@@ -184,9 +184,9 @@ These settings exist in the codebase but are **not** part of the Standalone `.en
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_HOST` | `192.168.0.111` | Redis host |
-| `REDIS_PORT` | `30379` | Redis port |
-| `REDIS_PASSWORD` | - | Redis password (optional) |
+| `REDIS_HOST` | — | Redis host (Cloud; set via ConfigMap/Secret) |
+| `REDIS_PORT` | `6379` | Redis port |
+| `REDIS_PASSWORD` | — | Redis password (set via Secret) |
 
 #### Security Settings
 
@@ -202,63 +202,17 @@ These settings exist in the codebase but are **not** part of the Standalone `.en
 
 ### Common Issues
 
-#### Issue: `ModuleNotFoundError: No module named 'opik'`
-
-**Cause**: Trying to use production features without the production-infrastructure dependencies.
-
-**Solution**:
-```bash
-pip install faultmaven[enterprise]
-```
-
-#### Issue: `Cannot connect to Redis`
-
-**Cause**: Redis not running or wrong connection settings.
-
-**Solution**:
-```bash
-# Check Redis is running
-docker ps | grep redis
-
-# Test connection
-redis-cli -h localhost -p 6379 ping
-# Should return: PONG
-
-# Update .env with correct settings
-REDIS_HOST=localhost
-REDIS_PORT=6379
-```
-
 #### Issue: `SQLite database locked`
 
-**Cause**: Multiple processes accessing SQLite database.
+**Cause**: More than one process is opening the Standalone SQLite database. Standalone is single-user / single-process by design.
 
 **Solution**:
 ```bash
-# For production, use PostgreSQL instead
-pip install faultmaven[enterprise]
-
-# Update .env
-DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/faultmaven
+# Ensure only one FaultMaven instance is running against ./data
+ps aux | grep faultmaven
 ```
 
-#### Issue: `PII redaction not working`
-
-**Cause**: Presidio services not running or `PROTECTION_ENABLED=false`.
-
-**Solution**:
-```bash
-# Check configuration
-grep PROTECTION_ENABLED .env
-grep SANITIZE_PII .env
-
-# Should be:
-PROTECTION_ENABLED=true
-SANITIZE_PII=true
-
-# Start Presidio services (if using local Presidio)
-docker-compose up -d presidio-analyzer presidio-anonymizer
-```
+> **Cloud-surface features** (PostgreSQL, Redis, Presidio PII redaction, Opik/Prometheus) are not part of Standalone — see [Scaling Beyond Standalone (Cloud)](#scaling-beyond-standalone-cloud). Their setup and troubleshooting belong to the Cloud config surface, not this guide.
 
 ### Verification Checklist
 

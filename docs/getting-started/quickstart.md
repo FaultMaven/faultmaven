@@ -190,28 +190,16 @@ Visit the interactive API documentation:
 
 ### Read the Guides
 
-- **[Installation Guide](installation/INSTALLATION_GUIDE.md)** - Comprehensive setup instructions
+- **[Installation Guide](installation.md)** - Comprehensive setup instructions
 - **[Architecture Overview](architecture/architecture-overview.md)** - System design and components
 - **[API Documentation](api/)** - Complete API reference
 - **[Development Guide](development/)** - Contributing and development setup
 
-### Add Production Infrastructure
+### Scaling Beyond Standalone
 
-When ready for production deployment:
+Standalone runs on fixed simple defaults (SQLite, in-process FakeRedis, embedded ChromaDB) and is single-user. Production-grade, multi-tenant infrastructure (PostgreSQL, Redis, object storage) is the **Cloud** deployment — a separate cloud-native architecture configured via Kubernetes, not an in-place upgrade of Standalone.
 
-```bash
-# Install production-infrastructure extras
-pip install -e .[enterprise]
-
-# Enables:
-# - PostgreSQL database support
-# - Redis session management
-# - Opik tracing and Prometheus metrics
-# - PII redaction (Presidio)
-# - Cloud storage (AWS S3, Azure Blob)
-```
-
-See [Installation Guide — Production Infrastructure](installation.md#production-infrastructure) for details.
+See [Installation Guide — Scaling Beyond Standalone (Cloud)](installation.md#scaling-beyond-standalone-cloud) for details.
 
 ### Join the Community
 

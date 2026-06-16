@@ -196,7 +196,7 @@ Returns the current primary provider, fallback chain, and per-provider
 status including health, connectivity, and available models. API keys
 are never exposed — only a boolean indicating whether one is configured.
 
-Available to any authenticated user (local deployment) or admin (cloud).
+Available to any authenticated user (Standalone) or admin (Cloud).
 Route-level access control is handled by the dashboard's LLMConfigRoute guard.
 
 Returns:

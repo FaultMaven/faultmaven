@@ -337,7 +337,7 @@ FaultMaven-Mono has:
 ## References
 
 - **[FaultMaven Platform Evolution Strategy](../../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md)** - Complete 20-week roadmap
-- **[Installation Guide](../../installation/INSTALLATION_GUIDE.md)** - Community and enterprise installation
+- **[Installation Guide](../../getting-started/installation.md)** - Standalone and Cloud installation
 - **[Quick Start Guide](../../QUICKSTART.md)** - 5-minute onboarding
 - **[Architecture Overview](../architecture-overview.md)** - System architecture documentation
 
