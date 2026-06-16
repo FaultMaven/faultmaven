@@ -1,6 +1,6 @@
 # FaultMaven
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688)](https://fastapi.tiangolo.com/)
 
@@ -247,7 +247,7 @@ It supports a wide variety of backends, including:
 
 ## Deployment Modes
 
-FaultMaven runs on a single, deployment-agnostic **Core**. The same engine powers two deployment architectures — what differs is the infrastructure footprint and who operates it, not the investigation engine itself. The Core is open source (Apache 2.0) in every mode.
+FaultMaven runs on a single, deployment-agnostic **Core**. The same engine powers two deployment architectures — what differs is the infrastructure footprint and who operates it, not the investigation engine itself. The Core is source-available (FSL-1.1-ALv2) in every mode.
 
 ### 1. Standalone (Self-Hosted)
 
@@ -543,7 +543,7 @@ See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for:
 
 ## License
 
-Apache 2.0 - See [LICENSE](LICENSE) for details.
+FSL-1.1-ALv2 (Functional Source License) — source-available, converting to Apache-2.0 two years after each release. See [LICENSE](LICENSE) for details.
 
 ---
 

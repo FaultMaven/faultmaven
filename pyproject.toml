@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "AI-powered troubleshooting copilot for incident investigation"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "Apache-2.0"}
+license = {text = "FSL-1.1-ALv2"}
 authors = [
     {name = "FaultMaven Team", email = "team@faultmaven.com"}
 ]
@@ -13,7 +13,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

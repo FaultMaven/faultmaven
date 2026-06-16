@@ -873,5 +873,5 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/auth/me
 
 - **Current Version:** 1.0.0
 - **Python Support:** 3.11, 3.12, 3.13
-- **License:** Apache 2.0
+- **License:** FSL-1.1-ALv2 (source-available; converts to Apache-2.0 two years after each release)
 - **Min Python:** 3.11
