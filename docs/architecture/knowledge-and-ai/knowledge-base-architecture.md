@@ -42,13 +42,13 @@ Team and Personal KBs are scoped to an **organization**. A user belongs to an or
 
 ### Deployment Differences
 
-| | Local (Open Source) | Cloud (SaaS) |
+| | Standalone | Cloud |
 |---|---|---|
-| **Available tiers** | Personal only | Global + Team + Personal |
-| **KB start state** | Empty — user builds from scratch | Pre-loaded Global KB included |
+| **Available scopes** | Global + Personal | Global + Team + Personal |
+| **KB start state** | Ships with the global runbook pack | Ships with the global runbook pack |
 | **Team collaboration** | Not applicable (single-user) | Full team sharing and org-wide access |
 
-In the local deployment, the Personal tier provides all KB functionality. The user builds their own knowledge base using the Dashboard and ingestion tools. In the cloud deployment, the Global tier provides immediate value out of the box, the Team tier captures institutional memory, and the Personal tier remains private.
+Both deployments ship with the same global runbook pack, so neither starts empty. In Standalone, the Global scope provides the shipped runbooks and the Personal scope holds the operator's own runbooks and drafts. In Cloud, multi-tenancy additionally activates the Team scope for runbooks shared across an organization (institutional memory), while the Personal scope remains private.
 
 ---
 

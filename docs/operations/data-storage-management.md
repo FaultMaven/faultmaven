@@ -273,7 +273,7 @@ The async SQLAlchemy engine is created in [`faultmaven/infrastructure/persistenc
 | `temp_store` | `MEMORY` | Temp tables, sort spill, and index build go to RAM instead of `/tmp` files. Temp data is ephemeral, so no durability cost. |
 | `cache_size` | `-64000` | ~64 MB page cache (negative = KB absolute). Default 2000 pages ≈ 8 MB is too small for the hot working set (cases + recent messages + evidence rows). |
 
-**Deployment scope:** These PRAGMAs apply only to SQLite (Local / Community Edition). Cloud / Enterprise deployments use PostgreSQL, which has its own concurrency model (MVCC), default-on foreign keys, and server-side configuration (`shared_buffers`, `work_mem`, `synchronous_commit`, etc.) outside the application engine layer. The branch in `get_engine()` is gated on `is_sqlite(url)` — the SQLite PRAGMA listener never runs against PostgreSQL.
+**Deployment scope:** These PRAGMAs apply only to SQLite (Standalone). Cloud deployments use PostgreSQL, which has its own concurrency model (MVCC), default-on foreign keys, and server-side configuration (`shared_buffers`, `work_mem`, `synchronous_commit`, etc.) outside the application engine layer. The branch in `get_engine()` is gated on `is_sqlite(url)` — the SQLite PRAGMA listener never runs against PostgreSQL.
 
 **Assumptions baked into the SQLite config:**
 

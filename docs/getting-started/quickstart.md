@@ -32,12 +32,12 @@ source .venv/bin/activate
 # On Windows:
 .venv\Scripts\activate
 
-# Install FaultMaven (community edition)
+# Install FaultMaven (standalone)
 pip install -e .
 ```
 
 **What's happening?**
-- Community edition installs with **zero external dependencies**
+- Standalone installs with **zero external dependencies**
 - Uses SQLite database (local file)
 - Local file storage for evidence
 - In-memory session management
@@ -161,7 +161,7 @@ curl -X POST http://localhost:8090/api/v1/data \
 
 ## What's Running?
 
-FaultMaven community edition runs entirely on your local machine:
+FaultMaven Standalone runs entirely on your local machine:
 
 | Component | Storage Type | Location |
 |-----------|--------------|----------|
@@ -195,12 +195,12 @@ Visit the interactive API documentation:
 - **[API Documentation](api/)** - Complete API reference
 - **[Development Guide](development/)** - Contributing and development setup
 
-### Upgrade to Enterprise Edition
+### Add Production Infrastructure
 
 When ready for production deployment:
 
 ```bash
-# Install with enterprise features
+# Install production-infrastructure extras
 pip install -e .[enterprise]
 
 # Enables:
@@ -211,7 +211,7 @@ pip install -e .[enterprise]
 # - Cloud storage (AWS S3, Azure Blob)
 ```
 
-See [Installation Guide - Enterprise Edition](installation/INSTALLATION_GUIDE.md#enterprise-edition) for details.
+See [Installation Guide — Production Infrastructure](installation.md#production-infrastructure) for details.
 
 ### Join the Community
 

@@ -60,11 +60,15 @@ Use these exact terms. Do not substitute synonyms.
 | self-hosted ↔ FaultMaven-hosted *(operator)* | — |
 | modular monolith | microservices, microservice backend |
 | open core *(applies to both deployments)* | "Open Source" as a tier name implying Cloud isn't open |
+| source-available / fair-source *(the backend license: FSL-1.1-ALv2)* | "open source" / "open-source" as a descriptor of the backend or the product |
+| Standalone / Cloud *(the two deployments)* | Community Edition / Enterprise Edition (CE/EE) — retired tier names |
 
 - `standalone`/`cloud` name the **deployment architecture**; `self-hosted`/`FaultMaven-hosted` name the **operator** (who runs it). These are independent axes.
 - **"cloud" describes the architecture (cloud-native), not the location** — a cloud deployment can run in public cloud *or* on-prem as a private cloud. `cloud` and `on-prem` are not opposites.
 - `local` is reserved for `AUTH_MODE=local` / `CHAT_PROVIDER=local` — **never** a deployment term.
 - The Core is **open core in both deployments.** Do not label a tier "Open Source" as if Cloud were proprietary; name a tier by its architecture (Standalone) or operator (Self-Hosted).
+- The backend/engine is **fair-source — FSL-1.1-ALv2 (source-available, converts to Apache-2.0 two years after each release)**, *not* OSI "open source." Describe the **backend or the product** as source-available or fair-source, never "open source." The **frontends stay permissively licensed (MIT/Apache)** and may be called open-source individually; third-party "open-source models" (e.g. via HuggingFace) keep the term too. The word is only wrong when it describes FaultMaven's backend/product/licensing.
+- There is **one unified codebase** — no Community/Enterprise edition split and no core/cloud fork. Standalone and Cloud are the **same core**, differing only by configuration and composed modules; multi-tenancy lives in the core schema, and proprietary cloud-only concerns (billing, usage metering, hosted IAM/admin) are **composed modules outside the open core**, never feature flags in the open tree.
 
 ### Capitalization
 
@@ -128,9 +132,9 @@ These secondary documents reinforce the above but do NOT override this skill:
 The terminology, capitalization, audience, and verb rules above are currently enforced manually via `/sync-brand`. The grep-style search cues throughout this skill (and in the `/sync-brand` propagation checklist) are written so they can graduate into automated checks:
 
 - **Pre-commit hook** — a regex scan over staged `.md`, `.html`, `.tsx`, `package.json`, and `manifest.json` files that fails the commit on a violation. Two pattern classes, matching "Authority by rule type":
-  - **Universal (terminology — runs on ALL brand-facing files, including marketing/website):** `troubleshooting assistant`, `microservices backend`, `Local Deployment`, `Deploy locally` (deployment context), `Enterprise SaaS` (as the Cloud tier name), `faultmaven-deploy` / `fm-*-service` (obsolete repos).
+  - **Universal (terminology — runs on ALL brand-facing files, including marketing/website):** `troubleshooting assistant`, `microservices backend`, `Local Deployment`, `Deploy locally` (deployment context), `Enterprise SaaS` (as the Cloud tier name), `Community Edition` / `Enterprise Edition` / `CE/EE` (retired tier names — there is one unified codebase, use Standalone/Cloud), `faultmaven-deploy` / `fm-*-service` (obsolete repos).
   - **Core surfaces only (positioning/audience/tone — README + product descriptions, NOT marketing copy):** `for SRE teams`, `designed for DevOps`, `leverages`, `utilizes`, etc.
-  - **NOT grep-enforced (human / `/sync-brand` judgment only):** category terms like *AIOps platform*, *observability platform*, and *playbook*. FaultMaven legitimately references these by **contrast** ("not the predictive AIOps platform", "deep integrations with observability platforms"), so a substring grep would false-positive on intended positioning. The §3 term-substitution rule still applies — don't *label FaultMaven* as one — but enforce it by review, not regex.
+  - **NOT grep-enforced (human / `/sync-brand` judgment only):** category terms like *AIOps platform*, *observability platform*, and *playbook*; **and `open source` / `open-source` describing the backend or product** (now fair-source/FSL — see §3). FaultMaven legitimately references the category terms by **contrast** ("not the predictive AIOps platform"), and "open source" legitimately appears for third-party models ("HuggingFace open-source models") and the permissively-licensed frontends — so a substring grep would false-positive. The §3 rules still apply — don't *label FaultMaven* a category platform, and don't call the *backend/product* "open source" — but enforce both by review, not regex.
 - **CI lint job** — same two pattern classes, run against brand-facing files in PRs (a `.github/workflows/brand-lint.yml`-style workflow that greps and posts a comment with offending lines). The universal class runs on marketing files too; the core-surfaces class does not.
 - **Search-cue maintenance** — when a violation pattern is added or retired in this skill, update the corresponding hook/CI rule in the same PR. The skill remains the source of truth; the automation is a downstream check, exactly as `/sync-brand` treats this skill as canonical and downstream-repo copies as derivatives.
 

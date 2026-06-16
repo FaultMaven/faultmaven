@@ -4,7 +4,8 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688)](https://fastapi.tiangolo.com/)
 
-**Open-Source AI Troubleshooting Copilot for Modern Engineering**
+**AI Troubleshooting Copilot for Modern Engineering.**
+Fair-source, self-hostable, and optimized for cloud scale.
 
 FaultMaven is an AI-powered troubleshooting copilot. It correlates live telemetry with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation — answers grounded in your actual system, not generic guesses. Resolve incidents faster with a copilot that understands both your stack and your organization.
 
@@ -240,7 +241,7 @@ It supports a wide variety of backends, including:
 
 - **Frontier Models:** Connect to major cloud providers (OpenAI, Anthropic, Google) for complex reasoning and multimodal analysis.
 - **Inference Providers:** Use high-speed inference engines (Groq, Fireworks AI) for low-latency responsiveness.
-- **Local & Open Source:** Run entirely on your own hardware using local runners (Ollama, vLLM) for maximum data privacy and zero API costs.
+- **Local & Self-Hosted:** Run entirely on your own hardware using local runners (Ollama, vLLM) for maximum data privacy and zero API costs.
 - **Model Routing:** Built-in fallback logic ensures high availability by automatically switching providers if the primary API becomes unavailable.
 
 ---

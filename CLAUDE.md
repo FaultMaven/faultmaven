@@ -560,12 +560,12 @@ Key configuration in `.env`:
 
 ### Storage Backends
 
-**Local (default - Community Edition):**
+**Standalone (default, self-hosted):**
 - SQLite database
 - FakeRedis sessions/cache (in-process, no external server)
 - Local filesystem storage
 
-**Production (Enterprise Edition):**
+**Cloud (FaultMaven-hosted):**
 - PostgreSQL database
 - Redis sessions
 - ChromaDB vectors
