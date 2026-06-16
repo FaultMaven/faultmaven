@@ -154,7 +154,7 @@ class TestProjectMetadata:
     def test_license_present(self, pyproject_data: dict):
         """Verify license is specified."""
         assert "license" in pyproject_data["project"]
-        assert pyproject_data["project"]["license"]["text"] == "Apache-2.0"
+        assert pyproject_data["project"]["license"]["text"] == "FSL-1.1-ALv2"
 
     def test_urls_present(self, pyproject_data: dict):
         """Verify project URLs are defined."""
