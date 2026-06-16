@@ -108,14 +108,15 @@ jobs:
         run: python scripts/check_kb_pack.py
 
   # ============================================================================
-  # COMMUNITY EDITION TESTING
-  # Test with minimal dependencies (pip install faultmaven)
+  # STANDALONE TESTING
+  # Minimal deps (pip install faultmaven) with optional features off — the
+  # standalone config. Proves the core runs without the optional integrations.
   # ============================================================================
-  test-community:
+  test-standalone:
     needs: [code-quality]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    name: Test Community Edition
+    name: Test Standalone
 
     steps:
       - name: Checkout Repository
@@ -128,24 +129,24 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'requirements/test.txt'
 
-      - name: Install Community Edition from Lockfile
+      - name: Install Standalone (minimal deps) from Lockfile
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements/test.txt
           pip install -e . --no-deps
 
-      - name: Verify Community Dependencies
+      - name: Verify Standalone Dependencies
         run: |
-          # Verify enterprise-only packages are NOT installed
+          # Verify optional (cloud) packages are NOT installed
           # Note: redis package IS expected (transitive dep of fakeredis, which is a base dep)
-          ! pip show opik 2>/dev/null || (echo "ERROR: opik should not be installed in community mode" && exit 1)
-          ! pip show presidio-analyzer 2>/dev/null || (echo "ERROR: presidio-analyzer should not be installed in community mode" && exit 1)
-          ! pip show boto3 2>/dev/null || (echo "ERROR: boto3 should not be installed in community mode" && exit 1)
-          # Verify fakeredis IS installed (community redis substitute)
-          pip show fakeredis || (echo "ERROR: fakeredis should be installed in community mode" && exit 1)
-          echo "✓ Community dependencies verified"
+          ! pip show opik 2>/dev/null || (echo "ERROR: opik should not be installed in standalone mode" && exit 1)
+          ! pip show presidio-analyzer 2>/dev/null || (echo "ERROR: presidio-analyzer should not be installed in standalone mode" && exit 1)
+          ! pip show boto3 2>/dev/null || (echo "ERROR: boto3 should not be installed in standalone mode" && exit 1)
+          # Verify fakeredis IS installed (standalone redis substitute)
+          pip show fakeredis || (echo "ERROR: fakeredis should be installed in standalone mode" && exit 1)
+          echo "✓ Standalone dependencies verified"
 
-      - name: Run Tests (Community Mode)
+      - name: Run Tests (Standalone)
         run: |
           pytest tests/ \
             --cov=faultmaven \
@@ -154,7 +155,7 @@ jobs:
             -m "not enterprise and not benchmark" \
             -v
         env:
-          # Community configuration - all enterprise features disabled
+          # Standalone configuration - optional (cloud) features disabled
           SKIP_SERVICE_CHECKS: "true"
           OPIK_ENABLED: "false"
           PROMETHEUS_ENABLED: "false"
@@ -170,22 +171,24 @@ jobs:
         run: |
           coverage report --fail-under=45
 
-      - name: Upload Community Coverage
+      - name: Upload Standalone Coverage
         uses: codecov/codecov-action@v6
         with:
           file: ./coverage.xml
-          flags: community
-          name: community-coverage
+          flags: standalone
+          name: standalone-coverage
 
   # ============================================================================
-  # ENTERPRISE EDITION TESTING
-  # Test with full dependencies (pip install faultmaven[enterprise,test])
+  # CLOUD TESTING
+  # Full deps + optional features on, external services mocked — the cloud config.
+  # (Installs the [enterprise] extras-set; renaming that extras-set/marker/lockfile
+  #  to "cloud" is a tracked follow-up — see chore PR.)
   # ============================================================================
-  test-enterprise:
+  test-cloud:
     needs: [code-quality]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    name: Test Enterprise Edition
+    name: Test Cloud
 
     steps:
       - name: Checkout Repository
@@ -198,22 +201,22 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'requirements/enterprise.txt'
 
-      - name: Install Enterprise Edition from Lockfile
+      - name: Install Cloud (full deps) from Lockfile
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements/enterprise.txt
           pip install -e . --no-deps
 
-      - name: Verify Enterprise Dependencies
+      - name: Verify Cloud Dependencies
         run: |
-          # Verify enterprise packages ARE installed
-          pip show opik || (echo "ERROR: opik should be installed in enterprise mode" && exit 1)
-          pip show presidio-analyzer || (echo "ERROR: presidio-analyzer should be installed in enterprise mode" && exit 1)
-          pip show boto3 || (echo "ERROR: boto3 should be installed in enterprise mode" && exit 1)
-          pip show redis || (echo "ERROR: redis should be installed in enterprise mode (for infrastructure testing)" && exit 1)
-          echo "✓ Enterprise dependencies verified"
+          # Verify optional (cloud) packages ARE installed
+          pip show opik || (echo "ERROR: opik should be installed in cloud mode" && exit 1)
+          pip show presidio-analyzer || (echo "ERROR: presidio-analyzer should be installed in cloud mode" && exit 1)
+          pip show boto3 || (echo "ERROR: boto3 should be installed in cloud mode" && exit 1)
+          pip show redis || (echo "ERROR: redis should be installed in cloud mode (for infrastructure testing)" && exit 1)
+          echo "✓ Cloud dependencies verified"
 
-      - name: Run Tests (Enterprise Mode)
+      - name: Run Tests (Cloud)
         run: |
           pytest tests/ \
             --cov=faultmaven \
@@ -222,7 +225,7 @@ jobs:
             -m "not benchmark" \
             -v
         env:
-          # Enterprise configuration - features can be enabled (but external services mocked)
+          # Cloud configuration - optional features enabled (external services mocked)
           SKIP_SERVICE_CHECKS: "true"
           OPIK_ENABLED: "true"
           OPIK_TRACK_DISABLE: "false"
@@ -240,12 +243,12 @@ jobs:
         run: |
           coverage report --fail-under=45
 
-      - name: Upload Enterprise Coverage
+      - name: Upload Cloud Coverage
         uses: codecov/codecov-action@v6
         with:
           file: ./coverage.xml
-          flags: enterprise
-          name: enterprise-coverage
+          flags: cloud
+          name: cloud-coverage
 
   # ============================================================================
   # POSTGRESQL INTEGRATION
@@ -295,7 +298,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'requirements/enterprise.txt'
 
-      - name: Install Enterprise Edition from Lockfile
+      - name: Install full deps from Lockfile
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements/enterprise.txt
@@ -392,7 +395,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [test-community, test-enterprise, test-postgres, architecture-lint, test-packaging]
+    needs: [test-standalone, test-cloud, test-postgres, architecture-lint, test-packaging]
 
     steps:
       - name: Checkout Repository
