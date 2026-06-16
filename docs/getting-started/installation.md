@@ -40,22 +40,26 @@ FaultMaven is **one codebase**. Standalone and Cloud run the same code and schem
 Perfect for local development, testing, and single-operator self-hosting. Zero external dependencies required.
 
 ```bash
-# Install FaultMaven
-pip install faultmaven
+# Clone the repository
+git clone https://github.com/FaultMaven/faultmaven.git
+cd faultmaven
 
-# Start the server
-faultmaven start
+# Configure your LLM provider
+cp .env.example .env
+# Edit .env: set CHAT_PROVIDER and the matching *_API_KEY
 
-# Or run directly with Python
-python -m faultmaven
+# Start with Docker (recommended)
+./faultmaven.sh start
 ```
+
+On first start the API auto-initializes the database, runs migrations, creates a default admin, and seeds the bundled Knowledge Base. To run as a local process instead of Docker, see [Running the Server](#running-the-server).
 
 ### What's Included
 
 The standalone default includes all core features:
 
 - ✅ **FastAPI REST API server**
-- ✅ **Multi-LLM support** (7 providers: Fireworks, OpenAI, Anthropic, Gemini, HuggingFace, OpenRouter, Groq)
+- ✅ **Multi-LLM support** (9 providers: Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local Ollama/vLLM)
 - ✅ **Agentic framework** with autonomous reasoning
 - ✅ **Knowledge base** (ChromaDB with RAG)
 - ✅ **SQLite database** (local file storage)
@@ -109,14 +113,15 @@ sanitize_pii = False
 ### Running the Server
 
 ```bash
-# Standard startup
-faultmaven start
+# Docker (recommended)
+./faultmaven.sh start
 
-# Or with custom port
-faultmaven start --port 8080
+# Or as a local process (development)
+pip install -e ".[dev]"
+./scripts/faultmaven-dev.sh start
 
 # Or with uvicorn directly
-uvicorn faultmaven.main:app --host 0.0.0.0 --port 8000
+uvicorn faultmaven.main:app --host 0.0.0.0 --port 8090
 ```
 
 ### API Access
@@ -219,21 +224,20 @@ ps aux | grep faultmaven
 After installation, verify your setup:
 
 ```bash
-# 1. Check installed packages
-pip list | grep faultmaven
+# 1. Check service status (Docker)
+./faultmaven.sh status
 
-# 2. Verify dependencies
-pip check
-
-# 3. Test server startup
-faultmaven start --test
-
-# 4. Check health endpoint
+# 2. Check the health endpoint
 curl http://localhost:8090/health
 
-# 5. Verify API documentation
+# 3. Check readiness
+curl http://localhost:8090/readiness
+
+# 4. Open the API docs
 curl http://localhost:8090/docs
 ```
+
+> Running as a local process instead of Docker? Use `./scripts/faultmaven-dev.sh health`.
 
 ### Getting Help
 
@@ -245,8 +249,8 @@ curl http://localhost:8090/docs
 
 ## Additional Resources
 
-- [Architecture Overview](../architecture/ARCHITECTURE.md)
-- [API Documentation](../api/API_REFERENCE.md)
-- [Configuration Reference](../reference/CONFIGURATION.md)
-- [Deployment Guide](../operations/DEPLOYMENT.md)
-- [Security Best Practices](../security/SECURITY_BEST_PRACTICES.md)
+- [Architecture Overview](../architecture/architecture-overview.md)
+- [API Reference](../reference/api/)
+- [Configuration Reference](../reference/configuration/)
+- [Quick Start](quickstart.md)
+- [Local Development Setup](local-setup.md)
