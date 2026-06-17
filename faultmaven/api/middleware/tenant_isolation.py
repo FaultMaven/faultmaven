@@ -1,31 +1,14 @@
-"""Tenant isolation middleware: set PostgreSQL RLS context per request.
+"""Tenant isolation helper: set the PostgreSQL RLS context for a session.
 
-After authentication resolves the user's organization_id, this middleware
-sets the per-connection PostgreSQL setting ``app.current_org_id`` so that
-RLS policies (created in Phase 8 of the storage redesign) can enforce
-tenant isolation at the database level.
+RLS policies (migration 018) enforce tenant isolation by filtering on
+``current_setting('app.current_org_id')``. That context is normally applied
+automatically **per transaction** by the engine ``begin`` listener (see
+``infrastructure/persistence/database.py``), which reads the current organization
+from the request/task contextvar. This helper sets it **explicitly** for a given
+session — e.g. to scope one session to a specific organization.
 
-On SQLite (local deployment), this is a no-op — RLS is PostgreSQL-only,
-and Local Deployment has exactly one organization, so the practical risk
-is zero.
-
-Wire-in (deferred):
-    The schema-side RLS policies are the primary deliverable of Phase 8.
-    Wiring this helper into the request lifecycle (e.g., calling it from
-    ``get_async_db_session`` after authentication resolves the org_id)
-    is tracked as a follow-up. The helper is dialect-aware and safe to
-    call from any context.
-
-Example wire-in pattern (for reference, not yet active)::
-
-    async def get_async_db_session(
-        user: UserDTO = Depends(require_authenticated_user),
-    ) -> AsyncGenerator[AsyncSession, None]:
-        async with get_db_session() as session:
-            await set_tenant_context(session, user.organization_id)
-            yield session
-
-Per ``deployment-schema-strategy.md`` v2.2 §10.
+On SQLite (Standalone) this is a no-op — RLS is PostgreSQL-only and Standalone has
+exactly one organization.
 """
 
 from sqlalchemy import text
@@ -33,27 +16,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def set_tenant_context(session: AsyncSession, organization_id: str) -> None:
-    """Set the PostgreSQL ``app.current_org_id`` for this session.
+    """Set ``app.current_org_id`` for ``session`` (PostgreSQL RLS).
 
-    ``SET LOCAL`` is per-transaction. Call this after authentication and
-    before any tenanted query in the request — the value is then visible
-    to RLS policies via ``current_setting('app.current_org_id', true)``.
-
-    On SQLite, this is a no-op. The dialect check happens before the
-    SQL is sent, so SQLite never sees the unsupported ``SET LOCAL``
-    syntax.
+    ``set_config(..., is_local=true)`` is the transaction-local equivalent of
+    ``SET LOCAL`` that accepts a bound parameter (``SET LOCAL x = :p`` is a syntax
+    error — ``SET`` takes no parameters). No-op on SQLite. The value is bound to
+    prevent injection.
 
     Args:
         session: Active async SQLAlchemy session.
-        organization_id: The tenant identifier. Bound as a parameter to
-            prevent SQL injection.
+        organization_id: The tenant identifier.
     """
     bind = session.get_bind()
     if bind.dialect.name != "postgresql":
-        # No RLS on SQLite — Local Deployment has one organization.
+        # No RLS on SQLite — Standalone has one organization.
         return
-
     await session.execute(
-        text("SET LOCAL app.current_org_id = :org_id"),
+        text("SELECT set_config('app.current_org_id', :org_id, true)"),
         {"org_id": organization_id},
     )

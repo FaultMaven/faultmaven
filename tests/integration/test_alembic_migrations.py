@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "a7c9e1b3d5f7"  # current head (017 — config_overrides source/category)
+HEAD_REVISION = "c1f3a5b7d9e2"  # current head (018 — rls_tenant_isolation)
 
 
 @pytest.fixture(scope="function")
