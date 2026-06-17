@@ -316,39 +316,90 @@ check_env_file() {
 # Core Commands
 #######################################
 
-check_docker_ports() {
-    # Check if required ports are available
-    local ports_to_check=(8090 3333)
-    local ports_in_use=()
+# Returns 0 if any of THIS project's compose containers are currently running.
+fm_containers_running() {
+    docker compose ps --format json 2>/dev/null | grep -q '"State":"running"'
+}
 
-    for port in "${ports_to_check[@]}"; do
-        # Use ss first (works without special privileges), fallback to lsof
-        if ss -tlnp 2>/dev/null | grep -q ":$port "; then
-            # Extract PIDs from ss output
-            local pids=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' ' || echo "unknown")
-            ports_in_use+=("$port (PID(s): ${pids:-unknown})")
-        elif command -v lsof >/dev/null 2>&1 && lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
-            # Fallback to lsof if ss didn't find anything
-            local pids=$(lsof -ti :$port 2>/dev/null | tr '\n' ' ' || echo "unknown")
-            ports_in_use+=("$port (PID(s): ${pids:-unknown})")
+# Identify the process(es) holding a port. Populates:
+#   HOLDER_PIDS        — space-separated PID list (may be empty if root-owned)
+#   HOLDER_IS_DOCKER   — true if a holder looks like Docker (docker-proxy/dockerd),
+#                        or if the port is held but no PID is visible (privileged
+#                        listener — most often Docker's published port).
+describe_port_holder() {
+    local port="$1"
+    HOLDER_PIDS=""
+    HOLDER_IS_DOCKER=false
+
+    # ss first (no privileges needed for our own processes); fall back to lsof.
+    HOLDER_PIDS=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' ')
+    if [ -z "$HOLDER_PIDS" ] && command -v lsof >/dev/null 2>&1; then
+        HOLDER_PIDS=$(lsof -ti :"$port" -sTCP:LISTEN 2>/dev/null | sort -u | tr '\n' ' ')
+    fi
+
+    if [ -z "$HOLDER_PIDS" ]; then
+        # Port is in use but we can't see the owning PID — typically a root-owned
+        # listener such as Docker's published port.
+        HOLDER_IS_DOCKER=true
+        return
+    fi
+
+    local p comm
+    for p in $HOLDER_PIDS; do
+        comm=$(ps -p "$p" -o comm= 2>/dev/null)
+        if [[ "$comm" == *docker* ]]; then
+            HOLDER_IS_DOCKER=true
         fi
     done
+}
 
-    if [ ${#ports_in_use[@]} -gt 0 ]; then
-        print_error "Required ports are already in use:"
-        for port_info in "${ports_in_use[@]}"; do
-            echo "  • Port $port_info"
+# Returns 0 if both required ports are free; 1 (with guidance) if either is held
+# by something OTHER than this project's own containers. Identifies each holder
+# (process vs Docker) so the user knows whether a process-based FaultMaven
+# (./scripts/faultmaven-dev.sh) or a stray container is in the way.
+check_docker_ports() {
+    local ports_to_check=(8090 3333)
+    local any_conflict=false
+    local saw_docker=false
+    local saw_process=false
+
+    for port in "${ports_to_check[@]}"; do
+        # Is anything listening on this port?
+        if ! ss -tln 2>/dev/null | grep -q ":$port " \
+           && ! { command -v lsof >/dev/null 2>&1 && lsof -Pi :"$port" -sTCP:LISTEN -t >/dev/null 2>&1; }; then
+            continue
+        fi
+
+        if [ "$any_conflict" = false ]; then
+            print_error "Required port(s) already in use — cannot start:"
+            any_conflict=true
+        fi
+
+        describe_port_holder "$port"
+        if [ "$HOLDER_IS_DOCKER" = true ]; then
+            saw_docker=true
+            echo "  • Port $port — held by a Docker container / privileged listener${HOLDER_PIDS:+ (PID(s): $HOLDER_PIDS)}"
+        else
+            saw_process=true
+            echo "  • Port $port — held by process (PID(s): $HOLDER_PIDS)"
+        fi
+        # Show holder details (mirrors faultmaven-dev.sh) so the user can identify it
+        local p
+        for p in $HOLDER_PIDS; do
+            ps -p "$p" -o pid,ppid,comm,args 2>/dev/null | tail -n +1 | sed 's/^/      /'
         done
+    done
+
+    if [ "$any_conflict" = true ]; then
         echo ""
-        echo "To resolve this:"
-        echo "  1. Check what's using the ports:"
-        for port in "${ports_to_check[@]}"; do
-            echo "     ss -tlnp | grep :$port"
-            echo "     (or) lsof -i :$port"
-        done
-        echo "  2. Stop existing FaultMaven containers: ./faultmaven.sh stop"
-        echo "  3. Or stop local processes using those ports:"
-        echo "     ./scripts/faultmaven-dev.sh stop"
+        echo "Resolve before starting:"
+        if [ "$saw_process" = true ]; then
+            echo "  • A process-based FaultMaven on these ports? Stop it: ./scripts/faultmaven-dev.sh stop"
+        fi
+        if [ "$saw_docker" = true ]; then
+            echo "  • A stray/previous FaultMaven container? Stop it: ./faultmaven.sh stop  (or: ./faultmaven.sh kill)"
+        fi
+        echo "  • Inspect manually: ss -tlnp | grep -E ':8090 |:3333 '   (or: lsof -i :8090)"
         return 1
     fi
     return 0
@@ -416,7 +467,20 @@ cmd_start() {
     check_env_file
     check_dashboard_source
 
-    # Check if ports are available before starting
+    # If THIS stack is already running, don't mistake our own published ports for
+    # a conflict — report "already running" (parity with faultmaven-dev.sh).
+    if fm_containers_running; then
+        print_warning "FaultMaven containers are already running"
+        echo ""
+        echo "  • Health:  ./faultmaven.sh health"
+        echo "  • Logs:    ./faultmaven.sh logs"
+        echo "  • Apply config/image changes: ./faultmaven.sh restart"
+        echo "  • Access:  Dashboard http://localhost:3333  |  API http://localhost:8090"
+        exit 0
+    fi
+
+    # Check if ports are available before starting (held by a process-based
+    # FaultMaven, a stray container, or anything else).
     if ! check_docker_ports; then
         exit 1
     fi
