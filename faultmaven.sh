@@ -547,15 +547,29 @@ cmd_start() {
         print_info "Building from source (API: $BUILD_MODE, Dashboard: $BUILD_DASHBOARD)..."
         print_info "First build compiles dependencies — typically several minutes. Live progress below."
     else
+        # Resolve image tags from .env (compose reads these too); FM_IMAGE_TAG is
+        # NOT in the shell, so read it safely rather than via ${FM_IMAGE_TAG:-}.
+        local api_tag dash_tag
+        api_tag="$(read_env_var FM_IMAGE_TAG)";            api_tag="${api_tag:-latest}"
+        dash_tag="$(read_env_var FM_DASHBOARD_IMAGE_TAG)"; dash_tag="${dash_tag:-latest}"
+
         print_info "Starting from pre-built GHCR images..."
-        # Refresh images first only when explicitly asked (pure pull mode)
+
+        # Refresh when asked (--pull), OR when tracking a mutable ':latest' tag so
+        # `start` picks up newly published builds instead of a stale local cache.
+        # Pinned (immutable) tags skip the registry round-trip.
         if [ "$PULL_MODE" = true ]; then
             print_info "Refreshing pre-built images from registry..."
             docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" pull || \
                 print_warning "Image refresh failed; continuing with locally cached images"
+        elif [ "$api_tag" = "latest" ] || [ "$dash_tag" = "latest" ]; then
+            print_info "Refreshing :latest images (pin FM_IMAGE_TAG / FM_DASHBOARD_IMAGE_TAG to skip)..."
+            docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" pull || \
+                print_warning "Image refresh failed (offline?); continuing with locally cached images"
         fi
-        # The API image is ~5GB. First run downloads it; cached restarts skip this.
-        if docker image inspect "ghcr.io/faultmaven/faultmaven:${FM_IMAGE_TAG:-latest}" >/dev/null 2>&1; then
+
+        # Heads-up about the up step, using the ACTUAL configured tag.
+        if docker image inspect "ghcr.io/faultmaven/faultmaven:${api_tag}" >/dev/null 2>&1; then
             print_info "API image present — starting containers (~30–60s)."
         else
             print_info "First run downloads the API image (~5GB) — typically 2–5 min on a fast link. Live progress below."
