@@ -53,9 +53,16 @@ services:
       # comments) and only refreshes on container recreate. With the file mounted,
       # `./faultmaven.sh restart` re-reads it, and mode-specific overrides in
       # `environment:` above still win (env vars rank above the .env file).
-      # NOTE: .env must exist before `up` (faultmaven.sh guarantees this); a bind
-      # mount of a missing file would create a directory.
-      - ./.env:/app/.env:ro
+      # .env must exist before `up`. create_host_path:false makes a missing file
+      # fail loudly ("bind source path does not exist") instead of Docker silently
+      # creating a directory named .env. faultmaven.sh guarantees it exists; this
+      # guards a raw `docker compose up`.
+      - type: bind
+        source: ./.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
       - ./data:/app/data
       # - ./kb-pack:/kb-pack:ro   # see KB_PACK_DIR above
     restart: unless-stopped
@@ -94,7 +101,12 @@ services:
       - VECTOR_STORAGE_TYPE=chromadb
     volumes:
       # Shared config (see api service) — same .env, same parser as dev.
-      - ./.env:/app/.env:ro
+      - type: bind
+        source: ./.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
       - ./data:/app/data
       - ./demo:/app/demo:ro
     depends_on:

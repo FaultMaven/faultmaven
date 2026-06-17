@@ -275,55 +275,77 @@ check_env_file() {
 
     # Check for at least one LLM provider configured (read values safely, do NOT
     # source .env — see read_env_var above).
-    local has_llm=false
-    local provider_name=""
-
-    # Check each supported provider's API key
-    declare -A provider_keys=(
-        ["OpenAI"]="OPENAI_API_KEY"
-        ["Anthropic"]="ANTHROPIC_API_KEY"
-        ["Gemini"]="GEMINI_API_KEY"
-        ["Fireworks"]="FIREWORKS_API_KEY"
-        ["Groq"]="GROQ_API_KEY"
-        ["HuggingFace"]="HUGGINGFACE_API_KEY"
-        ["Cohere"]="COHERE_API_KEY"
-        ["OpenRouter"]="OPENROUTER_API_KEY"
+    # Report the provider the app will ACTUALLY use (CHAT_PROVIDER) — not just the
+    # first key we happen to find. Values are read safely (no `source` — see
+    # read_env_var). Recognized providers in STABLE order: "id|Display|CRED_VAR";
+    # 'local' authenticates via LOCAL_LLM_URL rather than an API key.
+    local provider_specs=(
+        "openai|OpenAI|OPENAI_API_KEY"
+        "anthropic|Anthropic|ANTHROPIC_API_KEY"
+        "gemini|Gemini|GEMINI_API_KEY"
+        "fireworks|Fireworks|FIREWORKS_API_KEY"
+        "groq|Groq|GROQ_API_KEY"
+        "huggingface|HuggingFace|HUGGINGFACE_API_KEY"
+        "cohere|Cohere|COHERE_API_KEY"
+        "openrouter|OpenRouter|OPENROUTER_API_KEY"
+        "local|Local (Ollama/vLLM)|LOCAL_LLM_URL"
     )
 
-    for name in "${!provider_keys[@]}"; do
-        local key_var="${provider_keys[$name]}"
-        local key_val
-        key_val="$(read_env_var "$key_var")"
-        if [ -n "$key_val" ] && [[ ! "$key_val" =~ ^your- ]]; then
-            has_llm=true
-            provider_name="$name"
+    local chat_provider
+    chat_provider="$(read_env_var CHAT_PROVIDER | tr '[:upper:]' '[:lower:]')"
+
+    # First provider (stable order) with its credential set — the start gate and
+    # the fallback when CHAT_PROVIDER is unset/unusable.
+    local first_name="" spec pid pname pcred cred
+    for spec in "${provider_specs[@]}"; do
+        IFS='|' read -r pid pname pcred <<< "$spec"
+        cred="$(read_env_var "$pcred")"
+        if [ -n "$cred" ] && [[ ! "$cred" =~ ^your- ]]; then
+            first_name="$pname"
             break
         fi
     done
 
-    # Also check for local LLM (no API key needed)
-    local local_llm_url
-    local_llm_url="$(read_env_var LOCAL_LLM_URL)"
-    if [ "$has_llm" = false ] && [ -n "$local_llm_url" ]; then
-        has_llm=true
-        provider_name="Local (Ollama/vLLM)"
+    # Resolve CHAT_PROVIDER → display name + whether its credential is set.
+    local chat_name="" chat_known=false chat_ok=false
+    if [ -n "$chat_provider" ]; then
+        for spec in "${provider_specs[@]}"; do
+            IFS='|' read -r pid pname pcred <<< "$spec"
+            if [ "$pid" = "$chat_provider" ]; then
+                chat_known=true; chat_name="$pname"
+                cred="$(read_env_var "$pcred")"
+                [ -n "$cred" ] && [[ ! "$cred" =~ ^your- ]] && chat_ok=true
+                break
+            fi
+        done
     fi
 
-    if [ "$has_llm" = false ]; then
-        print_error "No LLM API key configured"
+    # Start gate: refuse only when NOTHING usable is configured.
+    if [ -z "$first_name" ] && [ "$chat_ok" = false ]; then
+        print_error "No LLM provider configured"
         echo ""
-        echo "Edit .env and configure AT LEAST ONE provider:"
-        echo "  OPENAI_API_KEY=sk-...              # OpenAI GPT"
-        echo "  ANTHROPIC_API_KEY=sk-ant-...       # Anthropic Claude"
-        echo "  GEMINI_API_KEY=...                  # Google Gemini"
-        echo "  FIREWORKS_API_KEY=...               # Fireworks AI"
-        echo "  GROQ_API_KEY=gsk-...               # Groq (ultra-fast)"
-        echo "  LOCAL_LLM_URL=http://localhost:11434 # Ollama (local, free)"
+        echo "Edit .env and set CHAT_PROVIDER plus its credential, e.g.:"
+        echo "  CHAT_PROVIDER=openai   + OPENAI_API_KEY=sk-..."
+        echo "  CHAT_PROVIDER=gemini   + GEMINI_API_KEY=..."
+        echo "  CHAT_PROVIDER=groq     + GROQ_API_KEY=gsk-..."
+        echo "  CHAT_PROVIDER=local    + LOCAL_LLM_URL=http://localhost:11434  (no key)"
         echo ""
         exit 1
     fi
 
-    print_info "LLM Provider: $provider_name"
+    # Report tied to CHAT_PROVIDER (the provider the app selects at runtime).
+    if [ "$chat_known" = true ]; then
+        print_info "LLM Provider: $chat_name (CHAT_PROVIDER)"
+        if [ "$chat_ok" = false ]; then
+            print_warning "CHAT_PROVIDER=$chat_provider but its credential is not set in .env"
+            [ -n "$first_name" ] && print_warning "Another provider IS configured ($first_name) — the app may fall back to it"
+        fi
+    elif [ -n "$chat_provider" ]; then
+        print_warning "CHAT_PROVIDER='$chat_provider' is not a recognized provider"
+        print_info "LLM Provider: $first_name (first configured — check CHAT_PROVIDER)"
+    else
+        print_info "LLM Provider: $first_name (CHAT_PROVIDER unset — app uses its default)"
+    fi
 
     print_success ".env file configured"
 }
