@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Docker image could publish from a failing commit**: `publish-docker.yml` triggered on every push to `main` independently of CI, so `:latest` could ship from a commit whose tests or Dockerfile build had failed. It now publishes only after the **CI/CD Pipeline** workflow succeeds on `main` (via `workflow_run` + a `conclusion == 'success'` gate), matching the dashboard's publish flow; version tags and manual dispatch still publish directly.
 - **`faultmaven.sh` corrupted on JSON `.env` values**: the script `source`d `.env` as shell, so a valid value like `LLM_PROVIDER_TIMEOUT_OVERRIDES={"fireworks": 180}` aborted startup (`180}: command not found`). It now reads keys with a safe parser (`read_env_var`) instead of sourcing.
 - **`faultmaven.sh` reported the wrong LLM provider**: it printed the first credential found in arbitrary order rather than the configured `CHAT_PROVIDER`; it now reports `CHAT_PROVIDER` and warns if that provider's credential is missing.
 - **KB Collection Mismatch**: Fixed silent empty results from KB Q&A tools caused by ingestion writing to `faultmaven_kb` while retrieval searched `case_global_kb` (CaseVectorStore prefix). Also fixes case evidence double-prefix bug (`case_case_{id}`).

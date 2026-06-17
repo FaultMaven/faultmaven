@@ -1,11 +1,18 @@
 name: Publish Docker Image
 
 on:
+  # Publish the main image only AFTER "CI/CD Pipeline" succeeds on main — gates on
+  # the full test suite + Dockerfile build. Previously this ran on every push to
+  # main and could ship :latest from a commit whose tests/build had failed.
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    types: [completed]
+    branches: [ "main" ]
+  # Version releases publish directly from the tag.
   push:
-    branches: [ "main" ]
     tags: [ 'v*.*.*' ]
-  pull_request:
-    branches: [ "main" ]
+  # Manual / emergency publish.
+  workflow_dispatch:
 
 env:
   REGISTRY_DOCKER: docker.io
@@ -15,6 +22,9 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Only when the triggering CI run passed (workflow_run), or a tag/manual run.
+    # Without this, a failed/cancelled CI run would still reach the publish steps.
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     permissions:
       contents: read
       packages: write
