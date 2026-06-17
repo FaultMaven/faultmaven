@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Local deployment runs pre-built images by default**: `./faultmaven.sh start` now pulls `ghcr.io/faultmaven/faultmaven` and `ghcr.io/faultmaven/faultmaven-dashboard` from GHCR instead of building the API from source (no ~5GB local build, no Docker Hub pull-rate limits). New flags: `--build` (build the API from this repo), `--build-dashboard` (build the Dashboard from `../faultmaven-dashboard`), `--pull` (refresh images). Image tags are pinnable via `FM_IMAGE_TAG` / `FM_DASHBOARD_IMAGE_TAG` in `.env`; a mutable `:latest` is auto-refreshed on each start. Build-from-source is layered via `docker-compose.build.yml` / `docker-compose.dashboard-build.yml`.
+- **Version-controlled git hook installer**: `.githooks/pre-commit` (black auto-formats staged Python, pinned to `black==26.3.1`) + `scripts/install-git-hooks.sh` (wires `core.hooksPath`; refuses to override an installed pre-commit framework unless `--force`, so secret-scanning hooks aren't silently disabled) + `scripts/black-pinned-version.sh`.
+
 ### Changed
+
+- **Standalone config is a single shared `.env`**: the containerized API reads `.env` via a read-only bind mount at `/app/.env` (not compose `env_file:`), so it is parsed by the same loader as the process runner (`scripts/faultmaven-dev.sh`); `./faultmaven.sh restart` re-reads edits, and a missing `.env` fails loudly instead of Docker creating a directory.
+- **Clearer `faultmaven.sh start` output**: confirms `.env` before naming the LLM provider (reported from `CHAT_PROVIDER`), streams live `docker compose` pull/build progress (previously captured/silent), shows an elapsed/budget health-wait with per-service state, and recognizes an already-running stack instead of reporting a false port conflict.
 
 - **KB Vector Store**: Introduced `KnowledgeVectorStore` for KB retrieval — uses collection names as-is from `KBConfig`. Replaces `CaseVectorStore` (which prepends `case_`) for all Q&A tools. Global KB collection standardized to `global_kb`.
 
@@ -15,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`faultmaven.sh` corrupted on JSON `.env` values**: the script `source`d `.env` as shell, so a valid value like `LLM_PROVIDER_TIMEOUT_OVERRIDES={"fireworks": 180}` aborted startup (`180}: command not found`). It now reads keys with a safe parser (`read_env_var`) instead of sourcing.
+- **`faultmaven.sh` reported the wrong LLM provider**: it printed the first credential found in arbitrary order rather than the configured `CHAT_PROVIDER`; it now reports `CHAT_PROVIDER` and warns if that provider's credential is missing.
 - **KB Collection Mismatch**: Fixed silent empty results from KB Q&A tools caused by ingestion writing to `faultmaven_kb` while retrieval searched `case_global_kb` (CaseVectorStore prefix). Also fixes case evidence double-prefix bug (`case_case_{id}`).
 - **Opik Ghost Spans**: Removed duplicate `@opik.track` decorator from `LLMRouter.generate()` — it created an empty outer span on every LLM call since `generate()` is a thin delegate to `route()` which already has the decorator
 - **Router Timeout Enforcement**: Changed `timeout=None` to `timeout=self.request_timeout` in `LLMRouter.route()` — the configured timeout (default 30s) was never enforced at the router level, allowing unbounded latency when the fallback chain tried multiple slow providers
