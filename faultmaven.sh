@@ -294,31 +294,22 @@ check_env_file() {
     local chat_provider
     chat_provider="$(read_env_var CHAT_PROVIDER | tr '[:upper:]' '[:lower:]')"
 
-    # First provider (stable order) with its credential set — the start gate and
-    # the fallback when CHAT_PROVIDER is unset/unusable.
-    local first_name="" spec pid pname pcred cred
+    # Single pass over the providers: capture the first one with a credential set
+    # (the start gate + fallback) AND resolve CHAT_PROVIDER's display/state. Each
+    # credential is read once here.
+    local first_name="" chat_name="" chat_known=false chat_ok=false
+    local spec pid pname pcred cred configured
     for spec in "${provider_specs[@]}"; do
         IFS='|' read -r pid pname pcred <<< "$spec"
         cred="$(read_env_var "$pcred")"
-        if [ -n "$cred" ] && [[ ! "$cred" =~ ^your- ]]; then
-            first_name="$pname"
-            break
+        configured=false
+        [ -n "$cred" ] && [[ ! "$cred" =~ ^your- ]] && configured=true
+
+        [ "$configured" = true ] && [ -z "$first_name" ] && first_name="$pname"
+        if [ -n "$chat_provider" ] && [ "$pid" = "$chat_provider" ]; then
+            chat_known=true; chat_name="$pname"; chat_ok="$configured"
         fi
     done
-
-    # Resolve CHAT_PROVIDER → display name + whether its credential is set.
-    local chat_name="" chat_known=false chat_ok=false
-    if [ -n "$chat_provider" ]; then
-        for spec in "${provider_specs[@]}"; do
-            IFS='|' read -r pid pname pcred <<< "$spec"
-            if [ "$pid" = "$chat_provider" ]; then
-                chat_known=true; chat_name="$pname"
-                cred="$(read_env_var "$pcred")"
-                [ -n "$cred" ] && [[ ! "$cred" =~ ^your- ]] && chat_ok=true
-                break
-            fi
-        done
-    fi
 
     # Start gate: refuse only when NOTHING usable is configured.
     if [ -z "$first_name" ] && [ "$chat_ok" = false ]; then
@@ -445,6 +436,23 @@ check_docker_ports() {
     return 0
 }
 
+# Probe every health-check service once. Sets HEALTHY_COUNT and HEALTH_STATUS
+# (a per-service " name ✓/…" line). Single source for the wait + stability check.
+probe_services() {
+    HEALTHY_COUNT=0
+    HEALTH_STATUS=""
+    local service port rest name path
+    for service in "${HEALTH_CHECK_SERVICES[@]}"; do
+        port="${service%%:*}"; rest="${service#*:}"; name="${rest%%:*}"; path="${rest#*:}"
+        if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
+            HEALTHY_COUNT=$((HEALTHY_COUNT + 1))
+            HEALTH_STATUS+="  ${name} ✓"
+        else
+            HEALTH_STATUS+="  ${name} …"
+        fi
+    done
+}
+
 wait_for_containers_ready() {
     local max_wait=120   # first boot also runs DB migrations + KB seeding
     local elapsed=0
@@ -454,37 +462,15 @@ wait_for_containers_ready() {
     print_info "Waiting for services to become healthy (up to ${max_wait}s; first boot runs migrations + KB seeding)..."
 
     while [ $elapsed -lt $max_wait ]; do
-        local healthy_count=0
-        local status_line=""
-
-        for service in "${HEALTH_CHECK_SERVICES[@]}"; do
-            local port="${service%%:*}"
-            local rest="${service#*:}"
-            local name="${rest%%:*}"
-            local path="${rest#*:}"
-
-            if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
-                healthy_count=$((healthy_count + 1))
-                status_line+="  ${name} ✓"
-            else
-                status_line+="  ${name} …"
-            fi
-        done
-
+        probe_services
         # In-place progress: elapsed / budget + per-service state.
-        printf '\r  ⏳ %3ds / %ds —%s        ' "$elapsed" "$max_wait" "$status_line"
+        printf '\r  ⏳ %3ds / %ds —%s        ' "$elapsed" "$max_wait" "$HEALTH_STATUS"
 
-        if [ "$healthy_count" -eq "$total_count" ]; then
-            # All responding — confirm stability with one more check after a pause.
+        if [ "$HEALTHY_COUNT" -eq "$total_count" ]; then
+            # All responding — confirm stability with one more probe after a pause.
             sleep 2
-            local still_healthy=0
-            for service in "${HEALTH_CHECK_SERVICES[@]}"; do
-                local port="${service%%:*}"
-                local rest="${service#*:}"
-                local path="${rest#*:}"
-                curl -sf "http://localhost:$port$path" > /dev/null 2>&1 && still_healthy=$((still_healthy + 1))
-            done
-            if [ "$still_healthy" -eq "$total_count" ]; then
+            probe_services
+            if [ "$HEALTHY_COUNT" -eq "$total_count" ]; then
                 printf '\r  ✓ all services healthy in ~%ds%-30s\n' "$elapsed" ""
                 return 0
             fi

@@ -51,7 +51,7 @@ echo "  Note: this hook runs black only — it does NOT scan for secrets/keys."
 echo "  For secret scanning too, use the pre-commit framework (see header)."
 
 # Verify black matches the version CI enforces (formatting is version-sensitive).
-PINNED="$(grep -oE 'black==[0-9][0-9A-Za-z.]+' pyproject.toml | head -1 | sed 's/black==//')"
+PINNED="$("$ROOT/scripts/black-pinned-version.sh" 2>/dev/null || true)"
 if [ -x .venv/bin/black ] && .venv/bin/black --version >/dev/null 2>&1; then
     HAVE="$(.venv/bin/black --version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
     if [ "$HAVE" = "$PINNED" ]; then

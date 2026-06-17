@@ -31,6 +31,23 @@
 #
 # For local development without Docker, use: ./scripts/faultmaven-dev.sh
 
+# Single source of truth for config: mount .env so the containerized app reads it
+# with the SAME parser (pydantic / python-dotenv) as the process runner
+# (scripts/faultmaven-dev.sh). Deliberately NOT compose `env_file:` — that uses a
+# different parser (diverges on quotes/JSON/inline comments) and only refreshes on
+# recreate. With the file mounted, `./faultmaven.sh restart` re-reads it, and
+# `environment:` overrides still win (env vars rank above the .env file).
+# create_host_path:false makes a missing .env fail loudly ("bind source path does
+# not exist") instead of Docker silently creating a directory; faultmaven.sh
+# guarantees it exists, this guards a raw `docker compose up`.
+x-env-mount: &env-mount
+  type: bind
+  source: ./.env
+  target: /app/.env
+  read_only: true
+  bind:
+    create_host_path: false
+
 services:
   api:
     image: ghcr.io/faultmaven/faultmaven:${FM_IMAGE_TAG:-latest}
@@ -46,23 +63,7 @@ services:
       # the baseline pack bundled in the image is used (zero-config default).
       # - KB_PACK_DIR=/kb-pack
     volumes:
-      # Single source of truth for config: mount .env so the containerized app
-      # reads it with the SAME parser (pydantic / python-dotenv) as the process-
-      # based runner (scripts/faultmaven-dev.sh). This is deliberately NOT compose
-      # `env_file:` — that uses a different parser (diverges on quotes/JSON/inline
-      # comments) and only refreshes on container recreate. With the file mounted,
-      # `./faultmaven.sh restart` re-reads it, and mode-specific overrides in
-      # `environment:` above still win (env vars rank above the .env file).
-      # .env must exist before `up`. create_host_path:false makes a missing file
-      # fail loudly ("bind source path does not exist") instead of Docker silently
-      # creating a directory named .env. faultmaven.sh guarantees it exists; this
-      # guards a raw `docker compose up`.
-      - type: bind
-        source: ./.env
-        target: /app/.env
-        read_only: true
-        bind:
-          create_host_path: false
+      - *env-mount          # shared .env mount (see x-env-mount above)
       - ./data:/app/data
       # - ./kb-pack:/kb-pack:ro   # see KB_PACK_DIR above
     restart: unless-stopped
@@ -100,13 +101,7 @@ services:
       - DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
       - VECTOR_STORAGE_TYPE=chromadb
     volumes:
-      # Shared config (see api service) — same .env, same parser as dev.
-      - type: bind
-        source: ./.env
-        target: /app/.env
-        read_only: true
-        bind:
-          create_host_path: false
+      - *env-mount          # shared .env mount (see x-env-mount above)
       - ./data:/app/data
       - ./demo:/app/demo:ro
     depends_on:
