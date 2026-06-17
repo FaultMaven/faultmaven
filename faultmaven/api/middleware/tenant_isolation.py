@@ -28,7 +28,6 @@ Example wire-in pattern (for reference, not yet active)::
 Per ``deployment-schema-strategy.md`` v2.2 §10.
 """
 
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -48,12 +47,10 @@ async def set_tenant_context(session: AsyncSession, organization_id: str) -> Non
         organization_id: The tenant identifier. Bound as a parameter to
             prevent SQL injection.
     """
-    bind = session.get_bind()
-    if bind.dialect.name != "postgresql":
-        # No RLS on SQLite — Local Deployment has one organization.
-        return
-
-    await session.execute(
-        text("SET LOCAL app.current_org_id = :org_id"),
-        {"org_id": organization_id},
+    # Single implementation lives in the persistence layer (the get_db_session
+    # chokepoint uses it too); delegate so the SET LOCAL logic cannot diverge.
+    from faultmaven.infrastructure.persistence.tenant_context import (
+        apply_tenant_context,
     )
+
+    await apply_tenant_context(session, organization_id)

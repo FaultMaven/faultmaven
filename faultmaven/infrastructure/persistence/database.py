@@ -244,6 +244,14 @@ async def get_db_session(
     session = factory()
 
     try:
+        # Scope the session to the current organization for PostgreSQL RLS
+        # (no-op on SQLite). Runs inside this session's transaction so the
+        # SET LOCAL is visible to the queries that follow.
+        from faultmaven.infrastructure.persistence.tenant_context import (
+            apply_tenant_context,
+        )
+
+        await apply_tenant_context(session)
         yield session
         await session.commit()
     except Exception:
