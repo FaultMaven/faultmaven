@@ -1,0 +1,75 @@
+#!/bin/bash
+#
+# FaultMaven pre-commit hook — auto-format STAGED Python files with black.
+# Version-controlled; activated by: ./scripts/install-git-hooks.sh
+# (sets git config core.hooksPath .githooks).
+#
+# Design notes (why this exists rather than the old .git/hooks/ script):
+#  - Locates a black that actually RUNS. A launcher on PATH can exist yet be
+#    broken (ModuleNotFoundError); prefer the project's .venv so it works from a
+#    non-activated shell or a GUI git client.
+#  - Operates ONLY on staged *.py files and re-stages only those, so unrelated
+#    unstaged changes never trigger a false "please re-stage" abort.
+#  - Warns if the resolved black version differs from the pin CI enforces
+#    (CI runs `black --check`; formatting output is version-sensitive).
+#  - Skips cleanly (exit 0) when black is unavailable — never blocks a commit
+#    just because the formatter isn't installed.
+
+set -uo pipefail
+
+YELLOW='\033[1;33m'; GREEN='\033[0;32m'; NC='\033[0m'
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# Pick the first candidate that actually executes (`--version` succeeds).
+black_works() { "$@" --version >/dev/null 2>&1; }
+BLACK=()
+for cand in \
+    "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/black}" \
+    "$REPO_ROOT/.venv/bin/black" \
+    "black" \
+    "python3 -m black" \
+    "python -m black"; do
+    [ -z "$cand" ] && continue
+    # shellcheck disable=SC2086  -- intentional word-split (e.g. "python3 -m black")
+    if black_works $cand; then BLACK=($cand); break; fi
+done
+
+if [ ${#BLACK[@]} -eq 0 ]; then
+    echo -e "${YELLOW}⚠ black not runnable — skipping auto-format (pip install -e \".[dev]\")${NC}"
+    exit 0
+fi
+
+# Warn on version drift from the pin CI checks against (keeps local == CI).
+PINNED="$(grep -oE 'black==[0-9][0-9A-Za-z.]+' "$REPO_ROOT/pyproject.toml" 2>/dev/null | head -1 | sed 's/black==//')"
+HAVE="$("${BLACK[@]}" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
+if [ -n "$PINNED" ] && [ -n "$HAVE" ] && [ "$PINNED" != "$HAVE" ]; then
+    echo -e "${YELLOW}⚠ black $HAVE differs from pinned $PINNED — CI runs 'black --check', formatting may diverge.${NC}"
+    echo -e "${YELLOW}  Fix: pip install black==$PINNED${NC}"
+fi
+
+# Staged Python files only (Added/Copied/Modified), NUL-safe for odd names.
+mapfile -d '' -t STAGED < <(git diff --cached --name-only --diff-filter=ACM -z -- '*.py')
+[ ${#STAGED[@]} -eq 0 ] && exit 0
+
+echo -e "${YELLOW}Running black on ${#STAGED[@]} staged Python file(s)...${NC}"
+if ! "${BLACK[@]}" -q -- "${STAGED[@]}"; then
+    echo -e "${YELLOW}⚠ black reported an error — commit aborted${NC}"
+    exit 1
+fi
+
+# Re-stage ONLY the staged files black may have reformatted.
+restaged=0
+for f in "${STAGED[@]}"; do
+    if [ -e "$REPO_ROOT/$f" ] && ! git diff --quiet -- "$f"; then
+        git add -- "$f"
+        restaged=1
+    fi
+done
+
+if [ "$restaged" -eq 1 ]; then
+    echo -e "${GREEN}✓ black reformatted staged file(s); re-staged automatically${NC}"
+else
+    echo -e "${GREEN}✓ staged Python already formatted${NC}"
+fi
+exit 0

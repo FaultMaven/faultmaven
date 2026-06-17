@@ -542,11 +542,22 @@ Pre-commit hooks (`.pre-commit-config.yaml`) include:
 - **check-hardcoded-rsa-keys** - RSA key detection
 - Standard hooks (JSON/YAML validation, trailing whitespace)
 
-**Install hooks:**
+**Install hooks (full suite — recommended, matches CI):**
 ```bash
 pip install pre-commit
 pre-commit install
 ```
+
+**Lightweight alternative (black auto-format only):**
+```bash
+./scripts/install-git-hooks.sh   # points core.hooksPath at tracked .githooks/
+```
+
+Use this when you only want black-on-commit without the full framework. The
+hook (`.githooks/pre-commit`) formats only *staged* `.py` files, prefers the
+`.venv` black, and warns if its version drifts from the pinned `black==26.3.1`
+(CI runs `black --check`, so local formatting must match). To switch back to the
+framework: `git config --unset core.hooksPath && pre-commit install`.
 
 ## Configuration
 
