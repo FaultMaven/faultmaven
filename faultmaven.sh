@@ -233,6 +233,23 @@ check_resources() {
     fi
 }
 
+# Read a single KEY's value from .env WITHOUT executing the file. A .env is NOT a
+# shell script: values may legitimately contain spaces, braces, or JSON (e.g.
+# LLM_PROVIDER_TIMEOUT_OVERRIDES={"fireworks": 180}), which `source` would try to
+# run. docker compose and pydantic parse these fine; we must not `source` them.
+# Last assignment wins; a single layer of surrounding quotes is stripped.
+read_env_var() {
+    local key="$1" line val
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" .env 2>/dev/null | tail -n1)
+    [ -z "$line" ] && return 0
+    val="${line#*=}"
+    # strip one matching pair of surrounding quotes, plus trailing whitespace
+    val="${val%"${val##*[![:space:]]}"}"
+    val="${val%\"}"; val="${val#\"}"
+    val="${val%\'}"; val="${val#\'}"
+    printf '%s' "$val"
+}
+
 check_env_file() {
     if [ ! -f .env ]; then
         print_warning ".env file not found"
@@ -256,12 +273,8 @@ check_env_file() {
         fi
     fi
 
-    # Source .env to check values
-    set -a
-    source .env
-    set +a
-
-    # Check for at least one LLM provider configured
+    # Check for at least one LLM provider configured (read values safely, do NOT
+    # source .env — see read_env_var above).
     local has_llm=false
     local provider_name=""
 
@@ -279,7 +292,8 @@ check_env_file() {
 
     for name in "${!provider_keys[@]}"; do
         local key_var="${provider_keys[$name]}"
-        local key_val="${!key_var:-}"
+        local key_val
+        key_val="$(read_env_var "$key_var")"
         if [ -n "$key_val" ] && [[ ! "$key_val" =~ ^your- ]]; then
             has_llm=true
             provider_name="$name"
@@ -288,7 +302,9 @@ check_env_file() {
     done
 
     # Also check for local LLM (no API key needed)
-    if [ "$has_llm" = false ] && [ -n "${LOCAL_LLM_URL:-}" ]; then
+    local local_llm_url
+    local_llm_url="$(read_env_var LOCAL_LLM_URL)"
+    if [ "$has_llm" = false ] && [ -n "$local_llm_url" ]; then
         has_llm=true
         provider_name="Local (Ollama/vLLM)"
     fi
