@@ -6,12 +6,17 @@
 # Local deployment can be used for both development and production workloads.
 # For cloud/SaaS deployment, see faultmaven-enterprise-infra repository.
 #
-# IMPORTANT: This script uses docker-compose.yml which defines ONLY:
-#   - api: FaultMaven API server (uses in-process storage: in-memory sessions/vectors, SQLite)
-#   - dashboard: FaultMaven Dashboard frontend
+# IMAGES: By default both services run from PRE-BUILT images on the GitHub
+# Container Registry (GHCR) — no build toolchain, no Docker Hub rate limits:
+#   - api:       ghcr.io/faultmaven/faultmaven           (bundles model + KB; runs offline)
+#   - dashboard: ghcr.io/faultmaven/faultmaven-dashboard
+# Tags are pinnable via FM_IMAGE_TAG / FM_DASHBOARD_IMAGE_TAG in .env (default :latest).
+# ChromaDB and Redis run in-process within the API container, NOT as separate containers.
 #
-# ChromaDB and Redis run as in-process services within the API container,
-# NOT as separate containers.
+# BUILD FROM SOURCE (contributors): `start --build` builds the API from this repo;
+# `start --build-dashboard` also builds the Dashboard from ../faultmaven-dashboard.
+# These layer docker-compose.build.yml / docker-compose.dashboard-build.yml on top.
+# `start --pull` refreshes the pre-built images before starting.
 
 set -e
 
@@ -37,6 +42,12 @@ TAIL_LINES=""
 YES_FLAG=false
 INTERACTIVE=true
 DEMO_MODE=false
+BUILD_MODE=false        # --build: build the API from this repo's source
+BUILD_DASHBOARD=false   # --build-dashboard: also build the Dashboard from ../faultmaven-dashboard
+PULL_MODE=false         # --pull: refresh pre-built images from the registry before starting
+
+# Sibling dashboard source repo (only needed for --build-dashboard)
+DASHBOARD_SRC_DIR="../faultmaven-dashboard"
 
 # Detect non-interactive mode
 if [ ! -t 0 ]; then
@@ -108,6 +119,39 @@ confirm_prompt() {
         return 1
     else
         [ "$default" = "y" ] && return 0 || return 1
+    fi
+}
+
+#######################################
+# Compose file assembly
+#######################################
+
+# Assemble the `-f <file>` arguments for docker compose based on build flags.
+# Result is placed in the COMPOSE_FILES array (caller expands "${COMPOSE_FILES[@]}").
+#   default            → docker-compose.yml only (pull pre-built GHCR images)
+#   --build            → + docker-compose.build.yml (build API from this repo)
+#   --build-dashboard  → + docker-compose.dashboard-build.yml (build Dashboard from source)
+COMPOSE_FILES=()
+compose_files_args() {
+    COMPOSE_FILES=(-f docker-compose.yml)
+    if [ "$BUILD_MODE" = true ]; then
+        COMPOSE_FILES+=(-f docker-compose.build.yml)
+    fi
+    if [ "$BUILD_DASHBOARD" = true ]; then
+        COMPOSE_FILES+=(-f docker-compose.dashboard-build.yml)
+    fi
+}
+
+# Guard: --build-dashboard needs the dashboard source checked out as a sibling.
+check_dashboard_source() {
+    if [ "$BUILD_DASHBOARD" = true ] && [ ! -d "$DASHBOARD_SRC_DIR" ]; then
+        print_error "--build-dashboard requires the Dashboard source at $DASHBOARD_SRC_DIR"
+        echo ""
+        echo "The Dashboard lives in a separate repository. Clone it next to this one:"
+        echo "  git clone https://github.com/FaultMaven/faultmaven-dashboard.git $DASHBOARD_SRC_DIR"
+        echo ""
+        echo "Or drop --build-dashboard to use the pre-built Dashboard image from GHCR."
+        exit 1
     fi
 }
 
@@ -189,6 +233,23 @@ check_resources() {
     fi
 }
 
+# Read a single KEY's value from .env WITHOUT executing the file. A .env is NOT a
+# shell script: values may legitimately contain spaces, braces, or JSON (e.g.
+# LLM_PROVIDER_TIMEOUT_OVERRIDES={"fireworks": 180}), which `source` would try to
+# run. docker compose and pydantic parse these fine; we must not `source` them.
+# Last assignment wins; a single layer of surrounding quotes is stripped.
+read_env_var() {
+    local key="$1" line val
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" .env 2>/dev/null | tail -n1)
+    [ -z "$line" ] && return 0
+    val="${line#*=}"
+    # strip one matching pair of surrounding quotes, plus trailing whitespace
+    val="${val%"${val##*[![:space:]]}"}"
+    val="${val%\"}"; val="${val#\"}"
+    val="${val%\'}"; val="${val#\'}"
+    printf '%s' "$val"
+}
+
 check_env_file() {
     if [ ! -f .env ]; then
         print_warning ".env file not found"
@@ -212,146 +273,209 @@ check_env_file() {
         fi
     fi
 
-    # Source .env to check values
-    set -a
-    source .env
-    set +a
-
-    # Check for at least one LLM provider configured
-    local has_llm=false
-    local provider_name=""
-
-    # Check each supported provider's API key
-    declare -A provider_keys=(
-        ["OpenAI"]="OPENAI_API_KEY"
-        ["Anthropic"]="ANTHROPIC_API_KEY"
-        ["Gemini"]="GEMINI_API_KEY"
-        ["Fireworks"]="FIREWORKS_API_KEY"
-        ["Groq"]="GROQ_API_KEY"
-        ["HuggingFace"]="HUGGINGFACE_API_KEY"
-        ["Cohere"]="COHERE_API_KEY"
-        ["OpenRouter"]="OPENROUTER_API_KEY"
+    # Check for at least one LLM provider configured (read values safely, do NOT
+    # source .env — see read_env_var above).
+    # Report the provider the app will ACTUALLY use (CHAT_PROVIDER) — not just the
+    # first key we happen to find. Values are read safely (no `source` — see
+    # read_env_var). Recognized providers in STABLE order: "id|Display|CRED_VAR";
+    # 'local' authenticates via LOCAL_LLM_URL rather than an API key.
+    local provider_specs=(
+        "openai|OpenAI|OPENAI_API_KEY"
+        "anthropic|Anthropic|ANTHROPIC_API_KEY"
+        "gemini|Gemini|GEMINI_API_KEY"
+        "fireworks|Fireworks|FIREWORKS_API_KEY"
+        "groq|Groq|GROQ_API_KEY"
+        "huggingface|HuggingFace|HUGGINGFACE_API_KEY"
+        "cohere|Cohere|COHERE_API_KEY"
+        "openrouter|OpenRouter|OPENROUTER_API_KEY"
+        "local|Local (Ollama/vLLM)|LOCAL_LLM_URL"
     )
 
-    for name in "${!provider_keys[@]}"; do
-        local key_var="${provider_keys[$name]}"
-        local key_val="${!key_var:-}"
-        if [ -n "$key_val" ] && [[ ! "$key_val" =~ ^your- ]]; then
-            has_llm=true
-            provider_name="$name"
-            break
+    local chat_provider
+    chat_provider="$(read_env_var CHAT_PROVIDER | tr '[:upper:]' '[:lower:]')"
+
+    # Single pass over the providers: capture the first one with a credential set
+    # (the start gate + fallback) AND resolve CHAT_PROVIDER's display/state. Each
+    # credential is read once here.
+    local first_name="" chat_name="" chat_known=false chat_ok=false
+    local spec pid pname pcred cred configured
+    for spec in "${provider_specs[@]}"; do
+        IFS='|' read -r pid pname pcred <<< "$spec"
+        cred="$(read_env_var "$pcred")"
+        configured=false
+        [ -n "$cred" ] && [[ ! "$cred" =~ ^your- ]] && configured=true
+
+        [ "$configured" = true ] && [ -z "$first_name" ] && first_name="$pname"
+        if [ -n "$chat_provider" ] && [ "$pid" = "$chat_provider" ]; then
+            chat_known=true; chat_name="$pname"; chat_ok="$configured"
         fi
     done
 
-    # Also check for local LLM (no API key needed)
-    if [ "$has_llm" = false ] && [ -n "${LOCAL_LLM_URL:-}" ]; then
-        has_llm=true
-        provider_name="Local (Ollama/vLLM)"
-    fi
-
-    if [ "$has_llm" = false ]; then
-        print_error "No LLM API key configured"
+    # Start gate: refuse only when NOTHING usable is configured.
+    if [ -z "$first_name" ] && [ "$chat_ok" = false ]; then
+        print_error "No LLM provider configured"
         echo ""
-        echo "Edit .env and configure AT LEAST ONE provider:"
-        echo "  OPENAI_API_KEY=sk-...              # OpenAI GPT"
-        echo "  ANTHROPIC_API_KEY=sk-ant-...       # Anthropic Claude"
-        echo "  GEMINI_API_KEY=...                  # Google Gemini"
-        echo "  FIREWORKS_API_KEY=...               # Fireworks AI"
-        echo "  GROQ_API_KEY=gsk-...               # Groq (ultra-fast)"
-        echo "  LOCAL_LLM_URL=http://localhost:11434 # Ollama (local, free)"
+        echo "Edit .env and set CHAT_PROVIDER plus its credential, e.g.:"
+        echo "  CHAT_PROVIDER=openai   + OPENAI_API_KEY=sk-..."
+        echo "  CHAT_PROVIDER=gemini   + GEMINI_API_KEY=..."
+        echo "  CHAT_PROVIDER=groq     + GROQ_API_KEY=gsk-..."
+        echo "  CHAT_PROVIDER=local    + LOCAL_LLM_URL=http://localhost:11434  (no key)"
         echo ""
         exit 1
     fi
 
-    print_info "LLM Provider: $provider_name"
-
+    # Confirm the file is valid BEFORE naming the specific provider, so the
+    # sequence reads: "✓ .env file configured" → "ℹ LLM Provider: …".
     print_success ".env file configured"
+
+    # Report tied to CHAT_PROVIDER (the provider the app selects at runtime).
+    if [ "$chat_known" = true ]; then
+        print_info "LLM Provider: $chat_name (CHAT_PROVIDER)"
+        if [ "$chat_ok" = false ]; then
+            print_warning "CHAT_PROVIDER=$chat_provider but its credential is not set in .env"
+            [ -n "$first_name" ] && print_warning "Another provider IS configured ($first_name) — the app may fall back to it"
+        fi
+    elif [ -n "$chat_provider" ]; then
+        print_warning "CHAT_PROVIDER='$chat_provider' is not a recognized provider"
+        print_info "LLM Provider: $first_name (first configured — check CHAT_PROVIDER)"
+    else
+        print_info "LLM Provider: $first_name (CHAT_PROVIDER unset — app uses its default)"
+    fi
 }
 
 #######################################
 # Core Commands
 #######################################
 
-check_docker_ports() {
-    # Check if required ports are available
-    local ports_to_check=(8090 3333)
-    local ports_in_use=()
+# Returns 0 if any of THIS project's compose containers are currently running.
+fm_containers_running() {
+    docker compose ps --format json 2>/dev/null | grep -q '"State":"running"'
+}
 
-    for port in "${ports_to_check[@]}"; do
-        # Use ss first (works without special privileges), fallback to lsof
-        if ss -tlnp 2>/dev/null | grep -q ":$port "; then
-            # Extract PIDs from ss output
-            local pids=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' ' || echo "unknown")
-            ports_in_use+=("$port (PID(s): ${pids:-unknown})")
-        elif command -v lsof >/dev/null 2>&1 && lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
-            # Fallback to lsof if ss didn't find anything
-            local pids=$(lsof -ti :$port 2>/dev/null | tr '\n' ' ' || echo "unknown")
-            ports_in_use+=("$port (PID(s): ${pids:-unknown})")
+# Identify the process(es) holding a port. Populates:
+#   HOLDER_PIDS        — space-separated PID list (may be empty if root-owned)
+#   HOLDER_IS_DOCKER   — true if a holder looks like Docker (docker-proxy/dockerd),
+#                        or if the port is held but no PID is visible (privileged
+#                        listener — most often Docker's published port).
+describe_port_holder() {
+    local port="$1"
+    HOLDER_PIDS=""
+    HOLDER_IS_DOCKER=false
+
+    # ss first (no privileges needed for our own processes); fall back to lsof.
+    HOLDER_PIDS=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' ')
+    if [ -z "$HOLDER_PIDS" ] && command -v lsof >/dev/null 2>&1; then
+        HOLDER_PIDS=$(lsof -ti :"$port" -sTCP:LISTEN 2>/dev/null | sort -u | tr '\n' ' ')
+    fi
+
+    if [ -z "$HOLDER_PIDS" ]; then
+        # Port is in use but we can't see the owning PID — typically a root-owned
+        # listener such as Docker's published port.
+        HOLDER_IS_DOCKER=true
+        return
+    fi
+
+    local p comm
+    for p in $HOLDER_PIDS; do
+        comm=$(ps -p "$p" -o comm= 2>/dev/null)
+        if [[ "$comm" == *docker* ]]; then
+            HOLDER_IS_DOCKER=true
         fi
     done
+}
 
-    if [ ${#ports_in_use[@]} -gt 0 ]; then
-        print_error "Required ports are already in use:"
-        for port_info in "${ports_in_use[@]}"; do
-            echo "  • Port $port_info"
+# Returns 0 if both required ports are free; 1 (with guidance) if either is held
+# by something OTHER than this project's own containers. Identifies each holder
+# (process vs Docker) so the user knows whether a process-based FaultMaven
+# (./scripts/faultmaven-dev.sh) or a stray container is in the way.
+check_docker_ports() {
+    local ports_to_check=(8090 3333)
+    local any_conflict=false
+    local saw_docker=false
+    local saw_process=false
+
+    for port in "${ports_to_check[@]}"; do
+        # Is anything listening on this port?
+        if ! ss -tln 2>/dev/null | grep -q ":$port " \
+           && ! { command -v lsof >/dev/null 2>&1 && lsof -Pi :"$port" -sTCP:LISTEN -t >/dev/null 2>&1; }; then
+            continue
+        fi
+
+        if [ "$any_conflict" = false ]; then
+            print_error "Required port(s) already in use — cannot start:"
+            any_conflict=true
+        fi
+
+        describe_port_holder "$port"
+        if [ "$HOLDER_IS_DOCKER" = true ]; then
+            saw_docker=true
+            echo "  • Port $port — held by a Docker container / privileged listener${HOLDER_PIDS:+ (PID(s): $HOLDER_PIDS)}"
+        else
+            saw_process=true
+            echo "  • Port $port — held by process (PID(s): $HOLDER_PIDS)"
+        fi
+        # Show holder details (mirrors faultmaven-dev.sh) so the user can identify it
+        local p
+        for p in $HOLDER_PIDS; do
+            ps -p "$p" -o pid,ppid,comm,args 2>/dev/null | tail -n +1 | sed 's/^/      /'
         done
+    done
+
+    if [ "$any_conflict" = true ]; then
         echo ""
-        echo "To resolve this:"
-        echo "  1. Check what's using the ports:"
-        for port in "${ports_to_check[@]}"; do
-            echo "     ss -tlnp | grep :$port"
-            echo "     (or) lsof -i :$port"
-        done
-        echo "  2. Stop existing FaultMaven containers: ./faultmaven.sh stop"
-        echo "  3. Or stop local processes using those ports:"
-        echo "     ./scripts/faultmaven-dev.sh stop"
+        echo "Resolve before starting:"
+        if [ "$saw_process" = true ]; then
+            echo "  • A process-based FaultMaven on these ports? Stop it: ./scripts/faultmaven-dev.sh stop"
+        fi
+        if [ "$saw_docker" = true ]; then
+            echo "  • A stray/previous FaultMaven container? Stop it: ./faultmaven.sh stop  (or: ./faultmaven.sh kill)"
+        fi
+        echo "  • Inspect manually: ss -tlnp | grep -E ':8090 |:3333 '   (or: lsof -i :8090)"
         return 1
     fi
     return 0
 }
 
+# Probe every health-check service once. Sets HEALTHY_COUNT and HEALTH_STATUS
+# (a per-service " name ✓/…" line). Single source for the wait + stability check.
+probe_services() {
+    HEALTHY_COUNT=0
+    HEALTH_STATUS=""
+    local service port rest name path
+    for service in "${HEALTH_CHECK_SERVICES[@]}"; do
+        port="${service%%:*}"; rest="${service#*:}"; name="${rest%%:*}"; path="${rest#*:}"
+        if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
+            HEALTHY_COUNT=$((HEALTHY_COUNT + 1))
+            HEALTH_STATUS+="  ${name} ✓"
+        else
+            HEALTH_STATUS+="  ${name} …"
+        fi
+    done
+}
+
 wait_for_containers_ready() {
-    local max_wait=60
+    local max_wait=120   # first boot also runs DB migrations + KB seeding
     local elapsed=0
     local check_interval=2
+    local total_count=${#HEALTH_CHECK_SERVICES[@]}
 
-    print_info "Waiting for services to become healthy (up to ${max_wait}s)..."
-    echo ""
+    print_info "Waiting for services to become healthy (up to ${max_wait}s; first boot runs migrations + KB seeding)..."
 
     while [ $elapsed -lt $max_wait ]; do
-        local healthy_count=0
-        local total_count=${#HEALTH_CHECK_SERVICES[@]}
+        probe_services
+        # In-place progress: elapsed / budget + per-service state.
+        printf '\r  ⏳ %3ds / %ds —%s        ' "$elapsed" "$max_wait" "$HEALTH_STATUS"
 
-        for service in "${HEALTH_CHECK_SERVICES[@]}"; do
-            local port="${service%%:*}"
-            local rest="${service#*:}"
-            local name="${rest%%:*}"
-            local path="${rest#*:}"
-
-            if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
-                ((healthy_count++))
-            fi
-        done
-
-        if [ "$healthy_count" -eq "$total_count" ]; then
-            # All services are responding, wait a bit more to ensure stability
+        if [ "$HEALTHY_COUNT" -eq "$total_count" ]; then
+            # All responding — confirm stability with one more probe after a pause.
             sleep 2
-            # Verify they're still responding
-            local still_healthy=0
-            for service in "${HEALTH_CHECK_SERVICES[@]}"; do
-                local port="${service%%:*}"
-                local rest="${service#*:}"
-                local path="${rest#*:}"
-                if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
-                    ((still_healthy++))
-                fi
-            done
-            if [ "$still_healthy" -eq "$total_count" ]; then
+            probe_services
+            if [ "$HEALTHY_COUNT" -eq "$total_count" ]; then
+                printf '\r  ✓ all services healthy in ~%ds%-30s\n' "$elapsed" ""
                 return 0
             fi
         fi
 
-        echo -n "."
         sleep $check_interval
         elapsed=$((elapsed + check_interval))
     done
@@ -370,25 +494,89 @@ cmd_start() {
     check_docker_running
     check_resources
     check_env_file
+    check_dashboard_source
 
-    # Check if ports are available before starting
+    # If THIS stack is already running, don't mistake our own published ports for
+    # a conflict — report "already running" (parity with faultmaven-dev.sh).
+    if fm_containers_running; then
+        print_warning "FaultMaven containers are already running"
+        echo ""
+        echo "  • Health:  ./faultmaven.sh health"
+        echo "  • Logs:    ./faultmaven.sh logs"
+        echo "  • Apply config/image changes: ./faultmaven.sh restart"
+        echo "  • Access:  Dashboard http://localhost:3333  |  API http://localhost:8090"
+        exit 0
+    fi
+
+    # Check if ports are available before starting (held by a process-based
+    # FaultMaven, a stray container, or anything else).
     if ! check_docker_ports; then
         exit 1
     fi
 
     echo ""
-    print_info "Starting containers with Docker Compose..."
-    echo ""
 
-    local compose_cmd="docker compose up -d --build"
+    # Assemble compose files + flags from build/demo/pull options
+    compose_files_args
+    local profile_args=()
     if [ "$DEMO_MODE" = true ]; then
-        compose_cmd="docker compose --profile demo up -d --build"
+        profile_args=(--profile demo)
         print_info "Demo mode enabled: Will seed sample data"
     fi
 
-    # Capture compose output for error analysis
-    local compose_output
-    if ! compose_output=$($compose_cmd 2>&1); then
+    local building=false
+    if [ "$BUILD_MODE" = true ] || [ "$BUILD_DASHBOARD" = true ]; then
+        building=true
+    fi
+
+    if [ "$building" = true ]; then
+        print_info "Building from source (API: $BUILD_MODE, Dashboard: $BUILD_DASHBOARD)..."
+        print_info "First build compiles dependencies — typically several minutes. Live progress below."
+    else
+        # Resolve image tags from .env (compose reads these too); FM_IMAGE_TAG is
+        # NOT in the shell, so read it safely rather than via ${FM_IMAGE_TAG:-}.
+        local api_tag dash_tag
+        api_tag="$(read_env_var FM_IMAGE_TAG)";            api_tag="${api_tag:-latest}"
+        dash_tag="$(read_env_var FM_DASHBOARD_IMAGE_TAG)"; dash_tag="${dash_tag:-latest}"
+
+        print_info "Starting from pre-built GHCR images..."
+
+        # Refresh when asked (--pull), OR when tracking a mutable ':latest' tag so
+        # `start` picks up newly published builds instead of a stale local cache.
+        # Pinned (immutable) tags skip the registry round-trip.
+        if [ "$PULL_MODE" = true ]; then
+            print_info "Refreshing pre-built images from registry..."
+            docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" pull || \
+                print_warning "Image refresh failed; continuing with locally cached images"
+        elif [ "$api_tag" = "latest" ] || [ "$dash_tag" = "latest" ]; then
+            print_info "Refreshing :latest images (pin FM_IMAGE_TAG / FM_DASHBOARD_IMAGE_TAG to skip)..."
+            docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" pull || \
+                print_warning "Image refresh failed (offline?); continuing with locally cached images"
+        fi
+
+        # Heads-up about the up step, using the ACTUAL configured tag.
+        if docker image inspect "ghcr.io/faultmaven/faultmaven:${api_tag}" >/dev/null 2>&1; then
+            print_info "API image present — starting containers (~30–60s)."
+        else
+            print_info "First run downloads the API image (~5GB) — typically 2–5 min on a fast link. Live progress below."
+        fi
+    fi
+    echo ""
+
+    local up_args=(up -d)
+    [ "$building" = true ] && up_args+=(--build)
+
+    # Stream compose output LIVE so the user sees docker's own pull/build/create
+    # progress (the previous version captured it, leaving a long silent wait),
+    # while still capturing it via tee for error analysis on failure.
+    local compose_output compose_log compose_rc
+    compose_log="$(mktemp)"
+    docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" "${up_args[@]}" 2>&1 | tee "$compose_log"
+    compose_rc=${PIPESTATUS[0]}
+    compose_output="$(cat "$compose_log")"
+    rm -f "$compose_log"
+
+    if [ "$compose_rc" -ne 0 ]; then
         echo ""
         print_error "Failed to start Docker containers"
         echo ""
@@ -404,6 +592,12 @@ cmd_start() {
         elif echo "$compose_output" | grep -qi "Cannot connect to the Docker daemon"; then
             print_error "Cannot connect to Docker daemon"
             echo "Make sure Docker is running: sudo systemctl start docker"
+        elif echo "$compose_output" | grep -qiE "manifest.*not found|pull access denied|not found: manifest|failed to resolve|no such host|unauthorized"; then
+            print_error "Could not pull a pre-built image from the registry"
+            echo "The tagged image may not exist, or the registry is unreachable."
+            echo "  • Check connectivity to ghcr.io"
+            echo "  • Verify FM_IMAGE_TAG / FM_DASHBOARD_IMAGE_TAG in .env are valid tags"
+            echo "  • Or build from source instead: ./faultmaven.sh start --build"
         else
             echo "Check container logs for details:"
             echo "  ./faultmaven.sh logs"
@@ -770,15 +964,26 @@ cmd_prune() {
 
 cmd_build() {
     print_header
-    echo "Building FaultMaven images from source..."
+
+    # `build` always builds the API from source; add the Dashboard with --build-dashboard.
+    BUILD_MODE=true
+    check_dashboard_source
+    compose_files_args
+
+    if [ "$BUILD_DASHBOARD" = true ]; then
+        echo "Building FaultMaven API + Dashboard images from source..."
+    else
+        echo "Building FaultMaven API image from source..."
+        echo "  (Dashboard uses the pre-built GHCR image; add --build-dashboard to build it too)"
+    fi
     echo ""
 
-    if docker compose build; then
+    if docker compose "${COMPOSE_FILES[@]}" build; then
         echo ""
         print_success "Images built successfully"
         echo ""
         echo "Next steps:"
-        echo "  ./faultmaven.sh start    # Start with newly built images"
+        echo "  ./faultmaven.sh start --build    # Start with newly built images"
     else
         echo ""
         print_error "Build failed"
@@ -1014,7 +1219,7 @@ cmd_help() {
     echo "Usage: ./faultmaven.sh [command] [options]"
     echo ""
     echo "Service Management:"
-    echo "  start [--demo]              Start all FaultMaven services"
+    echo "  start [options]             Start all FaultMaven services (pulls pre-built GHCR images)"
     echo "  stop                        Stop all services (preserves data)"
     echo "  restart [service]           Restart all or specific service"
     echo "  health                      Run comprehensive health checks"
@@ -1027,7 +1232,7 @@ cmd_help() {
     echo "  delete-user [name]          Delete a user account"
     echo ""
     echo "Build Commands:"
-    echo "  build                       Build Docker images from source"
+    echo "  build [--build-dashboard]   Build image(s) from source (API always; Dashboard if flagged)"
     echo ""
     echo "Cleanup Commands:"
     echo "  clean                       Delete data only (preserves images)"
@@ -1040,20 +1245,30 @@ cmd_help() {
     echo ""
     echo "Options:"
     echo "  --demo                      Start with demo data (sample runbooks)"
+    echo "  --pull                      Refresh pre-built images from the registry before starting"
+    echo "  --build                     Build the API from THIS repo's source instead of pulling"
+    echo "  --build-dashboard           Also build the Dashboard from ../faultmaven-dashboard"
     echo "  --no-color                  Disable colored output"
     echo "  --yes, -y                   Auto-confirm destructive operations"
     echo "  --tail N                    Limit log output to last N lines"
     echo ""
+    echo "Image source (default = pre-built images from GHCR):"
+    echo "  Pin tags in .env:  FM_IMAGE_TAG, FM_DASHBOARD_IMAGE_TAG  (default: latest)"
+    echo "  ghcr.io/faultmaven/faultmaven, ghcr.io/faultmaven/faultmaven-dashboard"
+    echo ""
     echo "Examples:"
-    echo "  ./faultmaven.sh start              # Start services"
-    echo "  ./faultmaven.sh start --demo       # Start with demo data"
-    echo "  ./faultmaven.sh create-user        # Create user account"
-    echo "  ./faultmaven.sh list-users         # List all users"
-    echo "  ./faultmaven.sh delete-user bob    # Delete user 'bob'"
-    echo "  ./faultmaven.sh health             # Run health checks"
-    echo "  ./faultmaven.sh logs api           # View API logs"
-    echo "  ./faultmaven.sh logs --tail 100    # View last 100 lines"
-    echo "  ./faultmaven.sh restart dashboard  # Restart dashboard only"
+    echo "  ./faultmaven.sh start                 # Start from pre-built GHCR images (fast)"
+    echo "  ./faultmaven.sh start --pull          # Refresh images, then start"
+    echo "  ./faultmaven.sh start --demo          # Start with demo data"
+    echo "  ./faultmaven.sh start --build         # Build the API from source, then start"
+    echo "  ./faultmaven.sh start --build --build-dashboard  # Build both from source"
+    echo "  ./faultmaven.sh create-user           # Create user account"
+    echo "  ./faultmaven.sh list-users            # List all users"
+    echo "  ./faultmaven.sh delete-user bob       # Delete user 'bob'"
+    echo "  ./faultmaven.sh health                # Run health checks"
+    echo "  ./faultmaven.sh logs api              # View API logs"
+    echo "  ./faultmaven.sh logs --tail 100       # View last 100 lines"
+    echo "  ./faultmaven.sh restart dashboard     # Restart dashboard only"
     echo ""
     echo "Alternative: Process-based Local Deployment (no Docker):"
     echo "  ./scripts/faultmaven-dev.sh start  # Start API as local Python process"
@@ -1085,6 +1300,15 @@ for ((i=1; i<=$#; i++)); do
     case $arg in
         --demo)
             DEMO_MODE=true
+            ;;
+        --build)
+            BUILD_MODE=true
+            ;;
+        --build-dashboard)
+            BUILD_DASHBOARD=true
+            ;;
+        --pull)
+            PULL_MODE=true
             ;;
         --no-color)
             NO_COLOR=true

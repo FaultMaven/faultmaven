@@ -62,15 +62,22 @@ FaultMaven supports two local deployment modes:
 
 ### Docker-Specific Commands
 
+By default `start` runs **pre-built images from GHCR** (`ghcr.io/faultmaven/faultmaven` and `…/faultmaven-dashboard`); a mutable `:latest` tag is auto-refreshed each start, and tags are pinnable via `FM_IMAGE_TAG` / `FM_DASHBOARD_IMAGE_TAG` in `.env`.
+
 | Command | Description | Example |
 |---------|-------------|---------|
 | `start --demo` | Start with demo/sample data | `./faultmaven.sh start --demo` |
-| `build` | Build Docker images from source | `./faultmaven.sh build` |
+| `start --pull` | Refresh pre-built images, then start | `./faultmaven.sh start --pull` |
+| `start --build` | Build the API from this repo's source, then start | `./faultmaven.sh start --build` |
+| `start --build-dashboard` | Also build the Dashboard from `../faultmaven-dashboard` | `./faultmaven.sh start --build --build-dashboard` |
+| `build [--build-dashboard]` | Build image(s) from source without starting | `./faultmaven.sh build` |
 | `ps` | Show running containers | `./faultmaven.sh ps` |
 | `kill` | Force-kill all containers | `./faultmaven.sh kill` |
 | `clean` | Remove data (keep images) | `./faultmaven.sh clean` |
 | `clean --wipe-data` | Remove data and wipe database | `./faultmaven.sh clean --wipe-data` |
 | `prune` | Remove containers and images | `./faultmaven.sh prune` |
+
+> `--build-dashboard` requires the Dashboard repo checked out alongside this one (`git clone …/faultmaven-dashboard.git ../faultmaven-dashboard`). Configuration: both run modes read the same `.env` — the Docker stack mounts it read-only at `/app/.env` so it's parsed identically to the process runner.
 
 ### Process-Specific Commands
 

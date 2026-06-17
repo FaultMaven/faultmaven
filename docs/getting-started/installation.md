@@ -54,6 +54,13 @@ cp .env.example .env
 
 On first start the API auto-initializes the database, runs migrations, creates a default admin, and seeds the bundled Knowledge Base. To run as a local process instead of Docker, see [Running the Server](#running-the-server).
 
+> **Where the images come from:** `./faultmaven.sh start` pulls pre-built images
+> from the GitHub Container Registry — `ghcr.io/faultmaven/faultmaven` and
+> `ghcr.io/faultmaven/faultmaven-dashboard`. Tags default to `latest` (auto-refreshed
+> on each start) and are pinnable via `FM_IMAGE_TAG` / `FM_DASHBOARD_IMAGE_TAG` in
+> `.env`. To build from your local source instead, use `./faultmaven.sh start --build`
+> (API) and `--build-dashboard` (Dashboard, from a sibling `../faultmaven-dashboard`).
+
 ### What's Included
 
 The standalone default includes all core features:

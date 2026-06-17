@@ -72,7 +72,7 @@ To get started with local development for the `faultmaven` monolith:
     ```
 
 2.  **Make Your Changes:** Write your code and any accompanying tests.
-    * **Coding Style:** Please follow the **Black** code style. We use `flake8` for linting.
+    * **Coding Style:** Please follow the **Black** code style (pinned `black==26.3.1`; CI runs `black --check`). To auto-format staged Python on commit, install the git hook once: `./scripts/install-git-hooks.sh` (or use the full pre-commit framework — see [faultmaven/CLAUDE.md](../CLAUDE.md) "Pre-commit Hooks").
     * **Error Logging:** All error logging MUST include `exc_info=True` or use `logger.exception()`. See [Logging Policy](operations/monitoring/logging-policy.md#error-logging-standards) for details.
     * **Commit Messages:** Please follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. For example: `feat: Add new data classifier for TOML files`.
 

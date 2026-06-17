@@ -1,0 +1,16 @@
+# Build override: build the FaultMaven Dashboard from the sibling
+# faultmaven-dashboard repository instead of pulling the pre-built GHCR image.
+# Layered on top of docker-compose.yml (and docker-compose.build.yml).
+#
+# Invoked by:  ./faultmaven.sh start --build-dashboard
+# Equivalent:  docker compose -f docker-compose.yml -f docker-compose.build.yml \
+#                             -f docker-compose.dashboard-build.yml up -d --build
+#
+# REQUIRES the dashboard source checked out next to this repo:
+#   git clone https://github.com/FaultMaven/faultmaven-dashboard.git ../faultmaven-dashboard
+# The CLI verifies the path exists and fails with guidance if it does not.
+services:
+  dashboard:
+    build:
+      context: ../faultmaven-dashboard
+      dockerfile: Dockerfile

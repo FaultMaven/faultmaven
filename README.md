@@ -49,15 +49,15 @@ cd faultmaven
 cp .env.example .env
 # Edit .env: Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or configure Ollama
 
-# Start API + Dashboard (pulls pre-built images from Docker Hub)
+# Start API + Dashboard (pulls pre-built images from GitHub Container Registry)
 # This AUTOMATICALLY creates the database and a default admin user.
 ./faultmaven.sh start
 # Or: docker compose up -d
 ```
 
 **What happens:**
-1. Docker pulls the images (one-time, ~5.4 GB for the API — it bundles the
-   embedding model and a starter Knowledge Base, so the stack runs fully
+1. Docker pulls the images from GHCR (one-time, ~5.4 GB for the API — it bundles
+   the embedding model and a starter Knowledge Base, so the stack runs fully
    offline with no model download at runtime) and starts the services.
 2. On first start (~1 minute) the API initializes the database, runs
    migrations, loads the bundled embedding model, and seeds 59 starter
@@ -124,6 +124,17 @@ Convenient scripts for managing the Docker-based stack:
 ./faultmaven.sh clean              # Remove containers (PROTECTS ./data)
 ./faultmaven.sh clean --wipe-data  # Remove containers AND delete all data
 ```
+
+By default the stack runs **pre-built images from GHCR** (`ghcr.io/faultmaven/faultmaven` and `…/faultmaven-dashboard`). Pin versions with `FM_IMAGE_TAG` / `FM_DASHBOARD_IMAGE_TAG` in `.env`, or refresh to the latest published images with `./faultmaven.sh start --pull`.
+
+**Building from source (contributors):**
+
+```bash
+./faultmaven.sh start --build              # Build the API from this repo, then start
+./faultmaven.sh start --build-dashboard    # Also build the Dashboard from ../faultmaven-dashboard
+```
+
+`--build-dashboard` needs the Dashboard repo checked out alongside this one (`git clone https://github.com/FaultMaven/faultmaven-dashboard.git ../faultmaven-dashboard`). For pure backend development without Docker, use `./scripts/faultmaven-dev.sh start`.
 
 ### Access Points
 

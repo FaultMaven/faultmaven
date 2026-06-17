@@ -323,13 +323,21 @@ cd faultmaven
 cp .env.example .env
 # Edit .env: Set CHAT_PROVIDER and API key
 
-# Start with Docker
+# Start with Docker (pulls pre-built images from GHCR by default)
 ./faultmaven.sh start
 
-# Or run locally (development)
+# Build from source instead of pulling (contributors)
+./faultmaven.sh start --build              # build the API from this repo
+./faultmaven.sh start --build-dashboard    # also build the Dashboard from ../faultmaven-dashboard
+
+# Or run locally (development, no Docker)
 pip install -e ".[dev]"           # Install dependencies
 ./scripts/faultmaven-dev.sh start # Start the server
 ```
+
+**Image source:** `./faultmaven.sh start` runs pre-built images from GHCR (`ghcr.io/faultmaven/faultmaven`, `…/faultmaven-dashboard`), pinnable via `FM_IMAGE_TAG` / `FM_DASHBOARD_IMAGE_TAG` in `.env`. The build path layers `docker-compose.build.yml` (API) / `docker-compose.dashboard-build.yml` (Dashboard) on top of `docker-compose.yml`.
+
+**Config (`.env`) is shared by both run modes.** The Docker stack and the process runner (`faultmaven-dev.sh`) read the *same* `.env` with the *same* parser: compose mounts `.env` read-only at `/app/.env` (not `env_file:`), so values are interpreted identically and `./faultmaven.sh restart` re-reads edits. Container-only overrides live in `docker-compose.yml`'s `environment:` (e.g. `HOST=0.0.0.0`) and take precedence over the file (pydantic env-var > `.env`).
 
 **Auto-Initialization:** On first startup, FaultMaven automatically:
 - Creates `data/` directories (database, ChromaDB, evidence, knowledge)
@@ -353,7 +361,9 @@ Login via dev-login: `POST /api/v1/auth/dev-login` with `{"username": "admin"}`
 
 **Docker-based (faultmaven.sh v2.0.0):**
 ```bash
-./faultmaven.sh start              # Start services
+./faultmaven.sh start              # Start services (pre-built GHCR images)
+./faultmaven.sh start --pull       # Refresh images from registry, then start
+./faultmaven.sh start --build      # Build the API from source, then start
 ./faultmaven.sh start --demo       # Start with demo data
 ./faultmaven.sh stop               # Stop services
 ./faultmaven.sh status             # Check health
@@ -532,11 +542,22 @@ Pre-commit hooks (`.pre-commit-config.yaml`) include:
 - **check-hardcoded-rsa-keys** - RSA key detection
 - Standard hooks (JSON/YAML validation, trailing whitespace)
 
-**Install hooks:**
+**Install hooks (full suite — recommended, matches CI):**
 ```bash
 pip install pre-commit
 pre-commit install
 ```
+
+**Lightweight alternative (black auto-format only):**
+```bash
+./scripts/install-git-hooks.sh   # points core.hooksPath at tracked .githooks/
+```
+
+Use this when you only want black-on-commit without the full framework. The
+hook (`.githooks/pre-commit`) formats only *staged* `.py` files, prefers the
+`.venv` black, and warns if its version drifts from the pinned `black==26.3.1`
+(CI runs `black --check`, so local formatting must match). To switch back to the
+framework: `git config --unset core.hooksPath && pre-commit install`.
 
 ## Configuration
 

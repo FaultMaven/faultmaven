@@ -1,38 +1,69 @@
-# FaultMaven Full-Stack - Quick Start Configuration
+# FaultMaven Standalone — Quick Start (pre-built images)
 #
-# This is the simplest way to run FaultMaven locally.
-# No external services required - local deployment uses SQLite, FakeRedis, and
-# embedded ChromaDB.
+# Default path pulls pre-built images from the GitHub Container Registry (GHCR):
+#   - ghcr.io/faultmaven/faultmaven            (API)
+#   - ghcr.io/faultmaven/faultmaven-dashboard  (Dashboard)
+# No build toolchain required, no Docker Hub pull-rate limits, and the API image
+# bundles the embedding model + starter Knowledge Base so the stack runs offline.
 #
 # Usage:
-#   1. Copy .env.example to .env and configure your LLM provider
-#   2. ./faultmaven.sh start
-#   3. Open http://localhost:3333 (Dashboard)
-#   4. Install the Copilot browser extension
+#   1. cp .env.example .env  &&  set ONE LLM provider key
+#   2. ./faultmaven.sh start           # pulls API + Dashboard, starts the stack
+#   3. open http://localhost:3333      # Dashboard
 #
-# Demo Mode (with sample data):
+# CONFIG: .env is the single source of truth for BOTH this container stack and
+# the process-based runner (scripts/faultmaven-dev.sh). It is mounted read-only
+# into the API container (not injected via compose `env_file:`) so the app parses
+# it identically in both modes; `environment:` entries below are container-only
+# overrides that take precedence.
+#
+# Image tags are pinnable/overridable from .env (see FM_IMAGE_TAG /
+# FM_DASHBOARD_IMAGE_TAG). Default is :latest; pin a digest or version for a
+# reproducible, version-matched stack.
+#
+# Building from source (contributors) layers override files on top of this one —
+# you don't invoke compose directly, the CLI assembles the -f flags:
+#   ./faultmaven.sh start --build             # build the API from THIS repo
+#   ./faultmaven.sh start --build-dashboard   # also build the Dashboard from ../faultmaven-dashboard
+#
+# Demo mode (sample runbooks + a demo incident):
 #   ./faultmaven.sh start --demo
 #
 # For local development without Docker, use: ./scripts/faultmaven-dev.sh
 
+# Single source of truth for config: mount .env so the containerized app reads it
+# with the SAME parser (pydantic / python-dotenv) as the process runner
+# (scripts/faultmaven-dev.sh). Deliberately NOT compose `env_file:` — that uses a
+# different parser (diverges on quotes/JSON/inline comments) and only refreshes on
+# recreate. With the file mounted, `./faultmaven.sh restart` re-reads it, and
+# `environment:` overrides still win (env vars rank above the .env file).
+# create_host_path:false makes a missing .env fail loudly ("bind source path does
+# not exist") instead of Docker silently creating a directory; faultmaven.sh
+# guarantees it exists, this guards a raw `docker compose up`.
+x-env-mount: &env-mount
+  type: bind
+  source: ./.env
+  target: /app/.env
+  read_only: true
+  bind:
+    create_host_path: false
+
 services:
   api:
-    build: .
-    image: faultmaven/faultmaven:latest
+    image: ghcr.io/faultmaven/faultmaven:${FM_IMAGE_TAG:-latest}
     ports:
       - "8090:8090"
     environment:
       - HOST=0.0.0.0  # Container must bind all interfaces for port mapping
       # KB pack override (optional): update the knowledge base offline WITHOUT
-      # rebuilding the image. Extract a pack (kb-pack-<version>.tar.gz, built by
-      # faultmaven-kb-toolkit `kb-build-pack --tar`) into ./kb-pack so it contains
-      # pack.json + vectors.npz + runbooks/, uncomment the line below AND the
-      # ./kb-pack mount, then `docker compose up -d` to re-ingest. Unset → the
-      # baseline pack bundled in the image is used (zero-config default).
+      # rebuilding/repulling the image. Extract a pack (kb-pack-<version>.tar.gz,
+      # built by faultmaven-kb-toolkit `kb-build-pack --tar`) into ./kb-pack so it
+      # contains pack.json + vectors.npz + runbooks/, uncomment the line below AND
+      # the ./kb-pack mount, then `./faultmaven.sh restart` to re-ingest. Unset →
+      # the baseline pack bundled in the image is used (zero-config default).
       # - KB_PACK_DIR=/kb-pack
-    env_file:
-      - .env
     volumes:
+      - *env-mount          # shared .env mount (see x-env-mount above)
       - ./data:/app/data
       # - ./kb-pack:/kb-pack:ro   # see KB_PACK_DIR above
     restart: unless-stopped
@@ -44,11 +75,7 @@ services:
       start_period: 10s
 
   dashboard:
-    image: faultmaven/faultmaven-dashboard:latest
-    # Or build from source:
-    # build:
-    #   context: ../faultmaven-dashboard
-    #   dockerfile: Dockerfile
+    image: ghcr.io/faultmaven/faultmaven-dashboard:${FM_DASHBOARD_IMAGE_TAG:-latest}
     ports:
       - "3333:80"
     environment:
@@ -64,19 +91,17 @@ services:
     restart: unless-stopped
 
   # Demo mode: Seeds sample runbooks and a demo incident case
-  # Activate with: docker compose --profile demo up
+  # Activate with: ./faultmaven.sh start --demo  (compose profile: demo)
   demo-seeder:
-    image: faultmaven/faultmaven:latest
-    # Or build from source: build: .
+    image: ghcr.io/faultmaven/faultmaven:${FM_IMAGE_TAG:-latest}
     profiles:
       - demo
     environment:
       - FAULTMAVEN_DEMO_MODE=true
       - DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
       - VECTOR_STORAGE_TYPE=chromadb
-    env_file:
-      - .env
     volumes:
+      - *env-mount          # shared .env mount (see x-env-mount above)
       - ./data:/app/data
       - ./demo:/app/demo:ro
     depends_on:
