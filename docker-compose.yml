@@ -11,6 +11,12 @@
 #   2. ./faultmaven.sh start           # pulls API + Dashboard, starts the stack
 #   3. open http://localhost:3333      # Dashboard
 #
+# CONFIG: .env is the single source of truth for BOTH this container stack and
+# the process-based runner (scripts/faultmaven-dev.sh). It is mounted read-only
+# into the API container (not injected via compose `env_file:`) so the app parses
+# it identically in both modes; `environment:` entries below are container-only
+# overrides that take precedence.
+#
 # Image tags are pinnable/overridable from .env (see FM_IMAGE_TAG /
 # FM_DASHBOARD_IMAGE_TAG). Default is :latest; pin a digest or version for a
 # reproducible, version-matched stack.
@@ -39,9 +45,17 @@ services:
       # the ./kb-pack mount, then `./faultmaven.sh restart` to re-ingest. Unset →
       # the baseline pack bundled in the image is used (zero-config default).
       # - KB_PACK_DIR=/kb-pack
-    env_file:
-      - .env
     volumes:
+      # Single source of truth for config: mount .env so the containerized app
+      # reads it with the SAME parser (pydantic / python-dotenv) as the process-
+      # based runner (scripts/faultmaven-dev.sh). This is deliberately NOT compose
+      # `env_file:` — that uses a different parser (diverges on quotes/JSON/inline
+      # comments) and only refreshes on container recreate. With the file mounted,
+      # `./faultmaven.sh restart` re-reads it, and mode-specific overrides in
+      # `environment:` above still win (env vars rank above the .env file).
+      # NOTE: .env must exist before `up` (faultmaven.sh guarantees this); a bind
+      # mount of a missing file would create a directory.
+      - ./.env:/app/.env:ro
       - ./data:/app/data
       # - ./kb-pack:/kb-pack:ro   # see KB_PACK_DIR above
     restart: unless-stopped
@@ -78,9 +92,9 @@ services:
       - FAULTMAVEN_DEMO_MODE=true
       - DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
       - VECTOR_STORAGE_TYPE=chromadb
-    env_file:
-      - .env
     volumes:
+      # Shared config (see api service) — same .env, same parser as dev.
+      - ./.env:/app/.env:ro
       - ./data:/app/data
       - ./demo:/app/demo:ro
     depends_on:
