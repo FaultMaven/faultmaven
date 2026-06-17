@@ -24,9 +24,7 @@ async def test_startup_migrations_run_when_flag_true():
     with (
         patch.object(data_init, "ensure_data_directories"),
         patch.object(data_init, "run_alembic_migrations") as run_migrations,
-        patch(
-            "faultmaven.config.settings.get_settings", return_value=settings
-        ),
+        patch("faultmaven.config.settings.get_settings", return_value=settings),
     ):
         await data_init.initialize_data_layer(container=MagicMock())
 
@@ -41,9 +39,7 @@ async def test_startup_migrations_skipped_when_flag_false():
     with (
         patch.object(data_init, "ensure_data_directories"),
         patch.object(data_init, "run_alembic_migrations") as run_migrations,
-        patch(
-            "faultmaven.config.settings.get_settings", return_value=settings
-        ),
+        patch("faultmaven.config.settings.get_settings", return_value=settings),
     ):
         await data_init.initialize_data_layer(container=MagicMock())
 
