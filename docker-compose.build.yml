@@ -1,0 +1,19 @@
+# Build override: build the FaultMaven API from THIS repository's source instead
+# of pulling the pre-built GHCR image. Layered on top of docker-compose.yml.
+#
+# Invoked by:  ./faultmaven.sh start --build   (and ./faultmaven.sh build)
+# Equivalent:  docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# The `image:` tag from docker-compose.yml still applies — the locally built
+# image is tagged ghcr.io/faultmaven/faultmaven:${FM_IMAGE_TAG:-latest}, so a
+# later plain `./faultmaven.sh start` reuses your build until you re-pull.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+  demo-seeder:
+    build:
+      context: .
+      dockerfile: Dockerfile

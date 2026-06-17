@@ -6,12 +6,17 @@
 # Local deployment can be used for both development and production workloads.
 # For cloud/SaaS deployment, see faultmaven-enterprise-infra repository.
 #
-# IMPORTANT: This script uses docker-compose.yml which defines ONLY:
-#   - api: FaultMaven API server (uses in-process storage: in-memory sessions/vectors, SQLite)
-#   - dashboard: FaultMaven Dashboard frontend
+# IMAGES: By default both services run from PRE-BUILT images on the GitHub
+# Container Registry (GHCR) — no build toolchain, no Docker Hub rate limits:
+#   - api:       ghcr.io/faultmaven/faultmaven           (bundles model + KB; runs offline)
+#   - dashboard: ghcr.io/faultmaven/faultmaven-dashboard
+# Tags are pinnable via FM_IMAGE_TAG / FM_DASHBOARD_IMAGE_TAG in .env (default :latest).
+# ChromaDB and Redis run in-process within the API container, NOT as separate containers.
 #
-# ChromaDB and Redis run as in-process services within the API container,
-# NOT as separate containers.
+# BUILD FROM SOURCE (contributors): `start --build` builds the API from this repo;
+# `start --build-dashboard` also builds the Dashboard from ../faultmaven-dashboard.
+# These layer docker-compose.build.yml / docker-compose.dashboard-build.yml on top.
+# `start --pull` refreshes the pre-built images before starting.
 
 set -e
 
@@ -37,6 +42,12 @@ TAIL_LINES=""
 YES_FLAG=false
 INTERACTIVE=true
 DEMO_MODE=false
+BUILD_MODE=false        # --build: build the API from this repo's source
+BUILD_DASHBOARD=false   # --build-dashboard: also build the Dashboard from ../faultmaven-dashboard
+PULL_MODE=false         # --pull: refresh pre-built images from the registry before starting
+
+# Sibling dashboard source repo (only needed for --build-dashboard)
+DASHBOARD_SRC_DIR="../faultmaven-dashboard"
 
 # Detect non-interactive mode
 if [ ! -t 0 ]; then
@@ -108,6 +119,39 @@ confirm_prompt() {
         return 1
     else
         [ "$default" = "y" ] && return 0 || return 1
+    fi
+}
+
+#######################################
+# Compose file assembly
+#######################################
+
+# Assemble the `-f <file>` arguments for docker compose based on build flags.
+# Result is placed in the COMPOSE_FILES array (caller expands "${COMPOSE_FILES[@]}").
+#   default            → docker-compose.yml only (pull pre-built GHCR images)
+#   --build            → + docker-compose.build.yml (build API from this repo)
+#   --build-dashboard  → + docker-compose.dashboard-build.yml (build Dashboard from source)
+COMPOSE_FILES=()
+compose_files_args() {
+    COMPOSE_FILES=(-f docker-compose.yml)
+    if [ "$BUILD_MODE" = true ]; then
+        COMPOSE_FILES+=(-f docker-compose.build.yml)
+    fi
+    if [ "$BUILD_DASHBOARD" = true ]; then
+        COMPOSE_FILES+=(-f docker-compose.dashboard-build.yml)
+    fi
+}
+
+# Guard: --build-dashboard needs the dashboard source checked out as a sibling.
+check_dashboard_source() {
+    if [ "$BUILD_DASHBOARD" = true ] && [ ! -d "$DASHBOARD_SRC_DIR" ]; then
+        print_error "--build-dashboard requires the Dashboard source at $DASHBOARD_SRC_DIR"
+        echo ""
+        echo "The Dashboard lives in a separate repository. Clone it next to this one:"
+        echo "  git clone https://github.com/FaultMaven/faultmaven-dashboard.git $DASHBOARD_SRC_DIR"
+        echo ""
+        echo "Or drop --build-dashboard to use the pre-built Dashboard image from GHCR."
+        exit 1
     fi
 }
 
@@ -370,6 +414,7 @@ cmd_start() {
     check_docker_running
     check_resources
     check_env_file
+    check_dashboard_source
 
     # Check if ports are available before starting
     if ! check_docker_ports; then
@@ -377,18 +422,39 @@ cmd_start() {
     fi
 
     echo ""
-    print_info "Starting containers with Docker Compose..."
-    echo ""
 
-    local compose_cmd="docker compose up -d --build"
+    # Assemble compose files + flags from build/demo/pull options
+    compose_files_args
+    local profile_args=()
     if [ "$DEMO_MODE" = true ]; then
-        compose_cmd="docker compose --profile demo up -d --build"
+        profile_args=(--profile demo)
         print_info "Demo mode enabled: Will seed sample data"
     fi
 
+    local building=false
+    if [ "$BUILD_MODE" = true ] || [ "$BUILD_DASHBOARD" = true ]; then
+        building=true
+    fi
+
+    if [ "$building" = true ]; then
+        print_info "Building from source (API: $BUILD_MODE, Dashboard: $BUILD_DASHBOARD)..."
+    else
+        print_info "Starting from pre-built GHCR images..."
+        # Refresh images first only when explicitly asked (pure pull mode)
+        if [ "$PULL_MODE" = true ]; then
+            print_info "Refreshing pre-built images from registry..."
+            docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" pull || \
+                print_warning "Image refresh failed; continuing with locally cached images"
+        fi
+    fi
+    echo ""
+
+    local up_args=(up -d)
+    [ "$building" = true ] && up_args+=(--build)
+
     # Capture compose output for error analysis
     local compose_output
-    if ! compose_output=$($compose_cmd 2>&1); then
+    if ! compose_output=$(docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" "${up_args[@]}" 2>&1); then
         echo ""
         print_error "Failed to start Docker containers"
         echo ""
@@ -404,6 +470,12 @@ cmd_start() {
         elif echo "$compose_output" | grep -qi "Cannot connect to the Docker daemon"; then
             print_error "Cannot connect to Docker daemon"
             echo "Make sure Docker is running: sudo systemctl start docker"
+        elif echo "$compose_output" | grep -qiE "manifest.*not found|pull access denied|not found: manifest|failed to resolve|no such host|unauthorized"; then
+            print_error "Could not pull a pre-built image from the registry"
+            echo "The tagged image may not exist, or the registry is unreachable."
+            echo "  • Check connectivity to ghcr.io"
+            echo "  • Verify FM_IMAGE_TAG / FM_DASHBOARD_IMAGE_TAG in .env are valid tags"
+            echo "  • Or build from source instead: ./faultmaven.sh start --build"
         else
             echo "Check container logs for details:"
             echo "  ./faultmaven.sh logs"
@@ -770,15 +842,26 @@ cmd_prune() {
 
 cmd_build() {
     print_header
-    echo "Building FaultMaven images from source..."
+
+    # `build` always builds the API from source; add the Dashboard with --build-dashboard.
+    BUILD_MODE=true
+    check_dashboard_source
+    compose_files_args
+
+    if [ "$BUILD_DASHBOARD" = true ]; then
+        echo "Building FaultMaven API + Dashboard images from source..."
+    else
+        echo "Building FaultMaven API image from source..."
+        echo "  (Dashboard uses the pre-built GHCR image; add --build-dashboard to build it too)"
+    fi
     echo ""
 
-    if docker compose build; then
+    if docker compose "${COMPOSE_FILES[@]}" build; then
         echo ""
         print_success "Images built successfully"
         echo ""
         echo "Next steps:"
-        echo "  ./faultmaven.sh start    # Start with newly built images"
+        echo "  ./faultmaven.sh start --build    # Start with newly built images"
     else
         echo ""
         print_error "Build failed"
@@ -1014,7 +1097,7 @@ cmd_help() {
     echo "Usage: ./faultmaven.sh [command] [options]"
     echo ""
     echo "Service Management:"
-    echo "  start [--demo]              Start all FaultMaven services"
+    echo "  start [options]             Start all FaultMaven services (pulls pre-built GHCR images)"
     echo "  stop                        Stop all services (preserves data)"
     echo "  restart [service]           Restart all or specific service"
     echo "  health                      Run comprehensive health checks"
@@ -1027,7 +1110,7 @@ cmd_help() {
     echo "  delete-user [name]          Delete a user account"
     echo ""
     echo "Build Commands:"
-    echo "  build                       Build Docker images from source"
+    echo "  build [--build-dashboard]   Build image(s) from source (API always; Dashboard if flagged)"
     echo ""
     echo "Cleanup Commands:"
     echo "  clean                       Delete data only (preserves images)"
@@ -1040,20 +1123,30 @@ cmd_help() {
     echo ""
     echo "Options:"
     echo "  --demo                      Start with demo data (sample runbooks)"
+    echo "  --pull                      Refresh pre-built images from the registry before starting"
+    echo "  --build                     Build the API from THIS repo's source instead of pulling"
+    echo "  --build-dashboard           Also build the Dashboard from ../faultmaven-dashboard"
     echo "  --no-color                  Disable colored output"
     echo "  --yes, -y                   Auto-confirm destructive operations"
     echo "  --tail N                    Limit log output to last N lines"
     echo ""
+    echo "Image source (default = pre-built images from GHCR):"
+    echo "  Pin tags in .env:  FM_IMAGE_TAG, FM_DASHBOARD_IMAGE_TAG  (default: latest)"
+    echo "  ghcr.io/faultmaven/faultmaven, ghcr.io/faultmaven/faultmaven-dashboard"
+    echo ""
     echo "Examples:"
-    echo "  ./faultmaven.sh start              # Start services"
-    echo "  ./faultmaven.sh start --demo       # Start with demo data"
-    echo "  ./faultmaven.sh create-user        # Create user account"
-    echo "  ./faultmaven.sh list-users         # List all users"
-    echo "  ./faultmaven.sh delete-user bob    # Delete user 'bob'"
-    echo "  ./faultmaven.sh health             # Run health checks"
-    echo "  ./faultmaven.sh logs api           # View API logs"
-    echo "  ./faultmaven.sh logs --tail 100    # View last 100 lines"
-    echo "  ./faultmaven.sh restart dashboard  # Restart dashboard only"
+    echo "  ./faultmaven.sh start                 # Start from pre-built GHCR images (fast)"
+    echo "  ./faultmaven.sh start --pull          # Refresh images, then start"
+    echo "  ./faultmaven.sh start --demo          # Start with demo data"
+    echo "  ./faultmaven.sh start --build         # Build the API from source, then start"
+    echo "  ./faultmaven.sh start --build --build-dashboard  # Build both from source"
+    echo "  ./faultmaven.sh create-user           # Create user account"
+    echo "  ./faultmaven.sh list-users            # List all users"
+    echo "  ./faultmaven.sh delete-user bob       # Delete user 'bob'"
+    echo "  ./faultmaven.sh health                # Run health checks"
+    echo "  ./faultmaven.sh logs api              # View API logs"
+    echo "  ./faultmaven.sh logs --tail 100       # View last 100 lines"
+    echo "  ./faultmaven.sh restart dashboard     # Restart dashboard only"
     echo ""
     echo "Alternative: Process-based Local Deployment (no Docker):"
     echo "  ./scripts/faultmaven-dev.sh start  # Start API as local Python process"
@@ -1085,6 +1178,15 @@ for ((i=1; i<=$#; i++)); do
     case $arg in
         --demo)
             DEMO_MODE=true
+            ;;
+        --build)
+            BUILD_MODE=true
+            ;;
+        --build-dashboard)
+            BUILD_DASHBOARD=true
+            ;;
+        --pull)
+            PULL_MODE=true
             ;;
         --no-color)
             NO_COLOR=true

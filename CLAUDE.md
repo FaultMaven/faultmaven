@@ -323,13 +323,19 @@ cd faultmaven
 cp .env.example .env
 # Edit .env: Set CHAT_PROVIDER and API key
 
-# Start with Docker
+# Start with Docker (pulls pre-built images from GHCR by default)
 ./faultmaven.sh start
 
-# Or run locally (development)
+# Build from source instead of pulling (contributors)
+./faultmaven.sh start --build              # build the API from this repo
+./faultmaven.sh start --build-dashboard    # also build the Dashboard from ../faultmaven-dashboard
+
+# Or run locally (development, no Docker)
 pip install -e ".[dev]"           # Install dependencies
 ./scripts/faultmaven-dev.sh start # Start the server
 ```
+
+**Image source:** `./faultmaven.sh start` runs pre-built images from GHCR (`ghcr.io/faultmaven/faultmaven`, `…/faultmaven-dashboard`), pinnable via `FM_IMAGE_TAG` / `FM_DASHBOARD_IMAGE_TAG` in `.env`. The build path layers `docker-compose.build.yml` (API) / `docker-compose.dashboard-build.yml` (Dashboard) on top of `docker-compose.yml`.
 
 **Auto-Initialization:** On first startup, FaultMaven automatically:
 - Creates `data/` directories (database, ChromaDB, evidence, knowledge)
@@ -353,7 +359,9 @@ Login via dev-login: `POST /api/v1/auth/dev-login` with `{"username": "admin"}`
 
 **Docker-based (faultmaven.sh v2.0.0):**
 ```bash
-./faultmaven.sh start              # Start services
+./faultmaven.sh start              # Start services (pre-built GHCR images)
+./faultmaven.sh start --pull       # Refresh images from registry, then start
+./faultmaven.sh start --build      # Build the API from source, then start
 ./faultmaven.sh start --demo       # Start with demo data
 ./faultmaven.sh stop               # Stop services
 ./faultmaven.sh status             # Check health
