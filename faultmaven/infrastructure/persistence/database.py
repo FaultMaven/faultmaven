@@ -178,6 +178,23 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
             pool_recycle=db_config.database_pool_recycle,
         )
 
+        # Re-apply the RLS tenant scope on EVERY transaction begin. The scope is
+        # transaction-local (set_config(..., is_local=true)), so setting it once
+        # per session would leave any query after a mid-session commit unscoped
+        # (a non-superuser role would then read zero rows). The org comes from the
+        # request/task contextvar (defaults to the Standalone org). PostgreSQL only
+        # — this branch is PG.
+        @event.listens_for(_engine.sync_engine, "begin")
+        def _scope_tenant_per_transaction(conn):
+            from faultmaven.infrastructure.persistence.tenant_context import (
+                get_current_org_id,
+            )
+
+            conn.execute(
+                text("SELECT set_config('app.current_org_id', :org_id, true)"),
+                {"org_id": get_current_org_id()},
+            )
+
     return _engine
 
 
@@ -244,14 +261,9 @@ async def get_db_session(
     session = factory()
 
     try:
-        # Scope the session to the current organization for PostgreSQL RLS
-        # (no-op on SQLite). Runs inside this session's transaction so the
-        # SET LOCAL is visible to the queries that follow.
-        from faultmaven.infrastructure.persistence.tenant_context import (
-            apply_tenant_context,
-        )
-
-        await apply_tenant_context(session)
+        # The PostgreSQL RLS tenant scope is applied per-transaction by the
+        # engine "begin" listener (get_engine), so it survives mid-session
+        # commits. No-op on SQLite.
         yield session
         await session.commit()
     except Exception:

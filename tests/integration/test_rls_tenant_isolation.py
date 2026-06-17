@@ -39,7 +39,9 @@ pytestmark = [
     ),
 ]
 
-_LIMITED_ROLE = "fm_rls_test_role"
+# Unique per worker process so parallel runs (pytest-xdist) don't collide on the
+# shared role name (CREATE ROLE is not idempotent).
+_LIMITED_ROLE = f"fm_rls_test_{uuid4().hex[:8]}"
 _LIMITED_PW = "fm_rls_test_pw"
 # A role that holds GRANTed privileges cannot be DROPped directly; DROP OWNED BY
 # revokes them first. Guarded by existence so it is safe as both pre-clean + teardown.
@@ -120,8 +122,10 @@ async def test_rls_scopes_reads_to_current_org(limited_engine, two_orgs):
             text("SELECT set_config('app.current_org_id', :o, true)"), {"o": org_a}
         )
         rows = (
-            await session.execute(text(_ORGS_QUERY), {"a": org_a, "b": org_b})
-        ).scalars().all()
+            (await session.execute(text(_ORGS_QUERY), {"a": org_a, "b": org_b}))
+            .scalars()
+            .all()
+        )
         assert set(rows) == {org_a}, "RLS leaked another org's row"
 
     async with maker() as session:
@@ -129,8 +133,10 @@ async def test_rls_scopes_reads_to_current_org(limited_engine, two_orgs):
             text("SELECT set_config('app.current_org_id', :o, true)"), {"o": org_b}
         )
         rows = (
-            await session.execute(text(_ORGS_QUERY), {"a": org_a, "b": org_b})
-        ).scalars().all()
+            (await session.execute(text(_ORGS_QUERY), {"a": org_a, "b": org_b}))
+            .scalars()
+            .all()
+        )
         assert set(rows) == {org_b}, "RLS leaked another org's row"
 
 
@@ -177,6 +183,6 @@ async def test_rls_enabled_and_policy_present(superuser_engine):
                     {"t": table},
                 )
             ).scalar()
-            assert polname == f"{table}_tenant_isolation", (
-                f"missing tenant-isolation policy on {table}"
-            )
+            assert (
+                polname == f"{table}_tenant_isolation"
+            ), f"missing tenant-isolation policy on {table}"

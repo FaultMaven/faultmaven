@@ -38,6 +38,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 # Every table carrying organization_id (VARCHAR(36)). `enterprises` is excluded
 # (it has no organization_id — it is the parent tier, keyed by enterprise_id).
+#
+# Note: `user_audit_log.organization_id` is nullable; a NULL-org row matches no
+# `app.current_org_id` and is therefore invisible to all tenants — fail-closed by
+# design (org-less audit rows are not leaked cross-tenant). Audit writes should
+# stamp an organization to keep those rows readable within their org.
 _TENANTED_TABLES = (
     "organizations",
     "organization_members",
