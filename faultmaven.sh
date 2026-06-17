@@ -333,6 +333,10 @@ check_env_file() {
         exit 1
     fi
 
+    # Confirm the file is valid BEFORE naming the specific provider, so the
+    # sequence reads: "✓ .env file configured" → "ℹ LLM Provider: …".
+    print_success ".env file configured"
+
     # Report tied to CHAT_PROVIDER (the provider the app selects at runtime).
     if [ "$chat_known" = true ]; then
         print_info "LLM Provider: $chat_name (CHAT_PROVIDER)"
@@ -346,8 +350,6 @@ check_env_file() {
     else
         print_info "LLM Provider: $first_name (CHAT_PROVIDER unset — app uses its default)"
     fi
-
-    print_success ".env file configured"
 }
 
 #######################################
@@ -444,16 +446,16 @@ check_docker_ports() {
 }
 
 wait_for_containers_ready() {
-    local max_wait=60
+    local max_wait=120   # first boot also runs DB migrations + KB seeding
     local elapsed=0
     local check_interval=2
+    local total_count=${#HEALTH_CHECK_SERVICES[@]}
 
-    print_info "Waiting for services to become healthy (up to ${max_wait}s)..."
-    echo ""
+    print_info "Waiting for services to become healthy (up to ${max_wait}s; first boot runs migrations + KB seeding)..."
 
     while [ $elapsed -lt $max_wait ]; do
         local healthy_count=0
-        local total_count=${#HEALTH_CHECK_SERVICES[@]}
+        local status_line=""
 
         for service in "${HEALTH_CHECK_SERVICES[@]}"; do
             local port="${service%%:*}"
@@ -462,29 +464,32 @@ wait_for_containers_ready() {
             local path="${rest#*:}"
 
             if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
-                ((healthy_count++))
+                healthy_count=$((healthy_count + 1))
+                status_line+="  ${name} ✓"
+            else
+                status_line+="  ${name} …"
             fi
         done
 
+        # In-place progress: elapsed / budget + per-service state.
+        printf '\r  ⏳ %3ds / %ds —%s        ' "$elapsed" "$max_wait" "$status_line"
+
         if [ "$healthy_count" -eq "$total_count" ]; then
-            # All services are responding, wait a bit more to ensure stability
+            # All responding — confirm stability with one more check after a pause.
             sleep 2
-            # Verify they're still responding
             local still_healthy=0
             for service in "${HEALTH_CHECK_SERVICES[@]}"; do
                 local port="${service%%:*}"
                 local rest="${service#*:}"
                 local path="${rest#*:}"
-                if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
-                    ((still_healthy++))
-                fi
+                curl -sf "http://localhost:$port$path" > /dev/null 2>&1 && still_healthy=$((still_healthy + 1))
             done
             if [ "$still_healthy" -eq "$total_count" ]; then
+                printf '\r  ✓ all services healthy in ~%ds%-30s\n' "$elapsed" ""
                 return 0
             fi
         fi
 
-        echo -n "."
         sleep $check_interval
         elapsed=$((elapsed + check_interval))
     done
@@ -540,6 +545,7 @@ cmd_start() {
 
     if [ "$building" = true ]; then
         print_info "Building from source (API: $BUILD_MODE, Dashboard: $BUILD_DASHBOARD)..."
+        print_info "First build compiles dependencies — typically several minutes. Live progress below."
     else
         print_info "Starting from pre-built GHCR images..."
         # Refresh images first only when explicitly asked (pure pull mode)
@@ -548,15 +554,29 @@ cmd_start() {
             docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" pull || \
                 print_warning "Image refresh failed; continuing with locally cached images"
         fi
+        # The API image is ~5GB. First run downloads it; cached restarts skip this.
+        if docker image inspect "ghcr.io/faultmaven/faultmaven:${FM_IMAGE_TAG:-latest}" >/dev/null 2>&1; then
+            print_info "API image present — starting containers (~30–60s)."
+        else
+            print_info "First run downloads the API image (~5GB) — typically 2–5 min on a fast link. Live progress below."
+        fi
     fi
     echo ""
 
     local up_args=(up -d)
     [ "$building" = true ] && up_args+=(--build)
 
-    # Capture compose output for error analysis
-    local compose_output
-    if ! compose_output=$(docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" "${up_args[@]}" 2>&1); then
+    # Stream compose output LIVE so the user sees docker's own pull/build/create
+    # progress (the previous version captured it, leaving a long silent wait),
+    # while still capturing it via tee for error analysis on failure.
+    local compose_output compose_log compose_rc
+    compose_log="$(mktemp)"
+    docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" "${up_args[@]}" 2>&1 | tee "$compose_log"
+    compose_rc=${PIPESTATUS[0]}
+    compose_output="$(cat "$compose_log")"
+    rm -f "$compose_log"
+
+    if [ "$compose_rc" -ne 0 ]; then
         echo ""
         print_error "Failed to start Docker containers"
         echo ""
