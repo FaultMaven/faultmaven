@@ -301,9 +301,21 @@ async def initialize_data_layer(container: Any) -> None:
     # knowledge_items + ChromaDB by the KB bootstrap. data/knowledge/ remains the
     # workspace for authored/converted runbooks and the /knowledge/scan flow.
 
-    # Step 3: Run database migrations
-    # Note: This uses synchronous Alembic - runs in the event loop's executor
-    run_alembic_migrations()
+    # Step 3: Run database migrations (only when this app owns its schema).
+    # When an external migration Job owns schema (the K8s deployment) the app
+    # connects as a non-owner, no-DDL role, so a startup `alembic upgrade` that
+    # needs DDL would be permission-denied and crash-loop the pod. Gate it on
+    # RUN_STARTUP_MIGRATIONS (default True for self-contained docker/local).
+    from faultmaven.config.settings import get_settings
+
+    if get_settings().run_startup_migrations:
+        # Note: This uses synchronous Alembic - runs in the event loop's executor
+        run_alembic_migrations()
+    else:
+        logger.info(
+            "Skipping startup Alembic migrations (RUN_STARTUP_MIGRATIONS=false); "
+            "schema is owned by an external migration Job."
+        )
 
     # Step 4: Create default admin user if needed
     # Moved to startup.py (Step 3) to ensure it runs after the default enterprise is created

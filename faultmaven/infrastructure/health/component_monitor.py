@@ -60,6 +60,10 @@ class ComponentHealthMonitor:
         self.dependency_map: Dict[str, DependencyMapping] = {}
         self.health_history: Dict[str, List[Tuple[datetime, HealthStatus, float]]] = {}
         self.sla_thresholds: Dict[str, Dict[str, float]] = {}
+        # RLS-bypass posture (role attributes + table ownership) is static for the
+        # life of the process/DB role, so determine it once and reuse it — the
+        # per-probe DB cost then stays just the SELECT 1 connectivity check.
+        self._rls_posture: Optional[Dict[str, Any]] = None
         self._initialize_default_components()
 
     def _initialize_default_components(self) -> None:
@@ -244,22 +248,129 @@ class ComponentHealthMonitor:
             return await self._generic_health_check(component_name)
 
     async def _check_database_health(self) -> Dict[str, Any]:
-        """Check database health."""
-        try:
-            # In a real implementation, this would check actual database connectivity
-            # For now, simulate a health check
-            await asyncio.sleep(0.01)  # Simulate database query time
+        """Check DB connectivity and RLS tenant-isolation posture.
 
+        Connectivity is a real `SELECT 1`. On PostgreSQL we additionally detect
+        whether the connected role would BYPASS Row-Level Security — i.e. it is a
+        superuser, has BYPASSRLS, or OWNS the tenanted tables (PostgreSQL exempts
+        all three from RLS). Such a role silently defeats tenant isolation, so we
+        report DEGRADED: the app must connect as a non-owner, non-superuser role
+        (see docs/operations/rls-app-role.md in faultmaven-enterprise-infra).
+
+        On SQLite (single-tenant standalone) RLS does not apply, so a successful
+        connection is HEALTHY.
+        """
+        # Lazy imports: this module is a global singleton instantiated at import,
+        # so defer coupling with the persistence layer to call time.
+        from sqlalchemy import text
+
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        try:
+            async with get_db_session() as session:
+                # Connectivity probe.
+                await session.execute(text("SELECT 1"))
+
+                dialect = session.get_bind().dialect.name
+                if dialect != "postgresql":
+                    # SQLite / standalone: single-tenant, no RLS to enforce.
+                    return {
+                        "status": HealthStatus.HEALTHY,
+                        "metadata": {
+                            "database_type": dialect,
+                            "rls_applicable": False,
+                        },
+                    }
+
+                # Posture is static per role/process — compute once, then cache.
+                # A successful connectivity probe still runs every call above.
+                if self._rls_posture is not None:
+                    rls = self._rls_posture
+                else:
+                    rls = await self._detect_rls_bypass(session)
+                    if not rls.get("check_error"):
+                        self._rls_posture = rls
+        except Exception as e:
+            return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
+
+        if rls.get("check_error"):
+            # Connectivity is fine; we just couldn't determine RLS posture. Don't
+            # cry wolf — report HEALTHY but record why the check was inconclusive.
             return {
                 "status": HealthStatus.HEALTHY,
                 "metadata": {
-                    "connection_pool_size": 10,
-                    "active_connections": 3,
-                    "query_cache_hit_rate": 0.95,
+                    "database_type": "postgresql",
+                    "rls_applicable": True,
+                    "rls_check_error": rls["check_error"],
                 },
             }
+
+        metadata = {
+            "database_type": "postgresql",
+            "rls_applicable": True,
+            "db_role": rls["role"],
+            "rls_bypassed": rls["bypassed"],
+            "rls_bypass_reasons": rls["reasons"],
+        }
+
+        if rls["bypassed"]:
+            return {
+                "status": HealthStatus.DEGRADED,
+                "error": (
+                    f"PostgreSQL role '{rls['role']}' BYPASSES Row-Level Security "
+                    f"({', '.join(rls['reasons'])}); tenant isolation is NOT "
+                    "enforced. The app must connect as a non-owner, non-superuser "
+                    "role."
+                ),
+                "metadata": metadata,
+            }
+
+        return {"status": HealthStatus.HEALTHY, "metadata": metadata}
+
+    async def _detect_rls_bypass(self, session: Any) -> Dict[str, Any]:
+        """Return the RLS-bypass posture of the connected PostgreSQL role.
+
+        A connection bypasses RLS if its role is a superuser, has the BYPASSRLS
+        attribute, or owns the tenanted tables. Probes role attributes plus
+        ownership of the `cases` table (a representative tenanted table). Returns
+        ``{"check_error": ...}`` if the posture can't be determined.
+        """
+        from sqlalchemy import text
+
+        try:
+            result = await session.execute(text("""
+                    SELECT
+                        r.rolname AS role,
+                        r.rolsuper AS is_superuser,
+                        r.rolbypassrls AS has_bypassrls,
+                        EXISTS (
+                            SELECT 1 FROM pg_tables t
+                            WHERE t.tablename = 'cases'
+                              AND t.tableowner = r.rolname
+                        ) AS owns_tenanted_tables
+                    FROM pg_roles r
+                    WHERE r.rolname = current_user
+                    """))
+            row = result.mappings().fetchone()
         except Exception as e:
-            return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
+            return {"check_error": str(e)}
+
+        if row is None:
+            return {"check_error": "current_user not found in pg_roles"}
+
+        reasons: List[str] = []
+        if row["is_superuser"]:
+            reasons.append("superuser")
+        if row["has_bypassrls"]:
+            reasons.append("bypassrls")
+        if row["owns_tenanted_tables"]:
+            reasons.append("owns_tenanted_tables")
+
+        return {
+            "role": row["role"],
+            "bypassed": bool(reasons),
+            "reasons": reasons,
+        }
 
     async def _check_llm_provider_health(self) -> Dict[str, Any]:
         """Check LLM provider health."""
