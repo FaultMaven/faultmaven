@@ -9,7 +9,7 @@ does not apply, so a live connection is HEALTHY.
 from __future__ import annotations
 
 from typing import Any, Optional
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -139,3 +139,39 @@ async def test_rls_check_inconclusive_stays_healthy(monkeypatch):
     out = await ComponentHealthMonitor()._check_database_health()
     assert out["status"] is HealthStatus.HEALTHY
     assert "rls_check_error" in out["metadata"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rls_posture_is_cached_after_first_probe(monkeypatch):
+    """The static posture is determined once; later probes skip the catalog query."""
+    session = _FakeSession("postgresql", _pg_row())
+    _patch_session(monkeypatch, session)
+    monitor = ComponentHealthMonitor()
+
+    with patch.object(
+        monitor, "_detect_rls_bypass", wraps=monitor._detect_rls_bypass
+    ) as spy:
+        first = await monitor._check_database_health()
+        second = await monitor._check_database_health()
+
+    assert first["status"] is HealthStatus.HEALTHY
+    assert second["status"] is HealthStatus.HEALTHY
+    spy.assert_called_once()  # second probe reused the cached posture
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_inconclusive_posture_is_not_cached(monkeypatch):
+    """An inconclusive probe must NOT be cached, so a later probe retries."""
+    session = _FakeSession("postgresql", row=None)
+    _patch_session(monkeypatch, session)
+    monitor = ComponentHealthMonitor()
+
+    with patch.object(
+        monitor, "_detect_rls_bypass", wraps=monitor._detect_rls_bypass
+    ) as spy:
+        await monitor._check_database_health()
+        await monitor._check_database_health()
+
+    assert spy.call_count == 2  # retried because the first result was inconclusive

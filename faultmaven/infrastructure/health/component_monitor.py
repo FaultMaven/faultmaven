@@ -60,6 +60,10 @@ class ComponentHealthMonitor:
         self.dependency_map: Dict[str, DependencyMapping] = {}
         self.health_history: Dict[str, List[Tuple[datetime, HealthStatus, float]]] = {}
         self.sla_thresholds: Dict[str, Dict[str, float]] = {}
+        # RLS-bypass posture (role attributes + table ownership) is static for the
+        # life of the process/DB role, so determine it once and reuse it — the
+        # per-probe DB cost then stays just the SELECT 1 connectivity check.
+        self._rls_posture: Optional[Dict[str, Any]] = None
         self._initialize_default_components()
 
     def _initialize_default_components(self) -> None:
@@ -278,7 +282,14 @@ class ComponentHealthMonitor:
                         },
                     }
 
-                rls = await self._detect_rls_bypass(session)
+                # Posture is static per role/process — compute once, then cache.
+                # A successful connectivity probe still runs every call above.
+                if self._rls_posture is not None:
+                    rls = self._rls_posture
+                else:
+                    rls = await self._detect_rls_bypass(session)
+                    if not rls.get("check_error"):
+                        self._rls_posture = rls
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
 
