@@ -2063,6 +2063,23 @@ class FaultMavenSettings(BaseSettings):
         ),
     )
 
+    # Whether the app runs `alembic upgrade head` itself at startup. True for
+    # self-contained deployments (docker-compose, local dev) where the app owns
+    # its schema. MUST be False wherever an external migration Job owns schema and
+    # the app connects as a NON-OWNER, no-DDL role (the K8s deployment + RLS
+    # tenant-isolation roles) — otherwise a startup `alembic upgrade` that needs
+    # DDL is permission-denied and crash-loops the pod. Decoupled from
+    # DEPLOYMENT_MODE on purpose: the on-prem cluster runs the migration Job while
+    # still in 'standalone' mode, so this is the migration Job's signal, not cloud's.
+    run_startup_migrations: bool = Field(
+        default=True,
+        validation_alias="RUN_STARTUP_MIGRATIONS",
+        description=(
+            "Run Alembic migrations at app startup. Set False when an external "
+            "migration Job owns schema and the app uses a non-owner DB role."
+        ),
+    )
+
     # Provider Selectors (PR #3 - doc-aligned vocabulary)
     providers: ProviderSettings = Field(default_factory=ProviderSettings)
 
