@@ -528,7 +528,15 @@ class OpenAIClient(BaseLLMClient):
         try:
             import tiktoken
 
-            encoding = tiktoken.encoding_for_model(self.model)
+            try:
+                encoding = tiktoken.encoding_for_model(self.model)
+            except KeyError:
+                # Models newer than the installed tiktoken's static name map
+                # (e.g. gpt-5.x) aren't resolvable by name and raise KeyError.
+                # Fall back to the current OpenAI base encoding — o200k_base is
+                # what gpt-4o and the gpt-5 family use — so token counting stays
+                # robust for ANY configured OPENAI_MODEL, not just the default.
+                encoding = tiktoken.get_encoding("o200k_base")
             total = 0
             for msg in messages:
                 total += len(encoding.encode(msg.content))
