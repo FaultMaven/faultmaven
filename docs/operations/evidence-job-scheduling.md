@@ -55,7 +55,7 @@ spec:
         spec:
           containers:
           - name: storage-cleanup
-            image: faultmaven/faultmaven:latest
+            image: ghcr.io/faultmaven/faultmaven:latest
             command:
               - python
               - -m
@@ -212,7 +212,7 @@ spec:
 
           containers:
           - name: storage-cleanup
-            image: faultmaven/faultmaven:1.0.0
+            image: ghcr.io/faultmaven/faultmaven:1.0.0
             imagePullPolicy: IfNotPresent
 
             command:
@@ -287,7 +287,7 @@ version: '3.8'
 
 services:
   storage-cleanup:
-    image: faultmaven/faultmaven:latest
+    image: ghcr.io/faultmaven/faultmaven:latest
     command: python -m faultmaven.jobs.run storage_cleanup
     environment:
       - DATABASE_URL=${DATABASE_URL}
