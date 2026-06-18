@@ -1740,6 +1740,130 @@ class InvestigationContextSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+class ModelContextSettings(BaseSettings):
+    """Model context-window registry overrides (GAP-1).
+
+    The built-in registry (``faultmaven.utils.model_context``) maps known
+    model ids to their true context window + a recommended response reserve,
+    from which the per-turn prompt budget is derived
+    (``prompt_budget = window − reserve``). These knobs let operators correct
+    or extend that registry without a code change — useful for self-hosted /
+    local models, newly released models not yet in the built-in map, or models
+    served with a non-default window.
+    """
+
+    window_overrides: Dict[str, Dict[str, int]] = Field(
+        default_factory=dict,
+        validation_alias="MODEL_CONTEXT_WINDOWS",
+        description=(
+            "JSON map of model-id → {context_window, response_reserve} that "
+            "overrides/extends the built-in registry. Exact-id match, "
+            "case-insensitive. Example: "
+            '{"my-local-llama": {"context_window": 32768, '
+            '"response_reserve": 4096}}. response_reserve is optional.'
+        ),
+    )
+
+    # --- Soft prompt-budget target (cost/quality control) ---
+    # The registry yields a HARD ceiling (window − reserve) that the overflow
+    # backstop (GAP-3) checks against. These knobs derive the SOFT target —
+    # how much of the window we actually choose to fill each turn. Filling the
+    # full window on a 200K/1M model every turn would be a large cost/latency
+    # regression, so by default the target is window-aware but capped. Raise
+    # prompt_target_cap to exploit big windows.
+    prompt_target_cap: int = Field(
+        default=32000,
+        ge=2000,
+        le=1_000_000,
+        validation_alias="PROMPT_TARGET_CAP",
+        description=(
+            "Upper bound (tokens) on the routine assembled prompt regardless of "
+            "how large the model window is. The cost-control knob."
+        ),
+    )
+    prompt_target_fraction: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=1.0,
+        validation_alias="PROMPT_TARGET_FRACTION",
+        description=(
+            "Fraction of the model's context window used to derive the soft "
+            "target before the cap/floor are applied "
+            "(target = clamp(window×fraction, floor, cap), then ≤ hard budget)."
+        ),
+    )
+    prompt_target_floor: int = Field(
+        default=6000,
+        ge=2000,
+        le=200_000,
+        validation_alias="PROMPT_TARGET_FLOOR",
+        description=(
+            "Lower bound (tokens) on the soft target, so small-window models "
+            "still get a usable prompt budget (clamped to the hard budget)."
+        ),
+    )
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
+class EvidencePromotionSettings(BaseSettings):
+    """UploadedFile → Evidence promotion controls (GAP-5).
+
+    Evidence is born only when the LLM emits ``evidence_to_add`` for a file
+    (INVESTIGATING only), so a file the model reads but never files for stays an
+    orphan with no milestone progression. These knobs govern the two behavior
+    layers that reduce that desync. Phase 1 (observability) is always on and
+    needs no flag.
+    """
+
+    reinforcement_enabled: bool = Field(
+        default=True,
+        validation_alias="EVIDENCE_PROMOTION_REINFORCEMENT",
+        description=(
+            "Phase 2 (prompt-only, reversible): when unpromoted orphan files "
+            "exist during INVESTIGATING, append a conditional notice nudging "
+            "the LLM to file evidence_to_add for any file that supports a "
+            "claim. Safe; default on."
+        ),
+    )
+
+    assist_enabled: bool = Field(
+        default=False,
+        validation_alias="EVIDENCE_PROMOTION_ASSIST",
+        description=(
+            "Phase 3 (engine-side, default OFF — behavior change): when a file "
+            "has been a chronic orphan, the engine makes one targeted LLM "
+            "extraction call to promote it. Claim-anchored (never manufactures "
+            "a claimless stub). Adds an LLM call; enable only after the Phase 1 "
+            "metrics justify it and a QA campaign validates it."
+        ),
+    )
+
+    assist_age_turns: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        validation_alias="EVIDENCE_PROMOTION_ASSIST_AGE_TURNS",
+        description=(
+            "Minimum age in turns (current_turn − uploaded_at_turn) before a "
+            "still-unpromoted file is eligible for the Phase 3 assist."
+        ),
+    )
+
+    assist_max_per_turn: int = Field(
+        default=1,
+        ge=1,
+        le=5,
+        validation_alias="EVIDENCE_PROMOTION_ASSIST_MAX_PER_TURN",
+        description=(
+            "Cap on Phase 3 assist extraction calls per turn, to bound the "
+            "added LLM cost/latency."
+        ),
+    )
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
 class DeepAnalysisSettings(BaseSettings):
     """Interpreted search configuration.
 
@@ -2200,6 +2324,10 @@ class FaultMavenSettings(BaseSettings):
     preprocessing: PreprocessingSettings = Field(default_factory=PreprocessingSettings)
     investigation_context: InvestigationContextSettings = Field(
         default_factory=InvestigationContextSettings
+    )
+    model_context: ModelContextSettings = Field(default_factory=ModelContextSettings)
+    evidence_promotion: EvidencePromotionSettings = Field(
+        default_factory=EvidencePromotionSettings
     )
     deep_analysis: DeepAnalysisSettings = Field(default_factory=DeepAnalysisSettings)
 

@@ -589,89 +589,106 @@ def get_token_budget_for_provider(
     provider_name: str, model_name: Optional[str] = None
 ) -> int:
     """
-    Get provider-specific token budget for prompts.
+    Get the per-turn **soft prompt-fill target** for a provider/model.
 
-    Reference: Prompt Engineering Guide Section 11.3 - Provider-Specific Limits
+    GAP-1: this now delegates to the model context-window registry
+    (:func:`faultmaven.utils.model_context.resolve_model_budget`) rather than a
+    hand-tuned inline table. It returns the registry's ``prompt_target`` — the
+    soft, cost-controlled target (``clamp(window×fraction, floor, cap)``), NOT
+    the hard ceiling — so callers that size fills against this value stay
+    cost-stable by default while remaining window-aware. The hard ceiling
+    (``window − reserve``) used by the overflow backstop is on the same
+    ``ResolvedBudget`` (``prompt_budget``). Unknown models resolve to a
+    documented conservative default and emit a WARNING.
 
     Args:
         provider_name: Provider name (e.g., "anthropic", "openai", "fireworks")
         model_name: Optional specific model name for fine-grained limits
 
     Returns:
-        Recommended prompt token budget (conservative to leave room for response)
+        Recommended soft prompt-fill target in tokens.
     """
-    # Provider-specific prompt budgets (conservative to allow response tokens)
-    # Based on total context windows minus expected response size
+    from faultmaven.utils.model_context import resolve_model_budget
 
-    # Default to conservative 8K if provider unknown
-    default_budget = 8000
-
-    provider_lower = provider_name.lower() if provider_name else ""
-    model_lower = model_name.lower() if model_name else ""
-
-    # Anthropic Claude (200K context window)
-    if "anthropic" in provider_lower or "claude" in model_lower:
-        if "sonnet" in model_lower or "opus" in model_lower:
-            return 12000  # 12K prompt budget for 200K context
-        return 10000  # Conservative for other Claude models
-
-    # OpenAI GPT-4 (128K context window)
-    elif "openai" in provider_lower or "gpt-4" in model_lower:
-        if "turbo" in model_lower or "gpt-4o" in model_lower:
-            return 10000  # 10K prompt budget for 128K context
-        return 8000  # Conservative for older GPT-4
-
-    # Google Gemini (1M+ context window)
-    elif "google" in provider_lower or "gemini" in model_lower:
-        return 15000  # 15K prompt budget for massive context
-
-    # Meta Llama (128K context window)
-    elif "meta" in provider_lower or "llama" in model_lower:
-        return 8000  # 8K prompt budget for 128K context
-
-    # Fireworks AI (context varies by model)
-    elif "fireworks" in provider_lower:
-        if "llama-3.3" in model_lower:
-            return 8000
-        return 6000  # Conservative for other models
-
-    # Cohere (4K-128K depending on model)
-    elif "cohere" in provider_lower:
-        return 6000  # Conservative
-
-    # Default fallback
-    logger.debug(
-        f"Unknown provider '{provider_name}' with model '{model_name}', "
-        f"using default budget of {default_budget} tokens"
-    )
-    return default_budget
+    return resolve_model_budget(provider_name, model_name).prompt_target
 
 
 class TokenBudget:
-    """Simple character-based token approximation (1 token ~= 4 chars)"""
+    """Running token budget shared across prompt sections (GAP-2/GAP-4).
 
-    def __init__(self, limit_tokens: int = 8000):
-        self.limit_chars = limit_tokens * 4
-        self.used_chars = 0
+    Token-native: each section is measured with the provider/model tokenizer
+    via :func:`faultmaven.utils.token_estimation.estimate_tokens` rather than
+    the old 4-chars≈1-token character heuristic. When no provider is supplied
+    (internal callers / tests) it degrades to the character fallback that
+    ``estimate_tokens`` already provides, so behavior is unchanged for those
+    paths.
+
+    The single instance threaded through ``build_investigation_context`` makes
+    this the accountant for the *sum* of the dynamic sections: ``use()``
+    deducts from one shared pool, so later (lower-priority) sections are
+    trimmed once the budget is spent. Sections are fed in priority order by the
+    caller (see ``build_investigation_context``), so trimming hits the
+    lowest-value content first.
+    """
+
+    def __init__(
+        self,
+        limit_tokens: int = 8000,
+        *,
+        provider_name: Optional[str] = None,
+        model_name: Optional[str] = None,
+    ):
+        self.limit_tokens = limit_tokens
+        self.used_tokens = 0
+        self._provider = provider_name
+        self._model = model_name
+
+    def count(self, text: str) -> int:
+        """Token count for *text* under the active provider/model."""
+        if not text:
+            return 0
+        from faultmaven.utils.token_estimation import estimate_tokens
+
+        return estimate_tokens(
+            text, provider=self._provider or "local", model=self._model
+        )
+
+    @property
+    def remaining_tokens(self) -> int:
+        return max(0, self.limit_tokens - self.used_tokens)
 
     def has_budget(self, text: str) -> bool:
-        return self.used_chars + len(text) <= self.limit_chars
+        return self.used_tokens + self.count(text) <= self.limit_tokens
 
     def use(self, text: str) -> str:
-        if self.has_budget(text):
-            self.used_chars += len(text)
+        if not text:
             return text
-        else:
-            # Truncate if partially fits
-            remaining = self.limit_chars - self.used_chars
-            if remaining > 100:
-                truncated = (
-                    text[: remaining - 50]
-                    + "\n[... Content truncated due to context limit ...]"
-                )
-                self.used_chars = self.limit_chars
-                return truncated
+        tokens = self.count(text)
+        if self.used_tokens + tokens <= self.limit_tokens:
+            self.used_tokens += tokens
+            return text
+        # Partial fit: truncate to the remaining token budget. Convert the
+        # remaining token allowance back to an approximate char slice (the
+        # tokenizer is not invertible) and verify the slice fits, shrinking if
+        # the content is token-dense.
+        remaining = self.limit_tokens - self.used_tokens
+        if remaining <= 25:  # not enough room for a useful slice + marker
+            self.used_tokens = self.limit_tokens
             return ""
+        marker = "\n[... Content truncated due to context limit ...]"
+        # Reserve ~15 tokens for the marker; approximate 4 chars/token for the
+        # initial slice, then trim down until the measured count fits.
+        char_budget = max(50, (remaining - 15) * 4)
+        truncated = text[:char_budget]
+        while truncated and self.count(truncated + marker) > remaining:
+            char_budget = int(char_budget * 0.85)
+            truncated = text[:char_budget]
+        if not truncated:
+            self.used_tokens = self.limit_tokens
+            return ""
+        result = truncated + marker
+        self.used_tokens += self.count(result)
+        return result
 
 
 def _build_state_summary(case: Case) -> str:
@@ -1132,6 +1149,65 @@ def _current_turn_reserve_fraction() -> float:
         return get_settings().investigation_context.current_turn_reserve_fraction
     except Exception:
         return 0.5
+
+
+def _unpromoted_orphan_file_ids(case: Case) -> List[str]:
+    """file_ids of uploaded files not yet referenced by any Evidence.
+
+    "Promoted" = the file's ``file_id`` appears as some
+    ``Evidence.source_file_id`` (GAP-5). Pure/crash-proof helper shared by the
+    Phase 2 prompt notice.
+    """
+    try:
+        promoted = {
+            ev.source_file_id
+            for ev in (case.evidence or [])
+            if getattr(ev, "source_file_id", None)
+        }
+        return [
+            uf.file_id
+            for uf in (getattr(case, "uploaded_files", None) or [])
+            if getattr(uf, "file_id", None) and uf.file_id not in promoted
+        ]
+    except Exception:
+        return []
+
+
+def _unpromoted_files_notice(case: Case) -> str:
+    """GAP-5 Phase 2 — conditional reinforcement notice for orphan files.
+
+    Returns a short ``<unpromoted_files_notice>`` block when the case is
+    INVESTIGATING, the reinforcement flag is on, and at least one uploaded file
+    has not been promoted to Evidence. The notice is deliberately CONDITIONAL —
+    it asks the LLM to file ``evidence_to_add`` only for files that support a
+    claim, and to ignore the rest. It never instructs blanket promotion (that
+    would re-create the rejected claimless-stub anti-pattern). Empty string when
+    not applicable.
+    """
+    if case.state != CaseState.INVESTIGATING:
+        return ""
+    try:
+        from faultmaven.config.settings import get_settings
+
+        if not get_settings().evidence_promotion.reinforcement_enabled:
+            return ""
+    except Exception:
+        pass  # default-on if settings unavailable
+    orphan_ids = _unpromoted_orphan_file_ids(case)
+    if not orphan_ids:
+        return ""
+    ids = ", ".join(orphan_ids[:10])
+    return (
+        "<unpromoted_files_notice>\n"
+        "These uploaded files have NOT yet been recorded as evidence: "
+        f"{ids}.\n"
+        "If a file's content supports a specific claim about the symptom, "
+        "cause, mitigation, or solution, file an evidence_to_add entry for it "
+        "(set source_file_id to the file_id above). If a file does NOT support "
+        "any claim, leave it as-is — do not create evidence just to clear this "
+        "notice.\n"
+        "</unpromoted_files_notice>"
+    )
 
 
 def _render_orphan_file_block(
@@ -2066,7 +2142,7 @@ def build_investigation_context(
             max_tokens = 8000  # Default fallback
             logger.debug("Using default budget: 8000 tokens (no provider specified)")
 
-    budget = TokenBudget(max_tokens)
+    budget = TokenBudget(max_tokens, provider_name=provider_name, model_name=model_name)
 
     # 1. Identity & Status (Gap #8: XML tags for better LLM attention)
     identity = f"<case_identity>\n"
@@ -2140,6 +2216,14 @@ def build_investigation_context(
         provider_name=provider_name,
         model_name=model_name,
     )
+
+    # GAP-5 Phase 2: prepend the conditional orphan-promotion notice so it
+    # rides at the TOP of the evidence block — surviving any tail-truncation
+    # the section budgeter applies. Empty unless INVESTIGATING with unpromoted
+    # files and the reinforcement flag on.
+    _orphan_notice = _unpromoted_files_notice(case)
+    if _orphan_notice:
+        evidence_str = f"{_orphan_notice}\n{evidence_str}"
 
     # 5. Hypothesis Summary
     #
@@ -2418,24 +2502,70 @@ def build_investigation_context(
     # activation; design §10.6).
     evidence_needs_str = _build_evidence_needs_block(case)
 
-    # Assembly with budget check
-    ctx = {
-        "identity": budget.use(identity),
-        "core_context": budget.use(core_context),
-        "milestones": budget.use(milestones_str),
-        "evidence": budget.use(evidence_str),
-        "evidence_needs": budget.use(evidence_needs_str),
-        "entity_highlights": budget.use(entity_highlights_str),
-        "hypotheses": budget.use(hypothesis_str),
-        "investigation_journal": budget.use(journal_str),
-        "working_conclusion": budget.use(conclusion_str),
-        "pending_action": budget.use(pending_action_str),
-        "kb_results": budget.use(kb_str),
-        "system_feedback": feedback_str,  # Prioritize feedback
-        "conversation_history": budget.use(recent_history),
-        "user_message": user_message_safe,  # Sanitized user message always included
-        "inquiry_state": budget.use(inquiry_state_str),
-    }
+    # =====================================================================
+    # Priority-ordered budget allocation (GAP-2)
+    # =====================================================================
+    # A single shared token budget bounds the SUM of the dynamic sections.
+    # Sections are allocated highest-value first, so when the budget tightens
+    # the lowest-value content (entity highlights, journal) is trimmed before
+    # the irreplaceable content (evidence, recent conversation).
+    #
+    #   Tier 0 — always-included (reserved, never trimmed): the structural /
+    #     safety-adjacent blocks + the user's own message + last-turn system
+    #     feedback. These are non-negotiable; they are counted against the
+    #     budget so lower tiers see the true remaining space.
+    #   Tier 1+ — trimmable, in priority order: evidence (carries the
+    #     current-turn floor, which is protected inside _build_evidence_context)
+    #     > recent conversation > working conclusion > KB > hypotheses >
+    #     evidence needs > journal > entity highlights.
+    #
+    # The whole-prompt accountant in get_prompt_for_case (GAP-2/GAP-3) measures
+    # the assembled total (these sections + the fixed template) against the
+    # model window and re-assembles at a tighter budget / falls back on
+    # overflow.
+    def _reserve(text: str) -> str:
+        """Include *text* unconditionally, counting it against the budget."""
+        if text:
+            budget.used_tokens += budget.count(text)
+        return text
+
+    ctx: Dict[str, str] = {}
+    # Tier 0 — reserved (order within the tier does not matter; none are trimmed)
+    ctx["identity"] = _reserve(identity)
+    ctx["core_context"] = _reserve(core_context)
+    ctx["milestones"] = _reserve(milestones_str)
+    ctx["inquiry_state"] = _reserve(inquiry_state_str)
+    ctx["pending_action"] = _reserve(pending_action_str)
+    ctx["system_feedback"] = feedback_str  # always included; prioritized
+    ctx["user_message"] = user_message_safe  # sanitized; always included
+    _reserve(feedback_str)
+    _reserve(user_message_safe)
+
+    # Tier 1+ — trimmable, highest priority first.
+    ctx["evidence"] = budget.use(evidence_str)
+    ctx["conversation_history"] = budget.use(recent_history)
+    ctx["working_conclusion"] = budget.use(conclusion_str)
+    ctx["kb_results"] = budget.use(kb_str)
+    ctx["hypotheses"] = budget.use(hypothesis_str)
+    ctx["evidence_needs"] = budget.use(evidence_needs_str)
+    ctx["investigation_journal"] = budget.use(journal_str)
+    ctx["entity_highlights"] = budget.use(entity_highlights_str)
+
+    # Per-turn structured log of the section-by-section token allocation and
+    # the running total vs the section budget (GAP-2 observability).
+    if logger.isEnabledFor(logging.DEBUG):
+        section_tokens = {k: budget.count(v) for k, v in ctx.items() if v}
+        logger.debug(
+            "prompt_section_allocation",
+            extra={
+                "case_id": case.case_id,
+                "provider": provider_name,
+                "model": model_name,
+                "section_budget_tokens": max_tokens,
+                "sections_used_tokens": budget.used_tokens,
+                "section_tokens": section_tokens,
+            },
+        )
 
     return ctx
 

@@ -183,9 +183,29 @@ The dispatcher is the only place where mode-conditional gating happens. The temp
 
 ---
 
-## 6. Fallback Templates
+## 6. Whole-prompt budget + overflow backstop
 
-When the primary template renders too long for the model's context window, or when an unrecoverable rendering error occurs, the engine falls back to a minimal variant via `get_fallback_prompt_for_case(case, user_message)`:
+`get_prompt_for_case()` is the single place where the dynamic sections and the
+fixed template text combine into the final string, so it owns the
+**whole-prompt token budget** (GAP-2/GAP-3). The ladder, in
+`_budgeted_prompt()`:
+
+1. **Assemble** with sections sized to the model's *soft* fill target
+   (`ResolvedBudget.prompt_target` — see §6.1).
+2. **Measure** the assembled prompt's real token count
+   (`token_estimation.estimate_tokens`, GAP-4) against the model's *hard*
+   ceiling (`ResolvedBudget.prompt_budget = window − response_reserve`).
+3. **If over → re-assemble once** at a tighter section budget
+   (`ceiling − measured_template_overhead − margin`). This is where the fixed
+   template overhead — which the per-section budgeter cannot see — finally gets
+   subtracted from what the sections may occupy.
+4. **If still over → fall back** to a minimal safe prompt via
+   `get_fallback_prompt_for_case(case, user_message)`.
+
+Every overflow event is logged at WARNING (`prompt_overflow_trimmed` /
+`prompt_overflow_fallback`) with the token counts and the action taken —
+overflow should be rare and visible, never silent. The normal (in-budget) path
+logs `prompt_budget_ok` at DEBUG.
 
 | Status | Fallback |
 | --- | --- |
@@ -193,7 +213,35 @@ When the primary template renders too long for the model's context window, or wh
 | INVESTIGATING | `FALLBACK_INVESTIGATION_TEMPLATE` |
 | RESOLVED / CLOSED | `FALLBACK_TERMINAL_TEMPLATE` |
 
-Fallback templates carry only the load-bearing safety constraints (no confabulation, hypothesis-evidence ordering for INVESTIGATING, closed-case boundary for TERMINAL). They produce shorter prompts at the cost of richer behavioral guidance — a degraded but safe mode.
+Fallback templates carry only the load-bearing safety constraints (no
+confabulation, hypothesis-evidence ordering for INVESTIGATING, closed-case
+boundary for TERMINAL). They produce shorter prompts at the cost of richer
+behavioral guidance — a degraded but safe mode, reserved for genuine last
+resort after step 3's trimming.
+
+> The backstop only fires when a `provider_name` is supplied (so the budget can
+> be resolved). All engine call sites — the main turn path and the terminal-Q&A
+> path — pass provider/model.
+
+### 6.1 Hard ceiling vs soft target (GAP-1)
+
+Budgets come from the model context-window registry
+(`faultmaven/utils/model_context.py`), keyed by exact model id with
+longest-prefix family fallback and an operator override map
+(`MODEL_CONTEXT_WINDOWS`). Two budgets are derived per (provider, model):
+
+- **Hard ceiling** `prompt_budget = context_window − response_reserve` — the
+  largest prompt the model can physically accept while leaving room for the
+  response. This is the overflow threshold in step 2 above.
+- **Soft target** `prompt_target = clamp(window × PROMPT_TARGET_FRACTION,
+  PROMPT_TARGET_FLOOR, PROMPT_TARGET_CAP)`, never above the hard ceiling — how
+  much of the window we *choose* to fill on a routine turn, for cost/quality
+  control. Sized so a 200K/1M-window model does not send a max-window prompt
+  every turn. `get_token_budget_for_provider()` returns this value.
+
+Unknown models resolve to a conservative default (16K window) and log a
+WARNING. The resolved budget is surfaced at `/debug/llm-providers`
+(`prompt_budget` block) and logged per turn.
 
 ---
 

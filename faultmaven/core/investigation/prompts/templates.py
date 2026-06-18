@@ -6,11 +6,14 @@ This module defines the core templates for FaultMaven's THREE-TEMPLATE system:
 3. TERMINAL: Documentation and summary.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.prompts.context_builder import (
     build_investigation_context,
 )
+
+logger = logging.getLogger(__name__)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -2510,68 +2513,188 @@ def get_prompt_for_case(
 
     Returns:
         Formatted prompt for the LLM
+
+    Whole-prompt token accounting (GAP-2 / GAP-3): this is the single place
+    where the dynamic sections and the fixed template text combine into the
+    final string, so it owns the whole-prompt budget. After assembling, it
+    measures the real assembled token count (GAP-4) against the model's hard
+    context ceiling (GAP-1 registry). On overflow it re-assembles once at a
+    tighter section budget (so the fixed template overhead is finally
+    accounted for); if it is *still* over, it falls back to the minimal safe
+    prompt (``get_fallback_prompt_for_case``). Every overflow event is logged.
     """
 
-    ctx = build_investigation_context(
-        case,
-        user_message,
-        kb_results,
-        provider_name=provider_name,
-        model_name=model_name,
-        use_state_summary=use_state_summary,
-        processing_mode=processing_mode,
-        entity_highlights=entity_highlights,
-    )
+    def _assemble(section_budget: Optional[int]) -> str:
+        """Build the full prompt with sections sized to *section_budget*.
 
-    if case.state == CaseState.INQUIRY:
-        return INQUIRY_TEMPLATE.format(**ctx)
+        ``section_budget=None`` lets ``build_investigation_context`` derive the
+        soft target from the registry (the normal path).
+        """
+        ctx = build_investigation_context(
+            case,
+            user_message,
+            kb_results,
+            max_tokens=section_budget,
+            provider_name=provider_name,
+            model_name=model_name,
+            use_state_summary=use_state_summary,
+            processing_mode=processing_mode,
+            entity_highlights=entity_highlights,
+        )
 
-    elif case.state == CaseState.INVESTIGATING:
-        stage = case.current_stage or InvestigationStage.DIAGNOSIS
+        if case.state == CaseState.INQUIRY:
+            return INQUIRY_TEMPLATE.format(**ctx)
 
-        # knowledge_query dispatches to its own instructions, bypassing stage logic.
-        # This prevents EVIDENCE GROUNDING and DIAGNOSTIC REASONING REQUIREMENTS
-        # from forcing the LLM to cite case evidence for general knowledge questions.
-        if processing_mode == "knowledge_query":
-            adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
-        else:
-            # Dispatch to stage instructions (derived display stage; no path fork)
-            if stage == InvestigationStage.DIAGNOSIS:
-                adaptive_instr = _select_diagnosis_block(case)
-            elif stage == InvestigationStage.MITIGATION:
-                adaptive_instr = MITIGATION_INSTRUCTIONS
-            elif stage == InvestigationStage.TREATMENT:
-                adaptive_instr = TREATMENT_INSTRUCTIONS
+        elif case.state == CaseState.INVESTIGATING:
+            stage = case.current_stage or InvestigationStage.DIAGNOSIS
+
+            # knowledge_query dispatches to its own instructions, bypassing
+            # stage logic. This prevents EVIDENCE GROUNDING and DIAGNOSTIC
+            # REASONING REQUIREMENTS from forcing the LLM to cite case evidence
+            # for general knowledge questions.
+            if processing_mode == "knowledge_query":
+                adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
             else:
-                adaptive_instr = _RCA_DIAGNOSIS_BLOCK
+                # Dispatch to stage instructions (derived display stage)
+                if stage == InvestigationStage.DIAGNOSIS:
+                    adaptive_instr = _select_diagnosis_block(case)
+                elif stage == InvestigationStage.MITIGATION:
+                    adaptive_instr = MITIGATION_INSTRUCTIONS
+                elif stage == InvestigationStage.TREATMENT:
+                    adaptive_instr = TREATMENT_INSTRUCTIONS
+                else:
+                    adaptive_instr = _RCA_DIAGNOSIS_BLOCK
 
-        # Add stage to context for schema reference
-        ctx["stage"] = stage.value if stage else "diagnosis"
+            # Add stage to context for schema reference
+            ctx["stage"] = stage.value if stage else "diagnosis"
 
-        # knowledge_query exempts from evidence grounding AND diagnostic
-        # reasoning (KNOWLEDGE_QUERY_INSTRUCTIONS waives both — a
-        # general-knowledge answer doesn't ground in case evidence or use
-        # the Observation/Analysis/Conclusion structure).
-        is_knowledge_query = processing_mode == "knowledge_query"
-        evidence_grounding = "" if is_knowledge_query else _EVIDENCE_GROUNDING_BLOCK
-        diagnostic_reasoning = "" if is_knowledge_query else _DIAGNOSTIC_REASONING_BLOCK
+            # knowledge_query exempts from evidence grounding AND diagnostic
+            # reasoning (KNOWLEDGE_QUERY_INSTRUCTIONS waives both — a
+            # general-knowledge answer doesn't ground in case evidence or use
+            # the Observation/Analysis/Conclusion structure).
+            is_knowledge_query = processing_mode == "knowledge_query"
+            evidence_grounding = "" if is_knowledge_query else _EVIDENCE_GROUNDING_BLOCK
+            diagnostic_reasoning = (
+                "" if is_knowledge_query else _DIAGNOSTIC_REASONING_BLOCK
+            )
 
-        return INVESTIGATION_BASE.format(
-            adaptive_instructions=adaptive_instr,
-            evidence_grounding=evidence_grounding,
-            diagnostic_reasoning=diagnostic_reasoning,
-            **ctx,
+            return INVESTIGATION_BASE.format(
+                adaptive_instructions=adaptive_instr,
+                evidence_grounding=evidence_grounding,
+                diagnostic_reasoning=diagnostic_reasoning,
+                **ctx,
+            )
+
+        else:  # TERMINAL (RESOLVED/CLOSED)
+            # "resolution" for RESOLVED, "closure" for CLOSED — the noun used
+            # in the canonical summary type names (RESOLUTION_SUMMARY /
+            # CLOSURE_SUMMARY). Lets the redirect message read naturally
+            # ("the resolution summary") regardless of which terminal state.
+            summary_kind = (
+                "resolution" if case.state == CaseState.RESOLVED else "closure"
+            )
+            return TERMINAL_TEMPLATE.format(
+                state_upper=case.state.value.upper(),
+                state_lower=case.state.value,
+                summary_kind=summary_kind,
+                **ctx,
+            )
+
+    return _budgeted_prompt(case, user_message, _assemble, provider_name, model_name)
+
+
+def _budgeted_prompt(
+    case: Case,
+    user_message: str,
+    assemble,
+    provider_name: Optional[str],
+    model_name: Optional[str],
+) -> str:
+    """Whole-prompt overflow accountant + backstop (GAP-2 / GAP-3).
+
+    Strategy (degrade, don't fail):
+
+    1. Assemble normally (sections sized to the soft target).
+    2. Measure the assembled prompt's real tokens vs the model's HARD ceiling
+       (``window − reserve``).
+    3. If over, re-assemble once at a tighter section budget so the fixed
+       template overhead is subtracted from what the sections may use.
+    4. If still over, fall back to the minimal safe prompt.
+
+    Every overflow event is logged at WARNING — overflow should be rare and
+    visible, never silent.
+    """
+    from faultmaven.utils.model_context import resolve_model_budget
+    from faultmaven.utils.token_estimation import estimate_tokens
+
+    prompt = assemble(None)
+
+    # No provider/model → cannot measure meaningfully; the section budgeter
+    # already bounded the sections. Return as-is (e.g. terminal-QA legacy path
+    # that supplies neither — now also wired with provider/model at the call
+    # site, but keep this safe).
+    if not provider_name:
+        return prompt
+
+    resolved = resolve_model_budget(provider_name, model_name)
+    ceiling = resolved.prompt_budget  # hard: window − reserve
+    total = estimate_tokens(prompt, provider=provider_name, model=model_name)
+
+    if total <= ceiling:
+        logger.debug(
+            "prompt_budget_ok",
+            extra={
+                "case_id": case.case_id,
+                "provider": provider_name,
+                "model": model_name,
+                "assembled_tokens": total,
+                "soft_target": resolved.prompt_target,
+                "hard_ceiling": ceiling,
+            },
         )
+        return prompt
 
-    else:  # TERMINAL (RESOLVED/CLOSED)
-        # "resolution" for RESOLVED, "closure" for CLOSED — the noun used
-        # in the canonical summary type names (RESOLUTION_SUMMARY /
-        # CLOSURE_SUMMARY). Lets the redirect message read naturally
-        # ("the resolution summary") regardless of which terminal state.
-        summary_kind = "resolution" if case.state == CaseState.RESOLVED else "closure"
-        return TERMINAL_TEMPLATE.format(
-            state_upper=case.state.value.upper(),
-            state_lower=case.state.value,
-            summary_kind=summary_kind,
-            **ctx,
+    # --- Overflow: attempt one tightened re-assembly ---------------------
+    # Estimate the fixed template overhead from this render so the retry can
+    # subtract it from the section budget. We don't have per-section counts
+    # here, so approximate overhead as (total − soft_target) clamped ≥ 0; the
+    # sections occupied at most the soft target, so the remainder is template.
+    template_overhead = max(0, total - resolved.prompt_target)
+    margin = 256  # safety slack for tokenizer approximation
+    tightened_section_budget = max(500, ceiling - template_overhead - margin)
+    retried = assemble(tightened_section_budget)
+    retried_total = estimate_tokens(retried, provider=provider_name, model=model_name)
+
+    if retried_total <= ceiling:
+        logger.warning(
+            "prompt_overflow_trimmed",
+            extra={
+                "case_id": case.case_id,
+                "provider": provider_name,
+                "model": model_name,
+                "first_tokens": total,
+                "trimmed_tokens": retried_total,
+                "hard_ceiling": ceiling,
+                "template_overhead_est": template_overhead,
+                "action": "reassembled_at_tighter_budget",
+            },
         )
+        return retried
+
+    # --- Still over: minimal safe fallback (GAP-3 last resort) -----------
+    fallback = get_fallback_prompt_for_case(case, user_message)
+    fallback_total = estimate_tokens(fallback, provider=provider_name, model=model_name)
+    logger.warning(
+        "prompt_overflow_fallback",
+        extra={
+            "case_id": case.case_id,
+            "provider": provider_name,
+            "model": model_name,
+            "first_tokens": total,
+            "trimmed_tokens": retried_total,
+            "fallback_tokens": fallback_total,
+            "hard_ceiling": ceiling,
+            "action": "minimal_fallback_prompt",
+        },
+    )
+    return fallback

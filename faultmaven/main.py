@@ -1408,6 +1408,36 @@ if _is_debug_enabled(settings=_debug_settings):
             settings_debug = get_settings()
             strict_mode = settings_debug.llm.strict_provider_mode
 
+            # GAP-1: surface the resolved context-window budget for the active
+            # provider/model so operators can see the true window, the derived
+            # hard prompt ceiling, the soft fill target, and whether the
+            # conservative default fired for an unrecognized model.
+            prompt_budget = None
+            try:
+                from .utils.model_context import resolve_model_budget
+
+                active_provider = getattr(llm_provider, "provider_name", None) or (
+                    fallback_chain[0] if fallback_chain else None
+                )
+                active_model = (
+                    getattr(llm_provider.config, "default_model", None)
+                    if hasattr(llm_provider, "config")
+                    else None
+                )
+                rb = resolve_model_budget(active_provider, active_model)
+                prompt_budget = {
+                    "provider": rb.provider,
+                    "model": rb.model,
+                    "context_window": rb.context_window,
+                    "response_reserve": rb.response_reserve,
+                    "hard_prompt_budget": rb.prompt_budget,
+                    "soft_prompt_target": rb.prompt_target,
+                    "matched_registry_key": rb.matched_key,
+                    "used_conservative_default": rb.used_default,
+                }
+            except Exception as budget_exc:  # pragma: no cover - best effort
+                prompt_budget = {"error": str(budget_exc)}
+
             return {
                 "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "primary_provider": fallback_chain[0] if fallback_chain else "none",
@@ -1415,6 +1445,7 @@ if _is_debug_enabled(settings=_debug_settings):
                 "fallback_chain": fallback_chain,
                 "available_providers": available_providers,
                 "provider_details": provider_status,
+                "prompt_budget": prompt_budget,
             }
 
         except Exception as e:

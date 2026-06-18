@@ -4,8 +4,9 @@ Provides accurate token counting for different LLM providers using their
 official tokenizers instead of rough estimates.
 
 Supported Providers:
-- OpenAI (tiktoken for GPT models)
-- Anthropic (anthropic tokenizer for Claude models)
+- OpenAI (tiktoken cl100k_base for GPT models)
+- Anthropic (tiktoken cl100k_base as an offline proxy — see
+  ``estimate_tokens_anthropic`` for why we do not call the network counter)
 - Fireworks (uses tiktoken since many models are OpenAI-compatible)
 - Fallback (character-based estimation for unsupported providers)
 
@@ -30,17 +31,8 @@ try:
 except ImportError:
     TIKTOKEN_AVAILABLE = False
     logger.warning(
-        "tiktoken not installed - falling back to character-based estimation for OpenAI/Fireworks"
-    )
-
-try:
-    from anthropic import Anthropic
-
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
-    logger.warning(
-        "anthropic not installed - falling back to character-based estimation for Claude"
+        "tiktoken not installed - falling back to character-based estimation "
+        "for OpenAI/Fireworks/Anthropic"
     )
 
 
@@ -72,24 +64,6 @@ def _get_tiktoken_encoder(model: str = "gpt-4"):
         return None
 
 
-@lru_cache(maxsize=10)
-def _get_anthropic_client():
-    """Get cached Anthropic client for token counting
-
-    Returns:
-        Anthropic client instance or None
-    """
-    if not ANTHROPIC_AVAILABLE:
-        return None
-
-    try:
-        # Anthropic client doesn't need API key for counting tokens
-        return Anthropic(api_key="dummy")
-    except Exception as e:
-        logger.warning(f"Failed to create Anthropic client: {e}")
-        return None
-
-
 def estimate_tokens_openai(text: str, model: str = "gpt-4") -> int:
     """Estimate tokens for OpenAI models using tiktoken
 
@@ -114,22 +88,36 @@ def estimate_tokens_openai(text: str, model: str = "gpt-4") -> int:
 
 
 def estimate_tokens_anthropic(text: str, model: str = "claude-sonnet-4-6") -> int:
-    """Estimate tokens for Anthropic models using official tokenizer
+    """Estimate tokens for Anthropic (Claude) models.
+
+    Counting strategy (offline-first, by design — see GAP-4):
+
+    1. **tiktoken ``cl100k_base`` as an offline proxy.** The modern Anthropic
+       SDK removed the local ``client.count_tokens`` helper; the only exact
+       counter is ``messages.count_tokens``, which is a *network* round-trip
+       and needs a real API key. Adding a per-item network call to every turn
+       is the latency hazard GAP-4 explicitly warns against, so we use the
+       cl100k BPE as a fast, local proxy. It tracks the Claude tokenizer within
+       a small margin on the prose/log/JSON/code content FaultMaven assembles —
+       far closer than the 4-chars heuristic.
+    2. **Char fallback** only when tiktoken is unavailable.
 
     Args:
         text: Input text to tokenize
-        model: Anthropic model name
+        model: Anthropic model name (accepted for API symmetry; cl100k is used
+            regardless of the specific Claude model)
 
     Returns:
         Number of tokens
     """
-    client = _get_anthropic_client()
-    if client:
+    encoder = _get_tiktoken_encoder("gpt-4")  # cl100k_base — offline proxy
+    if encoder:
         try:
-            return client.count_tokens(text)
+            return len(encoder.encode(text))
         except Exception as e:
             logger.warning(
-                f"Anthropic token counting failed: {e}, falling back to char estimate"
+                f"Anthropic (cl100k proxy) token counting failed: {e}, "
+                "falling back to char estimate"
             )
 
     # Fallback: rough estimate (4 chars per token)
