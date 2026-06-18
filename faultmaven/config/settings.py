@@ -246,7 +246,6 @@ class LLMSettings(BaseSettings):
     gemini_knowledge_model: Optional[str] = Field(default=None)
 
     # Cohere
-    cohere_chat_model: Optional[str] = Field(default=None)
     cohere_multimodal_model: Optional[str] = Field(default=None)
     cohere_synthesis_model: Optional[str] = Field(default=None)
     cohere_classifier_model: Optional[str] = Field(default=None)
@@ -273,7 +272,6 @@ class LLMSettings(BaseSettings):
     openrouter_knowledge_model: Optional[str] = Field(default=None)
 
     # Groq
-    groq_chat_model: Optional[str] = Field(default=None)
     groq_multimodal_model: Optional[str] = Field(default=None)
     groq_synthesis_model: Optional[str] = Field(default=None)
     groq_classifier_model: Optional[str] = Field(default=None)
@@ -283,8 +281,8 @@ class LLMSettings(BaseSettings):
 
     # Default chat model per provider (the effective default when the user does
     # not pin a model). Canonical set = docs/CLAUDE.md "Supported LLM Providers".
-    # Keep this, registry.py default_model, and .env.example in sync
-    # (scripts/check_env_example_sync.py enforces settings.py <-> .env.example).
+    # Keep this, registry.py default_model, and .env.example in sync —
+    # scripts/check_env_example_sync.py enforces all three (CI + pre-commit).
     # Defaults are performance-weighted (token-usage billing → quality drives UX),
     # all tool-calling + large-context capable. HuggingFace is the exception: its
     # Inference API can't do tool calling, so it is kept but not recommended.
