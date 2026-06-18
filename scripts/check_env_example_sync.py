@@ -94,7 +94,11 @@ def parse_env_example(path: Path) -> list[tuple[int, str, str]]:
     for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         m = ASSIGN_RE.match(line)
         if m and m.group(1):  # group(1) present == commented
-            # strip a trailing inline comment (e.g. "INFO   # note")
+            # Strip a trailing inline comment. The `\s+#` (whitespace REQUIRED
+            # before #) intentionally matches python-dotenv semantics: a `#` with
+            # no preceding space is part of the value (e.g. KEY=a#b -> "a#b"), so
+            # we must NOT strip it — that keeps this check consistent with how the
+            # value is actually parsed at runtime.
             value = re.sub(r"\s+#.*$", "", m.group(3))
             rows.append((i, m.group(2), value))
     return rows
@@ -156,23 +160,21 @@ def run_checks(
     try:
         from faultmaven.infrastructure.llm.providers import registry as _reg
 
-        provider_field = {
-            "openai": "openai_model",
-            "anthropic": "anthropic_model",
-            "gemini": "gemini_model",
-            "fireworks": "fireworks_model",
-            "groq": "groq_model",
-            "cohere": "cohere_model",
-            "huggingface": "huggingface_model",
-            "openrouter": "openrouter_model",
-        }
         llm_fields = settings_module.LLMSettings.model_fields
-        for prov, field in provider_field.items():
-            schema = _reg.PROVIDER_SCHEMA.get(prov)
-            if not schema or field not in llm_fields:
+        # Derive provider -> settings field from the registry's OWN model_var
+        # (e.g. "OPENAI_MODEL" -> openai_model) rather than a hardcoded parallel
+        # map, so a renamed/added provider can't silently drop out of this check.
+        # Providers with no scalar settings default (e.g. local, model_var
+        # LOCAL_LLM_MODEL -> local_model defaults None) are skipped.
+        for prov, schema in _reg.PROVIDER_SCHEMA.items():
+            model_var = schema.get("model_var")
+            field = model_var.lower() if model_var else None
+            if not field or field not in llm_fields:
+                continue
+            settings_default = llm_fields[field].default
+            if settings_default is None:
                 continue
             reg_default = schema.get("default_model")
-            settings_default = llm_fields[field].default
             if reg_default != settings_default:
                 errors.append(
                     f"registry PROVIDER_SCHEMA['{prov}'].default_model="

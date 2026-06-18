@@ -26,6 +26,11 @@ from faultmaven.modules.agent.domain.events.execution_events import (
 
 logger = logging.getLogger(__name__)
 
+# Token-count encoding for OpenAI models the installed tiktoken can't name-map
+# (e.g. gpt-5.x). o200k_base is what gpt-4o and the gpt-5 family use; counts are
+# estimates, so this is a safe default for unknown newer models.
+_OPENAI_FALLBACK_ENCODING = "o200k_base"
+
 
 class LLMProvider(str, Enum):
     """Supported LLM providers."""
@@ -533,10 +538,14 @@ class OpenAIClient(BaseLLMClient):
             except KeyError:
                 # Models newer than the installed tiktoken's static name map
                 # (e.g. gpt-5.x) aren't resolvable by name and raise KeyError.
-                # Fall back to the current OpenAI base encoding — o200k_base is
-                # what gpt-4o and the gpt-5 family use — so token counting stays
-                # robust for ANY configured OPENAI_MODEL, not just the default.
-                encoding = tiktoken.get_encoding("o200k_base")
+                # Fall back to the current OpenAI base encoding so token counting
+                # stays robust for ANY configured OPENAI_MODEL, not just the default.
+                logger.debug(
+                    "tiktoken has no name map for model %r; using %s fallback",
+                    self.model,
+                    _OPENAI_FALLBACK_ENCODING,
+                )
+                encoding = tiktoken.get_encoding(_OPENAI_FALLBACK_ENCODING)
             total = 0
             for msg in messages:
                 total += len(encoding.encode(msg.content))
