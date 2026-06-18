@@ -1,8 +1,15 @@
 """Tests for _extract_user_signals_from_context in title generation"""
 
+from types import SimpleNamespace
+
 import pytest
 
-from faultmaven.modules.case.api.routes import _extract_user_signals_from_context
+from faultmaven.modules.case.api.routes import (
+    MIN_CONTENT_LENGTH_FOR_TITLE,
+    _extract_user_signals_from_context,
+    _has_problem_statement,
+    _titleable_substance,
+)
 
 
 class TestExtractUserSignals:
@@ -252,3 +259,78 @@ User: Error persists after restart"""
         assert "Database connection timeout error occurring" in result
         assert "Error persists after restart" in result
         assert "Let me investigate" not in result
+
+
+class TestTitleableSubstance:
+    """The title gate measures substantive case content, not just user chat.
+
+    Regression: upload/capture-driven cases (the user types little, the data
+    arrives as files) used to be permanently blocked from titling because the
+    gate only counted sanitized user chat. The gate must clear when the case
+    has real substance (a confirmed problem statement / evidence / files) while
+    still blocking a genuinely empty case.
+    """
+
+    def _case(self, problem=None, proposed=None, evidence=None, files=None):
+        return SimpleNamespace(
+            problem_verification=(
+                SimpleNamespace(symptom_statement=problem) if problem else None
+            ),
+            inquiry=(
+                SimpleNamespace(proposed_problem_statement=proposed)
+                if proposed
+                else None
+            ),
+            evidence=[SimpleNamespace(summary=s) for s in (evidence or [])],
+            uploaded_files=[SimpleNamespace(summary=s) for s in (files or [])],
+        )
+
+    def test_problem_statement_alone_clears_gate_with_sparse_chat(self):
+        """A confirmed problem statement makes the case titleable even when the
+        user typed almost nothing — the gate keys off the statement, not a
+        200-char chat minimum."""
+        case = self._case(
+            problem=(
+                "The 'Deploy to on-prem' GitHub Actions workflow failed because "
+                "the associated migration job did not complete."
+            )
+        )
+        assert _has_problem_statement(case) is True
+        substance = _titleable_substance(case, "how")
+        assert "Deploy to on-prem" in substance
+
+    def test_evidence_and_file_summaries_contribute(self):
+        """Evidence + file summaries count toward substance when no problem
+        statement exists yet."""
+        case = self._case(
+            evidence=[
+                "Migration job failed with FATAL password authentication error.",
+                "Repository has no secrets configured for the database password.",
+            ],
+            files=["GitHub Actions run log for the failed on-prem deployment."],
+        )
+        substance = _titleable_substance(case, "what is it?")
+        assert "password authentication" in substance
+        assert "no secrets configured" in substance
+
+    def test_empty_case_still_blocked(self):
+        """A case with no problem statement, no evidence, no files, and a
+        one-word message stays below threshold AND has no statement — the
+        guard is preserved (gate would raise)."""
+        case = self._case()
+        assert _has_problem_statement(case) is False
+        substance = _titleable_substance(case, "hi")
+        assert len(substance) < MIN_CONTENT_LENGTH_FOR_TITLE
+
+    def test_proposed_statement_used_when_no_confirmed(self):
+        """During INQUIRY the proposed problem statement makes the case
+        titleable and is the substance."""
+        case = self._case(
+            proposed=(
+                "User reports intermittent 503 errors from the checkout API "
+                "after the latest deployment."
+            )
+        )
+        assert _has_problem_statement(case) is True
+        substance = _titleable_substance(case, "")
+        assert "checkout API" in substance
