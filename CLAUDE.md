@@ -290,14 +290,14 @@ modules/auth/
 
 | Provider | Environment Variable | Models | Notes |
 |----------|---------------------|--------|-------|
-| Anthropic | `ANTHROPIC_API_KEY` | claude-3-5-sonnet-20241022 | Recommended for logic |
-| OpenAI | `OPENAI_API_KEY` | gpt-4o | Recommended for consistency |
-| Google Gemini | `GEMINI_API_KEY` | gemini-2.0-flash | Fast multimodal |
-| Fireworks AI | `FIREWORKS_API_KEY` | qwen2.5-coder-32b-instruct | Fast & cheap |
-| Groq | `GROQ_API_KEY` | Llama-3.3-70b-versatile | Ultra-fast inference |
-| HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | Open models |
+| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | Recommended for logic |
+| OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | Recommended for consistency |
+| Google Gemini | `GEMINI_API_KEY` | gemini-3.5-flash | Fast multimodal; baseline |
+| Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v3 | Strong open weights |
+| Groq | `GROQ_API_KEY` | llama-3.3-70b-versatile | Ultra-fast inference |
+| HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | Open models — NOT recommended (no tool calling) |
 | Cohere | `COHERE_API_KEY` | command-r-plus | Enterprise RAG |
-| OpenRouter | `OPENROUTER_API_KEY` | Multiple | Multi-model gateway |
+| OpenRouter | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4-6 | Multi-model gateway |
 | Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | Private & offline |
 
 ### Capability Overrides

@@ -45,9 +45,11 @@ Get the full FaultMaven stack running in under 5 minutes.
 git clone https://github.com/FaultMaven/faultmaven.git
 cd faultmaven
 
-# Configure your LLM provider
+# Configure your LLM provider — the ONLY thing you must set
 cp .env.example .env
-# Edit .env: Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or configure Ollama
+# Edit .env: set ONE provider's API key (e.g. OPENAI_API_KEY / ANTHROPIC_API_KEY,
+# or CHAT_PROVIDER=local for Ollama). Everything else uses documented defaults,
+# and the auth secret is auto-generated on first run.
 
 # Start API + Dashboard (pulls pre-built images from GitHub Container Registry)
 # This AUTOMATICALLY creates the database and a default admin user.

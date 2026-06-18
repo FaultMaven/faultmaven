@@ -44,7 +44,7 @@ _ALLOWED_OVERRIDES = {
     "groq_model": "groq_model",
     "gemini_model": "gemini_model",
     "huggingface_model": "huggingface_model",
-    "cohere_model": "cohere_chat_model",
+    "cohere_model": "cohere_model",
     "openrouter_model": "openrouter_model",
     "local_model": "local_model",
 }

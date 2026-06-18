@@ -46,7 +46,9 @@ cd faultmaven
 
 # Configure your LLM provider
 cp .env.example .env
-# Edit .env: set CHAT_PROVIDER and the matching *_API_KEY
+# The ONLY required setting: one provider's API key (set CHAT_PROVIDER + its
+# *_API_KEY, or CHAT_PROVIDER=local for Ollama). Everything else has a default;
+# the auth secret is auto-generated on first run.
 
 # Start with Docker (recommended)
 ./faultmaven.sh start

@@ -262,6 +262,21 @@ class TestOpenAIClient:
 
         assert count > 0
 
+    @pytest.mark.asyncio
+    async def test_count_tokens_unmappable_model_falls_back_to_o200k(self):
+        """A model tiktoken can't name-map (e.g. gpt-5.x) must not raise.
+
+        Regression for the count_tokens fix: tiktoken.encoding_for_model raises
+        KeyError for models newer than its static name map; count_tokens should
+        fall back to o200k_base instead of crashing.
+        """
+        pytest.importorskip("tiktoken")
+        client = OpenAIClient(api_key="test-key", model="gpt-5.4-mini")
+
+        count = await client.count_tokens([Message.user("Hello, how are you?")])
+
+        assert count > 0
+
     def test_convert_messages_with_system(self, sample_messages):
         """Test converting messages with system prompt."""
         client = OpenAIClient(api_key="test-key")
