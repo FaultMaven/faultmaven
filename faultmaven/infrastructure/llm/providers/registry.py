@@ -111,7 +111,7 @@ PROVIDER_SCHEMA = {
         "model_var": "FIREWORKS_MODEL",
         "base_url_var": "FIREWORKS_API_BASE",
         "default_base_url": "https://api.fireworks.ai/inference/v1",
-        "default_model": "accounts/fireworks/models/qwen2p5-coder-32b-instruct",
+        "default_model": "accounts/fireworks/models/deepseek-v3",
         "available_models": [
             "accounts/fireworks/models/llama-v3p1-8b-instruct",
             "accounts/fireworks/models/llama-v3p1-70b-instruct",
@@ -126,8 +126,9 @@ PROVIDER_SCHEMA = {
         "model_var": "OPENAI_MODEL",
         "base_url_var": "OPENAI_API_BASE",
         "default_base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o",
+        "default_model": "gpt-5.4-mini",
         "available_models": [
+            "gpt-5.4-mini",
             "gpt-4o",
             "gpt-4o-mini",
             "gpt-4-turbo",
@@ -153,10 +154,9 @@ PROVIDER_SCHEMA = {
         "model_var": "GEMINI_MODEL",
         "base_url_var": "GEMINI_API_BASE",
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "default_model": "gemini-2.0-flash",
+        "default_model": "gemini-3.5-flash",
         "available_models": [
-            "gemini-1.5-pro",
-            "gemini-1.5-flash",
+            "gemini-3.5-flash",
             "gemini-2.0-flash",
             "gemini-2.0-flash-lite",
         ],
@@ -182,7 +182,7 @@ PROVIDER_SCHEMA = {
         "model_var": "OPENROUTER_MODEL",
         "base_url_var": "OPENROUTER_API_BASE",
         "default_base_url": "https://openrouter.ai/api/v1",
-        "default_model": "anthropic/claude-3.5-sonnet",
+        "default_model": "anthropic/claude-sonnet-4-6",
         "available_models": [],  # Dynamic — depends on OpenRouter's catalog
         "provider_class": OpenAIProvider,  # Compatible API
         "confidence_score": 0.8,

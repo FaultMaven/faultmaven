@@ -285,16 +285,19 @@ class LLMSettings(BaseSettings):
     # not pin a model). Canonical set = docs/CLAUDE.md "Supported LLM Providers".
     # Keep this, registry.py default_model, and .env.example in sync
     # (scripts/check_env_example_sync.py enforces settings.py <-> .env.example).
-    openai_model: str = Field(default="gpt-4o")
+    # Defaults are performance-weighted (token-usage billing → quality drives UX),
+    # all tool-calling + large-context capable. HuggingFace is the exception: its
+    # Inference API can't do tool calling, so it is kept but not recommended.
+    openai_model: str = Field(default="gpt-5.4-mini")
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     fireworks_model: str = Field(
-        default="accounts/fireworks/models/qwen2p5-coder-32b-instruct",
+        default="accounts/fireworks/models/deepseek-v3",
     )
     groq_model: str = Field(default="llama-3.3-70b-versatile")
     cohere_model: str = Field(default="command-r-plus")
-    gemini_model: str = Field(default="gemini-2.0-flash")
+    gemini_model: str = Field(default="gemini-3.5-flash")
     huggingface_model: str = Field(default="mistralai/Mistral-Large-Instruct-2411")
-    openrouter_model: str = Field(default="anthropic/claude-3.5-sonnet")
+    openrouter_model: str = Field(default="anthropic/claude-sonnet-4-6")
 
     # Local provider configuration
     local_url: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_URL")
