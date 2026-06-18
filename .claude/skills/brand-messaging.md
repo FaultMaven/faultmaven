@@ -92,6 +92,29 @@ The rule of thumb: lowercase as a common noun, Title Case only as a proper produ
 
 This rule governs how to capitalize *the canonical terms listed in this skill*. It does not claim authority over UI copy more broadly (see Scope Boundaries).
 
+### Naming architecture (scope discipline)
+
+Two names each carry the master brand **and** double as a component — the main source of confusion. `FaultMaven` = the product *and* the API server; `copilot` = the category *and* the extension. Keep three layers distinct:
+
+| Layer | Refers to | Use |
+|---|---|---|
+| **Identity** — what FaultMaven *is* | the value prop / category | "a troubleshooting **copilot**" *(lowercase common noun)* |
+| **Product** — the whole system | the thing you adopt/run | **FaultMaven** *(bare proper noun)* |
+| **Component** — a part you run/click | API server, web UI, extension | **FaultMaven API**, **FaultMaven Dashboard**, **FaultMaven Copilot** *(qualified proper nouns)* |
+
+**Rules:**
+
+1. **The whole product is "FaultMaven" — never "FaultMaven Copilot."** "FaultMaven Copilot" names the browser extension only. For copilot framing on the *product*, use apposition: *"FaultMaven — your AI troubleshooting copilot."*
+2. **Qualify the backend: "FaultMaven API."** Bare "FaultMaven" means the product; when distinguishing the server, say "FaultMaven API" (or "the API"), not bare "FaultMaven."
+3. **Lowercase `copilot` = the category; Title-Case `Copilot` = the extension.** Where casing is invisible (speech, headlines, logos), add the noun: *"the Copilot extension"* vs *"acts as your copilot."*
+4. **"Copilot" names the extension, not the experience.** A future conversational surface (Dashboard chat, CLI, …) gets its own qualified name; describe the umbrella experience in the lowercase category ("the copilot experience"), so no term has to stretch.
+
+**Substitution test:** *"the browser extension"* → **FaultMaven Copilot**; *"the product / the system"* → **FaultMaven**; *"a smart assistant for…"* (behavior) → lowercase **copilot**.
+
+These are review / `/sync-brand` judgment rules, **not** grep patterns — "FaultMaven Copilot" is a legitimate string for the extension, so substring matching can't enforce them.
+
+**Identifiers:** repos/packages use the lowercase kebab form of a component name — `faultmaven-copilot`, `faultmaven-dashboard` are correct. The backend repo is the bare `faultmaven` by the "flagship repo takes the project name" convention; in prose that component is still **FaultMaven API**.
+
 ---
 
 ## 4. Audience Framing
