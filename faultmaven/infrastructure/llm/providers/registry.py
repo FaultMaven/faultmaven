@@ -111,7 +111,7 @@ PROVIDER_SCHEMA = {
         "model_var": "FIREWORKS_MODEL",
         "base_url_var": "FIREWORKS_API_BASE",
         "default_base_url": "https://api.fireworks.ai/inference/v1",
-        "default_model": "accounts/fireworks/models/llama-v3p1-8b-instruct",
+        "default_model": "accounts/fireworks/models/qwen2p5-coder-32b-instruct",
         "available_models": [
             "accounts/fireworks/models/llama-v3p1-8b-instruct",
             "accounts/fireworks/models/llama-v3p1-70b-instruct",
@@ -153,7 +153,7 @@ PROVIDER_SCHEMA = {
         "model_var": "GEMINI_MODEL",
         "base_url_var": "GEMINI_API_BASE",
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "default_model": "gemini-1.5-pro",
+        "default_model": "gemini-2.0-flash",
         "available_models": [
             "gemini-1.5-pro",
             "gemini-1.5-flash",
@@ -168,7 +168,7 @@ PROVIDER_SCHEMA = {
         "model_var": "HUGGINGFACE_MODEL",
         "base_url_var": "HUGGINGFACE_API_URL",
         "default_base_url": "https://api-inference.huggingface.co/models",
-        "default_model": "tiiuae/falcon-7b-instruct",
+        "default_model": "mistralai/Mistral-Large-Instruct-2411",
         "available_models": [
             "tiiuae/falcon-7b-instruct",
             "mistralai/Mistral-Large-Instruct-2411",
@@ -182,7 +182,7 @@ PROVIDER_SCHEMA = {
         "model_var": "OPENROUTER_MODEL",
         "base_url_var": "OPENROUTER_API_BASE",
         "default_base_url": "https://openrouter.ai/api/v1",
-        "default_model": "openrouter-default",
+        "default_model": "anthropic/claude-3.5-sonnet",
         "available_models": [],  # Dynamic — depends on OpenRouter's catalog
         "provider_class": OpenAIProvider,  # Compatible API
         "confidence_score": 0.8,
@@ -192,7 +192,7 @@ PROVIDER_SCHEMA = {
         "model_var": "ANTHROPIC_MODEL",
         "base_url_var": "ANTHROPIC_API_BASE",
         "default_base_url": "https://api.anthropic.com/v1",
-        "default_model": "claude-3-sonnet-20240229",
+        "default_model": "claude-sonnet-4-6",
         "available_models": [
             "claude-sonnet-4-6",
             "claude-opus-4-6",
@@ -208,7 +208,7 @@ PROVIDER_SCHEMA = {
         "model_var": "GROQ_MODEL",
         "base_url_var": "GROQ_API_BASE",
         "default_base_url": "https://api.groq.com/openai/v1",
-        "default_model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "default_model": "llama-3.3-70b-versatile",
         "available_models": [
             "meta-llama/Llama-4-Scout-17B-16E-Instruct",
             "llama-3.3-70b-versatile",
@@ -220,7 +220,7 @@ PROVIDER_SCHEMA = {
     },
     "cohere": {
         "api_key_var": "COHERE_API_KEY",
-        "model_var": "COHERE_CHAT_MODEL",
+        "model_var": "COHERE_MODEL",
         "base_url_var": "COHERE_API_BASE",
         "default_base_url": "https://api.cohere.ai/v2",
         "default_model": "command-r-plus",
@@ -414,7 +414,7 @@ class ProviderRegistry:
                 if llm_settings.groq_api_key
                 else None
             )
-            model = llm_settings.groq_chat_model or schema["default_model"]
+            model = llm_settings.groq_model or schema["default_model"]
             base_url = llm_settings.groq_base_url or schema["default_base_url"]
 
         elif provider_name == "cohere":
@@ -423,7 +423,7 @@ class ProviderRegistry:
                 if llm_settings.cohere_api_key
                 else None
             )
-            model = llm_settings.cohere_chat_model or schema["default_model"]
+            model = llm_settings.cohere_model or schema["default_model"]
             base_url = llm_settings.cohere_base_url or schema["default_base_url"]
 
         if schema.get("api_key_var") and not api_key and provider_name != "local":

@@ -13,6 +13,7 @@ ARCHITECTURAL PRINCIPLES:
 
 import logging
 import os
+import secrets
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Type, Union
@@ -280,16 +281,20 @@ class LLMSettings(BaseSettings):
     groq_da_model: Optional[str] = Field(default=None)
     groq_knowledge_model: Optional[str] = Field(default=None)
 
-    # Model configuration
+    # Default chat model per provider (the effective default when the user does
+    # not pin a model). Canonical set = docs/CLAUDE.md "Supported LLM Providers".
+    # Keep this, registry.py default_model, and .env.example in sync
+    # (scripts/check_env_example_sync.py enforces settings.py <-> .env.example).
     openai_model: str = Field(default="gpt-4o")
-    anthropic_model: str = Field(default="claude-3-sonnet-20240229")
+    anthropic_model: str = Field(default="claude-sonnet-4-6")
     fireworks_model: str = Field(
-        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
+        default="accounts/fireworks/models/qwen2p5-coder-32b-instruct",
     )
+    groq_model: str = Field(default="llama-3.3-70b-versatile")
     cohere_model: str = Field(default="command-r-plus")
     gemini_model: str = Field(default="gemini-2.0-flash")
-    huggingface_model: str = Field(default="tiiuae/falcon-7b-instruct")
-    openrouter_model: str = Field(default="openrouter-default")
+    huggingface_model: str = Field(default="mistralai/Mistral-Large-Instruct-2411")
+    openrouter_model: str = Field(default="anthropic/claude-3.5-sonnet")
 
     # Local provider configuration
     local_url: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_URL")
@@ -522,7 +527,7 @@ class LLMSettings(BaseSettings):
             LLMProvider.GEMINI: self.gemini_model,
             LLMProvider.HUGGINGFACE: self.huggingface_model,
             LLMProvider.OPENROUTER: self.openrouter_model,
-            LLMProvider.GROQ: self.groq_chat_model or "",
+            LLMProvider.GROQ: self.groq_model,
         }
 
         base = base_models.get(provider, "")
@@ -823,6 +828,37 @@ class CaseSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+def _default_local_jwt_secret() -> Optional[SecretStr]:
+    """Auto-generate & persist an HS256 secret for standalone (local-auth) use.
+
+    Local auth requires a JWT secret. Rather than make the user set one (or ship
+    a shared dev secret, which would let every install forge each other's tokens),
+    generate a unique secret on first run and persist it to data/.jwt_secret so it
+    survives restarts. Returns None when:
+      - not in local auth mode (OAuth uses RS256 key files, not this secret), or
+      - the file can't be written (auth then fails loudly with a clear message).
+    The JWT_SECRET_KEY env var always takes precedence over this factory.
+    """
+    if os.environ.get("AUTH_MODE", "local").strip().lower() != "local":
+        return None
+    try:
+        secret_path = Path(os.environ.get("JWT_SECRET_FILE", "data/.jwt_secret"))
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        if secret_path.exists():
+            existing = secret_path.read_text(encoding="utf-8").strip()
+            if existing:
+                return SecretStr(existing)
+        value = secrets.token_urlsafe(48)
+        secret_path.write_text(value, encoding="utf-8")
+        try:
+            secret_path.chmod(0o600)
+        except OSError:
+            pass
+        return SecretStr(value)
+    except Exception:
+        return None
+
+
 class SecuritySettings(BaseSettings):
     """Security and authentication configuration"""
 
@@ -833,10 +869,13 @@ class SecuritySettings(BaseSettings):
     jwt_public_key_path: Optional[str] = Field(default=None)
     jwt_private_key: Optional[SecretStr] = Field(default=None)
     jwt_public_key: Optional[str] = Field(default=None)
-    # HS256 fallback secret key (for development/testing when RSA keys are not configured)
+    # HS256 secret for local auth. In local mode it is auto-generated and
+    # persisted (data/.jwt_secret) on first run so a standalone install needs no
+    # JWT_SECRET_KEY — set the env var to override. OAuth/RS256 ignores this.
     jwt_secret_key: Optional[SecretStr] = Field(
-        default=None,
-        description="Secret key for HS256 algorithm. Only used as fallback when RS256 keys are not configured.",
+        default_factory=lambda: _default_local_jwt_secret(),
+        validation_alias="JWT_SECRET_KEY",
+        description="HS256 secret for local auth; auto-generated+persisted in local mode if unset (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
     )
     jwt_access_token_expire_minutes: int = Field(default=60)
     jwt_refresh_token_expire_days: int = Field(default=7)

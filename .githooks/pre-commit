@@ -53,6 +53,25 @@ if [ -n "$PINNED" ] && [ -n "$HAVE" ] && [ "$PINNED" != "$HAVE" ]; then
     echo -e "${YELLOW}  Fix: pip install black==$PINNED${NC}"
 fi
 
+# .env.example <-> settings.py default-sync guard — runs only when either is
+# staged. Keeps the documented defaults from drifting from the code defaults.
+if git diff --cached --name-only --diff-filter=ACM \
+     | grep -qE '^(\.env\.example|faultmaven/config/settings\.py)$'; then
+    SYNC_PY=""
+    for cand in "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}" "$REPO_ROOT/.venv/bin/python" "$(command -v python3 || true)"; do
+        [ -n "$cand" ] || continue
+        if "$cand" -c 'import pydantic_settings' >/dev/null 2>&1; then SYNC_PY="$cand"; break; fi
+    done
+    if [ -n "$SYNC_PY" ]; then
+        if ! "$SYNC_PY" "$REPO_ROOT/scripts/check_env_example_sync.py"; then
+            echo -e "${YELLOW}✗ .env.example is out of sync with settings.py — commit aborted${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${YELLOW}⚠ skipping .env.example sync check (no python with pydantic_settings)${NC}"
+    fi
+fi
+
 # Staged Python files only (Added/Copied/Modified), NUL-safe for odd names.
 mapfile -d '' -t STAGED < <(git diff --cached --name-only --diff-filter=ACM -z -- '*.py')
 [ ${#STAGED[@]} -eq 0 ] && exit 0

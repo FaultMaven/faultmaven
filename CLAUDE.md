@@ -290,11 +290,11 @@ modules/auth/
 
 | Provider | Environment Variable | Models | Notes |
 |----------|---------------------|--------|-------|
-| Anthropic | `ANTHROPIC_API_KEY` | claude-3-5-sonnet-20241022 | Recommended for logic |
+| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | Recommended for logic |
 | OpenAI | `OPENAI_API_KEY` | gpt-4o | Recommended for consistency |
 | Google Gemini | `GEMINI_API_KEY` | gemini-2.0-flash | Fast multimodal |
-| Fireworks AI | `FIREWORKS_API_KEY` | qwen2.5-coder-32b-instruct | Fast & cheap |
-| Groq | `GROQ_API_KEY` | Llama-3.3-70b-versatile | Ultra-fast inference |
+| Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/qwen2p5-coder-32b-instruct | Fast & cheap |
+| Groq | `GROQ_API_KEY` | llama-3.3-70b-versatile | Ultra-fast inference |
 | HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | Open models |
 | Cohere | `COHERE_API_KEY` | command-r-plus | Enterprise RAG |
 | OpenRouter | `OPENROUTER_API_KEY` | Multiple | Multi-model gateway |

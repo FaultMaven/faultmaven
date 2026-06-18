@@ -107,6 +107,11 @@ jobs:
         # content hashes match bundled markdown, chunks have full-dim vectors).
         run: python scripts/check_kb_pack.py
 
+      - name: .env.example matches settings.py defaults
+        # The documented standalone defaults in .env.example must mirror the
+        # settings.py Field defaults (single source of truth); fail on drift.
+        run: python scripts/check_env_example_sync.py
+
   # ============================================================================
   # STANDALONE TESTING
   # Minimal deps (pip install faultmaven) with optional features off — the
