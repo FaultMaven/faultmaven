@@ -56,23 +56,27 @@ USER root
 
 # Note: spaCy model no longer needed - PII protection uses K8s Presidio microservice
 
-# Copy application code and project metadata
-COPY pyproject.toml .
-COPY faultmaven/ ./faultmaven/
-COPY alembic/ ./alembic/
-COPY alembic.ini .
+# Copy application code and project metadata, owned by the runtime user at copy
+# time. Using COPY --chown (instead of a later `chown -R /app`) avoids an
+# overlay copy-up that would duplicate everything under /app into an extra layer.
+COPY --chown=faultmaven:faultmaven pyproject.toml .
+COPY --chown=faultmaven:faultmaven faultmaven/ ./faultmaven/
+COPY --chown=faultmaven:faultmaven alembic/ ./alembic/
+COPY --chown=faultmaven:faultmaven alembic.ini .
 # Knowledge resources, including the baseline KB pack at
 # resources/knowledge/pack (runbooks + build-time vectors). The KB bootstrap
 # ingests this pack at startup in seconds (no embedding model). Override at
 # runtime with KB_PACK_DIR to ship an updated pack without rebuilding the image.
-COPY resources/ ./resources/
+COPY --chown=faultmaven:faultmaven resources/ ./resources/
 
 # Install the package itself (no deps — already installed from lockfile)
 RUN pip install --no-cache-dir --no-deps .
 
-# Give the runtime user ownership of the application code (the user itself was
-# created earlier, above, for the model cache).
-RUN chown -R faultmaven:faultmaven /app
+# The runtime user must own the /app directory itself so it can create ./data
+# (SQLite DB, ChromaDB, evidence) at startup. Copied files are already owned via
+# COPY --chown above, so this sets only the directory node — not a recursive
+# chown — and creates no copy-up layer.
+RUN chown faultmaven:faultmaven /app
 USER faultmaven
 
 # Container runtime defaults. With no explicit config the app applies the
