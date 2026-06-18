@@ -157,8 +157,6 @@ PROVIDER_SCHEMA = {
         "default_model": "gemini-3.5-flash",
         "available_models": [
             "gemini-3.5-flash",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite",
         ],
         "provider_class": GeminiProvider,
         "confidence_score": 0.8,

@@ -113,9 +113,7 @@ def estimate_tokens_openai(text: str, model: str = "gpt-4") -> int:
     return len(text) // 4
 
 
-def estimate_tokens_anthropic(
-    text: str, model: str = "claude-3-sonnet-20240229"
-) -> int:
+def estimate_tokens_anthropic(text: str, model: str = "claude-sonnet-4-6") -> int:
     """Estimate tokens for Anthropic models using official tokenizer
 
     Args:
@@ -139,7 +137,7 @@ def estimate_tokens_anthropic(
 
 
 def estimate_tokens_fireworks(
-    text: str, model: str = "llama-v3p1-405b-instruct"
+    text: str, model: str = "accounts/fireworks/models/deepseek-v3"
 ) -> int:
     """Estimate tokens for Fireworks models
 
@@ -189,7 +187,7 @@ def estimate_tokens(
     Examples:
         >>> estimate_tokens("Hello world", provider="openai")
         2
-        >>> estimate_tokens("Hello world", provider="anthropic", model="claude-3-sonnet-20240229")
+        >>> estimate_tokens("Hello world", provider="anthropic", model="claude-sonnet-4-6")
         2
         >>> estimate_tokens("Hello world", provider="fireworks")
         2
@@ -203,9 +201,11 @@ def estimate_tokens(
     if provider in ("openai", "openrouter"):
         return estimate_tokens_openai(text, model or "gpt-4")
     elif provider == "anthropic":
-        return estimate_tokens_anthropic(text, model or "claude-3-sonnet-20240229")
+        return estimate_tokens_anthropic(text, model or "claude-sonnet-4-6")
     elif provider == "fireworks":
-        return estimate_tokens_fireworks(text, model or "llama-v3p1-405b-instruct")
+        return estimate_tokens_fireworks(
+            text, model or "accounts/fireworks/models/deepseek-v3"
+        )
     else:
         # Fallback for local, cohere, and unknown providers
         return estimate_tokens_fallback(text)

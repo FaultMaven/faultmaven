@@ -5,8 +5,10 @@ Standalone config contract (agreed design):
   - settings.py Field(default=...) is the RUNTIME source of truth.
   - .env.example is its human-facing MIRROR: every variable it documents (as
     `KEY=value` or a commented `# KEY=value`) must show the SAME default.
-  - The two therefore change together; this check fails CI / the commit if they
-    drift, so a default can be re-defined in one place without silent divergence.
+  - registry.py PROVIDER_SCHEMA[...].default_model is the per-provider model
+    fallback and must also equal the settings.py model default.
+  - All three therefore change together; this check fails CI / the commit on any
+    divergence, so a default can be re-defined in one place without silent drift.
 
 Scope (what is value-checked):
   - Scalar defaults only: str / int / float / bool / Enum.
@@ -143,9 +145,44 @@ def main() -> int:
         else:
             checked += 1
 
+    # Third leg: registry default_model per provider must also equal the
+    # settings.py default for that provider's model field, so settings.py,
+    # .env.example, AND the registry are all machine-enforced (not two-of-three).
+    # Best-effort: skip if the registry's provider deps can't be imported here.
+    reg_checked = 0
+    try:
+        from faultmaven.infrastructure.llm.providers import registry as _reg
+
+        provider_field = {
+            "openai": "openai_model",
+            "anthropic": "anthropic_model",
+            "gemini": "gemini_model",
+            "fireworks": "fireworks_model",
+            "groq": "groq_model",
+            "cohere": "cohere_model",
+            "huggingface": "huggingface_model",
+            "openrouter": "openrouter_model",
+        }
+        llm_fields = settings_module.LLMSettings.model_fields
+        for prov, field in provider_field.items():
+            schema = _reg.PROVIDER_SCHEMA.get(prov)
+            if not schema or field not in llm_fields:
+                continue
+            reg_default = schema.get("default_model")
+            settings_default = llm_fields[field].default
+            if reg_default != settings_default:
+                errors.append(
+                    f"registry PROVIDER_SCHEMA['{prov}'].default_model="
+                    f"{reg_default!r} != settings.{field}={settings_default!r}"
+                )
+            else:
+                reg_checked += 1
+    except Exception as exc:  # registry deps unavailable (e.g. minimal hook env)
+        skipped.append(f"registry default_model cross-check skipped ({exc})")
+
     print(
-        f"checked {checked} scalar default(s); skipped {len(skipped)} "
-        f"(secret/None/complex); {len(errors)} problem(s)"
+        f"checked {checked} scalar default(s) + {reg_checked} registry default_model(s); "
+        f"skipped {len(skipped)} (secret/None/complex); {len(errors)} problem(s)"
     )
     if errors:
         print("\n.env.example is OUT OF SYNC with settings.py:\n")
