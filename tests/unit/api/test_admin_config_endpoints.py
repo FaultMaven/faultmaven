@@ -508,7 +508,7 @@ class TestGetEnvConfigStatus:
             result = await get_env_config_status(current_user=mock_admin_user)
 
         assert result.auth_mode == "local"
-        assert result.deployment == "local"
+        assert result.deployment == "standalone"
         assert result.db_backend == "sqlite"
         assert result.session_storage == "fakeredis (inmemory)"
         assert result.vector_storage == "chromadb"

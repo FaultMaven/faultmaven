@@ -391,10 +391,21 @@ async def lifespan(app: FastAPI):
             is_cloud = settings.is_cloud
             if is_cloud:
                 try:
-                    from .config.llm_config_overrides import apply_overrides_to_settings
+                    from .config.llm_config_overrides import (
+                        apply_overrides_to_settings,
+                        watch_config_version,
+                    )
 
                     await apply_overrides_to_settings(settings)
                     logger.debug("✅ Config overrides applied (cloud mode)")
+
+                    # Multi-replica propagation: a UI config write hot-reloads
+                    # only the serving replica; this watcher reloads the others
+                    # when the shared config version changes. Cancelled on
+                    # shutdown. Cloud-only — standalone has no DB overrides.
+                    app.state.llm_config_watch_task = asyncio.create_task(
+                        watch_config_version()
+                    )
                 except Exception as e:
                     logger.debug(f"Config overrides skipped: {e}")
             else:
@@ -781,6 +792,15 @@ async def lifespan(app: FastAPI):
         _funnel_task.cancel()
         try:
             await _funnel_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # Stop LLM config watcher (cloud multi-replica propagation)
+    _config_watch_task = getattr(app.state, "llm_config_watch_task", None)
+    if _config_watch_task is not None:
+        _config_watch_task.cancel()
+        try:
+            await _config_watch_task
         except (asyncio.CancelledError, Exception):
             pass
 

@@ -592,9 +592,9 @@ class LLMProviderDetail(BaseModel):
 class LLMConfigResponse(BaseModel):
     """LLM configuration and provider status response."""
 
-    deployment: str = Field(description="Deployment mode: 'local' or 'cloud'")
+    deployment: str = Field(description="Deployment mode: 'standalone' or 'cloud'")
     config_readonly: bool = Field(
-        description="True in local mode (config managed via .env file)"
+        description="True in standalone mode (config managed via .env file)"
     )
     primary_provider: str
     strict_mode: bool
@@ -684,7 +684,9 @@ class EnvConfigStatusResponse(BaseModel):
     """Read-only environment configuration status for dashboard display."""
 
     auth_mode: str = Field(description="'local' or 'oauth'")
-    deployment: str = Field(description="'local' or 'cloud' — derived from auth_mode")
+    deployment: str = Field(
+        description="'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)"
+    )
     db_backend: str = Field(description="'sqlite' or 'postgresql'")
     session_storage: str = Field(description="'inmemory' or 'redis'")
     vector_storage: str = Field(description="'inmemory' or 'chromadb'")
