@@ -100,9 +100,12 @@ def parse_env_example(path: Path) -> list[tuple[int, str, str]]:
     return rows
 
 
-def main() -> int:
+def run_checks(
+    env_example_path: Path = ROOT / ".env.example",
+) -> tuple[list[str], int, int, list[str]]:
+    """Run all sync checks; return (errors, scalar_checked, registry_checked, skipped)."""
     defaults = collect_settings_defaults()
-    rows = parse_env_example(ROOT / ".env.example")
+    rows = parse_env_example(env_example_path)
 
     errors: list[str] = []
     skipped: list[str] = []
@@ -180,6 +183,11 @@ def main() -> int:
     except Exception as exc:  # registry deps unavailable (e.g. minimal hook env)
         skipped.append(f"registry default_model cross-check skipped ({exc})")
 
+    return errors, checked, reg_checked, skipped
+
+
+def main() -> int:
+    errors, checked, reg_checked, skipped = run_checks()
     print(
         f"checked {checked} scalar default(s) + {reg_checked} registry default_model(s); "
         f"skipped {len(skipped)} (secret/None/complex); {len(errors)} problem(s)"

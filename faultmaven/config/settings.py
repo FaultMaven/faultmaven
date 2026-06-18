@@ -829,35 +829,54 @@ class CaseSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
-def _default_local_jwt_secret() -> Optional[SecretStr]:
-    """Auto-generate & persist an HS256 secret for standalone (local-auth) use.
+def ensure_local_jwt_secret_env() -> None:
+    """Ensure an HS256 JWT secret exists for standalone (local-auth) startup.
 
-    Local auth requires a JWT secret. Rather than make the user set one (or ship
-    a shared dev secret, which would let every install forge each other's tokens),
-    generate a unique secret on first run and persist it to data/.jwt_secret so it
-    survives restarts. Returns None when:
-      - not in local auth mode (OAuth uses RS256 key files, not this secret), or
-      - the file can't be written (auth then fails loudly with a clear message).
-    The JWT_SECRET_KEY env var always takes precedence over this factory.
+    Local auth requires a JWT secret. Rather than make the user set one (or ship a
+    shared dev secret — which would let every install forge each other's tokens),
+    generate a unique secret once on first run, persist it to data/.jwt_secret, and
+    export it as JWT_SECRET_KEY so the settings pick it up.
+
+    Called once from get_settings() (after load_dotenv, before settings are
+    constructed) — deliberately NOT a per-field default_factory, so there's no
+    repeated or racy filesystem I/O on every settings instantiation.
+
+    No-ops when:
+      - JWT_SECRET_KEY is already set (an explicit value always wins), or
+      - AUTH_MODE is not 'local' (OAuth uses RS256 key files, not this secret).
+    On a filesystem error it logs a warning and returns — local auth then fails
+    with a clear "JWT_SECRET_KEY not configured" message rather than the server
+    crashing at import time.
     """
+    if os.environ.get("JWT_SECRET_KEY"):
+        return
     if os.environ.get("AUTH_MODE", "local").strip().lower() != "local":
-        return None
+        return
+
+    logger = logging.getLogger(__name__)
+    secret_path = Path(os.environ.get("JWT_SECRET_FILE", "data/.jwt_secret"))
     try:
-        secret_path = Path(os.environ.get("JWT_SECRET_FILE", "data/.jwt_secret"))
         secret_path.parent.mkdir(parents=True, exist_ok=True)
-        if secret_path.exists():
-            existing = secret_path.read_text(encoding="utf-8").strip()
-            if existing:
-                return SecretStr(existing)
-        value = secrets.token_urlsafe(48)
-        secret_path.write_text(value, encoding="utf-8")
-        try:
-            secret_path.chmod(0o600)
-        except OSError:
-            pass
-        return SecretStr(value)
-    except Exception:
-        return None
+        value = (
+            secret_path.read_text(encoding="utf-8").strip()
+            if secret_path.exists()
+            else ""
+        )
+        if not value:
+            value = secrets.token_urlsafe(48)
+            secret_path.write_text(value, encoding="utf-8")
+            try:
+                secret_path.chmod(0o600)
+            except OSError as exc:
+                logger.debug("Could not chmod %s to 0600: %s", secret_path, exc)
+        os.environ["JWT_SECRET_KEY"] = value
+    except OSError as exc:
+        logger.warning(
+            "Could not generate/persist a local JWT secret at %s (%s); set "
+            "JWT_SECRET_KEY in .env if local auth fails to start.",
+            secret_path,
+            exc,
+        )
 
 
 class SecuritySettings(BaseSettings):
@@ -870,13 +889,14 @@ class SecuritySettings(BaseSettings):
     jwt_public_key_path: Optional[str] = Field(default=None)
     jwt_private_key: Optional[SecretStr] = Field(default=None)
     jwt_public_key: Optional[str] = Field(default=None)
-    # HS256 secret for local auth. In local mode it is auto-generated and
-    # persisted (data/.jwt_secret) on first run so a standalone install needs no
-    # JWT_SECRET_KEY — set the env var to override. OAuth/RS256 ignores this.
+    # HS256 secret for local auth. In local mode get_settings() auto-generates and
+    # persists it (data/.jwt_secret) via ensure_local_jwt_secret_env() before the
+    # settings are built, so a standalone install needs no JWT_SECRET_KEY — set the
+    # env var to override. OAuth/RS256 ignores this.
     jwt_secret_key: Optional[SecretStr] = Field(
-        default_factory=lambda: _default_local_jwt_secret(),
+        default=None,
         validation_alias="JWT_SECRET_KEY",
-        description="HS256 secret for local auth; auto-generated+persisted in local mode if unset (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
+        description="HS256 secret for local auth; auto-generated+persisted in local mode by get_settings() if unset (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
     )
     jwt_access_token_expire_minutes: int = Field(default=60)
     jwt_refresh_token_expire_days: int = Field(default=7)
@@ -2360,6 +2380,10 @@ def get_settings() -> FaultMavenSettings:
             # Load .env without overriding existing environment variables.
             # This preserves the standard precedence order: OS env > .env.
             load_dotenv()
+
+            # Standalone convenience: ensure a local JWT secret exists (once,
+            # here — not on every settings construction) before building settings.
+            ensure_local_jwt_secret_env()
 
             # Apply preset defaults for zero-config experience
             # Presets are applied AFTER .env but BEFORE settings instantiation
