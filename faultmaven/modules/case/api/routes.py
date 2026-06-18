@@ -1284,8 +1284,16 @@ async def generate_case_title(
             )
             context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
 
-        # Extract meaningful user content from conversation for LLM prompt
-        user_message_content = _extract_user_signals_from_context(context_text)
+        # Extract meaningful content for the title prompt + gate. The gate's
+        # purpose is a quality guard — don't ask the LLM to title a case with
+        # too little substance. Substance is NOT just user chat: an upload- or
+        # capture-driven investigation can have a confirmed problem statement,
+        # evidence, and file summaries while the user typed almost nothing. We
+        # measure the richest available signal (problem statement → evidence/
+        # file summaries → user chat) so the guard fires on genuinely empty
+        # cases without blocking content-rich ones. See _titleable_substance.
+        user_signals = _extract_user_signals_from_context(context_text)
+        user_message_content = _titleable_substance(case, user_signals)
 
         # Debug logging to diagnose empty extraction
         logger.info(
@@ -1303,14 +1311,23 @@ async def generate_case_title(
             },
         )
 
-        # Check content length threshold
-        if len(user_message_content) < MIN_CONTENT_LENGTH_FOR_TITLE:
+        # Content gate. A confirmed/proposed problem statement is, by itself,
+        # a title-grade summary of the case — when one exists the case is
+        # titleable regardless of how little the user typed. Otherwise require
+        # MIN_CONTENT_LENGTH_FOR_TITLE chars of substance (evidence/file
+        # summaries + chat) so we don't ask the LLM to title an empty case.
+        has_problem_statement = _has_problem_statement(case)
+        if (
+            not has_problem_statement
+            and len(user_message_content) < MIN_CONTENT_LENGTH_FOR_TITLE
+        ):
             logger.info(
                 f"Skipping title generation: insufficient content (case_id={case_id}, length={len(user_message_content)})",
                 extra={
                     "case_id": case_id,
                     "content_length": len(user_message_content),
                     "threshold": MIN_CONTENT_LENGTH_FOR_TITLE,
+                    "has_problem_statement": has_problem_statement,
                 },
             )
             raise ValidationException(
@@ -1325,7 +1342,18 @@ async def generate_case_title(
         llm_provider = getattr(request.app.state, "llm_provider", None)
         try:
             generated_title, title_source = await _generate_title_with_llm(
-                context_text, case, max_words, hint, user_message_content, llm_provider
+                context_text,
+                case,
+                max_words,
+                hint,
+                user_message_content,
+                llm_provider,
+                # Cost routing keys off the user's CHAT length (the original
+                # "simple single-issue conversation" signal), not the larger
+                # substance blob — otherwise every substance-rich case would
+                # always take the LLM path. Content/extractive still use the
+                # richer substance (user_message_content).
+                routing_signal=user_signals,
             )
         except ValueError:
             raise ValidationException(
@@ -1546,6 +1574,80 @@ def _extract_user_signals_from_context(context_text: str) -> str:
     return ""
 
 
+def _case_problem_statement(case) -> str:
+    """Confirmed (problem_verification) or proposed (inquiry) problem statement."""
+    pv = getattr(case, "problem_verification", None)
+    statement = getattr(pv, "symptom_statement", None) if pv else None
+    if not statement:
+        inquiry = getattr(case, "inquiry", None)
+        statement = (
+            getattr(inquiry, "proposed_problem_statement", None) if inquiry else None
+        )
+    return (statement or "").strip()
+
+
+# A statement shorter than this is too thin to be a meaningful title on its own.
+_MIN_PROBLEM_STATEMENT_LEN_FOR_TITLE = 20
+
+
+def _has_problem_statement(case) -> bool:
+    """True when the case carries a non-trivial problem statement (title-grade)."""
+    return len(_case_problem_statement(case)) >= _MIN_PROBLEM_STATEMENT_LEN_FOR_TITLE
+
+
+def _titleable_substance(case, user_signals: str) -> str:
+    """Richest titleable content for a case, for the title gate + prompt.
+
+    The previous gate measured only sanitized user chat from the last few
+    messages, so upload/capture-driven investigations — where the human types
+    little but the case carries a confirmed problem statement, evidence, and
+    file summaries — were permanently blocked from titling. This measures the
+    real substance in priority order:
+
+    1. Confirmed/proposed problem statement (the ideal title source).
+    2. Evidence summaries (what the investigation established).
+    3. Uploaded-file summaries (what data the user provided).
+    4. User chat (their own framing) — always appended as fallback.
+
+    The guard still fires on a genuinely empty case (no problem statement, no
+    evidence, no files, a one-line "hi") because none of 1–3 contribute and the
+    chat is below threshold — preserving the gate's original intent.
+    """
+    parts: list[str] = []
+
+    # 1. Problem statement — confirmed (problem_verification) or proposed (inquiry).
+    statement = _case_problem_statement(case)
+    if statement:
+        parts.append(statement)
+
+    # 2. Evidence summaries (cap to a few — enough to establish substance).
+    for ev in (getattr(case, "evidence", None) or [])[:5]:
+        summary = getattr(ev, "summary", None)
+        if summary and summary.strip():
+            parts.append(summary.strip())
+
+    # 3. Uploaded-file summaries.
+    for uf in (getattr(case, "uploaded_files", None) or [])[:5]:
+        summary = getattr(uf, "summary", None)
+        if summary and summary.strip():
+            parts.append(summary.strip())
+
+    # 4. User chat framing (fallback / always included).
+    if user_signals and user_signals.strip():
+        parts.append(user_signals.strip())
+
+    # Dedupe case-insensitively, preserve order.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for part in parts:
+        key = part.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(part)
+
+    return _sanitize_title_content(" ".join(unique))
+
+
 def _generate_smart_extractive_title(
     user_signals: str, max_words: int = MAX_TITLE_WORDS_DEFAULT
 ) -> Optional[str]:
@@ -1611,6 +1713,7 @@ async def _generate_title_with_llm(
     hint: Optional[str] = None,
     user_signals: Optional[str] = None,
     llm_provider=None,
+    routing_signal: Optional[str] = None,
 ) -> tuple[str, str]:
     """Generate title using hybrid approach: smart extractive for simple cases, LLM for complex.
 
@@ -1647,9 +1750,13 @@ async def _generate_title_with_llm(
         # 1. Content length: < EXTRACTIVE_MAX_CONTENT_LENGTH chars = simple, single-issue conversation
         # 2. No user_signals means insufficient extraction (rare edge case)
 
+        # Route on the user's chat length (routing_signal) when provided, so a
+        # large synthesized substance blob doesn't force every case onto the LLM
+        # path; fall back to user_signals when no separate routing signal given.
+        routing_text = routing_signal if routing_signal is not None else user_signals
         use_smart_extractive = False
         if user_signals and user_signals.strip():
-            content_length = len(user_signals)
+            content_length = len(routing_text or "")
             # Simple conversation: short content that likely describes a single issue
             if content_length < EXTRACTIVE_MAX_CONTENT_LENGTH:
                 use_smart_extractive = True

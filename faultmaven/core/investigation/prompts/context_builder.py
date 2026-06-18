@@ -1094,10 +1094,112 @@ def _evidence_label(ev, file_lookup: dict, case=None) -> str:
     return "uploaded data"
 
 
+def _effective_evidence_char_budget(
+    provider_name: Optional[str], model_name: Optional[str]
+) -> int:
+    """Effective char budget for the ``<evidence_collected>`` block.
+
+    Model-aware when the active provider is known: a fraction
+    (``evidence_budget_fraction``) of the provider's whole-prompt **token**
+    budget (:func:`get_token_budget_for_provider`), converted to chars via the
+    4-chars≈1-token approximation used by :class:`TokenBudget`. This lets the
+    evidence cap scale with the model's context window (e.g. ~36K chars on a
+    Gemini-class model) instead of one fixed constant.
+
+    When ``provider_name`` is absent (tests, internal callers), falls back to
+    the module-level :data:`EVIDENCE_CONTEXT_MAX_TOTAL_CHARS` — read live so
+    tests that monkeypatch it still drive behavior. Floored at two per-item
+    caps so the current-turn floor always has room for at least one full item.
+    """
+    if not provider_name:
+        return EVIDENCE_CONTEXT_MAX_TOTAL_CHARS
+    try:
+        from faultmaven.config.settings import get_settings
+
+        fraction = get_settings().investigation_context.evidence_budget_fraction
+    except Exception:
+        fraction = 0.6
+    prompt_tokens = get_token_budget_for_provider(provider_name, model_name)
+    model_aware = int(prompt_tokens * fraction * 4)
+    return max(2 * EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM, model_aware)
+
+
+def _current_turn_reserve_fraction() -> float:
+    """Fraction of the evidence budget reserved for current-turn items."""
+    try:
+        from faultmaven.config.settings import get_settings
+
+        return get_settings().investigation_context.current_turn_reserve_fraction
+    except Exception:
+        return 0.5
+
+
+def _render_orphan_file_block(
+    uf, hash_first_seen: dict, current_turn: int, summary_only: bool = False
+) -> str:
+    """Render one orphan ``UploadedFile`` as an ``<uploaded_file>`` block.
+
+    Shared by the current-turn floor and the historical Tier-D fill so both
+    paths produce byte-identical markup. The structural index is split into
+    ``file_extract`` (per-item capped, with a search_file truncation pointer),
+    ``search_map``, and ``file_meta``.
+
+    ``summary_only=True`` emits just the opening/closing tag (id, filename,
+    data_type, freshness, ``searchable``) without the ``file_extract`` body —
+    the graceful-degradation render used when a current-turn file can't fit its
+    full structural index within the reserve. The file stays present and
+    addressable (the LLM can still ``search_file`` it by ``file_id``) instead of
+    vanishing (INV-EC-1 / INV-EC-3).
+    """
+    file_extract, search_map, file_meta = _parse_extract(uf.structural_index or "")
+    file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
+    filename_attr = f' filename="{uf.filename}"' if uf.filename else ""
+    data_type_attr = f' data_type="{uf.data_type}"' if uf.data_type else ""
+    fresh_attr = _fresh_this_turn_attr(uf.uploaded_at_turn, current_turn)
+    duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
+    entry = (
+        f"  <uploaded_file{file_id_attr}{filename_attr}"
+        f"{data_type_attr}{fresh_attr}{duplicate_attr}"
+        f' searchable="true">\n'
+    )
+    if summary_only:
+        # Degraded render: file present + addressable, full index omitted.
+        entry += (
+            "    <file_extract>[Full content omitted to fit budget; "
+            "use search_file with the file_id above to read it.]</file_extract>\n"
+        )
+        entry += "  </uploaded_file>\n"
+        return entry
+    if file_extract.strip():
+        truncation_note = ""
+        if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
+            remaining_chars = len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
+            file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
+            truncation_note = (
+                f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
+                "Use search_file with the file_id above for specific lookups.]"
+            )
+        entry += "    <file_extract>\n"
+        if uf.filename:
+            entry += f"[Source: {uf.filename}]\n"
+        entry += file_extract
+        entry += truncation_note
+        entry += "\n    </file_extract>\n"
+    if search_map and search_map.strip():
+        entry += f"    <search_map>\n{search_map}\n    </search_map>\n"
+    if file_meta:
+        meta_lines = _format_file_meta(file_meta)
+        entry += f"    <file_meta>{meta_lines}</file_meta>\n"
+    entry += "  </uploaded_file>\n"
+    return entry
+
+
 def _build_evidence_context(
     case: Case,
     processing_mode: Optional[str] = None,
     user_query: str = "",
+    provider_name: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> str:
     """
     Build the evidence context section using a three-tier sliding window.
@@ -1234,13 +1336,81 @@ def _build_evidence_context(
         key=lambda ev: _score_evidence_for_tier_a(ev, case, time_window=time_window),
         reverse=True,
     )
+    current_turn = getattr(case, "current_turn", 0) or 0
     tier_a_set = set(id(ev) for ev in scored[:EVIDENCE_CONTEXT_RECENT_COUNT])
-    # Preserve original chronological order within each tier for stable output
-    tier_a = [ev for ev in data_evidence if id(ev) in tier_a_set]
+    # Current-turn floor (INV-EC-1): evidence created THIS turn is the highest-
+    # signal context for the turn's task. Force it into Tier A regardless of the
+    # recent_count cap or relevance score so it always gets a full render.
+    if current_turn > 0:
+        for ev in data_evidence:
+            if ev.collected_at_turn == current_turn:
+                tier_a_set.add(id(ev))
+
+    # Order Tier A current-turn-first so the budget downgrade below only ever
+    # hits older evidence, never the file the user just provided.
+    def _current_turn_first(ev) -> int:
+        return 0 if (current_turn > 0 and ev.collected_at_turn == current_turn) else 1
+
+    tier_a = sorted(
+        (ev for ev in data_evidence if id(ev) in tier_a_set), key=_current_turn_first
+    )
     tier_b = [ev for ev in data_evidence if id(ev) not in tier_a_set]
+
+    # Model-aware budget; falls back to the module-level char cap when the
+    # provider is unknown (read live so test monkeypatching still drives it).
+    effective_total_chars = _effective_evidence_char_budget(provider_name, model_name)
+    current_turn_floor_chars = max(
+        EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM,
+        int(effective_total_chars * _current_turn_reserve_fraction()),
+    )
 
     result = "<evidence_collected>\n"
     total_chars = 0
+
+    # File ids already backed by an Evidence row — computed once and reused by
+    # both the current-turn floor and the historical Tier-D fill (they used to
+    # recompute this identical set independently).
+    referenced_file_ids = {
+        str(ev.source_file_id) for ev in case.evidence if ev.source_file_id is not None
+    }
+
+    # === Current-turn orphan-file floor (INV-EC-1) ===
+    # Files uploaded THIS turn with no Evidence row yet are the exact blind spot
+    # that made the agent read a stale file: they used to land in the historical
+    # Tier-D fill, after older evidence had consumed the budget, and get dropped.
+    # Render them FIRST from a reserved slice. Every current-turn orphan is
+    # ALWAYS rendered and ALWAYS marked handled (so Tier D neither re-renders nor
+    # drops it): in full while the reserve has room (the first one is guaranteed
+    # full even if it alone exceeds the reserve), otherwise as a summary stub
+    # that keeps the file present and search_file-addressable (INV-EC-1/EC-3).
+    handled_file_ids: set[str] = set()
+    if current_turn > 0 and getattr(case, "uploaded_files", None):
+        current_turn_orphans = [
+            uf
+            for uf in case.uploaded_files
+            if uf.file_id is not None
+            and uf.uploaded_at_turn == current_turn
+            and str(uf.file_id) not in referenced_file_ids
+            and uf.structural_index
+            and len(uf.structural_index) > 10
+        ]
+        for uf in current_turn_orphans:
+            full_entry = _render_orphan_file_block(uf, hash_first_seen, current_turn)
+            # First item renders full unconditionally; later items render full
+            # only while within the reserve, else degrade to a summary stub.
+            # Never dropped — current-turn uploads are always present.
+            if total_chars == 0 or (
+                total_chars + len(full_entry) <= current_turn_floor_chars
+            ):
+                result += full_entry
+                total_chars += len(full_entry)
+            else:
+                summary_entry = _render_orphan_file_block(
+                    uf, hash_first_seen, current_turn, summary_only=True
+                )
+                result += summary_entry
+                total_chars += len(summary_entry)
+            handled_file_ids.add(str(uf.file_id))
 
     # Tier A: Recent data evidence with structural index
     for ev in tier_a:
@@ -1272,11 +1442,22 @@ def _build_evidence_context(
             file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
             truncated = True
 
-        # Total budget cap
+        # Total budget cap. Current-turn evidence is prioritized but BOUNDED:
+        # it skips the downgrade only while the current-turn reserve still has
+        # room (so a fresh item always wins a full render), not unconditionally —
+        # otherwise N current-turn evidence rows could each render in full with
+        # no cap and blow the whole evidence budget. Once the reserve is spent,
+        # current-turn evidence degrades to a Tier-B summary like everything else.
         entry_estimate = (
             len(file_extract) + len(ev.summary or "") + len(ev.extract or "") + 200
         )  # overhead for XML tags
-        if total_chars + entry_estimate > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
+        is_current_turn_ev = current_turn > 0 and ev.collected_at_turn == current_turn
+        within_reserve = total_chars < current_turn_floor_chars
+        exempt_from_downgrade = is_current_turn_ev and within_reserve
+        if (
+            not exempt_from_downgrade
+            and total_chars + entry_estimate > effective_total_chars
+        ):
             # Downgrade remaining Tier A to Tier B (summary only)
             tier_b.append(ev)
             continue
@@ -1347,8 +1528,10 @@ def _build_evidence_context(
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
         entry = f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{duplicate_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
-        if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
-            break
+        # Skip (not break) over-budget summaries so a single large item never
+        # drops every lower-ranked item behind it (INV-EC-2).
+        if total_chars + len(entry) > effective_total_chars:
+            continue
         result += entry
         total_chars += len(entry)
 
@@ -1368,8 +1551,8 @@ def _build_evidence_context(
             f'  <evidence id="{ev.evidence_id}"{label_attr}{fresh_attr}>'
             f"<summary>{ev.summary}</summary>{quote_block}</evidence>\n"
         )
-        if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
-            break
+        if total_chars + len(entry) > effective_total_chars:
+            continue
         result += entry
         total_chars += len(entry)
 
@@ -1385,26 +1568,19 @@ def _build_evidence_context(
     # for the empty-Evidence case, this section generalizes it to the
     # non-empty case.
     #
-    # Architectural note (see commit message): the post-010 strict
-    # evidence model relies on LLM compliance with ``evidence_to_add``
-    # to keep UploadedFile and Evidence in sync. This fix patches the
-    # immediate symptom; if cross-provider compliance proves unreliable,
-    # the layer-3 fix is engine-side auto-promotion of UploadedFile to
-    # Evidence stubs.
+    # Current-turn orphans are already rendered in the floor above (and tracked
+    # in handled_file_ids); this section renders the remaining (historical)
+    # orphans on the budget that survives the floor + Tiers A–C. Uses the
+    # referenced_file_ids set computed once above.
     if hasattr(case, "uploaded_files") and case.uploaded_files:
-        referenced_file_ids = {
-            str(ev.source_file_id)
-            for ev in case.evidence
-            if ev.source_file_id is not None
-        }
-        # Newest uploads first: on budget exhaustion the current-turn file
-        # (what the user is asking about) wins over older orphans.
+        # Iterate newest-first so newer orphans are attempted before older ones.
         orphan_files = sorted(
             (
                 uf
                 for uf in case.uploaded_files
                 if uf.file_id is not None
                 and str(uf.file_id) not in referenced_file_ids
+                and str(uf.file_id) not in handled_file_ids
                 and uf.structural_index
                 and len(uf.structural_index) > 10
             ),
@@ -1412,46 +1588,14 @@ def _build_evidence_context(
             reverse=True,
         )
         for uf in orphan_files:
-            file_extract, search_map, file_meta = _parse_extract(
-                uf.structural_index or ""
-            )
-            file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
-            filename_attr = f' filename="{uf.filename}"' if uf.filename else ""
-            data_type_attr = f' data_type="{uf.data_type}"' if uf.data_type else ""
-            fresh_attr = _fresh_this_turn_attr(uf.uploaded_at_turn, case.current_turn)
-            duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
-            entry = (
-                f"  <uploaded_file{file_id_attr}{filename_attr}"
-                f"{data_type_attr}{fresh_attr}{duplicate_attr}"
-                f' searchable="true">\n'
-            )
-            if file_extract.strip():
-                truncation_note = ""
-                if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
-                    remaining_chars = (
-                        len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
-                    )
-                    file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
-                    truncation_note = (
-                        f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
-                        "Use search_file with the file_id above for specific lookups.]"
-                    )
-                entry += "    <file_extract>\n"
-                if uf.filename:
-                    entry += f"[Source: {uf.filename}]\n"
-                entry += file_extract
-                entry += truncation_note
-                entry += "\n    </file_extract>\n"
-            if search_map and search_map.strip():
-                entry += f"    <search_map>\n{search_map}\n    </search_map>\n"
-            if file_meta:
-                meta_lines = _format_file_meta(file_meta)
-                entry += f"    <file_meta>{meta_lines}</file_meta>\n"
-            entry += "  </uploaded_file>\n"
-
-            # Budget enforcement — drop oldest orphans first when exhausted.
-            if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
-                break
+            entry = _render_orphan_file_block(uf, hash_first_seen, current_turn)
+            # Greedy newest-first fill with skip-not-break (INV-EC-2): one large
+            # orphan never drops every smaller orphan behind it. Note this is a
+            # greedy fit, not a strict newest-wins policy — a large newer orphan
+            # may be skipped while a smaller older one fits. Current-turn files
+            # are never affected (handled by the floor above).
+            if total_chars + len(entry) > effective_total_chars:
+                continue
             result += entry
             total_chars += len(entry)
 
@@ -1990,7 +2134,11 @@ def build_investigation_context(
     # Fixes "I don't have access to file content" bug by including
     # structural indexes in the LLM context for recent evidence.
     evidence_str = _build_evidence_context(
-        case, processing_mode=processing_mode, user_query=user_message_safe
+        case,
+        processing_mode=processing_mode,
+        user_query=user_message_safe,
+        provider_name=provider_name,
+        model_name=model_name,
     )
 
     # 5. Hypothesis Summary

@@ -1561,3 +1561,213 @@ class TestRule5NewDataClaimedButNotAttached:
         assert "create new evidence_to_add rows from prior-turn files" in (
             INVESTIGATION_BASE
         )
+
+
+# ============================================================
+# Current-turn priority floor + graceful fill (evidence-context-assembly.md)
+# ============================================================
+
+
+class TestCurrentTurnFloor:
+    """INV-EC-1..4: a file uploaded THIS turn is always present and full,
+    never evicted by historical evidence; the fill degrades gracefully (no
+    cliff); the budget scales with the model.
+
+    Regression for the production bug where a turn-8 page capture
+    (``platform-deploy.yaml``) was dropped from context because the existing
+    Evidence rows consumed the flat 16K-char budget before the fresh orphan
+    upload was reached — so the agent read a stale file and asked the user to
+    paste a file it already had.
+    """
+
+    def _orphan(
+        self,
+        file_id: str,
+        uploaded_at_turn: int,
+        extract: str = "fresh content",
+        filename: str = "fresh.yaml",
+    ) -> UploadedFile:
+        return UploadedFile(
+            file_id=file_id,
+            filename=filename,
+            size_bytes=len(extract),
+            content_type="text/plain",
+            uploaded_at_turn=uploaded_at_turn,
+            uploaded_at=datetime.now(UTC),
+            uploaded_by="user_123",
+            data_type="text",
+            structural_index=extract,
+        )
+
+    def test_current_turn_orphan_survives_budget_pressure(self):
+        """INV-EC-1: historical evidence that would exhaust the budget does
+        NOT evict the current-turn orphan upload — and it renders first."""
+        big = "Y" * 3500
+        evidence = [
+            _make_evidence(
+                extract=big,
+                summary=f"historical evidence {i}",
+                collected_at_turn=i + 1,
+                source_file_id=f"file_dddddddd{i:04d}",
+            )
+            for i in range(3)
+        ]
+        case = _make_case_with_evidence(evidence)
+        case.current_turn = 9
+        case.uploaded_files.append(
+            self._orphan(
+                "file_fafafafa0001",
+                uploaded_at_turn=9,
+                extract="apiVersion: v1\nkind: Job\nenv: DB_PASSWORD from secret",
+            )
+        )
+
+        with patch(
+            "faultmaven.core.investigation.prompts.context_builder."
+            "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
+            8000,
+        ):
+            result = _build_evidence_context(case)
+
+        assert 'file_id="file_fafafafa0001"' in result, (
+            "current-turn upload must always be present even under budget "
+            "pressure from historical evidence"
+        )
+        assert 'fresh_this_turn="true"' in result
+        # Floor renders before the historical <evidence> blocks.
+        assert result.find("file_fafafafa0001") < result.find("<evidence id=")
+
+    def test_no_cliff_large_orphan_does_not_drop_smaller(self):
+        """INV-EC-2: a large over-budget orphan is skipped, not a `break` that
+        drops every smaller orphan behind it."""
+        ev = _make_evidence(
+            source_file_id="file_aabbccdd1122",
+            summary="existing evidence",
+            extract="small existing content",
+        )
+        case = _make_case_with_evidence([ev])
+        case.current_turn = 0  # both orphans historical → Tier D fill
+
+        huge = "Z" * 6000  # per-item cap (4000) → entry ~4200 chars
+        case.uploaded_files.append(
+            self._orphan("file_bbbb00000001", uploaded_at_turn=9, extract=huge)
+        )
+        case.uploaded_files.append(
+            self._orphan(
+                "file_5acc00000002", uploaded_at_turn=2, extract="tiny orphan body"
+            )
+        )
+
+        # Budget admits the small orphan but not the big one. Newest-first
+        # ordering tries the big (turn 9) first; `continue` must let the small
+        # (turn 2) still render.
+        with patch(
+            "faultmaven.core.investigation.prompts.context_builder."
+            "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
+            3000,
+        ):
+            result = _build_evidence_context(case)
+
+        assert 'file_id="file_bbbb00000001"' not in result
+        assert 'file_id="file_5acc00000002"' in result, (
+            "small orphan must survive even though a larger orphan ahead of it "
+            "overflowed the budget (no-cliff)"
+        )
+
+    def test_model_aware_budget_scales_with_provider(self):
+        """INV-EC-4: a Gemini-class budget renders more orphan content than the
+        16K fallback when the total exceeds the fallback cap."""
+        ev = _make_evidence(
+            source_file_id="file_aabbccdd1122",
+            summary="seed evidence",
+            extract="seed",
+        )
+        case = _make_case_with_evidence([ev])
+        case.current_turn = 0
+        # 8 historical orphans × ~3000 chars ≈ 24K > 16K fallback, < ~36K Gemini.
+        for i in range(8):
+            case.uploaded_files.append(
+                self._orphan(
+                    f"file_0a0a0a0a{i:04d}",
+                    uploaded_at_turn=i + 1,
+                    extract="O" * 3000,
+                    filename=f"orphan{i}.txt",
+                )
+            )
+
+        fallback = _build_evidence_context(case)
+        gemini = _build_evidence_context(
+            case, provider_name="gemini", model_name="gemini-2.5-pro"
+        )
+        assert len(gemini) > len(fallback), (
+            "model-aware budget should admit more content on a large-context "
+            "model than the conservative fallback cap"
+        )
+
+    def test_multiple_current_turn_orphans_all_present_under_tight_budget(self):
+        """INV-EC-1: ALL current-turn orphan uploads are present (full or summary
+        stub) even when several arrive in one turn and the budget is tight — the
+        2nd+ orphan must not be dropped."""
+        ev = _make_evidence(
+            source_file_id="file_aabbccdd1122",
+            summary="historical evidence",
+            extract="existing content",
+        )
+        case = _make_case_with_evidence([ev])
+        case.current_turn = 9
+        ids = ["file_c0c0c0c00000", "file_c0c0c0c00001", "file_c0c0c0c00002"]
+        for i, fid in enumerate(ids):
+            case.uploaded_files.append(
+                self._orphan(
+                    fid, uploaded_at_turn=9, extract="C" * 3000, filename=f"cur{i}.txt"
+                )
+            )
+
+        with patch(
+            "faultmaven.core.investigation.prompts.context_builder."
+            "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
+            4000,
+        ):
+            result = _build_evidence_context(case)
+
+        for fid in ids:
+            assert f'file_id="{fid}"' in result, (
+                f"current-turn orphan {fid} must be present (full or summary stub), "
+                "never dropped"
+            )
+        # At least one degraded to a summary stub (budget can't hold 3 full).
+        assert "Full content omitted to fit budget" in result
+
+    def test_current_turn_evidence_full_render_bounded_by_reserve(self):
+        """INV-EC-1b: many current-turn EVIDENCE rows do not all render in full —
+        the full-render exemption is bounded by the reserve, so they can't blow
+        the evidence budget. Beyond the reserve they degrade to Tier-B summaries
+        (still present, not dropped)."""
+        evidence = [
+            _make_evidence(
+                extract="E" * 4000,
+                summary=f"current-turn evidence {i}",
+                collected_at_turn=9,
+                source_file_id=f"file_e0e0e0e0000{i}",
+            )
+            for i in range(5)
+        ]
+        case = _make_case_with_evidence(evidence)
+        case.current_turn = 9
+
+        with patch(
+            "faultmaven.core.investigation.prompts.context_builder."
+            "EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
+            8000,
+        ):
+            result = _build_evidence_context(case)
+
+        # Not every current-turn evidence renders its full structural index —
+        # bounded by the ~4000-char reserve (else the block would be ~20K+).
+        assert result.count("<file_extract") < 5, (
+            "current-turn evidence must be bounded by the reserve, not all "
+            "rendered full"
+        )
+        # But all 5 are still present (degraded to summary, not dropped).
+        for ev in evidence:
+            assert f'id="{ev.evidence_id}"' in result

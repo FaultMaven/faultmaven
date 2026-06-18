@@ -1703,7 +1703,38 @@ class InvestigationContextSettings(BaseSettings):
         ge=2000,
         le=400_000,
         validation_alias="EVIDENCE_CONTEXT_MAX_TOTAL_CHARS",
-        description="Hard cap on the entire <evidence_collected> block.",
+        description=(
+            "Fallback hard cap on the entire <evidence_collected> block, used "
+            "when the active provider/model is unknown. When the model IS known, "
+            "the effective cap is model-aware (see evidence_budget_fraction)."
+        ),
+    )
+
+    evidence_budget_fraction: float = Field(
+        default=0.6,
+        gt=0.0,
+        le=1.0,
+        validation_alias="EVIDENCE_CONTEXT_BUDGET_FRACTION",
+        description=(
+            "Fraction of the model's whole-prompt token budget "
+            "(get_token_budget_for_provider) allotted to the <evidence_collected> "
+            "block. Lets the evidence cap scale with the model's context window "
+            "instead of a single fixed char count. Only applies when "
+            "provider_name is supplied; otherwise max_total_chars is used."
+        ),
+    )
+
+    current_turn_reserve_fraction: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=1.0,
+        validation_alias="EVIDENCE_CONTEXT_CURRENT_TURN_RESERVE_FRACTION",
+        description=(
+            "Fraction of the effective evidence budget reserved for "
+            "current-turn items (files/evidence created this turn) so a fresh "
+            "upload is always rendered in full and never evicted by historical "
+            "evidence. See evidence-context-assembly.md INV-EC-1."
+        ),
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
