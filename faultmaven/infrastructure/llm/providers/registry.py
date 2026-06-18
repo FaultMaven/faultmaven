@@ -168,7 +168,6 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://api-inference.huggingface.co/models",
         "default_model": "mistralai/Mistral-Large-Instruct-2411",
         "available_models": [
-            "tiiuae/falcon-7b-instruct",
             "mistralai/Mistral-Large-Instruct-2411",
             "meta-llama/Llama-3.3-70B-Instruct",
         ],
@@ -196,7 +195,6 @@ PROVIDER_SCHEMA = {
             "claude-opus-4-6",
             "claude-haiku-4-5-20251001",
             "claude-3-5-sonnet-20241022",
-            "claude-3-sonnet-20240229",
         ],
         "provider_class": AnthropicProvider,
         "confidence_score": 0.85,
@@ -211,7 +209,6 @@ PROVIDER_SCHEMA = {
             "meta-llama/Llama-4-Scout-17B-16E-Instruct",
             "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
-            "mixtral-8x7b-32768",
         ],
         "provider_class": GroqProvider,
         "confidence_score": 0.88,

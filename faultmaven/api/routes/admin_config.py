@@ -61,7 +61,7 @@ async def get_llm_config(
     status including health, connectivity, and available models. API keys
     are never exposed — only a boolean indicating whether one is configured.
 
-    Available to any authenticated user (local deployment) or admin (cloud).
+    Available to any authenticated user (standalone deployment) or admin (cloud).
     Route-level access control is handled by the dashboard's LLMConfigRoute guard.
 
     Returns:
@@ -84,7 +84,7 @@ async def get_llm_config(
 
         # Deployment mode determines dashboard behavior (canonical DEPLOYMENT_MODE, ADR-004)
         is_cloud = settings.is_cloud
-        deployment = "cloud" if is_cloud else "local"
+        deployment = "cloud" if is_cloud else "standalone"
         config_readonly = not is_cloud
 
         # Get runtime state from the registry
@@ -193,7 +193,7 @@ async def update_llm_config(
 
     Raises:
         401 Unauthorized: No valid JWT token
-        403 Forbidden: Local deployment (config is read-only)
+        403 Forbidden: Standalone deployment (config is read-only)
         422 Unprocessable Entity: Invalid provider name
         503 Service Unavailable: LLM provider not initialized
     """
@@ -400,7 +400,7 @@ async def get_env_config_status(
 
         settings = get_settings()
 
-        deployment = "cloud" if settings.is_cloud else "local"
+        deployment = "cloud" if settings.is_cloud else "standalone"
 
         # Build feature status
         from faultmaven.api.models import FeatureStatus

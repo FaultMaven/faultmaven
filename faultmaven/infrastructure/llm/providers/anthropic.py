@@ -80,7 +80,7 @@ class AnthropicProvider(BaseLLMProvider):
         # Use specified model or default
         selected_model = model or self.config.default_model
         if not selected_model:
-            selected_model = "claude-3-sonnet-20240229"
+            selected_model = "claude-sonnet-4-6"
 
         # Prepare headers for Anthropic API
         headers = {
