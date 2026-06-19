@@ -20,7 +20,6 @@ with an actionable message. The gate is skipped under ``SKIP_SERVICE_CHECKS``
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -55,23 +54,20 @@ def _secret_present(value) -> bool:
 
 
 def validate_llm_provider_credentials(settings: "Settings") -> None:
-    """Fail fast unless a provider is explicitly chosen and its credential is set.
+    """Fail fast unless the active provider has a usable credential.
 
-    Raises ``ValueError`` (caught by the lifespan config gate, which aborts
-    startup) with an actionable message. No-op return on success.
+    Validates the **resolved** provider (``settings.llm.provider``, which honors
+    a literal ``CHAT_PROVIDER`` env var AND a preset/container-injected value) —
+    not ``os.getenv("CHAT_PROVIDER")``, which would false-positive on
+    preset-configured deployments. There is still no usable default: an
+    unconfigured deployment resolves to the placeholder provider with no
+    credential and is rejected here. Raises ``ValueError`` (caught by the
+    lifespan gate, which aborts startup) with an actionable message; no-op on
+    success.
     """
-    # 1. CHAT_PROVIDER must be explicitly provided — no implicit default.
-    if not (os.getenv("CHAT_PROVIDER") or "").strip():
-        raise ValueError(
-            "CHAT_PROVIDER is not set. FaultMaven has no default LLM provider — "
-            "you must choose one and supply its credential. Set CHAT_PROVIDER to "
-            f"one of: {', '.join(_SUPPORTED)} (and the matching API key, or "
-            "LOCAL_LLM_URL for 'local'). See .env.example section 1."
-        )
-
     provider = settings.llm.provider.value.lower()
 
-    # 2a. Local: needs a URL, not a key.
+    # Local: needs a URL, not a key.
     if provider == "local":
         if not (settings.llm.local_url or "").strip():
             raise ValueError(
@@ -82,7 +78,7 @@ def validate_llm_provider_credentials(settings: "Settings") -> None:
         logger.info("✅ LLM provider 'local' configured (LOCAL_LLM_URL set)")
         return
 
-    # 2b. Cloud providers: need the matching API key.
+    # Cloud providers: need the matching API key.
     mapping = _PROVIDER_API_KEY.get(provider)
     if mapping is None:
         raise ValueError(
@@ -92,9 +88,10 @@ def validate_llm_provider_credentials(settings: "Settings") -> None:
     field, env_name = mapping
     if not _secret_present(getattr(settings.llm, field, None)):
         raise ValueError(
-            f"CHAT_PROVIDER={provider} requires {env_name} to be set, but it is "
-            "missing or empty. Supply the API key for your chosen provider (or "
-            "switch CHAT_PROVIDER to a provider whose key you have). See "
-            ".env.example section 1."
+            f"No usable LLM credential: the active provider is {provider!r} but "
+            f"{env_name} is missing or empty. Set CHAT_PROVIDER to a provider "
+            "whose API key you have (or supply this one's key / LOCAL_LLM_URL "
+            "for 'local'). FaultMaven has no usable default. See .env.example "
+            "section 1."
         )
     logger.info("✅ LLM provider '%s' configured (%s set)", provider, env_name)

@@ -589,28 +589,70 @@ def get_token_budget_for_provider(
     provider_name: str, model_name: Optional[str] = None
 ) -> int:
     """
-    Get the per-turn **soft prompt-fill target** for a provider/model.
+    Get provider-specific token budget for prompts.
 
-    GAP-1: this now delegates to the model context-window registry
-    (:func:`faultmaven.utils.model_context.resolve_model_budget`) rather than a
-    hand-tuned inline table. It returns the registry's ``prompt_target`` — the
-    soft, cost-controlled target (``clamp(window×fraction, floor, cap)``), NOT
-    the hard ceiling — so callers that size fills against this value stay
-    cost-stable by default while remaining window-aware. The hard ceiling
-    (``window − reserve``) used by the overflow backstop is on the same
-    ``ResolvedBudget`` (``prompt_budget``). Unknown models resolve to a
-    documented conservative default and emit a WARNING.
+    Reference: Prompt Engineering Guide Section 11.3 - Provider-Specific Limits
+
+    This is the budget used by the **legacy (default) assembly path** and is
+    intentionally the original conservative per-provider table — so the
+    default, allocator-OFF behavior is unchanged. The priority-greedy allocator
+    does NOT use this function: it sizes against
+    ``model_context.resolve_model_budget(...).prompt_target`` (the flat
+    ``PROMPT_TARGET_TOKENS``) directly. Keeping the two separate is what makes
+    "allocator flags default OFF ⇒ production prompt assembly unchanged" true.
 
     Args:
         provider_name: Provider name (e.g., "anthropic", "openai", "fireworks")
         model_name: Optional specific model name for fine-grained limits
 
     Returns:
-        Recommended soft prompt-fill target in tokens.
+        Recommended prompt token budget (conservative to leave room for response)
     """
-    from faultmaven.utils.model_context import resolve_model_budget
+    # Provider-specific prompt budgets (conservative to allow response tokens)
+    # Based on total context windows minus expected response size
 
-    return resolve_model_budget(provider_name, model_name).prompt_target
+    # Default to conservative 8K if provider unknown
+    default_budget = 8000
+
+    provider_lower = provider_name.lower() if provider_name else ""
+    model_lower = model_name.lower() if model_name else ""
+
+    # Anthropic Claude (200K context window)
+    if "anthropic" in provider_lower or "claude" in model_lower:
+        if "sonnet" in model_lower or "opus" in model_lower:
+            return 12000  # 12K prompt budget for 200K context
+        return 10000  # Conservative for other Claude models
+
+    # OpenAI GPT-4 (128K context window)
+    elif "openai" in provider_lower or "gpt-4" in model_lower:
+        if "turbo" in model_lower or "gpt-4o" in model_lower:
+            return 10000  # 10K prompt budget for 128K context
+        return 8000  # Conservative for older GPT-4
+
+    # Google Gemini (1M+ context window)
+    elif "google" in provider_lower or "gemini" in model_lower:
+        return 15000  # 15K prompt budget for massive context
+
+    # Meta Llama (128K context window)
+    elif "meta" in provider_lower or "llama" in model_lower:
+        return 8000  # 8K prompt budget for 128K context
+
+    # Fireworks AI (context varies by model)
+    elif "fireworks" in provider_lower:
+        if "llama-3.3" in model_lower:
+            return 8000
+        return 6000  # Conservative for other models
+
+    # Cohere (4K-128K depending on model)
+    elif "cohere" in provider_lower:
+        return 6000  # Conservative
+
+    # Default fallback
+    logger.debug(
+        f"Unknown provider '{provider_name}' with model '{model_name}', "
+        f"using default budget of {default_budget} tokens"
+    )
+    return default_budget
 
 
 class TokenBudget:
@@ -637,16 +679,25 @@ class TokenBudget:
         *,
         provider_name: Optional[str] = None,
         model_name: Optional[str] = None,
+        char_mode: bool = False,
     ):
+        # char_mode reproduces the ORIGINAL char-based budget (1 token ≈ 4 chars)
+        # used by the legacy/default assembly path, so that path stays
+        # byte-identical to its pre-allocator behavior. The allocator uses the
+        # token-native mode (char_mode=False).
+        self._char_mode = char_mode
         self.limit_tokens = limit_tokens
-        self.used_tokens = 0
+        self._limit_units = limit_tokens * 4 if char_mode else limit_tokens
+        self.used_tokens = 0  # "units": chars in char_mode, tokens otherwise
         self._provider = provider_name
         self._model = model_name
 
     def count(self, text: str) -> int:
-        """Token count for *text* under the active provider/model."""
+        """Size of *text* in the active unit (chars in char_mode, else tokens)."""
         if not text:
             return 0
+        if self._char_mode:
+            return len(text)
         from faultmaven.utils.token_estimation import estimate_tokens
 
         return estimate_tokens(
@@ -655,10 +706,10 @@ class TokenBudget:
 
     @property
     def remaining_tokens(self) -> int:
-        return max(0, self.limit_tokens - self.used_tokens)
+        return max(0, self._limit_units - self.used_tokens)
 
     def has_budget(self, text: str) -> bool:
-        return self.used_tokens + self.count(text) <= self.limit_tokens
+        return self.used_tokens + self.count(text) <= self._limit_units
 
     def _truncate_to(self, text: str, token_limit: int, keep: str = "head") -> str:
         """Truncate *text* to ~``token_limit`` tokens with a marker.
@@ -681,15 +732,20 @@ class TokenBudget:
         if token_limit <= marker_tokens + 1:
             return "[...]"
 
+        # keep="tail" drops the OLDEST (leading) content, so the marker goes at
+        # the FRONT; keep="head" drops trailing content, marker at the end.
+        def _compose(slice_text: str) -> str:
+            return marker + slice_text if keep == "tail" else slice_text + marker
+
         def _slice(n: int) -> str:
             return text[-n:] if keep == "tail" else text[:n]
 
         char_budget = max(20, (token_limit - marker_tokens) * 4)
         truncated = _slice(char_budget)
-        while truncated and self.count(truncated + marker) > token_limit:
+        while truncated and self.count(_compose(truncated)) > token_limit:
             char_budget = int(char_budget * 0.85)
             truncated = _slice(char_budget)
-        return (truncated + marker) if truncated else "[...]"
+        return _compose(truncated) if truncated else "[...]"
 
     def use(self, text: str, cap: Optional[int] = None) -> str:
         """Admit *text* against the shared budget, optionally capped.
@@ -699,9 +755,27 @@ class TokenBudget:
         cap it may take all remaining budget. Over-limit content is truncated
         with a marker (never silently dropped — see INV-4).
         """
+        if self._char_mode:
+            # Exact reproduction of the original (pre-allocator) char-based use()
+            # so the legacy path is unchanged. ``cap`` is unused here.
+            if not text:
+                return text
+            if self.used_tokens + len(text) <= self._limit_units:
+                self.used_tokens += len(text)
+                return text
+            remaining = self._limit_units - self.used_tokens
+            if remaining > 100:
+                truncated = (
+                    text[: remaining - 50]
+                    + "\n[... Content truncated due to context limit ...]"
+                )
+                self.used_tokens = self._limit_units
+                return truncated
+            return ""
+
         if not text:
             return text
-        allowance = self.limit_tokens - self.used_tokens
+        allowance = self._limit_units - self.used_tokens
         if cap is not None:
             allowance = min(allowance, cap)
         if allowance <= 0:
@@ -2195,13 +2269,14 @@ def _allocate_sections(
     evidence_cap = int(section_budget * evidence_fraction)
     evidence_tokens = budget.count(evidence_str) if evidence_str else 0
     # Evidence floor: guarantee room for at least the current-turn render so
-    # INV-1 holds in the normal path. Capped so it cannot, on its own, starve
-    # the conversation continuity floor that follows it in priority.
-    evidence_floor = min(
-        evidence_tokens,
-        EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM // 4,
-        max(0, section_budget - compact_tokens),
-    )
+    # INV-1 (a fresh upload's addressable stub always survives) holds in the
+    # normal path. Granted FIRST in pass A (evidence is priority #1), ahead of
+    # the conversation continuity floor — INV-1 outranks continuity, which
+    # degrades gracefully (and the starvation fallback backstops the extreme
+    # case). Must NOT be capped by leaving room for compact_history, or it
+    # collapses to 0 when the conversation floor is large and the current-turn
+    # upload is dropped.
+    evidence_floor = min(evidence_tokens, EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM // 4)
 
     # (key, text, size, floor, cap) in PRIORITY order. Conversation uses the
     # graduated size for sizing; its floor is the compact size (continuity).
@@ -2289,9 +2364,17 @@ def _allocate_sections(
         ctx[key] = rendered
         # Reuse the known size when the section was admitted whole (no recount).
         if rendered is text:
-            budget.used_tokens += size
+            used = size
         elif rendered:
-            budget.used_tokens += budget.count(rendered)
+            used = budget.count(rendered)
+        else:
+            used = 0
+        budget.used_tokens += used
+        # Reclaim any allotment the section didn't consume (e.g. conversation
+        # downgraded to a smaller fidelity than its graduated-sized alloc) so it
+        # flows down to lower-priority sections instead of being stranded.
+        if used < alloc:
+            remaining += alloc - used
 
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
@@ -2363,7 +2446,12 @@ def build_investigation_context(
             max_tokens = 8000  # Default fallback
             logger.debug("Using default budget: 8000 tokens (no provider specified)")
 
-    budget = TokenBudget(max_tokens, provider_name=provider_name, model_name=model_name)
+    budget = TokenBudget(
+        max_tokens,
+        provider_name=provider_name,
+        model_name=model_name,
+        char_mode=not use_allocator,
+    )
 
     # 1. Identity & Status (Gap #8: XML tags for better LLM attention)
     identity = f"<case_identity>\n"
@@ -2762,51 +2850,26 @@ def build_investigation_context(
         )
         return ctx
 
-    # ---- Legacy path (priority-ordered single-pass; unchanged behavior) ----
-    # Tier 0 reserved (counted, never trimmed); Tier 1+ trimmed in priority order
-    # once the shared budget is spent.
-    def _reserve(text: str) -> str:
-        """Include *text* unconditionally, counting it against the budget."""
-        if text:
-            budget.used_tokens += budget.count(text)
-        return text
-
-    ctx: Dict[str, str] = {}
-    ctx["identity"] = _reserve(identity)
-    ctx["core_context"] = _reserve(core_context)
-    ctx["milestones"] = _reserve(milestones_str)
-    ctx["inquiry_state"] = _reserve(inquiry_state_str)
-    ctx["pending_action"] = _reserve(pending_action_str)
-    ctx["system_feedback"] = feedback_str  # always included; prioritized
-    ctx["user_message"] = user_message_safe  # sanitized; always included
-    _reserve(feedback_str)
-    _reserve(user_message_safe)
-
-    # Tier 1+ — trimmable, highest priority first.
-    ctx["evidence"] = budget.use(evidence_str)
-    ctx["conversation_history"] = budget.use(recent_history)
-    ctx["working_conclusion"] = budget.use(conclusion_str)
-    ctx["kb_results"] = budget.use(kb_str)
-    ctx["hypotheses"] = budget.use(hypothesis_str)
-    ctx["evidence_needs"] = budget.use(evidence_needs_str)
-    ctx["investigation_journal"] = budget.use(journal_str)
-    ctx["entity_highlights"] = budget.use(entity_highlights_str)
-
-    # Per-turn structured log of the section-by-section token allocation and
-    # the running total vs the section budget.
-    if logger.isEnabledFor(logging.DEBUG):
-        section_tokens = {k: budget.count(v) for k, v in ctx.items() if v}
-        logger.debug(
-            "prompt_section_allocation",
-            extra={
-                "case_id": case.case_id,
-                "provider": provider_name,
-                "model": model_name,
-                "section_budget_tokens": max_tokens,
-                "sections_used_tokens": budget.used_tokens,
-                "section_tokens": section_tokens,
-            },
-        )
+    # ---- Legacy (default, allocator-OFF) assembly — unchanged from pre-allocator
+    # behavior (char-mode budget, original section order). ----
+    # Assembly with budget check
+    ctx = {
+        "identity": budget.use(identity),
+        "core_context": budget.use(core_context),
+        "milestones": budget.use(milestones_str),
+        "evidence": budget.use(evidence_str),
+        "evidence_needs": budget.use(evidence_needs_str),
+        "entity_highlights": budget.use(entity_highlights_str),
+        "hypotheses": budget.use(hypothesis_str),
+        "investigation_journal": budget.use(journal_str),
+        "working_conclusion": budget.use(conclusion_str),
+        "pending_action": budget.use(pending_action_str),
+        "kb_results": budget.use(kb_str),
+        "system_feedback": feedback_str,  # Prioritize feedback
+        "conversation_history": budget.use(recent_history),
+        "user_message": user_message_safe,  # Sanitized user message always included
+        "inquiry_state": budget.use(inquiry_state_str),
+    }
 
     return ctx
 

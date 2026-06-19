@@ -2795,8 +2795,18 @@ def _assemble_allocated(
     # First cut: size sections to the full target, then measure the fixed
     # template overhead so we can re-size so template + sections ≈ target (§6).
     ctx = build_ctx(target, True)
-    section_sum = sum(count(v) for v in ctx.values() if v)
-    reserve_tokens = sum(count(ctx[k]) for k in _RESERVE_KEYS if ctx.get(k))
+    # Single pass over the ctx: accumulate the total section tokens and the
+    # reserve subset together (avoids tokenizing every section twice).
+    reserve_keys = frozenset(_RESERVE_KEYS)
+    section_sum = 0
+    reserve_tokens = 0
+    for k, v in ctx.items():
+        if not v:
+            continue
+        n = count(v)
+        section_sum += n
+        if k in reserve_keys:
+            reserve_tokens += n
     prompt = render(ctx)
     total = count(prompt)
     template_overhead = max(0, total - section_sum)
