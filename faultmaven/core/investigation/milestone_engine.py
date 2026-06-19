@@ -54,7 +54,6 @@ from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
-    PromotionAssistResult,
     TerminalResponse,
     get_schema_for_stage,
 )
@@ -317,52 +316,6 @@ def _is_context_length_error(exc: Exception) -> bool:
         "exceeds the maximum context",
     )
     return any(p in msg for p in phrases)
-
-
-def _create_evidence_from_to_add(
-    case: "Case",
-    ev_item: Any,
-    milestones_completed_this_turn: list[str],
-    metadata: dict[str, Any],
-) -> "Evidence":
-    """Create one claim-anchored Evidence row from an ``EvidenceToAdd`` item.
-
-    Shared by the main turn pipeline and the GAP-5 Phase 3 promotion assist so
-    both produce byte-identical, claim-anchored Evidence (category + extract +
-    source_file_id all from the LLM-declared item; the
-    ``evidence_source_invariant`` is already validated on ``EvidenceToAdd``).
-    Appends to ``case.evidence`` and records the id in
-    ``metadata["evidence_added"]``.
-    """
-    if ev_item.advances_milestones is not None:
-        advances_milestones = ev_item.advances_milestones  # Tier 3: LLM override
-    else:
-        advances_milestones = _infer_milestones(
-            ev_item.category, milestones_completed_this_turn
-        )
-
-    ev = Evidence(
-        evidence_id=f"ev_{uuid4().hex[:12]}",
-        summary=ev_item.summary,
-        extract=ev_item.extract,
-        category=ev_item.category,
-        source_type=ev_item.source_type,
-        source_file_id=ev_item.source_file_id,
-        collected_at=datetime.now(UTC),
-        collected_by=case.user_id,
-        collected_at_turn=case.current_turn,
-        advances_milestones=advances_milestones,
-        primary_purpose="Investigation context",
-    )
-    case.evidence.append(ev)
-    metadata.setdefault("evidence_added", []).append(ev.evidence_id)
-    logger.info(
-        f"Created evidence: {ev.evidence_id} | "
-        f"category={ev.category.value}, source_type={ev.source_type.value}, "
-        f"source_file_id={ev.source_file_id}, "
-        f"summary='{ev.summary[:80]}...'"
-    )
-    return ev
 
 
 def _infer_milestones(
@@ -1985,162 +1938,6 @@ class MilestoneEngine:
 
         return get_settings().protection.sanitize_pii
 
-    # =====================================================================
-    # GAP-5 Phase 3 — guarded engine-side evidence-promotion assist
-    # =====================================================================
-    async def _maybe_assist_evidence_promotion(
-        self,
-        case: "Case",
-        metadata: dict[str, Any],
-        provider_name: Optional[str],
-        model_name: Optional[str],
-        redaction_ctx: Any | None = None,
-    ) -> int:
-        """Promote chronically-orphaned uploaded files via a targeted LLM call.
-
-        DEFAULT OFF (``EVIDENCE_PROMOTION_ASSIST``). Claim-anchored: the engine
-        never manufactures a claimless Evidence stub — it asks the LLM to
-        extract a claim from the orphan file, and only creates Evidence if the
-        model returns one. INQUIRY is never touched (promotion presupposes a
-        confirmed claim). Returns the number of files promoted this turn.
-
-        Gating (all must hold):
-          - flag ``assist_enabled`` is on,
-          - state is INVESTIGATING,
-          - a file has been an orphan for ≥ ``assist_age_turns`` turns,
-          - and the main turn did not already promote it.
-        """
-        if case.state != CaseState.INVESTIGATING:
-            return 0
-        try:
-            from faultmaven.config.settings import get_settings
-
-            cfg = get_settings().evidence_promotion
-        except Exception:
-            return 0
-        if not cfg.assist_enabled:
-            return 0
-
-        from faultmaven.core.investigation.prompts.context_builder import (
-            _unpromoted_orphan_file_ids,
-        )
-
-        orphan_ids = set(_unpromoted_orphan_file_ids(case))
-        if not orphan_ids:
-            return 0
-
-        # Chronic orphans only, oldest first, capped per turn.
-        chronic = [
-            uf
-            for uf in (case.uploaded_files or [])
-            if uf.file_id in orphan_ids
-            and (
-                case.current_turn
-                - int(
-                    getattr(uf, "uploaded_at_turn", case.current_turn)
-                    or case.current_turn
-                )
-            )
-            >= cfg.assist_age_turns
-        ]
-        chronic.sort(key=lambda uf: getattr(uf, "uploaded_at_turn", case.current_turn))
-        if not chronic:
-            return 0
-
-        promoted = 0
-        milestones_this_turn = metadata.get("milestones_completed", [])
-        for uf in chronic[: cfg.assist_max_per_turn]:
-            try:
-                items = await self._run_promotion_extraction(
-                    case, uf, redaction_ctx=redaction_ctx
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Evidence-promotion assist extraction failed for file %s "
-                    "on case %s (non-fatal): %s",
-                    getattr(uf, "file_id", "?"),
-                    case.case_id,
-                    exc,
-                )
-                continue
-            for ev_item in items or []:
-                # Safety: the assist must promote THIS file. Ignore any item
-                # whose source_file_id doesn't match (claim-anchored to the
-                # file under review; never mis-attributed).
-                if getattr(ev_item, "source_file_id", None) != uf.file_id:
-                    logger.debug(
-                        "Assist skipped a returned item: source_file_id=%s != %s",
-                        getattr(ev_item, "source_file_id", None),
-                        uf.file_id,
-                    )
-                    continue
-                _create_evidence_from_to_add(
-                    case, ev_item, milestones_this_turn, metadata
-                )
-                promoted += 1
-
-        if promoted:
-            logger.info(
-                "Evidence-promotion assist created %d evidence row(s) on case %s",
-                promoted,
-                case.case_id,
-            )
-        return promoted
-
-    async def _run_promotion_extraction(
-        self, case: "Case", uploaded_file: Any, redaction_ctx: Any | None = None
-    ) -> list:
-        """One targeted LLM extraction for a single orphan file (Phase 3).
-
-        Returns a (possibly empty) list of ``EvidenceToAdd``. Isolated so tests
-        can simulate the LLM without a provider. The prompt scopes the model to
-        a single file's structural index and the case problem, and instructs it
-        to return at most one claim-anchored evidence record or nothing.
-
-        ``redaction_ctx`` MUST be threaded through: this prompt embeds raw file
-        content, so it goes through the same case-scoped PII redaction as every
-        other LLM call on the turn (without it the file content would reach the
-        provider un-redacted).
-        """
-        from faultmaven.core.investigation.prompts.context_builder import (
-            _parse_extract,
-        )
-
-        file_extract, _search_map, _file_meta = _parse_extract(
-            getattr(uploaded_file, "structural_index", "") or ""
-        )
-        problem = getattr(case, "description", "") or ""
-        if case.problem_verification and case.problem_verification.symptom_statement:
-            problem = case.problem_verification.symptom_statement
-
-        prompt = (
-            "You are FaultMaven. A file was uploaded to this investigation "
-            "but has not yet been recorded as evidence. Decide whether it "
-            "supports a specific claim about the symptom, cause, mitigation, "
-            "or solution.\n\n"
-            f"PROBLEM: {problem[:500]}\n\n"
-            f'FILE file_id="{uploaded_file.file_id}"'
-            f" filename={getattr(uploaded_file, 'filename', '')!r}:\n"
-            f"{file_extract[:6000]}\n\n"
-            "If — and only if — the file supports a claim, return ONE "
-            "evidence_to_add entry with:\n"
-            f'  - source_file_id="{uploaded_file.file_id}" (verbatim)\n'
-            "  - category: symptom_evidence | causal_evidence | "
-            "mitigation_evidence | solution_evidence\n"
-            "  - source_type matching the data, summary, and a focused "
-            "verbatim extract.\n"
-            "If the file does NOT support any claim, return an empty "
-            "evidence_to_add list. Do NOT invent a claim."
-        )
-
-        response_obj = await self._generate_structured_output(
-            prompt,
-            PromotionAssistResult,
-            redaction_ctx=redaction_ctx,
-            case=case,
-        )
-        return list(getattr(response_obj, "evidence_to_add", None) or [])
-
     async def process_turn(
         self,
         case: Case,
@@ -3017,26 +2814,6 @@ class MilestoneEngine:
             # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
             metadata.update(response_metadata)
 
-            # 4.0 GAP-5 Phase 3: guarded engine-side promotion of chronically
-            # orphaned uploaded files (default OFF). Runs AFTER the main turn's
-            # evidence_to_add is applied (so it only targets files the LLM
-            # still didn't promote) and BEFORE transitions/housekeeping/save,
-            # so any promoted evidence participates in the rest of this turn.
-            try:
-                await self._maybe_assist_evidence_promotion(
-                    case_updated,
-                    metadata,
-                    provider_name,
-                    model_name,
-                    redaction_ctx=redaction_ctx,
-                )
-            except Exception as _assist_exc:  # never break a turn on assist
-                logger.warning(
-                    "Evidence-promotion assist failed on case %s (non-fatal): %s",
-                    case_updated.case_id,
-                    _assist_exc,
-                )
-
             # 4a. Stage-gate compliance is now handled via LLM milestone output
             # (Framework §4.1). The LLM sets stage-gate milestones in its
             # structured response; side effects are applied in
@@ -3193,21 +2970,6 @@ class MilestoneEngine:
                 _supersede_needs_on_hypothesis_retirement(
                     case_updated, _retired_id, case_updated.current_turn
                 )
-
-            # Step 6b: GAP-5 Phase 1 — record UploadedFile → Evidence promotion
-            # metrics (orphan count, oldest-orphan age, per-provider promotion
-            # rate). Observation only; meaningful during INVESTIGATING, where
-            # promotion is expected (during INQUIRY no file is promoted by
-            # design, so counting orphans there would be misleading).
-            if case_updated.state == CaseState.INVESTIGATING:
-                try:
-                    from faultmaven.infrastructure.observability.evidence_metrics import (
-                        record_evidence_promotion_metrics,
-                    )
-
-                    record_evidence_promotion_metrics(case_updated, provider_name)
-                except Exception:  # telemetry must never break a turn
-                    pass
 
             # Step 7: Save case (only if changes made, but turn history always updates)
             case_updated.updated_at = datetime.now(UTC)
@@ -6017,10 +5779,38 @@ class MilestoneEngine:
             # is removed. Whether RCA-side work runs is decided by the prompt
             # (gated on cause uncertainty), not by an engine emission ban —
             # causal_evidence is always allowed during INVESTIGATING.
-            milestones_completed_this_turn = metadata.get("milestones_completed", [])
             for ev_item in updates.evidence_to_add:
-                _create_evidence_from_to_add(
-                    case, ev_item, milestones_completed_this_turn, metadata
+                # Infer milestone attribution (Tier 2 + Tier 3)
+                milestones_completed_this_turn = metadata.get(
+                    "milestones_completed", []
+                )
+                if ev_item.advances_milestones is not None:
+                    advances_milestones = ev_item.advances_milestones
+                else:
+                    advances_milestones = _infer_milestones(
+                        ev_item.category, milestones_completed_this_turn
+                    )
+
+                ev = Evidence(
+                    evidence_id=f"ev_{uuid4().hex[:12]}",
+                    summary=ev_item.summary,
+                    extract=ev_item.extract,
+                    category=ev_item.category,
+                    source_type=ev_item.source_type,
+                    source_file_id=ev_item.source_file_id,
+                    collected_at=datetime.now(UTC),
+                    collected_by=case.user_id,
+                    collected_at_turn=case.current_turn,
+                    advances_milestones=advances_milestones,
+                    primary_purpose="Investigation context",
+                )
+                case.evidence.append(ev)
+                metadata["evidence_added"].append(ev.evidence_id)
+                logger.info(
+                    f"Created evidence: {ev.evidence_id} | "
+                    f"category={ev.category.value}, source_type={ev.source_type.value}, "
+                    f"source_file_id={ev.source_file_id}, "
+                    f"summary='{ev.summary[:80]}...'"
                 )
 
         # 2b. Validate Milestone Claims Against Cited Evidence

@@ -17,7 +17,6 @@ for the canonical alert definitions.
 """
 
 import logging
-from typing import Optional
 
 try:
     from prometheus_client import Counter, Histogram
@@ -171,39 +170,6 @@ if PROMETHEUS_AVAILABLE:
         "extractor dispatch. Spikes indicate producer-side format drift "
         "or misuse of the page_capture intake path.",
     )
-
-    # GAP-5 Phase 1 — UploadedFile → Evidence promotion observability.
-    #
-    # Evidence is born only when the LLM emits evidence_to_add for a file
-    # (INVESTIGATING only). A file the LLM reads but never files for stays an
-    # orphan indefinitely — no milestone can advance from it. These metrics
-    # make that desync visible and establish the baseline the GAP-5 Phase 2/3
-    # behavior changes require. Labeled by ``provider`` so promotion
-    # reliability can be compared across configured LLM providers.
-    EVIDENCE_FILES_PROMOTED_TOTAL = Counter(
-        "faultmaven_evidence_files_promoted_total",
-        "Number of UploadedFiles promoted to Evidence (a new Evidence row "
-        "referencing the file's file_id was created on the current turn). "
-        "Labeled by provider.",
-        labelnames=["provider"],
-    )
-
-    EVIDENCE_ORPHAN_FILES_OBSERVED = Histogram(
-        "faultmaven_evidence_orphan_files_observed",
-        "Per-turn count of uploaded files NOT yet promoted to Evidence, "
-        "observed at the end of each INVESTIGATING turn. Labeled by provider.",
-        labelnames=["provider"],
-        buckets=(0, 1, 2, 3, 5, 8, 13, 21),
-    )
-
-    EVIDENCE_OLDEST_ORPHAN_AGE_TURNS = Histogram(
-        "faultmaven_evidence_oldest_orphan_age_turns",
-        "Age in turns (current_turn − uploaded_at_turn) of the oldest "
-        "unpromoted uploaded file, observed per INVESTIGATING turn. A rising "
-        "tail signals chronic orphans. Labeled by provider.",
-        labelnames=["provider"],
-        buckets=(0, 1, 2, 3, 5, 8, 13, 21, 34),
-    )
 else:
     EVIDENCE_DEDUP_HITS_TOTAL = _NoOpMetric()
     EVIDENCE_ORPHAN_FILES_FOUND_TOTAL = _NoOpMetric()
@@ -216,9 +182,6 @@ else:
     AGENT_TRIAGE_ESCALATION_TOTAL = _NoOpMetric()
     CASE_ENTITIES_OVERFLOW_TOTAL = _NoOpMetric()
     PAGE_CAPTURE_SHAPE_INVALID_TOTAL = _NoOpMetric()
-    EVIDENCE_FILES_PROMOTED_TOTAL = _NoOpMetric()
-    EVIDENCE_ORPHAN_FILES_OBSERVED = _NoOpMetric()
-    EVIDENCE_OLDEST_ORPHAN_AGE_TURNS = _NoOpMetric()
 
 
 __all__ = [
@@ -233,13 +196,8 @@ __all__ = [
     "AGENT_TRIAGE_ESCALATION_TOTAL",
     "CASE_ENTITIES_OVERFLOW_TOTAL",
     "PAGE_CAPTURE_SHAPE_INVALID_TOTAL",
-    "EVIDENCE_FILES_PROMOTED_TOTAL",
-    "EVIDENCE_ORPHAN_FILES_OBSERVED",
-    "EVIDENCE_OLDEST_ORPHAN_AGE_TURNS",
     "PROMETHEUS_AVAILABLE",
     "record_triage_escalation_if_same_turn",
-    "compute_promotion_snapshot",
-    "record_evidence_promotion_metrics",
 ]
 
 
@@ -280,123 +238,3 @@ def record_triage_escalation_if_same_turn(evidence, case, tool_name: str) -> boo
         return True
     except Exception:
         return False
-
-
-def compute_promotion_snapshot(case) -> dict:
-    """Compute the UploadedFile → Evidence promotion snapshot for a case
-    (GAP-5 Phase 1). Pure: reads case state, emits nothing.
-
-    Returns a dict::
-
-        {
-          "n_files": int,            # total uploaded files
-          "n_promoted": int,         # files referenced by some Evidence.source_file_id
-          "n_orphans": int,          # uploaded files with no Evidence yet
-          "promoted_this_turn": int, # files first referenced on the current turn
-          "oldest_orphan_age_turns": int,  # current_turn − min(orphan uploaded_at_turn); 0 if none
-          "orphan_file_ids": list[str],    # ids of the unpromoted files (for Phase 2/3)
-        }
-
-    "Promoted" = the file's ``file_id`` appears as some ``Evidence.source_file_id``.
-    Best-effort and crash-proof; on any structural surprise it returns a
-    zeroed snapshot so callers (telemetry, prompt hints) never fail a turn.
-    """
-    try:
-        uploaded = list(getattr(case, "uploaded_files", None) or [])
-        evidence = list(getattr(case, "evidence", None) or [])
-        current_turn = int(getattr(case, "current_turn", 0) or 0)
-
-        promoted_ids = {
-            ev.source_file_id for ev in evidence if getattr(ev, "source_file_id", None)
-        }
-        # file_ids referenced by Evidence created on the current turn
-        promoted_this_turn_ids = {
-            ev.source_file_id
-            for ev in evidence
-            if getattr(ev, "source_file_id", None)
-            and getattr(ev, "collected_at_turn", None) == current_turn
-        }
-
-        orphans = [
-            uf for uf in uploaded if getattr(uf, "file_id", None) not in promoted_ids
-        ]
-        orphan_ids = [uf.file_id for uf in orphans if getattr(uf, "file_id", None)]
-
-        oldest_age = 0
-        if orphans:
-            oldest_upload_turn = min(
-                int(getattr(uf, "uploaded_at_turn", current_turn) or current_turn)
-                for uf in orphans
-            )
-            oldest_age = max(0, current_turn - oldest_upload_turn)
-
-        n_files = len(uploaded)
-        promoted_files = [
-            uf for uf in uploaded if getattr(uf, "file_id", None) in promoted_ids
-        ]
-        return {
-            "n_files": n_files,
-            "n_promoted": len(promoted_files),
-            "n_orphans": len(orphans),
-            "promoted_this_turn": len(
-                [
-                    uf
-                    for uf in uploaded
-                    if getattr(uf, "file_id", None) in promoted_this_turn_ids
-                ]
-            ),
-            "oldest_orphan_age_turns": oldest_age,
-            "orphan_file_ids": orphan_ids,
-        }
-    except Exception:
-        return {
-            "n_files": 0,
-            "n_promoted": 0,
-            "n_orphans": 0,
-            "promoted_this_turn": 0,
-            "oldest_orphan_age_turns": 0,
-            "orphan_file_ids": [],
-        }
-
-
-def record_evidence_promotion_metrics(
-    case, provider_name: Optional[str] = None
-) -> dict:
-    """Emit GAP-5 Phase 1 promotion metrics + a structured log for a case.
-
-    Computes :func:`compute_promotion_snapshot`, emits the Prometheus metrics
-    (labeled by provider), and logs the per-case "N files, M promoted" signal
-    at INFO. Returns the snapshot so callers (e.g. the Phase 3 assist trigger)
-    can reuse it. No behavior change — observation only. Best-effort.
-    """
-    snapshot = compute_promotion_snapshot(case)
-    provider = (provider_name or "unknown").lower()
-    try:
-        if snapshot["promoted_this_turn"]:
-            EVIDENCE_FILES_PROMOTED_TOTAL.labels(provider=provider).inc(
-                snapshot["promoted_this_turn"]
-            )
-        EVIDENCE_ORPHAN_FILES_OBSERVED.labels(provider=provider).observe(
-            snapshot["n_orphans"]
-        )
-        EVIDENCE_OLDEST_ORPHAN_AGE_TURNS.labels(provider=provider).observe(
-            snapshot["oldest_orphan_age_turns"]
-        )
-        _PROMOTION_LOGGER.info(
-            "evidence_promotion_snapshot",
-            extra={
-                "case_id": getattr(case, "case_id", None),
-                "provider": provider,
-                "n_files": snapshot["n_files"],
-                "n_promoted": snapshot["n_promoted"],
-                "n_orphans": snapshot["n_orphans"],
-                "promoted_this_turn": snapshot["promoted_this_turn"],
-                "oldest_orphan_age_turns": snapshot["oldest_orphan_age_turns"],
-            },
-        )
-    except Exception:  # pragma: no cover - telemetry must never break a turn
-        pass
-    return snapshot
-
-
-_PROMOTION_LOGGER = logging.getLogger(__name__)

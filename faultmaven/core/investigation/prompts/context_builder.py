@@ -1176,65 +1176,6 @@ def _current_turn_reserve_fraction() -> float:
         return 0.5
 
 
-def _unpromoted_orphan_file_ids(case: Case) -> List[str]:
-    """file_ids of uploaded files not yet referenced by any Evidence.
-
-    "Promoted" = the file's ``file_id`` appears as some
-    ``Evidence.source_file_id`` (GAP-5). Pure/crash-proof helper shared by the
-    Phase 2 prompt notice.
-    """
-    try:
-        promoted = {
-            ev.source_file_id
-            for ev in (case.evidence or [])
-            if getattr(ev, "source_file_id", None)
-        }
-        return [
-            uf.file_id
-            for uf in (getattr(case, "uploaded_files", None) or [])
-            if getattr(uf, "file_id", None) and uf.file_id not in promoted
-        ]
-    except Exception:
-        return []
-
-
-def _unpromoted_files_notice(case: Case) -> str:
-    """GAP-5 Phase 2 — conditional reinforcement notice for orphan files.
-
-    Returns a short ``<unpromoted_files_notice>`` block when the case is
-    INVESTIGATING, the reinforcement flag is on, and at least one uploaded file
-    has not been promoted to Evidence. The notice is deliberately CONDITIONAL —
-    it asks the LLM to file ``evidence_to_add`` only for files that support a
-    claim, and to ignore the rest. It never instructs blanket promotion (that
-    would re-create the rejected claimless-stub anti-pattern). Empty string when
-    not applicable.
-    """
-    if case.state != CaseState.INVESTIGATING:
-        return ""
-    try:
-        from faultmaven.config.settings import get_settings
-
-        if not get_settings().evidence_promotion.reinforcement_enabled:
-            return ""
-    except Exception:
-        pass  # default-on if settings unavailable
-    orphan_ids = _unpromoted_orphan_file_ids(case)
-    if not orphan_ids:
-        return ""
-    ids = ", ".join(orphan_ids[:10])
-    return (
-        "<unpromoted_files_notice>\n"
-        "These uploaded files have NOT yet been recorded as evidence: "
-        f"{ids}.\n"
-        "If a file's content supports a specific claim about the symptom, "
-        "cause, mitigation, or solution, file an evidence_to_add entry for it "
-        "(set source_file_id to the file_id above). If a file does NOT support "
-        "any claim, leave it as-is — do not create evidence just to clear this "
-        "notice.\n"
-        "</unpromoted_files_notice>"
-    )
-
-
 def _render_orphan_file_block(
     uf, hash_first_seen: dict, current_turn: int, summary_only: bool = False
 ) -> str:
@@ -2511,14 +2452,6 @@ def build_investigation_context(
         model_name=model_name,
         char_budget_override=evidence_char_override,
     )
-
-    # GAP-5 Phase 2: prepend the conditional orphan-promotion notice so it
-    # rides at the TOP of the evidence block — surviving any tail-truncation
-    # the section budgeter applies. Empty unless INVESTIGATING with unpromoted
-    # files and the reinforcement flag on.
-    _orphan_notice = _unpromoted_files_notice(case)
-    if _orphan_notice:
-        evidence_str = f"{_orphan_notice}\n{evidence_str}"
 
     # 5. Hypothesis Summary
     #

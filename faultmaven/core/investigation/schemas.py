@@ -393,28 +393,6 @@ class EvidenceToAdd(BaseModel):
         return self
 
 
-class PromotionAssistResult(BaseModel):
-    """Structured output for the GAP-5 Phase 3 promotion assist.
-
-    A targeted, single-file extraction: the engine asks the LLM whether one
-    chronically-unpromoted uploaded file supports a claim. The model returns
-    either one ``EvidenceToAdd`` (claim-anchored, so promotion still originates
-    from an LLM-declared claim — never a claimless stub) or an empty list when
-    no claim applies. Deliberately minimal: no ``agent_response`` because this
-    is an internal, non-conversational call whose only product is evidence.
-    """
-
-    evidence_to_add: List[EvidenceToAdd] = Field(
-        default_factory=list,
-        description=(
-            "Zero or one evidence record for the file under review. Return an "
-            "entry ONLY if the file's content supports a specific claim about "
-            "the symptom, cause, mitigation, or solution. Return an empty list "
-            "if the file does not support any claim — do not invent one."
-        ),
-    )
-
-
 class HypothesisToAdd(BaseModel):
     """New hypothesis to track."""
 
