@@ -1,6 +1,17 @@
 # GAP-5 (Phase 1) — Legacy→Absence Evidence-Category Migration: Implementation Plan
 
-> **Status: PLAN — ready to implement, sequenced AFTER PR #478 merges.**
+> **Status: IMPLEMENTED (simplified, outright-removal). #478 merged; this work
+> on branch `docs/gap-5-evidence-promotion-plan`.**
+>
+> **Simplification applied (no users yet):** the original "readers-before-writers
+> with a transition period" framing has been collapsed. There is no production
+> data to protect, so there is **no feature flag, no deprecation period, no
+> dual-path, no compat shim**. `MITIGATION_EVIDENCE` / `SOLUTION_EVIDENCE` are
+> removed **outright in one PR** (enum value + `CATEGORY_MILESTONE_MAP` entries +
+> prompts), and the validation is re-aimed from "no regression vs. the legacy
+> path" to **"prove the clean end-state is correct."** The §2/§4/§5 sections
+> below reflect this resolved shape; struck framing from the original plan is
+> noted inline where it helps explain a decision.
 >
 > This supersedes the original GAP-5 ladder (observe → prompt-nudge → engine-assist)
 > for this phase. The nudge/assist work was implemented, reviewed, and **backed
@@ -74,12 +85,21 @@ half-migrated, internally-contradictory prompt surface.
 `MITIGATION_EVIDENCE = "mitigation_evidence"`, `SOLUTION_EVIDENCE = "solution_evidence"`.
 
 ### 1.2 READERS — **already mostly migrated** (this is the key finding)
-- **`CATEGORY_MILESTONE_MAP`** (`milestone_engine.py`): already routed off the
-  absence categories. `MITIGATION_EVIDENCE → []` and `SOLUTION_EVIDENCE → []`
-  (they fire **no** milestones today — emitting them produces inert rows);
-  `SYMPTOM_ABSENCE_EVIDENCE → [mitigation_verified, solution_verified]`;
-  `CAUSAL_ABSENCE_EVIDENCE → [solution_verified]`. So "migrate readers before
-  writers" is *largely done* on the milestone path.
+
+- **`CATEGORY_MILESTONE_MAP`** (`milestone_engine.py`): on `origin/main` the
+  legacy values already routed to nothing (`MITIGATION_EVIDENCE → []`,
+  `SOLUTION_EVIDENCE → []` — inert rows), while the absence categories routed to
+  the gate milestones (`SYMPTOM_ABSENCE_EVIDENCE → [mitigation_verified,
+  solution_verified]`, `CAUSAL_ABSENCE_EVIDENCE → [solution_verified]`).
+  **End state (this PR): the absence categories are neutralized to `[]`** — see
+  the §2 decision below. The map performs evidence *attribution* (intersection-
+  based `_infer_milestones`), and the verification gates are **not**
+  evidence-attributed: they are handshake-set by the LLM and the absence rows are
+  consumed directly by the readiness checks (`_has_causal_absence`). Mapping
+  absence → a gate milestone would have been a *second*, silent firing path. So
+  the clean end-state map is: presence categories attribute their milestones
+  (`SYMPTOM_EVIDENCE → [symptom_verified]`, `CAUSAL_EVIDENCE →
+  [root_cause_identified, solution_proposed]`); absence categories → `[]`.
 - **The one real non-milestone legacy reader:**
   `report_generation_service.py` (~`:433`) branches on
   `ev.category.value in ("causal_evidence", "solution_evidence")`. This must be
@@ -108,30 +128,38 @@ becomes a `symptom_absence` gate test), `test_evidence_source_invariant.py`,
 
 ---
 
-## 2. The behavioral DECISION POINT (resolve explicitly — do **not** assume)
+## 2. The behavioral DECISION POINT — **RESOLVED: (b) compliance-driven**
 
-This migration is **not cosmetic**, because it shifts the signal that fires the
-verification gates:
+The open question was whether each verification gate should be **(a)**
+evidence-driven (fired by absence evidence via the map), **(b)** compliance-driven
+(the LLM handshake bool), or **(c)** both.
 
-- **Today:** `mitigation_verified` / `solution_verified` are set by the LLM
-  (compliance / User-Agent handshake bool), and the legacy `mitigation_evidence` /
-  `solution_evidence` row created alongside is **decorative** (maps to `[]`). The
-  absence categories *also* fire those gates via the map — a parallel path that is
-  already wired but not consistently driven by the prompts.
-- **After migration:** the gate is fired by the LLM emitting
-  `symptom_absence_evidence` / `causal_absence_evidence`, which the map turns into
-  the milestone.
+**Decision: (b).** The gates (`mitigation_verified` / `solution_verified`) stay
+LLM-set via the User-Agent handshake / compliance signal — exactly as on
+`origin/main`. The migration changes **attribution, not firing logic**:
 
-So the open question the implementer must resolve **with the team, backed by
-persona evidence** — not silently:
+- The legacy `mitigation_evidence` / `solution_evidence` rows the prompts emitted
+  alongside the handshake were decorative (mapped to `[]`) and *contradicted* the
+  already-correct absence guidance in the same prompts. That contradiction is the
+  bug. Migrating the writers to the absence quartet collapses the dual prompt path
+  to one, so the recorded evidence finally describes what actually happened
+  (symptom relieved / cause eliminated) instead of a stage-named placeholder.
+- The absence rows are **not** wired to fire the gates. They are consumed
+  *directly* by the readiness checks (`assess_resolution_readiness` /
+  `assess_closure_readiness` via `_has_causal_absence`), which is why
+  `CATEGORY_MILESTONE_MAP` neutralizes the absence categories to `[]` (§1.2).
+  Mapping them to the gate milestones would re-introduce a second, silent firing
+  path — the opposite of the "one path" goal.
 
-> Should each verification gate be **(a)** evidence-driven (fired by absence
-> evidence), **(b)** compliance-driven (the handshake bool), or **(c)** both?
+Rejected **(c) both**: the original plan floated "(c) during a transition,
+narrow later." With no users and outright removal there is no transition to hedge
+for; (c) is exactly the dual-path this migration exists to delete. **(a)** was
+rejected for the same reason — it would move gate-firing into the map and away
+from the handshake the engine already trusts.
 
-This changes *when and how* cases verify, mitigate, and resolve. Pick deliberately,
-document the choice, and pin it with a regression test. The safest default is
-likely **(c) both** during transition (absence evidence OR the handshake bool
-fires the gate), narrowing later — but validate, don't assume.
+Pinned by `test_gap5_absence_migration.py` (absence categories map to `[]`;
+presence categories still attribute; readiness checks resolve/close off the
+absence rows).
 
 ---
 
@@ -147,32 +175,51 @@ category (or the agreed fix-worked signal). Re-run the reader grep to confirm no
 *other* code branches on the legacy categories. Tests stay green; behavior
 unchanged (legacy still emitted, still inert).
 
-**Step 2 — resolve the §2 decision** (gate-firing signal) and write it down.
+**Step 2 — resolve the §2 decision** (gate-firing signal). **Done: (b)**, written
+up in §2.
 
 **Step 3 — migrate the writers (the behavioral core).**
 Rewrite every `templates.py` legacy-emit site to the absence categories,
 consistent with the existing absence guidance. Remove the contradictory dual
 guidance so the prompt drives **one** path. This is the change that alters LLM
-behavior.
+behavior. (Notable: the TREATMENT *failure* path had no absence equivalent — a
+failed fix means the cause persists — so its `solution_evidence` row is removed
+outright, not remapped; failure is captured by the REFUTED hypothesis.)
 
-**Step 4 — behavioral validation (mandatory gate; do not skip to Step 5).**
-Shadow + persona/scenario testing across the disposition matrix
-(INQUIRY→INVESTIGATING, symptom→mitigation→solution, RESOLVED/CLOSED, mitigation-
-first, KB-resolution). **Assert the same cases reach the same dispositions** via
-the absence path as they did via the legacy path. Diff milestone progression and
-terminal transitions before/after. This is the safety gate — the whole point of
-treating GAP-5 as sensitive.
+**Step 4 — correctness validation (re-aimed; two tiers).**
+The original "shadow both paths, assert identical dispositions pre/post" gate is
+**dropped** — with outright removal there is no legacy path to diff against, and
+the goal is no longer "no regression" but "the clean end-state is correct."
+Replaced by:
 
-**Step 5 — remove the now-inert legacy.**
+- **Tier-1 — deterministic golden tests (THE MERGE GATE).** Feed canned Cases
+  with absence evidence straight through the readiness checks and assert the
+  correct terminal disposition fires: `causal_absence` → RESOLVED; `symptom_absence`
+  only → NEEDS_INFO / CLOSE (never auto-resolve); close-on-resolvable pivots to
+  RESOLVE; nothing investigated → CLOSE. Plus the source-grep / enum / map pins.
+  Lives in `tests/unit/core/investigation/test_gap5_absence_migration.py`. No
+  LLM, deterministic, runs in CI.
+- **Tier-2 — persona disposition matrix (dev correctness check, NOT a gate).**
+  The five `disp-*` scenarios in `fm-sre-simulator` exercise the same matrix
+  end-to-end against a live stack (applied-not-verified → INVESTIGATING,
+  out-of-band / KB-sourced / close-on-resolvable → RESOLVED, unverified-resolve →
+  CLOSE). Push-button: `fm-sre-simulator/scripts/run-disposition-matrix.sh`
+  (manifest `config/disposition-matrix.yaml`). Stochastic; run on whatever dev
+  stack is handy as a confidence check, not a CI blocker.
+
+**Step 5 — remove the now-inert legacy (same PR — no deprecation period).**
 Delete `MITIGATION_EVIDENCE`/`SOLUTION_EVIDENCE` from `EvidenceCategory`, their
 `CATEGORY_MILESTONE_MAP` entries, and the description strings. Check the
 `evidence_source_invariant` CHECK constraint and Pydantic validators don't
-reference them.
+reference them. Migrate the one real legacy reader
+(`report_generation_service.py`, "Confirming Evidence") to the absence category
+**before** the enum value is deleted.
 
 **Step 6 — update tests in lockstep.**
-Rework `test_mitigation_evidence_gate.py` to the absence gate; fix the other two
-pinned tests. Add a regression pin for the §2 gate-signal decision and for "no
-prompt emits a legacy category" (a source grep test).
+Rework `test_mitigation_evidence_gate.py` to a surviving category; fix the other
+two pinned tests (`test_evidence_source_invariant.py`,
+`test_surgical_strip_and_cause_state.py`). Add the regression pins for the §2
+decision and for "no prompt emits a legacy category" (source-grep test).
 
 ---
 
@@ -182,35 +229,46 @@ prompt emits a legacy category" (a source grep test).
   regression test passes.
 - `EvidenceCategory` no longer contains the legacy values; nothing references them
   (`grep -rn "MITIGATION_EVIDENCE\|SOLUTION_EVIDENCE\|mitigation_evidence\|solution_evidence" faultmaven/` is clean except intended history).
-- Reports render correctly off the absence/agreed signal.
-- **Persona/shadow: identical dispositions pre/post** across the matrix (the
-  behavioral guarantee).
-- The §2 gate-firing decision is documented and pinned by a test.
-- The graceful terminal ("nothing left to search → RESOLVED") still fires — no
-  stuck loop (regression-pin it; there is prior stuck-loop history).
+- Reports render correctly off the absence signal (Confirming Evidence reader
+  migrated to `causal_evidence` / `causal_absence_evidence`).
+- **Tier-1 golden tests pass** — the absence-driven flow reaches the correct
+  dispositions (the merge gate). `causal_absence` → RESOLVED; `symptom_absence`
+  only → CLOSE, never auto-resolve.
+- The §2 gate-firing decision (b) is documented and pinned by a test (absence →
+  `[]` in the map; presence categories still attribute).
+- The graceful terminal ("nothing left to search → CLOSE/RESOLVED") still fires —
+  no stuck loop (covered by `disp-unverified-resolve`; prior stuck-loop history).
+- Full investigation + modules suite green (no collateral regressions from the
+  enum removal).
 
 ---
 
-## 5. Sequencing & safety rules (this is sensitive engine behavior)
+## 5. Sequencing & safety rules
 
 1. **Start from a clean post-#478 tree.** One workstream; do not edit
    `templates.py`/`milestone_engine.py` concurrently with another agent.
-2. **Readers before writers** (mostly done — verify Step 1 before Step 3).
-3. **Behavioral validation (Step 4) is mandatory before enum removal (Step 5).**
-   No unit-test-only sign-off; this changes investigation outcomes.
-4. **Resolve the §2 decision deliberately** — it's the one place a silent
-   behavior change could hide.
-5. Reviewer checks the PR against §4 + the persona/shadow deltas, with particular
-   attention to the gate-signal decision and the "same dispositions" diff.
+2. **Migrate the one real reader before deleting the enum value** —
+   `report_generation_service.py` first, then the enum (§3 Step 5).
+3. **Tier-1 golden tests are the merge gate.** They prove the clean end-state is
+   correct (not "no regression vs. legacy" — there is no legacy path left to diff).
+   Tier-2 persona runs are a dev confidence check, not a blocker.
+4. **One PR, outright removal.** No feature flag, no deprecation period, no
+   dual-path, no compat shim — there are no users to protect and the dual path is
+   exactly what this migration deletes.
+5. Reviewer checks the PR against §4 + the §2 decision, with particular attention
+   to the map-neutralization (absence → `[]`) and the readiness-check reads.
 
 ---
 
-## 6. Recommended companion (separate, additive PR — not this one)
+## 6. Recommended companion (separate, additive PR — still open)
 
 The Phase-1 **observability** that was removed from #478 (promotion metrics +
 per-turn snapshot) is genuinely useful and low-risk. Land it as its **own
-metrics-only PR** *before* Step 3, to baseline promotion behavior pre/post the
-migration. Keep it out of this behavioral PR so the two are reviewed separately.
-Pair it with confirming the graceful-terminal fail-safe — these two (observe +
-fail-safe) are how we handle the irreducible "LLM just won't comply" remainder
-**without** mandating behavior in the engine.
+metrics-only PR**, kept out of this behavioral PR so the two are reviewed
+separately. With the migration now done, its value shifts from "baseline pre/post"
+to **ongoing visibility** into how often absence evidence is actually recorded
+when the gates fire — i.e. instrumenting the residual "LLM set the handshake but
+never recorded the absence row" case. Pair it with the graceful-terminal
+fail-safe (covered by `disp-unverified-resolve`): observe + fail-safe is how we
+handle the irreducible "LLM just won't comply" remainder **without** mandating
+behavior in the engine.

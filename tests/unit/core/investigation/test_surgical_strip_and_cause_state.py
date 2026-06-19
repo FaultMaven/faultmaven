@@ -328,7 +328,7 @@ class TestStructuredOutputDegradation:
                     {
                         "summary": "bad",
                         "extract": "x",
-                        "category": "solution_evidence",
+                        "category": "causal_evidence",
                         "source_type": "text",
                     },
                     # valid: source_file_id present
@@ -377,7 +377,7 @@ class TestStructuredOutputDegradation:
                     {
                         "summary": "bad",
                         "extract": "x",
-                        "category": "solution_evidence",
+                        "category": "causal_evidence",
                         "source_type": "text",
                     }
                 ]

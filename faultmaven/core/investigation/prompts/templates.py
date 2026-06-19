@@ -756,7 +756,7 @@ When your analysis reveals a new claim-relevant slice, create
 evidence records:
 - Required fields:
   * summary: Brief description of the finding
-  * category: symptom_evidence | causal_evidence | mitigation_evidence | solution_evidence
+  * category: symptom_evidence | causal_evidence | symptom_absence_evidence | causal_absence_evidence
   * source_type: logs | metrics | configuration | code | text | image | user_description
   * source_file_id: REQUIRED unless source_type=user_description.
                     Copy verbatim from the <evidence file_id="..."> or
@@ -913,11 +913,7 @@ an evidence row.
      then revisit. There is no longer a "contextual_evidence" escape
      hatch.
 
-3. Was this evidence submitted AFTER you proposed a specific action?
-   Post-mitigation action → mitigation_evidence
-   Post-solution action   → solution_evidence
-
-4. Is this evidence RE-CHECKING a previously verified symptom or cause to
+3. Is this evidence RE-CHECKING a previously verified symptom or cause to
    confirm a fix held (re-verification)? Two distinct outcomes — the
    difference decides RESOLVED vs CLOSED, so classify carefully:
    - **Symptom no longer present** (service restored, errors stopped) →
@@ -951,10 +947,9 @@ captured:
 - Required fields:
   * summary: Brief description of the finding
   * category: One of: symptom_evidence, causal_evidence,
-              mitigation_evidence, solution_evidence,
               symptom_absence_evidence, causal_absence_evidence
               (the last two are emitted on mitigation or treatment
-              re-verification — see step 4 of the decision tree).
+              re-verification — see step 3 of the decision tree).
   * source_type: What kind of data the slice is: logs, metrics,
                  configuration, code, text, image, or user_description
                  (for verbatim system-output quotes from the user's
@@ -1811,17 +1806,18 @@ goal is to stabilize the situation, NOT to find or fix the root cause.
 
 3. **Verify Effectiveness:**
    - Analyze the user's feedback on whether the fix helped
-   - If `mitigation_evidence` shows improvement or the user confirms stabilization:
+   - If the post-fix data shows improvement or the user confirms stabilization:
      1. Analyze the submitted data from the structural index in <evidence_collected>.
         Call search_file if you need specific patterns (e.g., error rate after the fix).
         Verbal confirmation ("It's stable", "errors dropped") is sufficient — no file
         required for source data.
-     2. Create a `mitigation_evidence` record in evidence_to_add:
-        summary: "Mitigation result: [what improved or stabilized, with key indicators]"
-        category: mitigation_evidence
+     2. Record a `symptom_absence_evidence` row in evidence_to_add — the
+        re-verification that the symptom is no longer present after the mitigation:
+        summary: "Symptom no longer present after the mitigation: [key indicators]"
+        category: symptom_absence_evidence
         source_type: logs | metrics | text (use text for verbal confirmation only)
-        Skip this step if the user's submitted file was already classified as
-        `mitigation_evidence` in a prior turn — do not create a duplicate.
+        Stand-alone audit row — do NOT link it to a hypothesis. Skip this step
+        if a `symptom_absence_evidence` row was already recorded in a prior turn.
      3. Set `mitigation_verified=True` in your state updates. The return to DIAGNOSIS
         happens only when this is set — do not narrate the transition without setting it.
    - ACCEPT SUBJECTIVE CONFIRMATION: "It's stabilized" or "errors dropped" is
@@ -1844,19 +1840,17 @@ do not continue proposing further fixes. Acknowledge the situation directly:
 direct intervention beyond what I can guide remotely."
 
 Offer the user exactly two DECIDE suggestions:
-1. "Accept current state and proceed to root cause" — first create a `mitigation_evidence`
-   record in evidence_to_add (summary: "Mitigation exhausted, partial or none",
-   category: mitigation_evidence, source_type: text), then set `mitigation_verified=True`
-   to return to DIAGNOSIS. The situation isn't fully stable, but root-cause work can
-   begin; set this even if mitigation is only partial.
+1. "Accept current state and proceed to root cause" — set `mitigation_verified=True`
+   to return to DIAGNOSIS. Do NOT record a `symptom_absence_evidence` row here: the
+   symptom is NOT confirmed gone (mitigation was only partial or none), so there is
+   no absence to record. The situation isn't fully stable, but root-cause work can
+   begin; set the gate even though mitigation is only partial.
 2. "Escalate to a human expert" — acknowledge the investigation has hit its limit and
    a specialist with direct system access is needed.
 
 Do NOT continue proposing further variants after offering this choice.
 
 **EVIDENCE TYPES FOR THIS STAGE:**
-- **mitigation_evidence**: Data showing whether the temporary fix worked
-  (post-fix metrics, error rates, user confirmation of improvement)
 - **symptom_absence_evidence**: Re-verification row confirming the symptom is
   no longer present after the mitigation (service restored). This is the
   absence category that belongs to a MITIGATION — it relieves the symptom.
@@ -1905,11 +1899,15 @@ verify the outcome.
    - Evidence submitted: assess it from the structural index in <evidence_collected>.
      Call search_file if you need specific patterns (e.g., error rate after the fix).
    - No evidence yet: ask once for post-fix metrics, error rates, or user observation
-   - Outcome confirmed: Create a solution_evidence record in evidence_to_add:
-       summary: "Fix verified: [what resolved and how — key metrics, log clearing, etc.]"
-       category: solution_evidence
+   - Outcome confirmed (the cause is verifiably gone): record a
+     `causal_absence_evidence` row in evidence_to_add — the positive proof the
+     ROOT CAUSE is eliminated (the bar for RESOLVED; see COMPLETION):
+       summary: "Root cause no longer present after the fix: [what resolved and how]"
+       category: causal_absence_evidence
        source_type: logs | metrics | text (use text for verbal confirmation only)
-     Then → Proceed to COMPLETION
+     Stand-alone audit row — do NOT link it to a hypothesis. If only the symptom
+     was relieved while the cause persists, record `symptom_absence_evidence`
+     instead and propose CLOSED (see COMPLETION). Then → Proceed to COMPLETION
    - Partial success: → Identify what remains and provide specific next steps to complete
      the fix (SUGGEST, don't execute — NEVER say "I will run" or "Let me execute")
    - ACCEPT SUBJECTIVE CONFIRMATION: "It's working now" or "looks good" is sufficient
@@ -1957,7 +1955,7 @@ REQUIRED EMISSIONS IN THE SAME TURN:
      high-confidence by construction)
    evidence_ids: include the IDs of the diagnostic evidence rows from
      prior turns that matched the Cause's Indicator entries. Do NOT
-     reference the same-turn solution_evidence row — its id is not
+     reference the same-turn causal_absence_evidence row — its id is not
      resolvable at write-time.
    ```
 
@@ -2033,11 +2031,11 @@ Extended diagnosis is structurally different from initial DIAGNOSIS:
 The process:
 
 1. **Failure Analysis** — What does the failure tell us?
-   First, record the failed outcome: create a solution_evidence record in evidence_to_add:
-     summary: "Fix [description] failed — [what was observed, e.g., errors persist, no change]"
-     category: solution_evidence
-     source_type: logs | metrics | text
-   Then determine the cause of failure:
+   Do NOT create an evidence row for the failed fix: a failure is not an
+   "absence" (the cause persists), and the absence categories record only a
+   CONFIRMED fix. The failed outcome is recorded by REFUTING the disproven
+   hypothesis in step 4 (state=REFUTED with a refutation_reason citing the
+   failed fix). Determine the cause of failure:
    - Was it an implementation error (wrong command, typo, missing step)?
      → If so, correct the approach and re-propose. No further evidence needed.
    - Or does it disprove the original root cause hypothesis?
@@ -2053,8 +2051,8 @@ The process:
    This may take multiple turns — don't rush to a new solution without evidence.
    Evidence classification: any new diagnostic data requested here to build a revised
    hypothesis MUST be classified as causal_evidence and linked to the new hypothesis.
-   Do NOT classify it as solution_evidence — solution_evidence only records whether
-   a fix worked; it cannot be evaluated against a hypothesis.
+   Do NOT classify it as an absence category — absence rows record a CONFIRMED fix
+   (the cause verifiably gone), not diagnostic data feeding a new hypothesis.
 
 4. **New Hypothesis & Solution** — Once you have new evidence:
    - Refute the disproven hypothesis: set state=REFUTED with refutation_reason
@@ -2072,8 +2070,6 @@ The process:
      for the user to execute the new fix and submit results before looping back to Verify.
 
 **EVIDENCE TYPES FOR THIS STAGE:**
-- **solution_evidence**: Data showing whether a fix worked
-  (post-fix metrics, error rates, user confirmation, clean logs)
 - **causal_absence_evidence**: Re-verification row confirming the ROOT CAUSE
   itself is no longer present after the permanent fix (the specific cause you
   identified is verifiably gone — not just the symptom relieved). The REQUIRED

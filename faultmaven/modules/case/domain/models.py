@@ -1313,18 +1313,25 @@ class EvidenceCategory(str, Enum):
     """
     Evidence classification by investigation purpose.
 
-    Six claim-attached categories: the presence/absence verification
-    quartet (``symptom_evidence``, ``causal_evidence``,
-    ``symptom_absence_evidence``, ``causal_absence_evidence``) plus two
-    legacy stage-completion categories (``mitigation_evidence``,
-    ``solution_evidence``) retained from the post-010 model and slated
-    for removal once prompts stop emitting them. Every row is the LLM's
-    deliberate decision to record a specific extract as evidence for a
-    specific claim, created only during INVESTIGATING. Contextual data
-    lives on ``uploaded_files`` — no evidence row is needed until the
-    agent extracts a claim-relevant slice. Rejection is expressed as the
-    absence of an evidence row; hypothesis-level refutation lives on
-    ``hypothesis_evidence.stance``.
+    Four claim-attached categories forming the presence/absence
+    verification quartet: ``symptom_evidence`` (symptom present),
+    ``causal_evidence`` (cause present), ``symptom_absence_evidence``
+    (symptom gone after a fix), ``causal_absence_evidence`` (cause gone
+    after a fix). Every row is the LLM's deliberate decision to record a
+    specific extract as evidence for a specific claim, created only during
+    INVESTIGATING. Contextual data lives on ``uploaded_files`` — no
+    evidence row is needed until the agent extracts a claim-relevant
+    slice. Rejection is expressed as the absence of an evidence row;
+    hypothesis-level refutation lives on ``hypothesis_evidence.stance``.
+
+    The verification gates (``mitigation_verified`` / ``solution_verified``)
+    are NOT driven by an evidence category — they are set by the LLM via the
+    User-Agent Handshake / compliance detection. The absence rows are the
+    durable audit trail that the readiness checks consult
+    (``assess_resolution_readiness`` via ``_has_causal_absence``) to decide
+    RESOLVED vs CLOSED. (The pre-migration ``mitigation_evidence`` /
+    ``solution_evidence`` stage-completion categories were removed in the
+    GAP-5 legacy→absence migration.)
     """
 
     SYMPTOM_EVIDENCE = "symptom_evidence"
@@ -1355,33 +1362,6 @@ class EvidenceCategory(str, Enum):
     - Config changes (for "misconfiguration" hypothesis)
 
     Advances Milestones: root_cause_identified
-    """
-
-    MITIGATION_EVIDENCE = "mitigation_evidence"
-    """
-    Shows whether a temporary fix worked.
-
-    Purpose: Verify mitigation effectiveness during MITIGATION stage.
-
-    Examples:
-    - Post-mitigation metrics showing improvement
-    - Error rates dropping after temporary fix
-    - User confirmation that bleeding stopped
-    - Logs showing mitigation after workaround
-    """
-
-    SOLUTION_EVIDENCE = "solution_evidence"
-    """
-    Shows whether a permanent fix worked.
-
-    Purpose: Verify solution effectiveness during TREATMENT stage.
-
-    Examples:
-    - Error rate after rollback (before/after comparison)
-    - Latency metrics after optimization
-    - Resource usage after scaling
-    - Success rate after config change
-    - User confirmation that fix resolved the problem
     """
 
     SYMPTOM_ABSENCE_EVIDENCE = "symptom_absence_evidence"
@@ -1753,9 +1733,9 @@ class Evidence(BaseModel):
     # ============================================================
     category: EvidenceCategory = Field(
         description=(
-            "Claim-anchored category declared by the LLM: "
-            "SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | "
-            "MITIGATION_EVIDENCE | SOLUTION_EVIDENCE"
+            "Claim-anchored category declared by the LLM (verification "
+            "quartet): SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | "
+            "SYMPTOM_ABSENCE_EVIDENCE | CAUSAL_ABSENCE_EVIDENCE"
         )
     )
 
