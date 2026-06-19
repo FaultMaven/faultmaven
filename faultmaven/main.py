@@ -288,6 +288,16 @@ async def lifespan(app: FastAPI):
 
         validate_deployment_coherence(settings)
 
+        # Fail fast if no LLM provider was explicitly chosen, or the chosen
+        # provider's credential is missing. There is no default provider — a
+        # silent default would only fail later, mid-turn, with an opaque error.
+        # Skipped in test environments (pytest / SKIP_SERVICE_CHECKS), which
+        # boot the app without real credentials.
+        if not _is_test_environment(settings):
+            from .config.llm_validation import validate_llm_provider_credentials
+
+            validate_llm_provider_credentials(settings)
+
         # Validate workers configuration for in-memory storage
         workers = settings.server.workers
         storage_type = (settings.database.session_storage_type or "inmemory").lower()
@@ -1428,12 +1438,16 @@ if _is_debug_enabled(settings=_debug_settings):
                 prompt_budget = {
                     "provider": rb.provider,
                     "model": rb.model,
+                    # The budget FaultMaven actually fills (PROMPT_TARGET_TOKENS,
+                    # clamped to the window when known).
+                    "prompt_target_tokens": rb.prompt_target,
+                    # Hard ceiling + inputs: present only when the window is
+                    # known; null means we trusted the configured target.
+                    "window_known": rb.window_known,
                     "context_window": rb.context_window,
                     "response_reserve": rb.response_reserve,
                     "hard_prompt_budget": rb.prompt_budget,
-                    "soft_prompt_target": rb.prompt_target,
                     "matched_registry_key": rb.matched_key,
-                    "used_conservative_default": rb.used_default,
                 }
             except Exception as budget_exc:  # pragma: no cover - best effort
                 prompt_budget = {"error": str(budget_exc)}

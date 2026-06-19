@@ -294,6 +294,31 @@ def _apply_stage_gate_side_effects(
     metadata["progress_made"] = True
 
 
+def _is_context_length_error(exc: Exception) -> bool:
+    """True if *exc* is a provider context-length / prompt-too-long rejection.
+
+    Provider-agnostic: the gateway may enforce a smaller window than our registry
+    estimate (proxy/aggregator/reduced-context serving). We classify ONLY on
+    length-specific phrases — deliberately NOT on a bare ``400 + "token"`` or the
+    generic Pydantic phrase ``"string too long"``, which fire on ordinary
+    request-validation errors and would trigger needless fallback retries.
+    """
+    msg = str(getattr(exc, "message", "") or exc).lower()
+    phrases = (
+        "context length",
+        "context window",
+        "maximum context",
+        "context_length_exceeded",
+        "too many tokens",
+        "reduce the length of the messages",
+        "prompt is too long",
+        "input is too long",
+        "maximum context length",
+        "exceeds the maximum context",
+    )
+    return any(p in msg for p in phrases)
+
+
 def _create_evidence_from_to_add(
     case: "Case",
     ev_item: Any,
@@ -1905,6 +1930,7 @@ class MilestoneEngine:
             **tools_kwargs,
             redaction_ctx=redaction_ctx,
             case=case,
+            user_message=user_message,
         )
 
         await redaction_ctx.save()
@@ -1968,6 +1994,7 @@ class MilestoneEngine:
         metadata: dict[str, Any],
         provider_name: Optional[str],
         model_name: Optional[str],
+        redaction_ctx: Any | None = None,
     ) -> int:
         """Promote chronically-orphaned uploaded files via a targeted LLM call.
 
@@ -2024,7 +2051,9 @@ class MilestoneEngine:
         milestones_this_turn = metadata.get("milestones_completed", [])
         for uf in chronic[: cfg.assist_max_per_turn]:
             try:
-                items = await self._run_promotion_extraction(case, uf)
+                items = await self._run_promotion_extraction(
+                    case, uf, redaction_ctx=redaction_ctx
+                )
             except Exception as exc:
                 logger.warning(
                     "Evidence-promotion assist extraction failed for file %s "
@@ -2058,13 +2087,20 @@ class MilestoneEngine:
             )
         return promoted
 
-    async def _run_promotion_extraction(self, case: "Case", uploaded_file: Any) -> list:
+    async def _run_promotion_extraction(
+        self, case: "Case", uploaded_file: Any, redaction_ctx: Any | None = None
+    ) -> list:
         """One targeted LLM extraction for a single orphan file (Phase 3).
 
         Returns a (possibly empty) list of ``EvidenceToAdd``. Isolated so tests
         can simulate the LLM without a provider. The prompt scopes the model to
         a single file's structural index and the case problem, and instructs it
         to return at most one claim-anchored evidence record or nothing.
+
+        ``redaction_ctx`` MUST be threaded through: this prompt embeds raw file
+        content, so it goes through the same case-scoped PII redaction as every
+        other LLM call on the turn (without it the file content would reach the
+        provider un-redacted).
         """
         from faultmaven.core.investigation.prompts.context_builder import (
             _parse_extract,
@@ -2100,6 +2136,7 @@ class MilestoneEngine:
         response_obj = await self._generate_structured_output(
             prompt,
             PromotionAssistResult,
+            redaction_ctx=redaction_ctx,
             case=case,
         )
         return list(getattr(response_obj, "evidence_to_add", None) or [])
@@ -2957,6 +2994,7 @@ class MilestoneEngine:
                     force_tool_use=force_tools,
                     redaction_ctx=redaction_ctx,
                     case=case,
+                    user_message=user_message,
                 )
             else:
                 response_obj = await self._generate_structured_output(
@@ -2964,6 +3002,7 @@ class MilestoneEngine:
                     schema_model,
                     redaction_ctx=redaction_ctx,
                     case=case,
+                    user_message=user_message,
                 )
 
             # Debug: Log what type was actually returned
@@ -2985,7 +3024,11 @@ class MilestoneEngine:
             # so any promoted evidence participates in the rest of this turn.
             try:
                 await self._maybe_assist_evidence_promotion(
-                    case_updated, metadata, provider_name, model_name
+                    case_updated,
+                    metadata,
+                    provider_name,
+                    model_name,
+                    redaction_ctx=redaction_ctx,
                 )
             except Exception as _assist_exc:  # never break a turn on assist
                 logger.warning(
@@ -4960,6 +5003,67 @@ class MilestoneEngine:
         return fixed_obj
 
     async def _generate_structured_output(
+        self,
+        prompt: str,
+        schema_model: Any,
+        investigation_tools: list[dict] | None = None,
+        tool_context: Any | None = None,
+        force_tool_use: bool = False,
+        redaction_ctx: Any | None = None,
+        case: Any | None = None,
+        user_message: Optional[str] = None,
+    ) -> BaseInteractionResponse:
+        """Structured-output generation with runtime context-length recovery.
+
+        Wraps the provider call so that a context-length rejection from the LLM
+        gateway (which can enforce a smaller window than our registry estimate —
+        e.g. a corporate proxy or aggregator) does NOT permanently block the
+        case. On such an error it recompiles the turn with the minimal
+        ``FALLBACK_*`` prompt and retries once. See the context-management design
+        doc §7.1. ``user_message`` is required to build the fallback; when it is
+        not supplied the recovery is skipped and the error propagates.
+        """
+        try:
+            return await self._generate_structured_output_inner(
+                prompt,
+                schema_model,
+                investigation_tools=investigation_tools,
+                tool_context=tool_context,
+                force_tool_use=force_tool_use,
+                redaction_ctx=redaction_ctx,
+                case=case,
+            )
+        except Exception as exc:
+            if (
+                user_message is not None
+                and case is not None
+                and _is_context_length_error(exc)
+            ):
+                from faultmaven.core.investigation.prompts.templates import (
+                    get_fallback_prompt_for_case,
+                )
+
+                logger.warning(
+                    "prompt_context_error_recovered: provider rejected prompt as "
+                    "too long (case %s); retrying once with the minimal fallback "
+                    "prompt. Original error: %s",
+                    getattr(case, "case_id", "?"),
+                    exc,
+                )
+                fb_prompt = get_fallback_prompt_for_case(case, user_message)
+                # Minimal retry: drop tools to shrink the request further.
+                return await self._generate_structured_output_inner(
+                    fb_prompt,
+                    schema_model,
+                    investigation_tools=None,
+                    tool_context=None,
+                    force_tool_use=False,
+                    redaction_ctx=redaction_ctx,
+                    case=case,
+                )
+            raise
+
+    async def _generate_structured_output_inner(
         self,
         prompt: str,
         schema_model: Any,

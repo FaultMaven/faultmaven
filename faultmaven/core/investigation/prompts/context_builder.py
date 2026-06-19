@@ -660,34 +660,59 @@ class TokenBudget:
     def has_budget(self, text: str) -> bool:
         return self.used_tokens + self.count(text) <= self.limit_tokens
 
-    def use(self, text: str) -> str:
+    def _truncate_to(self, text: str, token_limit: int, keep: str = "head") -> str:
+        """Truncate *text* to ~``token_limit`` tokens with a marker.
+
+        ``keep="head"`` keeps the start (default); ``keep="tail"`` keeps the end
+        (used for conversation history, whose most-recent turns are at the end).
+        Never returns "" for non-empty input above a 2-token floor — it always
+        leaves at least a bare ``[...]`` marker, so a section is never *silently*
+        dropped (INV-4). Does not mutate ``used_tokens``.
+        """
+        if not text or token_limit <= 2:
+            return ""
+        marker = (
+            "\n[...truncated...]"
+            if token_limit < 30
+            else "\n[... Content truncated due to context limit ...]"
+        )
+        marker_tokens = self.count(marker)
+        # Only room for (about) the marker → emit a minimal non-silent trace.
+        if token_limit <= marker_tokens + 1:
+            return "[...]"
+
+        def _slice(n: int) -> str:
+            return text[-n:] if keep == "tail" else text[:n]
+
+        char_budget = max(20, (token_limit - marker_tokens) * 4)
+        truncated = _slice(char_budget)
+        while truncated and self.count(truncated + marker) > token_limit:
+            char_budget = int(char_budget * 0.85)
+            truncated = _slice(char_budget)
+        return (truncated + marker) if truncated else "[...]"
+
+    def use(self, text: str, cap: Optional[int] = None) -> str:
+        """Admit *text* against the shared budget, optionally capped.
+
+        ``cap`` is a per-section token ceiling (priority-greedy allocation): the
+        section may take at most ``min(remaining_global, cap)`` tokens. Without a
+        cap it may take all remaining budget. Over-limit content is truncated
+        with a marker (never silently dropped — see INV-4).
+        """
         if not text:
             return text
+        allowance = self.limit_tokens - self.used_tokens
+        if cap is not None:
+            allowance = min(allowance, cap)
+        if allowance <= 0:
+            return ""
         tokens = self.count(text)
-        if self.used_tokens + tokens <= self.limit_tokens:
+        if tokens <= allowance:
             self.used_tokens += tokens
             return text
-        # Partial fit: truncate to the remaining token budget. Convert the
-        # remaining token allowance back to an approximate char slice (the
-        # tokenizer is not invertible) and verify the slice fits, shrinking if
-        # the content is token-dense.
-        remaining = self.limit_tokens - self.used_tokens
-        if remaining <= 25:  # not enough room for a useful slice + marker
-            self.used_tokens = self.limit_tokens
-            return ""
-        marker = "\n[... Content truncated due to context limit ...]"
-        # Reserve ~15 tokens for the marker; approximate 4 chars/token for the
-        # initial slice, then trim down until the measured count fits.
-        char_budget = max(50, (remaining - 15) * 4)
-        truncated = text[:char_budget]
-        while truncated and self.count(truncated + marker) > remaining:
-            char_budget = int(char_budget * 0.85)
-            truncated = text[:char_budget]
-        if not truncated:
-            self.used_tokens = self.limit_tokens
-            return ""
-        result = truncated + marker
-        self.used_tokens += self.count(result)
+        result = self._truncate_to(text, allowance)
+        if result:
+            self.used_tokens += self.count(result)
         return result
 
 
@@ -1276,6 +1301,7 @@ def _build_evidence_context(
     user_query: str = "",
     provider_name: Optional[str] = None,
     model_name: Optional[str] = None,
+    char_budget_override: Optional[int] = None,
 ) -> str:
     """
     Build the evidence context section using a three-tier sliding window.
@@ -1434,7 +1460,16 @@ def _build_evidence_context(
 
     # Model-aware budget; falls back to the module-level char cap when the
     # provider is unknown (read live so test monkeypatching still drives it).
-    effective_total_chars = _effective_evidence_char_budget(provider_name, model_name)
+    # Under the allocator, the caller passes the evidence section's actual
+    # allotment (char_budget_override) so the block sizes itself to what it will
+    # be granted — not the full model budget — avoiding the double-budget where
+    # evidence self-sizes large and is then re-truncated, and so the current-turn
+    # floor below is computed against the real allotment (INV-1).
+    effective_total_chars = (
+        char_budget_override
+        if char_budget_override is not None
+        else _effective_evidence_char_budget(provider_name, model_name)
+    )
     current_turn_floor_chars = max(
         EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM,
         int(effective_total_chars * _current_turn_reserve_fraction()),
@@ -2089,6 +2124,250 @@ def _build_evidence_needs_block(case: Case) -> str:
     return "\n".join(lines)
 
 
+def _build_compact_history(case: Case, user_message_safe: str) -> str:
+    """State-summary + previous-turn + current-turn (the low-fidelity history).
+
+    Extracted so the allocator can choose between this and the fuller graduated
+    history by budget pressure. Crucially, this *always* includes the current
+    turn (and the previous turn when available), so even at the lowest fidelity
+    conversational continuity is preserved — this is what lets the allocator
+    guarantee continuity via the conversation section's floor instead of a
+    separately-reserved last exchange.
+    """
+    recent_history = _build_state_summary(case)
+    if case.turn_history:
+        last_turn = case.turn_history[-1]
+        recent_history += "\n\n<previous_turn>\n"
+        if last_turn.evidence_added:
+            recent_history += (
+                f"User provided: {len(last_turn.evidence_added)} evidence artifacts\n"
+            )
+        if last_turn.agent_response_summary:
+            recent_history += f"Agent: {last_turn.agent_response_summary[:200]}\n"
+        recent_history += "</previous_turn>"
+    recent_history += "\n\n<current_turn>\n"
+    recent_history += f"User: {user_message_safe}\n"
+    recent_history += "</current_turn>"
+    return recent_history
+
+
+# =============================================================================
+# Priority-greedy budget allocator (the token-budget allocation model).
+# See docs/architecture/investigation-engine/prompt-token-budget-allocation.md
+# =============================================================================
+def _cap_text_tokens(
+    text: str,
+    max_tokens: int,
+    provider_name: Optional[str],
+    model_name: Optional[str],
+) -> str:
+    """Bound a reserved item to ``max_tokens`` (truncate with a marker)."""
+    if not text:
+        return text
+    tb = TokenBudget(max_tokens, provider_name=provider_name, model_name=model_name)
+    return tb.use(text)
+
+
+def _allocate_sections(
+    *,
+    budget: "TokenBudget",
+    case: Case,
+    provider_name: Optional[str],
+    model_name: Optional[str],
+    # reserved (bounded, never trimmed)
+    identity: str,
+    core_context: str,
+    milestones_str: str,
+    inquiry_state_str: str,
+    pending_action_str: str,
+    user_message_safe: str,
+    feedback_str: str,
+    # variable sections (priority order is fixed below)
+    evidence_str: str,
+    graduated_history: str,
+    compact_history: str,
+    journal_str: str,
+    conclusion_str: str,
+    kb_str: str,
+    hypothesis_str: str,
+    evidence_needs_str: str,
+    entity_highlights_str: str,
+) -> Dict[str, str]:
+    """Priority-greedy allocation of ``budget`` across the prompt sections.
+
+    Reserve first (bounded), then two passes over the variable sections in
+    strict priority order: pass A grants each its floor, pass B grows each up to
+    its cap with the remaining budget (sequential, not proportional). Continuity
+    is guaranteed by the conversation floor (its lowest fidelity, the compact
+    history, always carries the latest turn); INV-1 (current-turn upload) is
+    guaranteed by evidence's floor + its internal current-turn render.
+    """
+    from faultmaven.config.settings import get_settings
+
+    try:
+        pb = get_settings().prompt_budget
+        user_cap = pb.user_message_max_tokens
+        feedback_cap = pb.system_feedback_max_tokens
+        journal_cap = pb.journal_max_tokens
+    except Exception:
+        user_cap, feedback_cap, journal_cap = 4000, 1500, 1500
+
+    try:
+        evidence_fraction = (
+            get_settings().investigation_context.evidence_budget_fraction
+        )
+    except Exception:
+        evidence_fraction = 0.6
+
+    ctx: Dict[str, str] = {}
+
+    # --- 1. Reserve (bounded, always present, counted first) ---
+    def _reserve(text: str) -> str:
+        if text:
+            budget.used_tokens += budget.count(text)
+        return text
+
+    capped_user = _cap_text_tokens(
+        user_message_safe, user_cap, provider_name, model_name
+    )
+    capped_feedback = _cap_text_tokens(
+        feedback_str, feedback_cap, provider_name, model_name
+    )
+    ctx["identity"] = _reserve(identity)
+    ctx["core_context"] = _reserve(core_context)
+    ctx["milestones"] = _reserve(milestones_str)
+    ctx["inquiry_state"] = _reserve(inquiry_state_str)
+    ctx["pending_action"] = _reserve(pending_action_str)
+    ctx["system_feedback"] = _reserve(capped_feedback)
+    ctx["user_message"] = _reserve(capped_user)
+
+    reserve_tokens = budget.used_tokens
+    section_budget = max(0, budget.limit_tokens - reserve_tokens)
+
+    # --- 2. Section sizes, measured ONCE and reused (no re-tokenization) ---
+    # Conversation has two fidelities: the fuller graduated history, and the
+    # compact one (which ALWAYS carries the latest turn). Both are sized here;
+    # the renderer in pass B picks the largest that fits its allotment and, when
+    # it must truncate, keeps the TAIL so the most-recent turns survive.
+    graduated_tokens = budget.count(graduated_history)
+    compact_tokens = budget.count(compact_history)
+    evidence_cap = int(section_budget * evidence_fraction)
+    evidence_tokens = budget.count(evidence_str) if evidence_str else 0
+    # Evidence floor: guarantee room for at least the current-turn render so
+    # INV-1 holds in the normal path. Capped so it cannot, on its own, starve
+    # the conversation continuity floor that follows it in priority.
+    evidence_floor = min(
+        evidence_tokens,
+        EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM // 4,
+        max(0, section_budget - compact_tokens),
+    )
+
+    # (key, text, size, floor, cap) in PRIORITY order. Conversation uses the
+    # graduated size for sizing; its floor is the compact size (continuity).
+    variable = [
+        (
+            "evidence",
+            evidence_str,
+            evidence_tokens,
+            evidence_floor,
+            max(evidence_cap, evidence_floor),
+        ),
+        (
+            "conversation_history",
+            graduated_history,
+            graduated_tokens,
+            min(compact_tokens, section_budget),
+            section_budget,
+        ),
+        (
+            "investigation_journal",
+            journal_str,
+            budget.count(journal_str),
+            0,
+            journal_cap,
+        ),
+        (
+            "working_conclusion",
+            conclusion_str,
+            budget.count(conclusion_str),
+            0,
+            section_budget,
+        ),
+        ("kb_results", kb_str, budget.count(kb_str), 0, section_budget),
+        ("hypotheses", hypothesis_str, budget.count(hypothesis_str), 0, section_budget),
+        (
+            "evidence_needs",
+            evidence_needs_str,
+            budget.count(evidence_needs_str),
+            0,
+            section_budget,
+        ),
+        (
+            "entity_highlights",
+            entity_highlights_str,
+            budget.count(entity_highlights_str),
+            0,
+            section_budget,
+        ),
+    ]
+
+    # Pass A — pre-reserve floors (highest priority first, while budget remains)
+    reserved_floor: Dict[str, int] = {}
+    remaining = section_budget
+    for key, _text, size, floor, _cap in variable:
+        grant = min(floor, size, remaining)
+        reserved_floor[key] = grant
+        remaining -= grant
+
+    # Pass B — strict-priority sequential greedy fill up to each cap
+    for key, text, size, _floor, cap in variable:
+        want = min(size, cap)
+        floor_grant = reserved_floor[key]
+        take_extra = min(max(0, want - floor_grant), remaining)
+        alloc = floor_grant + take_extra
+        remaining -= take_extra
+
+        if key == "conversation_history":
+            # Continuity: pick the largest fidelity that fits; if even compact
+            # must be cut, keep the TAIL (latest turns are at the end).
+            if alloc <= 0:
+                rendered = ""
+            elif alloc >= graduated_tokens:
+                rendered = graduated_history
+            elif alloc >= compact_tokens:
+                rendered = compact_history
+            else:
+                rendered = budget._truncate_to(compact_history, alloc, keep="tail")
+        elif not text or alloc <= 0:
+            rendered = ""
+        elif size <= alloc:
+            rendered = text
+        else:
+            rendered = budget._truncate_to(text, alloc)
+
+        ctx[key] = rendered
+        # Reuse the known size when the section was admitted whole (no recount).
+        if rendered is text:
+            budget.used_tokens += size
+        elif rendered:
+            budget.used_tokens += budget.count(rendered)
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "prompt_allocation_v2",
+            extra={
+                "case_id": case.case_id,
+                "provider": provider_name,
+                "model": model_name,
+                "resolved_limit_tokens": budget.limit_tokens,
+                "reserve_tokens": reserve_tokens,
+                "section_budget_tokens": section_budget,
+                "used_tokens": budget.used_tokens,
+            },
+        )
+    return ctx
+
+
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -2100,6 +2379,7 @@ def build_investigation_context(
     enable_stage_specific_loading: bool = True,
     processing_mode: Optional[str] = None,
     entity_highlights: Optional[str] = None,
+    use_allocator: bool = False,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
@@ -2209,12 +2489,27 @@ def build_investigation_context(
     # Tier B (older data, summary only), Tier C (user text, summary only).
     # Fixes "I don't have access to file content" bug by including
     # structural indexes in the LLM context for recent evidence.
+    # Under the allocator, size the evidence block to its actual allotment
+    # (≈ evidence_fraction of the section budget) rather than the full model
+    # budget — see _build_evidence_context (avoids the double-budget).
+    evidence_char_override = None
+    if use_allocator and max_tokens:
+        try:
+            from faultmaven.config.settings import get_settings
+
+            _frac = get_settings().investigation_context.evidence_budget_fraction
+        except Exception:
+            _frac = 0.6
+        evidence_char_override = max(
+            2 * EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM, int(max_tokens * _frac * 4)
+        )
     evidence_str = _build_evidence_context(
         case,
         processing_mode=processing_mode,
         user_query=user_message_safe,
         provider_name=provider_name,
         model_name=model_name,
+        char_budget_override=evidence_char_override,
     )
 
     # GAP-5 Phase 2: prepend the conditional orphan-promotion notice so it
@@ -2503,26 +2798,40 @@ def build_investigation_context(
     evidence_needs_str = _build_evidence_needs_block(case)
 
     # =====================================================================
-    # Priority-ordered budget allocation (GAP-2)
+    # Budget allocation
     # =====================================================================
-    # A single shared token budget bounds the SUM of the dynamic sections.
-    # Sections are allocated highest-value first, so when the budget tightens
-    # the lowest-value content (entity highlights, journal) is trimmed before
-    # the irreplaceable content (evidence, recent conversation).
-    #
-    #   Tier 0 — always-included (reserved, never trimmed): the structural /
-    #     safety-adjacent blocks + the user's own message + last-turn system
-    #     feedback. These are non-negotiable; they are counted against the
-    #     budget so lower tiers see the true remaining space.
-    #   Tier 1+ — trimmable, in priority order: evidence (carries the
-    #     current-turn floor, which is protected inside _build_evidence_context)
-    #     > recent conversation > working conclusion > KB > hypotheses >
-    #     evidence needs > journal > entity highlights.
-    #
-    # The whole-prompt accountant in get_prompt_for_case (GAP-2/GAP-3) measures
-    # the assembled total (these sections + the fixed template) against the
-    # model window and re-assembles at a tighter budget / falls back on
-    # overflow.
+    if use_allocator:
+        # Priority-greedy allocator (the token-budget allocation model). Needs
+        # both history fidelities so it can pick the one that fits; the compact
+        # one is the continuity floor (always carries the latest turn).
+        compact_history = _build_compact_history(case, user_message_safe)
+        ctx = _allocate_sections(
+            budget=budget,
+            case=case,
+            provider_name=provider_name,
+            model_name=model_name,
+            identity=identity,
+            core_context=core_context,
+            milestones_str=milestones_str,
+            inquiry_state_str=inquiry_state_str,
+            pending_action_str=pending_action_str,
+            user_message_safe=user_message_safe,
+            feedback_str=feedback_str,
+            evidence_str=evidence_str,
+            graduated_history=recent_history,
+            compact_history=compact_history,
+            journal_str=journal_str,
+            conclusion_str=conclusion_str,
+            kb_str=kb_str,
+            hypothesis_str=hypothesis_str,
+            evidence_needs_str=evidence_needs_str,
+            entity_highlights_str=entity_highlights_str,
+        )
+        return ctx
+
+    # ---- Legacy path (priority-ordered single-pass; unchanged behavior) ----
+    # Tier 0 reserved (counted, never trimmed); Tier 1+ trimmed in priority order
+    # once the shared budget is spent.
     def _reserve(text: str) -> str:
         """Include *text* unconditionally, counting it against the budget."""
         if text:
@@ -2530,7 +2839,6 @@ def build_investigation_context(
         return text
 
     ctx: Dict[str, str] = {}
-    # Tier 0 — reserved (order within the tier does not matter; none are trimmed)
     ctx["identity"] = _reserve(identity)
     ctx["core_context"] = _reserve(core_context)
     ctx["milestones"] = _reserve(milestones_str)
@@ -2552,7 +2860,7 @@ def build_investigation_context(
     ctx["entity_highlights"] = budget.use(entity_highlights_str)
 
     # Per-turn structured log of the section-by-section token allocation and
-    # the running total vs the section budget (GAP-2 observability).
+    # the running total vs the section budget.
     if logger.isEnabledFor(logging.DEBUG):
         section_tokens = {k: budget.count(v) for k, v in ctx.items() if v}
         logger.debug(

@@ -157,9 +157,15 @@ class LLMSettings(BaseSettings):
         default=None, validation_alias="LLM_ROUTER_CLASS"
     )
 
-    # Task-specific provider selection
+    # Task-specific provider selection.
+    # NOTE: this default is a non-load-bearing placeholder so Settings() can be
+    # constructed in tests/tools without env. There is NO real default provider:
+    # app startup requires CHAT_PROVIDER to be explicitly set AND its credential
+    # present, and hard-fails otherwise (see config/llm_validation.py). Do not
+    # rely on this value — a deployment that never sets CHAT_PROVIDER refuses to
+    # boot rather than silently picking a provider for which it has no key.
     provider: LLMProvider = Field(
-        default=LLMProvider.FIREWORKS, validation_alias="CHAT_PROVIDER"
+        default=LLMProvider.OPENAI, validation_alias="CHAT_PROVIDER"
     )
     multimodal_provider: Optional[LLMProvider] = Field(default=None)
     synthesis_provider: Optional[LLMProvider] = Field(default=None)
@@ -1764,42 +1770,126 @@ class ModelContextSettings(BaseSettings):
         ),
     )
 
-    # --- Soft prompt-budget target (cost/quality control) ---
-    # The registry yields a HARD ceiling (window − reserve) that the overflow
-    # backstop (GAP-3) checks against. These knobs derive the SOFT target —
-    # how much of the window we actually choose to fill each turn. Filling the
-    # full window on a 200K/1M model every turn would be a large cost/latency
-    # regression, so by default the target is window-aware but capped. Raise
-    # prompt_target_cap to exploit big windows.
-    prompt_target_cap: int = Field(
+    # --- Flat prompt-budget target (the scarce-resource control) ---
+    # Prompt tokens are a scarce resource budget-allocated programmatically.
+    # FaultMaven targets a FLAT number of prompt tokens driven by what the
+    # investigation task needs — NOT a fraction of the model window. The model
+    # window enters only as a downward clamp (see ResolvedBudget.prompt_target):
+    #
+    #     prompt_budget = min(prompt_target_tokens, window − response_reserve)
+    #
+    # Flat across all big-window models (Claude/GPT/Gemini), clamped down only
+    # for small/local models we happen to know. This protects fleet cost from
+    # the 200K/1M models, degrades gracefully on local hardware, and forces the
+    # agent to use RAG tools (search_file / KB / deep_analysis) instead of lazy
+    # context-dumping. Default 32K is safe for the curated large-context cloud
+    # models; LOCAL/smaller models MUST lower it to fit (see .env.example).
+    prompt_target_tokens: int = Field(
         default=32000,
         ge=2000,
         le=1_000_000,
-        validation_alias="PROMPT_TARGET_CAP",
+        validation_alias="PROMPT_TARGET_TOKENS",
         description=(
-            "Upper bound (tokens) on the routine assembled prompt regardless of "
-            "how large the model window is. The cost-control knob."
+            "Flat target (tokens) for the whole assembled prompt, independent "
+            "of the model window. The model window only clamps this down for "
+            "small/local models. Raise it to exploit larger, more advanced "
+            "models; lower it to fit a small/local model or cut per-turn cost."
         ),
     )
-    prompt_target_fraction: float = Field(
-        default=0.5,
-        gt=0.0,
-        le=1.0,
-        validation_alias="PROMPT_TARGET_FRACTION",
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
+class PromptBudgetSettings(BaseSettings):
+    """Whole-prompt token-budget allocation + compaction controls.
+
+    Implements the allocator in
+    ``docs/architecture/investigation-engine/prompt-token-budget-allocation.md``:
+    the resolved budget (``PROMPT_TARGET_TOKENS`` clamped to the model window) is
+    poured into a single jar — reserve first, then variable sections by
+    strict-priority greedy fill up to per-section caps, each compacted to fit.
+
+    The allocator is gated for safe rollout (shadow → enable), per the doc's
+    acceptance/rollout section.
+    """
+
+    # --- Rollout flags (§14) ---
+    allocator_enabled: bool = Field(
+        default=False,
+        validation_alias="PROMPT_ALLOCATOR_ENABLED",
         description=(
-            "Fraction of the model's context window used to derive the soft "
-            "target before the cap/floor are applied "
-            "(target = clamp(window×fraction, floor, cap), then ≤ hard budget)."
+            "Use the priority-greedy budget allocator for prompt assembly. "
+            "Default OFF — the legacy assembly path is used until validated."
         ),
     )
-    prompt_target_floor: int = Field(
-        default=6000,
-        ge=2000,
-        le=200_000,
-        validation_alias="PROMPT_TARGET_FLOOR",
+    allocator_shadow: bool = Field(
+        default=False,
+        validation_alias="PROMPT_ALLOCATOR_SHADOW",
         description=(
-            "Lower bound (tokens) on the soft target, so small-window models "
-            "still get a usable prompt budget (clamped to the hard budget)."
+            "Shadow mode: assemble BOTH the legacy and allocator prompts, log "
+            "the size/section deltas, but SEND the legacy one. For validating "
+            "the allocator on real traffic before enabling it. Ignored when "
+            "allocator_enabled is true."
+        ),
+    )
+
+    # --- Reserve bounds (§6) — keep the never-trimmed reserve bounded ---
+    user_message_max_tokens: int = Field(
+        default=4000,
+        ge=200,
+        le=100_000,
+        validation_alias="PROMPT_USER_MESSAGE_MAX_TOKENS",
+        description=(
+            "Cap on the reserved current user message. Oversized pasted DATA "
+            "should be file-ified at intake (→ compactable evidence); the chat "
+            "text itself is truncated with a marker beyond this."
+        ),
+    )
+    last_exchange_max_tokens: int = Field(
+        default=2000,
+        ge=200,
+        le=100_000,
+        validation_alias="PROMPT_LAST_EXCHANGE_MAX_TOKENS",
+        description="Cap on the reserved previous user+assistant exchange (continuity floor).",
+    )
+    journal_max_tokens: int = Field(
+        default=1500,
+        ge=200,
+        le=50_000,
+        validation_alias="PROMPT_JOURNAL_MAX_TOKENS",
+        description=(
+            "Strict cap on the (high-priority) investigation-journal section. "
+            "Small by design — the journal is high-density anti-amnesia memory."
+        ),
+    )
+    system_feedback_max_tokens: int = Field(
+        default=1500,
+        ge=200,
+        le=50_000,
+        validation_alias="PROMPT_SYSTEM_FEEDBACK_MAX_TOKENS",
+        description="Cap on the reserved last-turn system feedback block.",
+    )
+
+    # --- Backstop (§7) ---
+    min_viable_tokens: int = Field(
+        default=1500,
+        ge=200,
+        le=100_000,
+        validation_alias="PROMPT_MIN_VIABLE_TOKENS",
+        description=(
+            "Starvation threshold: if the reserve leaves less than this for "
+            "variable content, switch proactively to the minimal FALLBACK_* "
+            "template (a usable degraded prompt rather than a near-empty one)."
+        ),
+    )
+    overhead_margin_tokens: int = Field(
+        default=256,
+        ge=0,
+        le=8000,
+        validation_alias="PROMPT_OVERHEAD_MARGIN_TOKENS",
+        description=(
+            "Safety buffer subtracted from section_budget to absorb token-"
+            "estimate error (matters mainly when target ≈ hard limit)."
         ),
     )
 
@@ -2326,6 +2416,7 @@ class FaultMavenSettings(BaseSettings):
         default_factory=InvestigationContextSettings
     )
     model_context: ModelContextSettings = Field(default_factory=ModelContextSettings)
+    prompt_budget: PromptBudgetSettings = Field(default_factory=PromptBudgetSettings)
     evidence_promotion: EvidencePromotionSettings = Field(
         default_factory=EvidencePromotionSettings
     )

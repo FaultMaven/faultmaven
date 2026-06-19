@@ -185,12 +185,18 @@ The dispatcher is the only place where mode-conditional gating happens. The temp
 
 ## 6. Whole-prompt budget + overflow backstop
 
+> **Full allocation + compaction model:**
+> [`prompt-token-budget-allocation.md`](./prompt-token-budget-allocation.md)
+> specifies how `PROMPT_TARGET_TOKENS` is divided across the prompt's sections
+> and how each section compacts to fit. This section summarizes the budget number
+> and the overflow ladder; that doc is the authority on allocation.
+
 `get_prompt_for_case()` is the single place where the dynamic sections and the
 fixed template text combine into the final string, so it owns the
 **whole-prompt token budget** (GAP-2/GAP-3). The ladder, in
 `_budgeted_prompt()`:
 
-1. **Assemble** with sections sized to the model's *soft* fill target
+1. **Assemble** with sections sized to the flat prompt budget
    (`ResolvedBudget.prompt_target` — see §6.1).
 2. **Measure** the assembled prompt's real token count
    (`token_estimation.estimate_tokens`, GAP-4) against the model's *hard*
@@ -223,24 +229,32 @@ resort after step 3's trimming.
 > be resolved). All engine call sites — the main turn path and the terminal-Q&A
 > path — pass provider/model.
 
-### 6.1 Hard ceiling vs soft target (GAP-1)
+### 6.1 Operator-owned flat budget + optional safety net (GAP-1)
 
-Budgets come from the model context-window registry
-(`faultmaven/utils/model_context.py`), keyed by exact model id with
-longest-prefix family fallback and an operator override map
-(`MODEL_CONTEXT_WINDOWS`). Two budgets are derived per (provider, model):
+The prompt budget is **operator-owned and flat**, driven by the investigation
+task — not by the model window. Prompt tokens are a scarce resource
+budget-allocated programmatically; this protects fleet cost on big-window models
+and forces the agent onto RAG tools (`search_file`/KB/`deep_analysis`) instead of
+lazy context-dumping.
 
-- **Hard ceiling** `prompt_budget = context_window − response_reserve` — the
-  largest prompt the model can physically accept while leaving room for the
-  response. This is the overflow threshold in step 2 above.
-- **Soft target** `prompt_target = clamp(window × PROMPT_TARGET_FRACTION,
-  PROMPT_TARGET_FLOOR, PROMPT_TARGET_CAP)`, never above the hard ceiling — how
-  much of the window we *choose* to fill on a routine turn, for cost/quality
-  control. Sized so a 200K/1M-window model does not send a max-window prompt
-  every turn. `get_token_budget_for_provider()` returns this value.
+- **Budget** = `PROMPT_TARGET_TOKENS` (default 32K in `.env.example`). This is
+  `get_token_budget_for_provider()`'s return and what the section/evidence fills
+  are sized against.
+- The **model window only clamps it down** when known:
+  `prompt_target = min(PROMPT_TARGET_TOKENS, context_window − response_reserve)`.
+  Flat across all curated big-window models; trims only for a model we know is
+  small (or one declared via `MODEL_CONTEXT_WINDOWS`).
+- **Unknown / uncurated model → trust the configured target** (`window_known =
+  False`); no clamp, no warning. This is the normal case for local/custom models;
+  the operator sets `PROMPT_TARGET_TOKENS` to fit (e.g. 8000 for an Ollama model
+  whose `num_ctx` is small — see `.env.example`).
 
-Unknown models resolve to a conservative default (16K window) and log a
-WARNING. The resolved budget is surfaced at `/debug/llm-providers`
+The registry in `faultmaven/utils/model_context.py` is therefore an **optional
+safety net**, not an authority anyone must maintain: it lists only models we are
+confident exceed 32K, so its incompleteness is harmless. The GAP-3 overflow
+backstop (step 2 above) uses `prompt_budget` only when the window is known and
+skips the check otherwise. The resolved budget — target, window (if known), hard
+ceiling, and `window_known` — is surfaced at `/debug/llm-providers`
 (`prompt_budget` block) and logged per turn.
 
 ---
