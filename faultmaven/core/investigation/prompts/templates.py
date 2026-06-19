@@ -6,11 +6,14 @@ This module defines the core templates for FaultMaven's THREE-TEMPLATE system:
 3. TERMINAL: Documentation and summary.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.prompts.context_builder import (
     build_investigation_context,
 )
+
+logger = logging.getLogger(__name__)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -2314,7 +2317,7 @@ FALLBACK_INQUIRY_TEMPLATE = """You are FaultMaven, a troubleshooting assistant.
 STATE: INQUIRY
 
 PROBLEM: {problem_summary}
-
+{current_turn_evidence}
 USER: {user_message}
 
 SAFETY: Only reference data from uploads or conversation history. Do not confabulate.
@@ -2331,7 +2334,7 @@ PROBLEM: {problem_summary}
 
 MILESTONES COMPLETED: {milestones_summary}
 HYPOTHESES: {hypotheses_summary}
-
+{journal_digest}{current_turn_evidence}
 USER: {user_message}
 
 SAFETY RULES (always apply):
@@ -2356,6 +2359,72 @@ Answer questions about the findings. Do not reopen investigation.
 """
 
 
+def _fallback_current_turn_evidence(case: Case) -> str:
+    """Compact addressable stub(s) for files uploaded THIS turn (INV-1).
+
+    The fallback fires at the tightest budget — precisely when a fresh upload
+    must not be dropped. Renders just the addressable essentials (file_id +
+    filename + searchable) so the agent can `search_file` it. Empty when no
+    current-turn upload exists.
+    """
+    current_turn = getattr(case, "current_turn", 0)
+    stubs = []
+    for uf in getattr(case, "uploaded_files", None) or []:
+        if getattr(uf, "uploaded_at_turn", None) == current_turn and getattr(
+            uf, "file_id", None
+        ):
+            head = (uf.structural_index or "")[:200].replace("\n", " ")
+            stubs.append(
+                f'<uploaded_file file_id="{uf.file_id}" '
+                f'filename="{uf.filename or "data"}" searchable="true">'
+                f"{head}</uploaded_file>"
+            )
+        if len(stubs) >= 3:
+            break
+    if not stubs:
+        return ""
+    return "\nCURRENT-TURN UPLOAD (use search_file with the file_id):\n" + "\n".join(
+        stubs
+    )
+
+
+def _fallback_journal_digest(case: Case, max_entries: int = 12) -> str:
+    """Compact journal digest for the fallback — anti-amnesia memory.
+
+    Keeps high-signal entry types (decision/finding/ruled_out/blocker) plus the
+    most recent entries, so the agent does not re-tread dead ends even in the
+    degraded fallback. Empty when there is no journal.
+    """
+    journal = getattr(case, "investigation_journal", None) or []
+    if not journal:
+        return ""
+    high_signal = {"decision", "finding", "ruled_out", "blocker"}
+    seen_ids: set[int] = set()
+    kept: list = []
+
+    def _add(entry) -> bool:
+        if len(kept) >= max_entries or id(entry) in seen_ids:
+            return False
+        seen_ids.add(id(entry))
+        kept.append(entry)
+        return True
+
+    # Prefer the most-recent HIGH-SIGNAL entries, then fill with the most-recent
+    # overall — both newest-first so, when capped, the NEWEST survive (the digest
+    # exists to prevent re-treading the latest dead ends, not the earliest).
+    for e in reversed(journal):
+        if (e.entry_type or "").lower() in high_signal:
+            _add(e)
+    for e in reversed(journal):
+        _add(e)
+    # Display chronologically.
+    kept = sorted(kept, key=lambda e: e.turn)
+    lines = [
+        f"[T{e.turn}] {(e.entry_type or '').upper()}: {e.content[:120]}" for e in kept
+    ]
+    return "JOURNAL (key findings/decisions so far):\n" + "\n".join(lines) + "\n"
+
+
 def get_fallback_prompt_for_case(
     case: Case,
     user_message: str,
@@ -2368,7 +2437,9 @@ def get_fallback_prompt_for_case(
 
     if case.state == CaseState.INQUIRY:
         return FALLBACK_INQUIRY_TEMPLATE.format(
-            problem_summary=problem_summary[:200], user_message=user_message[:500]
+            problem_summary=problem_summary[:200],
+            user_message=user_message[:500],
+            current_turn_evidence=_fallback_current_turn_evidence(case),
         )
 
     elif case.state == CaseState.INVESTIGATING:
@@ -2394,6 +2465,8 @@ def get_fallback_prompt_for_case(
             problem_summary=problem_summary[:200],
             milestones_summary=", ".join(milestones) if milestones else "None yet",
             hypotheses_summary="; ".join(hypotheses) if hypotheses else "None yet",
+            journal_digest=_fallback_journal_digest(case),
+            current_turn_evidence=_fallback_current_turn_evidence(case),
             user_message=user_message[:500],
         )
 
@@ -2510,68 +2583,314 @@ def get_prompt_for_case(
 
     Returns:
         Formatted prompt for the LLM
+
+    Whole-prompt token accounting (GAP-2 / GAP-3): this is the single place
+    where the dynamic sections and the fixed template text combine into the
+    final string, so it owns the whole-prompt budget. After assembling, it
+    measures the real assembled token count (GAP-4) against the model's hard
+    context ceiling (GAP-1 registry). On overflow it re-assembles once at a
+    tighter section budget (so the fixed template overhead is finally
+    accounted for); if it is *still* over, it falls back to the minimal safe
+    prompt (``get_fallback_prompt_for_case``). Every overflow event is logged.
     """
 
-    ctx = build_investigation_context(
-        case,
-        user_message,
-        kb_results,
-        provider_name=provider_name,
-        model_name=model_name,
-        use_state_summary=use_state_summary,
-        processing_mode=processing_mode,
-        entity_highlights=entity_highlights,
+    def _build_ctx(section_budget: Optional[int], use_allocator: bool) -> dict:
+        """Build the section ctx dict sized to *section_budget*."""
+        return build_investigation_context(
+            case,
+            user_message,
+            kb_results,
+            max_tokens=section_budget,
+            provider_name=provider_name,
+            model_name=model_name,
+            use_state_summary=use_state_summary,
+            processing_mode=processing_mode,
+            entity_highlights=entity_highlights,
+            use_allocator=use_allocator,
+        )
+
+    def _render(ctx: dict) -> str:
+        """Format the full prompt from a prebuilt section ctx dict."""
+        if case.state == CaseState.INQUIRY:
+            return INQUIRY_TEMPLATE.format(**ctx)
+
+        elif case.state == CaseState.INVESTIGATING:
+            stage = case.current_stage or InvestigationStage.DIAGNOSIS
+
+            # knowledge_query dispatches to its own instructions, bypassing
+            # stage logic. This prevents EVIDENCE GROUNDING and DIAGNOSTIC
+            # REASONING REQUIREMENTS from forcing the LLM to cite case evidence
+            # for general knowledge questions.
+            if processing_mode == "knowledge_query":
+                adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
+            else:
+                # Dispatch to stage instructions (derived display stage)
+                if stage == InvestigationStage.DIAGNOSIS:
+                    adaptive_instr = _select_diagnosis_block(case)
+                elif stage == InvestigationStage.MITIGATION:
+                    adaptive_instr = MITIGATION_INSTRUCTIONS
+                elif stage == InvestigationStage.TREATMENT:
+                    adaptive_instr = TREATMENT_INSTRUCTIONS
+                else:
+                    adaptive_instr = _RCA_DIAGNOSIS_BLOCK
+
+            # Add stage to context for schema reference
+            ctx["stage"] = stage.value if stage else "diagnosis"
+
+            # knowledge_query exempts from evidence grounding AND diagnostic
+            # reasoning (KNOWLEDGE_QUERY_INSTRUCTIONS waives both — a
+            # general-knowledge answer doesn't ground in case evidence or use
+            # the Observation/Analysis/Conclusion structure).
+            is_knowledge_query = processing_mode == "knowledge_query"
+            evidence_grounding = "" if is_knowledge_query else _EVIDENCE_GROUNDING_BLOCK
+            diagnostic_reasoning = (
+                "" if is_knowledge_query else _DIAGNOSTIC_REASONING_BLOCK
+            )
+
+            return INVESTIGATION_BASE.format(
+                adaptive_instructions=adaptive_instr,
+                evidence_grounding=evidence_grounding,
+                diagnostic_reasoning=diagnostic_reasoning,
+                **ctx,
+            )
+
+        else:  # TERMINAL (RESOLVED/CLOSED)
+            # "resolution" for RESOLVED, "closure" for CLOSED — the noun used
+            # in the canonical summary type names (RESOLUTION_SUMMARY /
+            # CLOSURE_SUMMARY). Lets the redirect message read naturally
+            # ("the resolution summary") regardless of which terminal state.
+            summary_kind = (
+                "resolution" if case.state == CaseState.RESOLVED else "closure"
+            )
+            return TERMINAL_TEMPLATE.format(
+                state_upper=case.state.value.upper(),
+                state_lower=case.state.value,
+                summary_kind=summary_kind,
+                **ctx,
+            )
+
+    return _budgeted_prompt(
+        case, user_message, _build_ctx, _render, provider_name, model_name
     )
 
-    if case.state == CaseState.INQUIRY:
-        return INQUIRY_TEMPLATE.format(**ctx)
 
-    elif case.state == CaseState.INVESTIGATING:
-        stage = case.current_stage or InvestigationStage.DIAGNOSIS
+def _budgeted_prompt(
+    case: Case,
+    user_message: str,
+    build_ctx,
+    render,
+    provider_name: Optional[str],
+    model_name: Optional[str],
+) -> str:
+    """Whole-prompt token-budget accountant + overflow/starvation backstop.
 
-        # knowledge_query dispatches to its own instructions, bypassing stage logic.
-        # This prevents EVIDENCE GROUNDING and DIAGNOSTIC REASONING REQUIREMENTS
-        # from forcing the LLM to cite case evidence for general knowledge questions.
-        if processing_mode == "knowledge_query":
-            adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
-        else:
-            # Dispatch to stage instructions (derived display stage; no path fork)
-            if stage == InvestigationStage.DIAGNOSIS:
-                adaptive_instr = _select_diagnosis_block(case)
-            elif stage == InvestigationStage.MITIGATION:
-                adaptive_instr = MITIGATION_INSTRUCTIONS
-            elif stage == InvestigationStage.TREATMENT:
-                adaptive_instr = TREATMENT_INSTRUCTIONS
-            else:
-                adaptive_instr = _RCA_DIAGNOSIS_BLOCK
+    See docs/architecture/investigation-engine/prompt-token-budget-allocation.md.
 
-        # Add stage to context for schema reference
-        ctx["stage"] = stage.value if stage else "diagnosis"
+    Rollout flags:
+      - allocator OFF (default): legacy assembly, unchanged.
+      - shadow: assemble both, log the delta, SEND legacy.
+      - allocator ON: allocator assembly with template-aware section budget +
+        overflow/starvation backstop.
+    """
+    from faultmaven.config.settings import get_settings
+    from faultmaven.utils.model_context import resolve_model_budget
+    from faultmaven.utils.token_estimation import estimate_tokens
 
-        # knowledge_query exempts from evidence grounding AND diagnostic
-        # reasoning (KNOWLEDGE_QUERY_INSTRUCTIONS waives both — a
-        # general-knowledge answer doesn't ground in case evidence or use
-        # the Observation/Analysis/Conclusion structure).
-        is_knowledge_query = processing_mode == "knowledge_query"
-        evidence_grounding = "" if is_knowledge_query else _EVIDENCE_GROUNDING_BLOCK
-        diagnostic_reasoning = "" if is_knowledge_query else _DIAGNOSTIC_REASONING_BLOCK
-
-        return INVESTIGATION_BASE.format(
-            adaptive_instructions=adaptive_instr,
-            evidence_grounding=evidence_grounding,
-            diagnostic_reasoning=diagnostic_reasoning,
-            **ctx,
+    def _count(text: str) -> int:
+        return estimate_tokens(
+            text, provider=provider_name or "local", model=model_name
         )
 
-    else:  # TERMINAL (RESOLVED/CLOSED)
-        # "resolution" for RESOLVED, "closure" for CLOSED — the noun used
-        # in the canonical summary type names (RESOLUTION_SUMMARY /
-        # CLOSURE_SUMMARY). Lets the redirect message read naturally
-        # ("the resolution summary") regardless of which terminal state.
-        summary_kind = "resolution" if case.state == CaseState.RESOLVED else "closure"
-        return TERMINAL_TEMPLATE.format(
-            state_upper=case.state.value.upper(),
-            state_lower=case.state.value,
-            summary_kind=summary_kind,
-            **ctx,
+    try:
+        pb = get_settings().prompt_budget
+        allocator_enabled, allocator_shadow = pb.allocator_enabled, pb.allocator_shadow
+        margin, min_viable = pb.overhead_margin_tokens, pb.min_viable_tokens
+    except Exception:
+        allocator_enabled = allocator_shadow = False
+        margin, min_viable = 256, 1500
+
+    # --- Legacy path (default + shadow's shipped output) ---
+    legacy_prompt = render(build_ctx(None, False))
+
+    if not allocator_enabled and not allocator_shadow:
+        return legacy_prompt
+    if not provider_name:
+        return legacy_prompt  # cannot resolve a budget; stay on legacy
+
+    resolved = resolve_model_budget(provider_name, model_name)
+
+    if allocator_shadow and not allocator_enabled:
+        # Build the allocator prompt for comparison only; SEND legacy.
+        try:
+            shadow = _assemble_allocated(
+                case,
+                build_ctx,
+                render,
+                resolved,
+                margin,
+                min_viable,
+                _count,
+                user_message,
+                provider_name,
+                model_name,
+            )
+            logger.info(
+                "prompt_allocator_shadow",
+                extra={
+                    "case_id": case.case_id,
+                    "provider": provider_name,
+                    "model": model_name,
+                    "legacy_tokens": _count(legacy_prompt),
+                    "allocator_tokens": _count(shadow),
+                    "prompt_target": resolved.prompt_target,
+                    "hard_ceiling": resolved.prompt_budget,
+                },
+            )
+        except Exception as exc:  # shadow must never break a turn
+            logger.warning("prompt_allocator_shadow_failed: %s", exc)
+        return legacy_prompt
+
+    # --- Allocator enabled ---
+    return _assemble_allocated(
+        case,
+        build_ctx,
+        render,
+        resolved,
+        margin,
+        min_viable,
+        _count,
+        user_message,
+        provider_name,
+        model_name,
+    )
+
+
+_RESERVE_KEYS = (
+    "identity",
+    "core_context",
+    "milestones",
+    "inquiry_state",
+    "pending_action",
+    "system_feedback",
+    "user_message",
+)
+
+
+def _assemble_allocated(
+    case,
+    build_ctx,
+    render,
+    resolved,
+    margin,
+    min_viable,
+    count,
+    user_message,
+    provider_name,
+    model_name,
+) -> str:
+    """Allocator assembly: template-aware section budget + backstop (§4/§6/§7)."""
+    target = resolved.prompt_target
+    ceiling = resolved.prompt_budget  # None when window unknown
+
+    # First cut: size sections to the full target, then measure the fixed
+    # template overhead so we can re-size so template + sections ≈ target (§6).
+    ctx = build_ctx(target, True)
+    # Single pass over the ctx: accumulate the total section tokens and the
+    # reserve subset together (avoids tokenizing every section twice).
+    reserve_keys = frozenset(_RESERVE_KEYS)
+    section_sum = 0
+    reserve_tokens = 0
+    for k, v in ctx.items():
+        if not v:
+            continue
+        n = count(v)
+        section_sum += n
+        if k in reserve_keys:
+            reserve_tokens += n
+    prompt = render(ctx)
+    total = count(prompt)
+    template_overhead = max(0, total - section_sum)
+
+    # Starvation (§7 trigger #2): check the room left for VARIABLE content AFTER
+    # both the fixed template AND the (non-trimmable) reserve. A fat reserve
+    # (e.g. a near-cap pasted user_message) can leave near-zero for variable
+    # sections even when target − template alone looks fine; the minimal
+    # FALLBACK_* (smaller skeleton) is then the better use of the budget.
+    variable_room = target - template_overhead - reserve_tokens - margin
+    if variable_room < min_viable:
+        fb = get_fallback_prompt_for_case(case, user_message)
+        logger.warning(
+            "prompt_starvation_fallback",
+            extra={
+                "case_id": case.case_id,
+                "provider": provider_name,
+                "model": model_name,
+                "template_overhead": template_overhead,
+                "reserve_tokens": reserve_tokens,
+                "variable_room": variable_room,
+                "min_viable": min_viable,
+                "fallback_tokens": count(fb),
+                "action": "minimal_fallback_prompt",
+            },
         )
+        return fb
+
+    # Re-size sections so the WHOLE prompt fits the target (template reserved) —
+    # but skip the re-assembly when the first cut already fits the target (small
+    # cases): the sections didn't use their full allotment, so re-sizing is a
+    # wasted second assembly + tokenization.
+    section_budget = target - template_overhead - margin
+    if total > target and section_budget < target:
+        ctx = build_ctx(section_budget, True)
+        prompt = render(ctx)
+        total = count(prompt)
+
+    # Overflow (§7 trigger #1): exceed the model's HARD ceiling (when known).
+    if ceiling is not None and total > ceiling:
+        retry_budget = ceiling - template_overhead - margin
+        if retry_budget >= min_viable:
+            # Only re-assemble if there's viable room; otherwise go straight to
+            # the fallback rather than build a prompt that can't fit anyway.
+            ctx = build_ctx(retry_budget, True)
+            prompt = render(ctx)
+            total = count(prompt)
+        if total > ceiling:
+            fb = get_fallback_prompt_for_case(case, user_message)
+            logger.warning(
+                "prompt_overflow_fallback",
+                extra={
+                    "case_id": case.case_id,
+                    "provider": provider_name,
+                    "model": model_name,
+                    "tokens": total,
+                    "hard_ceiling": ceiling,
+                    "fallback_tokens": count(fb),
+                    "action": "minimal_fallback_prompt",
+                },
+            )
+            return fb
+        logger.warning(
+            "prompt_overflow_trimmed",
+            extra={
+                "case_id": case.case_id,
+                "provider": provider_name,
+                "model": model_name,
+                "tokens": total,
+                "hard_ceiling": ceiling,
+                "action": "reassembled_at_tighter_budget",
+            },
+        )
+
+    logger.debug(
+        "prompt_budget_ok",
+        extra={
+            "case_id": case.case_id,
+            "provider": provider_name,
+            "model": model_name,
+            "assembled_tokens": total,
+            "prompt_target": target,
+            "hard_ceiling": ceiling,
+            "template_overhead": template_overhead,
+        },
+    )
+    return prompt

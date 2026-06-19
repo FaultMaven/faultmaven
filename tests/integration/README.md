@@ -213,7 +213,7 @@ async def test_settings_container_services_integration():
     with patch.dict(os.environ, test_env):
         # Validate settings layer
         settings = get_settings()
-        assert settings.llm.provider == LLMProvider.FIREWORKS
+        assert settings.llm.provider == LLMProvider.OPENAI  # placeholder default
 
         # Validate container initialization
         agent_service = container.get_agent_service()

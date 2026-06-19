@@ -28,7 +28,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 # Module initialization
@@ -291,6 +291,31 @@ def _apply_stage_gate_side_effects(
 
     metadata["compliance_detected"] = True
     metadata["progress_made"] = True
+
+
+def _is_context_length_error(exc: Exception) -> bool:
+    """True if *exc* is a provider context-length / prompt-too-long rejection.
+
+    Provider-agnostic: the gateway may enforce a smaller window than our registry
+    estimate (proxy/aggregator/reduced-context serving). We classify ONLY on
+    length-specific phrases — deliberately NOT on a bare ``400 + "token"`` or the
+    generic Pydantic phrase ``"string too long"``, which fire on ordinary
+    request-validation errors and would trigger needless fallback retries.
+    """
+    msg = str(getattr(exc, "message", "") or exc).lower()
+    phrases = (
+        "context length",
+        "context window",
+        "maximum context",
+        "context_length_exceeded",
+        "too many tokens",
+        "reduce the length of the messages",
+        "prompt is too long",
+        "input is too long",
+        "maximum context length",
+        "exceeds the maximum context",
+    )
+    return any(p in msg for p in phrases)
 
 
 def _infer_milestones(
@@ -1825,7 +1850,22 @@ class MilestoneEngine:
         )
         await redaction_ctx.load()
 
-        prompt = get_prompt_for_case(case, user_message)
+        # Pass provider/model so the whole-prompt accountant (GAP-1/2/3) can
+        # size the budget and engage the overflow backstop on the terminal-QA
+        # path too (previously this call supplied neither, so it fell back to
+        # the static char cap and was never measured against the model window).
+        provider_name = getattr(self.llm_provider, "provider_name", None)
+        model_name = (
+            getattr(self.llm_provider.config, "default_model", None)
+            if hasattr(self.llm_provider, "config")
+            else None
+        )
+        prompt = get_prompt_for_case(
+            case,
+            user_message,
+            provider_name=provider_name,
+            model_name=model_name,
+        )
 
         # Pass tools with auto tool_choice — LLM decides whether to invoke
         # kb_qa, web_search, etc. based on the user's question.
@@ -1843,6 +1883,7 @@ class MilestoneEngine:
             **tools_kwargs,
             redaction_ctx=redaction_ctx,
             case=case,
+            user_message=user_message,
         )
 
         await redaction_ctx.save()
@@ -2750,6 +2791,7 @@ class MilestoneEngine:
                     force_tool_use=force_tools,
                     redaction_ctx=redaction_ctx,
                     case=case,
+                    user_message=user_message,
                 )
             else:
                 response_obj = await self._generate_structured_output(
@@ -2757,6 +2799,7 @@ class MilestoneEngine:
                     schema_model,
                     redaction_ctx=redaction_ctx,
                     case=case,
+                    user_message=user_message,
                 )
 
             # Debug: Log what type was actually returned
@@ -4730,6 +4773,67 @@ class MilestoneEngine:
         force_tool_use: bool = False,
         redaction_ctx: Any | None = None,
         case: Any | None = None,
+        user_message: Optional[str] = None,
+    ) -> BaseInteractionResponse:
+        """Structured-output generation with runtime context-length recovery.
+
+        Wraps the provider call so that a context-length rejection from the LLM
+        gateway (which can enforce a smaller window than our registry estimate —
+        e.g. a corporate proxy or aggregator) does NOT permanently block the
+        case. On such an error it recompiles the turn with the minimal
+        ``FALLBACK_*`` prompt and retries once. See the context-management design
+        doc §7.1. ``user_message`` is required to build the fallback; when it is
+        not supplied the recovery is skipped and the error propagates.
+        """
+        try:
+            return await self._generate_structured_output_inner(
+                prompt,
+                schema_model,
+                investigation_tools=investigation_tools,
+                tool_context=tool_context,
+                force_tool_use=force_tool_use,
+                redaction_ctx=redaction_ctx,
+                case=case,
+            )
+        except Exception as exc:
+            if (
+                user_message is not None
+                and case is not None
+                and _is_context_length_error(exc)
+            ):
+                from faultmaven.core.investigation.prompts.templates import (
+                    get_fallback_prompt_for_case,
+                )
+
+                logger.warning(
+                    "prompt_context_error_recovered: provider rejected prompt as "
+                    "too long (case %s); retrying once with the minimal fallback "
+                    "prompt. Original error: %s",
+                    getattr(case, "case_id", "?"),
+                    exc,
+                )
+                fb_prompt = get_fallback_prompt_for_case(case, user_message)
+                # Minimal retry: drop tools to shrink the request further.
+                return await self._generate_structured_output_inner(
+                    fb_prompt,
+                    schema_model,
+                    investigation_tools=None,
+                    tool_context=None,
+                    force_tool_use=False,
+                    redaction_ctx=redaction_ctx,
+                    case=case,
+                )
+            raise
+
+    async def _generate_structured_output_inner(
+        self,
+        prompt: str,
+        schema_model: Any,
+        investigation_tools: list[dict] | None = None,
+        tool_context: Any | None = None,
+        force_tool_use: bool = False,
+        redaction_ctx: Any | None = None,
+        case: Any | None = None,
     ) -> BaseInteractionResponse:
         """
         Generate structured output from LLM using provider-agnostic capability system.
@@ -5677,22 +5781,12 @@ class MilestoneEngine:
             # causal_evidence is always allowed during INVESTIGATING.
             for ev_item in updates.evidence_to_add:
                 # Infer milestone attribution (Tier 2 + Tier 3)
-                # Tier 2: System infers from category + milestones completed this turn
-                # Tier 3: LLM can override via advances_milestones field
                 milestones_completed_this_turn = metadata.get(
                     "milestones_completed", []
                 )
-
                 if ev_item.advances_milestones is not None:
-                    # Tier 3: LLM provided explicit override
                     advances_milestones = ev_item.advances_milestones
-                    logger.debug(
-                        f"Evidence milestone attribution: LLM override "
-                        f"(category={ev_item.category.value}, "
-                        f"explicit_milestones={advances_milestones})"
-                    )
                 else:
-                    # Tier 2: System inference
                     advances_milestones = _infer_milestones(
                         ev_item.category, milestones_completed_this_turn
                     )

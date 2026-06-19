@@ -288,6 +288,16 @@ async def lifespan(app: FastAPI):
 
         validate_deployment_coherence(settings)
 
+        # Fail fast if no LLM provider was explicitly chosen, or the chosen
+        # provider's credential is missing. There is no default provider — a
+        # silent default would only fail later, mid-turn, with an opaque error.
+        # Skipped in test environments (pytest / SKIP_SERVICE_CHECKS), which
+        # boot the app without real credentials.
+        if not _is_test_environment(settings):
+            from .config.llm_validation import validate_llm_provider_credentials
+
+            validate_llm_provider_credentials(settings)
+
         # Validate workers configuration for in-memory storage
         workers = settings.server.workers
         storage_type = (settings.database.session_storage_type or "inmemory").lower()
@@ -1408,6 +1418,40 @@ if _is_debug_enabled(settings=_debug_settings):
             settings_debug = get_settings()
             strict_mode = settings_debug.llm.strict_provider_mode
 
+            # GAP-1: surface the resolved context-window budget for the active
+            # provider/model so operators can see the true window, the derived
+            # hard prompt ceiling, the soft fill target, and whether the
+            # conservative default fired for an unrecognized model.
+            prompt_budget = None
+            try:
+                from .utils.model_context import resolve_model_budget
+
+                active_provider = getattr(llm_provider, "provider_name", None) or (
+                    fallback_chain[0] if fallback_chain else None
+                )
+                active_model = (
+                    getattr(llm_provider.config, "default_model", None)
+                    if hasattr(llm_provider, "config")
+                    else None
+                )
+                rb = resolve_model_budget(active_provider, active_model)
+                prompt_budget = {
+                    "provider": rb.provider,
+                    "model": rb.model,
+                    # The budget FaultMaven actually fills (PROMPT_TARGET_TOKENS,
+                    # clamped to the window when known).
+                    "prompt_target_tokens": rb.prompt_target,
+                    # Hard ceiling + inputs: present only when the window is
+                    # known; null means we trusted the configured target.
+                    "window_known": rb.window_known,
+                    "context_window": rb.context_window,
+                    "response_reserve": rb.response_reserve,
+                    "hard_prompt_budget": rb.prompt_budget,
+                    "matched_registry_key": rb.matched_key,
+                }
+            except Exception as budget_exc:  # pragma: no cover - best effort
+                prompt_budget = {"error": str(budget_exc)}
+
             return {
                 "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "primary_provider": fallback_chain[0] if fallback_chain else "none",
@@ -1415,6 +1459,7 @@ if _is_debug_enabled(settings=_debug_settings):
                 "fallback_chain": fallback_chain,
                 "available_providers": available_providers,
                 "provider_details": provider_status,
+                "prompt_budget": prompt_budget,
             }
 
         except Exception as e:

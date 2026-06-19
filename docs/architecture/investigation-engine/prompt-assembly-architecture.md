@@ -183,9 +183,35 @@ The dispatcher is the only place where mode-conditional gating happens. The temp
 
 ---
 
-## 6. Fallback Templates
+## 6. Whole-prompt budget + overflow backstop
 
-When the primary template renders too long for the model's context window, or when an unrecoverable rendering error occurs, the engine falls back to a minimal variant via `get_fallback_prompt_for_case(case, user_message)`:
+> **Full allocation + compaction model:**
+> [`prompt-token-budget-allocation.md`](./prompt-token-budget-allocation.md)
+> specifies how `PROMPT_TARGET_TOKENS` is divided across the prompt's sections
+> and how each section compacts to fit. This section summarizes the budget number
+> and the overflow ladder; that doc is the authority on allocation.
+
+`get_prompt_for_case()` is the single place where the dynamic sections and the
+fixed template text combine into the final string, so it owns the
+**whole-prompt token budget** (GAP-2/GAP-3). The ladder, in
+`_budgeted_prompt()`:
+
+1. **Assemble** with sections sized to the flat prompt budget
+   (`ResolvedBudget.prompt_target` — see §6.1).
+2. **Measure** the assembled prompt's real token count
+   (`token_estimation.estimate_tokens`, GAP-4) against the model's *hard*
+   ceiling (`ResolvedBudget.prompt_budget = window − response_reserve`).
+3. **If over → re-assemble once** at a tighter section budget
+   (`ceiling − measured_template_overhead − margin`). This is where the fixed
+   template overhead — which the per-section budgeter cannot see — finally gets
+   subtracted from what the sections may occupy.
+4. **If still over → fall back** to a minimal safe prompt via
+   `get_fallback_prompt_for_case(case, user_message)`.
+
+Every overflow event is logged at WARNING (`prompt_overflow_trimmed` /
+`prompt_overflow_fallback`) with the token counts and the action taken —
+overflow should be rare and visible, never silent. The normal (in-budget) path
+logs `prompt_budget_ok` at DEBUG.
 
 | Status | Fallback |
 | --- | --- |
@@ -193,7 +219,43 @@ When the primary template renders too long for the model's context window, or wh
 | INVESTIGATING | `FALLBACK_INVESTIGATION_TEMPLATE` |
 | RESOLVED / CLOSED | `FALLBACK_TERMINAL_TEMPLATE` |
 
-Fallback templates carry only the load-bearing safety constraints (no confabulation, hypothesis-evidence ordering for INVESTIGATING, closed-case boundary for TERMINAL). They produce shorter prompts at the cost of richer behavioral guidance — a degraded but safe mode.
+Fallback templates carry only the load-bearing safety constraints (no
+confabulation, hypothesis-evidence ordering for INVESTIGATING, closed-case
+boundary for TERMINAL). They produce shorter prompts at the cost of richer
+behavioral guidance — a degraded but safe mode, reserved for genuine last
+resort after step 3's trimming.
+
+> The backstop only fires when a `provider_name` is supplied (so the budget can
+> be resolved). All engine call sites — the main turn path and the terminal-Q&A
+> path — pass provider/model.
+
+### 6.1 Operator-owned flat budget + optional safety net (GAP-1)
+
+The prompt budget is **operator-owned and flat**, driven by the investigation
+task — not by the model window. Prompt tokens are a scarce resource
+budget-allocated programmatically; this protects fleet cost on big-window models
+and forces the agent onto RAG tools (`search_file`/KB/`deep_analysis`) instead of
+lazy context-dumping.
+
+- **Budget** = `PROMPT_TARGET_TOKENS` (default 32K in `.env.example`). This is
+  `get_token_budget_for_provider()`'s return and what the section/evidence fills
+  are sized against.
+- The **model window only clamps it down** when known:
+  `prompt_target = min(PROMPT_TARGET_TOKENS, context_window − response_reserve)`.
+  Flat across all curated big-window models; trims only for a model we know is
+  small (or one declared via `MODEL_CONTEXT_WINDOWS`).
+- **Unknown / uncurated model → trust the configured target** (`window_known =
+  False`); no clamp, no warning. This is the normal case for local/custom models;
+  the operator sets `PROMPT_TARGET_TOKENS` to fit (e.g. 8000 for an Ollama model
+  whose `num_ctx` is small — see `.env.example`).
+
+The registry in `faultmaven/utils/model_context.py` is therefore an **optional
+safety net**, not an authority anyone must maintain: it lists only models we are
+confident exceed 32K, so its incompleteness is harmless. The GAP-3 overflow
+backstop (step 2 above) uses `prompt_budget` only when the window is known and
+skips the check otherwise. The resolved budget — target, window (if known), hard
+ceiling, and `window_known` — is surfaced at `/debug/llm-providers`
+(`prompt_budget` block) and logged per turn.
 
 ---
 

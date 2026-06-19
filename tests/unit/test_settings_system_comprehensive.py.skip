@@ -148,7 +148,7 @@ class TestLLMSettings:
         """Test default LLM settings values."""
         settings = LLMSettings()
 
-        assert settings.provider == LLMProvider.FIREWORKS
+        assert settings.provider == LLMProvider.OPENAI  # placeholder default
         assert settings.openai_api_key is None
         assert settings.anthropic_api_key is None
         assert settings.fireworks_api_key is None
