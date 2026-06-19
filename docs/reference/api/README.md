@@ -79,7 +79,7 @@ All data submitted to the API is processed through privacy-first pipelines with:
 
 **Version:** 1.0.0  
 **Base URL:** `/`  
-**Generated:** 2026-06-11T23:31:37.138956Z
+**Generated:** 2026-06-19T20:10:03.462683Z
 
 ## Authentication
 
@@ -196,7 +196,7 @@ Returns the current primary provider, fallback chain, and per-provider
 status including health, connectivity, and available models. API keys
 are never exposed — only a boolean indicating whether one is configured.
 
-Available to any authenticated user (Standalone) or admin (Cloud).
+Available to any authenticated user (standalone deployment) or admin (cloud).
 Route-level access control is handled by the dashboard's LLMConfigRoute guard.
 
 Returns:
@@ -238,7 +238,7 @@ Returns:
 
 Raises:
     401 Unauthorized: No valid JWT token
-    403 Forbidden: Local deployment (config is read-only)
+    403 Forbidden: Standalone deployment (config is read-only)
     422 Unprocessable Entity: Invalid provider name
     503 Service Unavailable: LLM provider not initialized
 
@@ -843,14 +843,11 @@ including profile data and token statistics.
 
 Return KB scopes the calling user can target when publishing.
 
-Gated by the user's actual memberships, not AUTH_MODE — the picker
-should omit any scope that would produce an unresolvable runbook
-(e.g. TEAM when the user has no team membership).
-
-Always returned: ``personal``, ``global`` (GLOBAL write is admin-gated
-by the publish endpoint, not by this picker). ``team`` is added when
-the user has any team membership; ``organization`` is added when the
-user's org has 2+ members or the user is an org owner/admin.
+Community Edition is single-tenant (one implicit operator, no teams,
+no multi-member orgs), so only ``personal`` and ``global`` are
+publishable here. The ``team`` / ``organization`` scopes are a cloud
+collaboration feature — their gating lives with the org/team management
+surface in faultmaven-cloud (ADR-006), not in the CE core.
 
 **Tags:** `authentication`
 
@@ -3479,322 +3476,6 @@ Returns:
 
 ---
 
-### `/api/v1/organizations`
-
-#### GET
-
-**List User Organizations**
-
-List all organizations the authenticated user belongs to.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `limit` (query) ❌ - Maximum results
-- `offset` (query) ❌ - Pagination offset
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### POST
-
-**Create Organization**
-
-Create a new organization. The creator becomes the organization owner.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**201** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/organizations/by-slug/{slug}`
-
-#### GET
-
-**Get Organization by Slug**
-
-Get organization details by slug. Requires organization membership.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `slug` (path) ✅ - Organization slug
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/organizations/{organization_id}`
-
-#### GET
-
-**Get Organization**
-
-Get organization details by ID. Requires organization membership.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### PATCH
-
-**Update Organization**
-
-Update organization details. Requires owner permission.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### DELETE
-
-**Delete Organization**
-
-Soft delete an organization. Requires owner permission.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/organizations/{organization_id}/members`
-
-#### GET
-
-**List Organization Members**
-
-List all members of an organization. Requires organization membership.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `role` (query) ❌ - Filter by role: owner, admin, member
-- `limit` (query) ❌ - Maximum results
-- `offset` (query) ❌ - Pagination offset
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### POST
-
-**Add Member**
-
-Add user to organization by email. Requires owner or admin permission.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**201** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/organizations/{organization_id}/members/{user_id}`
-
-#### PATCH
-
-**Update Member Role**
-
-Update user's role in organization. Requires owner permission.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `user_id` (path) ✅ - User ID
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### DELETE
-
-**Remove Member**
-
-Remove user from organization. Owner can remove anyone except self, admin can remove members only.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `user_id` (path) ✅ - User ID to remove
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/organizations/{organization_id}/permissions/check`
-
-#### POST
-
-**Check Permission**
-
-Check if user has specific permission in organization.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/organizations/{organization_id}/settings`
-
-#### GET
-
-**Get Organization Settings**
-
-Get organization settings and plan limits. Requires organization membership.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### PATCH
-
-**Update Organization Settings**
-
-Update organization settings. Requires owner permission.
-
-**Tags:** `organizations`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
 ### `/api/v1/reports/case/{case_id}`
 
 #### GET
@@ -4484,244 +4165,6 @@ Returns:
 **Parameters:**
 
 - `session_id` (path) ✅ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/teams`
-
-#### POST
-
-**Create Team**
-
-Create a new team within an organization. The creator becomes the team lead.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**201** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/teams/organization/{organization_id}`
-
-#### GET
-
-**List Organization Teams**
-
-List all teams in an organization.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `organization_id` (path) ✅ - Organization ID
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/teams/user/{target_user_id}/organization/{organization_id}`
-
-#### GET
-
-**List User Teams**
-
-List all teams a user belongs to in an organization.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `target_user_id` (path) ✅ - User ID
-- `organization_id` (path) ✅ - Organization ID
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/teams/{team_id}`
-
-#### GET
-
-**Get Team**
-
-Get team details by ID.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `team_id` (path) ✅ - Team ID
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### PUT
-
-**Update Team**
-
-Update team details. Requires 'teams.write' permission.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `team_id` (path) ✅ - Team ID
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### DELETE
-
-**Delete Team**
-
-Soft delete a team. Requires 'teams.manage' permission.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `team_id` (path) ✅ - Team ID
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**204** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/teams/{team_id}/members`
-
-#### GET
-
-**List Team Members**
-
-List all members of a team.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `team_id` (path) ✅ - Team ID
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-**422** - Validation Error
-
----
-
-#### POST
-
-**Add Team Member**
-
-Add user to team. Requires 'teams.write' permission.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `team_id` (path) ✅ - Team ID
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**201** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/teams/{team_id}/members/{target_user_id}`
-
-#### DELETE
-
-**Remove Team Member**
-
-Remove user from team. Requires 'teams.write' permission.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `team_id` (path) ✅ - Team ID
-- `target_user_id` (path) ✅ - User ID to remove
-- `Authorization` (header) ❌ - No description
-
-**Responses:**
-
-**204** - Successful Response
-
-**422** - Validation Error
-
----
-
-### `/api/v1/teams/{team_id}/members/{target_user_id}/is-member`
-
-#### GET
-
-**Check Team Membership**
-
-Check if user is member of team.
-
-**Tags:** `teams`
-
-**Parameters:**
-
-- `team_id` (path) ✅ - Team ID
-- `target_user_id` (path) ✅ - User ID
-- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -5726,18 +5169,6 @@ Correlation between a change and the symptom.
 
 ---
 
-### DeleteResponse
-
-Generic delete response
-
-**Properties:**
-
-- `message` (string) ✅ - No description
-- `organization_id` (unknown) ❌ - No description
-- `user_id` (unknown) ❌ - No description
-
----
-
 ### DerivedEvidenceSummary
 
 Summary of evidence derived from an uploaded file.
@@ -5746,7 +5177,7 @@ Summary of evidence derived from an uploaded file.
 
 - `evidence_id` (string) ✅ - No description
 - `summary` (string) ✅ - No description
-- `category` (string) ✅ - SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER
+- `category` (string) ✅ - SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE | CAUSAL_ABSENCE_EVIDENCE | OTHER
 - `collected_at_turn` (integer) ✅ - No description
 - `source_type` (string) ✅ - LOGS | METRICS | CONFIGURATION | CODE | TEXT | IMAGE
 - `primary_purpose` (unknown) ❌ - No description
@@ -5839,7 +5270,7 @@ Read-only environment configuration status for dashboard display.
 **Properties:**
 
 - `auth_mode` (string) ✅ - 'local' or 'oauth'
-- `deployment` (string) ✅ - 'local' or 'cloud' — derived from auth_mode
+- `deployment` (string) ✅ - 'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)
 - `db_backend` (string) ✅ - 'sqlite' or 'postgresql'
 - `session_storage` (string) ✅ - 'inmemory' or 'redis'
 - `vector_storage` (string) ✅ - 'inmemory' or 'chromadb'
@@ -5896,7 +5327,7 @@ System fills: evidence_id, collected_at_turn, collected_by,
 **Properties:**
 
 - `evidence_id` (string) ❌ - Unique evidence identifier
-- `category` (unknown) ✅ - Claim-anchored category declared by the LLM: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | MITIGATION_EVIDENCE | SOLUTION_EVIDENCE
+- `category` (unknown) ✅ - Claim-anchored category declared by the LLM (verification quartet): SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE | CAUSAL_ABSENCE_EVIDENCE
 - `primary_purpose` (string) ✅ - What this evidence validates (milestone name or hypothesis ID)
 - `summary` (string) ✅ - Short label (≤500 chars) the LLM wrote when declaring this evidence via ``evidence_to_add``. ALWAYS present — use it for UI list views, headers, and quick scanning. The optional ``extract`` field carries the verbatim slice that supports the summary.
 - `extract` (unknown) ❌ - Optional verbatim quote that supports the ``summary``. The LLM populates this when grounding the finding in a specific system-output slice (a log line, a metric reading, a config snippet). Distinct from ``summary`` (short label) and from ``uploaded_files.storage_ref`` (file pointer). May be NULL when the summary is self-contained. File-level preprocessing artifacts (structural index, file summary) live on ``uploaded_files``, never here — this field is for claim-relevant quotes only.
@@ -5922,18 +5353,25 @@ System fills: evidence_id, collected_at_turn, collected_by,
 
 Evidence classification by investigation purpose.
 
-Six claim-attached categories: the presence/absence verification
-quartet (``symptom_evidence``, ``causal_evidence``,
-``symptom_absence_evidence``, ``causal_absence_evidence``) plus two
-legacy stage-completion categories (``mitigation_evidence``,
-``solution_evidence``) retained from the post-010 model and slated
-for removal once prompts stop emitting them. Every row is the LLM's
-deliberate decision to record a specific extract as evidence for a
-specific claim, created only during INVESTIGATING. Contextual data
-lives on ``uploaded_files`` — no evidence row is needed until the
-agent extracts a claim-relevant slice. Rejection is expressed as the
-absence of an evidence row; hypothesis-level refutation lives on
-``hypothesis_evidence.stance``.
+Four claim-attached categories forming the presence/absence
+verification quartet: ``symptom_evidence`` (symptom present),
+``causal_evidence`` (cause present), ``symptom_absence_evidence``
+(symptom gone after a fix), ``causal_absence_evidence`` (cause gone
+after a fix). Every row is the LLM's deliberate decision to record a
+specific extract as evidence for a specific claim, created only during
+INVESTIGATING. Contextual data lives on ``uploaded_files`` — no
+evidence row is needed until the agent extracts a claim-relevant
+slice. Rejection is expressed as the absence of an evidence row;
+hypothesis-level refutation lives on ``hypothesis_evidence.stance``.
+
+The verification gates (``mitigation_verified`` / ``solution_verified``)
+are NOT driven by an evidence category — they are set by the LLM via the
+User-Agent Handshake / compliance detection. The absence rows are the
+durable audit trail that the readiness checks consult
+(``assess_resolution_readiness`` via ``_has_causal_absence``) to decide
+RESOLVED vs CLOSED. (The pre-migration ``mitigation_evidence`` /
+``solution_evidence`` stage-completion categories were removed in the
+GAP-5 legacy→absence migration.)
 
 ---
 
@@ -6031,7 +5469,7 @@ Summary of evidence for INVESTIGATING phase UI.
 - `timestamp` (string) ✅ - When evidence was collected
 - `relevance_score` (number) ✅ - Relevance to current investigation (0.0-1.0)
 - `collected_at_turn` (integer) ❌ - Turn number when evidence was collected
-- `category` (string) ❌ - Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER
+- `category` (string) ❌ - Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE | CAUSAL_ABSENCE_EVIDENCE | OTHER
 - `source_filename` (unknown) ❌ - Original filename of the source file, if evidence originated from an attachment.
 
 ---
@@ -6426,12 +5864,13 @@ LLM configuration and provider status response.
 
 **Properties:**
 
-- `deployment` (string) ✅ - Deployment mode: 'local' or 'cloud'
-- `config_readonly` (boolean) ✅ - True in local mode (config managed via .env file)
+- `deployment` (string) ✅ - Deployment mode: 'standalone' or 'cloud'
+- `config_readonly` (boolean) ✅ - True in standalone mode (config managed via .env file)
 - `primary_provider` (string) ✅ - No description
 - `strict_mode` (boolean) ✅ - No description
 - `fallback_chain` (array) ✅ - No description
 - `providers` (object) ✅ - No description
+- `config_sources` (object) ❌ - Provenance per overridable setting key: 'admin-override' (set via the dashboard, stored in the DB) or 'env-default' (.env / seed). Always 'env-default' in standalone (no DB overrides).
 - `timestamp` (string) ✅ - No description
 
 ---
@@ -6552,84 +5991,6 @@ Logout response model
 
 ---
 
-### MemberAddRequest
-
-Request to add member to organization
-
-**Properties:**
-
-- `email` (string) ✅ - Email of user to invite
-- `role` (unknown) ❌ - Role to assign (member, admin)
-
----
-
-### MemberAddResponse
-
-Response for adding a member
-
-**Properties:**
-
-- `user_id` (string) ✅ - No description
-- `email` (string) ✅ - No description
-- `full_name` (string) ✅ - No description
-- `role` (string) ✅ - No description
-- `joined_at` (string) ✅ - No description
-- `invitation_sent` (boolean) ✅ - No description
-
----
-
-### MemberListResponse
-
-Response for listing organization members
-
-**Properties:**
-
-- `members` (array) ✅ - No description
-- `total` (integer) ✅ - No description
-- `limit` (integer) ✅ - No description
-- `offset` (integer) ✅ - No description
-
----
-
-### MemberResponse
-
-Organization member response
-
-**Properties:**
-
-- `user_id` (string) ✅ - No description
-- `email` (string) ✅ - No description
-- `full_name` (string) ✅ - No description
-- `role` (string) ✅ - No description
-- `joined_at` (string) ✅ - No description
-
----
-
-### MemberRoleUpdateRequest
-
-Request to update member role
-
-**Properties:**
-
-- `role` (string) ✅ - New role to assign (member, admin)
-
----
-
-### MemberRoleUpdateResponse
-
-Response for updating member role
-
-**Properties:**
-
-- `user_id` (string) ✅ - No description
-- `email` (string) ✅ - No description
-- `full_name` (string) ✅ - No description
-- `role` (string) ✅ - No description
-- `joined_at` (string) ✅ - No description
-- `updated_at` (string) ✅ - No description
-
----
-
 ### Message
 
 Message model for conversation endpoints.
@@ -6740,101 +6101,6 @@ OAuth configuration for cloud mode.
 - `token_url` (string) ✅ - No description
 - `client_id` (string) ✅ - No description
 - `scopes` (array) ✅ - No description
-
----
-
-### OrganizationCreateRequest
-
-Request to create a new organization
-
-**Properties:**
-
-- `name` (string) ✅ - Organization name
-- `slug` (string) ✅ - URL-friendly identifier
-- `description` (unknown) ❌ - Organization description
-- `plan_tier` (unknown) ❌ - Subscription plan tier
-
----
-
-### OrganizationListItem
-
-Organization list item with user role
-
-**Properties:**
-
-- `organization_id` (string) ✅ - No description
-- `name` (string) ✅ - No description
-- `slug` (string) ✅ - No description
-- `plan_tier` (string) ✅ - No description
-- `role` (string) ✅ - No description
-- `member_since` (string) ✅ - No description
-
----
-
-### OrganizationListResponse
-
-Response for listing user's organizations
-
-**Properties:**
-
-- `organizations` (array) ✅ - No description
-- `total` (integer) ✅ - No description
-- `limit` (integer) ✅ - No description
-- `offset` (integer) ✅ - No description
-
----
-
-### OrganizationResponse
-
-Organization details response
-
-**Properties:**
-
-- `organization_id` (string) ✅ - No description
-- `name` (string) ✅ - No description
-- `slug` (string) ✅ - No description
-- `description` (unknown) ✅ - No description
-- `plan_tier` (string) ✅ - No description
-- `max_members` (integer) ✅ - No description
-- `current_member_count` (integer) ❌ - No description
-- `owner_user_id` (unknown) ❌ - No description
-- `settings` (object) ❌ - No description
-- `created_at` (string) ✅ - No description
-- `updated_at` (string) ✅ - No description
-
----
-
-### OrganizationUpdateRequest
-
-Request to update organization details
-
-**Properties:**
-
-- `name` (unknown) ❌ - Updated organization name
-- `description` (unknown) ❌ - Updated description
-
----
-
-### PermissionCheckRequest
-
-Request to check user permission
-
-**Properties:**
-
-- `permission` (string) ✅ - Permission to check (e.g., 'cases.write')
-
----
-
-### PermissionCheckResponse
-
-Permission check result
-
-**Properties:**
-
-- `has_permission` (boolean) ✅ - No description
-- `permission` (string) ✅ - No description
-- `user_id` (string) ✅ - No description
-- `organization_id` (string) ✅ - No description
 
 ---
 
@@ -7290,48 +6556,6 @@ Request model for updating session.
 
 ---
 
-### SettingsResponse
-
-Organization settings response
-
-**Properties:**
-
-- `organization_id` (string) ✅ - No description
-- `plan_tier` (string) ✅ - No description
-- `max_members` (integer) ✅ - No description
-- `current_member_count` (integer) ❌ - No description
-- `max_cases_per_month` (unknown) ❌ - No description
-- `max_storage_gb` (integer) ✅ - No description
-- `features` (object) ✅ - No description
-- `settings` (object) ✅ - No description
-
----
-
-### SettingsUpdateRequest
-
-Request to update organization settings
-
-**Properties:**
-
-- `allow_public_cases` (unknown) ❌ - No description
-- `require_2fa` (unknown) ❌ - No description
-- `session_timeout_minutes` (unknown) ❌ - No description
-- `default_case_priority` (unknown) ❌ - No description
-
----
-
-### SettingsUpdateResponse
-
-Response for updating organization settings
-
-**Properties:**
-
-- `organization_id` (string) ✅ - No description
-- `settings` (object) ✅ - No description
-- `updated_at` (string) ✅ - No description
-
----
-
 ### Solution
 
 Proposed or applied solution/mitigation.
@@ -7418,68 +6642,6 @@ A follow-up suggestion returned with agent responses.
 - `hints` (unknown) ❌ - No description
 - `intent` (unknown) ❌ - No description
 - `evidence_need_id` (unknown) ❌ - No description
-
----
-
-### TeamCreateRequest
-
-Request to create a new team
-
-**Properties:**
-
-- `organization_id` (string) ✅ - Organization ID
-- `name` (string) ✅ - Team name
-- `description` (unknown) ❌ - Team description
-
----
-
-### TeamMemberAddRequest
-
-Request to add member to team
-
-**Properties:**
-
-- `user_id` (string) ✅ - User ID to add
-- `team_role` (unknown) ❌ - Team role ('lead' or 'member')
-
----
-
-### TeamMemberResponse
-
-Team member response
-
-**Properties:**
-
-- `user_id` (string) ✅ - No description
-- `team_id` (string) ✅ - No description
-- `team_role` (unknown) ✅ - No description
-- `joined_at` (string) ✅ - No description
-
----
-
-### TeamResponse
-
-Team details response
-
-**Properties:**
-
-- `team_id` (string) ✅ - No description
-- `organization_id` (string) ✅ - No description
-- `name` (string) ✅ - No description
-- `description` (unknown) ✅ - No description
-- `created_at` (string) ✅ - No description
-- `updated_at` (string) ✅ - No description
-
----
-
-### TeamUpdateRequest
-
-Request to update team details
-
-**Properties:**
-
-- `name` (unknown) ❌ - Updated team name
-- `description` (unknown) ❌ - Updated description
 
 ---
 
