@@ -5,7 +5,7 @@
 **Date**: 2026-04-18
 **Role in Four-Tier Model**: **Tier 0: Classification** — the first stage in the [Data Preprocessing](./data-preprocessing-design-specification.md) four-tier model. Tier 0 runs on every submission (file uploads and pasted text via `POST /cases/{id}/turns`), completes in <100 ms with zero LLM calls, and produces a `DataType` enum + confidence score that determines which Tier 1 extractor runs next.
 
-**Scope**: This document covers **data-type classification** — determining what kind of content has been submitted (logs vs metrics vs configuration, etc.). It is separate from **evidence classification** (symptom / causal / mitigation / solution_evidence — claim-anchored categories the LLM assigns during `INVESTIGATING`), which is described in [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
+**Scope**: This document covers **data-type classification** — determining what kind of content has been submitted (logs vs metrics vs configuration, etc.). It is separate from **evidence classification** (symptom / causal / symptom-absence / causal-absence evidence — claim-anchored categories the LLM assigns during `INVESTIGATING`), which is described in [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
 
 **Entry point**: All turns arrive via `POST /cases/{id}/turns` as `{query?, attachments?[]}`. Attachments are routed through Tier 0+1 via `PreprocessingService.classify_and_extract()`. Query-only turns skip preprocessing entirely.
 

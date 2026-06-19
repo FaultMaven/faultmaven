@@ -237,7 +237,7 @@ Mitigation is **not assumed to be one-shot**. It is dynamic, interactive, and po
 
 **Evidence types accepted**:
 
-- `mitigation_evidence` — data showing whether the temporary fix worked
+- `symptom_absence_evidence` — confirmation the symptom is no longer present after the workaround (the cause may persist)
 
 **Exit condition**: User verifies mitigation is effective → post-mitigation behavior depends on `rca_infeasible` (see [Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal)). Default: return to **DIAGNOSIS** for root cause analysis. When `rca_infeasible=True`: agent proposes closure as mitigated (User-Agent Handshake). The user can always override in either direction.
 
@@ -282,7 +282,7 @@ Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing
 
 **Evidence types accepted**:
 
-- `solution_evidence` — data showing whether the fix worked (post-fix metrics, logs, user confirmation)
+- `causal_absence_evidence` — positive proof the root cause is eliminated after the fix (post-fix metrics, logs, user confirmation)
 - `symptom_evidence` — new symptoms discovered after fix attempt
 - `causal_evidence` — new causal insights from failure analysis (requires hypothesis)
 
@@ -479,8 +479,8 @@ two tables play distinct roles and never carry duplicate information.
 |----------|-------------|--------------|---------|
 | `symptom_evidence` | Data showing the problem exists | DIAGNOSIS, TREATMENT | Error logs, latency spikes, alert notifications |
 | `causal_evidence` | Data explaining why the problem happened | DIAGNOSIS, TREATMENT | Deploy logs, config diffs, code changes |
-| `mitigation_evidence` | Data showing whether the temp fix worked | MITIGATION | Post-mitigation metrics, error rate changes |
-| `solution_evidence` | Data showing whether the fix worked | TREATMENT | Post-fix metrics, clean logs, user confirmation |
+| `symptom_absence_evidence` | Confirmation the symptom is gone after a workaround (cause may persist) | MITIGATION | Post-mitigation metrics, error-rate drop |
+| `causal_absence_evidence` | Confirmation the root cause is eliminated after the fix | TREATMENT | Post-fix metrics, clean logs, user confirmation |
 
 Contextual material (architecture diagrams, baseline configs,
 deployment timestamps) is data, not evidence — it lives on
@@ -974,14 +974,14 @@ class InvestigationProgress(BaseModel):
 
 ### 10.3 EvidenceCategory Enum
 
-Four claim-anchored categories. Every Evidence row attaches a finding to a specific claim about the problem, its cause, a mitigation, or a permanent fix. Contextual data lives on `uploaded_files`, not in `evidence`; rejection is expressed as the absence of a row. See §5.1 for the rationale.
+Four claim-anchored categories forming the presence/absence verification quartet — a symptom present, a cause present, a symptom gone after a fix, a cause gone after a fix. Every Evidence row attaches a finding to a specific claim about the problem. Contextual data lives on `uploaded_files`, not in `evidence`; rejection is expressed as the absence of a row. See §5.1 for the rationale.
 
 ```python
 class EvidenceCategory(str, Enum):
     SYMPTOM_EVIDENCE = "symptom_evidence"
     CAUSAL_EVIDENCE = "causal_evidence"
-    MITIGATION_EVIDENCE = "mitigation_evidence"
-    SOLUTION_EVIDENCE = "solution_evidence"
+    SYMPTOM_ABSENCE_EVIDENCE = "symptom_absence_evidence"
+    CAUSAL_ABSENCE_EVIDENCE = "causal_absence_evidence"
 ```
 
 ### 10.4 InvestigationPath (REMOVED — superseded by assessment variables)
@@ -1134,12 +1134,12 @@ flowchart TD
     end
 
     subgraph MITIGATION_STAGE ["MITIGATION Stage"]
-        ME[mitigation_evidence<br/>Did temp fix work?]
+        ME[symptom_absence_evidence<br/>Symptom gone?]
     end
 
     subgraph TREATMENT_STAGE ["TREATMENT Stage (Iterative Resolution)"]
         direction TB
-        RE[solution_evidence<br/>Did fix work?]
+        RE[causal_absence_evidence<br/>Cause eliminated?]
         SE2[symptom_evidence<br/>New symptoms after fix]
         CE2[causal_evidence<br/>Revised root cause]
     end

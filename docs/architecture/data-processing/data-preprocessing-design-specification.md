@@ -527,7 +527,7 @@ investigation_service.process_turn(payload: TurnPayload)
   │   (Tier A: recent data with <file_extract>, <search_map>, and <file_meta> elements, searchable="true")
   │   Tools access raw files via ToolContext.in_memory_case
   │   → LLM responds with evidence_to_add — claim-anchored Evidence rows
-  │     (category ∈ symptom/causal/mitigation/solution_evidence, source_file_id
+  │     (category ∈ symptom/causal/symptom-absence/causal-absence evidence, source_file_id
   │      back to the originating UploadedFile)
   │
   └─ Result: TurnResponse
@@ -1289,7 +1289,7 @@ When the agent creates evidence from mechanical search results:
 | Evidence Field | Value | Source |
 |----------------|-------|--------|
 | `summary` | Agent-written description of the finding | LLM generates from search excerpts |
-| `category` | LLM-classified (symptom/causal/mitigation/solution_evidence) | LLM determines from finding nature |
+| `category` | LLM-classified (symptom/causal/symptom-absence/causal-absence evidence) | LLM determines from finding nature |
 | `source_type` | logs / metrics / configuration / code / text / image | LLM determines from data shape |
 | `source_file_id` | The searched UploadedFile's `file_id` | Links back to the source file |
 | `extract` | Verbatim quote supporting the summary (optional) | Agent selects supporting excerpt |
@@ -1300,7 +1300,7 @@ When the agent creates evidence from mechanical search results:
 | Evidence Field | Value | Source |
 |----------------|-------|--------|
 | `summary` | Agent-written description of the analysis finding | LLM generates |
-| `category` | LLM-classified (symptom/causal/mitigation/solution_evidence) | LLM determines |
+| `category` | LLM-classified (symptom/causal/symptom-absence/causal-absence evidence) | LLM determines |
 | `source_type` | logs / metrics / configuration / code / text / image | LLM determines from data shape |
 | `source_file_id` | The analyzed UploadedFile's `file_id` | Links back |
 | `extract` | Verbatim quote from `DeepAnalysisResult.answer` (optional) | Agent selects supporting excerpt |

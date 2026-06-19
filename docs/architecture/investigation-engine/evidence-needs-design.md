@@ -252,9 +252,8 @@ not the same as *"the bad config has been corrected."*
 
 ### 4.3 Four Evidence Categories
 
-> **As-built (see §11.5):** the live `EvidenceCategory` enum has **six**
-> members — these four verification categories plus `MITIGATION_EVIDENCE`
-> and `SOLUTION_EVIDENCE` retained from the post-010 evidence model.
+> **As-built:** the live `EvidenceCategory` enum is exactly these four
+> verification categories — the presence/absence quartet.
 
 To make the presence/absence distinction structural rather than
 inferred, `EvidenceCategory` carries four categories:
@@ -1216,15 +1215,11 @@ resolves `new_index_N` against `metadata["evidence_needs_updated"]`:
 
 ### 11.5 As-built deltas from §1–10
 
-- **`EvidenceCategory` has 6 members, not the 4 in §4.3.** The four in
-  §4.3 (`SYMPTOM_EVIDENCE`, `CAUSAL_EVIDENCE`, `SYMPTOM_ABSENCE_EVIDENCE`,
-  `CAUSAL_ABSENCE_EVIDENCE`) are the verification quartet Evidence Needs
-  introduced. The enum **also retains** `MITIGATION_EVIDENCE` and
-  `SOLUTION_EVIDENCE` from the post-010 evidence model (stage-completion
-  categories that predate this feature). A debugger seeing those two in
-  the code is not looking at a bug — they're legacy-but-live, outside the
-  presence/absence verification model. (The enum docstring still says
-  "Four claim-attached categories"; that string is stale.)
+- **`EvidenceCategory` matches §4.3 exactly** — the four-member
+  presence/absence verification quartet (`SYMPTOM_EVIDENCE`,
+  `CAUSAL_EVIDENCE`, `SYMPTOM_ABSENCE_EVIDENCE`, `CAUSAL_ABSENCE_EVIDENCE`).
+  The legacy `MITIGATION_EVIDENCE` / `SOLUTION_EVIDENCE` stage-completion
+  categories were removed in the GAP-5 legacy→absence migration.
 - **DB tables carry two columns beyond the §8.7 DDL:** both
   `evidence_needs` and `evidence_need_fulfillment` have an
   `organization_id` FK (enterprise tenancy, matches every other case-

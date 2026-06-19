@@ -532,7 +532,7 @@ CREATE TABLE evidence (
 
     -- Classification
     -- domain EvidenceCategory enum: symptom_evidence | causal_evidence
-    --                              | mitigation_evidence | solution_evidence
+    --                              | symptom_absence_evidence | causal_absence_evidence
     category            VARCHAR(50) NOT NULL,
     -- domain EvidenceSourceType enum: logs | metrics | configuration
     --                                | code | text | image | user_description

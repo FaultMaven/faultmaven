@@ -289,7 +289,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 
 1. **Search KB first (once, at Zone 2 entry)** — call `kb_qa` for the confirmed symptom before generating hypotheses. If a runbook matches, follow its diagnostic steps as the default approach. Do not call `kb_qa` in Zone 1 — KB contains procedures, not incident facts.
 2. **Use scope to prioritise hypothesis categories.** Wide scope (multiple services, regions, pods) → systemic hypotheses first: shared dependency failure, network issue, config push affecting all instances. Narrow scope (single pod, user, endpoint) → isolated hypotheses first: pod-specific config, user-specific data, targeted code path.
-3. **Use timeline as the search anchor.** Every evidence request in Zone 2 must reference the timeline window established in Zone 1. Before generating hypotheses, run a targeted search for change events just before the timeline: deployments, updates, config pushes, scaling events. A change event near the timeline raises confidence in a deployment/change hypothesis. It is a trigger signal sourced from the structural index of uploaded files — not its own evidence row. Drill into the specific changes made to find the candidate root cause; when a specific change links to the symptom mechanism, classify that slice as `causal_evidence` (post-migration-010 evidence-category set: `symptom_evidence`, `causal_evidence`, `mitigation_evidence`, `solution_evidence`).
+3. **Use timeline as the search anchor.** Every evidence request in Zone 2 must reference the timeline window established in Zone 1. Before generating hypotheses, run a targeted search for change events just before the timeline: deployments, updates, config pushes, scaling events. A change event near the timeline raises confidence in a deployment/change hypothesis. It is a trigger signal sourced from the structural index of uploaded files — not its own evidence row. Drill into the specific changes made to find the candidate root cause; when a specific change links to the symptom mechanism, classify that slice as `causal_evidence` (evidence-category set is the verification quartet: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence`).
 4. Apply the hypothesis-evidence ordering: form hypothesis → apply three-step pattern for the grounded cause signal (`cause_state = IDENTIFIED`) → validate or refute.
 5. **Single-shot vs multi-hypothesis:** if the root cause is obvious from existing evidence (clear error chain, strong timing correlation, specific change found), form one hypothesis and validate in the same turn. If ambiguous, form 2–4 hypotheses across different categories and request targeted evidence per hypothesis.
 6. Each evidence request must be tied to a specific hypothesis and follow the specificity standard.
@@ -406,14 +406,14 @@ The **mitigation insert**: apply a temporary fix to stop active impact when an A
 1. **Search KB first** — call `kb_qa` for the symptom to find known mitigation procedures or workarounds before suggesting steps. If a match is found, follow those steps. If not, proceed with general knowledge for the technology stack.
 2. Provide numbered steps framed as user instructions, not agent actions.
 3. State rollback: what to do if the fix makes things worse. State the fix is temporary.
-4. Request `mitigation_evidence` — post-fix metrics, error rates, user observation.
-5. Accept subjective confirmation for `mitigation.verified`. When confirmed: (1) create a `mitigation_evidence` record in `evidence_to_add`, (2) emit `mitigation_verified=True` (materializes `mitigation.verified` + `completed_at_turn`).
+4. Request post-fix evidence — metrics, error rates, user observation — that the symptom has stopped.
+5. Accept subjective confirmation for `mitigation.verified`. When confirmed: (1) record a `symptom_absence_evidence` row in `evidence_to_add` (the symptom is no longer present, while the cause may persist), (2) emit `mitigation_verified=True` (materializes `mitigation.verified` + `completed_at_turn`).
 6. Iterate if ineffective — propose a modified approach, stay in the mitigation insert.
 7. Whether to form hypotheses here follows the single rule: do so iff `cause_state ∈ {UNKNOWN, CANDIDATES}`. There is no separate ban tied to being mid-mitigation.
 
 **`mitigation_verified`** — Emitted when the user confirms stabilization. Subjective confirmation is sufficient: "it's better", "errors dropped", "seems stable". Specific metric values are not required. Forward-only: `mitigation.accepted`/`.verified` are never reset. The case returns to DIAGNOSIS via the `current_stage` property's fall-through (the "Mitigating" branch requires `NOT mitigation.verified`).
 
-**When mitigation stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. The single-record constraint is not a dead-end (lifecycle §2.3, INV-24): offer exactly two DECIDE suggestions — (1) "Accept current state and continue" — creates a `mitigation_evidence` record (source_type: text) and emits `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization; (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
+**When mitigation stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. The single-record constraint is not a dead-end (lifecycle §2.3, INV-24): offer exactly two DECIDE suggestions — (1) "Accept current state and continue" — emits `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization. Do NOT fabricate a `symptom_absence_evidence` row here: the symptom was not actually verified gone, so the gate is set directly without an absence row. (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
 
 **Gate Conditions:**
 
@@ -445,15 +445,15 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 
 #### Agent Duties — Failure path (fix did not work)
 
-1. Create a `solution_evidence` record in `evidence_to_add` recording the failed outcome: summary "Fix [description] failed — [what was observed]", category `solution_evidence`. This records the failed attempt in the evidence trail regardless of failure type.
+1. Do not record an evidence row for the failed fix. A failed fix has no absence to record — the cause persists — so there is no "the fix worked" signal to capture. The failed attempt is recorded by refuting the hypothesis (duty 4), not by an evidence row.
 2. Determine failure type: implementation error (wrong command, missing step) → correct and re-propose without new evidence. Theory wrong → the original hypothesis was incorrect; new evidence is required before a new proposal.
 3. State what the failure eliminates and what is now unclear. Request NEW evidence with full specificity before revising a theory.
-4. Refute the disproven hypothesis with `refutation_reason` citing the failed fix. Any new diagnostic data gathered here must be classified as `causal_evidence` (linkable to hypotheses), never `solution_evidence`.
+4. Refute the disproven hypothesis with `refutation_reason` citing the failed fix. Any new diagnostic data gathered here must be classified as `causal_evidence` (linkable to hypotheses), never `causal_absence_evidence` — the cause was not eliminated.
 
 #### Agent Duties — Primary path (fix verified successfully)
 
 1. Analyze post-fix data from the structural index; call `search_file` if specific patterns are needed.
-2. When outcome is confirmed: create a `solution_evidence` record in `evidence_to_add` (summary "Fix verified: [what resolved and how]", source_type: logs | metrics | text), then proceed to completion.
+2. When outcome is confirmed: record a `causal_absence_evidence` row in `evidence_to_add` — the positive proof the root cause is now eliminated (summary "Cause eliminated: [what resolved and how]", source_type: logs | metrics | text). If only the symptom was relieved while the cause persists, record `symptom_absence_evidence` instead. Then proceed to completion.
 3. Accept subjective confirmation: "it's working", "looks good" is sufficient.
 
 #### Agent Duties — Completion (two-step handshake)
