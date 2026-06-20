@@ -871,7 +871,14 @@ class TestEvidenceAccumulation:
                 },
             ),
             state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
-                milestones=MilestoneUpdates(root_cause_identified=True),
+                # Grounded emission: a confirmed root cause carries a high
+                # likelihood, not just the bare flag. With root_cause_likelihood
+                # >= 0.7 AND >=1 causal evidence row, the engine grounds the
+                # cause and advances cause_state to IDENTIFIED.
+                milestones=MilestoneUpdates(
+                    root_cause_identified=True,
+                    root_cause_likelihood=0.9,
+                ),
                 evidence_to_add=[
                     EvidenceToAdd(
                         summary="v2.1.3 deployment introduced DB connection leak causing errors from 14:03",
@@ -899,8 +906,9 @@ class TestEvidenceAccumulation:
         case = result["case_updated"]
 
         assert len(case.evidence) > count_after_turn3
-        # The LLM's grounded ``root_cause_identified`` emission maps to the
-        # engine-owned ``cause_state`` enum (IDENTIFIED == old True).
+        # The grounded cause signal (likelihood 0.9 + causal evidence) maps to
+        # the engine-owned ``cause_state`` enum. A bare ``root_cause_identified``
+        # flag with no grounding would NOT reach IDENTIFIED.
         assert case.progress.cause_state == CauseState.IDENTIFIED
 
     async def test_evidence_milestone_attribution(self, engine, case_repo):
