@@ -247,8 +247,8 @@ async def get_agent_orchestration_service(
             ):
                 yield event
     """
-    # Community Edition has no team collaboration — org/team management lives in
-    # faultmaven-cloud (ADR-006) — so no team service is wired for KB scoping.
+    # The standalone deployment has no team collaboration — org/team management is
+    # a Cloud feature — so no team service is wired for KB scoping.
     return factory.create_agent_orchestration_service(team_service=None)
 
 

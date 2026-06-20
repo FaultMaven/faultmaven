@@ -1,7 +1,7 @@
 """Dependency Injection Container for FaultMaven Services.
 
 This module provides a lightweight DI container for managing service dependencies
-and enabling deployment profile separation (community vs enterprise).
+and enabling deployment profile separation (standalone vs cloud).
 
 Pattern:
 - Service registry with lazy initialization

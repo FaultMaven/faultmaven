@@ -11,7 +11,7 @@ Implemented by:
 
 Hierarchy: Enterprise > Organization > Team > User. An enterprise owns
 billing, plan tier, and SSO/SAML config; organizations live underneath it
-as workspaces. Single-tenant deployments (local/community) get one
+as workspaces. Single-tenant deployments (standalone) get one
 default enterprise containing one default organization.
 
 Cross-layer parity:
