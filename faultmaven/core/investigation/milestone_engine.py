@@ -682,6 +682,51 @@ def _cause_state_grounded(case: "Case") -> bool:
     ) or has_root_cause_conclusion
 
 
+def _mark_cause_identified(case: "Case") -> bool:
+    """Single chokepoint for recording ``cause_state=IDENTIFIED``.
+
+    The indicator follows the fact (R1): IDENTIFIED is recorded ONLY when the
+    cause is grounded case-wide (``_cause_state_grounded`` — a recorded
+    ``RootCauseConclusion`` or high-confidence causal evidence), NEVER from a
+    bare LLM ``root_cause_identified`` flag with an empty conclusion. This is
+    what makes cause_state a derived, engine-owned truth signal rather than a
+    claim the LLM can assert: a reflexive ``root_cause_identified`` on thin
+    evidence (which reasoning-validation strips) no longer leaves an ungrounded
+    IDENTIFIED behind (the bug where the indicator was "yes" while the
+    root-cause content was empty).
+
+    Also enforces the Case invariant ``root_cause_likelihood > 0 when
+    cause_state=IDENTIFIED`` by flooring the likelihood to the grounding bar
+    when a conclusion grounds the cause without a numeric confidence.
+
+    Returns True if cause_state is (now, or already) IDENTIFIED; False if the
+    cause is not grounded. Both the milestone-apply loop and
+    ``_recompute_assessment_state`` route through here so the two paths cannot
+    disagree and IDENTIFIED can never be set without grounding.
+    """
+    p = case.progress
+    # Gate a NEW transition on grounding; an existing IDENTIFIED is sticky
+    # (forward-only — never downgraded here, avoiding IDENTIFIED↔CANDIDATES
+    # oscillation) and falls through to re-enforce its invariant below.
+    if p.cause_state != CauseState.IDENTIFIED and not _cause_state_grounded(case):
+        return False
+    p.cause_state = CauseState.IDENTIFIED
+    # The Case ``root_cause_consistency`` invariant requires BOTH a positive
+    # likelihood AND a non-null ``root_cause_method`` when IDENTIFIED. Enforce
+    # both EVERY call (including the already-IDENTIFIED path) so save can never
+    # see IDENTIFIED with a zero likelihood / null method — regardless of which
+    # path reached it, whether the LLM supplied a confidence/method, or whether
+    # a later same-turn mutation reset these fields. Because ``_recompute_-
+    # assessment_state`` routes through here at end-of-turn, the invariant holds
+    # at save by construction. The LLM's own higher likelihood / explicit method
+    # still win where the apply loop applies them from the structured output.
+    if not p.root_cause_likelihood or p.root_cause_likelihood <= 0:
+        p.root_cause_likelihood = 0.8
+    if not p.root_cause_method:
+        p.root_cause_method = "direct_analysis"
+    return True
+
+
 def _recompute_assessment_state(case: "Case") -> None:
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
@@ -706,10 +751,11 @@ def _recompute_assessment_state(case: "Case") -> None:
     """
     p = case.progress
 
-    if p.cause_state != CauseState.IDENTIFIED:
-        if _cause_state_grounded(case):
-            p.cause_state = CauseState.IDENTIFIED
-        elif HypothesisManager.count_active_hypotheses(case) >= 2:
+    # Single chokepoint: sets/keeps IDENTIFIED (grounded-only, sticky) and
+    # re-enforces its invariant at end-of-turn. Only when NOT identified does
+    # cause_state derive from the active-hypothesis count.
+    if not _mark_cause_identified(case):
+        if HypothesisManager.count_active_hypotheses(case) >= 2:
             p.cause_state = CauseState.CANDIDATES
         else:
             p.cause_state = CauseState.UNKNOWN
@@ -5588,8 +5634,19 @@ class MilestoneEngine:
                     # IDENTIFIED signal. The milestone SYMBOL stays
                     # "root_cause_identified" for downstream maps/telemetry.
                     if field == "root_cause_identified":
-                        if p.cause_state != CauseState.IDENTIFIED:
-                            p.cause_state = CauseState.IDENTIFIED
+                        # Honor the LLM's signal ONLY when the cause is grounded
+                        # (a recorded conclusion / high-confidence causal
+                        # evidence). A bare flag with an empty conclusion must
+                        # NOT flip the indicator: route through the grounded
+                        # chokepoint so an ungrounded claim (which the
+                        # reasoning-validation strip rejects) leaves cause_state
+                        # untouched instead of stranding an IDENTIFIED with no
+                        # conclusion. Append the symbol only on a real,
+                        # grounded transition this turn.
+                        if (
+                            p.cause_state != CauseState.IDENTIFIED
+                            and _mark_cause_identified(case)
+                        ):
                             metadata["milestones_completed"].append(field)
                     # Only append if transitioning from False to True
                     elif not getattr(p, field, False):

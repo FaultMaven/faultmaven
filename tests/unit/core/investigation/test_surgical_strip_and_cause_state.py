@@ -17,6 +17,7 @@ import pytest
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.milestone_engine import (
+    _mark_cause_identified,
     _recompute_assessment_state,
     validate_reasoning_first,
 )
@@ -420,3 +421,74 @@ class TestStructuredOutputDegradation:
         non_prunable = getattr(degraded[0], "non_prunable_errors", None)
         assert non_prunable, "fallback must log the non-prunable errors"
         assert any("evidence_to_add" in loc for loc, _msg in non_prunable)
+
+
+class TestMarkCauseIdentifiedChokepoint:
+    """The single grounded chokepoint for cause_state=IDENTIFIED.
+
+    Regression for the production 500 where the LLM reflexively asserted the
+    ``root_cause_identified`` milestone on thin evidence: reasoning-validation
+    stripped the milestone, but the eager apply-loop had already set
+    ``cause_state=IDENTIFIED`` with an empty conclusion and zero likelihood —
+    leaving the indicator "yes" while the fact was empty, which the Case
+    invariant (``root_cause_likelihood > 0 when IDENTIFIED``) rejects on save.
+    The chokepoint makes IDENTIFIED impossible without grounding.
+    """
+
+    def _case(self, *, causal_evidence=0, conclusion=False, likelihood=0.0):
+        progress = InvestigationProgress()
+        progress.root_cause_likelihood = likelihood
+        evidence = [
+            SimpleNamespace(category=EvidenceCategory.CAUSAL_EVIDENCE)
+            for _ in range(causal_evidence)
+        ]
+        rcc = SimpleNamespace(root_cause="the cause") if conclusion else None
+        return SimpleNamespace(
+            progress=progress, evidence=evidence, root_cause_conclusion=rcc
+        )
+
+    def test_ungrounded_claim_does_not_identify(self):
+        # No conclusion, no causal evidence, zero likelihood — a bare LLM flag.
+        case = self._case()
+        assert _mark_cause_identified(case) is False
+        assert case.progress.cause_state != CauseState.IDENTIFIED
+
+    def test_conclusion_grounds_and_satisfies_the_full_case_invariant(self):
+        # Grounded via a recorded conclusion with NO numeric confidence AND NO
+        # method — the exact crash shape. Must set IDENTIFIED and satisfy the
+        # FULL ``root_cause_consistency`` invariant (likelihood > 0 AND
+        # root_cause_method set). Proven by re-running the model validator —
+        # exactly what the repository does on save (the 500's origin) — not by
+        # asserting fields, which is what let the method leak slip through.
+        case = self._case(conclusion=True, likelihood=0.0)
+        assert _mark_cause_identified(case) is True
+        assert case.progress.cause_state == CauseState.IDENTIFIED
+        assert case.progress.root_cause_likelihood > 0
+        assert case.progress.root_cause_method is not None
+        # No ValidationError → no 500 on save.
+        InvestigationProgress.model_validate(case.progress.model_dump())
+
+    def test_high_confidence_causal_path_preserves_likelihood(self):
+        case = self._case(causal_evidence=1, likelihood=0.9)
+        assert _mark_cause_identified(case) is True
+        assert case.progress.cause_state == CauseState.IDENTIFIED
+        assert case.progress.root_cause_likelihood == 0.9  # not overwritten
+
+    def test_low_confidence_single_causal_is_not_grounded(self):
+        case = self._case(causal_evidence=1, likelihood=0.5)
+        assert _mark_cause_identified(case) is False
+        assert case.progress.cause_state != CauseState.IDENTIFIED
+
+    def test_already_identified_is_sticky_and_reenforces_invariant(self):
+        # An already-IDENTIFIED case whose likelihood/method were reset to an
+        # invalid state by a later same-turn mutation: the chokepoint (run via
+        # _recompute at end-of-turn) keeps IDENTIFIED (sticky, never downgrades)
+        # AND repairs the invariant instead of early-returning past it.
+        case = self._case(likelihood=0.0)
+        case.progress.cause_state = CauseState.IDENTIFIED
+        case.progress.root_cause_method = None
+        assert _mark_cause_identified(case) is True
+        assert case.progress.cause_state == CauseState.IDENTIFIED
+        assert case.progress.root_cause_likelihood > 0
+        assert case.progress.root_cause_method is not None
+        InvestigationProgress.model_validate(case.progress.model_dump())
