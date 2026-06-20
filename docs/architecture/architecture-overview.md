@@ -136,8 +136,8 @@ See [security/iam-design.md](security/iam-design.md), [security/case-scoped-pii-
 
 | Mode | Database | Sessions | Storage | Vector | Tenancy |
 |------|----------|----------|---------|--------|---------|
-| **Local (Community)** | SQLite | FakeRedis | Filesystem | ChromaDB PersistentClient | Single |
-| **Enterprise (Cloud)** | PostgreSQL | Redis | S3 / Azure | ChromaDB HTTP | Multi |
+| **Standalone (self-hosted)** | SQLite | FakeRedis | Filesystem | ChromaDB PersistentClient | Single |
+| **Cloud** | PostgreSQL | Redis | S3 / Azure | ChromaDB HTTP | Multi |
 
 The **same codebase** runs in both modes — provider selection happens in `main.py` via settings (Principle 1: Deployment Agnostic).
 
