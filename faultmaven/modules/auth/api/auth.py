@@ -50,6 +50,8 @@ from faultmaven.modules.auth.domain.models.api_auth import (
     AuthTokenResponse,
     DevLoginRequest,
     LogoutResponse,
+    TokenRefreshRequest,
+    TokenRefreshResponse,
     TokenValidationError,
     UserInfoResponse,
     UserProfile,
@@ -92,6 +94,33 @@ async def require_local_mode() -> None:
                 "hint": "Use OAuth endpoints for cloud deployments",
             },
         )
+
+
+def _build_local_jwt_generator(token_manager):
+    """Construct the HS256 JWT generator used for local-mode tokens.
+
+    Shared by /login and /refresh so both mint and validate tokens with the
+    same secret, issuer, audience, and revocation store — a refresh token must
+    verify under exactly the configuration that issued it.
+    """
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        HS256JWTTokenGenerator,
+    )
+
+    settings = get_settings()
+    if not settings.security.jwt_secret_key:
+        raise HTTPException(
+            status_code=500,
+            detail="JWT_SECRET_KEY not configured for local mode authentication",
+        )
+
+    return HS256JWTTokenGenerator(
+        secret_key=settings.security.jwt_secret_key.get_secret_value(),
+        revocation_store=token_manager,
+        settings=settings.auth,
+        issuer=settings.security.jwt_issuer,
+        audience=settings.security.jwt_audience,
+    )
 
 
 # =============================================================================
@@ -272,30 +301,16 @@ async def local_login(
             },
         )
 
-        # Generate JWT access token (HS256 for local mode)
+        # Generate JWT tokens (HS256 for local mode)
         # Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes use JWT tokens"
-        from faultmaven.modules.auth.domain.services.jwt_token_generator import (
-            HS256JWTTokenGenerator,
-        )
-
         settings = get_settings()
-
-        # Create HS256 JWT generator for local mode
-        if not settings.security.jwt_secret_key:
-            raise HTTPException(
-                status_code=500,
-                detail="JWT_SECRET_KEY not configured for local mode authentication",
-            )
-
-        jwt_generator = HS256JWTTokenGenerator(
-            secret_key=settings.security.jwt_secret_key.get_secret_value(),
-            revocation_store=token_manager,  # Use existing token_manager for revocation
-            settings=settings.auth,
-            issuer=settings.security.jwt_issuer,
-            audience=settings.security.jwt_audience,
-        )
+        jwt_generator = _build_local_jwt_generator(token_manager)
 
         access_token = await jwt_generator.generate_access_token(user)
+        # Refresh token lets the client mint a new access token via
+        # POST /auth/refresh instead of being forced to re-login when the
+        # short-lived access token expires.
+        refresh_token = await jwt_generator.generate_refresh_token(user)
 
         # Create session for multi-turn conversations
         session = await session_service.create_session(
@@ -330,6 +345,7 @@ async def local_login(
             access_token=access_token,
             token_type="bearer",
             expires_in=settings.auth.jwt_access_token_expire_minutes * 60,
+            refresh_token=refresh_token,
             session_id=session_id,
             user=user_profile,
         )
@@ -433,30 +449,13 @@ async def local_register(
             f"User registration: {request_body.username} (new user: {user.user_id})"
         )
 
-        # Generate JWT access token (HS256 for local mode)
+        # Generate JWT tokens (HS256 for local mode)
         # Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes use JWT tokens"
-        from faultmaven.modules.auth.domain.services.jwt_token_generator import (
-            HS256JWTTokenGenerator,
-        )
-
         settings = get_settings()
-
-        # Create HS256 JWT generator for local mode
-        if not settings.security.jwt_secret_key:
-            raise HTTPException(
-                status_code=500,
-                detail="JWT_SECRET_KEY not configured for local mode authentication",
-            )
-
-        jwt_generator = HS256JWTTokenGenerator(
-            secret_key=settings.security.jwt_secret_key.get_secret_value(),
-            revocation_store=token_manager,  # Use existing token_manager for revocation
-            settings=settings.auth,
-            issuer=settings.security.jwt_issuer,
-            audience=settings.security.jwt_audience,
-        )
+        jwt_generator = _build_local_jwt_generator(token_manager)
 
         access_token = await jwt_generator.generate_access_token(user)
+        refresh_token = await jwt_generator.generate_refresh_token(user)
 
         # Create session for multi-turn conversations
         session = await session_service.create_session(
@@ -491,6 +490,7 @@ async def local_register(
             access_token=access_token,
             token_type="bearer",
             expires_in=settings.auth.jwt_access_token_expire_minutes * 60,
+            refresh_token=refresh_token,
             session_id=session_id,
             user=user_profile,
         )
@@ -521,6 +521,100 @@ async def local_register(
             detail={
                 "error": "internal_error",
                 "message": "Registration failed due to an internal error. Please try again later.",
+            },
+        )
+
+
+@router.post(
+    "/refresh",
+    response_model=TokenRefreshResponse,
+    status_code=200,
+    dependencies=[Depends(require_local_mode)],
+)
+@trace("auth_refresh")
+async def refresh_tokens(
+    request_body: TokenRefreshRequest,
+    request: Request,
+    response: Response,
+) -> TokenRefreshResponse:
+    """Exchange a refresh token for a new access token (local mode).
+
+    The short-lived access token cannot be extended (it is a stateless JWT),
+    so an active client must mint a new one before expiry rather than being
+    forced to re-login. Refresh tokens rotate: the presented token is revoked
+    and a fresh one is returned alongside the new access token.
+
+    **Flow:**
+    1. Validate the refresh token (signature, expiry, type, revocation)
+    2. Load the current user (rejects deactivated/deleted accounts)
+    3. Mint a new access + refresh token pair
+    4. Revoke the old refresh token (rotation)
+    """
+    correlation_id = str(uuid.uuid4())
+
+    try:
+        user_store = await get_user_store(request)
+        token_manager = await get_token_manager(request)
+        settings = get_settings()
+        jwt_generator = _build_local_jwt_generator(token_manager)
+
+        # 1. Validate the presented refresh token (None => invalid/expired/revoked)
+        claims = await jwt_generator.validate_refresh_token(request_body.refresh_token)
+        if not claims:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "invalid_refresh_token",
+                    "message": "Refresh token is invalid, expired, or revoked. Please log in again.",
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # 2. Load the current user — a token for a since-deleted/deactivated
+        #    account must not be refreshable.
+        user = await user_store.get_user(claims["sub"])
+        if not user or not getattr(user, "is_active", True):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "user_unavailable",
+                    "message": "User account no longer exists or is inactive. Please log in again.",
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # 3. Mint a fresh pair.
+        new_access_token = await jwt_generator.generate_access_token(user)
+        new_refresh_token = await jwt_generator.generate_refresh_token(user)
+
+        # 4. Rotation: revoke the old refresh token so a leaked/replayed token
+        #    cannot be reused after a successful refresh.
+        await jwt_generator.revoke_refresh_token(request_body.refresh_token)
+
+        response.headers["X-Correlation-Id"] = correlation_id
+        logger.info(
+            f"Token refreshed for user {user.user_id} (correlation: {correlation_id})"
+        )
+        return TokenRefreshResponse(
+            access_token=new_access_token,
+            token_type="bearer",
+            expires_in=settings.auth.jwt_access_token_expire_minutes * 60,
+            refresh_token=new_refresh_token,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Token refresh failed: {type(e).__name__}: {str(e)}",
+            extra={"correlation_id": correlation_id},
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Token refresh failed due to an internal error. Please try again later.",
             },
         )
 
