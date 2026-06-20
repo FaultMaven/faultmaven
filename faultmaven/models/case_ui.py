@@ -166,7 +166,7 @@ class EvidenceSummary(BaseModel):
 
     category: str = Field(
         default="OTHER",
-        description="Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER",
+        description="Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE | CAUSAL_ABSENCE_EVIDENCE | OTHER",
         max_length=50,
     )
 

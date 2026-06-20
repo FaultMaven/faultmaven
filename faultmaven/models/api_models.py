@@ -793,7 +793,7 @@ class DerivedEvidenceSummary(BaseModel):
     evidence_id: str
     summary: str = Field(max_length=500)
     category: str = Field(
-        description="SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER"
+        description="SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE | CAUSAL_ABSENCE_EVIDENCE | OTHER"
     )
     collected_at_turn: int
     source_type: str = Field(

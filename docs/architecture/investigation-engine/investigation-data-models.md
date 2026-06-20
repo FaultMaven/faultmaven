@@ -1517,7 +1517,7 @@ class DocumentType(str, Enum):
 > - **Preprocessing pipeline:** [data-processing/data-preprocessing-design-specification.md](../data-processing/data-preprocessing-design-specification.md)
 > - **Pipeline flows + sequence diagrams:** [data-processing/evidence-flow-architecture.md](../data-processing/evidence-flow-architecture.md)
 >
-> Categories: `symptom_evidence`, `causal_evidence`, `mitigation_evidence`, `solution_evidence`. Source is expressed by `Evidence.source_type` + `Evidence.source_file_id`; the `evidence_source_invariant` DB CHECK requires `source_file_id IS NOT NULL OR source_type = 'user_description'`.
+> Categories: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence`. Source is expressed by `Evidence.source_type` + `Evidence.source_file_id`; the `evidence_source_invariant` DB CHECK requires `source_file_id IS NOT NULL OR source_type = 'user_description'`.
 
 ### 2.1 Evidence Fields Used by Investigation Engine
 

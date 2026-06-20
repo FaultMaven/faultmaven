@@ -87,7 +87,7 @@ class TestCaseHasSymptomEvidence:
         case = _make_case()
         case.evidence.append(_make_evidence(EvidenceCategory.CAUSAL_EVIDENCE, idx=1))
         case.evidence.append(
-            _make_evidence(EvidenceCategory.MITIGATION_EVIDENCE, idx=2)
+            _make_evidence(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, idx=2)
         )
         assert _case_has_symptom_evidence(case) is False
 

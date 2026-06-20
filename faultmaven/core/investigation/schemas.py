@@ -349,9 +349,9 @@ class EvidenceToAdd(BaseModel):
         the error as ``UNKNOWN_ERROR`` and returns ``ErrorAction.FAIL``
         on the first attempt). The strict enum constraint is enforced
         at decode time by STRICT / FUNCTION_CALLING modes, so in
-        practice this path is rarely hit. Valid values:
-        ``symptom_evidence`` / ``causal_evidence`` /
-        ``mitigation_evidence`` / ``solution_evidence``.
+        practice this path is rarely hit. Valid values (the verification
+        quartet): ``symptom_evidence`` / ``causal_evidence`` /
+        ``symptom_absence_evidence`` / ``causal_absence_evidence``.
         """
         if isinstance(v, str):
             return EvidenceCategory(v)

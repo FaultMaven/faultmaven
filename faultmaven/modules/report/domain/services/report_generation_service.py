@@ -430,7 +430,10 @@ class ReportGenerationService:
                 ev
                 for ev in evidence_items
                 if hasattr(getattr(ev, "category", None), "value")
-                and ev.category.value in ("causal_evidence", "solution_evidence")
+                # Confirming evidence = the cause (causal_evidence) plus the
+                # "fix worked at the cause level" signal (causal_absence_evidence,
+                # which supersedes the removed legacy ``solution_evidence``).
+                and ev.category.value in ("causal_evidence", "causal_absence_evidence")
             ]
 
         if cited:

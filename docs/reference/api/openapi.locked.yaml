@@ -641,13 +641,11 @@ paths:
       - authentication
       summary: Get Available Scopes
       description: "Return KB scopes the calling user can target when publishing.\n\
-        \nGated by the user's actual memberships, not AUTH_MODE \u2014 the picker\n\
-        should omit any scope that would produce an unresolvable runbook\n(e.g. TEAM\
-        \ when the user has no team membership).\n\nAlways returned: ``personal``,\
-        \ ``global`` (GLOBAL write is admin-gated\nby the publish endpoint, not by\
-        \ this picker). ``team`` is added when\nthe user has any team membership;\
-        \ ``organization`` is added when the\nuser's org has 2+ members or the user\
-        \ is an org owner/admin."
+        \nA standalone (self-hosted) deployment is single-tenant \u2014 one implicit\n\
+        operator, no teams, no multi-member orgs \u2014 so only ``personal`` and\n\
+        ``global`` are publishable here. The ``team`` / ``organization`` scopes\n\
+        are a Cloud collaboration feature, gated by the org/team management\nsurface\
+        \ that ships only in Cloud."
       operationId: get_available_scopes_api_v1_auth_me_available_scopes_get
       parameters:
       - name: Authorization
@@ -5429,8 +5427,8 @@ paths:
         \ primary provider, fallback chain, and per-provider\nstatus including health,\
         \ connectivity, and available models. API keys\nare never exposed \u2014 only\
         \ a boolean indicating whether one is configured.\n\nAvailable to any authenticated\
-        \ user (local deployment) or admin (cloud).\nRoute-level access control is\
-        \ handled by the dashboard's LLMConfigRoute guard.\n\nReturns:\n    LLMConfigResponse\
+        \ user (standalone deployment) or admin (cloud).\nRoute-level access control\
+        \ is handled by the dashboard's LLMConfigRoute guard.\n\nReturns:\n    LLMConfigResponse\
         \ with provider details and fallback chain\n\nRaises:\n    401 Unauthorized:\
         \ No valid JWT token\n    503 Service Unavailable: LLM provider not initialized"
       operationId: get_llm_config_api_v1_admin_llm_config_get
@@ -5468,8 +5466,8 @@ paths:
         \ changes take effect\nimmediately without a restart.\n\nAccepts partial updates\
         \ \u2014 only provided fields are changed.\n\nReturns:\n    LLMConfigUpdateResponse\
         \ with list of updated keys\n\nRaises:\n    401 Unauthorized: No valid JWT\
-        \ token\n    403 Forbidden: Local deployment (config is read-only)\n    422\
-        \ Unprocessable Entity: Invalid provider name\n    503 Service Unavailable:\
+        \ token\n    403 Forbidden: Standalone deployment (config is read-only)\n\
+        \    422 Unprocessable Entity: Invalid provider name\n    503 Service Unavailable:\
         \ LLM provider not initialized"
       operationId: update_llm_config_api_v1_admin_llm_config_put
       security:
@@ -7692,26 +7690,6 @@ components:
       - correlation_type
       title: Correlation
       description: Correlation between a change and the symptom.
-    DeleteResponse:
-      properties:
-        message:
-          type: string
-          title: Message
-        organization_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Organization Id
-        user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: User Id
-      type: object
-      required:
-      - message
-      title: DeleteResponse
-      description: Generic delete response
     DerivedEvidenceSummary:
       properties:
         evidence_id:
@@ -7724,8 +7702,8 @@ components:
         category:
           type: string
           title: Category
-          description: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE |
-            OTHER
+          description: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE
+            | CAUSAL_ABSENCE_EVIDENCE | OTHER
         collected_at_turn:
           type: integer
           title: Collected At Turn
@@ -7935,7 +7913,7 @@ components:
         deployment:
           type: string
           title: Deployment
-          description: "'local' or 'cloud' \u2014 derived from auth_mode"
+          description: "'standalone' or 'cloud' \u2014 from DEPLOYMENT_MODE (ADR-004)"
         db_backend:
           type: string
           title: Db Backend
@@ -8057,8 +8035,9 @@ components:
           description: Unique evidence identifier
         category:
           $ref: '#/components/schemas/EvidenceCategory'
-          description: 'Claim-anchored category declared by the LLM: SYMPTOM_EVIDENCE
-            | CAUSAL_EVIDENCE | MITIGATION_EVIDENCE | SOLUTION_EVIDENCE'
+          description: 'Claim-anchored category declared by the LLM (verification
+            quartet): SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE
+            | CAUSAL_ABSENCE_EVIDENCE'
         primary_purpose:
           type: string
           maxLength: 100
@@ -8218,22 +8197,26 @@ components:
       enum:
       - symptom_evidence
       - causal_evidence
-      - mitigation_evidence
-      - solution_evidence
       - symptom_absence_evidence
       - causal_absence_evidence
       title: EvidenceCategory
-      description: "Evidence classification by investigation purpose.\n\nSix claim-attached\
-        \ categories: the presence/absence verification\nquartet (``symptom_evidence``,\
-        \ ``causal_evidence``,\n``symptom_absence_evidence``, ``causal_absence_evidence``)\
-        \ plus two\nlegacy stage-completion categories (``mitigation_evidence``,\n\
-        ``solution_evidence``) retained from the post-010 model and slated\nfor removal\
-        \ once prompts stop emitting them. Every row is the LLM's\ndeliberate decision\
-        \ to record a specific extract as evidence for a\nspecific claim, created\
-        \ only during INVESTIGATING. Contextual data\nlives on ``uploaded_files``\
-        \ \u2014 no evidence row is needed until the\nagent extracts a claim-relevant\
-        \ slice. Rejection is expressed as the\nabsence of an evidence row; hypothesis-level\
-        \ refutation lives on\n``hypothesis_evidence.stance``."
+      description: "Evidence classification by investigation purpose.\n\nFour claim-attached\
+        \ categories forming the presence/absence\nverification quartet: ``symptom_evidence``\
+        \ (symptom present),\n``causal_evidence`` (cause present), ``symptom_absence_evidence``\n\
+        (symptom gone after a fix), ``causal_absence_evidence`` (cause gone\nafter\
+        \ a fix). Every row is the LLM's deliberate decision to record a\nspecific\
+        \ extract as evidence for a specific claim, created only during\nINVESTIGATING.\
+        \ Contextual data lives on ``uploaded_files`` \u2014 no\nevidence row is needed\
+        \ until the agent extracts a claim-relevant\nslice. Rejection is expressed\
+        \ as the absence of an evidence row;\nhypothesis-level refutation lives on\
+        \ ``hypothesis_evidence.stance``.\n\nThe verification gates (``mitigation_verified``\
+        \ / ``solution_verified``)\nare NOT driven by an evidence category \u2014\
+        \ they are set by the LLM via the\nUser-Agent Handshake / compliance detection.\
+        \ The absence rows are the\ndurable audit trail that the readiness checks\
+        \ consult\n(``assess_resolution_readiness`` via ``_has_causal_absence``) to\
+        \ decide\nRESOLVED vs CLOSED. (The pre-migration ``mitigation_evidence`` /\n\
+        ``solution_evidence`` stage-completion categories were removed in the\nGAP-5\
+        \ legacy\u2192absence migration.)"
     EvidenceDetailsResponse:
       properties:
         evidence_id:
@@ -8477,8 +8460,8 @@ components:
           type: string
           maxLength: 50
           title: Category
-          description: 'Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE
-            | OTHER'
+          description: 'Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE
+            | CAUSAL_ABSENCE_EVIDENCE | OTHER'
           default: OTHER
         source_filename:
           anyOf:
@@ -9447,11 +9430,11 @@ components:
         deployment:
           type: string
           title: Deployment
-          description: 'Deployment mode: ''local'' or ''cloud'''
+          description: 'Deployment mode: ''standalone'' or ''cloud'''
         config_readonly:
           type: boolean
           title: Config Readonly
-          description: True in local mode (config managed via .env file)
+          description: True in standalone mode (config managed via .env file)
         primary_provider:
           type: string
           title: Primary Provider
@@ -9468,6 +9451,14 @@ components:
             $ref: '#/components/schemas/LLMProviderDetail'
           type: object
           title: Providers
+        config_sources:
+          additionalProperties:
+            type: string
+          type: object
+          title: Config Sources
+          description: 'Provenance per overridable setting key: ''admin-override''
+            (set via the dashboard, stored in the DB) or ''env-default'' (.env / seed).
+            Always ''env-default'' in standalone (no DB overrides).'
         timestamp:
           type: string
           format: date-time
@@ -9707,149 +9698,6 @@ components:
       example:
         message: Logged out successfully
         revoked_tokens: 1
-    MemberAddRequest:
-      properties:
-        email:
-          type: string
-          title: Email
-          description: Email of user to invite
-        role:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Role
-          description: Role to assign (member, admin)
-          default: member
-      type: object
-      required:
-      - email
-      title: MemberAddRequest
-      description: Request to add member to organization
-    MemberAddResponse:
-      properties:
-        user_id:
-          type: string
-          title: User Id
-        email:
-          type: string
-          title: Email
-        full_name:
-          type: string
-          title: Full Name
-        role:
-          type: string
-          title: Role
-        joined_at:
-          type: string
-          format: date-time
-          title: Joined At
-        invitation_sent:
-          type: boolean
-          title: Invitation Sent
-      type: object
-      required:
-      - user_id
-      - email
-      - full_name
-      - role
-      - joined_at
-      - invitation_sent
-      title: MemberAddResponse
-      description: Response for adding a member
-    MemberListResponse:
-      properties:
-        members:
-          items:
-            $ref: '#/components/schemas/MemberResponse'
-          type: array
-          title: Members
-        total:
-          type: integer
-          title: Total
-        limit:
-          type: integer
-          title: Limit
-        offset:
-          type: integer
-          title: Offset
-      type: object
-      required:
-      - members
-      - total
-      - limit
-      - offset
-      title: MemberListResponse
-      description: Response for listing organization members
-    MemberResponse:
-      properties:
-        user_id:
-          type: string
-          title: User Id
-        email:
-          type: string
-          title: Email
-        full_name:
-          type: string
-          title: Full Name
-        role:
-          type: string
-          title: Role
-        joined_at:
-          type: string
-          format: date-time
-          title: Joined At
-      type: object
-      required:
-      - user_id
-      - email
-      - full_name
-      - role
-      - joined_at
-      title: MemberResponse
-      description: Organization member response
-    MemberRoleUpdateRequest:
-      properties:
-        role:
-          type: string
-          title: Role
-          description: New role to assign (member, admin)
-      type: object
-      required:
-      - role
-      title: MemberRoleUpdateRequest
-      description: Request to update member role
-    MemberRoleUpdateResponse:
-      properties:
-        user_id:
-          type: string
-          title: User Id
-        email:
-          type: string
-          title: Email
-        full_name:
-          type: string
-          title: Full Name
-        role:
-          type: string
-          title: Role
-        joined_at:
-          type: string
-          format: date-time
-          title: Joined At
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
-      type: object
-      required:
-      - user_id
-      - email
-      - full_name
-      - role
-      - joined_at
-      - updated_at
-      title: MemberRoleUpdateResponse
-      description: Response for updating member role
     Message:
       properties:
         message_id:
@@ -10037,201 +9885,6 @@ components:
       - scopes
       title: OAuthConfigResponse
       description: OAuth configuration for cloud mode.
-    OrganizationCreateRequest:
-      properties:
-        name:
-          type: string
-          maxLength: 100
-          minLength: 1
-          title: Name
-          description: Organization name
-        slug:
-          type: string
-          maxLength: 50
-          minLength: 3
-          title: Slug
-          description: URL-friendly identifier
-        description:
-          anyOf:
-          - type: string
-            maxLength: 500
-          - type: 'null'
-          title: Description
-          description: Organization description
-        plan_tier:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Plan Tier
-          description: Subscription plan tier
-          default: free
-      type: object
-      required:
-      - name
-      - slug
-      title: OrganizationCreateRequest
-      description: Request to create a new organization
-    OrganizationListItem:
-      properties:
-        organization_id:
-          type: string
-          title: Organization Id
-        name:
-          type: string
-          title: Name
-        slug:
-          type: string
-          title: Slug
-        plan_tier:
-          type: string
-          title: Plan Tier
-        role:
-          type: string
-          title: Role
-        member_since:
-          type: string
-          format: date-time
-          title: Member Since
-      type: object
-      required:
-      - organization_id
-      - name
-      - slug
-      - plan_tier
-      - role
-      - member_since
-      title: OrganizationListItem
-      description: Organization list item with user role
-    OrganizationListResponse:
-      properties:
-        organizations:
-          items:
-            $ref: '#/components/schemas/OrganizationListItem'
-          type: array
-          title: Organizations
-        total:
-          type: integer
-          title: Total
-        limit:
-          type: integer
-          title: Limit
-        offset:
-          type: integer
-          title: Offset
-      type: object
-      required:
-      - organizations
-      - total
-      - limit
-      - offset
-      title: OrganizationListResponse
-      description: Response for listing user's organizations
-    OrganizationResponse:
-      properties:
-        organization_id:
-          type: string
-          title: Organization Id
-        name:
-          type: string
-          title: Name
-        slug:
-          type: string
-          title: Slug
-        description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
-        plan_tier:
-          type: string
-          title: Plan Tier
-        max_members:
-          type: integer
-          title: Max Members
-        current_member_count:
-          type: integer
-          title: Current Member Count
-          default: 0
-        owner_user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Owner User Id
-        settings:
-          type: object
-          title: Settings
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
-      type: object
-      required:
-      - organization_id
-      - name
-      - slug
-      - description
-      - plan_tier
-      - max_members
-      - created_at
-      - updated_at
-      title: OrganizationResponse
-      description: Organization details response
-    OrganizationUpdateRequest:
-      properties:
-        name:
-          anyOf:
-          - type: string
-            maxLength: 100
-          - type: 'null'
-          title: Name
-          description: Updated organization name
-        description:
-          anyOf:
-          - type: string
-            maxLength: 500
-          - type: 'null'
-          title: Description
-          description: Updated description
-      type: object
-      title: OrganizationUpdateRequest
-      description: Request to update organization details
-    PermissionCheckRequest:
-      properties:
-        permission:
-          type: string
-          title: Permission
-          description: Permission to check (e.g., 'cases.write')
-      type: object
-      required:
-      - permission
-      title: PermissionCheckRequest
-      description: Request to check user permission
-    PermissionCheckResponse:
-      properties:
-        has_permission:
-          type: boolean
-          title: Has Permission
-        permission:
-          type: string
-          title: Permission
-        user_id:
-          type: string
-          title: User Id
-        organization_id:
-          type: string
-          title: Organization Id
-      type: object
-      required:
-      - has_permission
-      - permission
-      - user_id
-      - organization_id
-      title: PermissionCheckResponse
-      description: Permission check result
     PreliminaryUrgency:
       properties:
         level:
@@ -11336,93 +10989,6 @@ components:
       type: object
       title: SessionUpdateRequest
       description: Request model for updating session.
-    SettingsResponse:
-      properties:
-        organization_id:
-          type: string
-          title: Organization Id
-        plan_tier:
-          type: string
-          title: Plan Tier
-        max_members:
-          type: integer
-          title: Max Members
-        current_member_count:
-          type: integer
-          title: Current Member Count
-          default: 0
-        max_cases_per_month:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Max Cases Per Month
-        max_storage_gb:
-          type: integer
-          title: Max Storage Gb
-        features:
-          additionalProperties:
-            type: boolean
-          type: object
-          title: Features
-        settings:
-          type: object
-          title: Settings
-      type: object
-      required:
-      - organization_id
-      - plan_tier
-      - max_members
-      - max_storage_gb
-      - features
-      - settings
-      title: SettingsResponse
-      description: Organization settings response
-    SettingsUpdateRequest:
-      properties:
-        allow_public_cases:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Allow Public Cases
-        require_2fa:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Require 2Fa
-        session_timeout_minutes:
-          anyOf:
-          - type: integer
-            maximum: 480.0
-            minimum: 15.0
-          - type: 'null'
-          title: Session Timeout Minutes
-        default_case_priority:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Default Case Priority
-      type: object
-      title: SettingsUpdateRequest
-      description: Request to update organization settings
-    SettingsUpdateResponse:
-      properties:
-        organization_id:
-          type: string
-          title: Organization Id
-        settings:
-          type: object
-          title: Settings
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
-      type: object
-      required:
-      - organization_id
-      - settings
-      - updated_at
-      title: SettingsUpdateResponse
-      description: Response for updating organization settings
     Solution:
       properties:
         solution_id:
@@ -11644,127 +11210,6 @@ components:
       - type
       title: SuggestedActionResponse
       description: A follow-up suggestion returned with agent responses.
-    TeamCreateRequest:
-      properties:
-        organization_id:
-          type: string
-          title: Organization Id
-          description: Organization ID
-        name:
-          type: string
-          maxLength: 200
-          minLength: 1
-          title: Name
-          description: Team name
-        description:
-          anyOf:
-          - type: string
-            maxLength: 1000
-          - type: 'null'
-          title: Description
-          description: Team description
-      type: object
-      required:
-      - organization_id
-      - name
-      title: TeamCreateRequest
-      description: Request to create a new team
-    TeamMemberAddRequest:
-      properties:
-        user_id:
-          type: string
-          title: User Id
-          description: User ID to add
-        team_role:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Team Role
-          description: Team role ('lead' or 'member')
-          default: member
-      type: object
-      required:
-      - user_id
-      title: TeamMemberAddRequest
-      description: Request to add member to team
-    TeamMemberResponse:
-      properties:
-        user_id:
-          type: string
-          title: User Id
-        team_id:
-          type: string
-          title: Team Id
-        team_role:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Team Role
-        joined_at:
-          type: string
-          format: date-time
-          title: Joined At
-      type: object
-      required:
-      - user_id
-      - team_id
-      - team_role
-      - joined_at
-      title: TeamMemberResponse
-      description: Team member response
-    TeamResponse:
-      properties:
-        team_id:
-          type: string
-          title: Team Id
-        organization_id:
-          type: string
-          title: Organization Id
-        name:
-          type: string
-          title: Name
-        description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
-      type: object
-      required:
-      - team_id
-      - organization_id
-      - name
-      - description
-      - created_at
-      - updated_at
-      title: TeamResponse
-      description: Team details response
-    TeamUpdateRequest:
-      properties:
-        name:
-          anyOf:
-          - type: string
-            maxLength: 200
-          - type: 'null'
-          title: Name
-          description: Updated team name
-        description:
-          anyOf:
-          - type: string
-            maxLength: 1000
-          - type: 'null'
-          title: Description
-          description: Updated description
-      type: object
-      title: TeamUpdateRequest
-      description: Request to update team details
     TemporalState:
       type: string
       enum:

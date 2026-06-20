@@ -133,32 +133,18 @@ CATEGORY_MILESTONE_MAP = {
         "root_cause_identified",  # Demonstrates root cause
         "solution_proposed",  # Justifies proposed solution
     ],
-    EvidenceCategory.MITIGATION_EVIDENCE: [
-        # Mitigation evidence verifies temp fix effectiveness
-        # mitigation_verified is a stage-gate milestone (set by compliance detection)
-    ],
-    EvidenceCategory.SOLUTION_EVIDENCE: [
-        # Solution evidence verifies permanent fix effectiveness
-        # solution_verified is a stage-gate milestone (set via User-Agent Handshake)
-    ],
-    EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: [
-        # Symptom-absence evidence verifies a fix at the symptom level.
-        # Contributes to BOTH mitigation_verified (workaround masks
-        # symptom — sufficient on its own) AND solution_verified
-        # (defense in depth alongside causal absence, since a fixed
-        # cause without symptom recovery means downstream debris).
-        "mitigation_verified",
-        "solution_verified",
-    ],
-    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE: [
-        # Causal-absence evidence verifies a fix at the cause level —
-        # distinct from symptom absence (a workaround can mask symptoms
-        # without removing the cause). The map is used for attribution
-        # (intersection with milestones the LLM completed this turn),
-        # not auto-advancement — gate milestones stay LLM-set via the
-        # compliance-detection / handshake mechanism.
-        "solution_verified",
-    ],
+    # Absence categories map to [] DELIBERATELY (not an oversight). The
+    # verification gates (mitigation_verified / solution_verified) are set by
+    # the LLM via the User-Agent Handshake / compliance detection — NOT by
+    # evidence category. The map's only consumer (_infer_milestones) does
+    # *attribution* (intersect category-eligible milestones with what the LLM
+    # completed this turn), and these gates are not evidence-attributed.
+    # The absence rows' disposition role is read DIRECTLY by the readiness
+    # checks: assess_resolution_readiness/_closure consult _has_causal_absence()
+    # to decide RESOLVED vs CLOSED. So absence evidence drives dispositions
+    # through readiness, not through this map — keep these at [].
+    EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: [],
+    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE: [],
     # Baseline/environmental data lives on ``uploaded_files``, not Evidence;
     # Evidence rows are only created when the agent extracts a
     # claim-relevant slice.
@@ -334,8 +320,8 @@ def _infer_milestones(
     - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md
 
     Args:
-        category: The evidence category (SYMPTOM / CAUSAL / MITIGATION /
-            SOLUTION)
+        category: The evidence category (the verification quartet:
+            SYMPTOM / CAUSAL + their ABSENCE rows)
         milestones_completed_this_turn: Milestones completed this turn from MilestoneUpdates
 
     Returns:
@@ -358,10 +344,11 @@ def _infer_milestones(
         that turn get attributed to it. No guessing needed.
 
     Note:
-        - Post-010: 4 categories (SYMPTOM/CAUSAL/MITIGATION/SOLUTION).
-          MITIGATION_EVIDENCE and SOLUTION_EVIDENCE map to [] —
-          mitigation_verified / solution_verified are gate milestones
-          set by compliance detection, not by evidence category.
+        - The verification quartet (SYMPTOM/CAUSAL + their ABSENCE rows).
+          The absence categories map to [] — mitigation_verified /
+          solution_verified are gate milestones set by compliance detection,
+          not by evidence category; the absence rows are consumed directly by
+          the readiness checks (see CATEGORY_MILESTONE_MAP).
         - If category not in map, returns [] (safe fallback).
         - LLM can override by explicitly setting advances_milestones in EvidenceToAdd.
     """
@@ -6432,8 +6419,9 @@ class MilestoneEngine:
               The LLM reads files via ``<uploaded_file>`` context blocks.
             - Evidence is born during INVESTIGATING: the LLM extracts
               claim-anchored slices via ``evidence_to_add``, each carrying a
-              category (symptom / causal / mitigation / solution_evidence)
-              and a ``source_file_id`` back to the originating file.
+              category (the verification quartet: symptom / causal +
+              symptom_absence / causal_absence) and a ``source_file_id``
+              back to the originating file.
             - Milestones derive from evidence categories as those rows are
               created turn-by-turn, not retroactively at the transition.
 

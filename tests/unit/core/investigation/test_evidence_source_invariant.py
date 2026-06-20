@@ -156,19 +156,16 @@ class TestPostDropCategories:
     def test_evidence_category_values(self):
         """The full set of EvidenceCategory values.
 
-        Post-013, the absence-of-symptom and absence-of-cause categories
-        joined the presumption-evidence model (see
-        evidence-needs-design.md §4.3). The legacy stage-named
-        ``mitigation_evidence`` / ``solution_evidence`` are still
-        present pending the Phase 5 prompt cutover, after which they
-        will be removed in favor of the absence categories alone.
+        The category set is the presence/absence verification quartet.
+        The legacy stage-named ``mitigation_evidence`` / ``solution_evidence``
+        were removed in the GAP-5 legacy→absence migration (prompts emit only
+        the absence categories; the verification gates are handshake-set and
+        the absence rows are consumed by the readiness checks).
         """
         values = {c.value for c in EvidenceCategory}
         assert values == {
             "symptom_evidence",
             "causal_evidence",
-            "mitigation_evidence",
-            "solution_evidence",
             "symptom_absence_evidence",
             "causal_absence_evidence",
         }

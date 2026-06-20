@@ -2,7 +2,7 @@
 
 **Version:** 2.7
 **Date:** 2026-04-26
-**Status:** Live. The pipeline preprocesses attachments before the LLM, and Evidence is created during `INVESTIGATING` via the LLM's `evidence_to_add` (anchored to a `source_file_id` on `uploaded_files` or `source_type=user_description` for chat quotes). Categories are `symptom_evidence`, `causal_evidence`, `mitigation_evidence`, `solution_evidence`. The evidence taxonomy and DB schema live in [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) and [case-schema.md](../data-and-storage/schemas/case-schema.md) respectively.
+**Status:** Live. The pipeline preprocesses attachments before the LLM, and Evidence is created during `INVESTIGATING` via the LLM's `evidence_to_add` (anchored to a `source_file_id` on `uploaded_files` or `source_type=user_description` for chat quotes). Categories are `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence`. The evidence taxonomy and DB schema live in [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) and [case-schema.md](../data-and-storage/schemas/case-schema.md) respectively.
 
 ---
 
@@ -125,8 +125,8 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │                                                                     │ │
 │  │ Step 2 — Agent findings (after LLM call):                          │ │
 │  │   For each item in evidence_to_add:                                │ │
-│  │     1. Validate category (symptom / causal / mitigation /          │ │
-│  │        solution_evidence) — reject otherwise                       │ │
+│  │     1. Validate category (symptom / causal / symptom-absence /     │ │
+│  │        causal-absence evidence) — reject otherwise                 │ │
 │  │     2. Build Evidence row with source_file_id pointing at the      │ │
 │  │        originating UploadedFile (or source_type=user_description   │ │
 │  │        for chat-quote rows with no file)                           │ │
@@ -633,7 +633,7 @@ LLM and DB-insert failure handling is synchronous in-process retry via `BaseExte
 
 The design decisions that govern the taxonomy and classification semantics live in their canonical documents. Pointers:
 
-- **Evidence is claim-anchored.** The `evidence` table holds rows that the LLM emits with a category (`symptom_evidence` / `causal_evidence` / `mitigation_evidence` / `solution_evidence`) and either a `source_file_id` pointing at an `uploaded_files` row or `source_type=user_description` for chat-quote rows. File-level dedup is on `uploaded_files.content_hash`; the LLM never sees duplicate intake. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
+- **Evidence is claim-anchored.** The `evidence` table holds rows that the LLM emits with a category (`symptom_evidence` / `causal_evidence` / `symptom_absence_evidence` / `causal_absence_evidence`) and either a `source_file_id` pointing at an `uploaded_files` row or `source_type=user_description` for chat-quote rows. File-level dedup is on `uploaded_files.content_hash`; the LLM never sees duplicate intake. See [evidence-driven-investigation-framework.md §5](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model).
 - **Strict category validation.** `EvidenceToAdd.validate_category` raises `ValidationError` on any value outside the four valid categories. `LLMErrorHandler` does not classify Pydantic ValidationError as retryable, so the turn fails fast surfacing the validation message — re-calling the LLM blindly wouldn't fix a category-choice error without a prompt change. See [Evidence Failure Modes → Scenario 3](./evidence-failure-modes.md) and `core/investigation/schemas.py:validate_category`.
 - **No Evidence during INQUIRY; no retroactive attribution.** File uploads create `UploadedFile` rows only at intake. The LLM reads them via `<uploaded_file file_id="...">` prompt blocks and emits `evidence_to_add` once the case enters `INVESTIGATING`. Milestones derive from categories as rows are created turn-by-turn. See `core/investigation/milestone_engine.py:_transition_to_investigating`.
 - **Source-discriminator lives on the row, not in a separate column.** `source_type` + `source_file_id` carry the source information together; the `evidence_source_invariant` DB CHECK requires `source_file_id IS NOT NULL OR source_type = 'user_description'`.
