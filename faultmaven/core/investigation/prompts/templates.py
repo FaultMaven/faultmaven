@@ -1352,7 +1352,14 @@ When evidence reveals a cause, follow this exact sequence — all in ONE turn if
 1. CREATE a hypothesis representing that cause (hypotheses_to_add)
 2. CLASSIFY the evidence as causal_evidence (evidence_to_add)
 3. LINK the evidence to the hypothesis (hypothesis_evidence_links)
-4. SET root_cause_identified=True if confidence ≥ 0.7 (70% on the 0.0–1.0 scale)
+4. When confidence ≥ 0.7 (70% on the 0.0–1.0 scale), set BOTH
+   root_cause_identified=True AND root_cause_likelihood to that confidence value.
+
+The likelihood is what grounds the claim: the engine marks the cause identified
+only when root_cause_likelihood ≥ 0.7 is backed by the causal_evidence from
+steps 2–3 (or a stated root-cause conclusion). The bare root_cause_identified
+flag without that grounding does NOT advance the milestone — always emit the
+numeric likelihood with the flag.
 
 Never skip step 1. Never classify evidence as causal_evidence without a
 corresponding hypothesis already in hypotheses_to_add or already existing.
