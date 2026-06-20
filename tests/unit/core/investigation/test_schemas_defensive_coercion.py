@@ -225,6 +225,116 @@ class TestSuggestedFollowUpPayloadScope:
             SuggestedFollowUp(label="Run the check", action_type="RUN")
 
 
+class TestResultInspectionCoercion:
+    """``_coerce_result_inspection_payload_to_evidence`` — a DECIDE payload that
+    HANDS the agent results/output the user has not actually submitted is
+    coerced to EVIDENCE (and its payload dropped). This is the EVIDENCE-miscast
+    counterpart of the command→RUN net; it submits a false "here are my results"
+    claim in the user's name on click.
+
+    A handoff means EITHER the user presents results inline ("here are the
+    logs") OR claims a completed action AND asks the agent to inspect the
+    outcome ("I re-ran it, check the output"). Critically, two valid DECIDE
+    shapes must be PRESERVED: a bare steer the agent can act on ("Let's review
+    the logs") and a bare compliance acknowledgement ("I've applied the fix").
+
+    The canonical failure that motivated it (observed live, case
+    ``case_e970a5c24fe1`` turn 25): label "I've applied the fix and re-ran the
+    job" with payload "I have applied the fix and re-ran the pipeline. Please
+    check the results." — clicking asked the agent to check results the user
+    had not submitted.
+    """
+
+    # (label, payload) DECIDE suggestions that MUST coerce to EVIDENCE — each is
+    # a genuine handoff (results presented inline, or completed-action + inspect).
+    COERCED = [
+        (
+            "I've applied the fix and re-ran the job",
+            "I have applied the fix and re-ran the pipeline. Please check the results.",
+        ),
+        ("I ran it", "I ran it — here's the result"),
+        ("Share re-run output", "I re-ran the job, check the output"),
+        ("Logs are ready", "Here are the logs from the failing pod"),
+        ("Reviewed it", "I re-ran the check, review the stderr output"),
+        ("Attached", "Attached are the results of the migration job"),
+        ("Re-run results", "I finished the re-run, check the results"),
+    ]
+
+    @pytest.mark.parametrize("label,payload", COERCED)
+    def test_result_inspection_decide_coerced_to_evidence(self, label, payload):
+        f = SuggestedFollowUp(label=label, action_type="DECIDE", payload=payload)
+        assert (
+            f.action_type == "EVIDENCE"
+        ), f"expected EVIDENCE coercion for payload {payload!r}"
+        # Payload is content the user never supplied — it must not linger.
+        assert f.payload is None
+
+    # (label, payload) legitimate DECIDE suggestions that MUST be left alone —
+    # the agent can act on these from case state/knowledge, OR they are bare
+    # compliance acknowledgements; no unsubmitted outcome data is handed over.
+    PRESERVED = [
+        (
+            "Validate the config hypothesis",
+            "Let's validate the config change hypothesis",
+        ),
+        ("What does exit code 137 mean?", "What does exit code 137 mean?"),
+        (
+            "Focus on the network policy",
+            "Let's focus on the NetworkPolicy ingress rule as the likely cause",
+        ),
+        (
+            "Investigate the DB connection",
+            "Investigate the database connection settings next",
+        ),
+        ("Search the KB", "Search the knowledge base for similar migration timeouts"),
+        # Bare steers that mention a result-noun + inspect verb but hand over
+        # NOTHING — the agent acts on case evidence. These were the regression
+        # the over-broad first cut wrongly coerced (code-review finding #1).
+        (
+            "Review the error logs",
+            "Let's review the error logs in the failing pod next",
+        ),
+        (
+            "Verify the results",
+            "Let's verify the database results match the expected schema",
+        ),
+        (
+            "Examine the health check",
+            "Let's examine the output of the health check together",
+        ),
+        (
+            "Analyze the latency",
+            "Let's analyze the latency results from the dashboard",
+        ),
+        # Bare compliance acknowledgement — a completed-action claim with no
+        # inspect request / no presented data. This is a valid gate-advancing
+        # DECIDE and must NOT be turned into an evidence ask.
+        (
+            "I've applied the fix",
+            "I've applied the fix to the NetworkPolicy ingress rule",
+        ),
+    ]
+
+    @pytest.mark.parametrize("label,payload", PRESERVED)
+    def test_legitimate_decide_payload_preserved(self, label, payload):
+        f = SuggestedFollowUp(label=label, action_type="DECIDE", payload=payload)
+        assert (
+            f.action_type == "DECIDE"
+        ), f"DECIDE payload {payload!r} was wrongly coerced"
+        assert f.payload == payload
+
+    def test_command_payload_still_coerces_to_run_not_evidence(self):
+        """Ordering guard: the command net runs first, so a shell command that
+        also mentions 'logs' becomes RUN (copy the command), not EVIDENCE."""
+        f = SuggestedFollowUp(
+            label="Get pod logs",
+            action_type="DECIDE",
+            payload="kubectl logs <pod> --tail=100",
+        )
+        assert f.action_type == "RUN"
+        assert f.payload == "kubectl logs <pod> --tail=100"
+
+
 # ============================================================
 # HypothesisEvidenceLinkToAdd — int-where-string coercion
 # (Variant E in the shape-failures backlog; observed on Gemini 2.5 Pro

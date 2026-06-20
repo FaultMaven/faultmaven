@@ -32,6 +32,7 @@ Without this pattern, LLM returning null causes Pydantic validation errors:
 Applied to 23 list fields across all schemas (see git blame for specific changes).
 """
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar, Dict, List, Literal, Optional, Union
@@ -941,6 +942,53 @@ class SuggestedFollowUp(BaseModel):
         "tcpdump",
     )
 
+    # Outcome-data safety net — the opposite (and more user-harmful) miscast to
+    # the command→RUN one: a DECIDE payload that hands the agent results/output
+    # the user has NOT actually submitted. On click it submits a false "here are
+    # my results" claim in the user's name and wastes the turn. That outcome data
+    # is content only the user can supply, so the suggestion is EVIDENCE. The
+    # prompt already forbids this shape (_FOLLOW_UP_SUGGESTIONS_BLOCK, "I ran it
+    # — here's the result" BAD case); this makes the prohibition deterministic.
+    #
+    # PRECISION IS THE WHOLE GAME HERE. Two valid DECIDE shapes must NOT be
+    # caught, or the net does more harm than the bug:
+    #   1. Steers the agent can act on from case evidence:
+    #      "Let's review the error logs", "Let's verify the results".
+    #   2. Compliance acknowledgements that advance a gate:
+    #      "I've applied the fix" (the user reporting they did the mitigation).
+    # So coercion requires the payload to actually be a HANDOFF of outcome data:
+    #   (A) the user presents results inline — "here are the logs",
+    #       "attached are the results"; OR
+    #   (B) the user CLAIMS a completed action AND asks the agent to inspect the
+    #       outcome — "I re-ran it, check the output". A completed-action claim
+    #       on its own (no inspect request) stays a DECIDE (case 2 above); an
+    #       inspect verb on its own stays a DECIDE (case 1 above).
+    # Sub-patterns are clause-bounded ([^.?!\n]) so a result noun in a later
+    # sentence can't bind to a presenter in an earlier one.
+
+    # (A) "here's / here are / attached / sharing … results/output/logs"
+    _RESULTS_PRESENTED_RE: ClassVar = re.compile(
+        r"(?:here'?s|here\s+is|here\s+are|attached\s+(?:is|are)|"
+        r"i'?ve\s+attached|i\s+attached|i'?m\s+sharing|sharing|i\s+pasted)"
+        r"[^.?!\n]{0,30}?"
+        r"\b(?:results?|output|logs?|stdout|stderr|tracebacks?|stack\s?traces?)\b",
+        re.IGNORECASE,
+    )
+    # (B1) first-person CLAIM of a completed action (not an inspect/observe verb)
+    _USER_DID_ACTION_RE: ClassVar = re.compile(
+        r"\bi(?:'ve| have| just| already)?\s+"
+        r"(?:applied|ran|re-?ran|executed|deployed|redeployed|restarted|"
+        r"rolled\s+back|updated|patched|implemented|completed|finished|"
+        r"made\s+the\s+change)\b",
+        re.IGNORECASE,
+    )
+    # (B2) an imperative asking the agent to inspect the outcome
+    _INSPECT_REQUEST_RE: ClassVar = re.compile(
+        r"\b(?:check|checking|review|reviewing|see|look\s+at|verify|examine|"
+        r"inspect|tell\s+me\s+about)\b",
+        re.IGNORECASE,
+    )
+
     @model_validator(mode="after")
     def _coerce_command_payload_to_run(self) -> "SuggestedFollowUp":
         """Encoding safety net: a DECIDE payload that is actually a shell
@@ -951,6 +999,36 @@ class SuggestedFollowUp(BaseModel):
             payload_first_word = self.payload.strip().split()[0]
             if payload_first_word in self._COMMAND_PREFIXES:
                 self.action_type = "RUN"
+        return self
+
+    @model_validator(mode="after")
+    def _coerce_result_inspection_payload_to_evidence(self) -> "SuggestedFollowUp":
+        """Encoding safety net (EVIDENCE miscast): a DECIDE payload that hands
+        the agent results/output the user has NOT actually submitted would, on
+        click, send a false "here are my results" message in the user's name.
+        That outcome data is content only the user can supply, so the suggestion
+        is EVIDENCE, not DECIDE. Coerce the type and drop the payload
+        (``_enforce_payload_scope`` would otherwise require it). Mirror of
+        ``_coerce_command_payload_to_run`` for the opposite, more user-harmful
+        miscast direction.
+
+        Coerce only on an actual data HANDOFF (see the regex block above):
+        results presented inline, OR a completed-action claim paired with an
+        inspect request. A bare steer ("Let's review the logs") and a bare
+        compliance claim ("I've applied the fix") are left as DECIDE.
+
+        Runs only on DECIDE (a command already coerced to RUN above is left
+        alone — copying a command is a legitimate request for the user to run
+        it and report back separately)."""
+        if self.action_type == "DECIDE" and self.payload:
+            payload = self.payload
+            is_handoff = self._RESULTS_PRESENTED_RE.search(payload) or (
+                self._USER_DID_ACTION_RE.search(payload)
+                and self._INSPECT_REQUEST_RE.search(payload)
+            )
+            if is_handoff:
+                self.action_type = "EVIDENCE"
+                self.payload = None
         return self
 
     @model_validator(mode="after")
