@@ -122,6 +122,15 @@ class AuthTokenResponse(BaseModel):
         default="bearer", description="Token type (always 'bearer')"
     )
     expires_in: int = Field(..., description="Token expiration time in seconds")
+    refresh_token: Optional[str] = Field(
+        default=None,
+        description=(
+            "Long-lived refresh token used to mint a new access token via "
+            "POST /auth/refresh without re-authenticating. Issued in local "
+            "mode; clients should persist it and refresh before the access "
+            "token expires."
+        ),
+    )
     session_id: str = Field(
         ..., description="Session identifier for multi-turn conversations"
     )
@@ -133,6 +142,7 @@ class AuthTokenResponse(BaseModel):
                 "access_token": "550e8400-e29b-41d4-a716-446655440000",
                 "token_type": "bearer",
                 "expires_in": 86400,
+                "refresh_token": "770e8400-e29b-41d4-a716-446655442222",
                 "session_id": "session-550e8400-e29b-41d4-a716-446655440000",
                 "user": {
                     "user_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -145,6 +155,32 @@ class AuthTokenResponse(BaseModel):
                 },
             }
         }
+    )
+
+
+class TokenRefreshRequest(BaseModel):
+    """Request body for POST /auth/refresh (local mode)."""
+
+    refresh_token: str = Field(
+        ..., description="The refresh token issued at login or a prior refresh"
+    )
+
+
+class TokenRefreshResponse(BaseModel):
+    """Response for POST /auth/refresh.
+
+    A new access token (and rotated refresh token). The session and user are
+    unchanged, so they are not re-sent — the client keeps its existing
+    session_id and user profile and only swaps the tokens.
+    """
+
+    access_token: str = Field(..., description="New bearer access token")
+    token_type: str = Field(
+        default="bearer", description="Token type (always 'bearer')"
+    )
+    expires_in: int = Field(..., description="Token expiration time in seconds")
+    refresh_token: str = Field(
+        ..., description="New refresh token (the old one is revoked — rotation)"
     )
 
 
