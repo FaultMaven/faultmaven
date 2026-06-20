@@ -2,7 +2,7 @@
 Redis client configuration for FaultMaven.
 
 Provides a single factory function that returns either a real Redis client
-(cloud/enterprise) or FakeRedis (local deployment). All subsystems receive
+(cloud) or FakeRedis (standalone). All subsystems receive
 the same async Redis interface — no dual code paths needed.
 
 Configuration is read from the unified settings system (faultmaven.config.settings).
@@ -12,7 +12,7 @@ import logging
 from typing import Optional
 from urllib.parse import urlparse
 
-# Conditional Redis import - only available in enterprise edition
+# Conditional Redis import — the redis package is installed for cloud; standalone uses FakeRedis
 try:
     import redis.asyncio as redis
 

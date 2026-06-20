@@ -1,8 +1,8 @@
-"""SingleTenantProvider for Local/Community Deployments.
+"""SingleTenantProvider for standalone (self-hosted) deployments.
 
 Returns a single default enterprise + organization for all requests.
 All users belong to the same enterprise (and the same organization
-within it), simplifying local development and community edition.
+within it), simplifying local development and standalone deployments.
 """
 
 from datetime import datetime, timezone
@@ -33,16 +33,16 @@ DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
 
 
 class SingleTenantProvider(TenantProvider):
-    """Single-tenant provider for local/community deployments.
+    """Single-tenant provider for standalone (self-hosted) deployments.
 
     Behavior:
     - Returns a single default organization for all requests
     - All users belong to the same organization
-    - Simplifies local development and community edition
+    - Simplifies local development and standalone deployments
 
     Use Cases:
     - Local development (git clone → python main.py)
-    - Community edition (self-hosted, single team)
+    - Standalone (self-hosted, single tenant)
     - Testing and CI/CD
 
     Design Notes:
@@ -198,7 +198,7 @@ class SingleTenantProvider(TenantProvider):
             enterprise_id=self.DEFAULT_ENTERPRISE_ID,
             slug=self.DEFAULT_ORG_SLUG,
             name=self.DEFAULT_ORG_NAME,
-            description="Default organization for local/community deployment",
+            description="Default organization for standalone deployment",
             plan_tier=OrgPlanTier.PRO,  # Local mode gets pro features
             max_members=100,  # Generous limit for local teams
             max_cases=None,  # Unlimited cases in local mode

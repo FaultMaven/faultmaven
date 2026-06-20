@@ -2135,7 +2135,7 @@ class ProviderSettings(BaseSettings):
     # Tenant isolation strategy
     tenant_provider: TenantProvider = Field(
         default=TenantProvider.SINGLE,
-        description="Tenant isolation: 'single' (local/community) or 'multi' (cloud/enterprise)",
+        description="Tenant isolation: 'single' (standalone) or 'multi' (cloud)",
     )
 
     # Database backend
