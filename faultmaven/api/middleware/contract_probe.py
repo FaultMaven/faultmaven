@@ -34,6 +34,10 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
     - Correlation IDs for failure tracking
     """
 
+    # Violations whose code starts with one of these are advisory (convention
+    # drift, not a broken contract) and are logged at warning, not error.
+    _ADVISORY_VIOLATION_PREFIXES = ("MISSING_PAGINATION_HEADER",)
+
     def __init__(
         self,
         app: ASGIApp,
@@ -248,8 +252,18 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
 
             self._failure_cache[failure_key] += 1
 
+            # Severity split: a missing Location/Retry-After header is a genuine
+            # broken contract (error). A missing X-Total-Count is an advisory
+            # convention drift — the body still carries the total — so it should
+            # not pollute error logs. Log at error only when a non-advisory
+            # violation is present.
+            is_critical = any(
+                not v.startswith(self._ADVISORY_VIOLATION_PREFIXES) for v in violations
+            )
+            first_occurrence_log = logger.error if is_critical else logger.warning
+
             if self._failure_cache[failure_key] == 1:  # Log first occurrence
-                logger.error(
+                first_occurrence_log(
                     f"CONTRACT_VIOLATION [{correlation_id}] {probe_data['method']} {path} -> {status_code}",
                     extra={
                         "correlation_id": correlation_id,
