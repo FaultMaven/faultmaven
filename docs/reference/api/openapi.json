@@ -798,7 +798,7 @@
           "authentication"
         ],
         "summary": "Get Available Scopes",
-        "description": "Return KB scopes the calling user can target when publishing.\n\nCommunity Edition is single-tenant (one implicit operator, no teams,\nno multi-member orgs), so only ``personal`` and ``global`` are\npublishable here. The ``team`` / ``organization`` scopes are a cloud\ncollaboration feature \u2014 their gating lives with the org/team management\nsurface in faultmaven-cloud (ADR-006), not in the CE core.",
+        "description": "Return KB scopes the calling user can target when publishing.\n\nA standalone (self-hosted) deployment is single-tenant \u2014 one implicit\noperator, no teams, no multi-member orgs \u2014 so only ``personal`` and\n``global`` are publishable here. The ``team`` / ``organization`` scopes\nare a Cloud collaboration feature, gated by the org/team management\nsurface that ships only in Cloud.",
         "operationId": "get_available_scopes_api_v1_auth_me_available_scopes_get",
         "parameters": [
           {

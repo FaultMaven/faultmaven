@@ -79,7 +79,7 @@ All data submitted to the API is processed through privacy-first pipelines with:
 
 **Version:** 1.0.0  
 **Base URL:** `/`  
-**Generated:** 2026-06-19T20:10:03.462683Z
+**Generated:** 2026-06-20T01:38:44.539946Z
 
 ## Authentication
 
@@ -843,11 +843,11 @@ including profile data and token statistics.
 
 Return KB scopes the calling user can target when publishing.
 
-Community Edition is single-tenant (one implicit operator, no teams,
-no multi-member orgs), so only ``personal`` and ``global`` are
-publishable here. The ``team`` / ``organization`` scopes are a cloud
-collaboration feature — their gating lives with the org/team management
-surface in faultmaven-cloud (ADR-006), not in the CE core.
+A standalone (self-hosted) deployment is single-tenant — one implicit
+operator, no teams, no multi-member orgs — so only ``personal`` and
+``global`` are publishable here. The ``team`` / ``organization`` scopes
+are a Cloud collaboration feature, gated by the org/team management
+surface that ships only in Cloud.
 
 **Tags:** `authentication`
 
