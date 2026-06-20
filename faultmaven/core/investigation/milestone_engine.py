@@ -654,32 +654,55 @@ def _cause_state_grounded(case: "Case") -> bool:
     The engine-owned truth bar (R1), shared by ``_recompute_assessment_state``
     (which derives cause_state) and the milestone-claim REVERT path (which must
     not strip a cause that is grounded case-wide) so the two cannot disagree
-    within a turn. Bar: a high ``root_cause_likelihood`` (>= 0.7) backed by at
-    least ONE causal-evidence row, OR a recorded ``RootCauseConclusion``.
-    Case-wide (not current-turn-only): a cause grounded over several turns stays
-    grounded.
+    within a turn. Case-wide (not current-turn-only): a cause grounded over
+    several turns stays grounded.
+
+    One coherent rule: **high confidence backed by something concrete.**
+
+    1. Confidence guard — the stated likelihood (the higher of the progress
+       signal and any recorded ``RootCauseConclusion``, since the LLM may set one
+       but not the other) must be >= 0.7. A low-confidence claim is held back
+       however it is expressed.
+    2. Concrete backing — that confidence must anchor to something real, not a
+       bare assertion. Either at least ONE causal-evidence row, OR a
+       *substantiated* ``RootCauseConclusion`` that cites a concrete basis
+       (non-empty ``evidence_basis`` or a ``validated_hypothesis_id``). A
+       conclusion that is pure narrative — no basis, no causal evidence — is the
+       same self-claim the engine must not trust, just in a conclusion's clothes,
+       and does NOT ground.
 
     The ``>= 1`` (not ``>= 2``) causal bar matches the redesign's self-naming
     premise — a cause can be identified from a single self-evident observation
-    (the error that names it). The ``likelihood >= 0.7`` gate is the confidence
-    guard, not the evidence count. The milestone-claim validator still requires
+    (the error that names it). The milestone-claim validator still requires
     ``>= 2`` and will flag a 1-causal claim, but the REVERT is skipped when this
     returns True (a confidently-grounded cause is not torn down) — so there is no
     revert-churn and no spurious "insufficient evidence" warning for the common
-    self-naming case. A 1-causal claim with low likelihood (< 0.7) is NOT grounded
-    here, so the validator's revert proceeds and the cause is correctly held back.
+    self-naming case.
     """
     p = case.progress
     causal_count = sum(
         1 for e in case.evidence if e.category == EvidenceCategory.CAUSAL_EVIDENCE
     )
-    has_root_cause_conclusion = bool(
-        case.root_cause_conclusion
-        and getattr(case.root_cause_conclusion, "root_cause", None)
-    )
-    return (
-        p.root_cause_likelihood >= 0.7 and causal_count >= 1
-    ) or has_root_cause_conclusion
+
+    rcc = case.root_cause_conclusion
+    has_conclusion = bool(rcc and getattr(rcc, "root_cause", None))
+
+    # 1. Confidence guard (>= 0.7), tolerant of which field the LLM populated.
+    likelihood = p.root_cause_likelihood or 0.0
+    if has_conclusion:
+        likelihood = max(likelihood, getattr(rcc, "likelihood", 0.0) or 0.0)
+    if likelihood < 0.7:
+        return False
+
+    # 2. Concrete backing: a causal-evidence row, or a substantiated conclusion.
+    if causal_count >= 1:
+        return True
+    if has_conclusion and (
+        getattr(rcc, "evidence_basis", None)
+        or getattr(rcc, "validated_hypothesis_id", None)
+    ):
+        return True
+    return False
 
 
 def _mark_cause_identified(case: "Case") -> bool:
