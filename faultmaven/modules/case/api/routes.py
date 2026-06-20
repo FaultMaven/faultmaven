@@ -2029,7 +2029,11 @@ async def get_case_messages_enhanced(
             case_id=case_id, limit=limit, offset=offset, include_debug=include_debug
         )
 
-        # Add headers for metadata
+        # Add headers for metadata. X-Total-Count is the canonical pagination
+        # header used by every other list endpoint (and expected by the contract
+        # probe / any generic paginating client); X-Message-Count is kept for
+        # backward compatibility.
+        response.headers["X-Total-Count"] = str(message_response.total_count)
         response.headers["X-Message-Count"] = str(message_response.total_count)
         response.headers["X-Retrieved-Count"] = str(message_response.retrieved_count)
 
