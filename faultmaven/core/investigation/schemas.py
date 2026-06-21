@@ -51,6 +51,7 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
+    NodeType,
     SolutionType,
     TurnOutcome,
 )
@@ -401,6 +402,14 @@ class HypothesisToAdd(BaseModel):
     category: HypothesisCategory
     likelihood: float = Field(ge=0.0, le=1.0)
     rationale: str
+    root_node_ref: Optional[str] = Field(
+        default=None,
+        description=(
+            "Chain mode (optional): the causal node that is this hypothesis's "
+            "ROOT cause — an existing node id (cn_...) or 'new_index_N' of a node "
+            "in causal_nodes_to_add. Links the hypothesis to its root→D chain."
+        ),
+    )
 
 
 class HypothesisUpdate(BaseModel):
@@ -511,6 +520,63 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
         if isinstance(v, int) and not isinstance(v, bool):
             return f"new_index_{v}"
         return v
+
+
+class CausalNodeToAdd(BaseModel):
+    """A causal node emitted during lazy backward expansion (methodology §5/S3).
+
+    The lazy primitive is "this state directly produces <a node closer to the
+    problem>", so a node carries the single downstream edge it creates via
+    ``produces``. The PROBLEM node ``D`` is engine-seeded, never emitted here.
+    """
+
+    statement: str
+    node_type: NodeType = Field(
+        description="'root' (a candidate root cause) or 'intermediate' (a state on the way to D)."
+    )
+    produces: Optional[str] = Field(
+        default=None,
+        description=(
+            "The node this directly causes (one step closer to the problem): an "
+            "existing node id (cn_...), 'D' for the problem node, or 'new_index_N' "
+            "referencing another node in this same causal_nodes_to_add list."
+        ),
+    )
+    and_group: Optional[str] = Field(
+        default=None,
+        description=(
+            "If this node is co-necessary with other causes of the same `produces` "
+            "(an AND-set, M7), a shared key marking the group; null/distinct = an "
+            "independent (OR) alternative cause."
+        ),
+    )
+
+
+class CausalEdgeToAdd(BaseModel):
+    """An explicit cause→effect edge, for convergence (S2) or links beyond a
+    node's own ``produces``."""
+
+    cause: str = Field(
+        description="Cause node ref: existing id, 'D', or 'new_index_N'."
+    )
+    effect: str = Field(
+        description="Effect node ref: existing id, 'D', or 'new_index_N'."
+    )
+    and_group: Optional[str] = Field(default=None, description="AND-set key (M7).")
+    reasoning: Optional[str] = Field(default=None)
+
+
+class NodeEvidenceLinkToAdd(BaseModel):
+    """Link evidence to a specific causal NODE (rung-level), not the whole chain
+    — what makes step-by-step descent and AND-validation computable (§9.1)."""
+
+    node_ref: str = Field(description="Node ref: existing id, 'D', or 'new_index_N'.")
+    evidence_id_ref: str = Field(
+        description="Evidence ID (ev_...) or 'new_index_N' if created this turn."
+    )
+    stance: EvidenceStance
+    reasoning: str
+    stance_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class EvidenceNeedUpdate(BaseModel):
@@ -1209,6 +1275,15 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
+        causal_nodes_to_add: Optional[List[CausalNodeToAdd]] = Field(
+            default_factory=list
+        )
+        causal_edges_to_add: Optional[List[CausalEdgeToAdd]] = Field(
+            default_factory=list
+        )
+        node_evidence_links: Optional[List[NodeEvidenceLinkToAdd]] = Field(
+            default_factory=list
+        )
         evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
             default_factory=list,
             description=(
@@ -1311,6 +1386,15 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
+        causal_nodes_to_add: Optional[List[CausalNodeToAdd]] = Field(
+            default_factory=list
+        )
+        causal_edges_to_add: Optional[List[CausalEdgeToAdd]] = Field(
+            default_factory=list
+        )
+        node_evidence_links: Optional[List[NodeEvidenceLinkToAdd]] = Field(
+            default_factory=list
+        )
         evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
             default_factory=list,
             description=(
@@ -1357,6 +1441,15 @@ class InvestigationResponse_General(BaseInteractionResponse):
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
         hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
+            default_factory=list
+        )
+        causal_nodes_to_add: Optional[List[CausalNodeToAdd]] = Field(
+            default_factory=list
+        )
+        causal_edges_to_add: Optional[List[CausalEdgeToAdd]] = Field(
+            default_factory=list
+        )
+        node_evidence_links: Optional[List[NodeEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
         evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
