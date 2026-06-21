@@ -6,11 +6,17 @@ the chain-based engine has a populated graph before the LLM emits chains.
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import bridge_flat_hypotheses_to_graph
+from faultmaven.core.investigation.causal_graph import (
+    bridge_flat_hypotheses_to_graph,
+    promote_grounded_chain_root,
+)
+from faultmaven.core.investigation.milestone_engine import _recompute_assessment_state
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseState,
+    CauseState,
+    ConfidenceLevel,
     EvidenceStance,
     Hypothesis,
     HypothesisCategory,
@@ -20,9 +26,21 @@ from faultmaven.modules.case.contracts import (
     NodeState,
     NodeType,
     ProblemVerification,
+    RootCauseConclusion,
+    ValidationMethod,
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _rcc(validated_hypothesis_id=None):
+    return RootCauseConclusion(
+        root_cause="NetworkPolicy denies ingress to postgres",
+        mechanism="ingress rule has no from-clause -> default deny",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+        validated_hypothesis_id=validated_hypothesis_id,
+    )
 
 
 def _investigating_case(**overrides) -> Case:
@@ -139,3 +157,71 @@ def test_bridge_noop_without_problem_statement():
     assert case.causal_nodes == {}
     assert case.causal_edges == []
     assert h.root_node_id is None
+
+
+# ---------------------------------------------------------------------------
+# slice 4: promote_grounded_chain_root (mirror grounding onto the chain)
+# ---------------------------------------------------------------------------
+
+
+def test_promote_validates_linked_root():
+    h = _hyp("NetworkPolicy blocks the connection")
+    case = _investigating_case()
+    case.hypotheses = {h.hypothesis_id: h}
+    bridge_flat_hypotheses_to_graph(case)
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=h.hypothesis_id)
+
+    assert promote_grounded_chain_root(case) is True
+    root = case.causal_nodes[h.root_node_id]
+    assert root.node_state == NodeState.VALIDATED
+    assert root.validation_method == ValidationMethod.EMPIRICAL
+    assert root.actionable is True
+
+
+def test_promote_noop_without_validated_hyp_id():
+    h = _hyp("NetworkPolicy blocks the connection")
+    case = _investigating_case()
+    case.hypotheses = {h.hypothesis_id: h}
+    bridge_flat_hypotheses_to_graph(case)
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=None)  # no link
+
+    assert promote_grounded_chain_root(case) is False
+    assert case.causal_nodes[h.root_node_id].node_state == NodeState.CANDIDATE
+
+
+def test_promote_idempotent():
+    h = _hyp("NetworkPolicy blocks the connection")
+    case = _investigating_case()
+    case.hypotheses = {h.hypothesis_id: h}
+    bridge_flat_hypotheses_to_graph(case)
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=h.hypothesis_id)
+
+    assert promote_grounded_chain_root(case) is True
+    assert promote_grounded_chain_root(case) is False  # already validated
+    assert case.causal_nodes[h.root_node_id].node_state == NodeState.VALIDATED
+
+
+def test_promote_noop_without_conclusion():
+    h = _hyp("NetworkPolicy blocks the connection")
+    case = _investigating_case()
+    case.hypotheses = {h.hypothesis_id: h}
+    bridge_flat_hypotheses_to_graph(case)
+    # no root_cause_conclusion at all
+    assert promote_grounded_chain_root(case) is False
+
+
+def test_recompute_grounds_cause_state_and_promotes_root_end_to_end():
+    """Integration: a grounded case with a bridged chain + validated_hypothesis_id
+    -> _recompute_assessment_state marks IDENTIFIED AND promotes the chain root.
+    Exercises the same path the engine wires the bridge into (slice 3)."""
+    h = _hyp("NetworkPolicy blocks the connection")
+    case = _investigating_case()
+    case.hypotheses = {h.hypothesis_id: h}
+    bridge_flat_hypotheses_to_graph(case)
+    # Ground the cause: high-confidence, substantiated conclusion naming the hyp.
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=h.hypothesis_id)
+
+    _recompute_assessment_state(case)
+
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.causal_nodes[h.root_node_id].node_state == NodeState.VALIDATED

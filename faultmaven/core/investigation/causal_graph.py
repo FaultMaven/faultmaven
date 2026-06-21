@@ -25,6 +25,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ValidationMethod,
 )
 
 if TYPE_CHECKING:
@@ -245,3 +246,37 @@ def bridge_flat_hypotheses_to_graph(case: Case) -> None:
         )
         hyp.root_node_id = root.node_id
         hyp.path = [root.node_id, d_id]
+
+
+def promote_grounded_chain_root(case: "Case") -> bool:
+    """Mirror the engine's case-wide grounding onto the chain graph: when a
+    SPECIFIC hypothesis is named the validated cause
+    (``RootCauseConclusion.validated_hypothesis_id``), promote that chain's ROOT
+    node to VALIDATED so the graph reflects what the flat grounding already
+    knows. Returns True if a root was promoted.
+
+    Transitional (Option-1) and deliberately conservative: it fires ONLY on an
+    explicit ``validated_hypothesis_id`` — never guesses from "the sole active
+    chain". The EMPIRICAL method + ``actionable=True`` are fabricated here
+    because the flat model doesn't track them; PR B removes this once the LLM
+    supplies real validated chains. Idempotent (a root already VALIDATED is left
+    alone). Callers gate this on the case being grounded
+    (``cause_state=IDENTIFIED``); it is the prerequisite that gives M6 a
+    validated root to demote on counterfactual disconfirmation.
+    """
+    rcc = case.root_cause_conclusion
+    hyp_id = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
+    if not hyp_id:
+        return False
+    hyp = case.hypotheses.get(hyp_id)
+    if hyp is None or not hyp.root_node_id:
+        return False
+    root = case.causal_nodes.get(hyp.root_node_id)
+    if root is None or root.node_state == NodeState.VALIDATED:
+        return False
+    # Set method + actionable before state so the combination is valid at every
+    # step (M4: validated⇒method; M1: validated root⇒actionable).
+    root.validation_method = ValidationMethod.EMPIRICAL
+    root.actionable = True
+    root.node_state = NodeState.VALIDATED
+    return True

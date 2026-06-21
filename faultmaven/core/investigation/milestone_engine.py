@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.causal_graph import (
     bridge_flat_hypotheses_to_graph,
+    promote_grounded_chain_root,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
@@ -785,6 +786,12 @@ def _recompute_assessment_state(case: "Case") -> None:
             p.cause_state = CauseState.CANDIDATES
         else:
             p.cause_state = CauseState.UNKNOWN
+    else:
+        # Option-1 mirror: reflect the grounding onto the chain graph (promote
+        # the validated cause's root node) so the failed-treatment demotion (M6)
+        # has a validated root to act on. Conservative — only on an explicit
+        # validated_hypothesis_id. Transitional (removed with PR B).
+        promote_grounded_chain_root(case)
 
     if p.solution_state != SolutionState.SELECTED:
         if p.solution_proposed or bool(case.solutions):
