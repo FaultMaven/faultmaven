@@ -21,11 +21,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
     CauseState,
-    ConfidenceLevel,
     EvidenceStance,
     HypothesisState,
     NodeEvidenceLink,
@@ -288,45 +288,92 @@ def promote_grounded_chain_root(case: Case) -> bool:
     return True
 
 
+def _net_refuted(hyp: Hypothesis) -> bool:
+    """Decisive-disconfirmation test for M6: refuting evidence at least matches
+    supporting evidence (and there is at least one refuting link).
+
+    A *lone* refuting link among a body of supporting evidence is NOT decisive —
+    treating it as such tears down a legitimately grounded cause that merely
+    attracted one contrary data point during search (a real false-demotion risk).
+    A refutation that flips or ties the support balance is. With no links at all
+    this is False (absence of evidence is not disconfirmation).
+    """
+    refuting = sum(
+        1 for link in hyp.evidence_links if link.stance == EvidenceStance.REFUTES
+    )
+    if refuting == 0:
+        return False
+    supporting = sum(
+        1 for link in hyp.evidence_links if link.stance == EvidenceStance.SUPPORTS
+    )
+    return refuting >= supporting
+
+
+def _representative_cause_hypothesis(case: Case) -> Hypothesis | None:
+    """The hypothesis that best represents the currently-grounded cause.
+
+    When the conclusion names one (``validated_hypothesis_id``) that is
+    authoritative. Otherwise the cause was grounded case-wide (high likelihood +
+    causal evidence / ``evidence_basis``) WITHOUT naming a hypothesis — the
+    common grounding shape, and the one in case_e970a5c24fe1 (``likelihood`` 1.0,
+    ``validated_hypothesis_id`` null). The engine's best proxy is then the
+    strongest hypothesis by ORIGINAL confidence: ``initial_likelihood`` is stable
+    where ``likelihood`` is not — refutation zeroes ``likelihood``, so a
+    just-refuted believed-cause would vanish from a max-by-``likelihood`` pick.
+    """
+    rcc = case.root_cause_conclusion
+    if rcc and rcc.validated_hypothesis_id:
+        return case.hypotheses.get(rcc.validated_hypothesis_id)
+    if not case.hypotheses:
+        return None
+    return max(case.hypotheses.values(), key=lambda h: h.initial_likelihood)
+
+
 def demote_disconfirmed_cause(case: Case) -> bool:
-    """M6 — the turn-28 fix. On counterfactual disconfirmation of the validated
+    """M6 — the turn-28 fix. On counterfactual disconfirmation of the grounded
     root cause, demote it **deterministically** rather than waiting for the LLM
     to volunteer a downgrade (which it did not, in case_e970a5c24fe1).
 
-    Triggers when the validated cause's hypothesis (named by
-    ``RootCauseConclusion.validated_hypothesis_id``) is either:
-      - **A** already ``REFUTED`` (the LLM refuted it), or
-      - **B** carries a ``REFUTES`` evidence link — a single counterfactual
-        disconfirmation is *decisive* here, not a gradual evidence-ratio nudge
-        (the fix was applied / the cause was confirmed correct yet ``D`` persisted).
+    Acts ONLY on a grounded (sticky ``cause_state=IDENTIFIED``) case — the
+    precondition that makes a demotion meaningful, gives clean idempotency (after
+    it fires, ``cause_state`` is UNKNOWN so the next call no-ops), and lets it act
+    on the COMMON grounding shape, where the cause is grounded by causal evidence
+    / ``evidence_basis`` with NO ``validated_hypothesis_id`` (see
+    ``_representative_cause_hypothesis``) — not just an explicitly-named cause.
 
-    Demotion is atomic and three-part so the *sticky* ``cause_state`` can neither
-    keep a disproven cause nor immediately re-promote it:
-      1. refute the chain ROOT node + the flat hypothesis (with a reason),
-      2. downgrade the ``RootCauseConclusion`` — preserved as audit, but its
-         likelihood/confidence are dropped and ``validated_hypothesis_id`` cleared
-         so it no longer grounds,
-      3. un-stick the assessment — zero ``root_cause_likelihood`` and drop
+    Triggers when that representative hypothesis is either:
+      - **A** already ``REFUTED`` (the LLM refuted it), or
+      - **B** *net-refuted* (``_net_refuted``) — refuting evidence flips/ties the
+        balance. A single contrary link is deliberately NOT decisive (it would
+        falsely demote a well-supported cause).
+
+    Demotion is atomic and four-part so the *sticky* ``cause_state`` can neither
+    keep a disproven cause, be re-grounded next turn, nor be reported as known by
+    the disposition layer:
+      1. refute the flat hypothesis via the canonical ``refute_hypothesis``
+         (zeroes likelihood, bumps the turn, logs), preserving any LLM reason,
+      2. refute the chain ROOT node and strip its now-stale validation marks
+         (a REFUTED node must not keep advertising EMPIRICAL/actionable),
+      3. RETRACT the ``RootCauseConclusion`` entirely — leaving it lets the
+         disposition layer (``_cause_identified`` reads ``root_cause`` text) keep
+         treating the cause as known and lets ``evidence_basis`` re-ground it, so
+         every grounding anchor must go, not just ``validated_hypothesis_id``,
+      4. un-stick the assessment — zero ``root_cause_likelihood`` and drop
          ``cause_state`` out of IDENTIFIED; the caller's recompute then derives
          CANDIDATES/UNKNOWN from the remaining active chains.
 
-    Returns True if it demoted. No-op when there is no validated cause or it is
-    not disconfirmed. Idempotent (a cause already demoted has no
-    ``validated_hypothesis_id`` to act on).
+    Returns True if it demoted; False when the case is not grounded, has no
+    representative cause, or that cause is not disconfirmed.
     """
     p = case.progress
-    rcc = case.root_cause_conclusion
-    hyp_id = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
-    if not hyp_id:
+    if p.cause_state != CauseState.IDENTIFIED:
         return False
-    hyp = case.hypotheses.get(hyp_id)
+
+    hyp = _representative_cause_hypothesis(case)
     if hyp is None:
         return False
 
-    disconfirmed = hyp.state == HypothesisState.REFUTED or any(
-        link.stance == EvidenceStance.REFUTES for link in hyp.evidence_links
-    )
-    if not disconfirmed:
+    if not (hyp.state == HypothesisState.REFUTED or _net_refuted(hyp)):
         return False
 
     reason = (
@@ -335,23 +382,27 @@ def demote_disconfirmed_cause(case: Case) -> bool:
         "correct yet the problem persisted"
     )[:200]
 
-    # 1. Refute the chain root node + the flat hypothesis (reason before state so
-    # the combination is valid under either assignment-validation setting).
+    # 1. Refute the flat hypothesis via the canonical path (single source of
+    # truth: likelihood=0.0 + last_updated_turn + logging). Skip if already
+    # refuted so the LLM's own refutation reason is not clobbered.
+    if hyp.state != HypothesisState.REFUTED:
+        HypothesisManager().refute_hypothesis(hyp, case.current_turn, [], reason)
+
+    # 2. Refute the chain ROOT and clear its stale validation marks (reason
+    # before state so the REFUTED/refutation_reason pair is valid on round-trip).
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
     if root is not None and root.node_state != NodeState.REFUTED:
         root.refutation_reason = reason
         root.node_state = NodeState.REFUTED
-    if hyp.state != HypothesisState.REFUTED:
-        hyp.refutation_reason = reason
-        hyp.state = HypothesisState.REFUTED
+        root.validation_method = ValidationMethod.NONE
+        root.actionable = False
 
-    # 2. Downgrade the conclusion (audit-preserving) so it no longer grounds.
-    if rcc is not None:
-        rcc.likelihood = 0.2
-        rcc.confidence_level = ConfidenceLevel.from_score(0.2)
-        rcc.validated_hypothesis_id = None
+    # 3. Retract the disconfirmed conclusion outright — clears EVERY grounding
+    # anchor (root_cause text, evidence_basis, validated_hypothesis_id) so the
+    # demotion is durable and cannot be defeated downstream.
+    case.root_cause_conclusion = None
 
-    # 3. Un-stick the assessment; recompute re-derives from remaining chains.
+    # 4. Un-stick the assessment; recompute re-derives from remaining chains.
     p.root_cause_likelihood = 0.0
     p.cause_state = CauseState.UNKNOWN
     return True

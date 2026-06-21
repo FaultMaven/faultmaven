@@ -781,8 +781,9 @@ def _recompute_assessment_state(case: "Case") -> None:
 
     # M6: a counterfactually-disconfirmed root cause is demoted FIRST — the one
     # sanctioned downgrade of the otherwise-sticky cause_state. It refutes the
-    # root + downgrades the conclusion so _mark_cause_identified below neither
-    # keeps nor re-promotes the disproven cause (the turn-28 fix).
+    # root + RETRACTS the conclusion (clearing every grounding anchor) so
+    # _mark_cause_identified below can neither keep nor re-ground the disproven
+    # cause this turn or next (the turn-28 fix).
     demote_disconfirmed_cause(case)
 
     # Single chokepoint: sets/keeps IDENTIFIED (grounded-only, sticky) and

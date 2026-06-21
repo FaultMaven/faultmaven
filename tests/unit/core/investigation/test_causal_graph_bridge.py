@@ -244,8 +244,14 @@ def _refutes_link(evidence_id="ev_0123456789ab") -> HypothesisEvidenceLink:
     )
 
 
+def _grounded(case) -> None:
+    """Mark the case as grounded (sticky IDENTIFIED) — demote's precondition."""
+    case.progress.cause_state = CauseState.IDENTIFIED
+    case.progress.root_cause_likelihood = 0.9
+
+
 def test_demote_on_refuted_hypothesis():
-    # Trigger A: the LLM refuted the validated cause's hypothesis.
+    # Trigger A: the LLM refuted the grounded cause's hypothesis.
     hyp = Hypothesis(
         statement="NetworkPolicy blocks the connection",
         category=HypothesisCategory.NETWORK,
@@ -259,28 +265,38 @@ def test_demote_on_refuted_hypothesis():
     case.hypotheses = {hyp.hypothesis_id: hyp}
     bridge_flat_hypotheses_to_graph(case)
     case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
+    _grounded(case)
 
     assert demote_disconfirmed_cause(case) is True
     assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.REFUTED
-    assert case.root_cause_conclusion.validated_hypothesis_id is None
-    assert case.root_cause_conclusion.likelihood == 0.2
+    # The disconfirmed conclusion is RETRACTED, not left behind (review #2/#3).
+    assert case.root_cause_conclusion is None
     assert case.progress.cause_state == CauseState.UNKNOWN
     assert case.progress.root_cause_likelihood == 0.0
 
 
 def test_demote_on_refutes_evidence():
-    # Trigger B: a single REFUTES evidence link is decisive disconfirmation.
+    # Trigger B: net-refuting evidence (here a lone REFUTES link, no support) is
+    # decisive disconfirmation.
     hyp = _hyp("NetworkPolicy blocks the connection", evidence=[_refutes_link()])
     case = _investigating_case()
     case.hypotheses = {hyp.hypothesis_id: hyp}
     bridge_flat_hypotheses_to_graph(case)
     case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
     promote_grounded_chain_root(case)  # root was validated a prior turn
+    _grounded(case)
 
     assert demote_disconfirmed_cause(case) is True
     assert hyp.state == HypothesisState.REFUTED
-    assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.REFUTED
-    assert case.root_cause_conclusion.validated_hypothesis_id is None
+    # Canonical refutation zeroed likelihood + bumped the turn (review #6).
+    assert hyp.likelihood == 0.0
+    assert hyp.last_updated_turn == case.current_turn
+    root = case.causal_nodes[hyp.root_node_id]
+    assert root.node_state == NodeState.REFUTED
+    # A REFUTED root must not keep advertising its prior validation (review #7).
+    assert root.validation_method == ValidationMethod.NONE
+    assert root.actionable is False
+    assert case.root_cause_conclusion is None
 
 
 def test_demote_noop_when_active_and_unrefuted():
@@ -290,10 +306,97 @@ def test_demote_noop_when_active_and_unrefuted():
     bridge_flat_hypotheses_to_graph(case)
     case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
     promote_grounded_chain_root(case)
+    _grounded(case)
 
     assert demote_disconfirmed_cause(case) is False
     assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.VALIDATED
     assert case.root_cause_conclusion.validated_hypothesis_id == hyp.hypothesis_id
+
+
+def test_demote_noop_when_not_grounded():
+    # Disconfirmation without a grounded (IDENTIFIED) cause is a no-op: there is
+    # no sticky cause to un-stick.
+    hyp = _hyp("NetworkPolicy blocks the connection", evidence=[_refutes_link()])
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    bridge_flat_hypotheses_to_graph(case)
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
+    # cause_state left UNKNOWN (default) — not grounded.
+
+    assert demote_disconfirmed_cause(case) is False
+    assert case.root_cause_conclusion is not None
+
+
+def test_demote_does_not_fire_on_minority_refute():
+    # Review #4: a lone refuting link among supporting evidence is NOT decisive —
+    # a well-supported grounded cause must survive one contrary data point.
+    links = [
+        HypothesisEvidenceLink(
+            hypothesis_id="hyp_unused000000",
+            evidence_id=f"ev_00000000000{i}",
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="supports",
+            stance_confidence=0.9,
+        )
+        for i in range(3)
+    ] + [_refutes_link(evidence_id="ev_0123456789ff")]
+    hyp = _hyp("NetworkPolicy blocks the connection", evidence=links)
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    bridge_flat_hypotheses_to_graph(case)
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
+    promote_grounded_chain_root(case)
+    _grounded(case)
+
+    assert demote_disconfirmed_cause(case) is False
+    assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.VALIDATED
+    assert case.root_cause_conclusion is not None
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+
+
+def test_demote_fires_on_unnamed_grounding_via_leading_hypothesis():
+    # Review #1: the common grounding shape has NO validated_hypothesis_id (as in
+    # case_e970a5c24fe1). Demotion still fires, keyed on the strongest hypothesis
+    # by initial_likelihood (stable under refutation).
+    believed = Hypothesis(
+        statement="NetworkPolicy blocks the connection",
+        category=HypothesisCategory.NETWORK,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=3,
+        rationale="leading theory",
+        initial_likelihood=0.9,
+        state=HypothesisState.REFUTED,
+        refutation_reason="re-ran with policy already correct; still failed",
+    )
+    alternative = Hypothesis(
+        statement="collation mismatch",
+        category=HypothesisCategory.CONFIG,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=3,
+        rationale="weak alt",
+        initial_likelihood=0.3,
+    )
+    case = _investigating_case()
+    case.hypotheses = {
+        believed.hypothesis_id: believed,
+        alternative.hypothesis_id: alternative,
+    }
+    bridge_flat_hypotheses_to_graph(case)
+    # Grounded case-wide (evidence_basis) WITHOUT naming a hypothesis.
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="NetworkPolicy denies ingress to postgres",
+        mechanism="ingress rule has no from-clause -> default deny",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+        evidence_basis=["ev_aaaaaaaaaaaa"],
+        validated_hypothesis_id=None,
+    )
+    _grounded(case)
+
+    assert demote_disconfirmed_cause(case) is True
+    assert case.causal_nodes[believed.root_node_id].node_state == NodeState.REFUTED
+    assert case.root_cause_conclusion is None
+    assert case.progress.cause_state == CauseState.UNKNOWN
 
 
 def test_turn28_grounded_then_disconfirmed_demotes_end_to_end():
@@ -317,4 +420,4 @@ def test_turn28_grounded_then_disconfirmed_demotes_end_to_end():
     assert case.progress.cause_state != CauseState.IDENTIFIED
     assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.REFUTED
     assert hyp.state == HypothesisState.REFUTED
-    assert case.root_cause_conclusion.validated_hypothesis_id is None
+    assert case.root_cause_conclusion is None
