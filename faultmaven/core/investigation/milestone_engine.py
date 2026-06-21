@@ -34,6 +34,11 @@ from uuid import uuid4
 # Module initialization
 logger = logging.getLogger(__name__)
 
+from faultmaven.core.investigation.causal_graph import (
+    bridge_flat_hypotheses_to_graph,
+    demote_disconfirmed_cause,
+    promote_grounded_chain_root,
+)
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
     create_hypothesis_manager,
@@ -774,6 +779,13 @@ def _recompute_assessment_state(case: "Case") -> None:
     """
     p = case.progress
 
+    # M6: a counterfactually-disconfirmed root cause is demoted FIRST — the one
+    # sanctioned downgrade of the otherwise-sticky cause_state. It refutes the
+    # root + RETRACTS the conclusion (clearing every grounding anchor) so
+    # _mark_cause_identified below can neither keep nor re-ground the disproven
+    # cause this turn or next (the turn-28 fix).
+    demote_disconfirmed_cause(case)
+
     # Single chokepoint: sets/keeps IDENTIFIED (grounded-only, sticky) and
     # re-enforces its invariant at end-of-turn. Only when NOT identified does
     # cause_state derive from the active-hypothesis count.
@@ -782,6 +794,12 @@ def _recompute_assessment_state(case: "Case") -> None:
             p.cause_state = CauseState.CANDIDATES
         else:
             p.cause_state = CauseState.UNKNOWN
+    else:
+        # Option-1 mirror: reflect the grounding onto the chain graph (promote
+        # the validated cause's root node) so the failed-treatment demotion (M6)
+        # has a validated root to act on. Conservative — only on an explicit
+        # validated_hypothesis_id. Transitional (removed with PR B).
+        promote_grounded_chain_root(case)
 
     if p.solution_state != SolutionState.SELECTED:
         if p.solution_proposed or bool(case.solutions):
@@ -6135,6 +6153,11 @@ class MilestoneEngine:
                 f"Case {case.case_id}: added {len(updates.journal_entries)} journal entries "
                 f"(total: {len(case.investigation_journal)})"
             )
+
+        # Option-1 bridge (transitional): project this turn's flat hypotheses
+        # onto the causal graph so the chain-based assessment has a populated
+        # graph to read. Removed once the LLM emits chains directly (PR B).
+        bridge_flat_hypotheses_to_graph(case)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).

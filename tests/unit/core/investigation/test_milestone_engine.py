@@ -231,6 +231,51 @@ class TestMilestoneEngine:
         assert updated_case.progress.symptom_verified is True
 
     @pytest.mark.asyncio
+    async def test_process_turn_bridges_hypotheses_into_causal_graph(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """End-to-end: a turn that adds a flat hypothesis populates the causal
+        graph via the Option-1 bridge wired into the apply path (slice 3). The
+        function-level tests call _recompute directly; this proves the bridge
+        actually runs inside process_turn."""
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "Here is a hypothesis.",
+                "internal_reasoning": {
+                    "evidence_analyzed": [],
+                    "conclusions": [],
+                    "milestone_justifications": {},
+                    "uncertainties": [],
+                },
+                "state_updates": {
+                    "hypotheses_to_add": [
+                        {
+                            "statement": "A restrictive NetworkPolicy blocks the DB connection",
+                            "category": "network",
+                            "likelihood": 0.6,
+                            "rationale": "timeout signature points at reachability",
+                        }
+                    ],
+                    "outcome": "conversation",
+                },
+            }
+        )
+
+        result = await engine.process_turn(base_case, "What could be wrong?")
+
+        case = result["case_updated"]
+        # The bridge ran during the turn: a PROBLEM node (D) + a ROOT node exist.
+        node_types = {n.node_type.value for n in case.causal_nodes.values()}
+        assert "problem" in node_types
+        assert "root" in node_types
+        # The flat hypothesis is now a chain header (root -> D).
+        hyp = next(iter(case.hypotheses.values()))
+        assert hyp.root_node_id in case.causal_nodes
+        assert hyp.path and hyp.path[0] == hyp.root_node_id
+
+    @pytest.mark.asyncio
     async def test_process_turn_inquiry(self, mock_llm, mock_repo):
         """Test processing a turn in INQUIRY state"""
         engine = MilestoneEngine(
