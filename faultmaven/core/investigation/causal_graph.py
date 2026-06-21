@@ -19,6 +19,7 @@ propagation (§6.1 / §9.4) is a follow-on.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
@@ -219,10 +220,13 @@ def chain_path_to_problem(root_id: str, case: Case) -> list[str]:
     returning the ordered path ``[root_id, ..., d_id]`` (methodology: a
     ``Hypothesis`` is a root→D path).
 
-    Follows one outgoing edge per node (the lazy single-arrow primitive, S1);
-    where a node has several downstream edges the first toward an unvisited node
-    is taken. Returns ``[]`` if no path reaches ``D`` (the chain is still open) —
-    the caller leaves ``root_node_id``/``path`` unset until it does.
+    Breadth-first search for the shortest ``root → D`` route. A node may have
+    several downstream edges (convergence, S2) and some branches dead-end; a
+    greedy single-arrow walk would wrongly report an open chain when it picked a
+    dead branch first, so the search explores all branches. Returns ``[]`` if no
+    path reaches ``D`` (the chain is still open, or ``root_id`` *is* ``D`` — a
+    root cause cannot be the symptom itself) — the caller then leaves
+    ``root_node_id``/``path`` unset.
     """
     problem = next(
         (n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM),
@@ -231,21 +235,28 @@ def chain_path_to_problem(root_id: str, case: Case) -> list[str]:
     if problem is None or root_id not in case.causal_nodes:
         return []
     d_id = problem.node_id
+    if root_id == d_id:
+        return []  # the symptom is not its own root cause
     # Adjacency: cause -> [effects].
     out: dict[str, list[str]] = {}
     for e in case.causal_edges:
         out.setdefault(e.cause_node_id, []).append(e.effect_node_id)
-    path = [root_id]
-    seen = {root_id}
-    cur = root_id
-    while cur != d_id:
-        nxt = next((e for e in out.get(cur, []) if e not in seen), None)
-        if nxt is None:
-            return []  # open chain — no route to D
-        path.append(nxt)
-        seen.add(nxt)
-        cur = nxt
-    return path
+    parent: dict[str, str | None] = {root_id: None}
+    queue: deque[str] = deque([root_id])
+    while queue:
+        cur = queue.popleft()
+        if cur == d_id:
+            path: list[str] = []
+            node: str | None = d_id
+            while node is not None:
+                path.append(node)
+                node = parent[node]
+            return list(reversed(path))
+        for nxt in out.get(cur, []):
+            if nxt not in parent:
+                parent[nxt] = cur
+                queue.append(nxt)
+    return []  # open chain — no route to D
 
 
 def ingest_emitted_chain(
@@ -254,7 +265,7 @@ def ingest_emitted_chain(
     edges_to_add: list,
     node_evidence: list,
     current_turn: int,
-) -> list[str]:
+) -> list[str | None]:
     """Build the causal graph from a turn's LLM-emitted chain fragments (lazy
     backward expansion, methodology §5/S3). Pure: no I/O, no LLM.
 
@@ -269,10 +280,14 @@ def ingest_emitted_chain(
     - ``node_evidence`` — ``node_ref``, ``evidence_id``/``evidence_id_ref``,
       ``stance``, ``reasoning``, ``stance_confidence``.
 
-    Returns the created node ids in emission order, so the caller can resolve
-    ``new_index_N`` hypothesis ``root_node_ref`` against them. Best-effort:
-    unresolvable refs and unknown evidence are skipped (never raised); ``D`` is
-    seeded if a problem statement exists, otherwise ingestion is a no-op.
+    Returns the created node ids in emission order (``None`` for any skipped
+    node, so ``new_index_N`` indices stay aligned), so the caller can resolve
+    ``new_index_N`` references (e.g. linking a hypothesis to its root node)
+    against them. Best-effort and
+    never raises: unresolvable refs, unknown evidence, and malformed nodes
+    (empty statement, or a type other than root/intermediate — ``D`` is
+    engine-seeded, never emitted) are skipped; ``D`` is seeded if a problem
+    statement exists, otherwise ingestion is a no-op.
     """
     problem = seed_problem_node(case)
     if problem is None:
@@ -280,11 +295,22 @@ def ingest_emitted_chain(
     d_id = problem.node_id
 
     # Pass 1: create the nodes; record ids in order for new_index_N resolution.
-    created: list[str] = []
+    # A skipped node holds None so later indices still line up.
+    created: list[str | None] = []
     for spec in nodes_to_add:
+        statement = (getattr(spec, "statement", None) or "").strip()
+        node_type = getattr(spec, "node_type", None)
+        if not statement or node_type not in (
+            NodeType.ROOT,
+            NodeType.INTERMEDIATE,
+        ):
+            # Empty statement (CausalNode rejects it) or a non-{root,intermediate}
+            # type (a second PROBLEM node would violate the one-D-per-case index).
+            created.append(None)
+            continue
         node = CausalNode(
-            statement=(spec.statement or "")[:500],
-            node_type=spec.node_type,
+            statement=statement[:500],
+            node_type=node_type,
             generated_at_turn=current_turn,
         )
         case.causal_nodes[node.node_id] = node
@@ -346,14 +372,15 @@ def ingest_emitted_chain(
         ev_id = getattr(link, "evidence_id", None) or getattr(
             link, "evidence_id_ref", None
         )
-        if node is None or ev_id not in existing_ev:
+        stance = getattr(link, "stance", None)
+        if node is None or ev_id not in existing_ev or stance is None:
             continue
         if any(el.evidence_id == ev_id for el in node.evidence_links):
             continue
         node.evidence_links.append(
             NodeEvidenceLink(
                 evidence_id=ev_id,
-                stance=link.stance,
+                stance=stance,
                 reasoning=getattr(link, "reasoning", None) or "node evidence",
                 stance_confidence=getattr(link, "stance_confidence", 1.0),
             )

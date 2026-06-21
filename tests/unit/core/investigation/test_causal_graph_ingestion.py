@@ -60,6 +60,96 @@ def _node(statement, node_type, produces=None, and_group=None):
     )
 
 
+def test_ingest_skips_empty_statement_node_without_raising():
+    # CausalNode rejects an empty statement; ingestion must skip (never raise)
+    # and keep new_index_N indices aligned (None placeholder).
+    case = _case()
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[
+            _node("   ", NodeType.ROOT, produces="D"),  # whitespace -> skipped
+            _node("real root", NodeType.ROOT, produces="D"),
+        ],
+        edges_to_add=[],
+        node_evidence=[],
+        current_turn=case.current_turn,
+    )
+    assert created[0] is None  # skipped, index preserved
+    assert created[1] is not None
+    # Only the real root + D exist; no edge from the skipped node.
+    assert len(case.causal_nodes) == 2
+
+
+def test_ingest_skips_emitted_problem_node():
+    # D is engine-seeded; an emitted PROBLEM node would create a second D and
+    # violate the one-PROBLEM-per-case index. It must be skipped.
+    case = _case()
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_node("fake D", NodeType.PROBLEM, produces=None)],
+        edges_to_add=[],
+        node_evidence=[],
+        current_turn=case.current_turn,
+    )
+    assert created == [None]
+    problem_nodes = [
+        n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    ]
+    assert len(problem_nodes) == 1  # only the engine-seeded D
+
+
+def test_chain_path_finds_d_despite_a_dead_end_branch_first():
+    # Regression for the greedy single-walk bug: the dead-end branch is emitted
+    # FIRST, but BFS still finds root -> D.
+    case = _case()
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[
+            _node("dead end", NodeType.INTERMEDIATE),  # no produces -> dangling
+            _node("root", NodeType.ROOT, produces="new_index_0"),  # root -> dead end
+        ],
+        # ...and an explicit root -> D edge added AFTER the dead-end edge.
+        edges_to_add=[
+            SimpleNamespace(
+                cause="new_index_1", effect="D", and_group=None, reasoning=None
+            )
+        ],
+        node_evidence=[],
+        current_turn=case.current_turn,
+    )
+    dead_id, root_id = created
+    d_id = next(
+        n.node_id for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    )
+    assert chain_path_to_problem(root_id, case) == [root_id, d_id]
+
+
+def test_chain_path_empty_when_root_is_the_problem_node():
+    case = _case()
+    d = seed_problem_node(case)
+    assert chain_path_to_problem(d.node_id, case) == []
+
+
+def test_ingest_skips_node_evidence_missing_stance():
+    case = _case()
+    case.evidence.append(SimpleNamespace(evidence_id="ev_0123456789ab"))
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_node("root", NodeType.ROOT, produces="D")],
+        edges_to_add=[],
+        node_evidence=[
+            SimpleNamespace(  # no `stance` attribute -> skipped, no AttributeError
+                node_ref="new_index_0",
+                evidence_id="ev_0123456789ab",
+                reasoning="r",
+                stance_confidence=1.0,
+            )
+        ],
+        current_turn=case.current_turn,
+    )
+    assert case.causal_nodes[created[0]].evidence_links == []
+
+
 def test_seed_problem_node_is_idempotent():
     case = _case()
     d1 = seed_problem_node(case)
