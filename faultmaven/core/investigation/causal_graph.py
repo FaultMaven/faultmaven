@@ -19,6 +19,7 @@ propagation (§6.1 / §9.4) is a follow-on.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
@@ -187,6 +188,207 @@ def deductively_validated(
 # ---------------------------------------------------------------------------
 
 
+def seed_problem_node(case: Case) -> CausalNode | None:
+    """Return the case's single PROBLEM node ``D``, creating it from the
+    confirmed problem statement when absent.
+
+    ``D`` is engine-owned (deterministic), not LLM-emitted: it anchors every
+    chain. Returns None when there is no problem statement to anchor on yet.
+    Idempotent — at most one PROBLEM node per case.
+    """
+    problem_node = next(
+        (n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM),
+        None,
+    )
+    if problem_node is not None:
+        return problem_node
+    pv = case.problem_verification
+    statement = pv.symptom_statement if pv else None
+    if not statement or not statement.strip():
+        return None
+    problem_node = CausalNode(
+        statement=statement[:500],
+        node_type=NodeType.PROBLEM,
+        generated_at_turn=case.current_turn,
+    )
+    case.causal_nodes[problem_node.node_id] = problem_node
+    return problem_node
+
+
+def chain_path_to_problem(root_id: str, case: Case) -> list[str]:
+    """Walk cause→effect edges from ``root_id`` down to the PROBLEM node ``D``,
+    returning the ordered path ``[root_id, ..., d_id]`` (methodology: a
+    ``Hypothesis`` is a root→D path).
+
+    Breadth-first search for the shortest ``root → D`` route. A node may have
+    several downstream edges (convergence, S2) and some branches dead-end; a
+    greedy single-arrow walk would wrongly report an open chain when it picked a
+    dead branch first, so the search explores all branches. Returns ``[]`` if no
+    path reaches ``D`` (the chain is still open, or ``root_id`` *is* ``D`` — a
+    root cause cannot be the symptom itself) — the caller then leaves
+    ``root_node_id``/``path`` unset.
+    """
+    problem = next(
+        (n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM),
+        None,
+    )
+    if problem is None or root_id not in case.causal_nodes:
+        return []
+    d_id = problem.node_id
+    if root_id == d_id:
+        return []  # the symptom is not its own root cause
+    # Adjacency: cause -> [effects].
+    out: dict[str, list[str]] = {}
+    for e in case.causal_edges:
+        out.setdefault(e.cause_node_id, []).append(e.effect_node_id)
+    parent: dict[str, str | None] = {root_id: None}
+    queue: deque[str] = deque([root_id])
+    while queue:
+        cur = queue.popleft()
+        if cur == d_id:
+            path: list[str] = []
+            node: str | None = d_id
+            while node is not None:
+                path.append(node)
+                node = parent[node]
+            return list(reversed(path))
+        for nxt in out.get(cur, []):
+            if nxt not in parent:
+                parent[nxt] = cur
+                queue.append(nxt)
+    return []  # open chain — no route to D
+
+
+def ingest_emitted_chain(
+    case: Case,
+    nodes_to_add: list,
+    edges_to_add: list,
+    node_evidence: list,
+    current_turn: int,
+) -> list[str | None]:
+    """Build the causal graph from a turn's LLM-emitted chain fragments (lazy
+    backward expansion, methodology §5/S3). Pure: no I/O, no LLM.
+
+    Replaces the transitional bridge once the LLM emits chains directly. Each
+    item is a duck-typed schema object:
+
+    - ``nodes_to_add`` — ``statement``, ``node_type``, optional ``produces``
+      (the node it directly causes: an existing id, ``'D'``, or ``'new_index_N'``
+      into this same list) and ``and_group``.
+    - ``edges_to_add`` — explicit ``cause``/``effect`` refs (+ ``and_group``,
+      ``reasoning``) for convergence (S2) beyond a node's own ``produces``.
+    - ``node_evidence`` — ``node_ref``, ``evidence_id``/``evidence_id_ref``,
+      ``stance``, ``reasoning``, ``stance_confidence``.
+
+    Returns the created node ids in emission order (``None`` for any skipped
+    node, so ``new_index_N`` indices stay aligned), so the caller can resolve
+    ``new_index_N`` references (e.g. linking a hypothesis to its root node)
+    against them. Best-effort and
+    never raises: unresolvable refs, unknown evidence, and malformed nodes
+    (empty statement, or a type other than root/intermediate — ``D`` is
+    engine-seeded, never emitted) are skipped; ``D`` is seeded if a problem
+    statement exists, otherwise ingestion is a no-op.
+    """
+    problem = seed_problem_node(case)
+    if problem is None:
+        return []
+    d_id = problem.node_id
+
+    # Pass 1: create the nodes; record ids in order for new_index_N resolution.
+    # A skipped node holds None so later indices still line up.
+    created: list[str | None] = []
+    for spec in nodes_to_add:
+        statement = (getattr(spec, "statement", None) or "").strip()
+        node_type = getattr(spec, "node_type", None)
+        if not statement or node_type not in (
+            NodeType.ROOT,
+            NodeType.INTERMEDIATE,
+        ):
+            # Empty statement (CausalNode rejects it) or a non-{root,intermediate}
+            # type (a second PROBLEM node would violate the one-D-per-case index).
+            created.append(None)
+            continue
+        node = CausalNode(
+            statement=statement[:500],
+            node_type=node_type,
+            generated_at_turn=current_turn,
+        )
+        case.causal_nodes[node.node_id] = node
+        created.append(node.node_id)
+
+    def _resolve(ref: str | None) -> str | None:
+        if not ref:
+            return None
+        if ref == "D":
+            return d_id
+        if ref.startswith("new_index_"):
+            try:
+                idx = int(ref[len("new_index_") :])
+            except ValueError:
+                return None
+            return created[idx] if 0 <= idx < len(created) else None
+        return ref if ref in case.causal_nodes else None
+
+    def _add_edge(cause_id, effect_id, and_group, reasoning):
+        if not cause_id or not effect_id or cause_id == effect_id:
+            return
+        if cause_id not in case.causal_nodes or effect_id not in case.causal_nodes:
+            return
+        if any(
+            e.cause_node_id == cause_id and e.effect_node_id == effect_id
+            for e in case.causal_edges
+        ):
+            return  # idempotent
+        case.causal_edges.append(
+            CausalEdge(
+                cause_node_id=cause_id,
+                effect_node_id=effect_id,
+                and_group=and_group,
+                reasoning=reasoning,
+                created_at_turn=current_turn,
+            )
+        )
+
+    # Pass 2: edges from each node's `produces`, then explicit edges.
+    for i, spec in enumerate(nodes_to_add):
+        produces = getattr(spec, "produces", None)
+        if produces:
+            _add_edge(
+                created[i], _resolve(produces), getattr(spec, "and_group", None), None
+            )
+    for e in edges_to_add:
+        _add_edge(
+            _resolve(getattr(e, "cause", None)),
+            _resolve(getattr(e, "effect", None)),
+            getattr(e, "and_group", None),
+            getattr(e, "reasoning", None),
+        )
+
+    # Node-targeted evidence (rung-level stance).
+    existing_ev = {ev.evidence_id for ev in case.evidence}
+    for link in node_evidence:
+        nid = _resolve(getattr(link, "node_ref", None))
+        node = case.causal_nodes.get(nid) if nid else None
+        ev_id = getattr(link, "evidence_id", None) or getattr(
+            link, "evidence_id_ref", None
+        )
+        stance = getattr(link, "stance", None)
+        if node is None or ev_id not in existing_ev or stance is None:
+            continue
+        if any(el.evidence_id == ev_id for el in node.evidence_links):
+            continue
+        node.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=ev_id,
+                stance=stance,
+                reasoning=getattr(link, "reasoning", None) or "node evidence",
+                stance_confidence=getattr(link, "stance_confidence", 1.0),
+            )
+        )
+
+    return created
+
+
 def bridge_flat_hypotheses_to_graph(case: Case) -> None:
     """Populate the causal graph from the case's *flat* hypotheses so the
     chain-based engine (cause_state-over-chains, M6 demotion) has a graph to
@@ -206,21 +408,9 @@ def bridge_flat_hypotheses_to_graph(case: Case) -> None:
     statement exists to anchor ``D``.
     """
     # 1. Ensure the single PROBLEM node D (seeded from the confirmed problem).
-    problem_node = next(
-        (n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM),
-        None,
-    )
+    problem_node = seed_problem_node(case)
     if problem_node is None:
-        pv = case.problem_verification
-        statement = pv.symptom_statement if pv else None
-        if not statement or not statement.strip():
-            return  # nothing to anchor on yet
-        problem_node = CausalNode(
-            statement=statement[:500],
-            node_type=NodeType.PROBLEM,
-            generated_at_turn=case.current_turn,
-        )
-        case.causal_nodes[problem_node.node_id] = problem_node
+        return  # nothing to anchor on yet
     d_id = problem_node.node_id
 
     # 2. One root→D chain per not-yet-bridged flat hypothesis.

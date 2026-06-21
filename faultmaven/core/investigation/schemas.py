@@ -51,6 +51,7 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
+    NodeType,
     SolutionType,
     TurnOutcome,
 )
@@ -511,6 +512,68 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
         if isinstance(v, int) and not isinstance(v, bool):
             return f"new_index_{v}"
         return v
+
+
+# Chain-emission contract (Two-Dimensional Hypothesis Methodology §5/§9.1).
+# Defined here and consumed by ``causal_graph.ingest_emitted_chain``; the
+# ``state_updates`` fields that carry them to the LLM are added together with the
+# prompt + engine wiring + feature flag in a later slice (kept off the sent
+# schema until then so the LLM is not invited to emit chains nothing ingests).
+class CausalNodeToAdd(BaseModel):
+    """A causal node emitted during lazy backward expansion (methodology §5/S3).
+
+    The lazy primitive is "this state directly produces <a node closer to the
+    problem>", so a node carries the single downstream edge it creates via
+    ``produces``. The PROBLEM node ``D`` is engine-seeded, never emitted here.
+    """
+
+    statement: str
+    node_type: NodeType = Field(
+        description="'root' (a candidate root cause) or 'intermediate' (a state on the way to D)."
+    )
+    produces: Optional[str] = Field(
+        default=None,
+        description=(
+            "The node this directly causes (one step closer to the problem): an "
+            "existing node id (cn_...), 'D' for the problem node, or 'new_index_N' "
+            "referencing another node in this same causal_nodes_to_add list."
+        ),
+    )
+    and_group: Optional[str] = Field(
+        default=None,
+        description=(
+            "If this node is co-necessary with other causes of the same `produces` "
+            "(an AND-set, M7), a shared key marking the group; null/distinct = an "
+            "independent (OR) alternative cause."
+        ),
+    )
+
+
+class CausalEdgeToAdd(BaseModel):
+    """An explicit cause→effect edge, for convergence (S2) or links beyond a
+    node's own ``produces``."""
+
+    cause: str = Field(
+        description="Cause node ref: existing id, 'D', or 'new_index_N'."
+    )
+    effect: str = Field(
+        description="Effect node ref: existing id, 'D', or 'new_index_N'."
+    )
+    and_group: Optional[str] = Field(default=None, description="AND-set key (M7).")
+    reasoning: Optional[str] = Field(default=None)
+
+
+class NodeEvidenceLinkToAdd(BaseModel):
+    """Link evidence to a specific causal NODE (rung-level), not the whole chain
+    — what makes step-by-step descent and AND-validation computable (§9.1)."""
+
+    node_ref: str = Field(description="Node ref: existing id, 'D', or 'new_index_N'.")
+    evidence_id_ref: str = Field(
+        description="Evidence ID (ev_...) or 'new_index_N' if created this turn."
+    )
+    stance: EvidenceStance
+    reasoning: str
+    stance_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class EvidenceNeedUpdate(BaseModel):
