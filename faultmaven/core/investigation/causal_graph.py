@@ -1,0 +1,169 @@
+"""Pure causal-graph mechanics for the Two-Dimensional Hypothesis Methodology.
+
+Operates on a case's causal graph — ``causal_nodes`` (dict ``node_id -> CausalNode``)
+and ``causal_edges`` (list of ``CausalEdge``) — with NO I/O and NO LLM. These are
+the engine-side validation primitives the ``cause_state`` derivation, the
+failed-treatment demotion, and (later) the prompt-driven chain emission all build
+on. Keeping them pure makes the methodology's load-bearing invariants
+unit-testable against hand-built graphs.
+
+Spec: docs/architecture/investigation-engine/two-dimensional-hypothesis-methodology.md
+  - §0 invariants (M4 empirical/deductive validation, M7 AND-proof)
+  - §7.1 / §7.1.1 (empirical vs deductive validation, strict exclusion)
+
+This slice covers the STRUCTURAL primitives (AND-proof, chain-root validation,
+deductive strict-exclusion). Belief propagation (§6.1 / §9.4) is a follow-on.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from faultmaven.modules.case.contracts import NodeState
+
+if TYPE_CHECKING:
+    from faultmaven.modules.case.contracts import CausalEdge, CausalNode, Hypothesis
+
+# §7.1.1 guard 3: a sibling counts as "excluded" only when its refutation is
+# ABSOLUTE — REFUTED and belief at/under this bar. A merely-inconclusive or
+# weakly-refuted sibling does NOT count, so deductive validation cannot fire on
+# partial exclusion.
+DEDUCTIVE_EXCLUSION_MAX_BELIEF = 0.05
+
+
+# ---------------------------------------------------------------------------
+# Edge / AND-set helpers
+# ---------------------------------------------------------------------------
+
+
+def incoming_and_groups(
+    node_id: str, edges: list[CausalEdge]
+) -> dict[str | None, list[str]]:
+    """Group the *direct causes* of ``node_id`` by their ``and_group``.
+
+    Returns ``{and_group_key: [cause_node_id, ...]}``. Edges sharing the same
+    ``(effect_node_id, and_group)`` are co-necessary (an AND-set, M7). A
+    ``None`` key collects the independent (OR-alternative) direct causes — each
+    is its own sufficient cause, not part of a conjunction.
+    """
+    groups: dict[str | None, list[str]] = {}
+    for e in edges:
+        if e.effect_node_id == node_id:
+            groups.setdefault(e.and_group, []).append(e.cause_node_id)
+    return groups
+
+
+def _state(node_id: str, nodes: dict[str, CausalNode]) -> NodeState | None:
+    n = nodes.get(node_id)
+    return n.node_state if n else None
+
+
+# ---------------------------------------------------------------------------
+# M7 — AND-gate proof (symmetric: strict to prove, asymmetric to refute)
+# ---------------------------------------------------------------------------
+
+
+def and_constraints_refuted(
+    node_id: str, nodes: dict[str, CausalNode], edges: list[CausalEdge]
+) -> bool:
+    """M7 disproof (asymmetric): refuting ANY one co-necessary member refutes
+    the conjunction — the node cannot occur via that AND-path.
+
+    Returns True if any member of any AND-set feeding ``node_id`` is REFUTED.
+    OR-alternative causes (``and_group is None``) are independent and do not
+    count — one of them being refuted doesn't break the others.
+    """
+    for and_group, cause_ids in incoming_and_groups(node_id, edges).items():
+        if and_group is None:
+            continue  # OR alternatives, not a conjunction
+        if any(_state(cid, nodes) == NodeState.REFUTED for cid in cause_ids):
+            return True
+    return False
+
+
+def and_constraints_satisfied(
+    node_id: str, nodes: dict[str, CausalNode], edges: list[CausalEdge]
+) -> bool:
+    """M7 proof (symmetric, strict): every co-necessary member of every AND-set
+    feeding ``node_id`` must be VALIDATED.
+
+    A node with no AND-sets (only OR-alternative parents, or no parents) is
+    vacuously satisfied — its own evidence governs it (M4), not a conjunction.
+    While any AND-member is still a candidate/inconclusive, this returns False:
+    the node cannot be considered conjunctively established.
+    """
+    for and_group, cause_ids in incoming_and_groups(node_id, edges).items():
+        if and_group is None:
+            continue
+        if not all(_state(cid, nodes) == NodeState.VALIDATED for cid in cause_ids):
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Chain-level validation (what cause_state=IDENTIFIED reads)
+# ---------------------------------------------------------------------------
+
+
+def is_chain_root_validated(
+    hypothesis: Hypothesis, nodes: dict[str, CausalNode]
+) -> bool:
+    """A chain (hypothesis) grounds ``cause_state=IDENTIFIED`` only when its
+    ROOT node exists and is VALIDATED (methodology §9.2). The root is the top of
+    the ``root -> ... -> D`` path; M3 requires it to be set before validation.
+    """
+    root_id = hypothesis.root_node_id
+    if not root_id:
+        return False
+    return _state(root_id, nodes) == NodeState.VALIDATED
+
+
+# ---------------------------------------------------------------------------
+# §7.1.1 — deductive validation (proof by exclusion, strict)
+# ---------------------------------------------------------------------------
+
+
+def deductively_validated(
+    survivor_id: str,
+    or_set_ids: list[str],
+    nodes: dict[str, CausalNode],
+    *,
+    exhaustive: bool,
+) -> bool:
+    """Validate ``survivor_id`` by exclusion (§7.1.1): if its OR-set has ``N``
+    mutually-exclusive members and the other ``N-1`` are ABSOLUTELY excluded,
+    the survivor is validated by deduction — even if it cannot be observed.
+
+    Strict guards (all required):
+
+    - ``exhaustive`` — the OR-set must be certified collectively exhaustive
+      (family-completeness sweep passed). Proof-by-exclusion over an incomplete
+      differential concludes the wrong survivor; the caller asserts this.
+    - the survivor must be a member of ``or_set_ids`` and there must be ≥2
+      members (with one survivor you have learned nothing by exclusion).
+    - every non-survivor must be ABSOLUTELY excluded: ``REFUTED`` AND
+      ``belief <= DEDUCTIVE_EXCLUSION_MAX_BELIEF``. A merely inconclusive or
+      weakly-refuted sibling blocks the deduction (the survivor stays a
+      candidate — graceful denial).
+
+    This is binary by design — it backs an invariant (M4), not a probabilistic
+    estimate. Deductive validation is *mechanistic* grade only (§7.2): it
+    unlocks treatment but counterfactual confirmation is still required to
+    resolve.
+    """
+    if not exhaustive:
+        return False
+    members = list(dict.fromkeys(or_set_ids))  # dedup, preserve order
+    if survivor_id not in members or len(members) < 2:
+        return False
+    for cid in members:
+        if cid == survivor_id:
+            continue
+        node = nodes.get(cid)
+        if node is None:
+            return False
+        if node.node_state != NodeState.REFUTED:
+            return False
+        if (node.belief or 0.0) > DEDUCTIVE_EXCLUSION_MAX_BELIEF:
+            return False
+    return True
