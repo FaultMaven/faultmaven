@@ -11,8 +11,10 @@ Spec: docs/architecture/investigation-engine/two-dimensional-hypothesis-methodol
   - §0 invariants (M4 empirical/deductive validation, M7 AND-proof)
   - §7.1 / §7.1.1 (empirical vs deductive validation, strict exclusion)
 
-This slice covers the STRUCTURAL primitives (AND-proof, chain-root validation,
-deductive strict-exclusion). Belief propagation (§6.1 / §9.4) is a follow-on.
+Contents: structural primitives (AND-proof, chain-root validation, deductive
+strict-exclusion); the transitional flat->graph bridge and grounded-root
+promotion (Option-1); and M6 counterfactual-disconfirmation demotion. Belief
+propagation (§6.1 / §9.4) is a follow-on.
 """
 
 from __future__ import annotations
@@ -22,6 +24,10 @@ from typing import TYPE_CHECKING
 from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
+    CauseState,
+    ConfidenceLevel,
+    EvidenceStance,
+    HypothesisState,
     NodeEvidenceLink,
     NodeState,
     NodeType,
@@ -248,7 +254,7 @@ def bridge_flat_hypotheses_to_graph(case: Case) -> None:
         hyp.path = [root.node_id, d_id]
 
 
-def promote_grounded_chain_root(case: "Case") -> bool:
+def promote_grounded_chain_root(case: Case) -> bool:
     """Mirror the engine's case-wide grounding onto the chain graph: when a
     SPECIFIC hypothesis is named the validated cause
     (``RootCauseConclusion.validated_hypothesis_id``), promote that chain's ROOT
@@ -279,4 +285,73 @@ def promote_grounded_chain_root(case: "Case") -> bool:
     root.validation_method = ValidationMethod.EMPIRICAL
     root.actionable = True
     root.node_state = NodeState.VALIDATED
+    return True
+
+
+def demote_disconfirmed_cause(case: Case) -> bool:
+    """M6 — the turn-28 fix. On counterfactual disconfirmation of the validated
+    root cause, demote it **deterministically** rather than waiting for the LLM
+    to volunteer a downgrade (which it did not, in case_e970a5c24fe1).
+
+    Triggers when the validated cause's hypothesis (named by
+    ``RootCauseConclusion.validated_hypothesis_id``) is either:
+      - **A** already ``REFUTED`` (the LLM refuted it), or
+      - **B** carries a ``REFUTES`` evidence link — a single counterfactual
+        disconfirmation is *decisive* here, not a gradual evidence-ratio nudge
+        (the fix was applied / the cause was confirmed correct yet ``D`` persisted).
+
+    Demotion is atomic and three-part so the *sticky* ``cause_state`` can neither
+    keep a disproven cause nor immediately re-promote it:
+      1. refute the chain ROOT node + the flat hypothesis (with a reason),
+      2. downgrade the ``RootCauseConclusion`` — preserved as audit, but its
+         likelihood/confidence are dropped and ``validated_hypothesis_id`` cleared
+         so it no longer grounds,
+      3. un-stick the assessment — zero ``root_cause_likelihood`` and drop
+         ``cause_state`` out of IDENTIFIED; the caller's recompute then derives
+         CANDIDATES/UNKNOWN from the remaining active chains.
+
+    Returns True if it demoted. No-op when there is no validated cause or it is
+    not disconfirmed. Idempotent (a cause already demoted has no
+    ``validated_hypothesis_id`` to act on).
+    """
+    p = case.progress
+    rcc = case.root_cause_conclusion
+    hyp_id = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
+    if not hyp_id:
+        return False
+    hyp = case.hypotheses.get(hyp_id)
+    if hyp is None:
+        return False
+
+    disconfirmed = hyp.state == HypothesisState.REFUTED or any(
+        link.stance == EvidenceStance.REFUTES for link in hyp.evidence_links
+    )
+    if not disconfirmed:
+        return False
+
+    reason = (
+        hyp.refutation_reason
+        or "counterfactual disconfirmation: the cause was addressed or confirmed "
+        "correct yet the problem persisted"
+    )[:200]
+
+    # 1. Refute the chain root node + the flat hypothesis (reason before state so
+    # the combination is valid under either assignment-validation setting).
+    root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
+    if root is not None and root.node_state != NodeState.REFUTED:
+        root.refutation_reason = reason
+        root.node_state = NodeState.REFUTED
+    if hyp.state != HypothesisState.REFUTED:
+        hyp.refutation_reason = reason
+        hyp.state = HypothesisState.REFUTED
+
+    # 2. Downgrade the conclusion (audit-preserving) so it no longer grounds.
+    if rcc is not None:
+        rcc.likelihood = 0.2
+        rcc.confidence_level = ConfidenceLevel.from_score(0.2)
+        rcc.validated_hypothesis_id = None
+
+    # 3. Un-stick the assessment; recompute re-derives from remaining chains.
+    p.root_cause_likelihood = 0.0
+    p.cause_state = CauseState.UNKNOWN
     return True

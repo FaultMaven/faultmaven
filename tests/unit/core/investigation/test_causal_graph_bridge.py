@@ -8,6 +8,7 @@ import pytest
 
 from faultmaven.core.investigation.causal_graph import (
     bridge_flat_hypotheses_to_graph,
+    demote_disconfirmed_cause,
     promote_grounded_chain_root,
 )
 from faultmaven.core.investigation.milestone_engine import _recompute_assessment_state
@@ -22,6 +23,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
+    HypothesisState,
     InquiryData,
     NodeState,
     NodeType,
@@ -225,3 +227,94 @@ def test_recompute_grounds_cause_state_and_promotes_root_end_to_end():
 
     assert case.progress.cause_state == CauseState.IDENTIFIED
     assert case.causal_nodes[h.root_node_id].node_state == NodeState.VALIDATED
+
+
+# ---------------------------------------------------------------------------
+# slice 5: demote_disconfirmed_cause (M6 — the turn-28 fix)
+# ---------------------------------------------------------------------------
+
+
+def _refutes_link(evidence_id="ev_0123456789ab") -> HypothesisEvidenceLink:
+    return HypothesisEvidenceLink(
+        hypothesis_id="hyp_unused000000",
+        evidence_id=evidence_id,
+        stance=EvidenceStance.REFUTES,
+        reasoning="re-ran with the cause already correct; still failed",
+        stance_confidence=1.0,
+    )
+
+
+def test_demote_on_refuted_hypothesis():
+    # Trigger A: the LLM refuted the validated cause's hypothesis.
+    hyp = Hypothesis(
+        statement="NetworkPolicy blocks the connection",
+        category=HypothesisCategory.NETWORK,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=3,
+        rationale="x",
+        state=HypothesisState.REFUTED,
+        refutation_reason="policy was already correct; still failed",
+    )
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    bridge_flat_hypotheses_to_graph(case)
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
+
+    assert demote_disconfirmed_cause(case) is True
+    assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.REFUTED
+    assert case.root_cause_conclusion.validated_hypothesis_id is None
+    assert case.root_cause_conclusion.likelihood == 0.2
+    assert case.progress.cause_state == CauseState.UNKNOWN
+    assert case.progress.root_cause_likelihood == 0.0
+
+
+def test_demote_on_refutes_evidence():
+    # Trigger B: a single REFUTES evidence link is decisive disconfirmation.
+    hyp = _hyp("NetworkPolicy blocks the connection", evidence=[_refutes_link()])
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    bridge_flat_hypotheses_to_graph(case)
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
+    promote_grounded_chain_root(case)  # root was validated a prior turn
+
+    assert demote_disconfirmed_cause(case) is True
+    assert hyp.state == HypothesisState.REFUTED
+    assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.REFUTED
+    assert case.root_cause_conclusion.validated_hypothesis_id is None
+
+
+def test_demote_noop_when_active_and_unrefuted():
+    hyp = _hyp("NetworkPolicy blocks the connection")
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    bridge_flat_hypotheses_to_graph(case)
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
+    promote_grounded_chain_root(case)
+
+    assert demote_disconfirmed_cause(case) is False
+    assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.VALIDATED
+    assert case.root_cause_conclusion.validated_hypothesis_id == hyp.hypothesis_id
+
+
+def test_turn28_grounded_then_disconfirmed_demotes_end_to_end():
+    """Headline fix: a cause that grounds to IDENTIFIED, then is disconfirmed, is
+    DEMOTED by the engine — not left standing as 'verified' (case_e970a5c24fe1)."""
+    hyp = _hyp("NetworkPolicy blocks the connection")
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    bridge_flat_hypotheses_to_graph(case)
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
+
+    # Turn N: grounds, identifies, validates the root.
+    _recompute_assessment_state(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.VALIDATED
+
+    # Turn N+1: the user disproves it (re-ran, still failing) -> REFUTES evidence.
+    hyp.evidence_links.append(_refutes_link())
+    _recompute_assessment_state(case)
+
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+    assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.REFUTED
+    assert hyp.state == HypothesisState.REFUTED
+    assert case.root_cause_conclusion.validated_hypothesis_id is None
