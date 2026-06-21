@@ -117,8 +117,8 @@ def test_refuted_with_reason_applies():
     assert meta["hypotheses_updated"] == [h.hypothesis_id]
 
 
-def test_refuted_without_reason_is_skipped():
-    # Pair integrity: do not record a disproof on no stated grounds.
+def test_refuted_without_reason_is_skipped_with_feedback():
+    # Pair integrity: do not record a disproof on no stated grounds; tell the LLM.
     eng = _make_engine()
     case = _make_case()
     h = _active_hyp()
@@ -134,9 +134,12 @@ def test_refuted_without_reason_is_skipped():
 
     assert h.state == HypothesisState.ACTIVE  # unchanged
     assert meta["hypotheses_updated"] == []
+    assert "refutation_reason" in meta.get("system_feedback", "")
 
 
-def test_validated_update_applies():
+def test_validated_transition_is_deferred_noop():
+    # Non-REFUTED state transitions are intentionally NOT applied in this slice
+    # (cause_state grounds off the RootCauseConclusion, not hypothesis.state).
     eng = _make_engine()
     case = _make_case()
     h = _active_hyp()
@@ -150,9 +153,99 @@ def test_validated_update_applies():
         case.current_turn,
     )
 
-    assert h.state == HypothesisState.VALIDATED
-    assert h.last_updated_turn == case.current_turn
-    assert meta["hypotheses_updated"] == [h.hypothesis_id]
+    assert h.state == HypothesisState.ACTIVE  # deferred: not applied
+    assert meta["hypotheses_updated"] == []
+
+
+def test_refuted_is_terminal_immutable_no_resurrection_or_corruption():
+    # REFUTED is terminal: a later state-flip is refused (no resurrection of a
+    # disproven cause, no stranded refutation_reason that would fail the model's
+    # pair invariant on reload) and surfaced via system_feedback.
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()
+    case.hypotheses = {h.hypothesis_id: h}
+
+    eng._apply_hypothesis_updates(
+        case,
+        {
+            h.hypothesis_id: HypothesisUpdate(
+                state=HypothesisState.REFUTED, refutation_reason="disproved"
+            )
+        },
+        _empty_metadata(),
+        case.current_turn,
+    )
+    assert h.state == HypothesisState.REFUTED
+
+    meta2 = _empty_metadata()
+    eng._apply_hypothesis_updates(
+        case,
+        {h.hypothesis_id: HypothesisUpdate(state=HypothesisState.ACTIVE)},
+        meta2,
+        case.current_turn,
+    )
+
+    assert h.state == HypothesisState.REFUTED  # not resurrected
+    assert h.refutation_reason == "disproved"  # intact
+    assert meta2["hypotheses_updated"] == []
+    assert "terminal" in meta2.get("system_feedback", "").lower()
+    # The pair stays consistent — the hypothesis still reconstructs cleanly.
+    Hypothesis(**h.model_dump())  # must not raise
+
+
+def test_likelihood_not_applied_to_terminal_hypothesis():
+    eng = _make_engine()
+    case = _make_case()
+    h = Hypothesis(
+        statement="dead theory",
+        category=HypothesisCategory.NETWORK,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=3,
+        rationale="r",
+        state=HypothesisState.REFUTED,
+        refutation_reason="disproved",
+        likelihood=0.0,
+    )
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    eng._apply_hypothesis_updates(
+        case,
+        {h.hypothesis_id: HypothesisUpdate(likelihood=0.6)},
+        meta,
+        case.current_turn,
+    )
+
+    assert h.likelihood == 0.0  # unchanged — terminal
+    assert meta["hypotheses_updated"] == []
+    assert meta.get("system_feedback")
+
+
+def test_refuted_without_reason_does_not_apply_same_entry_likelihood():
+    # {state:REFUTED (no reason), likelihood:0.95}: refutation refused AND the
+    # likelihood is NOT applied — the entry was a refutation, not a confidence bump.
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()  # likelihood 0.7
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    eng._apply_hypothesis_updates(
+        case,
+        {
+            h.hypothesis_id: HypothesisUpdate(
+                state=HypothesisState.REFUTED, likelihood=0.95
+            )
+        },
+        meta,
+        case.current_turn,
+    )
+
+    assert h.state == HypothesisState.ACTIVE  # not refuted (no reason)
+    assert h.likelihood == 0.7  # NOT bumped to 0.95
+    assert meta["hypotheses_updated"] == []
+    assert meta.get("system_feedback")
 
 
 def test_likelihood_only_update_applies():
