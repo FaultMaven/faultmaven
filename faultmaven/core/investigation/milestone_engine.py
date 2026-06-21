@@ -5526,6 +5526,83 @@ class MilestoneEngine:
         # See docs/architecture/investigation-engine/
         # evidence-driven-investigation-framework.md §5.
 
+    def _apply_hypothesis_updates(
+        self,
+        case: "Case",
+        updates_dict: dict,
+        metadata: dict[str, Any],
+        current_turn: int,
+    ) -> None:
+        """Apply the LLM's per-turn hypothesis lifecycle updates
+        (``state_updates.hypotheses_to_update``).
+
+        This is the LLM's DIRECT lifecycle signal — most importantly
+        ``state=REFUTED`` with a ``refutation_reason``, the disconfirmation that
+        drives M6 demotion of a grounded cause. The schema and the prompt have
+        long emitted it, but the engine never applied it (no read of
+        ``hypotheses_to_update`` anywhere); wired here.
+
+        Best-effort like evidence linking: an unknown id is logged and skipped,
+        never raised. ``new_index_N`` placeholders resolve against hypotheses
+        created this turn. Refutation goes through the canonical
+        ``refute_hypothesis`` (zeroes likelihood, bumps the turn, logs).
+
+        Pair integrity (schema contract): ``state=REFUTED`` requires a
+        ``refutation_reason`` — without one the refutation is skipped (we do not
+        record a disproof on no stated grounds), though a likelihood update in
+        the same entry still applies.
+        """
+        if not updates_dict:
+            return
+        metadata.setdefault("hypotheses_updated", [])
+        for raw_id, upd in updates_dict.items():
+            h_id = self._resolve_id_ref(
+                raw_id, metadata.get("hypotheses_generated", []), "hyp"
+            )
+            hypothesis = case.hypotheses.get(h_id)
+            if hypothesis is None:
+                logger.warning(
+                    f"Hypothesis update skipped: id '{h_id}' not found "
+                    f"(resolved from '{raw_id}'). "
+                    f"Available: {list(case.hypotheses.keys())}"
+                )
+                continue
+
+            new_state = upd.state  # validated to HypothesisState | None by schema
+            changed = False
+            refuted_now = False
+
+            if new_state == HypothesisState.REFUTED:
+                # Pair integrity: refute only on stated grounds.
+                if upd.refutation_reason and upd.refutation_reason.strip():
+                    self.hypothesis_manager.refute_hypothesis(
+                        hypothesis=hypothesis,
+                        current_turn=current_turn,
+                        refuting_evidence_ids=[],
+                        reason=upd.refutation_reason,
+                    )
+                    changed = True
+                    refuted_now = True
+                else:
+                    logger.warning(
+                        f"Hypothesis {h_id}: state=REFUTED without "
+                        f"refutation_reason — skipping refutation (pair-integrity)."
+                    )
+            elif new_state is not None and new_state != hypothesis.state:
+                hypothesis.state = new_state
+                hypothesis.last_updated_turn = current_turn
+                changed = True
+
+            # Apply an explicit likelihood, except right after a refutation
+            # (refute_hypothesis already set it to 0.0).
+            if upd.likelihood is not None and not refuted_now:
+                hypothesis.likelihood = upd.likelihood
+                hypothesis.last_updated_turn = current_turn
+                changed = True
+
+            if changed:
+                metadata["hypotheses_updated"].append(h_id)
+
     async def _apply_investigation_updates(
         self,
         case: Case,
@@ -5959,6 +6036,19 @@ class MilestoneEngine:
                 )
                 case.hypotheses[h.hypothesis_id] = h
                 metadata["hypotheses_generated"].append(h.hypothesis_id)
+
+        # 3b. Update existing hypotheses (state / likelihood / refutation).
+        # The LLM's direct disconfirmation signal (state=REFUTED + reason) was
+        # emitted by schema+prompt but never applied; this connects it so M6
+        # demotion fires on the LLM's own refutation, not only on REFUTES
+        # evidence links.
+        if getattr(updates, "hypotheses_to_update", None):
+            self._apply_hypothesis_updates(
+                case,
+                updates.hypotheses_to_update,
+                metadata,
+                case.current_turn,
+            )
 
         # 4. Link Evidence (Partial Application Check)
         # Note: Hypothesis-evidence linking is best-effort. The LLM may reference
