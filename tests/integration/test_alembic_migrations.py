@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "c1f3a5b7d9e2"  # current head (018 — rls_tenant_isolation)
+HEAD_REVISION = "888d280e336e"  # current head (019 — causal_graph_chain_model)
 
 
 @pytest.fixture(scope="function")
@@ -107,6 +107,9 @@ EXPECTED_TABLES = [
     "case_messages",
     "case_tags",
     "cases",
+    "causal_edges",
+    "causal_node_evidence",
+    "causal_nodes",
     "conversion_drafts",
     "conversion_jobs",
     "enterprises",
