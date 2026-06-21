@@ -34,6 +34,9 @@ from uuid import uuid4
 # Module initialization
 logger = logging.getLogger(__name__)
 
+from faultmaven.core.investigation.causal_graph import (
+    bridge_flat_hypotheses_to_graph,
+)
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
     create_hypothesis_manager,
@@ -6135,6 +6138,11 @@ class MilestoneEngine:
                 f"Case {case.case_id}: added {len(updates.journal_entries)} journal entries "
                 f"(total: {len(case.investigation_journal)})"
             )
+
+        # Option-1 bridge (transitional): project this turn's flat hypotheses
+        # onto the causal graph so the chain-based assessment has a populated
+        # graph to read. Removed once the LLM emits chains directly (PR B).
+        bridge_flat_hypotheses_to_graph(case)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).
