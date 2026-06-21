@@ -33,12 +33,25 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseEntity,
     CaseState,
+    CausalEdge,
+    CausalNode,
     EntityType,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    EvidenceStance,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
     InquiryData,
+    InterventionQuadrant,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
+    Solution,
+    SolutionType,
     UploadedFile,
+    ValidationMethod,
 )
 from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 from faultmaven.modules.case.domain.owned_models.report import (
@@ -350,3 +363,151 @@ async def test_create_checkpoint_roundtrip_with_timestamptz(pg_repo):
     fetched = await pg_repo.get_checkpoint(checkpoint.checkpoint_id)
     assert fetched is not None
     assert fetched.case_snapshot == {"state": "investigating", "turn": 1}
+
+
+@pytest.mark.asyncio
+async def test_causal_graph_roundtrip(pg_repo):
+    """Round-trip the causal graph on real PG (the 1d slice): causal_nodes +
+    causal_edges (incl. an AND-group) + the causal_node_evidence junction, plus
+    the chain-header fields on hypotheses (root_node_id/path) and the node/
+    quadrant linkage on solutions. Exercises the JSONB ``path`` cast and the
+    FK ordering (nodes before edges/hypotheses/solutions; node-evidence after
+    evidence)."""
+    session = pg_repo.db
+    org_id = f"org_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_organizations(session, [org_id])
+    await seed_users(session, [user_id])
+
+    case = _make_case(org_id, user_id)
+
+    # Evidence the node-evidence junction can FK to (USER_DESCRIPTION needs no file).
+    ev_id = f"ev_{uuid4().hex[:12]}"
+    case.evidence.append(
+        Evidence(
+            evidence_id=ev_id,
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            primary_purpose="root_cause",
+            summary="psql from the migration pod times out connecting to :5432",
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by=user_id,
+            collected_at_turn=2,
+        )
+    )
+
+    # Build the graph: D <- intermediate <- (root AND co-cause).
+    d = CausalNode(
+        statement="Deploy to on-prem job fails",
+        node_type=NodeType.PROBLEM,
+        generated_at_turn=0,
+    )
+    inter = CausalNode(
+        statement="migration pod connection to postgres times out",
+        node_type=NodeType.INTERMEDIATE,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        category=HypothesisCategory.NETWORK,
+        generated_at_turn=2,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=ev_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="timeout signature observed",
+                stance_confidence=0.9,
+                linked_at_turn=2,
+            )
+        ],
+    )
+    root = CausalNode(
+        statement="NetworkPolicy denies ingress to postgres on 5432",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        actionable=True,
+        category=HypothesisCategory.NETWORK,
+        generated_at_turn=3,
+    )
+    co_cause = CausalNode(
+        statement="migration Job has an aggressive connect deadline",
+        node_type=NodeType.INTERMEDIATE,
+        category=HypothesisCategory.CONFIG,
+        generated_at_turn=3,
+    )
+    case.causal_nodes = {n.node_id: n for n in (d, inter, root, co_cause)}
+    # root AND co_cause -> intermediate (co-necessary, shared and_group); then
+    # intermediate -> D.
+    case.causal_edges = [
+        CausalEdge(
+            cause_node_id=root.node_id,
+            effect_node_id=inter.node_id,
+            and_group="g1",
+            created_at_turn=3,
+        ),
+        CausalEdge(
+            cause_node_id=co_cause.node_id,
+            effect_node_id=inter.node_id,
+            and_group="g1",
+            created_at_turn=3,
+        ),
+        CausalEdge(
+            cause_node_id=inter.node_id,
+            effect_node_id=d.node_id,
+            created_at_turn=2,
+        ),
+    ]
+
+    # Chain header on a hypothesis + intervention linkage on a solution.
+    hyp = Hypothesis(
+        statement="NetworkPolicy blocks the migration connection",
+        category=HypothesisCategory.NETWORK,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=3,
+        rationale="timeout signature points at reachability",
+        root_node_id=root.node_id,
+        path=[root.node_id, inter.node_id, d.node_id],
+    )
+    case.hypotheses[hyp.hypothesis_id] = hyp
+    case.solutions.append(
+        Solution(
+            solution_type=SolutionType.CONFIG_CHANGE,
+            title="Add an ingress from-clause to the NetworkPolicy",
+            immediate_action="patch the NetworkPolicy to allow ingress on 5432",
+            node_id=root.node_id,
+            quadrant=InterventionQuadrant.REMEDIATION,
+        )
+    )
+
+    await pg_repo.save(case)
+    fetched = await pg_repo.get(case.case_id)
+    assert fetched is not None
+
+    # Nodes round-tripped, with per-node empirical state intact.
+    assert len(fetched.causal_nodes) == 4
+    fr = fetched.causal_nodes[root.node_id]
+    assert fr.node_type == NodeType.ROOT
+    assert fr.node_state == NodeState.VALIDATED
+    assert fr.validation_method == ValidationMethod.EMPIRICAL
+    assert fr.actionable is True
+    fi = fetched.causal_nodes[inter.node_id]
+    assert fi.node_state == NodeState.VALIDATED
+    # Node-scoped evidence link survived the junction.
+    assert len(fi.evidence_links) == 1
+    assert fi.evidence_links[0].evidence_id == ev_id
+    assert fi.evidence_links[0].stance == EvidenceStance.SUPPORTS
+
+    # Edges round-tripped, AND-group preserved (two edges into `inter`).
+    assert len(fetched.causal_edges) == 3
+    and_edges = [
+        e
+        for e in fetched.causal_edges
+        if e.effect_node_id == inter.node_id and e.and_group == "g1"
+    ]
+    assert len(and_edges) == 2
+
+    # Chain header + solution linkage.
+    fh = fetched.hypotheses[hyp.hypothesis_id]
+    assert fh.root_node_id == root.node_id
+    assert fh.path == [root.node_id, inter.node_id, d.node_id]
+    fs = fetched.solutions[0]
+    assert fs.node_id == root.node_id
+    assert fs.quadrant == InterventionQuadrant.REMEDIATION

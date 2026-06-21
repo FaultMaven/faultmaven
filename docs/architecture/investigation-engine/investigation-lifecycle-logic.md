@@ -1292,6 +1292,15 @@ None`) — descriptions of what happened, not paths chosen upfront. The
 INQUIRY → INVESTIGATING transition requires **Gate 1 only** (problem-statement
 confirmation); there is no second gate before investigating.
 
+> **Methodology alignment.** In the
+> [Two-Dimensional Hypothesis Methodology](./two-dimensional-hypothesis-methodology.md),
+> a mitigation *is* a **temporary state interception** (R8) on the causal ladder,
+> and the two axes here map directly onto its *why-stopping rule*: **Axis A
+> (certainty / feasibility)** sets how deep diagnosis descends before a node is
+> accepted as the stopping point (`rca_infeasible` caps the ladder at the deepest
+> controllable rung); **Axis B (impact-now gap)** decides whether an intermediate
+> rung is intercepted *temporarily* en route. See methodology §7.5.
+
 ### 2.3 Mitigation triggers and forwarding
 
 A mitigation is proposed when an Axis-B gap exists. The first and most common

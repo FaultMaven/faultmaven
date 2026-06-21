@@ -594,6 +594,15 @@ unaffected by dedup).
 
 ## 6. Hypothesis Model
 
+> **Methodology layer.** This section specifies the hypothesis *lifecycle and
+> confidence mechanics*. How candidate root causes are **formed**, **structured**
+> into a search space, **searched** (invalidation-first), and **validated** —
+> the diagnostic reasoning the agent applies while driving this lifecycle — is
+> specified in **[Two-Dimensional Hypothesis Methodology](./two-dimensional-hypothesis-methodology.md)**.
+> That document defines the building blocks (root cause vs. intermediate state,
+> hypothesis-as-causal-chain, test vs. solution) and supersedes the flat
+> single-sentence hypothesis and per-mention confidence assumptions below.
+
 ### 6.1 Hypothesis Lifecycle
 
 The hypothesis lifecycle:

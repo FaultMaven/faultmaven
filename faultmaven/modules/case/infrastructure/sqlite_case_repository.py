@@ -41,6 +41,8 @@ from faultmaven.modules.case.contracts import (
     CaseEntity,
     CaseReport,
     CaseState,
+    CausalEdge,
+    CausalNode,
     DocumentationData,
     EntityType,
     EscalationState,
@@ -50,6 +52,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     EvidenceStance,
     Hypothesis,
+    HypothesisCategory,
     HypothesisEvidenceLink,
     InquiryData,
     InvestigationProgress,
@@ -57,6 +60,9 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
     ProblemVerification,
     ProposedAction,
     ReportStatus,
@@ -66,6 +72,7 @@ from faultmaven.modules.case.contracts import (
     Solution,
     TurnProgress,
     UploadedFile,
+    ValidationMethod,
     WorkingConclusion,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
@@ -206,6 +213,15 @@ class SQLiteCaseRepository(CaseRepository):
                 organization_id,
                 case.current_turn,
             )
+            # Causal graph before hypotheses/solutions: hypotheses.root_node_id
+            # and solutions.node_id FK causal_nodes; causal_node_evidence FKs
+            # evidence (already upserted). Nodes before edges (edges FK nodes).
+            await self._upsert_causal_nodes(
+                case.case_id, case.causal_nodes, organization_id
+            )
+            await self._upsert_causal_edges(
+                case.case_id, case.causal_edges, organization_id
+            )
             await self._upsert_hypotheses(
                 case.case_id, case.hypotheses, organization_id
             )
@@ -266,6 +282,7 @@ class SQLiteCaseRepository(CaseRepository):
             if case:
                 await self._load_evidence_for_case(case)
                 await self._load_evidence_needs_for_case(case)
+                await self._load_causal_graph_for_case(case)
 
             return case
 
@@ -286,7 +303,8 @@ class SQLiteCaseRepository(CaseRepository):
                    iterations_without_progress,
                    category, generation_mode, rationale, retirement_reason,
                    refutation_reason,
-                   tested_at, concluded_at, proposed_at, updated_at, metadata
+                   tested_at, concluded_at, proposed_at, updated_at, metadata,
+                   root_node_id, path
             FROM hypotheses
             WHERE case_id = :case_id
         """)
@@ -320,6 +338,8 @@ class SQLiteCaseRepository(CaseRepository):
                     "proposed_at": row[16],
                     "updated_at": row[17],
                     "metadata": json.loads(row[18]) if row[18] else {},
+                    "root_node_id": row[19],
+                    "path": json.loads(row[20]) if row[20] else [],
                 }
             )
         return hypotheses
@@ -392,7 +412,8 @@ class SQLiteCaseRepository(CaseRepository):
                    proposed_at, proposed_by,
                    applied_at, applied_by,
                    verified_at, verification_method,
-                   verification_evidence_id, effectiveness
+                   verification_evidence_id, effectiveness,
+                   node_id, quadrant
             FROM solutions
             WHERE case_id = :case_id
         """)
@@ -419,9 +440,124 @@ class SQLiteCaseRepository(CaseRepository):
                     "verification_method": row[13],
                     "verification_evidence_id": row[14],
                     "effectiveness": row[15],
+                    "node_id": row[16],
+                    "quadrant": row[17],
                 }
             )
         return solutions
+
+    async def _load_node_evidence_links(
+        self, node_ids: builtins.list[str]
+    ) -> dict[str, builtins.list[NodeEvidenceLink]]:
+        """Load causal_node_evidence rows as ``{node_id: [NodeEvidenceLink]}``.
+        Stance is stored verbatim (supports/refutes/neutral)."""
+        if not node_ids:
+            return {}
+        params: dict[str, Any] = {}
+        placeholders = self._bind_ids(params, node_ids)
+        query = text(f"""
+            SELECT node_id, evidence_id, stance, stance_confidence,
+                   reasoning, linked_at_turn, created_at
+            FROM causal_node_evidence
+            WHERE node_id IN ({placeholders})
+        """)
+        result = await self.db.execute(query, params)
+        by_node: dict[str, builtins.list[NodeEvidenceLink]] = {}
+        for row in result.fetchall():
+            nid = str(row[0])
+            analyzed_at = row[6]
+            if isinstance(analyzed_at, str):
+                try:
+                    analyzed_at = datetime.fromisoformat(analyzed_at.replace(" ", "T"))
+                except ValueError:
+                    analyzed_at = datetime.now(UTC)
+            elif analyzed_at is None:
+                analyzed_at = datetime.now(UTC)
+            conf = float(row[3]) if row[3] is not None else 1.0
+            by_node.setdefault(nid, []).append(
+                NodeEvidenceLink(
+                    evidence_id=str(row[1]),
+                    stance=EvidenceStance(row[2]),
+                    reasoning=row[4] or "",
+                    stance_confidence=max(0.0, min(1.0, conf)),
+                    linked_at_turn=row[5] or 0,
+                    analyzed_at=analyzed_at,
+                )
+            )
+        return by_node
+
+    async def _load_causal_graph_for_case(self, case: Case) -> None:
+        """Load the case's causal graph (nodes + edges) + node-scoped evidence."""
+        node_rows = (
+            await self.db.execute(
+                text("""
+                    SELECT node_id, statement, node_type, node_state,
+                           validation_method, belief, signature_consistent,
+                           actionable, category, state_epoch, generated_at_turn,
+                           last_updated_turn, last_progress_at_turn,
+                           iterations_without_progress, refutation_reason,
+                           rationale, proposed_at, updated_at, metadata
+                    FROM causal_nodes
+                    WHERE case_id = :case_id
+                """),
+                {"case_id": case.case_id},
+            )
+        ).fetchall()
+        node_ids = [str(r[0]) for r in node_rows]
+        links_by_node = await self._load_node_evidence_links(node_ids)
+
+        nodes: dict[str, CausalNode] = {}
+        for r in node_rows:
+            nid = str(r[0])
+            nodes[nid] = CausalNode(
+                node_id=nid,
+                statement=r[1],
+                node_type=NodeType(r[2]),
+                node_state=NodeState(r[3]),
+                validation_method=ValidationMethod(r[4]),
+                belief=float(r[5]) if r[5] is not None else 0.5,
+                signature_consistent=bool(r[6]),
+                actionable=bool(r[7]),
+                category=HypothesisCategory(r[8]) if r[8] else None,
+                state_epoch=r[9] or 0,
+                generated_at_turn=r[10] or 0,
+                last_updated_turn=r[11] or 0,
+                last_progress_at_turn=r[12] or 0,
+                iterations_without_progress=r[13] or 0,
+                refutation_reason=r[14],
+                rationale=r[15],
+                evidence_links=links_by_node.get(nid, []),
+                proposed_at=r[16] or datetime.now(UTC),
+                updated_at=r[17] or datetime.now(UTC),
+                metadata=(
+                    json.loads(r[18]) if isinstance(r[18], str) else (r[18] or {})
+                ),
+            )
+        case.causal_nodes = nodes
+
+        edge_rows = (
+            await self.db.execute(
+                text("""
+                    SELECT edge_id, cause_node_id, effect_node_id, and_group,
+                           reasoning, created_at_turn, created_at
+                    FROM causal_edges
+                    WHERE case_id = :case_id
+                """),
+                {"case_id": case.case_id},
+            )
+        ).fetchall()
+        case.causal_edges = [
+            CausalEdge(
+                edge_id=str(r[0]),
+                cause_node_id=str(r[1]),
+                effect_node_id=str(r[2]),
+                and_group=r[3],
+                reasoning=r[4],
+                created_at_turn=r[5] or 0,
+                created_at=r[6] or datetime.now(UTC),
+            )
+            for r in edge_rows
+        ]
 
     async def _load_uploaded_files(self, case_id: str) -> list[dict]:
         """Load uploaded files for a case.
@@ -2428,6 +2564,7 @@ class SQLiteCaseRepository(CaseRepository):
                 INSERT INTO hypotheses (
                     hypothesis_id, case_id, organization_id, statement, state,
                     likelihood, initial_likelihood,
+                    root_node_id, path,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress,
                     category, generation_mode, rationale, retirement_reason,
@@ -2437,6 +2574,7 @@ class SQLiteCaseRepository(CaseRepository):
                 ) VALUES (
                     :hypothesis_id, :case_id, :organization_id, :statement, :state,
                     :likelihood, :initial_likelihood,
+                    :root_node_id, :path,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
                     :iterations_without_progress,
                     :category, :generation_mode, :rationale, :retirement_reason,
@@ -2448,6 +2586,8 @@ class SQLiteCaseRepository(CaseRepository):
                     statement = EXCLUDED.statement,
                     state = EXCLUDED.state,
                     likelihood = EXCLUDED.likelihood,
+                    root_node_id = EXCLUDED.root_node_id,
+                    path = EXCLUDED.path,
                     generated_at_turn = EXCLUDED.generated_at_turn,
                     last_updated_turn = EXCLUDED.last_updated_turn,
                     last_progress_at_turn = EXCLUDED.last_progress_at_turn,
@@ -2469,6 +2609,8 @@ class SQLiteCaseRepository(CaseRepository):
                     "state": hypothesis.state.value,
                     "likelihood": hypothesis.likelihood,
                     "initial_likelihood": hypothesis.initial_likelihood,
+                    "root_node_id": hypothesis.root_node_id,
+                    "path": json.dumps(list(hypothesis.path)),
                     "generated_at_turn": hypothesis.generated_at_turn,
                     "last_updated_turn": hypothesis.last_updated_turn,
                     "last_progress_at_turn": hypothesis.last_progress_at_turn,
@@ -2547,6 +2689,155 @@ class SQLiteCaseRepository(CaseRepository):
                 },
             )
 
+    async def _upsert_causal_nodes(
+        self, case_id: str, nodes_dict: dict[str, CausalNode], organization_id: str
+    ) -> None:
+        """Upsert causal-graph nodes; node-scoped evidence follows into the
+        causal_node_evidence junction. Additive + idempotent on node_id."""
+        for node_id, node in nodes_dict.items():
+            query = text("""
+                INSERT INTO causal_nodes (
+                    node_id, case_id, organization_id, statement,
+                    node_type, node_state, validation_method, belief,
+                    signature_consistent, actionable, category, state_epoch,
+                    generated_at_turn, last_updated_turn, last_progress_at_turn,
+                    iterations_without_progress, refutation_reason, rationale,
+                    metadata, proposed_at, updated_at
+                ) VALUES (
+                    :node_id, :case_id, :organization_id, :statement,
+                    :node_type, :node_state, :validation_method, :belief,
+                    :signature_consistent, :actionable, :category, :state_epoch,
+                    :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
+                    :iterations_without_progress, :refutation_reason, :rationale,
+                    :metadata, :proposed_at, :updated_at
+                )
+                ON CONFLICT (node_id) DO UPDATE SET
+                    statement = EXCLUDED.statement,
+                    node_type = EXCLUDED.node_type,
+                    node_state = EXCLUDED.node_state,
+                    validation_method = EXCLUDED.validation_method,
+                    belief = EXCLUDED.belief,
+                    signature_consistent = EXCLUDED.signature_consistent,
+                    actionable = EXCLUDED.actionable,
+                    category = EXCLUDED.category,
+                    state_epoch = EXCLUDED.state_epoch,
+                    last_updated_turn = EXCLUDED.last_updated_turn,
+                    last_progress_at_turn = EXCLUDED.last_progress_at_turn,
+                    iterations_without_progress = EXCLUDED.iterations_without_progress,
+                    refutation_reason = EXCLUDED.refutation_reason,
+                    rationale = EXCLUDED.rationale,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = EXCLUDED.updated_at
+            """)
+            await self.db.execute(
+                query,
+                {
+                    "node_id": node_id,
+                    "case_id": case_id,
+                    "organization_id": organization_id,
+                    "statement": node.statement,
+                    "node_type": node.node_type.value,
+                    "node_state": node.node_state.value,
+                    "validation_method": node.validation_method.value,
+                    "belief": node.belief,
+                    "signature_consistent": node.signature_consistent,
+                    "actionable": node.actionable,
+                    "category": node.category.value if node.category else None,
+                    "state_epoch": node.state_epoch,
+                    "generated_at_turn": node.generated_at_turn,
+                    "last_updated_turn": node.last_updated_turn,
+                    "last_progress_at_turn": node.last_progress_at_turn,
+                    "iterations_without_progress": node.iterations_without_progress,
+                    "refutation_reason": node.refutation_reason,
+                    "rationale": node.rationale,
+                    "metadata": json.dumps(node.metadata or {}),
+                    "proposed_at": node.proposed_at,
+                    "updated_at": datetime.now(UTC),
+                },
+            )
+            await self._upsert_node_evidence(
+                node_id, node.evidence_links, organization_id
+            )
+
+    async def _upsert_node_evidence(
+        self,
+        node_id: str,
+        links: builtins.list[NodeEvidenceLink],
+        organization_id: str,
+    ) -> None:
+        """Upsert rows on the causal_node_evidence junction. Composite PK
+        (node_id, evidence_id) makes it idempotent; stance is stored verbatim
+        (supports/refutes/neutral)."""
+        if not links:
+            return
+        query = text("""
+            INSERT INTO causal_node_evidence (
+                node_id, evidence_id, organization_id, stance,
+                stance_confidence, reasoning, linked_at_turn, created_at
+            ) VALUES (
+                :node_id, :evidence_id, :organization_id, :stance,
+                :stance_confidence, :reasoning, :linked_at_turn, :created_at
+            )
+            ON CONFLICT (node_id, evidence_id) DO UPDATE SET
+                stance = EXCLUDED.stance,
+                stance_confidence = EXCLUDED.stance_confidence,
+                reasoning = EXCLUDED.reasoning,
+                linked_at_turn = EXCLUDED.linked_at_turn
+        """)
+        for link in links:
+            await self.db.execute(
+                query,
+                {
+                    "node_id": node_id,
+                    "evidence_id": link.evidence_id,
+                    "organization_id": organization_id,
+                    "stance": link.stance.value,
+                    "stance_confidence": link.stance_confidence,
+                    "reasoning": link.reasoning,
+                    "linked_at_turn": link.linked_at_turn,
+                    "created_at": link.analyzed_at,
+                },
+            )
+
+    async def _upsert_causal_edges(
+        self,
+        case_id: str,
+        edges: builtins.list[CausalEdge],
+        organization_id: str,
+    ) -> None:
+        """Upsert causal-graph edges. Additive + idempotent on edge_id."""
+        if not edges:
+            return
+        query = text("""
+            INSERT INTO causal_edges (
+                edge_id, case_id, organization_id,
+                cause_node_id, effect_node_id, and_group, reasoning,
+                created_at_turn, created_at
+            ) VALUES (
+                :edge_id, :case_id, :organization_id,
+                :cause_node_id, :effect_node_id, :and_group, :reasoning,
+                :created_at_turn, :created_at
+            )
+            ON CONFLICT (edge_id) DO UPDATE SET
+                and_group = EXCLUDED.and_group,
+                reasoning = EXCLUDED.reasoning
+        """)
+        for edge in edges:
+            await self.db.execute(
+                query,
+                {
+                    "edge_id": edge.edge_id,
+                    "case_id": case_id,
+                    "organization_id": organization_id,
+                    "cause_node_id": edge.cause_node_id,
+                    "effect_node_id": edge.effect_node_id,
+                    "and_group": edge.and_group,
+                    "reasoning": edge.reasoning,
+                    "created_at_turn": edge.created_at_turn,
+                    "created_at": edge.created_at,
+                },
+            )
+
     async def _upsert_solutions(
         self,
         case_id: str,
@@ -2572,6 +2863,7 @@ class SQLiteCaseRepository(CaseRepository):
             query = text("""
                 INSERT INTO solutions (
                     solution_id, case_id, organization_id, solution_type, title,
+                    node_id, quadrant,
                     immediate_action, longterm_fix, implementation_steps, commands, risks,
                     description, state,
                     proposed_by, applied_by,
@@ -2580,6 +2872,7 @@ class SQLiteCaseRepository(CaseRepository):
                     proposed_at, applied_at, updated_at, metadata
                 ) VALUES (
                     :solution_id, :case_id, :organization_id, :solution_type, :title,
+                    :node_id, :quadrant,
                     :immediate_action, :longterm_fix, :implementation_steps, :commands, :risks,
                     :description, :state,
                     :proposed_by, :applied_by,
@@ -2590,6 +2883,8 @@ class SQLiteCaseRepository(CaseRepository):
                 ON CONFLICT (solution_id) DO UPDATE SET
                     solution_type = EXCLUDED.solution_type,
                     title = EXCLUDED.title,
+                    node_id = EXCLUDED.node_id,
+                    quadrant = EXCLUDED.quadrant,
                     immediate_action = EXCLUDED.immediate_action,
                     longterm_fix = EXCLUDED.longterm_fix,
                     implementation_steps = EXCLUDED.implementation_steps,
@@ -2617,6 +2912,8 @@ class SQLiteCaseRepository(CaseRepository):
                     "organization_id": organization_id,
                     "solution_type": solution.solution_type.value,
                     "title": solution.title,
+                    "node_id": solution.node_id,
+                    "quadrant": solution.quadrant.value if solution.quadrant else None,
                     "immediate_action": solution.immediate_action,
                     "longterm_fix": solution.longterm_fix,
                     "implementation_steps": json.dumps(
