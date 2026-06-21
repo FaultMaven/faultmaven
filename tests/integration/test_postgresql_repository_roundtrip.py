@@ -397,13 +397,11 @@ async def test_causal_graph_roundtrip(pg_repo):
 
     # Build the graph: D <- intermediate <- (root AND co-cause).
     d = CausalNode(
-        node_id="cn_0000000000d0",
         statement="Deploy to on-prem job fails",
         node_type=NodeType.PROBLEM,
         generated_at_turn=0,
     )
     inter = CausalNode(
-        node_id="cn_000000000a11",
         statement="migration pod connection to postgres times out",
         node_type=NodeType.INTERMEDIATE,
         node_state=NodeState.VALIDATED,
@@ -421,7 +419,6 @@ async def test_causal_graph_roundtrip(pg_repo):
         ],
     )
     root = CausalNode(
-        node_id="cn_000000000b22",
         statement="NetworkPolicy denies ingress to postgres on 5432",
         node_type=NodeType.ROOT,
         node_state=NodeState.VALIDATED,
@@ -431,7 +428,6 @@ async def test_causal_graph_roundtrip(pg_repo):
         generated_at_turn=3,
     )
     co_cause = CausalNode(
-        node_id="cn_000000000c33",
         statement="migration Job has an aggressive connect deadline",
         node_type=NodeType.INTERMEDIATE,
         category=HypothesisCategory.CONFIG,
@@ -461,8 +457,7 @@ async def test_causal_graph_roundtrip(pg_repo):
     ]
 
     # Chain header on a hypothesis + intervention linkage on a solution.
-    case.hypotheses["hyp_aaaaaaaaaaaa"] = Hypothesis(
-        hypothesis_id="hyp_aaaaaaaaaaaa",
+    hyp = Hypothesis(
         statement="NetworkPolicy blocks the migration connection",
         category=HypothesisCategory.NETWORK,
         generation_mode=HypothesisGenerationMode.SYSTEMATIC,
@@ -471,9 +466,9 @@ async def test_causal_graph_roundtrip(pg_repo):
         root_node_id=root.node_id,
         path=[root.node_id, inter.node_id, d.node_id],
     )
+    case.hypotheses[hyp.hypothesis_id] = hyp
     case.solutions.append(
         Solution(
-            solution_id="sol_aaaaaaaaaaaa",
             solution_type=SolutionType.CONFIG_CHANGE,
             title="Add an ingress from-clause to the NetworkPolicy",
             immediate_action="patch the NetworkPolicy to allow ingress on 5432",
@@ -510,7 +505,7 @@ async def test_causal_graph_roundtrip(pg_repo):
     assert len(and_edges) == 2
 
     # Chain header + solution linkage.
-    fh = fetched.hypotheses["hyp_aaaaaaaaaaaa"]
+    fh = fetched.hypotheses[hyp.hypothesis_id]
     assert fh.root_node_id == root.node_id
     assert fh.path == [root.node_id, inter.node_id, d.node_id]
     fs = fetched.solutions[0]

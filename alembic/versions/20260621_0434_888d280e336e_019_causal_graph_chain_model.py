@@ -22,8 +22,9 @@ Create Date: 2026-06-21 04:34:06.118000
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "888d280e336e"
@@ -120,6 +121,25 @@ def upgrade() -> None:
             "belief IS NULL OR (belief >= 0 AND belief <= 1)",
             name="causal_nodes_belief_range",
         ),
+        # Cross-column invariants (mirror the CausalNode Pydantic validators) so
+        # a non-model write path can never persist a row the loader would reject.
+        # M4: a VALIDATED node must carry a real validation_method.
+        sa.CheckConstraint(
+            "node_state <> 'validated' OR validation_method <> 'none'",
+            name="causal_nodes_validated_requires_method",
+        ),
+        # M1: a VALIDATED ROOT must be actionable. (NOT actionable is dialect-safe
+        # across PG boolean and SQLite 0/1.)
+        sa.CheckConstraint(
+            "NOT (node_type = 'root' AND node_state = 'validated' AND NOT actionable)",
+            name="causal_nodes_validated_root_actionable",
+        ),
+        # refutation_reason <-> node_state='refuted' travel together.
+        sa.CheckConstraint(
+            "(node_state = 'refuted' AND refutation_reason IS NOT NULL) "
+            "OR (node_state <> 'refuted' AND refutation_reason IS NULL)",
+            name="causal_nodes_refutation_pairing",
+        ),
         sa.ForeignKeyConstraint(["case_id"], ["cases.case_id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(
             ["organization_id"],
@@ -135,6 +155,16 @@ def upgrade() -> None:
     op.create_index("ix_causal_nodes_node_type", "causal_nodes", ["node_type"])
     op.create_index("ix_causal_nodes_node_state", "causal_nodes", ["node_state"])
     op.create_index("ix_causal_nodes_category", "causal_nodes", ["category"])
+    # At most one PROBLEM node (the active problem D) per case — partial unique
+    # index, supported on both PostgreSQL and SQLite.
+    op.create_index(
+        "uq_causal_nodes_one_problem_per_case",
+        "causal_nodes",
+        ["case_id"],
+        unique=True,
+        postgresql_where=sa.text("node_type = 'problem'"),
+        sqlite_where=sa.text("node_type = 'problem'"),
+    )
 
     # ---- causal_edges ----------------------------------------------------
     op.create_table(

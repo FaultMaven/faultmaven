@@ -49,6 +49,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import declarative_base, relationship
@@ -1450,6 +1451,30 @@ class CausalNodeModel(Base):
         CheckConstraint(
             "belief IS NULL OR (belief >= 0 AND belief <= 1)",
             name="causal_nodes_belief_range",
+        ),
+        # Cross-column invariants mirroring the CausalNode Pydantic validators
+        # (M4 / M1 / refutation pairing) so non-model write paths can't persist
+        # a row the loader would reject. NOT actionable is dialect-safe.
+        CheckConstraint(
+            "node_state <> 'validated' OR validation_method <> 'none'",
+            name="causal_nodes_validated_requires_method",
+        ),
+        CheckConstraint(
+            "NOT (node_type = 'root' AND node_state = 'validated' AND NOT actionable)",
+            name="causal_nodes_validated_root_actionable",
+        ),
+        CheckConstraint(
+            "(node_state = 'refuted' AND refutation_reason IS NOT NULL) "
+            "OR (node_state <> 'refuted' AND refutation_reason IS NULL)",
+            name="causal_nodes_refutation_pairing",
+        ),
+        # At most one PROBLEM node (the active problem D) per case.
+        Index(
+            "uq_causal_nodes_one_problem_per_case",
+            "case_id",
+            unique=True,
+            sqlite_where=text("node_type = 'problem'"),
+            postgresql_where=text("node_type = 'problem'"),
         ),
     )
 

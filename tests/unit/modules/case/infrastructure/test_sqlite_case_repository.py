@@ -1961,13 +1961,11 @@ class TestCausalGraphRoundTrip:
         )
 
         d = CausalNode(
-            node_id="cn_0000000000d0",
             statement="Deploy to on-prem job fails",
             node_type=NodeType.PROBLEM,
             generated_at_turn=0,
         )
         inter = CausalNode(
-            node_id="cn_000000000a11",
             statement="migration pod connection to postgres times out",
             node_type=NodeType.INTERMEDIATE,
             node_state=NodeState.VALIDATED,
@@ -1985,7 +1983,6 @@ class TestCausalGraphRoundTrip:
             ],
         )
         root = CausalNode(
-            node_id="cn_000000000b22",
             statement="NetworkPolicy denies ingress to postgres on 5432",
             node_type=NodeType.ROOT,
             node_state=NodeState.VALIDATED,
@@ -1995,7 +1992,6 @@ class TestCausalGraphRoundTrip:
             generated_at_turn=3,
         )
         co_cause = CausalNode(
-            node_id="cn_000000000c33",
             statement="migration Job has an aggressive connect deadline",
             node_type=NodeType.INTERMEDIATE,
             category=HypothesisCategory.CONFIG,
@@ -2021,8 +2017,7 @@ class TestCausalGraphRoundTrip:
                 created_at_turn=2,
             ),
         ]
-        case.hypotheses["hyp_aaaaaaaaaaaa"] = Hypothesis(
-            hypothesis_id="hyp_aaaaaaaaaaaa",
+        hyp = Hypothesis(
             statement="NetworkPolicy blocks the migration connection",
             category=HypothesisCategory.NETWORK,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
@@ -2031,9 +2026,9 @@ class TestCausalGraphRoundTrip:
             root_node_id=root.node_id,
             path=[root.node_id, inter.node_id, d.node_id],
         )
+        case.hypotheses[hyp.hypothesis_id] = hyp
         case.solutions.append(
             Solution(
-                solution_id="sol_aaaaaaaaaaaa",
                 solution_type=SolutionType.CONFIG_CHANGE,
                 title="Add an ingress from-clause to the NetworkPolicy",
                 immediate_action="patch the NetworkPolicy to allow ingress on 5432",
@@ -2066,7 +2061,7 @@ class TestCausalGraphRoundTrip:
         ]
         assert len(and_edges) == 2
 
-        fh = fetched.hypotheses["hyp_aaaaaaaaaaaa"]
+        fh = fetched.hypotheses[hyp.hypothesis_id]
         assert fh.root_node_id == root.node_id
         assert fh.path == [root.node_id, inter.node_id, d.node_id]
         fs = fetched.solutions[0]

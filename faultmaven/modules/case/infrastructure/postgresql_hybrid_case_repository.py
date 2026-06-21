@@ -812,14 +812,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         by_node: Dict[str, List[NodeEvidenceLink]] = {}
         for row in result.fetchall():
             nid = str(row[0])
-            analyzed_at = row[6]
-            if isinstance(analyzed_at, str):
-                try:
-                    analyzed_at = datetime.fromisoformat(analyzed_at.replace(" ", "T"))
-                except ValueError:
-                    analyzed_at = datetime.now(timezone.utc)
-            elif analyzed_at is None:
-                analyzed_at = datetime.now(timezone.utc)
+            # Reuse the canonical timestamptz coercion (handles str/None/datetime)
+            # rather than a weaker inline parser — same helper the message path uses.
+            analyzed_at = self._as_datetime(row[6], datetime.now(timezone.utc))
             conf = float(row[3]) if row[3] is not None else 1.0
             by_node.setdefault(nid, []).append(
                 NodeEvidenceLink(
@@ -845,7 +840,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                            actionable, category, state_epoch, generated_at_turn,
                            last_updated_turn, last_progress_at_turn,
                            iterations_without_progress, refutation_reason,
-                           rationale, proposed_at, updated_at
+                           rationale, proposed_at, updated_at, metadata
                     FROM causal_nodes
                     WHERE case_id = :case_id
                 """),
@@ -878,6 +873,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 evidence_links=links_by_node.get(nid, []),
                 proposed_at=r[16] or datetime.now(timezone.utc),
                 updated_at=r[17] or datetime.now(timezone.utc),
+                metadata=(
+                    json.loads(r[18]) if isinstance(r[18], str) else (r[18] or {})
+                ),
             )
         case.causal_nodes = nodes
 
@@ -2430,7 +2428,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "iterations_without_progress": node.iterations_without_progress,
                     "refutation_reason": node.refutation_reason,
                     "rationale": node.rationale,
-                    "metadata": json.dumps({}),
+                    "metadata": json.dumps(node.metadata or {}),
                     "proposed_at": node.proposed_at,
                     "updated_at": datetime.now(timezone.utc),
                 },

@@ -496,7 +496,7 @@ class SQLiteCaseRepository(CaseRepository):
                            actionable, category, state_epoch, generated_at_turn,
                            last_updated_turn, last_progress_at_turn,
                            iterations_without_progress, refutation_reason,
-                           rationale, proposed_at, updated_at
+                           rationale, proposed_at, updated_at, metadata
                     FROM causal_nodes
                     WHERE case_id = :case_id
                 """),
@@ -529,6 +529,9 @@ class SQLiteCaseRepository(CaseRepository):
                 evidence_links=links_by_node.get(nid, []),
                 proposed_at=r[16] or datetime.now(UTC),
                 updated_at=r[17] or datetime.now(UTC),
+                metadata=(
+                    json.loads(r[18]) if isinstance(r[18], str) else (r[18] or {})
+                ),
             )
         case.causal_nodes = nodes
 
@@ -2747,7 +2750,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "iterations_without_progress": node.iterations_without_progress,
                     "refutation_reason": node.refutation_reason,
                     "rationale": node.rationale,
-                    "metadata": json.dumps({}),
+                    "metadata": json.dumps(node.metadata or {}),
                     "proposed_at": node.proposed_at,
                     "updated_at": datetime.now(UTC),
                 },
