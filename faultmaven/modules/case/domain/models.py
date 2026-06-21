@@ -2628,7 +2628,18 @@ class CausalNode(BaseModel):
     )
     last_updated_turn: int = Field(default=0, ge=0)
     last_progress_at_turn: int = Field(default=0, ge=0)
-    iterations_without_progress: int = Field(default=0, ge=0)
+    iterations_without_progress: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Stagnation counter for decay/anchoring. Advances ONLY on "
+            "investigation turns where this node was eligible to progress and "
+            "didn't (new evidence analyzed, a test result returned, a state "
+            "transition attempted) — never on clarifying/awaiting-user turns "
+            "(TurnOutcome.CONVERSATION). Engine-maintained in Phase 2; see "
+            "methodology §6.1 'Decay counts investigation turns'."
+        ),
+    )
 
     refutation_reason: Optional[str] = Field(
         default=None,

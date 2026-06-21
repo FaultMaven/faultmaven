@@ -248,6 +248,18 @@ max). With these duals in place, the symmetric AND rule (S1) and deductive
 validation (§7.1.1) fall out of the arithmetic rather than needing to be bolted
 on as special cases.
 
+**Decay counts investigation turns, not wall-clock turns.** Stagnation decay
+(`belief × 0.85^iterations_without_progress`) and anchoring detection key on
+`iterations_without_progress`, which must advance **only on investigation turns**
+— a turn where a node was *eligible* to progress and didn't (new evidence
+analyzed, a proposed test's result returned, or a node-state transition
+attempted). Turns spent waiting on the user, answering clarifying questions, or
+coaching how to run a command (`TurnOutcome.CONVERSATION`) are **not** progress
+opportunities and must not increment the counter. Otherwise a correct hypothesis
+decays on user latency alone — a three-turn network-capture detour would penalize
+the very chain it is testing. The counter is per-node and resets at
+`last_progress_at_turn`.
+
 ---
 
 ## 7. Validation, Treatment, and the Intervention Quadrants
@@ -270,7 +282,7 @@ unobservable cause, it may validate by **exclusion**:
 > **empirically refuted** (§7.1), the remaining path is validated by deduction —
 > even if its root cannot be directly observed.
 
-Three guards keep this from becoming a fallacy:
+Four guards keep this from becoming a fallacy:
 
 1. **Exhaustiveness is mandatory.** Proof-by-exclusion is only as sound as the
    differential is complete. It is permitted **only when the OR-set is certified
@@ -279,7 +291,18 @@ Three guards keep this from becoming a fallacy:
    (S2). A non-exhaustive elimination simply concludes the wrong survivor.
 2. **The eliminations must be empirical.** Deduce only from refutations that
    themselves meet §7.1 — never from assumed or inferred eliminations.
-3. **Deductive validation is *mechanistic* grade only** (§7.2). It unlocks
+3. **Strict exclusion — refutation must be absolute, not partial.** Proof by
+   exclusion is acutely noise-sensitive: deducing the survivor is "100% valid"
+   while a sibling is only *75% refuted* is mathematically unsafe (the survivor's
+   deduced belief is at most the product of the siblings' exclusion strengths). A
+   sibling counts as *excluded* **only** when its refutation is absolute —
+   `node_state=REFUTED` **and** `belief ≤ DEDUCTIVE_EXCLUSION_MAX_BELIEF` (a small
+   constant, e.g. `0.05`). If **any** of the `N−1` is merely `INCONCLUSIVE` or
+   weakly refuted (`belief` above the bar), deductive validation **does not fire**
+   — the survivor stays `CANDIDATE` (graceful denial: keep searching). This makes
+   the deduction binary, matching its use as an invariant (M4) rather than a
+   probabilistic estimate.
+4. **Deductive validation is *mechanistic* grade only** (§7.2). It unlocks
    TREATMENT but never RESOLVED on its own; **counterfactual confirmation** (the
    fix works) is still required to resolve. And if treatment then *fails* (§7.3)
    on a deductively-validated cause, that is strong evidence the OR-set was **not**
