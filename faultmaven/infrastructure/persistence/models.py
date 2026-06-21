@@ -686,6 +686,9 @@ class CaseModel(Base):
     solutions = relationship(
         "SolutionModel", back_populates="case", cascade="all, delete-orphan"
     )
+    causal_nodes = relationship(
+        "CausalNodeModel", back_populates="case", cascade="all, delete-orphan"
+    )
     messages = relationship(
         "CaseMessageModel", back_populates="case", cascade="all, delete-orphan"
     )
@@ -1143,6 +1146,17 @@ class HypothesisModel(Base):
         index=True,
     )
 
+    # Causal-chain header (Two-Dimensional Hypothesis Methodology §9.1): a
+    # hypothesis is a root->D path over the case's causal graph. NULL root while
+    # the chain is still expanding (lazy). `path` is the ordered node_id list.
+    root_node_id = Column(
+        String(36),
+        ForeignKey("causal_nodes.node_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    path = Column(JsonBlob, nullable=False, server_default="[]")
+
     statement = Column(Text, nullable=False)
     state = Column(String(20), nullable=False, server_default="captured", index=True)
     likelihood = Column(Numeric(3, 2), nullable=True, server_default="0.5")
@@ -1278,6 +1292,16 @@ class SolutionModel(Base):
         index=True,
     )
 
+    # Causal-graph linkage (methodology §7.4, §9.1): which node this solution
+    # acts on, and which intervention quadrant it occupies.
+    node_id = Column(
+        String(36),
+        ForeignKey("causal_nodes.node_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    quadrant = Column(String(20), nullable=True)
+
     title = Column(String(500), nullable=False)
     description = Column(Text, nullable=False)
     solution_type = Column(String(30), nullable=False, server_default="other")
@@ -1342,6 +1366,181 @@ class SolutionModel(Base):
             "effectiveness IS NULL OR (effectiveness >= 0 AND effectiveness <= 1)",
             name="solutions_effectiveness_range",
         ),
+        CheckConstraint(
+            "quadrant IS NULL OR quadrant IN "
+            "('remediation', 'defensive_fix', 'mitigation', 'loop_break')",
+            name="solutions_quadrant_check",
+        ),
+    )
+
+
+class CausalNodeModel(Base):
+    """A node in the case's causal graph (Two-Dimensional Hypothesis
+    Methodology §3/§9.1): the active problem (PROBLEM), an intermediate state,
+    or a candidate root cause (ROOT). Node-scoped evidence lives in the
+    `causal_node_evidence` junction (not a JSON blob)."""
+
+    __tablename__ = "causal_nodes"
+
+    node_id = Column(String(36), primary_key=True)
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    case_id = Column(
+        String(36),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    statement = Column(Text, nullable=False)
+    node_type = Column(String(20), nullable=False, index=True)
+    node_state = Column(
+        String(20), nullable=False, server_default="candidate", index=True
+    )
+    validation_method = Column(String(20), nullable=False, server_default="none")
+    belief = Column(Numeric(3, 2), nullable=True, server_default="0.5")
+    signature_consistent = Column(Boolean, nullable=False, server_default="1")
+    actionable = Column(Boolean, nullable=False, server_default="0")
+    category = Column(String(50), nullable=True, index=True)
+    state_epoch = Column(Integer, nullable=False, server_default="0")
+
+    # Turn tracking (stagnation / decay; advances on investigation turns only)
+    generated_at_turn = Column(Integer, nullable=False, server_default="0")
+    last_updated_turn = Column(Integer, nullable=False, server_default="0")
+    last_progress_at_turn = Column(Integer, nullable=False, server_default="0")
+    iterations_without_progress = Column(Integer, nullable=False, server_default="0")
+
+    refutation_reason = Column(String(200), nullable=True)
+    rationale = Column(Text, nullable=True)
+
+    node_metadata = Column("metadata", JsonBlob, nullable=False, server_default="{}")
+
+    proposed_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    case = relationship("CaseModel", back_populates="causal_nodes")
+
+    __table_args__ = (
+        CheckConstraint(
+            "LENGTH(TRIM(statement)) > 0", name="causal_nodes_statement_not_empty"
+        ),
+        CheckConstraint(
+            "node_type IN ('problem', 'intermediate', 'root')",
+            name="causal_nodes_node_type_check",
+        ),
+        CheckConstraint(
+            "node_state IN ('candidate', 'validated', 'refuted', 'inconclusive')",
+            name="causal_nodes_node_state_check",
+        ),
+        CheckConstraint(
+            "validation_method IN ('none', 'empirical', 'deductive')",
+            name="causal_nodes_validation_method_check",
+        ),
+        CheckConstraint(
+            "belief IS NULL OR (belief >= 0 AND belief <= 1)",
+            name="causal_nodes_belief_range",
+        ),
+    )
+
+
+class CausalEdgeModel(Base):
+    """A directed cause -> effect edge in the causal graph (methodology S1).
+    Edges sharing (effect_node_id, and_group) are co-necessary (an AND-set, M7);
+    a null/distinct and_group denotes an independent (OR) alternative cause."""
+
+    __tablename__ = "causal_edges"
+
+    edge_id = Column(String(36), primary_key=True)
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    case_id = Column(
+        String(36),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    cause_node_id = Column(
+        String(36),
+        ForeignKey("causal_nodes.node_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    effect_node_id = Column(
+        String(36),
+        ForeignKey("causal_nodes.node_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    and_group = Column(String(64), nullable=True)
+    reasoning = Column(Text, nullable=True)
+    created_at_turn = Column(Integer, nullable=False, server_default="0")
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "cause_node_id <> effect_node_id", name="causal_edges_no_self_loop"
+        ),
+    )
+
+
+class CausalNodeEvidenceModel(Base):
+    """Junction: causal node ↔ evidence with a stance (methodology §9.1).
+    The node-scoped counterpart of `hypothesis_evidence`."""
+
+    __tablename__ = "causal_node_evidence"
+
+    node_id = Column(
+        String(36),
+        ForeignKey("causal_nodes.node_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evidence_id = Column(
+        String(36),
+        ForeignKey("evidence.evidence_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stance = Column(String(20), nullable=False)  # supports | refutes | neutral
+    stance_confidence = Column(Numeric(3, 2), nullable=True)
+    reasoning = Column(Text, nullable=True)
+    linked_at_turn = Column(Integer, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "stance IN ('supports', 'refutes', 'neutral')",
+            name="causal_node_evidence_stance_check",
+        ),
+        CheckConstraint(
+            "stance_confidence IS NULL OR "
+            "(stance_confidence >= 0 AND stance_confidence <= 1)",
+            name="causal_node_evidence_confidence_range",
+        ),
+        Index("ix_causal_node_evidence_evidence", "evidence_id"),
     )
 
 
