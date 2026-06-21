@@ -2795,6 +2795,36 @@ class Hypothesis(BaseModel):
     )
 
     # ============================================================
+    # Causal Chain (Two-Dimensional Hypothesis Methodology)
+    # ------------------------------------------------------------
+    # A hypothesis is a CHAIN: a root->D path through the case's causal graph
+    # (Case.causal_nodes / causal_edges). These fields make it a chain header.
+    # Phase 1 adds them additively; the engine populates and validates them in
+    # Phase 2 (M3 checkpoint: a chain may not validate / carry a Solution until
+    # it terminates in a root node). `statement` and `evidence_links` below are
+    # transitional (flat-model fields) until the Phase-2 engine rewire retires
+    # them in favor of per-node evidence (CausalNode.evidence_links).
+    # See docs/.../two-dimensional-hypothesis-methodology.md §9.1.
+    # ============================================================
+    root_node_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The chain's ROOT causal node (its candidate root cause). NULL while "
+            "the chain is still being expanded backward toward a root (lazy "
+            "expansion). When set, must equal path[0]."
+        ),
+    )
+
+    path: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered node_ids root -> ... -> D (the active problem). path[0] is "
+            "the root node, path[-1] is the PROBLEM node. Empty until the chain "
+            "is materialized."
+        ),
+    )
+
+    # ============================================================
     # Evidence Relationships (Many-to-Many)
     # ============================================================
     evidence_links: List[HypothesisEvidenceLink] = Field(
@@ -2926,6 +2956,18 @@ class Hypothesis(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _root_heads_the_path(self) -> "Hypothesis":
+        """Chain consistency: when both are set, the root node is the head of
+        the root->D path (path[0]). Lenient by design — a chain mid-expansion
+        may have root_node_id set with an empty path, or a path with no root
+        yet; only an outright head/root mismatch is rejected."""
+        if self.root_node_id and self.path and self.path[0] != self.root_node_id:
+            raise ValueError(
+                "root_node_id must equal path[0] (the chain runs root -> D)."
+            )
+        return self
+
 
 # ============================================================
 # Solution Models (Section 7)
@@ -2978,6 +3020,28 @@ class Solution(BaseModel):
     # Solution Type
     # ============================================================
     solution_type: SolutionType = Field(description="Type of solution")
+
+    # ============================================================
+    # Causal-graph linkage (Two-Dimensional Hypothesis Methodology §7.4, §9.1)
+    # ------------------------------------------------------------
+    # Which causal node this intervention acts on, and which intervention
+    # quadrant it occupies. Phase 1 adds these additively; the engine sets and
+    # enforces them in Phase 2 (M5: a REMEDIATION solution requires its node's
+    # root to be validated; mitigation/defensive interceptions are exempt).
+    # ============================================================
+    node_id: Optional[str] = Field(
+        default=None,
+        description="Causal node this solution remediates or intercepts",
+    )
+
+    quadrant: Optional[InterventionQuadrant] = Field(
+        default=None,
+        description=(
+            "Intervention quadrant (§7.4): remediation (perm@root) / "
+            "defensive_fix (perm@intermediate) / mitigation (temp@intermediate) "
+            "/ loop_break."
+        ),
+    )
 
     # ============================================================
     # Solution Details
@@ -4090,6 +4154,26 @@ class Case(BaseModel):
 
     solutions: List[Solution] = Field(
         default_factory=list, description="Proposed and applied solutions"
+    )
+
+    # ============================================================
+    # Causal Graph (Two-Dimensional Hypothesis Methodology §3, §9.1)
+    # ------------------------------------------------------------
+    # The case owns ONE causal DAG rooted at the active problem D. Nodes are the
+    # problem / intermediate states / candidate roots; edges are cause->effect
+    # (with and_group for AND-sets). A Hypothesis is a named root->D path over
+    # this graph (Hypothesis.path / root_node_id). Phase 1 adds the collections
+    # additively; the engine seeds the PROBLEM node and grows the graph by lazy
+    # backward expansion in Phase 2/3.
+    # ============================================================
+    causal_nodes: Dict[str, CausalNode] = Field(
+        default_factory=dict,
+        description="Causal-graph nodes, keyed by node_id (D + intermediate + roots)",
+    )
+
+    causal_edges: List[CausalEdge] = Field(
+        default_factory=list,
+        description="Directed cause->effect edges (and_group marks AND-sets)",
     )
 
     proposed_actions: List[ProposedAction] = Field(
