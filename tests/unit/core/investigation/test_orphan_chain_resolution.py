@@ -188,6 +188,83 @@ def test_t1_dedupes_two_degenerate_roots_for_one_cause():
     assert _orphan_roots(case) == []
 
 
+def test_t1_requires_substantive_overlap_not_single_token_containment():
+    # A 1-token orphan fully contained in the hypothesis scores containment=1.0
+    # (STRONG), but a single shared word is too flimsy to auto-attach — it must
+    # fall through to a nudge, not deterministically re-root.
+    hyp = _hyp("a database deadlock blocks the writer thread")
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    bridge_flat_hypotheses_to_graph(case)
+    stub_root = hyp.root_node_id
+
+    orphan_root = _add_orphan_chain(case, "deadlock", multi_rung=True)
+    # Confirm the metric WOULD call it STRONG on the lone shared token...
+    assert restatement_score("deadlock", hyp.statement) >= RESTATEMENT_STRONG
+
+    ambiguous = resolve_orphan_chains(case)
+
+    # ...but the substantive-overlap guard blocks the auto-attach.
+    assert hyp.root_node_id == stub_root  # not re-rooted
+    assert [o["root_id"] for o in ambiguous] == [orphan_root]
+
+
+def test_t1_does_not_reattach_same_hypothesis_to_two_orphans():
+    # Two degenerate orphan roots both restate one hypothesis. The hypothesis is
+    # adopted by the first; the second must NOT re-root it again (no churn) and
+    # is left as a standalone candidate.
+    hyp = _hyp("connection pool exhausted by a leaked database connection")
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    bridge_flat_hypotheses_to_graph(case)
+
+    o1 = _add_orphan_chain(
+        case, "a leaked database connection exhausts the pool", multi_rung=False
+    )
+    o2 = _add_orphan_chain(
+        case, "the pool drains from a leaked database connection", multi_rung=False
+    )
+
+    ambiguous = resolve_orphan_chains(case)
+
+    assert ambiguous == []
+    # Exactly one orphan became the hypothesis's root; the other is left standalone.
+    assert hyp.root_node_id in (o1, o2)
+    leftover = o2 if hyp.root_node_id == o1 else o1
+    assert leftover in case.causal_nodes
+    assert leftover in _orphan_roots(case)
+
+
+def test_adopted_hypothesis_does_not_block_a_clean_second_match():
+    # orphan1 cleanly restates H; orphan2 cleanly restates G but ALSO overlaps H
+    # weakly. Excluding the already-adopted H from orphan2's scoring keeps G's
+    # match unambiguous, so BOTH re-attach (no spurious downgrade to a nudge).
+    h = _hyp("database connection pool exhausted")
+    g = _hyp("redis cache eviction storm overload")
+    case = _investigating_case()
+    case.hypotheses = {h.hypothesis_id: h, g.hypothesis_id: g}
+    bridge_flat_hypotheses_to_graph(case)
+
+    o1 = _add_orphan_chain(
+        case, "database connection pool exhausted by a leak", multi_rung=True
+    )
+    o2 = _add_orphan_chain(
+        case,
+        "redis cache eviction storm from connection pool pressure",
+        multi_rung=True,
+    )
+    # o2 genuinely overlaps H (shares connection+pool) at/above the ambiguity floor.
+    assert restatement_score(case.causal_nodes[o2].statement, h.statement) >= (
+        RESTATEMENT_AMBIGUOUS
+    )
+
+    ambiguous = resolve_orphan_chains(case)
+
+    assert ambiguous == []  # neither downgraded to a nudge
+    assert h.root_node_id == o1
+    assert g.root_node_id == o2
+
+
 # --- T2a: ambiguous -> nudge, no auto-attach -------------------------------
 
 
