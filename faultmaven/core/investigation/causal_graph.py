@@ -28,6 +28,7 @@ from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
     CauseState,
+    EvidenceCategory,
     EvidenceStance,
     HypothesisState,
     NodeEvidenceLink,
@@ -182,6 +183,127 @@ def deductively_validated(
         if (node.belief or 0.0) > DEDUCTIVE_EXCLUSION_MAX_BELIEF:
             return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# §7.1 — empirical node-state derivation (what feeds is_chain_root_validated)
+# ---------------------------------------------------------------------------
+
+
+def _node_evidence_tally(
+    node: CausalNode, evidence_by_id: dict[str, EvidenceCategory | None]
+) -> tuple[int, int, int]:
+    """``(supports, refutes, causal_supports)`` for a node from its rung links.
+
+    Counts only links whose backing evidence row actually exists (a dangling
+    ``evidence_id`` is ignored, never assumed). ``causal_supports`` is the subset
+    of SUPPORTS links backed by ``CAUSAL_EVIDENCE`` — the §7.1 "direct observable
+    fact" bar (the same causal floor the flat ``_cause_state_grounded`` uses),
+    so a node validates only on real causal grounding, not any stray support.
+    """
+    supports = refutes = causal_supports = 0
+    for link in node.evidence_links:
+        if link.evidence_id not in evidence_by_id:
+            continue  # dangling reference — never counts
+        if link.stance == EvidenceStance.SUPPORTS:
+            supports += 1
+            if evidence_by_id[link.evidence_id] == EvidenceCategory.CAUSAL_EVIDENCE:
+                causal_supports += 1
+        elif link.stance == EvidenceStance.REFUTES:
+            refutes += 1
+    return supports, refutes, causal_supports
+
+
+def derive_node_states(case: Case) -> bool:
+    """Derive every causal node's ``node_state`` from its OWN rung evidence
+    (§7.1) plus the M7 AND-gate — the evidence-grounded replacement for
+    ``promote_grounded_chain_root``'s fabricated EMPIRICAL grade. This is what
+    makes ``cause_state=IDENTIFIED`` (via ``is_chain_root_validated``, §9.2) a
+    derived truth signal: a root reaches VALIDATED only when real causal evidence
+    bears it out, never because the flat model already "knew" the answer.
+
+    Per non-PROBLEM node (the PROBLEM node ``D`` is the engine-owned anchor and
+    is left untouched):
+
+    - **REFUTED** — its links net-refute it (``refutes >= 1`` and
+      ``refutes >= supports``), OR an AND-member feeding it is REFUTED (M7
+      disproof, asymmetric). ``validation_method=NONE``, ``actionable=False``.
+    - **VALIDATED** — not refuted, has at least one CAUSAL_EVIDENCE-backed
+      SUPPORTS link, is net-supporting (``supports > refutes``), AND every
+      AND-set feeding it is fully VALIDATED (M7 proof, strict). EMPIRICAL grade;
+      a validated ROOT is marked ``actionable`` (M1). Method + actionable are set
+      BEFORE the state so the node satisfies its M1/M4 model-validators at every
+      step (CausalNode has ``validate_assignment`` off, but it is reloaded via
+      ``CausalNode(**...)`` and would fail an inconsistent combination).
+    - **INCONCLUSIVE** — has bearing evidence but neither validates nor refutes.
+    - **CANDIDATE** — no bearing evidence yet (the lazy default; a freshly
+      emitted, untested rung).
+
+    Iterates to a fixpoint (bounded by node count) so a cause validated this pass
+    can satisfy its effect's AND-gate within the same recompute. Conservative and
+    monotone-safe: each node's target is a pure function of its links + parents'
+    states, so the loop settles. Returns True if any node's state changed.
+    """
+    nodes = case.causal_nodes
+    edges = case.causal_edges
+    evidence_by_id: dict[str, EvidenceCategory | None] = {
+        e.evidence_id: e.category for e in case.evidence
+    }
+
+    changed_any = False
+    # Fixpoint: a validated parent can unlock a child's AND-gate. Bound the loop
+    # by node count + 1 (a strictly longer dependency chain cannot exist).
+    for _ in range(len(nodes) + 1):
+        changed_this_pass = False
+        for node in nodes.values():
+            if node.node_type == NodeType.PROBLEM:
+                continue
+            supports, refutes, causal_supports = _node_evidence_tally(
+                node, evidence_by_id
+            )
+            net_refuted = refutes >= 1 and refutes >= supports
+            target_state = node.node_state
+            if net_refuted or and_constraints_refuted(node.node_id, nodes, edges):
+                target_state = NodeState.REFUTED
+            elif (
+                causal_supports >= 1
+                and supports > refutes
+                and and_constraints_satisfied(node.node_id, nodes, edges)
+            ):
+                target_state = NodeState.VALIDATED
+            elif supports or refutes:
+                target_state = NodeState.INCONCLUSIVE
+            else:
+                target_state = NodeState.CANDIDATE
+
+            if target_state == node.node_state:
+                continue
+
+            # Keep the FINAL field combination invariant-valid (the model
+            # validators run on reload via CausalNode(**...)): M4 validated ⇒
+            # method != NONE; M1 validated ROOT ⇒ actionable; REFUTED ⇔
+            # refutation_reason present (and a reason is illegal on any other
+            # state, so it is cleared when leaving REFUTED).
+            if target_state == NodeState.VALIDATED:
+                node.validation_method = ValidationMethod.EMPIRICAL
+                node.refutation_reason = None
+                if node.node_type == NodeType.ROOT:
+                    node.actionable = True
+            elif target_state == NodeState.REFUTED:
+                node.validation_method = ValidationMethod.NONE
+                node.actionable = False
+                if not node.refutation_reason:
+                    node.refutation_reason = (
+                        "refuted by rung evidence / a refuted AND-member (M7)"
+                    )
+            else:  # CANDIDATE / INCONCLUSIVE
+                node.validation_method = ValidationMethod.NONE
+                node.refutation_reason = None
+            node.node_state = target_state
+            changed_this_pass = changed_any = True
+        if not changed_this_pass:
+            break
+    return changed_any
 
 
 # ---------------------------------------------------------------------------
