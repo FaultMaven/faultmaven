@@ -1372,28 +1372,35 @@ is obvious.
 # Appended to the DIAGNOSIS instructions by ``_select_diagnosis_block`` ONLY when
 # ``settings.features.enable_hypothesis_chain_emission`` is on, so the tuned
 # baseline prompt is byte-identical when the flag is off. It layers ON TOP of the
-# flat hypotheses_to_add + hypothesis-evidence ordering flow above (does not
-# replace it): the chain is the structure beneath the flat hypothesis.
+# flat hypotheses_to_add + hypothesis-evidence ordering flow above: the chain IS
+# the hypothesis's structure — every hypothesis carries its root cause as a node,
+# not optional scaffolding beside a flat guess. (The engine still tolerates an
+# unlinked hypothesis as a best-effort fallback — graceful degradation; the
+# prompt's job is to make rooting the norm.)
 _CHAIN_EMISSION_BLOCK = """
-**CAUSAL CHAINS (build the explanation backward):**
-A hypothesis is a CHAIN of cause→effect steps ending at the problem D, not a flat
-guess. Build it backward from D, one rung at a time — do not invent a full tree:
+**CAUSAL CHAINS (every hypothesis is a chain, not a flat guess):**
+A hypothesis is a CHAIN of cause→effect steps ending at the problem D. Its deepest
+cause is the chain's ROOT — and a hypothesis already NAMES a cause, so EVERY
+hypothesis you add or maintain MUST be anchored to a root node. A flat hypothesis
+with no root is INCOMPLETE: it asserts a cause without placing it in the causal
+structure. What is lazy is the DEPTH of the chain — the intermediate rungs between
+root and D — never WHETHER the hypothesis has a root.
 
-1. For a cause you posit, emit a node in `causal_nodes_to_add`
-   (statement, node_type, produces):
+1. Emit the cause as a node in `causal_nodes_to_add` (statement, node_type,
+   produces):
    - `statement`: the condition that holds,
-   - `node_type`: `intermediate` (a state on the way) or `root` (an independent,
-     actionable origin — remove it and the problem is gone),
+   - `node_type`: `root` (the deepest cause you can currently posit for this
+     hypothesis — its actionable origin: remove it and the problem is gone) or
+     `intermediate` (a state on the way from a root to D),
    - `produces`: the node it DIRECTLY causes — an existing node id, `"D"` for the
      problem, or `"new_index_N"` for another node you emit this turn.
-2. Link the hypothesis to its chain — REQUIRED whenever you emit a root: set
-   `root_node_ref` on the hypothesis's `hypotheses_to_add` entry to that root
-   (`new_index_N` or an existing id), the SAME turn you emit the node. A root you
-   emit for a cause a hypothesis already names is the SAME chain — never leave it
-   unlinked beside a flat hypothesis for that cause (that double-records one cause).
-   If you LATER flesh out a hypothesis you already posited into a real chain, RE-ROOT
-   it the same way — set `root_node_ref` on its `hypotheses_to_update` entry to the
-   new chain's deepest root; do not start a second parallel chain for the same cause.
+2. Link the hypothesis to its root — REQUIRED FOR EVERY HYPOTHESIS: set
+   `root_node_ref` on its `hypotheses_to_add` (or `hypotheses_to_update`) entry to
+   the root node (`new_index_N` or an existing id), the SAME turn. One cause = one
+   chain: never leave a root unlinked beside a flat hypothesis for that cause, and
+   never start a second parallel chain for a cause a hypothesis already names. When
+   you later discover a DEEPER cause, RE-ROOT the hypothesis — set `root_node_ref`
+   on its `hypotheses_to_update` entry to the new deepest root — rather than branch.
 3. Attach evidence to the RUNG it tests via `node_evidence_links`
    (node_ref, evidence_id_ref, stance, reasoning): the SAME causal_evidence you
    record for the hypothesis ALSO names the node it bears on, so a
@@ -1411,10 +1418,17 @@ Example (TLS handshake failures):
   node_evidence_links: [{node_ref:"new_index_0", evidence_id_ref:"ev_openssl",
                          stance:"supports", reasoning:"openssl shows notAfter=02:00 today"}]
 
-Keep following the hypothesis→causal_evidence ordering above; the chain is the
-structure beneath it. Expand backward only as far as evidence warrants — a root you
-cannot yet explain is fine to leave as a standalone candidate ONLY when no
-hypothesis names it; a root that IS a hypothesis's cause must be linked (step 2).
+Build backward from D, one rung at a time — at minimum the root→D link, adding
+intermediate rungs as evidence warrants. Do NOT invent a full tree, or rungs or
+causes you have no basis for: the root is simply the deepest cause this hypothesis
+already claims, so representing it is naming what you posit, not guessing. If you
+can only point to a symptom with no cause yet, keep investigating — that is not
+yet a hypothesis, so do not manufacture a root to satisfy the rule.
+
+The mandate is that every HYPOTHESIS has a root, NOT that every root has a
+hypothesis: a root you surface but no hypothesis yet names may stand alone as a
+candidate — do not force-link it to an unrelated hypothesis, and do not invent a
+hypothesis just to carry it.
 """
 
 

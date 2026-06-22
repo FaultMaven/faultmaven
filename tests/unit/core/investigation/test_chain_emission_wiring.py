@@ -75,6 +75,11 @@ def test_diagnosis_prompt_includes_chain_block_when_flag_on(monkeypatch):
     # Step 3 spells out every required NodeEvidenceLinkToAdd field (the alignment).
     assert "node_evidence_links" in block
     assert "evidence_id_ref" in block
+    # Gate-1 strengthening: root emission/linking is mandatory for EVERY
+    # hypothesis (not optional "whenever you emit a root"), so the graph is
+    # reliably non-empty. A future edit that softens this mandate trips here.
+    assert "MUST be anchored to a root" in block
+    assert "REQUIRED FOR EVERY HYPOTHESIS" in block
 
 
 # ---------------------------------------------------------------------------
