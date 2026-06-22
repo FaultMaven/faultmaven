@@ -1386,11 +1386,14 @@ guess. Build it backward from D, one rung at a time — do not invent a full tre
      actionable origin — remove it and the problem is gone),
    - `produces`: the node it DIRECTLY causes — an existing node id, `"D"` for the
      problem, or `"new_index_N"` for another node you emit this turn.
-2. Link the hypothesis to its chain: set `root_node_ref` on its `hypotheses_to_add`
-   entry to the root node (`new_index_N` or an existing id). If you LATER flesh out
-   a hypothesis you already posited into a real chain, RE-ROOT it the same way — set
-   `root_node_ref` on its `hypotheses_to_update` entry to the new chain's deepest
-   root; do not start a second parallel chain for the same cause.
+2. Link the hypothesis to its chain — REQUIRED whenever you emit a root: set
+   `root_node_ref` on the hypothesis's `hypotheses_to_add` entry to that root
+   (`new_index_N` or an existing id), the SAME turn you emit the node. A root you
+   emit for a cause a hypothesis already names is the SAME chain — never leave it
+   unlinked beside a flat hypothesis for that cause (that double-records one cause).
+   If you LATER flesh out a hypothesis you already posited into a real chain, RE-ROOT
+   it the same way — set `root_node_ref` on its `hypotheses_to_update` entry to the
+   new chain's deepest root; do not start a second parallel chain for the same cause.
 3. Attach evidence to the RUNG it tests via `node_evidence_links`
    (node_ref, evidence_id_ref, stance, reasoning): the SAME causal_evidence you
    record for the hypothesis ALSO names the node it bears on, so a
@@ -1409,8 +1412,9 @@ Example (TLS handshake failures):
                          stance:"supports", reasoning:"openssl shows notAfter=02:00 today"}]
 
 Keep following the hypothesis→causal_evidence ordering above; the chain is the
-structure beneath it. Expand backward only as far as evidence warrants — leaving
-an unexplained root as a candidate is fine.
+structure beneath it. Expand backward only as far as evidence warrants — a root you
+cannot yet explain is fine to leave as a standalone candidate ONLY when no
+hypothesis names it; a root that IS a hypothesis's cause must be linked (step 2).
 """
 
 

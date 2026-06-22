@@ -621,3 +621,247 @@ def demote_disconfirmed_cause(case: Case) -> bool:
     p.root_cause_likelihood = 0.0
     p.cause_state = CauseState.UNKNOWN
     return True
+
+
+# ---------------------------------------------------------------------------
+# Orphan-chain resolution (B2c prerequisite: "every chain explaining D is
+# attached to exactly one hypothesis"). The divergence the prompt (step 2) does
+# not fully prevent: the LLM emits a real root->D chain but leaves it unlinked,
+# so the hypothesis runs its lifecycle on a degenerate bridge stub while a
+# parallel orphan chain describes the SAME cause (double-representation). This
+# deterministic post-pass runs each turn AFTER chain-ingest + bridge.
+# ---------------------------------------------------------------------------
+
+# A root whose statement restates a hypothesis at/above STRONG, with no other
+# hypothesis at/above AMBIGUOUS, is an UNAMBIGUOUS double-representation and is
+# re-attached automatically (T1). A weaker or contested match is left for an
+# LLM nudge (T2a) — a wrong auto-attach is itself an incorrect conclusion, so
+# "when unsure, don't". The scoring + thresholds mirror the sim analyzer's
+# ``_restatement_score`` / ``_RESTATEMENT_THRESHOLD``
+# (fm-sre-simulator/scripts/analyze_chain_emission.py) so engine and harness
+# agree on what "restates" means — keep them reconciled when either moves.
+RESTATEMENT_STRONG = 0.6
+RESTATEMENT_AMBIGUOUS = 0.4
+
+# Function/filler words dropped before comparing two statements. This is the
+# GENERAL base list; the sim analyzer may EXTEND it with scenario-specific noise
+# words (e.g. a recurring service name) for its own runs — those deliberately
+# stay out of the engine, which must not bake any one scenario's vocabulary in.
+_RESTATEMENT_STOPWORDS = {
+    "a",
+    "an",
+    "the",
+    "is",
+    "are",
+    "was",
+    "were",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "for",
+    "and",
+    "or",
+    "that",
+    "this",
+    "it",
+    "its",
+    "by",
+    "with",
+    "as",
+    "from",
+    "has",
+    "have",
+    "had",
+    "be",
+    "been",
+    "into",
+    "not",
+    "but",
+    "which",
+    "when",
+    "then",
+    "so",
+    "new",
+    "version",
+    "service",
+    "application",
+}
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Lowercased content tokens (filler words dropped) for comparing whether
+    two statements describe the same cause."""
+    raw = "".join(
+        c.lower() if (c.isalnum() or c in ".-_:/") else " " for c in (text or "")
+    )
+    return {t for t in raw.split() if len(t) >= 2 and t not in _RESTATEMENT_STOPWORDS}
+
+
+def restatement_score(a: str, b: str) -> float:
+    """How strongly statement ``a`` restates ``b`` (0..1): the max of Jaccard and
+    the two containments, so a specific elaboration largely covered by a more
+    general statement (or vice versa) still scores high. Fuzzy by nature."""
+    ta, tb = _content_tokens(a), _content_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    if not inter:
+        return 0.0
+    jaccard = inter / len(ta | tb)
+    return max(jaccard, inter / len(ta), inter / len(tb))
+
+
+# A T1 auto-attach needs at least this many shared content tokens. The score
+# alone is not enough: a 1–2 token statement fully contained in another yields
+# containment 1.0 (a STRONG score) on a single coincidental word, which would
+# auto-attach on flimsy evidence. Requiring a substantive overlap keeps the
+# deterministic re-root honest ("when unsure, don't") without touching the
+# shared thresholds.
+_MIN_SHARED_TOKENS_FOR_REATTACH = 2
+
+
+def _substantive_overlap(a: str, b: str) -> bool:
+    """True when ``a`` and ``b`` share enough content tokens that a STRONG score
+    reflects real overlap, not a single-word containment artifact."""
+    return (
+        len(_content_tokens(a) & _content_tokens(b)) >= _MIN_SHARED_TOKENS_FOR_REATTACH
+    )
+
+
+def _referenced_node_ids(case: Case) -> set[str]:
+    """Every node id that lies on some hypothesis path or is a hypothesis root —
+    the single definition of "load-bearing" used by both the GC and the
+    orphan-resolution post-pass."""
+    referenced: set[str] = set()
+    for h in case.hypotheses.values():
+        if h.root_node_id:
+            referenced.add(h.root_node_id)
+        referenced.update(h.path or [])
+    return referenced
+
+
+def prune_abandoned_nodes(case: Case, abandoned_node_ids: list[str]) -> None:
+    """Drop the nodes of a chain abandoned by a hypothesis re-root, but only the
+    ones now dead — referenced by no hypothesis (as a root or on a path). The
+    PROBLEM node D is never collected (it anchors every chain). Edges are pruned
+    to those whose endpoints both survive, so a surviving node's connectivity is
+    never severed. No-op for any node still load-bearing for another hypothesis.
+    """
+    referenced = _referenced_node_ids(case)
+    for node_id in abandoned_node_ids:
+        node = case.causal_nodes.get(node_id)
+        if node is None or node.node_type == NodeType.PROBLEM:
+            continue  # keep D; skip already-gone
+        if node_id in referenced:
+            continue  # still load-bearing for some hypothesis
+        case.causal_nodes.pop(node_id, None)
+    case.causal_edges[:] = [
+        e
+        for e in case.causal_edges
+        if e.cause_node_id in case.causal_nodes
+        and e.effect_node_id in case.causal_nodes
+    ]
+
+
+def _hypothesis_lacks_real_chain(hyp: "Hypothesis") -> bool:
+    """True when the hypothesis is flat or carries only a degenerate bridge stub
+    (a 2-node root->D path). Re-attaching only such a hypothesis avoids
+    clobbering one that already owns a real multi-rung chain — that case is a
+    genuine separate representation, left for an LLM nudge instead."""
+    return not hyp.path or len(hyp.path) <= 2
+
+
+def resolve_orphan_chains(case: Case) -> list[dict]:
+    """Resolve emitted chains the LLM left unlinked (the B2c invariant: every
+    chain explaining D attaches to exactly one hypothesis). Run AFTER chain
+    ingest + bridge.
+
+    For each ORPHAN root (a ROOT node on no hypothesis path, anchoring a chain
+    that reaches D), score its statement against every hypothesis:
+
+    - **T1 — deterministic re-attach.** Exactly one hypothesis restates it
+      ``>= RESTATEMENT_STRONG`` with no other ``>= RESTATEMENT_AMBIGUOUS``, and
+      that hypothesis lacks a real chain of its own: re-root it onto the orphan
+      chain and GC its abandoned stub. Mutates the graph in place.
+    - **T2a — ambiguous.** The orphan restates a hypothesis but not
+      unambiguously (best in ``[AMBIGUOUS, STRONG)``, or two-plus hypotheses
+      ``>= AMBIGUOUS``, or the sole strong match already owns a real chain):
+      returned for the caller to surface as a one-turn LLM nudge. NOT
+      auto-resolved.
+    - **benign.** Matches no hypothesis (best ``< AMBIGUOUS``): left as a
+      standalone candidate root ("an unexplained candidate root is fine").
+
+    Returns the ambiguous orphans (each ``{root_id, statement,
+    candidate_hypotheses}``) for T2a; T1 re-attachments are applied in place.
+    """
+    if not any(n.node_type == NodeType.PROBLEM for n in case.causal_nodes.values()):
+        return []
+
+    # ``referenced`` is the set of load-bearing nodes; it only changes when a T1
+    # re-attach below mutates a hypothesis path, so compute it once and refresh
+    # it only after an actual re-attach (not every iteration). Snapshot the
+    # orphan-root candidates up front; a prior re-attach may GC or adopt a later
+    # candidate, so re-check existence/membership per root.
+    referenced = _referenced_node_ids(case)
+    orphan_root_ids = [
+        nid
+        for nid, n in case.causal_nodes.items()
+        if n.node_type == NodeType.ROOT and nid not in referenced
+    ]
+
+    # Hypotheses already re-rooted in THIS pass — excluded from later scoring so
+    # one orphan cannot re-attach a hypothesis a previous orphan already took
+    # (no churn), and an already-taken hypothesis cannot inflate another orphan's
+    # ambiguity count and wrongly downgrade its clean match to a nudge.
+    adopted: set[str] = set()
+    ambiguous: list[dict] = []
+    for root_id in orphan_root_ids:
+        node = case.causal_nodes.get(root_id)
+        if node is None or root_id in referenced:
+            continue  # GC'd or adopted onto a path by a prior re-attach
+        path = chain_path_to_problem(root_id, case)
+        if not path:
+            continue  # open chain not yet anchored to D — leave it
+
+        scored = [
+            (s, h)
+            for h in case.hypotheses.values()
+            if h.hypothesis_id not in adopted
+            and (s := restatement_score(node.statement, h.statement))
+            >= RESTATEMENT_AMBIGUOUS
+        ]
+        if not scored:
+            continue  # benign standalone candidate root
+
+        # T1: exactly one hypothesis matches (so the sole match is also the only
+        # one >= STRONG, since STRONG > AMBIGUOUS), it owns no real chain, and the
+        # overlap is substantive (not a single-word containment artifact).
+        if (
+            len(scored) == 1
+            and scored[0][0] >= RESTATEMENT_STRONG
+            and _hypothesis_lacks_real_chain(scored[0][1])
+            and _substantive_overlap(node.statement, scored[0][1].statement)
+        ):
+            hyp = scored[0][1]
+            old_path = hyp.path or []
+            hyp.root_node_id = root_id
+            hyp.path = path
+            prune_abandoned_nodes(case, old_path)
+            adopted.add(hyp.hypothesis_id)
+            referenced = _referenced_node_ids(case)  # graph changed — refresh
+            continue
+
+        # T2a: matched but ambiguous (or the strong match already owns a chain).
+        ambiguous.append(
+            {
+                "root_id": root_id,
+                "statement": node.statement,
+                "candidate_hypotheses": [
+                    h.statement
+                    for _, h in sorted(scored, key=lambda sh: sh[0], reverse=True)
+                ],
+            }
+        )
+    return ambiguous

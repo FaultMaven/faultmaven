@@ -511,3 +511,75 @@ async def test_causal_graph_roundtrip(pg_repo):
     fs = fetched.solutions[0]
     assert fs.node_id == root.node_id
     assert fs.quadrant == InterventionQuadrant.REMEDIATION
+
+
+async def test_pruned_causal_graph_does_not_resurrect(pg_repo):
+    """On real PG: a node/edge removed in memory (e.g. a bridge stub GC'd by a
+    hypothesis re-root) must be deleted from the DB on save, not survive the
+    additive upsert and resurrect on the next load. Covers both a stale node and
+    a stale edge whose endpoints both survive (not caught by the FK cascade)."""
+    session = pg_repo.db
+    org_id = f"org_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_organizations(session, [org_id])
+    await seed_users(session, [user_id])
+
+    case = _make_case(org_id, user_id)
+    d = CausalNode(
+        statement="Checkout returns 500s",
+        node_type=NodeType.PROBLEM,
+        generated_at_turn=0,
+    )
+    stub = CausalNode(
+        statement="config drift on the gateway",
+        node_type=NodeType.ROOT,
+        generated_at_turn=1,
+    )
+    root = CausalNode(
+        statement="a leaked database connection",
+        node_type=NodeType.ROOT,
+        generated_at_turn=2,
+    )
+    inter = CausalNode(
+        statement="the connection pool is exhausted",
+        node_type=NodeType.INTERMEDIATE,
+        generated_at_turn=2,
+    )
+    case.causal_nodes = {n.node_id: n for n in (d, stub, root, inter)}
+    shortcut = CausalEdge(
+        cause_node_id=root.node_id, effect_node_id=d.node_id, created_at_turn=2
+    )
+    case.causal_edges = [
+        CausalEdge(
+            cause_node_id=stub.node_id, effect_node_id=d.node_id, created_at_turn=1
+        ),
+        CausalEdge(
+            cause_node_id=root.node_id,
+            effect_node_id=inter.node_id,
+            created_at_turn=2,
+        ),
+        CausalEdge(
+            cause_node_id=inter.node_id, effect_node_id=d.node_id, created_at_turn=2
+        ),
+        shortcut,  # root->D direct edge; both endpoints survive the prune below
+    ]
+    await pg_repo.save(case)
+    fetched = await pg_repo.get(case.case_id)
+    assert len(fetched.causal_nodes) == 4
+    assert len(fetched.causal_edges) == 4
+
+    # GC the stub node (+ its edge) and drop the surviving-endpoint shortcut edge.
+    del fetched.causal_nodes[stub.node_id]
+    fetched.causal_edges = [
+        e
+        for e in fetched.causal_edges
+        if e.cause_node_id != stub.node_id and e.edge_id != shortcut.edge_id
+    ]
+    await pg_repo.save(fetched)
+
+    reloaded = await pg_repo.get(case.case_id)
+    assert stub.node_id not in reloaded.causal_nodes  # did NOT resurrect
+    assert len(reloaded.causal_nodes) == 3
+    assert len(reloaded.causal_edges) == 2
+    assert all(e.cause_node_id != stub.node_id for e in reloaded.causal_edges)
+    assert all(e.edge_id != shortcut.edge_id for e in reloaded.causal_edges)

@@ -40,6 +40,8 @@ from faultmaven.core.investigation.causal_graph import (
     demote_disconfirmed_cause,
     ingest_emitted_chain,
     promote_grounded_chain_root,
+    prune_abandoned_nodes,
+    resolve_orphan_chains,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
@@ -5731,32 +5733,34 @@ class MilestoneEngine:
 
     @staticmethod
     def _gc_orphan_chain(case: "Case", abandoned_node_ids: list) -> None:
-        """Drop the nodes of a chain abandoned by a hypothesis re-root, but only
-        the ones now dead — referenced by no hypothesis (as a root or on a path).
-        Generalizes the degenerate-stub case (a single root→D) to a full abandoned
-        multi-rung chain, so re-rooting away from a real chain does not leave its
-        intermediates orphaned. The PROBLEM node D is never collected (it anchors
-        every chain). Edges are pruned to those whose endpoints both survive, so a
-        surviving node's connectivity is never severed. No-op for any node still
-        load-bearing for another hypothesis."""
-        referenced = set()
-        for h in case.hypotheses.values():
-            if h.root_node_id:
-                referenced.add(h.root_node_id)
-            referenced.update(h.path or [])
-        for node_id in abandoned_node_ids:
-            node = case.causal_nodes.get(node_id)
-            if node is None or node.node_type == NodeType.PROBLEM:
-                continue  # keep D; skip already-gone
-            if node_id in referenced:
-                continue  # still load-bearing for some hypothesis
-            case.causal_nodes.pop(node_id, None)
-        case.causal_edges[:] = [
-            e
-            for e in case.causal_edges
-            if e.cause_node_id in case.causal_nodes
-            and e.effect_node_id in case.causal_nodes
+        """Drop the nodes of a chain abandoned by a hypothesis re-root that are
+        now dead. Thin delegate to the pure ``prune_abandoned_nodes`` (shared
+        with the orphan-chain resolution post-pass)."""
+        prune_abandoned_nodes(case, abandoned_node_ids)
+
+    @staticmethod
+    def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> None:
+        """Run the orphan-chain resolution post-pass. ``resolve_orphan_chains``
+        re-attaches any UNAMBIGUOUS double-representation in place (T1); for the
+        ambiguous remainder it returns the orphan + its candidate hypotheses,
+        which we surface to the LLM next turn via ``system_feedback`` (T2a) so it
+        re-roots or declares the chain separate — the engine does not guess."""
+        ambiguous = resolve_orphan_chains(case)
+        if not ambiguous:
+            return
+        lines = [
+            "Unlinked causal chain(s) may restate an existing hypothesis. If a "
+            "chain and a hypothesis are the SAME cause, re-root the hypothesis "
+            "onto the chain (set its root_node_ref); if they are different "
+            "causes, keep them separate:"
         ]
+        for orphan in ambiguous[:3]:
+            cands = "; ".join(orphan["candidate_hypotheses"][:2])
+            lines.append(
+                f"- chain root '{orphan['statement'][:80]}' ~ hypothesis '{cands[:120]}'"
+            )
+        current = metadata.get("system_feedback", "") or ""
+        metadata["system_feedback"] = "\n".join([current, *lines]).strip()
 
     async def _apply_investigation_updates(
         self,
@@ -6417,6 +6421,13 @@ class MilestoneEngine:
         if get_settings().features.enable_hypothesis_chain_emission:
             self._apply_chain_emission(case, updates, metadata)
         bridge_flat_hypotheses_to_graph(case)
+        if get_settings().features.enable_hypothesis_chain_emission:
+            # Orphan-chain resolution (B2c invariant: every chain explaining D is
+            # attached to exactly one hypothesis). T1 re-attaches an unambiguous
+            # double-representation in place; any ambiguous orphan is surfaced to
+            # the LLM as a one-turn nudge (T2a) to re-root it or declare it
+            # separate, rather than guessing.
+            self._nudge_ambiguous_orphan_chains(case, metadata)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).

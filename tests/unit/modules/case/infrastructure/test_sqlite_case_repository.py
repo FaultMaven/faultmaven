@@ -2067,3 +2067,111 @@ class TestCausalGraphRoundTrip:
         fs = fetched.solutions[0]
         assert fs.node_id == root.node_id
         assert fs.quadrant == InterventionQuadrant.REMEDIATION
+
+    @pytest.mark.asyncio
+    async def test_pruned_node_does_not_resurrect(self, repository):
+        """A node removed in memory (e.g. a bridge stub GC'd by a hypothesis
+        re-root) must be DELETED from the DB on save, not survive the additive
+        upsert and resurrect on the next load."""
+        case = _make_case()
+        d = CausalNode(
+            statement="Checkout returns 500s",
+            node_type=NodeType.PROBLEM,
+            generated_at_turn=0,
+        )
+        stub = CausalNode(
+            statement="config drift on the gateway",
+            node_type=NodeType.ROOT,
+            generated_at_turn=1,
+        )
+        root = CausalNode(
+            statement="a leaked database connection",
+            node_type=NodeType.ROOT,
+            generated_at_turn=2,
+        )
+        inter = CausalNode(
+            statement="the connection pool is exhausted",
+            node_type=NodeType.INTERMEDIATE,
+            generated_at_turn=2,
+        )
+        case.causal_nodes = {n.node_id: n for n in (d, stub, root, inter)}
+        case.causal_edges = [
+            CausalEdge(
+                cause_node_id=stub.node_id, effect_node_id=d.node_id, created_at_turn=1
+            ),
+            CausalEdge(
+                cause_node_id=root.node_id,
+                effect_node_id=inter.node_id,
+                created_at_turn=2,
+            ),
+            CausalEdge(
+                cause_node_id=inter.node_id,
+                effect_node_id=d.node_id,
+                created_at_turn=2,
+            ),
+        ]
+        await repository.save(case)
+        fetched = await repository.get(case.case_id)
+        assert len(fetched.causal_nodes) == 4
+        assert len(fetched.causal_edges) == 3
+
+        # GC the stub root and its edge in memory (as a T1 re-root would).
+        del fetched.causal_nodes[stub.node_id]
+        fetched.causal_edges = [
+            e for e in fetched.causal_edges if e.cause_node_id != stub.node_id
+        ]
+        await repository.save(fetched)
+
+        reloaded = await repository.get(case.case_id)
+        assert stub.node_id not in reloaded.causal_nodes  # did NOT resurrect
+        assert len(reloaded.causal_nodes) == 3
+        assert len(reloaded.causal_edges) == 2
+        assert all(e.cause_node_id != stub.node_id for e in reloaded.causal_edges)
+
+    @pytest.mark.asyncio
+    async def test_pruned_edge_with_surviving_endpoints_is_deleted(self, repository):
+        """An edge removed in memory whose BOTH endpoints survive is not caught
+        by the node-delete FK cascade, so save must delete it explicitly."""
+        case = _make_case()
+        d = CausalNode(
+            statement="Checkout returns 500s",
+            node_type=NodeType.PROBLEM,
+            generated_at_turn=0,
+        )
+        root = CausalNode(
+            statement="a leaked database connection",
+            node_type=NodeType.ROOT,
+            generated_at_turn=1,
+        )
+        inter = CausalNode(
+            statement="the connection pool is exhausted",
+            node_type=NodeType.INTERMEDIATE,
+            generated_at_turn=1,
+        )
+        case.causal_nodes = {n.node_id: n for n in (d, root, inter)}
+        keep_a = CausalEdge(
+            cause_node_id=root.node_id,
+            effect_node_id=inter.node_id,
+            created_at_turn=1,
+        )
+        keep_b = CausalEdge(
+            cause_node_id=inter.node_id, effect_node_id=d.node_id, created_at_turn=1
+        )
+        # A direct root->D shortcut we will later drop while root and D survive.
+        shortcut = CausalEdge(
+            cause_node_id=root.node_id, effect_node_id=d.node_id, created_at_turn=1
+        )
+        case.causal_edges = [keep_a, keep_b, shortcut]
+        await repository.save(case)
+        fetched = await repository.get(case.case_id)
+        assert len(fetched.causal_edges) == 3
+
+        fetched.causal_edges = [
+            e for e in fetched.causal_edges if e.edge_id != shortcut.edge_id
+        ]
+        await repository.save(fetched)
+
+        reloaded = await repository.get(case.case_id)
+        assert len(reloaded.causal_nodes) == 3  # both endpoints survive
+        assert len(reloaded.causal_edges) == 2
+        assert all(e.edge_id != shortcut.edge_id for e in reloaded.causal_edges)
