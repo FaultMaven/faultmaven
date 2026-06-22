@@ -5351,7 +5351,9 @@ class MilestoneEngine:
             from faultmaven.modules.case.domain.models import (
                 PreliminaryUrgency as DomainPreliminaryUrgency,
             )
-            from faultmaven.modules.case.domain.models import UrgencyLevel
+            from faultmaven.modules.case.domain.models import (
+                UrgencyLevel,
+            )
 
             case.inquiry.preliminary_urgency = DomainPreliminaryUrgency(
                 level=UrgencyLevel(
@@ -5621,6 +5623,16 @@ class MilestoneEngine:
                     )
                 continue
 
+            # Re-root request (chain mode): record the ref so the chain-emission
+            # linking pass re-points this existing hypothesis onto the named chain
+            # root, replacing the placeholder root the bridge gave it. Applied
+            # there (not here) because the target node is commonly emitted this
+            # same turn in causal_nodes_to_add and must be ingested first.
+            reroot = getattr(upd, "root_node_ref", None)
+            if reroot:
+                metadata.setdefault("hyp_root_refs", {})[h_id] = reroot
+                metadata["hypotheses_updated"].append(h_id)
+
             # Non-REFUTED state transitions are intentionally not applied here.
             # Likelihood updates go through the canonical mutator.
             if upd.likelihood is not None:
@@ -5630,7 +5642,8 @@ class MilestoneEngine:
                     current_turn,
                     reason="LLM hypothesis update",
                 )
-                metadata["hypotheses_updated"].append(h_id)
+                if not reroot:
+                    metadata["hypotheses_updated"].append(h_id)
 
         if feedback:
             current = metadata.get("system_feedback", "") or ""
@@ -5689,14 +5702,42 @@ class MilestoneEngine:
             )
 
         # Link each hypothesis to its chain root via the explicit
-        # hyp_id -> root_node_ref map recorded at creation (no positional zip).
+        # hyp_id -> root_node_ref map (recorded at creation, or on a re-root
+        # update when the LLM elaborates a previously-posited hypothesis into a
+        # real chain). Re-rooting abandons the hypothesis's old placeholder root;
+        # garbage-collect that stub if it is left dangling, so the elaborated
+        # chain does not co-exist with the degenerate bridge stub for the same
+        # cause (the double-representation / orphan-chain divergence).
         for hyp_id, ref in metadata.get("hyp_root_refs", {}).items():
             root_id = _resolve_root(ref)
             hyp = case.hypotheses.get(hyp_id)
             if root_id is None or hyp is None:
                 continue
+            old_root = hyp.root_node_id
             hyp.root_node_id = root_id
             hyp.path = chain_path_to_problem(root_id, case)
+            if old_root and old_root != root_id:
+                self._gc_orphan_stub(case, old_root)
+
+    @staticmethod
+    def _gc_orphan_stub(case: "Case", node_id: str) -> None:
+        """Drop a causal node abandoned by a hypothesis re-root, but ONLY if it is
+        now dead — referenced by no hypothesis (as a root or on a path). This
+        collects the degenerate root→D bridge stub a hypothesis was projected onto
+        before its real chain was emitted, so the stub does not linger alongside
+        the elaborated chain. No-op if the node is still load-bearing for any
+        hypothesis."""
+        if node_id not in case.causal_nodes:
+            return
+        for h in case.hypotheses.values():
+            if h.root_node_id == node_id or node_id in (h.path or []):
+                return  # still referenced — leave it in place
+        case.causal_nodes.pop(node_id, None)
+        case.causal_edges[:] = [
+            e
+            for e in case.causal_edges
+            if e.cause_node_id != node_id and e.effect_node_id != node_id
+        ]
 
     async def _apply_investigation_updates(
         self,

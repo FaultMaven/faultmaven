@@ -432,6 +432,16 @@ class HypothesisUpdate(BaseModel):
             "statuses. state=REFUTED and refutation_reason travel together."
         ),
     )
+    root_node_ref: Optional[str] = Field(
+        default=None,
+        description=(
+            "Chain mode (optional): RE-ROOT this existing hypothesis onto a causal "
+            "node — an existing node id (cn_...) or 'new_index_N' of a node in "
+            "causal_nodes_to_add. Use when you flesh out a hypothesis you already "
+            "posited into a real chain: point it at the chain's deepest ROOT so it "
+            "leaves its placeholder root. Not for REFUTED entries."
+        ),
+    )
 
     @field_validator("state", mode="before")
     @classmethod
