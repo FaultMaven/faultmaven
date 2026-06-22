@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph import bridge_flat_hypotheses_to_graph
+from _bridge_fixture import bridge_flat_hypotheses_to_graph
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,

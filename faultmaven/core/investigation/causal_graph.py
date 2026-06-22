@@ -184,7 +184,7 @@ def deductively_validated(
 
 
 # ---------------------------------------------------------------------------
-# TRANSITIONAL bridge (Option-1): project flat hypotheses onto the graph
+# Graph anchoring + path walking (the PROBLEM node D + root->D paths)
 # ---------------------------------------------------------------------------
 
 
@@ -412,61 +412,6 @@ def ingest_emitted_chain(
         )
 
     return created
-
-
-def bridge_flat_hypotheses_to_graph(case: Case) -> None:
-    """Populate the causal graph from the case's *flat* hypotheses so the
-    chain-based engine (cause_state-over-chains, M6 demotion) has a graph to
-    work on WITHOUT the LLM emitting chains yet.
-
-    **Transitional.** This bridge is removed once the prompt contract (PR B)
-    makes the LLM emit real multi-rung chains directly. Each flat ``Hypothesis``
-    becomes a degenerate 2-node chain — a ROOT node (the hypothesis statement)
-    → the single PROBLEM node ``D`` — carrying the hypothesis's evidence on the
-    root. Projected roots are left ``CANDIDATE``: validation/demotion is the
-    engine's job (a later slice promotes a *grounded* root, fabricating the
-    actionable/method that the flat model doesn't track — kept out of this pure
-    structural projection on purpose).
-
-    Idempotent: a hypothesis that already carries a ``root_node_id`` is skipped,
-    and the PROBLEM node is created at most once. No-op until a problem
-    statement exists to anchor ``D``.
-    """
-    # 1. Ensure the single PROBLEM node D (seeded from the confirmed problem).
-    problem_node = seed_problem_node(case)
-    if problem_node is None:
-        return  # nothing to anchor on yet
-    d_id = problem_node.node_id
-
-    # 2. One root→D chain per not-yet-bridged flat hypothesis.
-    for hyp in case.hypotheses.values():
-        if hyp.root_node_id:
-            continue
-        root = CausalNode(
-            statement=hyp.statement[:500],
-            node_type=NodeType.ROOT,
-            category=hyp.category,
-            generated_at_turn=hyp.generated_at_turn,
-            evidence_links=[
-                NodeEvidenceLink(
-                    evidence_id=link.evidence_id,
-                    stance=link.stance,
-                    reasoning=link.reasoning,
-                    stance_confidence=link.stance_confidence,
-                )
-                for link in hyp.evidence_links
-            ],
-        )
-        case.causal_nodes[root.node_id] = root
-        case.causal_edges.append(
-            CausalEdge(
-                cause_node_id=root.node_id,
-                effect_node_id=d_id,
-                created_at_turn=hyp.generated_at_turn,
-            )
-        )
-        hyp.root_node_id = root.node_id
-        hyp.path = [root.node_id, d_id]
 
 
 def promote_grounded_chain_root(case: Case) -> bool:

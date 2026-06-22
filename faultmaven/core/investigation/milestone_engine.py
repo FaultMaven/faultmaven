@@ -35,7 +35,6 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.causal_graph import (
-    bridge_flat_hypotheses_to_graph,
     chain_path_to_problem,
     demote_disconfirmed_cause,
     ingest_emitted_chain,
@@ -800,10 +799,14 @@ def _recompute_assessment_state(case: "Case") -> None:
         else:
             p.cause_state = CauseState.UNKNOWN
     else:
-        # Option-1 mirror: reflect the grounding onto the chain graph (promote
-        # the validated cause's root node) so the failed-treatment demotion (M6)
-        # has a validated root to act on. Conservative — only on an explicit
-        # validated_hypothesis_id. Transitional (removed with PR B).
+        # Mirror the grounding onto the chain graph (promote the validated
+        # cause's root node) so the failed-treatment demotion (M6) has a
+        # validated root to act on. Conservative — only on an explicit
+        # validated_hypothesis_id, and a no-op when that hypothesis has no
+        # emitted chain (post-B2c the graph is emission-only; cause_state still
+        # derives from flat grounding regardless). The hardcoded EMPIRICAL grade
+        # here is a known forward hazard, reworked when validation reads the
+        # chain (methodology §9.2).
         promote_grounded_chain_root(case)
 
     if p.solution_state != SolutionState.SELECTED:
@@ -6410,18 +6413,16 @@ class MilestoneEngine:
                 f"(total: {len(case.investigation_journal)})"
             )
 
-        # Populate the causal graph. When chain emission is on, ingest the LLM's
-        # emitted chain (lazy backward expansion) and link each hypothesis to its
-        # root. The bridge then ALWAYS runs as a floor — idempotent, it skips
-        # hypotheses already carrying a root_node_id and degenerate-projects only
-        # the still-flat ones, so cause_state never regresses during the
-        # transition. A later slice removes the bridge once emission is reliable.
+        # Populate the causal graph from the LLM's emitted chain (lazy backward
+        # expansion), then resolve any chain the LLM left unlinked. The graph is
+        # emission-only: the transitional flat->chain bridge (PR B2c) is gone, so
+        # cause_state/M6 derive from flat grounding when emission is off, and from
+        # real emitted chains when it is on. (cause_state derivation never reads
+        # the graph for truth — see _recompute_assessment_state.)
         from faultmaven.config.settings import get_settings
 
         if get_settings().features.enable_hypothesis_chain_emission:
             self._apply_chain_emission(case, updates, metadata)
-        bridge_flat_hypotheses_to_graph(case)
-        if get_settings().features.enable_hypothesis_chain_emission:
             # Orphan-chain resolution (B2c invariant: every chain explaining D is
             # attached to exactly one hypothesis). T1 re-attaches an unambiguous
             # double-representation in place; any ambiguous orphan is surfaced to

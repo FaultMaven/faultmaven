@@ -12,12 +12,14 @@ is attached to exactly one hypothesis.
 
 import pytest
 
+from _bridge_fixture import bridge_flat_hypotheses_to_graph
+
 from faultmaven.core.investigation.causal_graph import (
     RESTATEMENT_AMBIGUOUS,
     RESTATEMENT_STRONG,
-    bridge_flat_hypotheses_to_graph,
     resolve_orphan_chains,
     restatement_score,
+    seed_problem_node,
 )
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
@@ -166,6 +168,29 @@ def test_t1_reattaches_unambiguous_double_representation_and_gcs_stub():
     assert len(hyp.path) == 3  # root -> intermediate -> D
     # The abandoned bridge stub is GC'd; no orphan roots remain.
     assert stub_root not in case.causal_nodes
+    assert _orphan_roots(case) == []
+
+
+def test_t1_reattaches_a_flat_hypothesis_onto_orphan_chain():
+    # Post-B2c (no bridge), a hypothesis the LLM emits a chain for but leaves
+    # unlinked is FLAT (no stub), not bridge-projected. T1 must still re-attach
+    # the flat hypothesis onto the orphan chain — there is simply no old stub to
+    # GC. This is the real production scenario after the bridge removal.
+    hyp = _hyp("connection pool exhausted by a leaked database connection")
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    seed_problem_node(case)  # only D is engine-seeded; the hypothesis stays flat
+    assert hyp.root_node_id is None
+
+    orphan_root = _add_orphan_chain(
+        case, "a leaked database connection exhausts the pool", multi_rung=True
+    )
+
+    ambiguous = resolve_orphan_chains(case)
+
+    assert ambiguous == []
+    assert hyp.root_node_id == orphan_root
+    assert len(hyp.path) == 3  # root -> intermediate -> D
     assert _orphan_roots(case) == []
 
 

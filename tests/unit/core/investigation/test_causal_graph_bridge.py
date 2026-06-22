@@ -6,8 +6,9 @@ the chain-based engine has a populated graph before the LLM emits chains.
 
 import pytest
 
+from _bridge_fixture import bridge_flat_hypotheses_to_graph
+
 from faultmaven.core.investigation.causal_graph import (
-    bridge_flat_hypotheses_to_graph,
     demote_disconfirmed_cause,
     promote_grounded_chain_root,
 )
