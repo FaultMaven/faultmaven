@@ -1435,6 +1435,16 @@ class FeatureSettings(BaseSettings):
     enable_multi_agent: bool = Field(default=False)
     enable_workflow_optimization: bool = Field(default=False)
 
+    # Two-Dimensional Hypothesis Methodology: when on, the LLM emits causal
+    # chains (causal_nodes_to_add / edges / node_evidence_links) and the engine
+    # ingests them via causal_graph.ingest_emitted_chain, linking each hypothesis
+    # to its root. The transitional flat->graph bridge still runs as a floor
+    # (it degenerate-projects any flat hypothesis the LLM did not chain), so
+    # cause_state never regresses; a later slice removes the bridge once emission
+    # is reliable. Off by default — the carefully-tuned baseline prompt +
+    # flat-hypothesis flow are unchanged when off.
+    enable_hypothesis_chain_emission: bool = Field(default=False)
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

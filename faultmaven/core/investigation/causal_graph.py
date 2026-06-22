@@ -265,6 +265,7 @@ def ingest_emitted_chain(
     edges_to_add: list,
     node_evidence: list,
     current_turn: int,
+    evidence_created_ids: list | None = None,
 ) -> list[str | None]:
     """Build the causal graph from a turn's LLM-emitted chain fragments (lazy
     backward expansion, methodology §5/S3). Pure: no I/O, no LLM.
@@ -278,7 +279,13 @@ def ingest_emitted_chain(
     - ``edges_to_add`` — explicit ``cause``/``effect`` refs (+ ``and_group``,
       ``reasoning``) for convergence (S2) beyond a node's own ``produces``.
     - ``node_evidence`` — ``node_ref``, ``evidence_id``/``evidence_id_ref``,
-      ``stance``, ``reasoning``, ``stance_confidence``.
+      ``stance``, ``reasoning``, ``stance_confidence``. The evidence ref may be a
+      real ``ev_...`` id or ``'new_index_N'`` referencing evidence created this
+      turn (resolved via ``evidence_created_ids``).
+
+    ``evidence_created_ids`` are the evidence ids added earlier this turn (the
+    caller's ``metadata['evidence_added']``), against which ``new_index_N``
+    evidence refs resolve — without it, same-turn rung evidence is dropped.
 
     Returns the created node ids in emission order (``None`` for any skipped
     node, so ``new_index_N`` indices stay aligned), so the caller can resolve
@@ -289,6 +296,7 @@ def ingest_emitted_chain(
     engine-seeded, never emitted) are skipped; ``D`` is seeded if a problem
     statement exists, otherwise ingestion is a no-op.
     """
+    evidence_created_ids = evidence_created_ids or []
     problem = seed_problem_node(case)
     if problem is None:
         return []
@@ -366,11 +374,28 @@ def ingest_emitted_chain(
 
     # Node-targeted evidence (rung-level stance).
     existing_ev = {ev.evidence_id for ev in case.evidence}
+
+    def _resolve_ev(ref: str | None) -> str | None:
+        # Evidence ref: a real ev_ id, or 'new_index_N' into this turn's evidence.
+        if not ref:
+            return None
+        if ref.startswith("new_index_"):
+            try:
+                idx = int(ref[len("new_index_") :])
+            except ValueError:
+                return None
+            return (
+                evidence_created_ids[idx]
+                if 0 <= idx < len(evidence_created_ids)
+                else None
+            )
+        return ref
+
     for link in node_evidence:
         nid = _resolve(getattr(link, "node_ref", None))
         node = case.causal_nodes.get(nid) if nid else None
-        ev_id = getattr(link, "evidence_id", None) or getattr(
-            link, "evidence_id_ref", None
+        ev_id = _resolve_ev(
+            getattr(link, "evidence_id", None) or getattr(link, "evidence_id_ref", None)
         )
         stance = getattr(link, "stance", None)
         if node is None or ev_id not in existing_ev or stance is None:
