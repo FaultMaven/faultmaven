@@ -405,9 +405,11 @@ class HypothesisToAdd(BaseModel):
     root_node_ref: Optional[str] = Field(
         default=None,
         description=(
-            "Chain mode (optional): the causal node that is this hypothesis's "
-            "ROOT cause — an existing node id (cn_...) or 'new_index_N' of a node "
-            "in causal_nodes_to_add. Links the hypothesis to its root→D chain."
+            "Chain mode: the causal node that is this hypothesis's ROOT cause — "
+            "an existing node id (cn_...) or 'new_index_N' of a node in "
+            "causal_nodes_to_add. When the CAUSAL CHAINS instructions are active, "
+            "set this for EVERY hypothesis; it links the hypothesis to its root→D "
+            "chain."
         ),
     )
 
@@ -435,11 +437,11 @@ class HypothesisUpdate(BaseModel):
     root_node_ref: Optional[str] = Field(
         default=None,
         description=(
-            "Chain mode (optional): RE-ROOT this existing hypothesis onto a causal "
-            "node — an existing node id (cn_...) or 'new_index_N' of a node in "
-            "causal_nodes_to_add. Use when you flesh out a hypothesis you already "
-            "posited into a real chain: point it at the chain's deepest ROOT so it "
-            "leaves its placeholder root. Not for REFUTED entries."
+            "Chain mode: RE-ROOT this existing hypothesis onto a causal node — an "
+            "existing node id (cn_...) or 'new_index_N' of a node in "
+            "causal_nodes_to_add. When the CAUSAL CHAINS instructions are active and "
+            "you deepen a hypothesis's cause, point it at the chain's deepest ROOT so "
+            "it leaves its placeholder root. Not for REFUTED entries."
         ),
     )
 

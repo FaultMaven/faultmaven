@@ -1372,8 +1372,11 @@ is obvious.
 # Appended to the DIAGNOSIS instructions by ``_select_diagnosis_block`` ONLY when
 # ``settings.features.enable_hypothesis_chain_emission`` is on, so the tuned
 # baseline prompt is byte-identical when the flag is off. It layers ON TOP of the
-# flat hypotheses_to_add + hypothesis-evidence ordering flow above (does not
-# replace it): the chain is the structure beneath the flat hypothesis.
+# flat hypotheses_to_add + hypothesis-evidence ordering flow above: the chain IS
+# the hypothesis's structure — every hypothesis carries its root cause as a node,
+# not optional scaffolding beside a flat guess. (The engine still tolerates an
+# unlinked hypothesis as a best-effort fallback — graceful degradation; the
+# prompt's job is to make rooting the norm.)
 _CHAIN_EMISSION_BLOCK = """
 **CAUSAL CHAINS (every hypothesis is a chain, not a flat guess):**
 A hypothesis is a CHAIN of cause→effect steps ending at the problem D. Its deepest
@@ -1419,6 +1422,11 @@ Build backward from D, one rung at a time — at minimum the root→D link, addi
 intermediate rungs as evidence warrants. Do NOT invent a full tree, or rungs or
 causes you have no basis for: the root is simply the deepest cause this hypothesis
 already claims, so representing it is naming what you posit, not guessing.
+
+The mandate is that every HYPOTHESIS has a root, NOT that every root has a
+hypothesis: a root you surface but no hypothesis yet names may stand alone as a
+candidate — do not force-link it to an unrelated hypothesis, and do not invent a
+hypothesis just to carry it.
 """
 
 
