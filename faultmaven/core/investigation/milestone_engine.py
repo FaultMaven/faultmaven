@@ -5704,39 +5704,58 @@ class MilestoneEngine:
         # Link each hypothesis to its chain root via the explicit
         # hyp_id -> root_node_ref map (recorded at creation, or on a re-root
         # update when the LLM elaborates a previously-posited hypothesis into a
-        # real chain). Re-rooting abandons the hypothesis's old placeholder root;
-        # garbage-collect that stub if it is left dangling, so the elaborated
-        # chain does not co-exist with the degenerate bridge stub for the same
-        # cause (the double-representation / orphan-chain divergence).
+        # real chain). Re-rooting abandons the hypothesis's old chain; collect any
+        # of its now-dead nodes so the elaborated chain does not co-exist with the
+        # degenerate bridge stub for the same cause (the double-representation /
+        # orphan-chain divergence).
         for hyp_id, ref in metadata.get("hyp_root_refs", {}).items():
             root_id = _resolve_root(ref)
             hyp = case.hypotheses.get(hyp_id)
             if root_id is None or hyp is None:
                 continue
             old_root = hyp.root_node_id
+            old_path = hyp.path or []
+            new_path = chain_path_to_problem(root_id, case)
+            # On a RE-ROOT (the hypothesis already had a root) only move it once
+            # the new chain actually reaches D. Abandoning a working [stub, D]
+            # link for an empty path would strand the hypothesis: the bridge
+            # floor that runs next skips it (root_node_id is set), so nothing
+            # restores the link. At creation (no prior root) an empty path is
+            # fine — there was no link to lose.
+            if old_root and old_root != root_id and not new_path:
+                continue
             hyp.root_node_id = root_id
-            hyp.path = chain_path_to_problem(root_id, case)
+            hyp.path = new_path
             if old_root and old_root != root_id:
-                self._gc_orphan_stub(case, old_root)
+                self._gc_orphan_chain(case, old_path)
 
     @staticmethod
-    def _gc_orphan_stub(case: "Case", node_id: str) -> None:
-        """Drop a causal node abandoned by a hypothesis re-root, but ONLY if it is
-        now dead — referenced by no hypothesis (as a root or on a path). This
-        collects the degenerate root→D bridge stub a hypothesis was projected onto
-        before its real chain was emitted, so the stub does not linger alongside
-        the elaborated chain. No-op if the node is still load-bearing for any
-        hypothesis."""
-        if node_id not in case.causal_nodes:
-            return
+    def _gc_orphan_chain(case: "Case", abandoned_node_ids: list) -> None:
+        """Drop the nodes of a chain abandoned by a hypothesis re-root, but only
+        the ones now dead — referenced by no hypothesis (as a root or on a path).
+        Generalizes the degenerate-stub case (a single root→D) to a full abandoned
+        multi-rung chain, so re-rooting away from a real chain does not leave its
+        intermediates orphaned. The PROBLEM node D is never collected (it anchors
+        every chain). Edges are pruned to those whose endpoints both survive, so a
+        surviving node's connectivity is never severed. No-op for any node still
+        load-bearing for another hypothesis."""
+        referenced = set()
         for h in case.hypotheses.values():
-            if h.root_node_id == node_id or node_id in (h.path or []):
-                return  # still referenced — leave it in place
-        case.causal_nodes.pop(node_id, None)
+            if h.root_node_id:
+                referenced.add(h.root_node_id)
+            referenced.update(h.path or [])
+        for node_id in abandoned_node_ids:
+            node = case.causal_nodes.get(node_id)
+            if node is None or node.node_type == NodeType.PROBLEM:
+                continue  # keep D; skip already-gone
+            if node_id in referenced:
+                continue  # still load-bearing for some hypothesis
+            case.causal_nodes.pop(node_id, None)
         case.causal_edges[:] = [
             e
             for e in case.causal_edges
-            if e.cause_node_id != node_id and e.effect_node_id != node_id
+            if e.cause_node_id in case.causal_nodes
+            and e.effect_node_id in case.causal_nodes
         ]
 
     async def _apply_investigation_updates(
