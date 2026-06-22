@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
@@ -331,6 +331,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
             await self._upsert_causal_edges(
                 case.case_id, case.causal_edges, organization_id
+            )
+            await self._reconcile_causal_graph(
+                case.case_id,
+                set(case.causal_nodes.keys()),
+                {e.edge_id for e in case.causal_edges},
             )
             await self._upsert_hypotheses(
                 case.case_id, case.hypotheses, organization_id
@@ -2476,6 +2481,39 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "created_at": link.analyzed_at,
                 },
             )
+
+    async def _reconcile_causal_graph(
+        self, case_id: str, node_ids: set[str], edge_ids: set[str]
+    ) -> None:
+        """Delete persisted causal nodes/edges no longer in the in-memory graph.
+
+        The upserts are additive, so a node/edge removed in memory (e.g. an
+        abandoned bridge stub GC'd by a hypothesis re-root, or any orphan-chain
+        resolution) would otherwise survive in the DB and RESURRECT on the next
+        load. This reconciles the persisted rows to the authoritative in-memory
+        set: stale edges are deleted explicitly (a pruned edge whose endpoints
+        both survive is not caught by the node-delete FK cascade), then stale
+        nodes (their causal_node_evidence + endpoint edges cascade away, and
+        solutions.node_id is SET NULL).
+
+        Guarded on a non-empty node set: ``save`` persists the FULL graph and
+        ``get`` loads it whole, so an empty set means a brand-new case with no
+        graph yet — never a partial load — and must not wipe a populated graph.
+        """
+        if not node_ids:
+            return
+        await self.db.execute(
+            text(
+                "DELETE FROM causal_edges WHERE case_id = :cid AND edge_id NOT IN :ids"
+            ).bindparams(bindparam("ids", expanding=True)),
+            {"cid": case_id, "ids": list(edge_ids) or [""]},
+        )
+        await self.db.execute(
+            text(
+                "DELETE FROM causal_nodes WHERE case_id = :cid AND node_id NOT IN :ids"
+            ).bindparams(bindparam("ids", expanding=True)),
+            {"cid": case_id, "ids": list(node_ids)},
+        )
 
     async def _upsert_causal_edges(
         self, case_id: str, edges: List[CausalEdge], organization_id: str
