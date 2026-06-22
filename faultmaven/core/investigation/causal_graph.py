@@ -12,9 +12,10 @@ Spec: docs/architecture/investigation-engine/two-dimensional-hypothesis-methodol
   - §7.1 / §7.1.1 (empirical vs deductive validation, strict exclusion)
 
 Contents: structural primitives (AND-proof, chain-root validation, deductive
-strict-exclusion); the transitional flat->graph bridge and grounded-root
-promotion (Option-1); and M6 counterfactual-disconfirmation demotion. Belief
-propagation (§6.1 / §9.4) is a follow-on.
+strict-exclusion); LLM-emitted-chain ingestion + orphan-chain resolution;
+grounded-root promotion; and M6 counterfactual-disconfirmation demotion. (The
+transitional flat->graph bridge was removed in PR B2c — the graph is now
+emission-only.) Belief propagation (§6.1 / §9.4) is a follow-on.
 """
 
 from __future__ import annotations
@@ -270,8 +271,8 @@ def ingest_emitted_chain(
     """Build the causal graph from a turn's LLM-emitted chain fragments (lazy
     backward expansion, methodology §5/S3). Pure: no I/O, no LLM.
 
-    Replaces the transitional bridge once the LLM emits chains directly. Each
-    item is a duck-typed schema object:
+    The sole source of the causal graph (the transitional bridge was removed in
+    PR B2c). Each item is a duck-typed schema object:
 
     - ``nodes_to_add`` — ``statement``, ``node_type``, optional ``produces``
       (the node it directly causes: an existing id, ``'D'``, or ``'new_index_N'``
@@ -569,12 +570,12 @@ def demote_disconfirmed_cause(case: Case) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Orphan-chain resolution (B2c prerequisite: "every chain explaining D is
-# attached to exactly one hypothesis"). The divergence the prompt (step 2) does
-# not fully prevent: the LLM emits a real root->D chain but leaves it unlinked,
-# so the hypothesis runs its lifecycle on a degenerate bridge stub while a
-# parallel orphan chain describes the SAME cause (double-representation). This
-# deterministic post-pass runs each turn AFTER chain-ingest + bridge.
+# Orphan-chain resolution (the invariant: "every chain explaining D is attached
+# to exactly one hypothesis"). The divergence the prompt (step 2) does not fully
+# prevent: the LLM emits a real root->D chain but leaves it unlinked, so the
+# hypothesis keeps running flat while a parallel orphan chain describes the SAME
+# cause (double-representation). This deterministic post-pass runs each turn
+# AFTER chain-ingest.
 # ---------------------------------------------------------------------------
 
 # A root whose statement restates a hypothesis at/above STRONG, with no other
@@ -711,17 +712,16 @@ def prune_abandoned_nodes(case: Case, abandoned_node_ids: list[str]) -> None:
 
 
 def _hypothesis_lacks_real_chain(hyp: "Hypothesis") -> bool:
-    """True when the hypothesis is flat or carries only a degenerate bridge stub
-    (a 2-node root->D path). Re-attaching only such a hypothesis avoids
-    clobbering one that already owns a real multi-rung chain — that case is a
-    genuine separate representation, left for an LLM nudge instead."""
+    """True when the hypothesis is flat or carries only a degenerate stub (a
+    2-node root->D path). Re-attaching only such a hypothesis avoids clobbering
+    one that already owns a real multi-rung chain — that case is a genuine
+    separate representation, left for an LLM nudge instead."""
     return not hyp.path or len(hyp.path) <= 2
 
 
 def resolve_orphan_chains(case: Case) -> list[dict]:
-    """Resolve emitted chains the LLM left unlinked (the B2c invariant: every
-    chain explaining D attaches to exactly one hypothesis). Run AFTER chain
-    ingest + bridge.
+    """Resolve emitted chains the LLM left unlinked (the invariant: every chain
+    explaining D attaches to exactly one hypothesis). Run AFTER chain ingest.
 
     For each ORPHAN root (a ROOT node on no hypothesis path, anchoring a chain
     that reaches D), score its statement against every hypothesis:

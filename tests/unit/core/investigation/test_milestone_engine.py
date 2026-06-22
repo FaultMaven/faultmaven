@@ -232,14 +232,22 @@ class TestMilestoneEngine:
 
     @pytest.mark.asyncio
     async def test_process_turn_does_not_auto_project_flat_hypotheses(
-        self, mock_llm, mock_repo, base_case
+        self, mock_llm, mock_repo, base_case, monkeypatch
     ):
         """Post-B2c: the transitional flat->chain bridge is gone, so a turn that
-        adds a flat hypothesis with chain emission OFF (the default) does NOT
-        populate the causal graph — it is emission-only. The hypothesis stays
-        flat; cause_state derives from flat grounding, not the graph."""
+        adds a flat hypothesis with chain emission OFF does NOT populate the
+        causal graph — it is emission-only. The hypothesis stays flat; cause_state
+        derives from flat grounding, not the graph. The flag is pinned OFF here so
+        the assertion does not depend on the ambient default."""
+        from faultmaven.config.settings import get_settings
+
+        monkeypatch.setattr(
+            get_settings().features, "enable_hypothesis_chain_emission", False
+        )
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
 
+        # Content is irrelevant to the assertion — only that a flat hypothesis is
+        # added and the graph stays empty.
         mock_llm.generate.return_value = json.dumps(
             {
                 "agent_response": "Here is a hypothesis.",

@@ -11,7 +11,6 @@ from uuid import uuid4
 
 import pytest
 
-from _bridge_fixture import bridge_flat_hypotheses_to_graph
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
@@ -32,6 +31,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     RootCauseConclusion,
 )
+from tests.utils import bridge_flat_hypotheses_to_graph
 
 pytestmark = pytest.mark.unit
 

@@ -12,8 +12,6 @@ is attached to exactly one hypothesis.
 
 import pytest
 
-from _bridge_fixture import bridge_flat_hypotheses_to_graph
-
 from faultmaven.core.investigation.causal_graph import (
     RESTATEMENT_AMBIGUOUS,
     RESTATEMENT_STRONG,
@@ -35,6 +33,7 @@ from faultmaven.modules.case.contracts import (
     NodeType,
     ProblemVerification,
 )
+from tests.utils import bridge_flat_hypotheses_to_graph
 
 pytestmark = pytest.mark.unit
 

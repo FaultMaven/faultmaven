@@ -5630,9 +5630,9 @@ class MilestoneEngine:
 
             # Re-root request (chain mode): record the ref so the chain-emission
             # linking pass re-points this existing hypothesis onto the named chain
-            # root, replacing the placeholder root the bridge gave it. Applied
-            # there (not here) because the target node is commonly emitted this
-            # same turn in causal_nodes_to_add and must be ingested first.
+            # root, replacing any earlier root it carried. Applied there (not
+            # here) because the target node is commonly emitted this same turn in
+            # causal_nodes_to_add and must be ingested first.
             reroot = getattr(upd, "root_node_ref", None)
             if reroot:
                 metadata.setdefault("hyp_root_refs", {})[h_id] = reroot
@@ -5661,17 +5661,18 @@ class MilestoneEngine:
         metadata: dict[str, Any],
     ) -> None:
         """Ingest the LLM's emitted causal chain and link new hypotheses to their
-        roots (the flag-gated alternative to relying on the bridge alone).
+        roots (the flag-gated source of the causal graph; the bridge is removed).
 
         Lazy backward expansion (methodology §5/S3): build the graph from the
         emitted nodes/edges/node-evidence, then set ``root_node_id``/``path`` on
-        each hypothesis whose spec carried a ``root_node_ref``. The bridge still
-        runs afterwards as a floor for any flat hypothesis left un-chained.
+        each hypothesis whose spec carried a ``root_node_ref``. A hypothesis the
+        LLM never links stays flat (``root_node_id`` is None) — the graph is
+        emission-only, so there is no projection floor.
 
         Best-effort: an unresolvable ``root_node_ref`` leaves the hypothesis flat
-        (the bridge will degenerate-project it) rather than raising. ``path`` may
-        be ``[]`` when the chain has not yet reached ``D`` (still being expanded);
-        the model permits ``root_node_id`` set with an empty path.
+        rather than raising. ``path`` may be ``[]`` when the chain has not yet
+        reached ``D`` (still being expanded); the model permits ``root_node_id``
+        set with an empty path.
         """
         created = ingest_emitted_chain(
             case,
@@ -5687,7 +5688,7 @@ class MilestoneEngine:
 
             A hypothesis root must be a ROOT node (M1/M3) — refs that resolve to
             an intermediate or to the PROBLEM node D are rejected (the hypothesis
-            stays flat; the bridge floor projects it).
+            stays flat).
             """
             if not ref:
                 return None
@@ -5711,7 +5712,7 @@ class MilestoneEngine:
         # update when the LLM elaborates a previously-posited hypothesis into a
         # real chain). Re-rooting abandons the hypothesis's old chain; collect any
         # of its now-dead nodes so the elaborated chain does not co-exist with the
-        # degenerate bridge stub for the same cause (the double-representation /
+        # abandoned degenerate stub for the same cause (the double-representation /
         # orphan-chain divergence).
         for hyp_id, ref in metadata.get("hyp_root_refs", {}).items():
             root_id = _resolve_root(ref)
@@ -5722,11 +5723,11 @@ class MilestoneEngine:
             old_path = hyp.path or []
             new_path = chain_path_to_problem(root_id, case)
             # On a RE-ROOT (the hypothesis already had a root) only move it once
-            # the new chain actually reaches D. Abandoning a working [stub, D]
-            # link for an empty path would strand the hypothesis: the bridge
-            # floor that runs next skips it (root_node_id is set), so nothing
-            # restores the link. At creation (no prior root) an empty path is
-            # fine — there was no link to lose.
+            # the new chain actually reaches D. Abandoning a working [root, D]
+            # link for an empty path would strand the hypothesis: the graph is
+            # emission-only (no projection floor), so nothing would restore the
+            # link this turn. At creation (no prior root) an empty path is fine —
+            # there was no link to lose.
             if old_root and old_root != root_id and not new_path:
                 continue
             hyp.root_node_id = root_id
