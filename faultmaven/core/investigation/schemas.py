@@ -402,6 +402,10 @@ class HypothesisToAdd(BaseModel):
     category: HypothesisCategory
     likelihood: float = Field(ge=0.0, le=1.0)
     rationale: str
+    # Stays Optional in BOTH flag states by design: the field is always in the
+    # serialized schema, the flag-off baseline emits no chains, and the engine
+    # tolerates an unrooted hypothesis (graceful fallback). Do NOT make it
+    # required — that would break the flag-off baseline and the fallback.
     root_node_ref: Optional[str] = Field(
         default=None,
         description=(
@@ -437,11 +441,12 @@ class HypothesisUpdate(BaseModel):
     root_node_ref: Optional[str] = Field(
         default=None,
         description=(
-            "Chain mode: RE-ROOT this existing hypothesis onto a causal node — an "
-            "existing node id (cn_...) or 'new_index_N' of a node in "
-            "causal_nodes_to_add. When the CAUSAL CHAINS instructions are active and "
-            "you deepen a hypothesis's cause, point it at the chain's deepest ROOT so "
-            "it leaves its placeholder root. Not for REFUTED entries."
+            "Chain mode: anchor or RE-ROOT this existing hypothesis onto a causal "
+            "node — an existing node id (cn_...) or 'new_index_N' of a node in "
+            "causal_nodes_to_add. When the CAUSAL CHAINS instructions are active, set "
+            "this for any existing hypothesis not yet anchored (its ROOT cause) or "
+            "being deepened (the chain's new deepest root, leaving its placeholder "
+            "root). Not for REFUTED entries."
         ),
     )
 

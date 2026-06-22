@@ -1421,7 +1421,9 @@ Example (TLS handshake failures):
 Build backward from D, one rung at a time — at minimum the root→D link, adding
 intermediate rungs as evidence warrants. Do NOT invent a full tree, or rungs or
 causes you have no basis for: the root is simply the deepest cause this hypothesis
-already claims, so representing it is naming what you posit, not guessing.
+already claims, so representing it is naming what you posit, not guessing. If you
+can only point to a symptom with no cause yet, keep investigating — that is not
+yet a hypothesis, so do not manufacture a root to satisfy the rule.
 
 The mandate is that every HYPOTHESIS has a root, NOT that every root has a
 hypothesis: a root you surface but no hypothesis yet names may stand alone as a
