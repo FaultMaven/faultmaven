@@ -36,7 +36,9 @@ logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.causal_graph import (
     bridge_flat_hypotheses_to_graph,
+    chain_path_to_problem,
     demote_disconfirmed_cause,
+    ingest_emitted_chain,
     promote_grounded_chain_root,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
@@ -97,6 +99,7 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
+    NodeType,
     ProblemVerification,
     ProposedAction,
     RootCauseConclusion,
@@ -5633,6 +5636,68 @@ class MilestoneEngine:
             current = metadata.get("system_feedback", "") or ""
             metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
 
+    def _apply_chain_emission(
+        self,
+        case: "Case",
+        updates: Any,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Ingest the LLM's emitted causal chain and link new hypotheses to their
+        roots (the flag-gated alternative to relying on the bridge alone).
+
+        Lazy backward expansion (methodology §5/S3): build the graph from the
+        emitted nodes/edges/node-evidence, then set ``root_node_id``/``path`` on
+        each hypothesis whose spec carried a ``root_node_ref``. The bridge still
+        runs afterwards as a floor for any flat hypothesis left un-chained.
+
+        Best-effort: an unresolvable ``root_node_ref`` leaves the hypothesis flat
+        (the bridge will degenerate-project it) rather than raising. ``path`` may
+        be ``[]`` when the chain has not yet reached ``D`` (still being expanded);
+        the model permits ``root_node_id`` set with an empty path.
+        """
+        created = ingest_emitted_chain(
+            case,
+            getattr(updates, "causal_nodes_to_add", None) or [],
+            getattr(updates, "causal_edges_to_add", None) or [],
+            getattr(updates, "node_evidence_links", None) or [],
+            case.current_turn,
+            evidence_created_ids=metadata.get("evidence_added", []),
+        )
+
+        def _resolve_root(ref: str | None) -> str | None:
+            """Resolve a root_node_ref to a ROOT node id, or None.
+
+            A hypothesis root must be a ROOT node (M1/M3) — refs that resolve to
+            an intermediate or to the PROBLEM node D are rejected (the hypothesis
+            stays flat; the bridge floor projects it).
+            """
+            if not ref:
+                return None
+            if ref.startswith("new_index_"):
+                try:
+                    idx = int(ref[len("new_index_") :])
+                except ValueError:
+                    return None
+                node_id = created[idx] if 0 <= idx < len(created) else None
+            else:
+                node_id = ref if ref in case.causal_nodes else None
+            node = case.causal_nodes.get(node_id) if node_id else None
+            return (
+                node_id
+                if node is not None and node.node_type == NodeType.ROOT
+                else None
+            )
+
+        # Link each hypothesis to its chain root via the explicit
+        # hyp_id -> root_node_ref map recorded at creation (no positional zip).
+        for hyp_id, ref in metadata.get("hyp_root_refs", {}).items():
+            root_id = _resolve_root(ref)
+            hyp = case.hypotheses.get(hyp_id)
+            if root_id is None or hyp is None:
+                continue
+            hyp.root_node_id = root_id
+            hyp.path = chain_path_to_problem(root_id, case)
+
     async def _apply_investigation_updates(
         self,
         case: Case,
@@ -6066,6 +6131,13 @@ class MilestoneEngine:
                 )
                 case.hypotheses[h.hypothesis_id] = h
                 metadata["hypotheses_generated"].append(h.hypothesis_id)
+                # Record this hypothesis's chain-root ref keyed by its id, so
+                # chain linking (when enabled) needs no positional zip against
+                # the spec list — robust to any future skip/dedup here.
+                if getattr(h_item, "root_node_ref", None):
+                    metadata.setdefault("hyp_root_refs", {})[
+                        h.hypothesis_id
+                    ] = h_item.root_node_ref
 
         # 3b. Apply the LLM's hypothesis disconfirmation signal (state=REFUTED +
         # reason) and likelihood updates. Emitted by schema+prompt but never
@@ -6274,9 +6346,16 @@ class MilestoneEngine:
                 f"(total: {len(case.investigation_journal)})"
             )
 
-        # Option-1 bridge (transitional): project this turn's flat hypotheses
-        # onto the causal graph so the chain-based assessment has a populated
-        # graph to read. Removed once the LLM emits chains directly (PR B).
+        # Populate the causal graph. When chain emission is on, ingest the LLM's
+        # emitted chain (lazy backward expansion) and link each hypothesis to its
+        # root. The bridge then ALWAYS runs as a floor — idempotent, it skips
+        # hypotheses already carrying a root_node_id and degenerate-projects only
+        # the still-flat ones, so cause_state never regresses during the
+        # transition. A later slice removes the bridge once emission is reliable.
+        from faultmaven.config.settings import get_settings
+
+        if get_settings().features.enable_hypothesis_chain_emission:
+            self._apply_chain_emission(case, updates, metadata)
         bridge_flat_hypotheses_to_graph(case)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)

@@ -260,6 +260,32 @@ def test_ingest_attaches_node_evidence_and_skips_unknown():
     assert root.evidence_links[0].stance == EvidenceStance.SUPPORTS
 
 
+def test_ingest_resolves_new_index_evidence_ref():
+    # Same-turn evidence: evidence_id_ref='new_index_N' resolves against the
+    # evidence created earlier this turn (the common rung-evidence case).
+    case = _case()
+    case.evidence.append(SimpleNamespace(evidence_id="ev_aaaaaaaaaaaa"))
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_node("the root", NodeType.ROOT, produces="D")],
+        edges_to_add=[],
+        node_evidence=[
+            SimpleNamespace(
+                node_ref="new_index_0",
+                evidence_id_ref="new_index_0",  # same-turn evidence placeholder
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="confirms",
+                stance_confidence=0.9,
+            )
+        ],
+        current_turn=case.current_turn,
+        evidence_created_ids=["ev_aaaaaaaaaaaa"],
+    )
+    root = case.causal_nodes[created[0]]
+    assert len(root.evidence_links) == 1
+    assert root.evidence_links[0].evidence_id == "ev_aaaaaaaaaaaa"
+
+
 def test_ingest_skips_unresolvable_refs_and_is_idempotent_on_edges():
     case = _case()
     ingest_emitted_chain(

@@ -1368,6 +1368,39 @@ is obvious.
 """
 
 
+# Chain-emission addendum (Two-Dimensional Hypothesis Methodology §5/S3).
+# Appended to the DIAGNOSIS instructions by ``_select_diagnosis_block`` ONLY when
+# ``settings.features.enable_hypothesis_chain_emission`` is on, so the tuned
+# baseline prompt is byte-identical when the flag is off. It layers ON TOP of the
+# flat hypotheses_to_add + hypothesis-evidence ordering flow above (does not
+# replace it): the chain is the structure beneath the flat hypothesis.
+_CHAIN_EMISSION_BLOCK = """
+**CAUSAL CHAINS (build the explanation backward):**
+A hypothesis is a CHAIN of cause→effect steps ending at the problem D, not a flat
+guess. Build it backward from D, one rung at a time — do not invent a full tree:
+
+1. For a cause you posit, emit a node in `causal_nodes_to_add`
+   (statement, node_type, produces):
+   - `statement`: the condition that holds,
+   - `node_type`: `intermediate` (a state on the way) or `root` (an independent,
+     actionable origin — remove it and the problem is gone),
+   - `produces`: the node it DIRECTLY causes — an existing node id, `"D"` for the
+     problem, or `"new_index_N"` for another node you emit this turn.
+2. Link the hypothesis to its chain: set `root_node_ref` on its `hypotheses_to_add`
+   entry to the root node (`new_index_N` or an existing id).
+3. Attach evidence to the RUNG it tests via `node_evidence_links`
+   (node_ref, evidence_id_ref, stance, reasoning), so a SUPPORTS/REFUTES bears on
+   that specific step.
+4. Co-necessary causes (BOTH needed to produce the effect) = an AND-set: give each
+   the SAME `produces` target AND the same `and_group`. Independent alternatives
+   omit `and_group`.
+
+Keep following the hypothesis→causal_evidence ordering above; the chain is the
+structure beneath it. Expand backward only as far as evidence warrants — leaving
+an unexplained root as a candidate is fine.
+"""
+
+
 # =============================================================================
 # _RCA_DIAGNOSIS_BLOCK — the single DIAGNOSIS-stage block in the unified
 # opportunistic flow. Full hypothesis-driven diagnostic flow, built by
@@ -2554,7 +2587,15 @@ def _select_diagnosis_block(case: Case) -> str:
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``).
     """
     focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
-    return focus_emphasis + _RCA_DIAGNOSIS_BLOCK
+    block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
+    # Chain emission is flag-gated: when off, the baseline diagnosis prompt is
+    # unchanged; when on, teach lazy backward expansion (the engine ingests the
+    # emitted chain instead of running the bridge).
+    from faultmaven.config.settings import get_settings
+
+    if get_settings().features.enable_hypothesis_chain_emission:
+        block += _CHAIN_EMISSION_BLOCK
+    return block
 
 
 def get_prompt_for_case(
