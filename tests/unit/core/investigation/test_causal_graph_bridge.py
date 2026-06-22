@@ -1,13 +1,15 @@
-"""Unit tests for the transitional flat->graph bridge (Phase 2, Option 1).
+"""Unit tests for the causal-graph engine lane: grounded-root promotion and M6
+counterfactual-disconfirmation demotion.
 
-The bridge projects a case's flat hypotheses into degenerate root->D chains so
-the chain-based engine has a populated graph before the LLM emits chains.
+The graphs are stood up with the ``bridge_flat_hypotheses_to_graph`` TEST
+fixture (the retired Option-1 projection, removed from production in PR B2c) for
+the degenerate-stub cases, and built directly for the real multi-rung and flat
+(no-graph) cases that production actually produces post-B2c.
 """
 
 import pytest
 
 from faultmaven.core.investigation.causal_graph import (
-    bridge_flat_hypotheses_to_graph,
     demote_disconfirmed_cause,
     promote_grounded_chain_root,
 )
@@ -16,6 +18,8 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseState,
+    CausalEdge,
+    CausalNode,
     CauseState,
     ConfidenceLevel,
     EvidenceStance,
@@ -31,6 +35,7 @@ from faultmaven.modules.case.contracts import (
     RootCauseConclusion,
     ValidationMethod,
 )
+from tests.utils import bridge_flat_hypotheses_to_graph
 
 pytestmark = pytest.mark.unit
 
@@ -420,4 +425,89 @@ def test_turn28_grounded_then_disconfirmed_demotes_end_to_end():
     assert case.progress.cause_state != CauseState.IDENTIFIED
     assert case.causal_nodes[hyp.root_node_id].node_state == NodeState.REFUTED
     assert hyp.state == HypothesisState.REFUTED
+    assert case.root_cause_conclusion is None
+
+
+def test_demote_fires_on_a_flat_hypothesis_with_no_graph():
+    # Post-B2c flag-OFF production shape: the cause is grounded via FLAT state
+    # with NO causal graph at all (root_node_id is None). M6's load-bearing
+    # effect must still fire — refute the flat hypothesis, RETRACT the conclusion,
+    # un-stick cause_state — with the node-refutation step simply skipped (there
+    # is no root node). This is the case_e970a5c24fe1 shape in the default config.
+    hyp = Hypothesis(
+        statement="NetworkPolicy blocks the connection",
+        category=HypothesisCategory.NETWORK,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=3,
+        rationale="x",
+        state=HypothesisState.REFUTED,
+        refutation_reason="policy was already correct; still failed",
+    )
+    case = _investigating_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    # No bridge / no emission: empty graph, hypothesis stays flat.
+    assert case.causal_nodes == {}
+    assert hyp.root_node_id is None
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
+    _grounded(case)
+
+    assert demote_disconfirmed_cause(case) is True
+    assert case.root_cause_conclusion is None
+    assert case.progress.cause_state == CauseState.UNKNOWN
+    assert case.progress.root_cause_likelihood == 0.0
+
+
+def test_promote_then_demote_on_a_real_multi_rung_chain():
+    # Engine-lane coverage against a REAL multi-rung emitted chain
+    # (root -> intermediate -> D), the only chain shape production produces
+    # post-B2c — not a degenerate bridge stub. promote must validate the real
+    # root, and demote on disconfirmation must refute that same root and strip
+    # its validation marks.
+    case = _investigating_case()
+    d = CausalNode(
+        statement="Deploy to on-prem job fails",
+        node_type=NodeType.PROBLEM,
+        generated_at_turn=0,
+    )
+    root = CausalNode(
+        statement="deploy dropped `defer conn.Release()`",
+        node_type=NodeType.ROOT,
+        generated_at_turn=3,
+    )
+    inter = CausalNode(
+        statement="connections are acquired but never released",
+        node_type=NodeType.INTERMEDIATE,
+        generated_at_turn=3,
+    )
+    case.causal_nodes = {n.node_id: n for n in (d, root, inter)}
+    case.causal_edges = [
+        CausalEdge(
+            cause_node_id=root.node_id, effect_node_id=inter.node_id, created_at_turn=3
+        ),
+        CausalEdge(
+            cause_node_id=inter.node_id, effect_node_id=d.node_id, created_at_turn=3
+        ),
+    ]
+    hyp = _hyp("a leaked connection exhausts the pool")
+    hyp.root_node_id = root.node_id
+    hyp.path = [root.node_id, inter.node_id, d.node_id]
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    case.root_cause_conclusion = _rcc(validated_hypothesis_id=hyp.hypothesis_id)
+    _grounded(case)
+
+    # promote validates the real multi-rung root (path length 3, not a stub).
+    assert promote_grounded_chain_root(case) is True
+    assert len(hyp.path) == 3
+    assert case.causal_nodes[root.node_id].node_state == NodeState.VALIDATED
+    assert (
+        case.causal_nodes[root.node_id].validation_method == ValidationMethod.EMPIRICAL
+    )
+
+    # Disconfirmation: demote refutes that same multi-rung root + strips its marks.
+    hyp.evidence_links = [_refutes_link()]
+    assert demote_disconfirmed_cause(case) is True
+    refuted_root = case.causal_nodes[root.node_id]
+    assert refuted_root.node_state == NodeState.REFUTED
+    assert refuted_root.validation_method == ValidationMethod.NONE
+    assert refuted_root.actionable is False
     assert case.root_cause_conclusion is None

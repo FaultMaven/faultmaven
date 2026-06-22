@@ -139,8 +139,8 @@ def test_apply_chain_emission_links_hypothesis_to_root_and_path():
 
 
 def test_apply_chain_emission_leaves_hypothesis_flat_when_ref_unresolvable():
-    # An unresolvable root_node_ref leaves the hypothesis flat (the bridge floor
-    # will degenerate-project it) rather than raising.
+    # An unresolvable root_node_ref leaves the hypothesis flat (the graph is
+    # emission-only post-B2c, so it simply stays flat) rather than raising.
     eng = _engine()
     case = _case()
     h = _hyp()
@@ -225,9 +225,7 @@ def _two_rung_chain():
 
 
 def test_reroot_moves_hypothesis_to_chain_and_gcs_old_stub():
-    from faultmaven.core.investigation.causal_graph import (
-        bridge_flat_hypotheses_to_graph,
-    )
+    from tests.utils import bridge_flat_hypotheses_to_graph
 
     eng = _engine()
     case = _case()
@@ -271,9 +269,7 @@ def test_reroot_moves_hypothesis_to_chain_and_gcs_old_stub():
 def test_reroot_keeps_old_root_when_another_hypothesis_still_uses_it():
     # The stub GC is conservative: a root still referenced by another hypothesis
     # is load-bearing and must NOT be collected when one hypothesis re-roots away.
-    from faultmaven.core.investigation.causal_graph import (
-        bridge_flat_hypotheses_to_graph,
-    )
+    from tests.utils import bridge_flat_hypotheses_to_graph
 
     eng = _engine()
     case = _case()
@@ -306,13 +302,11 @@ def _problem_id(case) -> str:
 
 def test_reroot_with_incomplete_chain_keeps_existing_link():
     # A re-root onto a chain that does NOT yet reach D (chain_path_to_problem
-    # returns []) must NOT abandon the hypothesis's working bridge link: doing so
-    # would strand it (the bridge floor that runs next skips a hyp with a
-    # root_node_id, so nothing restores the link). The existing root/path and the
-    # old stub are preserved until the chain is actually complete.
-    from faultmaven.core.investigation.causal_graph import (
-        bridge_flat_hypotheses_to_graph,
-    )
+    # returns []) must NOT abandon the hypothesis's working [root, D] link: doing
+    # so would strand it (the graph is emission-only, so nothing would restore the
+    # link this turn). The existing root/path are preserved until the chain is
+    # actually complete. (Setup uses the bridge fixture to stand up the link.)
+    from tests.utils import bridge_flat_hypotheses_to_graph
 
     eng = _engine()
     case = _case()

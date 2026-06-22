@@ -242,3 +242,58 @@ def generate_agent_execution_id() -> str:
 def generate_investigation_session_id() -> str:
     """Generate a valid investigation session ID."""
     return f"is_{uuid4().hex[:12]}"
+
+
+def bridge_flat_hypotheses_to_graph(case) -> None:
+    """Test helper: project a case's flat hypotheses into degenerate root->D
+    chains (the retired Option-1 bridge, removed from production in PR B2c).
+
+    Each not-yet-chained ``Hypothesis`` becomes a ROOT node (the hypothesis
+    statement) -> the single PROBLEM node ``D``, carrying the hypothesis's
+    evidence on the root and left ``CANDIDATE``. Idempotent; no-op until a
+    problem statement exists to anchor ``D``. Kept here (not in production) as a
+    compact way to stand up a known degenerate-chain graph for engine-lane tests
+    (promote/demote) and the orphan-resolution stub path. Heavy imports are
+    deferred so importing this module stays cheap for non-graph tests.
+    """
+    from faultmaven.core.investigation.causal_graph import seed_problem_node
+    from faultmaven.modules.case.contracts import (
+        CausalEdge,
+        CausalNode,
+        NodeEvidenceLink,
+        NodeType,
+    )
+
+    problem_node = seed_problem_node(case)
+    if problem_node is None:
+        return  # nothing to anchor on yet
+    d_id = problem_node.node_id
+
+    for hyp in case.hypotheses.values():
+        if hyp.root_node_id:
+            continue
+        root = CausalNode(
+            statement=hyp.statement[:500],
+            node_type=NodeType.ROOT,
+            category=hyp.category,
+            generated_at_turn=hyp.generated_at_turn,
+            evidence_links=[
+                NodeEvidenceLink(
+                    evidence_id=link.evidence_id,
+                    stance=link.stance,
+                    reasoning=link.reasoning,
+                    stance_confidence=link.stance_confidence,
+                )
+                for link in hyp.evidence_links
+            ],
+        )
+        case.causal_nodes[root.node_id] = root
+        case.causal_edges.append(
+            CausalEdge(
+                cause_node_id=root.node_id,
+                effect_node_id=d_id,
+                created_at_turn=hyp.generated_at_turn,
+            )
+        )
+        hyp.root_node_id = root.node_id
+        hyp.path = [root.node_id, d_id]

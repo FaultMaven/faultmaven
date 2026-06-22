@@ -231,15 +231,23 @@ class TestMilestoneEngine:
         assert updated_case.progress.symptom_verified is True
 
     @pytest.mark.asyncio
-    async def test_process_turn_bridges_hypotheses_into_causal_graph(
-        self, mock_llm, mock_repo, base_case
+    async def test_process_turn_does_not_auto_project_flat_hypotheses(
+        self, mock_llm, mock_repo, base_case, monkeypatch
     ):
-        """End-to-end: a turn that adds a flat hypothesis populates the causal
-        graph via the Option-1 bridge wired into the apply path (slice 3). The
-        function-level tests call _recompute directly; this proves the bridge
-        actually runs inside process_turn."""
+        """Post-B2c: the transitional flat->chain bridge is gone, so a turn that
+        adds a flat hypothesis with chain emission OFF does NOT populate the
+        causal graph — it is emission-only. The hypothesis stays flat; cause_state
+        derives from flat grounding, not the graph. The flag is pinned OFF here so
+        the assertion does not depend on the ambient default."""
+        from faultmaven.config.settings import get_settings
+
+        monkeypatch.setattr(
+            get_settings().features, "enable_hypothesis_chain_emission", False
+        )
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
 
+        # Content is irrelevant to the assertion — only that a flat hypothesis is
+        # added and the graph stays empty.
         mock_llm.generate.return_value = json.dumps(
             {
                 "agent_response": "Here is a hypothesis.",
@@ -266,14 +274,11 @@ class TestMilestoneEngine:
         result = await engine.process_turn(base_case, "What could be wrong?")
 
         case = result["case_updated"]
-        # The bridge ran during the turn: a PROBLEM node (D) + a ROOT node exist.
-        node_types = {n.node_type.value for n in case.causal_nodes.values()}
-        assert "problem" in node_types
-        assert "root" in node_types
-        # The flat hypothesis is now a chain header (root -> D).
+        # No auto-projection: the graph is empty and the hypothesis stays flat.
+        assert case.causal_nodes == {}
+        assert case.causal_edges == []
         hyp = next(iter(case.hypotheses.values()))
-        assert hyp.root_node_id in case.causal_nodes
-        assert hyp.path and hyp.path[0] == hyp.root_node_id
+        assert hyp.root_node_id is None
 
     @pytest.mark.asyncio
     async def test_process_turn_inquiry(self, mock_llm, mock_repo):
