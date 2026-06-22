@@ -1387,13 +1387,26 @@ guess. Build it backward from D, one rung at a time — do not invent a full tre
    - `produces`: the node it DIRECTLY causes — an existing node id, `"D"` for the
      problem, or `"new_index_N"` for another node you emit this turn.
 2. Link the hypothesis to its chain: set `root_node_ref` on its `hypotheses_to_add`
-   entry to the root node (`new_index_N` or an existing id).
+   entry to the root node (`new_index_N` or an existing id). If you LATER flesh out
+   a hypothesis you already posited into a real chain, RE-ROOT it the same way — set
+   `root_node_ref` on its `hypotheses_to_update` entry to the new chain's deepest
+   root; do not start a second parallel chain for the same cause.
 3. Attach evidence to the RUNG it tests via `node_evidence_links`
-   (node_ref, evidence_id_ref, stance, reasoning), so a SUPPORTS/REFUTES bears on
-   that specific step.
+   (node_ref, evidence_id_ref, stance, reasoning): the SAME causal_evidence you
+   record for the hypothesis ALSO names the node it bears on, so a
+   SUPPORTS/REFUTES lands on that step — not just the whole chain. A rung you
+   cannot tie to evidence yet is fine; tie it the turn evidence arrives.
 4. Co-necessary causes (BOTH needed to produce the effect) = an AND-set: give each
    the SAME `produces` target AND the same `and_group`. Independent alternatives
    omit `and_group`.
+
+Example (TLS handshake failures):
+  causal_nodes_to_add:
+    [0] {statement:"the API's TLS cert expired at 02:00", node_type:"root", produces:"new_index_1"}
+    [1] {statement:"clients reject the handshake",        node_type:"intermediate", produces:"D"}
+  hypotheses_to_add:   [{statement:"expired cert breaks TLS", root_node_ref:"new_index_0"}]
+  node_evidence_links: [{node_ref:"new_index_0", evidence_id_ref:"ev_openssl",
+                         stance:"supports", reasoning:"openssl shows notAfter=02:00 today"}]
 
 Keep following the hypothesis→causal_evidence ordering above; the chain is the
 structure beneath it. Expand backward only as far as evidence warrants — leaving

@@ -5351,7 +5351,9 @@ class MilestoneEngine:
             from faultmaven.modules.case.domain.models import (
                 PreliminaryUrgency as DomainPreliminaryUrgency,
             )
-            from faultmaven.modules.case.domain.models import UrgencyLevel
+            from faultmaven.modules.case.domain.models import (
+                UrgencyLevel,
+            )
 
             case.inquiry.preliminary_urgency = DomainPreliminaryUrgency(
                 level=UrgencyLevel(
@@ -5621,6 +5623,16 @@ class MilestoneEngine:
                     )
                 continue
 
+            # Re-root request (chain mode): record the ref so the chain-emission
+            # linking pass re-points this existing hypothesis onto the named chain
+            # root, replacing the placeholder root the bridge gave it. Applied
+            # there (not here) because the target node is commonly emitted this
+            # same turn in causal_nodes_to_add and must be ingested first.
+            reroot = getattr(upd, "root_node_ref", None)
+            if reroot:
+                metadata.setdefault("hyp_root_refs", {})[h_id] = reroot
+                metadata["hypotheses_updated"].append(h_id)
+
             # Non-REFUTED state transitions are intentionally not applied here.
             # Likelihood updates go through the canonical mutator.
             if upd.likelihood is not None:
@@ -5630,7 +5642,8 @@ class MilestoneEngine:
                     current_turn,
                     reason="LLM hypothesis update",
                 )
-                metadata["hypotheses_updated"].append(h_id)
+                if not reroot:
+                    metadata["hypotheses_updated"].append(h_id)
 
         if feedback:
             current = metadata.get("system_feedback", "") or ""
@@ -5689,14 +5702,61 @@ class MilestoneEngine:
             )
 
         # Link each hypothesis to its chain root via the explicit
-        # hyp_id -> root_node_ref map recorded at creation (no positional zip).
+        # hyp_id -> root_node_ref map (recorded at creation, or on a re-root
+        # update when the LLM elaborates a previously-posited hypothesis into a
+        # real chain). Re-rooting abandons the hypothesis's old chain; collect any
+        # of its now-dead nodes so the elaborated chain does not co-exist with the
+        # degenerate bridge stub for the same cause (the double-representation /
+        # orphan-chain divergence).
         for hyp_id, ref in metadata.get("hyp_root_refs", {}).items():
             root_id = _resolve_root(ref)
             hyp = case.hypotheses.get(hyp_id)
             if root_id is None or hyp is None:
                 continue
+            old_root = hyp.root_node_id
+            old_path = hyp.path or []
+            new_path = chain_path_to_problem(root_id, case)
+            # On a RE-ROOT (the hypothesis already had a root) only move it once
+            # the new chain actually reaches D. Abandoning a working [stub, D]
+            # link for an empty path would strand the hypothesis: the bridge
+            # floor that runs next skips it (root_node_id is set), so nothing
+            # restores the link. At creation (no prior root) an empty path is
+            # fine — there was no link to lose.
+            if old_root and old_root != root_id and not new_path:
+                continue
             hyp.root_node_id = root_id
-            hyp.path = chain_path_to_problem(root_id, case)
+            hyp.path = new_path
+            if old_root and old_root != root_id:
+                self._gc_orphan_chain(case, old_path)
+
+    @staticmethod
+    def _gc_orphan_chain(case: "Case", abandoned_node_ids: list) -> None:
+        """Drop the nodes of a chain abandoned by a hypothesis re-root, but only
+        the ones now dead — referenced by no hypothesis (as a root or on a path).
+        Generalizes the degenerate-stub case (a single root→D) to a full abandoned
+        multi-rung chain, so re-rooting away from a real chain does not leave its
+        intermediates orphaned. The PROBLEM node D is never collected (it anchors
+        every chain). Edges are pruned to those whose endpoints both survive, so a
+        surviving node's connectivity is never severed. No-op for any node still
+        load-bearing for another hypothesis."""
+        referenced = set()
+        for h in case.hypotheses.values():
+            if h.root_node_id:
+                referenced.add(h.root_node_id)
+            referenced.update(h.path or [])
+        for node_id in abandoned_node_ids:
+            node = case.causal_nodes.get(node_id)
+            if node is None or node.node_type == NodeType.PROBLEM:
+                continue  # keep D; skip already-gone
+            if node_id in referenced:
+                continue  # still load-bearing for some hypothesis
+            case.causal_nodes.pop(node_id, None)
+        case.causal_edges[:] = [
+            e
+            for e in case.causal_edges
+            if e.cause_node_id in case.causal_nodes
+            and e.effect_node_id in case.causal_nodes
+        ]
 
     async def _apply_investigation_updates(
         self,
