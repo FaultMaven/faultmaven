@@ -35,8 +35,11 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.causal_graph import (
+    any_chain_root_validated,
     chain_path_to_problem,
     demote_disconfirmed_cause,
+    demote_disconfirmed_cause_via_evidence,
+    derive_node_states,
     ingest_emitted_chain,
     promote_grounded_chain_root,
     prune_abandoned_nodes,
@@ -759,6 +762,59 @@ def _mark_cause_identified(case: "Case") -> bool:
     return True
 
 
+def _recompute_cause_state_flat(case: "Case") -> None:
+    """Flat-grounding ``cause_state`` derivation (the pre-chain path, used when
+    ``enable_hypothesis_chain_emission`` is OFF). Unchanged from the original
+    ``_recompute_assessment_state`` body: M6 demote, then the sticky grounded-only
+    IDENTIFIED chokepoint, else CANDIDATES/UNKNOWN from the active-hyp count."""
+    p = case.progress
+    demote_disconfirmed_cause(case)
+    if not _mark_cause_identified(case):
+        if HypothesisManager.count_active_hypotheses(case) >= 2:
+            p.cause_state = CauseState.CANDIDATES
+        else:
+            p.cause_state = CauseState.UNKNOWN
+    else:
+        promote_grounded_chain_root(case)
+
+
+def _recompute_cause_state_from_chain(case: "Case") -> None:
+    """Chain-derived ``cause_state`` (Option A, methodology §9.2; flag ON).
+
+    ``IDENTIFIED`` iff some live hypothesis's chain ROOT is VALIDATED from real
+    rung evidence (``derive_node_states`` + ``any_chain_root_validated``), never
+    from a flat assertion — ``promote_grounded_chain_root``'s fabricated EMPIRICAL
+    grade is retired here. The chain is now load-bearing: a cause reaches
+    IDENTIFIED only by emitting a chain and grounding its root.
+
+    Order matters:
+      1. M6 (Option c): a counterfactually-disconfirmed grounded cause gets a
+         DURABLE engine refutation attached to its root + the conclusion retracted
+         — BEFORE derive, so derive refutes the root from that evidence this turn
+         and every later turn (preventing the turn-28 resurrection that an
+         imperative-only refutation would allow once stale support re-derives it).
+      2. ``derive_node_states``: evidence → node states (validate/refute each rung).
+      3. cause_state: IDENTIFIED if a live chain root is validated; else
+         CANDIDATES (≥2 active hypotheses) / UNKNOWN. Not sticky — it follows the
+         root's evidence-derived truth, so M6 demotion drops it automatically.
+    """
+    p = case.progress
+    demote_disconfirmed_cause_via_evidence(case)
+    derive_node_states(case)
+    if any_chain_root_validated(case):
+        p.cause_state = CauseState.IDENTIFIED
+        # Case invariant: IDENTIFIED requires a positive likelihood + a method.
+        # Floor them (the LLM's own higher confidence still wins where applied).
+        if not p.root_cause_likelihood or p.root_cause_likelihood <= 0:
+            p.root_cause_likelihood = 0.8
+        if not p.root_cause_method:
+            p.root_cause_method = "hypothesis_validation"
+    elif HypothesisManager.count_active_hypotheses(case) >= 2:
+        p.cause_state = CauseState.CANDIDATES
+    else:
+        p.cause_state = CauseState.UNKNOWN
+
+
 def _recompute_assessment_state(case: "Case") -> None:
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
@@ -783,31 +839,12 @@ def _recompute_assessment_state(case: "Case") -> None:
     """
     p = case.progress
 
-    # M6: a counterfactually-disconfirmed root cause is demoted FIRST — the one
-    # sanctioned downgrade of the otherwise-sticky cause_state. It refutes the
-    # root + RETRACTS the conclusion (clearing every grounding anchor) so
-    # _mark_cause_identified below can neither keep nor re-ground the disproven
-    # cause this turn or next (the turn-28 fix).
-    demote_disconfirmed_cause(case)
+    from faultmaven.config.settings import get_settings
 
-    # Single chokepoint: sets/keeps IDENTIFIED (grounded-only, sticky) and
-    # re-enforces its invariant at end-of-turn. Only when NOT identified does
-    # cause_state derive from the active-hypothesis count.
-    if not _mark_cause_identified(case):
-        if HypothesisManager.count_active_hypotheses(case) >= 2:
-            p.cause_state = CauseState.CANDIDATES
-        else:
-            p.cause_state = CauseState.UNKNOWN
+    if get_settings().features.enable_hypothesis_chain_emission:
+        _recompute_cause_state_from_chain(case)
     else:
-        # Mirror the grounding onto the chain graph (promote the validated
-        # cause's root node) so the failed-treatment demotion (M6) has a
-        # validated root to act on. Conservative — only on an explicit
-        # validated_hypothesis_id, and a no-op when that hypothesis has no
-        # emitted chain (post-B2c the graph is emission-only; cause_state still
-        # derives from flat grounding regardless). The hardcoded EMPIRICAL grade
-        # here is a known forward hazard, reworked when validation reads the
-        # chain (methodology §9.2).
-        promote_grounded_chain_root(case)
+        _recompute_cause_state_flat(case)
 
     if p.solution_state != SolutionState.SELECTED:
         if p.solution_proposed or bool(case.solutions):

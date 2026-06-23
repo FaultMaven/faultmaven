@@ -21,14 +21,18 @@ emission-only.) Belief propagation (§6.1 / §9.4) is a follow-on.
 from __future__ import annotations
 
 from collections import deque
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
     CauseState,
+    Evidence,
     EvidenceCategory,
+    EvidenceSourceType,
     EvidenceStance,
     HypothesisState,
     NodeEvidenceLink,
@@ -192,16 +196,21 @@ def deductively_validated(
 
 def _node_evidence_tally(
     node: CausalNode, evidence_by_id: dict[str, EvidenceCategory | None]
-) -> tuple[int, int, int]:
-    """``(supports, refutes, causal_supports)`` for a node from its rung links.
+) -> tuple[int, int, int, int]:
+    """``(supports, refutes, causal_supports, counterfactual_refutes)`` for a node
+    from its rung links.
 
     Counts only links whose backing evidence row actually exists (a dangling
     ``evidence_id`` is ignored, never assumed). ``causal_supports`` is the subset
     of SUPPORTS links backed by ``CAUSAL_EVIDENCE`` — the §7.1 "direct observable
-    fact" bar (the same causal floor the flat ``_cause_state_grounded`` uses),
-    so a node validates only on real causal grounding, not any stray support.
+    fact" bar (the same causal floor the flat ``_cause_state_grounded`` uses), so
+    a node validates only on real causal grounding. ``counterfactual_refutes`` is
+    the subset of REFUTES links backed by ``CAUSAL_ABSENCE_EVIDENCE`` — a
+    counterfactual disconfirmation (the cause was addressed yet ``D`` persisted),
+    the §7.2 strongest grade, which refutes DECISIVELY (it is not outweighed by
+    correlational support).
     """
-    supports = refutes = causal_supports = 0
+    supports = refutes = causal_supports = counterfactual_refutes = 0
     for link in node.evidence_links:
         if link.evidence_id not in evidence_by_id:
             continue  # dangling reference — never counts
@@ -211,7 +220,12 @@ def _node_evidence_tally(
                 causal_supports += 1
         elif link.stance == EvidenceStance.REFUTES:
             refutes += 1
-    return supports, refutes, causal_supports
+            if (
+                evidence_by_id[link.evidence_id]
+                == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            ):
+                counterfactual_refutes += 1
+    return supports, refutes, causal_supports, counterfactual_refutes
 
 
 def derive_node_states(case: Case) -> bool:
@@ -232,7 +246,9 @@ def derive_node_states(case: Case) -> bool:
     Per non-PROBLEM node (the PROBLEM node ``D`` is the engine-owned anchor and
     is left untouched):
 
-    - **REFUTED** — its links net-refute it: ``refutes > supports`` (strict; a
+    - **REFUTED** — a counterfactual disconfirmation bears on it (any
+      ``CAUSAL_ABSENCE_EVIDENCE`` REFUTES link — §7.2 strongest grade, decisive),
+      OR its links net-refute it ``refutes > supports`` (strict; a correlational
       tie is INCONCLUSIVE, not a disproof). ``validation_method=NONE``,
       ``actionable=False``.
     - **VALIDATED** — not refuted, has at least one CAUSAL_EVIDENCE-backed
@@ -272,14 +288,16 @@ def derive_node_states(case: Case) -> bool:
         for node in nodes.values():
             if node.node_type == NodeType.PROBLEM:
                 continue
-            supports, refutes, causal_supports = _node_evidence_tally(
-                node, evidence_by_id
+            supports, refutes, causal_supports, counterfactual_refutes = (
+                _node_evidence_tally(node, evidence_by_id)
             )
             deductively_valid = (
                 node.node_state == NodeState.VALIDATED
                 and node.validation_method == ValidationMethod.DEDUCTIVE
             )
-            if refutes > supports:  # decisive direct refutation (M7 / §7.3)
+            # A counterfactual disconfirmation (§7.2/§7.3) refutes decisively; a
+            # correlational tie/majority is the lesser ``refutes > supports`` bar.
+            if counterfactual_refutes >= 1 or refutes > supports:
                 target_state = NodeState.REFUTED
             elif deductively_valid:
                 continue  # owned by the deductive lane — never demote here
@@ -706,6 +724,100 @@ def demote_disconfirmed_cause(case: Case) -> bool:
     # 4. Un-stick the assessment; recompute re-derives from remaining chains.
     p.root_cause_likelihood = 0.0
     p.cause_state = CauseState.UNKNOWN
+    return True
+
+
+def any_chain_root_validated(case: Case) -> bool:
+    """§9.2: does some live hypothesis's chain ROOT node read VALIDATED? This is
+    the chain-mode ``cause_state=IDENTIFIED`` signal. A REFUTED hypothesis is
+    excluded (its root is no longer a standing cause), so a disconfirmed chain
+    cannot keep grounding the case."""
+    return any(
+        h
+        and h.state != HypothesisState.REFUTED
+        and is_chain_root_validated(h, case.causal_nodes)
+        for h in case.hypotheses.values()
+    )
+
+
+def _attach_engine_refutation(case: Case, node_id: str, reason: str) -> None:
+    """Attach a DURABLE engine-authored REFUTES link (+ backing
+    ``CAUSAL_ABSENCE_EVIDENCE`` row) to ``node_id`` — the Option-(c) mechanism
+    that makes M6 evidence-driven. Without a persisted refuting fact,
+    ``derive_node_states`` would re-validate the root next turn from the stale
+    supporting evidence and resurrect the disconfirmed cause (the turn-28 bug).
+    Idempotent: skips when the node already carries a refuting link. The backing
+    row is ``CAUSAL_ABSENCE_EVIDENCE`` (the honest counterfactual category) so it
+    does not inflate the flat ``CAUSAL_EVIDENCE`` grounding count.
+    """
+    node = case.causal_nodes.get(node_id)
+    if node is None or any(
+        link.stance == EvidenceStance.REFUTES for link in node.evidence_links
+    ):
+        return
+    ev_id = f"ev_{uuid4().hex[:12]}"
+    case.evidence.append(
+        Evidence(
+            evidence_id=ev_id,
+            summary=(
+                "Counterfactual disconfirmation (M6): the cause was addressed or "
+                "confirmed correct, yet the problem persisted."
+            ),
+            primary_purpose="failed-treatment disconfirmation",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="engine",
+            collected_at_turn=case.current_turn,
+            collected_at=datetime.now(timezone.utc),
+        )
+    )
+    node.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=ev_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning=reason,
+            linked_at_turn=case.current_turn,
+        )
+    )
+
+
+def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
+    """M6 for chain mode (Option c): on counterfactual disconfirmation of the
+    grounded cause, refute the flat hypothesis AND attach a DURABLE engine
+    refutation to its root, then retract the conclusion. Unlike the flat
+    ``demote_disconfirmed_cause`` (which imperatively flips ``node_state``), the
+    root's refutation is recorded as EVIDENCE so the subsequent
+    ``derive_node_states`` — this turn and every later turn — keeps the root
+    REFUTED instead of re-validating it from the now-stale supporting evidence.
+
+    Same trigger as the flat path (shared helpers): a grounded
+    (``cause_state=IDENTIFIED``) case whose representative cause hypothesis is
+    REFUTED or net-refuted. Returns True if it acted.
+    """
+    p = case.progress
+    if p.cause_state != CauseState.IDENTIFIED:
+        return False
+    hyp = _representative_cause_hypothesis(case)
+    if hyp is None:
+        return False
+    if not (hyp.state == HypothesisState.REFUTED or _net_refuted(hyp)):
+        return False
+
+    reason = (
+        hyp.refutation_reason
+        or "counterfactual disconfirmation: the cause was addressed or confirmed "
+        "correct yet the problem persisted"
+    )[:200]
+
+    if hyp.state != HypothesisState.REFUTED:
+        HypothesisManager().refute_hypothesis(hyp, case.current_turn, [], reason)
+    if hyp.root_node_id:
+        _attach_engine_refutation(case, hyp.root_node_id, reason)
+    # Retract the conclusion so the disposition layer cannot keep treating the
+    # cause as known; the cause_state itself is re-derived from the (now refuted)
+    # root by the caller's derive + recompute.
+    case.root_cause_conclusion = None
+    p.root_cause_likelihood = 0.0
     return True
 
 
