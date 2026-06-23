@@ -33,6 +33,7 @@ from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
     CauseState,
+    ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -41,6 +42,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    RootCauseConclusion,
     ValidationMethod,
 )
 
@@ -787,6 +789,88 @@ def any_chain_root_validated(case: Case) -> bool:
     standing = {HypothesisState.ACTIVE, HypothesisState.VALIDATED}
     return any(
         h and h.state in standing and is_chain_root_validated(h, case.causal_nodes)
+        for h in case.hypotheses.values()
+    )
+
+
+def synthesize_rcc_from_validated_root(case: Case) -> bool:
+    """§9.3 — when the cause is grounded via a VALIDATED chain root but no
+    ``RootCauseConclusion`` is recorded, mirror the validated chain into a minimal
+    RCC so the disposition / report layer has consistent cause text.
+
+    Two ways cause_state can be IDENTIFIED-via-chain with no RCC: the LLM
+    validated a root with rung evidence but never authored a conclusion, or M6
+    retracted a *different* chain's RCC while this one still stands. Either way
+    the validated root IS the cause, so a derived RCC (root statement + the chain
+    as mechanism, VERIFIED for empirical / CONFIDENT for deductive grade) is a
+    faithful mirror, not an assertion. No-op when an RCC already exists (the LLM's
+    own conclusion wins) or no standing root is validated. Returns True if it
+    wrote one.
+    """
+    if case.root_cause_conclusion is not None:
+        return False
+    standing = {HypothesisState.ACTIVE, HypothesisState.VALIDATED}
+    hyp = next(
+        (
+            h
+            for h in case.hypotheses.values()
+            if h
+            and h.state in standing
+            and is_chain_root_validated(h, case.causal_nodes)
+        ),
+        None,
+    )
+    if hyp is None:
+        return False
+    root = case.causal_nodes[hyp.root_node_id]
+    # Mechanism = the chain's intermediate rungs (root -> ... -> D), if any.
+    inter = [
+        case.causal_nodes[nid].statement
+        for nid in (hyp.path or [])[1:-1]
+        if nid in case.causal_nodes
+    ]
+    mechanism = (
+        " → ".join(inter + ["the problem"])
+        if inter
+        else "Directly produces the observed problem."
+    )[:2000]
+    # An empirically-validated root is VERIFIED grade (floor 0.9); a deductively-
+    # validated one is mechanistic-only (CONFIDENT, floor 0.8). confidence_level
+    # must agree with likelihood (RootCauseConclusion.confidence_consistency), so
+    # derive it from the final score rather than hardcoding.
+    floor = 0.9 if root.validation_method == ValidationMethod.EMPIRICAL else 0.8
+    likelihood = max(case.progress.root_cause_likelihood or 0.0, floor)
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=root.statement[:1000],
+        mechanism=mechanism,
+        confidence_level=ConfidenceLevel.from_score(likelihood),
+        likelihood=likelihood,
+        validated_hypothesis_id=hyp.hypothesis_id,
+        evidence_basis=[
+            link.evidence_id
+            for link in root.evidence_links
+            if link.stance == EvidenceStance.SUPPORTS
+        ],
+        determined_by="engine:chain_validation",
+    )
+    return True
+
+
+def any_chain_root_inconclusive(case: Case) -> bool:
+    """Does some STANDING hypothesis's chain ROOT node read INCONCLUSIVE — i.e.
+    a cause we have gathered bearing-but-indecisive evidence on (neither validated
+    nor refuted)? Such a root is a live CANDIDATE, not nothing. Used by the
+    cause_state soft floor: a once-grounded root that loses validation to an
+    evidence tie (INCONCLUSIVE, NOT counterfactually REFUTED) holds the case at
+    CANDIDATES rather than flapping down to UNKNOWN (finding-5 / NO-COLLAPSE). A
+    truly REFUTED root is excluded here, so a real M6 disconfirmation still drops
+    the case fully."""
+    standing = {HypothesisState.ACTIVE, HypothesisState.VALIDATED}
+    return any(
+        h
+        and h.state in standing
+        and h.root_node_id
+        and _state(h.root_node_id, case.causal_nodes) == NodeState.INCONCLUSIVE
         for h in case.hypotheses.values()
     )
 
