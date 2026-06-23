@@ -149,11 +149,20 @@ def test_stemming_matches_morphological_variants():
     assert _stem("leaks") == _stem("leaking") == _stem("leak") == "leak"
     assert _stem("connections") == _stem("connection") == "connection"
     assert _stem("exhausted") == _stem("exhausting") == _stem("exhaust") == "exhaust"
-    # Conservative: does not over-merge or mangle non-plural -ss / short / id tokens.
-    assert _stem("process") == "process"  # -ss is not a plural marker
-    assert _stem("loss") == "loss"
+    # Silent-e plurals keep their 'e' (single -s strip, not -es).
+    assert _stem("caches") == _stem("cache") == "cache"
+    assert _stem("nodes") == _stem("node") == "node"
+    # Conservative: -ss/-us/-is are not plural markers; short / id tokens untouched.
+    assert _stem("process") == "process"
+    assert _stem("status") == "status"
+    assert _stem("basis") == "basis"
     assert _stem("pod") == "pod"
     assert _stem("cn_0a1b2c3d4e5f") == "cn_0a1b2c3d4e5f"  # non-alpha untouched
+    # NO over-merge of unrelated words: the silent-e / short-verb collisions a
+    # crude stemmer would create (codes/cods->cod, caring->car) must NOT happen.
+    assert _stem("codes") == "code" and _stem("cods") == "cod"  # distinct stems
+    assert _stem("caring") == "caring" and _stem("cars") == "car"  # caring is NOT car
+    assert _stem("rates") == "rate" and _stem("rats") == "rat"  # distinct stems
 
     # A morphologically-divergent restatement that scored too low before stemming
     # now clears STRONG.
