@@ -167,6 +167,24 @@ def test_tie_supports_equal_refutes_is_inconclusive():
     assert n.node_state == NodeState.INCONCLUSIVE
 
 
+def test_counterfactual_absence_refutes_decisively_over_support():
+    """A CAUSAL_ABSENCE_EVIDENCE REFUTES (counterfactual disconfirmation, §7.2) is
+    decisive — it refutes even against an equal causal SUPPORTS (where an ordinary
+    correlational tie would be INCONCLUSIVE)."""
+    sup = _evidence("ev_sup", EvidenceCategory.CAUSAL_EVIDENCE)
+    absent = _evidence("ev_absent", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    n = _node(
+        _nid(8),
+        links=[
+            _link("ev_sup", EvidenceStance.SUPPORTS),
+            _link("ev_absent", EvidenceStance.REFUTES),
+        ],
+    )
+    case = _case([n], evidence=[sup, absent])
+    derive_node_states(case)
+    assert n.node_state == NodeState.REFUTED
+
+
 def test_no_evidence_stays_candidate():
     n = _node(_nid(5))
     case = _case([n])
