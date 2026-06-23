@@ -40,8 +40,6 @@ from faultmaven.modules.case.contracts import (
 
 pytestmark = pytest.mark.unit
 
-_HEX = "0123456789abcdef"
-
 
 def _nid(seed: int) -> str:
     return f"cn_{seed:012x}"
@@ -152,8 +150,9 @@ def test_net_refuting_evidence_refutes_node():
     assert n.validation_method == ValidationMethod.NONE
 
 
-def test_tie_refutes_equal_supports_is_refuted():
-    """refutes >= supports (a tie) refutes — refutation is asymmetric/easier."""
+def test_tie_supports_equal_refutes_is_inconclusive():
+    """A support/refute tie is genuinely INCONCLUSIVE — neither side wins, so it
+    is not asserted REFUTED (refutation needs strictly more refutes)."""
     evs = _evidence("ev_s", EvidenceCategory.CAUSAL_EVIDENCE)
     evr = _evidence("ev_r", EvidenceCategory.CAUSAL_EVIDENCE)
     n = _node(
@@ -165,7 +164,7 @@ def test_tie_refutes_equal_supports_is_refuted():
     )
     case = _case([n], evidence=[evs, evr])
     derive_node_states(case)
-    assert n.node_state == NodeState.REFUTED
+    assert n.node_state == NodeState.INCONCLUSIVE
 
 
 def test_no_evidence_stays_candidate():
@@ -238,8 +237,35 @@ def test_and_gate_refuted_member_blocks_effect_validation():
     case = _case([c1, c2, effect], edges=edges, evidence=[evc, evr])
     derive_node_states(case)
     assert c2.node_state == NodeState.REFUTED
-    # effect cannot be conjunctively established (M7 disproof via refuted member)
-    assert effect.node_state == NodeState.REFUTED
+    # The AND-gate BLOCKS validation (M7 proof needs every member validated), but
+    # derive does not structurally REFUTE the effect — it has its own support, so
+    # it stays INCONCLUSIVE (conservative; structural refutation is §9.4).
+    assert effect.node_state == NodeState.INCONCLUSIVE
+
+
+def test_refuted_and_member_does_not_over_refute_effect_with_or_alternative():
+    """A refuted member of one AND-group must NOT refute an effect that also has
+    an independent OR-alternative path — the over-refutation bug. derive does no
+    structural refutation, so the effect is never REFUTED on a sibling's account."""
+    evr = _evidence("ev_r", EvidenceCategory.CAUSAL_EVIDENCE)
+    evc = _evidence("ev_c", EvidenceCategory.CAUSAL_EVIDENCE)
+    a = _node(
+        _nid(50), links=[_link("ev_r", EvidenceStance.REFUTES)]
+    )  # refuted AND member
+    b = _node(_nid(51), links=[_link("ev_c", EvidenceStance.SUPPORTS)])  # valid OR alt
+    effect = _node(_nid(52))  # no own evidence yet
+    edges = [
+        CausalEdge(
+            cause_node_id=a.node_id, effect_node_id=effect.node_id, and_group="g1"
+        ),
+        CausalEdge(
+            cause_node_id=b.node_id, effect_node_id=effect.node_id, and_group=None
+        ),
+    ]
+    case = _case([a, b, effect], edges=edges, evidence=[evr, evc])
+    derive_node_states(case)
+    assert a.node_state == NodeState.REFUTED
+    assert effect.node_state != NodeState.REFUTED  # the fix: no over-refutation
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +288,47 @@ def test_derived_states_round_trip_through_model_validators():
     derive_node_states(case)
     for n in (root, refuted):
         CausalNode(**n.model_dump())  # raises if an invariant combination is wrong
+
+
+# ---------------------------------------------------------------------------
+# Deductive preservation + idempotency
+# ---------------------------------------------------------------------------
+
+
+def test_deductively_validated_node_is_not_demoted():
+    """A node VALIDATED by deduction (§7.1.1) carries no supporting evidence of
+    its own; the empirical lane must leave it intact, not demote it to CANDIDATE."""
+    n = _node(_nid(60), node_type=NodeType.ROOT)
+    n.node_state = NodeState.VALIDATED
+    n.validation_method = ValidationMethod.DEDUCTIVE
+    n.actionable = True
+    case = _case([n])  # no evidence
+    derive_node_states(case)
+    assert n.node_state == NodeState.VALIDATED
+    assert n.validation_method == ValidationMethod.DEDUCTIVE
+
+
+def test_deductive_node_is_overturned_by_direct_refutation():
+    evr = _evidence("ev_r", EvidenceCategory.CAUSAL_EVIDENCE)
+    n = _node(_nid(61), links=[_link("ev_r", EvidenceStance.REFUTES)])
+    n.node_state = NodeState.VALIDATED
+    n.validation_method = ValidationMethod.DEDUCTIVE
+    case = _case([n], evidence=[evr])
+    derive_node_states(case)
+    assert n.node_state == NodeState.REFUTED
+
+
+def test_redrive_is_idempotent():
+    """A second derive over a settled graph changes nothing (no needless persist)."""
+    ev = _evidence("ev_c", EvidenceCategory.CAUSAL_EVIDENCE)
+    root = _node(
+        _nid(70),
+        node_type=NodeType.ROOT,
+        links=[_link("ev_c", EvidenceStance.SUPPORTS)],
+    )
+    case = _case([root], evidence=[ev])
+    assert derive_node_states(case) is True
+    assert derive_node_states(case) is False  # already settled
 
 
 # ---------------------------------------------------------------------------

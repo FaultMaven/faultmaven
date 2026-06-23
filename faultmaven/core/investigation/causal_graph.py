@@ -222,27 +222,41 @@ def derive_node_states(case: Case) -> bool:
     derived truth signal: a root reaches VALIDATED only when real causal evidence
     bears it out, never because the flat model already "knew" the answer.
 
+    This is the EMPIRICAL lane only: a node's state follows its OWN rung evidence
+    plus the M7 AND-gate used strictly as a VALIDATION gate. Structural
+    refutation propagation (refuting an effect because an upstream cause is
+    refuted) is deliberately NOT done here — it over-refutes a node that still
+    has an intact OR-alternative and would invert precedence over a node's own
+    direct observation; that belongs to the §9.4 belief-propagation slice.
+
     Per non-PROBLEM node (the PROBLEM node ``D`` is the engine-owned anchor and
     is left untouched):
 
-    - **REFUTED** — its links net-refute it (``refutes >= 1`` and
-      ``refutes >= supports``), OR an AND-member feeding it is REFUTED (M7
-      disproof, asymmetric). ``validation_method=NONE``, ``actionable=False``.
+    - **REFUTED** — its links net-refute it: ``refutes > supports`` (strict; a
+      tie is INCONCLUSIVE, not a disproof). ``validation_method=NONE``,
+      ``actionable=False``.
     - **VALIDATED** — not refuted, has at least one CAUSAL_EVIDENCE-backed
       SUPPORTS link, is net-supporting (``supports > refutes``), AND every
       AND-set feeding it is fully VALIDATED (M7 proof, strict). EMPIRICAL grade;
-      a validated ROOT is marked ``actionable`` (M1). Method + actionable are set
-      BEFORE the state so the node satisfies its M1/M4 model-validators at every
-      step (CausalNode has ``validate_assignment`` off, but it is reloaded via
-      ``CausalNode(**...)`` and would fail an inconsistent combination).
-    - **INCONCLUSIVE** — has bearing evidence but neither validates nor refutes.
+      a validated ROOT is marked ``actionable`` (M1). Method/actionable/reason
+      are kept mutually consistent so the node satisfies its M1/M4/refutation
+      model-validators on reload (``CausalNode(**...)``; ``validate_assignment``
+      is off in memory).
+    - **INCONCLUSIVE** — has bearing evidence but neither validates nor refutes
+      (including a support/refute tie).
     - **CANDIDATE** — no bearing evidence yet (the lazy default; a freshly
       emitted, untested rung).
 
+    A node already VALIDATED by DEDUCTION (§7.1.1, proof-by-exclusion) carries no
+    supporting evidence of its own by design, so the evidence-local lane LEAVES
+    it intact — it is only overturned here by DIRECT refuting evidence
+    (``refutes > supports``), never silently demoted to CANDIDATE.
+
     Iterates to a fixpoint (bounded by node count) so a cause validated this pass
-    can satisfy its effect's AND-gate within the same recompute. Conservative and
-    monotone-safe: each node's target is a pure function of its links + parents'
-    states, so the loop settles. Returns True if any node's state changed.
+    can satisfy its effect's AND-gate within the same recompute. On a DAG the
+    longest dependency path is ``len(nodes)-1`` edges, so ``len(nodes)+1`` passes
+    settle it; a malformed cyclic graph simply stops at the bound (no hang).
+    Returns True if any node's state changed.
     """
     nodes = case.causal_nodes
     edges = case.causal_edges
@@ -261,10 +275,14 @@ def derive_node_states(case: Case) -> bool:
             supports, refutes, causal_supports = _node_evidence_tally(
                 node, evidence_by_id
             )
-            net_refuted = refutes >= 1 and refutes >= supports
-            target_state = node.node_state
-            if net_refuted or and_constraints_refuted(node.node_id, nodes, edges):
+            deductively_valid = (
+                node.node_state == NodeState.VALIDATED
+                and node.validation_method == ValidationMethod.DEDUCTIVE
+            )
+            if refutes > supports:  # decisive direct refutation (M7 / §7.3)
                 target_state = NodeState.REFUTED
+            elif deductively_valid:
+                continue  # owned by the deductive lane — never demote here
             elif (
                 causal_supports >= 1
                 and supports > refutes
