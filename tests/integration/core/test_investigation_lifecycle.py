@@ -51,7 +51,24 @@ from faultmaven.modules.case.domain.models import (
     Case,
     InquiryData,
     ProblemVerification,
+    UploadedFile,
 )
+
+# The file the mocked LLM responses cite as ``source_file_id``; the case must
+# carry the matching upload (as in a real flow) or the engine drops the file
+# anchor as unresolvable (the source_file_id FK guard).
+_CITED_UPLOAD_ID = "file_aabb12345678"
+
+
+def _cited_upload() -> UploadedFile:
+    return UploadedFile(
+        file_id=_CITED_UPLOAD_ID,
+        filename="metrics.txt",
+        size_bytes=128,
+        uploaded_at_turn=1,
+    )
+
+
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
@@ -70,6 +87,7 @@ def _make_inquiry_case(**overrides) -> Case:
         "description": "",
         "state": CaseState.INQUIRY,
         "current_turn": 0,
+        "uploaded_files": [_cited_upload()],
     }
     defaults.update(overrides)
     return Case(**defaults)
@@ -105,6 +123,7 @@ def _make_investigating_case(**overrides) -> Case:
             symptom_statement=description,
             severity="LOW",
         ),
+        "uploaded_files": [_cited_upload()],
     }
     defaults.update(overrides)
     return Case(**defaults)
