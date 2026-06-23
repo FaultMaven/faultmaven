@@ -940,13 +940,50 @@ _RESTATEMENT_STOPWORDS = {
 }
 
 
+def _stem(token: str) -> str:
+    """Collapse common English inflections so morphological variants of the same
+    word match (``leaks``/``leaking`` → ``leak``; ``connections`` → ``connection``;
+    ``caches`` → ``cache``). Deliberately CONSERVATIVE so it cannot merge UNRELATED
+    words into a coincidental shared token (which could push an orphan past the T1
+    STRONG + 2-token guard into a wrong auto-attach — the campaign's
+    NO-INCORRECT-CONCLUSION line):
+
+    - ``-ing``/``-ed`` strip only when the stem is 4+ chars, so short silent-e
+      collisions never form (``caring``→``caring`` not ``car``; ``coding`` stays).
+    - plurals strip a SINGLE trailing ``-s`` (Porter step-1a style), so silent-e
+      nouns keep their ``e`` (``caches``→``cache``, ``nodes``→``node``) and
+      ``-ss``/``-us``/``-is`` (``process``, ``status``, ``basis``) are left alone —
+      that ``-s`` is not a plural marker.
+
+    Single-``-s`` stripping cannot merge two *unrelated* words (they would have to
+    differ only by a trailing ``s``, i.e. be the same word). Tokens with non-alpha
+    chars (ids, dotted names, paths) are left untouched."""
+    if not token.isalpha() or len(token) <= 3:
+        return token
+    for suf in ("ing", "ed"):
+        if token.endswith(suf) and len(token) - len(suf) >= 4:
+            return token[: -len(suf)]
+    if token.endswith("ies") and len(token) > 4:
+        return token[:-3] + "y"
+    if (
+        token.endswith("s")
+        and not token.endswith(("ss", "us", "is"))
+        and len(token) - 1 >= 3
+    ):
+        return token[:-1]
+    return token
+
+
 def _content_tokens(text: str) -> set[str]:
-    """Lowercased content tokens (filler words dropped) for comparing whether
-    two statements describe the same cause."""
+    """Lowercased, STEMMED content tokens (filler words dropped) for comparing
+    whether two statements describe the same cause. Stopwords are dropped before
+    stemming so the stopword list stays readable (plain words)."""
     raw = "".join(
         c.lower() if (c.isalnum() or c in ".-_:/") else " " for c in (text or "")
     )
-    return {t for t in raw.split() if len(t) >= 2 and t not in _RESTATEMENT_STOPWORDS}
+    return {
+        _stem(t) for t in raw.split() if len(t) >= 2 and t not in _RESTATEMENT_STOPWORDS
+    }
 
 
 def restatement_score(a: str, b: str) -> float:

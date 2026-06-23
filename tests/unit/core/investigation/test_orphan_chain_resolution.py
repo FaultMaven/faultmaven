@@ -141,7 +141,69 @@ def test_restatement_score_thresholds_bracket_expectations():
     )
 
 
+def test_stemming_matches_morphological_variants():
+    """Gate 2: inflectional variants of the same words now match (the leaks≠leak /
+    connections≠connection brittleness that left a validated chain orphaned)."""
+    from faultmaven.core.investigation.causal_graph import _stem
+
+    assert _stem("leaks") == _stem("leaking") == _stem("leak") == "leak"
+    assert _stem("connections") == _stem("connection") == "connection"
+    assert _stem("exhausted") == _stem("exhausting") == _stem("exhaust") == "exhaust"
+    # Silent-e plurals keep their 'e' (single -s strip, not -es).
+    assert _stem("caches") == _stem("cache") == "cache"
+    assert _stem("nodes") == _stem("node") == "node"
+    # Conservative: -ss/-us/-is are not plural markers; short / id tokens untouched.
+    assert _stem("process") == "process"
+    assert _stem("status") == "status"
+    assert _stem("basis") == "basis"
+    assert _stem("pod") == "pod"
+    assert _stem("cn_0a1b2c3d4e5f") == "cn_0a1b2c3d4e5f"  # non-alpha untouched
+    # NO over-merge of unrelated words: the silent-e / short-verb collisions a
+    # crude stemmer would create (codes/cods->cod, caring->car) must NOT happen.
+    assert _stem("codes") == "code" and _stem("cods") == "cod"  # distinct stems
+    assert _stem("caring") == "caring" and _stem("cars") == "car"  # caring is NOT car
+    assert _stem("rates") == "rate" and _stem("rats") == "rat"  # distinct stems
+
+    # A morphologically-divergent restatement that scored too low before stemming
+    # now clears STRONG.
+    assert (
+        restatement_score(
+            "code change leaks connections on the error path",
+            "a connection leak in the deployed code",
+        )
+        >= RESTATEMENT_STRONG
+    )
+    # Stemming does not manufacture a match between unrelated statements.
+    assert (
+        restatement_score("dns resolution timeout", "memory pressure evictions")
+        < RESTATEMENT_AMBIGUOUS
+    )
+
+
 # --- T1: deterministic re-attach -------------------------------------------
+
+
+def test_t1_reattaches_morphological_orphan_over_a_distractor():
+    """The disp-confirmed behavioral case: a VALIDATED chain root the LLM left
+    orphaned (morphological variants of a leak hypothesis) is now a clean single
+    match (stemming) over an unrelated distractor hypothesis → T1 auto-attaches,
+    so a validated root no longer fails to ground cause_state."""
+    leak = _hyp("a connection leak in the deployed checkout code")
+    distractor = _hyp("the number of replicas increased beyond the pool size")
+    case = _investigating_case()
+    case.hypotheses = {leak.hypothesis_id: leak, distractor.hypothesis_id: distractor}
+    bridge_flat_hypotheses_to_graph(case)  # each gets a degenerate stub
+
+    orphan_root = _add_orphan_chain(
+        case,
+        "a code change in PlaceOrder removed the release call, leaking connections",
+        multi_rung=True,
+    )
+    ambiguous = resolve_orphan_chains(case)
+
+    assert ambiguous == []  # resolved deterministically, no nudge
+    assert leak.root_node_id == orphan_root  # the leak hyp owns the real chain
+    assert distractor.root_node_id != orphan_root  # the distractor is untouched
 
 
 def test_t1_reattaches_unambiguous_double_representation_and_gcs_stub():
