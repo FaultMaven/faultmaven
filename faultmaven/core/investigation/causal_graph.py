@@ -940,13 +940,37 @@ _RESTATEMENT_STOPWORDS = {
 }
 
 
+def _stem(token: str) -> str:
+    """Collapse common English inflections so morphological variants of the same
+    word match (``leaks``/``leaking`` → ``leak``; ``connections`` → ``connection``;
+    ``exhausted`` → ``exhaust``). Deliberately CONSERVATIVE — it strips only clear
+    plural/verb suffixes on long-enough tokens and never derives aggressively, so
+    it cannot merge unrelated words (the ``leaks≠leak`` brittleness the T1
+    re-attach hit, without inflating false matches that would risk a wrong
+    auto-attach). Tokens carrying non-alpha chars (ids, dotted names, paths) are
+    left untouched."""
+    if not token.isalpha() or len(token) <= 3:
+        return token
+    if token.endswith("ies") and len(token) > 4:
+        return token[:-3] + "y"
+    for suf in ("ing", "ed", "es", "s"):
+        if token.endswith(suf) and len(token) - len(suf) >= 3:
+            if suf == "s" and token.endswith("ss"):
+                continue  # process / loss — the -s is not a plural marker
+            return token[: -len(suf)]
+    return token
+
+
 def _content_tokens(text: str) -> set[str]:
-    """Lowercased content tokens (filler words dropped) for comparing whether
-    two statements describe the same cause."""
+    """Lowercased, STEMMED content tokens (filler words dropped) for comparing
+    whether two statements describe the same cause. Stopwords are dropped before
+    stemming so the stopword list stays readable (plain words)."""
     raw = "".join(
         c.lower() if (c.isalnum() or c in ".-_:/") else " " for c in (text or "")
     )
-    return {t for t in raw.split() if len(t) >= 2 and t not in _RESTATEMENT_STOPWORDS}
+    return {
+        _stem(t) for t in raw.split() if len(t) >= 2 and t not in _RESTATEMENT_STOPWORDS
+    }
 
 
 def restatement_score(a: str, b: str) -> float:
