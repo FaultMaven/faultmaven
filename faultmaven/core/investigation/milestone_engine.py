@@ -762,6 +762,16 @@ def _mark_cause_identified(case: "Case") -> bool:
     return True
 
 
+def _chain_mode() -> bool:
+    """Whether causal-chain emission is active. The single source of truth for the
+    chain-vs-flat decision, read fresh (hot-reloadable) at each use: the
+    end-of-turn cause_state recompute and the mid-turn flat-grounding guard must
+    agree, so both call here rather than re-deriving the flag."""
+    from faultmaven.config.settings import get_settings
+
+    return get_settings().features.enable_hypothesis_chain_emission
+
+
 def _recompute_cause_state_flat(case: "Case") -> None:
     """Flat-grounding ``cause_state`` derivation (the pre-chain path, used when
     ``enable_hypothesis_chain_emission`` is OFF). Unchanged from the original
@@ -823,25 +833,21 @@ def _recompute_assessment_state(case: "Case") -> None:
     ``_apply_investigation_updates`` so hypotheses/solutions added this turn
     are reflected.
 
-    - ``cause_state``: ``IDENTIFIED`` is sticky/forward-only. It is reached
-      either from the LLM's grounded ``root_cause_identified`` signal (honored
-      in the milestone apply loop) OR derived here from observable grounding —
-      a high ``root_cause_likelihood`` (>= 0.7) backed by causal evidence, or a
-      recorded ``RootCauseConclusion``. Deriving it (not depending solely on the
-      LLM setting a separate milestone) keeps cause_state a robust engine-owned
-      truth signal (R1): the LLM routinely expresses high confidence + files
-      causal evidence without also toggling the milestone flag. Until
-      IDENTIFIED, it derives from the active-hypothesis count: ``>= 2`` ACTIVE
-      hypotheses → ``CANDIDATES``, else ``UNKNOWN``.
+    - ``cause_state`` is delegated by the chain-emission flag (both helpers are
+      documented at their definitions):
+        * flag OFF → ``_recompute_cause_state_flat`` — the established flat
+          grounding: ``IDENTIFIED`` sticky/forward-only from grounded confidence
+          + causal evidence / a ``RootCauseConclusion``, else CANDIDATES/UNKNOWN.
+        * flag ON → ``_recompute_cause_state_from_chain`` (Option A, §9.2) —
+          ``IDENTIFIED`` iff a standing chain root is VALIDATED; NOT sticky (it
+          follows the root's evidence-derived truth, so M6 drops it on its own).
     - ``solution_state``: ``SELECTED`` once a permanent SOLUTION has been
       proposed (or a Solution record exists). ``CANDIDATES`` (multi-solution
       deliberation) is reserved for a follow-on and not produced here.
     """
     p = case.progress
 
-    from faultmaven.config.settings import get_settings
-
-    if get_settings().features.enable_hypothesis_chain_emission:
+    if _chain_mode():
         _recompute_cause_state_from_chain(case)
     else:
         _recompute_cause_state_flat(case)
@@ -5966,10 +5972,8 @@ class MilestoneEngine:
                         # grounding chokepoint must NOT set IDENTIFIED here, or it
                         # would leak a stale likelihood/method the chain recompute
                         # then rejects — and could re-ground a chain-less cause.
-                        from faultmaven.config.settings import get_settings
-
                         if (
-                            not get_settings().features.enable_hypothesis_chain_emission
+                            not _chain_mode()
                             and p.cause_state != CauseState.IDENTIFIED
                             and _mark_cause_identified(case)
                         ):

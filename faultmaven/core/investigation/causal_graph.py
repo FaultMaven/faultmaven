@@ -673,14 +673,20 @@ def _node_has_counterfactual_refute(
     )
 
 
-def _disconfirmed_cause_trigger(case: Case) -> tuple[Hypothesis, str] | None:
+def _disconfirmed_cause_trigger(
+    case: Case, *, node_side: bool
+) -> tuple[Hypothesis, str] | None:
     """Shared M6 trigger for both demote paths. Returns ``(hypothesis, reason)``
     when a grounded (``cause_state=IDENTIFIED``) case's representative cause is
     disconfirmed, else None. Disconfirmation is the hypothesis being REFUTED or
-    net-refuted (``_net_refuted``), OR — the chain-mode case the prompt mandates —
-    its ROOT node carrying a counterfactual (CAUSAL_ABSENCE) refutation even when
-    the flat hypothesis was not touched. (In flat mode there is no emitted chain,
-    so the node-side check is vacuously False.)"""
+    net-refuted (``_net_refuted``); and — only when ``node_side`` (the chain-mode
+    case the prompt mandates) — its ROOT node carrying a counterfactual
+    (CAUSAL_ABSENCE) refutation even when the flat hypothesis was untouched.
+
+    ``node_side`` is FALSE for the flat path so its behavior is exactly as
+    before: a persisted root (reloaded regardless of the flag, e.g. after the
+    flag is flipped off) with a counterfactual refute must NOT demote a healthy
+    flat hypothesis — node-derived disconfirmation is a chain-mode concept."""
     p = case.progress
     if p.cause_state != CauseState.IDENTIFIED:
         return None
@@ -692,7 +698,8 @@ def _disconfirmed_cause_trigger(case: Case) -> tuple[Hypothesis, str] | None:
         hyp.state == HypothesisState.REFUTED
         or _net_refuted(hyp)
         or (
-            root is not None
+            node_side
+            and root is not None
             and _node_has_counterfactual_refute(root, _evidence_category_map(case))
         )
     )
@@ -738,7 +745,9 @@ def demote_disconfirmed_cause(case: Case) -> bool:
     representative cause, or that cause is not disconfirmed.
     """
     p = case.progress
-    trigger = _disconfirmed_cause_trigger(case)
+    # Flat path: node-side counterfactual disconfirmation does NOT apply (no
+    # emitted chain; persisted nodes must not demote a healthy flat hypothesis).
+    trigger = _disconfirmed_cause_trigger(case, node_side=False)
     if trigger is None:
         return False
     hyp, reason = trigger
@@ -845,7 +854,9 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     lingers. Returns True if it acted.
     """
     p = case.progress
-    trigger = _disconfirmed_cause_trigger(case)
+    # Chain path: a counterfactual refute on the root NODE also disconfirms the
+    # cause (the prompt mandates the failed-treatment fact land on the rung).
+    trigger = _disconfirmed_cause_trigger(case, node_side=True)
     if trigger is None:
         return False
     hyp, reason = trigger

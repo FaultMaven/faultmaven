@@ -17,6 +17,7 @@ from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.causal_graph import (
     _attach_engine_refutation,
     any_chain_root_validated,
+    demote_disconfirmed_cause,
     demote_disconfirmed_cause_via_evidence,
     seed_problem_node,
 )
@@ -95,12 +96,17 @@ def _root(node_id="cn_000000000001", *, support_label=None) -> CausalNode:
 
 
 def _hyp(
-    root_node_id, *, refutes=0, supports=0, state=HypothesisState.ACTIVE
+    root_node_id,
+    *,
+    hypothesis_id="hyp_000000000001",
+    refutes=0,
+    supports=0,
+    state=HypothesisState.ACTIVE,
 ) -> Hypothesis:
     links = [
         HypothesisEvidenceLink(
-            hypothesis_id="hyp_000000000001",
-            evidence_id=_eid(f"r{i}"),
+            hypothesis_id=hypothesis_id,
+            evidence_id=_eid(f"{hypothesis_id}r{i}"),
             stance=EvidenceStance.REFUTES,
             reasoning="contra",
             stance_confidence=0.9,
@@ -108,8 +114,8 @@ def _hyp(
         for i in range(refutes)
     ] + [
         HypothesisEvidenceLink(
-            hypothesis_id="hyp_000000000001",
-            evidence_id=_eid(f"s{i}"),
+            hypothesis_id=hypothesis_id,
+            evidence_id=_eid(f"{hypothesis_id}s{i}"),
             stance=EvidenceStance.SUPPORTS,
             reasoning="pro",
             stance_confidence=0.9,
@@ -117,7 +123,7 @@ def _hyp(
         for i in range(supports)
     ]
     return Hypothesis(
-        hypothesis_id="hyp_000000000001",
+        hypothesis_id=hypothesis_id,
         statement="connection pool exhausted",
         category=HypothesisCategory.DATABASE,
         state=state,
@@ -327,6 +333,16 @@ def test_retired_hypothesis_root_does_not_ground():
     assert case.progress.cause_state != CauseState.IDENTIFIED
 
 
+def test_demote_via_evidence_noop_when_not_grounded():
+    """M6 must not fire on an ungrounded case (cause_state != IDENTIFIED) — no
+    refutation, no fabricated CAUSAL_ABSENCE row, no retraction."""
+    case, root, hyp = _chain_case()  # cause_state defaults to UNKNOWN
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+    before = len(case.evidence)
+    assert demote_disconfirmed_cause_via_evidence(case) is False
+    assert len(case.evidence) == before  # no engine refutation minted
+
+
 def test_node_only_counterfactual_refute_retracts_conclusion():
     """The disconfirmation lands on the ROOT NODE (not the flat hypothesis), as
     the prompt mandates. M6 must still fire: cause_state drops AND the stale
@@ -355,6 +371,28 @@ def test_node_only_counterfactual_refute_retracts_conclusion():
     assert root.node_state == NodeState.REFUTED
     assert case.progress.cause_state != CauseState.IDENTIFIED
     assert case.root_cause_conclusion is None  # retracted via node-side trigger
+
+
+def test_flat_demote_ignores_node_side_counterfactual():
+    """The flat path must NOT demote a healthy hypothesis off a persisted node-side
+    counterfactual (a root reloaded after the flag was flipped off). Node-derived
+    disconfirmation is chain-mode-only."""
+    case, root, hyp = _chain_case()
+    case.progress.cause_state = CauseState.IDENTIFIED  # grounded (prior turn)
+    # The hypothesis itself is healthy (ACTIVE, not net-refuted), but its persisted
+    # root carries a counterfactual refute.
+    absent = _evidence("ev_absent", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    case.evidence.append(absent)
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=absent.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="stale counterfactual",
+            linked_at_turn=case.current_turn,
+        )
+    )
+    assert demote_disconfirmed_cause(case) is False  # flat path does not fire
+    assert hyp.state == HypothesisState.ACTIVE  # healthy hyp untouched
 
 
 def test_ordinary_refute_does_not_suppress_decisive_attach():
@@ -391,10 +429,8 @@ def test_one_chain_demoted_other_standing_stays_identified():
         CausalEdge(cause_node_id=r1.node_id, effect_node_id=d.node_id),
         CausalEdge(cause_node_id=r2.node_id, effect_node_id=d.node_id),
     ]
-    h1 = _hyp(r1.node_id)
-    h1.hypothesis_id = "hyp_000000000001"
-    h2 = _hyp(r2.node_id)
-    h2.hypothesis_id = "hyp_000000000002"
+    h1 = _hyp(r1.node_id, hypothesis_id="hyp_000000000001")
+    h2 = _hyp(r2.node_id, hypothesis_id="hyp_000000000002")
     case.hypotheses = {h1.hypothesis_id: h1, h2.hypothesis_id: h2}
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_state == CauseState.IDENTIFIED
