@@ -5961,8 +5961,16 @@ class MilestoneEngine:
                         # untouched instead of stranding an IDENTIFIED with no
                         # conclusion. Append the symbol only on a real,
                         # grounded transition this turn.
+                        # In chain mode cause_state is owned by the end-of-turn
+                        # chain recompute (a validated chain root, §9.2); the flat
+                        # grounding chokepoint must NOT set IDENTIFIED here, or it
+                        # would leak a stale likelihood/method the chain recompute
+                        # then rejects — and could re-ground a chain-less cause.
+                        from faultmaven.config.settings import get_settings
+
                         if (
-                            p.cause_state != CauseState.IDENTIFIED
+                            not get_settings().features.enable_hypothesis_chain_emission
+                            and p.cause_state != CauseState.IDENTIFIED
                             and _mark_cause_identified(case)
                         ):
                             metadata["milestones_completed"].append(field)

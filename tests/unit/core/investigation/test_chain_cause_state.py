@@ -31,6 +31,7 @@ from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
     CauseState,
+    ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -307,3 +308,108 @@ def test_recompute_uses_flat_path_when_flag_off(monkeypatch):
     # did not run, so the root is untouched.
     assert root.node_state == NodeState.CANDIDATE
     assert case.progress.cause_state != CauseState.IDENTIFIED
+
+
+# ---------------------------------------------------------------------------
+# Code-review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_retired_hypothesis_root_does_not_ground():
+    """A RETIRED (abandoned) hypothesis whose root is still VALIDATED must NOT
+    keep grounding IDENTIFIED — only ACTIVE/VALIDATED hypotheses are standing."""
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    hyp.state = HypothesisState.RETIRED
+    assert any_chain_root_validated(case) is False
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+
+
+def test_node_only_counterfactual_refute_retracts_conclusion():
+    """The disconfirmation lands on the ROOT NODE (not the flat hypothesis), as
+    the prompt mandates. M6 must still fire: cause_state drops AND the stale
+    conclusion is retracted (no truth-split with the disposition layer)."""
+    case, root, hyp = _chain_case()
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="pool exhausted",
+        mechanism="leak",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+    )
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    # Counterfactual REFUTES on the ROOT NODE only — the hypothesis is untouched.
+    absent = _evidence("ev_absent", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    case.evidence.append(absent)
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=absent.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="fix applied, D persists",
+            linked_at_turn=case.current_turn,
+        )
+    )
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.REFUTED
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+    assert case.root_cause_conclusion is None  # retracted via node-side trigger
+
+
+def test_ordinary_refute_does_not_suppress_decisive_attach():
+    """A pre-existing ordinary (non-counterfactual) refute must NOT block M6 from
+    attaching its DECISIVE CAUSAL_ABSENCE refutation."""
+    from faultmaven.core.investigation.causal_graph import _attach_engine_refutation
+
+    ordinary = _evidence("ev_ordinary", EvidenceCategory.CAUSAL_EVIDENCE)
+    root = _root(support_label="ev_root_support")
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=ordinary.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="weak contra",
+            linked_at_turn=2,
+        )
+    )
+    case = _case(nodes=[root], evidence=[_evidence("ev_root_support"), ordinary])
+    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    # a CAUSAL_ABSENCE row was added despite the pre-existing ordinary refute
+    assert any(
+        e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE for e in case.evidence
+    )
+
+
+def test_one_chain_demoted_other_standing_stays_identified():
+    """Two chains; one is counterfactually disconfirmed, the other's root stays
+    validated → the case remains IDENTIFIED via the standing chain."""
+    r1 = _root("cn_000000000001", support_label="ev_s1")
+    r2 = _root("cn_000000000002", support_label="ev_s2")
+    case = _case(nodes=[r1, r2], evidence=[_evidence("ev_s1"), _evidence("ev_s2")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=r1.node_id, effect_node_id=d.node_id),
+        CausalEdge(cause_node_id=r2.node_id, effect_node_id=d.node_id),
+    ]
+    h1 = _hyp(r1.node_id)
+    h1.hypothesis_id = "hyp_000000000001"
+    h2 = _hyp(r2.node_id)
+    h2.hypothesis_id = "hyp_000000000002"
+    case.hypotheses = {h1.hypothesis_id: h1, h2.hypothesis_id: h2}
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    # Disconfirm chain 1 only (counterfactual on its root).
+    absent = _evidence("ev_absent1", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    case.evidence.append(absent)
+    r1.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=absent.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="fix on cause 1 failed",
+            linked_at_turn=case.current_turn,
+        )
+    )
+    _recompute_cause_state_from_chain(case)
+    assert r1.node_state == NodeState.REFUTED
+    assert r2.node_state == NodeState.VALIDATED
+    assert case.progress.cause_state == CauseState.IDENTIFIED  # standing via chain 2
