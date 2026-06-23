@@ -504,6 +504,33 @@ class TestInvestigationLifecycle:
         assert len(updated.turn_history) >= 1
         assert result["metadata"]["progress_made"] is True
 
+    async def test_unresolvable_source_file_id_does_not_abort_turn(
+        self, engine, case_repo
+    ):
+        """The regression the source_file_id guard prevents: when the LLM cites a
+        file that is NOT in uploaded_files, the turn must still COMPLETE (no FK
+        abort) and persist the slice as USER_DESCRIPTION with no file anchor."""
+        # Same cited evidence, but the case carries no matching upload.
+        case = _make_investigating_case(current_turn=4, uploaded_files=[])
+        await case_repo.save(case)
+
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_investigation_verification_response(),
+        ):
+            result = await engine.process_turn(case, "Here are the metrics: p99=5200ms")
+
+        updated = result["case_updated"]
+        assert (
+            result["metadata"]["progress_made"] is True
+        )  # turn completed, not aborted
+        assert len(updated.evidence) >= 1
+        ev = updated.evidence[0]
+        assert ev.source_file_id is None  # dangling anchor dropped
+        assert ev.source_type == EvidenceSourceType.USER_DESCRIPTION
+        assert ev.summary  # content preserved
+
     async def test_full_lifecycle_inquiry_to_resolved(self, engine, case_repo):
         """Complete lifecycle: INQUIRY → INVESTIGATING → RESOLVED."""
         case = _make_inquiry_case(current_turn=1)
