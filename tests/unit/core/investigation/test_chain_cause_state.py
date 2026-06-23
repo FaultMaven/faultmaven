@@ -540,3 +540,67 @@ def test_synthesized_rcc_does_not_overwrite_llm_conclusion():
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_state == CauseState.IDENTIFIED
     assert case.root_cause_conclusion is own  # LLM's conclusion preserved
+
+
+def test_stale_engine_rcc_refreshed_on_root_handoff_without_refutation():
+    """The non-M6 handoff: chain A grounds (engine RCC for A); next turn A drifts
+    to INCONCLUSIVE (a tie, NOT refuted, so M6 never clears the RCC) while chain B
+    validates. The stale engine RCC must REFRESH to B, not keep naming A."""
+    rA = _root("cn_00000000000a", support_label="ev_sa")
+    rB = _root("cn_00000000000b")  # B not yet supported
+    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),
+        CausalEdge(cause_node_id=rB.node_id, effect_node_id=d.node_id),
+    ]
+    hA = _hyp(rA.node_id, hypothesis_id="hyp_0000000000aa")
+    hB = _hyp(rB.node_id, hypothesis_id="hyp_0000000000bb")
+    case.hypotheses = {hA.hypothesis_id: hA, hB.hypothesis_id: hB}
+    _recompute_cause_state_from_chain(case)  # A validated → engine RCC names hA
+    assert case.root_cause_conclusion.validated_hypothesis_id == hA.hypothesis_id
+
+    # A drifts to a tie (INCONCLUSIVE, not refuted); B gains causal support.
+    tie = _evidence("ev_tieA", EvidenceCategory.CAUSAL_EVIDENCE)
+    sb = _evidence("ev_sb", EvidenceCategory.CAUSAL_EVIDENCE)
+    case.evidence += [tie, sb]
+    rA.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=tie.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="contra",
+            linked_at_turn=case.current_turn,
+        )
+    )
+    rB.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=sb.evidence_id,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="pro",
+            linked_at_turn=case.current_turn,
+        )
+    )
+    _recompute_cause_state_from_chain(case)
+    assert rA.node_state == NodeState.INCONCLUSIVE  # drifted, not refuted
+    assert rB.node_state == NodeState.VALIDATED
+    assert case.progress.cause_state == CauseState.IDENTIFIED  # via B
+    # the stale engine mirror refreshed to the surviving grounding root
+    assert case.root_cause_conclusion.validated_hypothesis_id == hB.hypothesis_id
+
+
+def test_deductive_root_rcc_is_confident_grade():
+    """A deductively-validated root yields a CONFIDENT (mechanistic-grade) RCC,
+    not VERIFIED, and the no-intermediate mechanism fallback."""
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)  # validates empirically first
+    # Flip the (now validated) root to deductive grade, clear the RCC to force a
+    # fresh synthesis, and re-run.
+    root.validation_method = ValidationMethod.DEDUCTIVE
+    case.root_cause_conclusion = None
+    _recompute_cause_state_from_chain(case)
+    rcc = case.root_cause_conclusion
+    assert rcc is not None
+    assert rcc.confidence_level == ConfidenceLevel.CONFIDENT  # deductive ≠ VERIFIED
+    assert (
+        rcc.mechanism == "Directly produces the observed problem."
+    )  # degenerate chain
