@@ -90,6 +90,7 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     EvidenceCategory,
     EvidenceNeed,
+    EvidenceSourceType,
     EvidenceStance,
     HypothesisState,
     InvestigationActionType,
@@ -314,6 +315,34 @@ def _is_context_length_error(exc: Exception) -> bool:
         "exceeds the maximum context",
     )
     return any(p in msg for p in phrases)
+
+
+def _resolve_evidence_source(
+    case: "Case", source_file_id: str | None, source_type: "EvidenceSourceType"
+) -> "tuple[str | None, EvidenceSourceType]":
+    """Guard a hallucinated / stale ``source_file_id``.
+
+    The LLM declares ``source_file_id`` on each ``EvidenceToAdd``; the schema
+    validator enforces it is PRESENT (unless ``USER_DESCRIPTION``) but NOT that it
+    points at a real uploaded file. An id that resolves to no file passes
+    validation, then fails the ``evidence.source_file_id`` foreign key at save —
+    which aborts the entire turn (silent progress loss, observed in a behavioral
+    run). When the id does not resolve, drop the file anchor and record the slice
+    as ``USER_DESCRIPTION`` (the only fileless-legal source type per the
+    ``evidence_source_invariant`` CHECK): the evidence content is preserved, just
+    not file-attributed. Returns the (possibly adjusted) ``(source_file_id,
+    source_type)``.
+    """
+    if source_file_id is not None and case.find_uploaded_file(source_file_id) is None:
+        logger.warning(
+            "Evidence source_file_id %s does not resolve to an uploaded file for "
+            "case %s; recording the slice as USER_DESCRIPTION (no file anchor) so "
+            "the turn is not lost to a foreign-key failure.",
+            source_file_id,
+            case.case_id,
+        )
+        return None, EvidenceSourceType.USER_DESCRIPTION
+    return source_file_id, source_type
 
 
 def _infer_milestones(
@@ -6165,13 +6194,19 @@ class MilestoneEngine:
                         ev_item.category, milestones_completed_this_turn
                     )
 
+                # Guard a hallucinated/stale source_file_id (FK to uploaded_files)
+                # before it aborts the turn at save.
+                source_file_id, source_type = _resolve_evidence_source(
+                    case, ev_item.source_file_id, ev_item.source_type
+                )
+
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
                     extract=ev_item.extract,
                     category=ev_item.category,
-                    source_type=ev_item.source_type,
-                    source_file_id=ev_item.source_file_id,
+                    source_type=source_type,
+                    source_file_id=source_file_id,
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
