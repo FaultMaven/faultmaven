@@ -249,8 +249,10 @@ def _determine_investigation_momentum(
     if case.turns_without_progress >= 5:
         return InvestigationMomentum.BLOCKED
 
-    # Check recent turn history (last 3 turns)
-    recent_turns = case.turn_history[-3:] if case.turn_history else []
+    # Check recent turn history (last 3 turns). Exclude SKIPPED recovery
+    # placeholders — they aren't real turns and would dilute momentum.
+    real_turns = [t for t in case.turn_history if not t.is_skipped]
+    recent_turns = real_turns[-3:] if real_turns else []
 
     if len(recent_turns) < 2:
         return InvestigationMomentum.MODERATE  # Not enough data

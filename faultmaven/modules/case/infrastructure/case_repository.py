@@ -761,6 +761,10 @@ class InMemoryCaseRepository(CaseRepository):
         # Update timestamp
         case.updated_at = datetime.now(case.updated_at.tzinfo)
 
+        # Self-heal any turn-sequence anomaly before storing, matching the
+        # SQL-backed repositories so the in-memory path can't wedge or drift.
+        case.reconcile_turn_sequence()
+
         # P3 chokepoint: refresh denormalized disposition_eligibility from
         # current case content. Same site as the SQL-backed repositories
         # so all tests using the in-memory repo also exercise the
@@ -784,7 +788,14 @@ class InMemoryCaseRepository(CaseRepository):
         return case
 
     async def get(self, case_id: str) -> Optional[Case]:
-        """Get case from memory."""
+        """Get case from memory.
+
+        Returns the stored object by reference (no deserialization round-trip),
+        so we do NOT reconcile here — that would mutate the shared in-flight
+        object on a read. save() already heals before storing, and the in-memory
+        store is ephemeral (no pre-fix wedged cases to repair on load), so the
+        stored object is always consecutive.
+        """
         return self._cases.get(case_id)
 
     async def list(
