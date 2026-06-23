@@ -5,10 +5,11 @@ and ``causal_edges`` (list of ``CausalEdge``) — with NO I/O and NO LLM. These 
 the engine-side validation primitives the ``cause_state`` derivation, the
 failed-treatment demotion, and (later) the prompt-driven chain emission all build
 on, keeping the methodology's load-bearing invariants unit-testable against
-hand-built graphs. Mostly pure/deterministic; the one exception is the M6
-evidence-authoring path (``_attach_engine_refutation``), which mints an
-Evidence row with a ``uuid4`` id + wall-clock timestamp, so assert on its shape,
-not exact equality.
+hand-built graphs. Mostly pure/deterministic; the exceptions are the two
+authoring paths — ``_attach_engine_refutation`` (M6, mints an Evidence row) and
+``synthesize_rcc_from_validated_root`` (§9.3, mints a RootCauseConclusion) — which
+use a ``uuid4`` id / wall-clock timestamp, so assert on their shape, not exact
+equality.
 
 Spec: docs/architecture/investigation-engine/two-dimensional-hypothesis-methodology.md
   - §0 invariants (M4 empirical/deductive validation, M7 AND-proof)
@@ -33,6 +34,7 @@ from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
     CauseState,
+    ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -41,6 +43,7 @@ from faultmaven.modules.case.contracts import (
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    RootCauseConclusion,
     ValidationMethod,
 )
 
@@ -778,16 +781,123 @@ def demote_disconfirmed_cause(case: Case) -> bool:
     return True
 
 
+# A hypothesis is a STANDING cause only while ACTIVE or VALIDATED — a REFUTED,
+# RETIRED (abandoned/decayed) or CAPTURED (not-yet-pursued) one is not, so a stale
+# root under it must not keep grounding the case. One definition, used by every
+# chain-mode cause_state query below.
+_STANDING_HYP_STATES = {HypothesisState.ACTIVE, HypothesisState.VALIDATED}
+
+
+def _standing_hypotheses(case: Case):
+    """Yield the case's standing-cause hypotheses (ACTIVE/VALIDATED)."""
+    return (
+        h for h in case.hypotheses.values() if h and h.state in _STANDING_HYP_STATES
+    )
+
+
+# The marker on an engine-synthesized RootCauseConclusion (§9.3) — distinguishes
+# the engine's faithful mirror (which may be refreshed/retired) from the LLM's own
+# authored conclusion (which always wins and is never overwritten).
+_ENGINE_RCC_AUTHOR = "engine:chain_validation"
+
+
 def any_chain_root_validated(case: Case) -> bool:
     """§9.2: does some STANDING hypothesis's chain ROOT node read VALIDATED? This
-    is the chain-mode ``cause_state=IDENTIFIED`` signal. Only ACTIVE/VALIDATED
-    hypotheses count — a REFUTED, RETIRED (abandoned/decayed) or CAPTURED
-    (not-yet-pursued) hypothesis is not a standing cause, so a stale validated
-    root under one cannot keep grounding the case."""
-    standing = {HypothesisState.ACTIVE, HypothesisState.VALIDATED}
+    is the chain-mode ``cause_state=IDENTIFIED`` signal."""
     return any(
-        h and h.state in standing and is_chain_root_validated(h, case.causal_nodes)
-        for h in case.hypotheses.values()
+        is_chain_root_validated(h, case.causal_nodes)
+        for h in _standing_hypotheses(case)
+    )
+
+
+def synthesize_rcc_from_validated_root(case: Case) -> bool:
+    """§9.3 — when the cause is grounded via a VALIDATED chain root but no
+    ``RootCauseConclusion`` is recorded, mirror the validated chain into a minimal
+    RCC so the disposition / report layer has consistent cause text.
+
+    Two ways cause_state can be IDENTIFIED-via-chain with no RCC: the LLM
+    validated a root with rung evidence but never authored a conclusion, or M6
+    retracted a *different* chain's RCC while this one still stands. Either way
+    the validated root IS the cause, so a derived RCC (root statement + the chain
+    as mechanism, VERIFIED for empirical / CONFIDENT for deductive grade) is a
+    faithful mirror, not an assertion. Leaves an LLM-authored RCC untouched (the
+    LLM's own conclusion always wins). An engine-synthesized RCC IS refreshed when
+    it has gone stale — its named hypothesis is no longer a standing-validated
+    root (the grounding chain handed off to another root via an INCONCLUSIVE
+    drift, NOT a refutation, so M6 never cleared it). No-op when no standing root
+    is validated. Returns True if it wrote one.
+    """
+    rcc = case.root_cause_conclusion
+    if rcc is not None:
+        if getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR:
+            return False  # LLM-authored — never overwrite
+        prior = case.hypotheses.get(getattr(rcc, "validated_hypothesis_id", None) or "")
+        if (
+            prior
+            and prior.state in _STANDING_HYP_STATES
+            and is_chain_root_validated(prior, case.causal_nodes)
+        ):
+            return False  # the engine mirror still names the grounding root
+        # else: stale engine mirror — refresh from the current validated root.
+    hyp = next(
+        (
+            h
+            for h in _standing_hypotheses(case)
+            if is_chain_root_validated(h, case.causal_nodes)
+        ),
+        None,
+    )
+    if hyp is None:
+        return False
+    root = case.causal_nodes[hyp.root_node_id]
+    # Mechanism = the chain's intermediate rungs (root -> ... -> D), if any.
+    inter = [
+        case.causal_nodes[nid].statement
+        for nid in (hyp.path or [])[1:-1]
+        if nid in case.causal_nodes
+    ]
+    mechanism = (
+        " → ".join(inter + ["the problem"])
+        if inter
+        else "Directly produces the observed problem."
+    )[:2000]
+    # An empirically-validated root is VERIFIED grade (floor 0.9); a deductively-
+    # validated one is mechanistic-only (CONFIDENT, floor 0.8). confidence_level
+    # must agree with likelihood (RootCauseConclusion.confidence_consistency), so
+    # derive it from the final score rather than hardcoding.
+    floor = 0.9 if root.validation_method == ValidationMethod.EMPIRICAL else 0.8
+    likelihood = max(case.progress.root_cause_likelihood or 0.0, floor)
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=root.statement[:1000],
+        mechanism=mechanism,
+        confidence_level=ConfidenceLevel.from_score(likelihood),
+        likelihood=likelihood,
+        validated_hypothesis_id=hyp.hypothesis_id,
+        evidence_basis=[
+            link.evidence_id
+            for link in root.evidence_links
+            if link.stance == EvidenceStance.SUPPORTS
+        ],
+        determined_by=_ENGINE_RCC_AUTHOR,
+    )
+    return True
+
+
+def any_chain_root_inconclusive(case: Case) -> bool:
+    """Does some STANDING hypothesis's chain ROOT node read INCONCLUSIVE — i.e.
+    a cause we have gathered bearing-but-indecisive evidence on (neither validated
+    nor refuted)? Such a root is a live CANDIDATE, not nothing. Used by the
+    cause_state soft floor: a once-grounded root that loses validation to an
+    evidence tie (INCONCLUSIVE, NOT counterfactually REFUTED) holds the case at
+    CANDIDATES rather than flapping down to UNKNOWN (finding-5 / NO-COLLAPSE). A
+    truly REFUTED root is excluded here, so a real M6 disconfirmation still drops
+    the case fully. (Also captures a never-yet-grounded root that has bearing-but-
+    indecisive evidence — that too is a live candidate, so CANDIDATES over UNKNOWN
+    is the honest read.)"""
+    return any(
+        h.root_node_id
+        and _state(h.root_node_id, case.causal_nodes) == NodeState.INCONCLUSIVE
+        for h in _standing_hypotheses(case)
     )
 
 

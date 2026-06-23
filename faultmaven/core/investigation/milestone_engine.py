@@ -35,6 +35,7 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.causal_graph import (
+    any_chain_root_inconclusive,
     any_chain_root_validated,
     chain_path_to_problem,
     demote_disconfirmed_cause,
@@ -44,6 +45,7 @@ from faultmaven.core.investigation.causal_graph import (
     promote_grounded_chain_root,
     prune_abandoned_nodes,
     resolve_orphan_chains,
+    synthesize_rcc_from_validated_root,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
@@ -834,8 +836,12 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
          imperative-only refutation would allow once stale support re-derives it).
       2. ``derive_node_states``: evidence → node states (validate/refute each rung).
       3. cause_state: IDENTIFIED if a live chain root is validated; else
-         CANDIDATES (≥2 active hypotheses) / UNKNOWN. Not sticky — it follows the
-         root's evidence-derived truth, so M6 demotion drops it automatically.
+         CANDIDATES (≥2 active hypotheses, OR a live root that is INCONCLUSIVE —
+         the soft floor) / UNKNOWN. It follows the root's evidence-derived truth
+         (M6 demotion drops it automatically), but a root that merely loses
+         validation to an evidence TIE (INCONCLUSIVE, not REFUTED) holds the case
+         at CANDIDATES rather than flapping to UNKNOWN (finding-5 / NO-COLLAPSE);
+         only a counterfactual REFUTED drops it fully.
     """
     p = case.progress
     demote_disconfirmed_cause_via_evidence(case)
@@ -848,7 +854,14 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
             p.root_cause_likelihood = 0.8
         if not p.root_cause_method:
             p.root_cause_method = "hypothesis_validation"
-    elif HypothesisManager.count_active_hypotheses(case) >= 2:
+        # §9.3: mirror the validated chain into a RootCauseConclusion when none
+        # is recorded, so the disposition/report layer has consistent cause text
+        # (covers the LLM-validated-root-without-conclusion case and the M6
+        # retracted-one-chain-while-another-stands case).
+        synthesize_rcc_from_validated_root(case)
+    elif HypothesisManager.count_active_hypotheses(
+        case
+    ) >= 2 or any_chain_root_inconclusive(case):
         p.cause_state = CauseState.CANDIDATES
     else:
         p.cause_state = CauseState.UNKNOWN
