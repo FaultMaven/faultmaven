@@ -180,6 +180,11 @@ class SQLiteCaseRepository(CaseRepository):
         the new version and returned — callers can use either the
         return value or the passed-in object.
         """
+        # Self-heal any turn-sequence anomaly into consecutive history (with
+        # SKIPPED placeholders) BEFORE persisting, so a transient gap can never
+        # wedge the case. No-op on healthy cases.
+        case.reconcile_turn_sequence()
+
         # Defense in depth: catch swallowed validation exceptions or bypassed validators
         # by re-verifying the entire aggregate state before persisting.
         Case.model_validate(case.model_dump(mode="python"))
@@ -288,6 +293,9 @@ class SQLiteCaseRepository(CaseRepository):
                 await self._load_evidence_for_case(case)
                 await self._load_evidence_needs_for_case(case)
                 await self._load_causal_graph_for_case(case)
+                # Self-heal any persisted turn-sequence anomaly (e.g. a case
+                # wedged before this fix) on load, before the engine uses it.
+                case.reconcile_turn_sequence()
 
             return case
 
@@ -2284,7 +2292,11 @@ class SQLiteCaseRepository(CaseRepository):
             "description": case.description or "",
             "state": case.state.value,
             "investigation_strategy": case.investigation_strategy.value,
-            "current_turn": case.current_turn,
+            # Prevention: persist the DERIVED counter so it can never be saved
+            # ahead of turn_history (the drift that wedged cases). See
+            # Case.effective_current_turn — single source so the two repos can't
+            # drift. The in-memory case.current_turn is untouched.
+            "current_turn": case.effective_current_turn,
             "turns_without_progress": case.turns_without_progress,
             "created_at": case.created_at,
             "updated_at": case.updated_at,

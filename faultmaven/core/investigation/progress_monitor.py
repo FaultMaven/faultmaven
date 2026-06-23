@@ -309,9 +309,13 @@ class ProgressMonitor:
                 break
 
             # Count as investigative if evidence was added or agent did
-            # diagnostic work (anything other than pure conversation)
-            is_investigative = bool(turn.evidence_added) or (
-                turn.outcome and turn.outcome.value not in ("conversation", "other")
+            # diagnostic work (anything other than pure conversation). SKIPPED
+            # is a synthetic recovery placeholder, not real work — never count it.
+            is_investigative = not turn.is_skipped and (
+                bool(turn.evidence_added)
+                or (
+                    turn.outcome and turn.outcome.value not in ("conversation", "other")
+                )
             )
 
             if is_investigative:
@@ -534,10 +538,13 @@ class ProgressMonitor:
 
         Triggers if identical structural output across N consecutive turns.
         """
-        if len(case.turn_history) < self.action_loop_threshold:
+        # Exclude SKIPPED recovery placeholders: several identical-by-design
+        # backfilled turns would otherwise trip the "identical output" detector.
+        real_turns = [t for t in case.turn_history if not t.is_skipped]
+        if len(real_turns) < self.action_loop_threshold:
             return False
 
-        recent_turns = case.turn_history[-self.action_loop_threshold :]
+        recent_turns = real_turns[-self.action_loop_threshold :]
 
         fingerprints = []
         for turn in recent_turns:

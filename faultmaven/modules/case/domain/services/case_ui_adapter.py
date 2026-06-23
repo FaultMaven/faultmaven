@@ -192,13 +192,16 @@ def _compute_progress_transparency(
     if not case.progress:
         return None
 
-    # Count investigative turns since last milestone
+    # Count investigative turns since last milestone. SKIPPED is a synthetic
+    # recovery placeholder, not real work — never count it (mirrors
+    # ProgressMonitor._count_investigative_turns_since_milestone).
     investigative_count = 0
     for turn in reversed(case.turn_history):
         if turn.milestones_completed:
             break
-        is_investigative = bool(turn.evidence_added) or (
-            turn.outcome and turn.outcome.value not in ("conversation", "other")
+        is_investigative = not turn.is_skipped and (
+            bool(turn.evidence_added)
+            or (turn.outcome and turn.outcome.value not in ("conversation", "other"))
         )
         if is_investigative:
             investigative_count += 1

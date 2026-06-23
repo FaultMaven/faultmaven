@@ -20,12 +20,19 @@ Architecture:
 - Repository abstraction (no direct database imports)
 """
 
+import logging
 from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
+
+# Cap synthetic SKIPPED inserts per turn_history gap; a larger gap signals
+# corruption, not a normal one-turn interruption, so we renumber instead.
+_MAX_TURN_BACKFILL = 100
 
 # ============================================================
 # Status & Lifecycle Models (Section 2)
@@ -3338,6 +3345,12 @@ class TurnOutcome(str, Enum):
         "other",
         "does not fit any of the above.",
     )
+    # Maintainer note: synthesized by Case.reconcile_turn_sequence to backfill a
+    # turn whose record was lost (e.g. an interrupted save). Not LLM-emitted.
+    SKIPPED = (
+        "skipped",
+        "turn not recorded — recovered after an interrupted turn.",
+    )
 
 
 class InvestigationMomentum(str, Enum):
@@ -3485,6 +3498,17 @@ class TurnProgress(BaseModel):
             + len(self.hypotheses_validated)
             + len(self.solutions_proposed)
         )
+
+    @property
+    def is_skipped(self) -> bool:
+        """True for a synthetic recovery placeholder (a turn that was *not
+        recorded*, backfilled by ``Case.reconcile_turn_sequence``).
+
+        The single source of truth for SKIPPED screening — analyses that count or
+        window ``turn_history`` must exclude these so a placeholder isn't mistaken
+        for real diagnostic work.
+        """
+        return self.outcome is TurnOutcome.SKIPPED
 
     # ============================================================
     # Configuration
@@ -4449,12 +4473,137 @@ class Case(BaseModel):
     @field_validator("turn_history")
     @classmethod
     def turn_history_sequential(cls, v):
-        """Ensure turn numbers are sequential"""
+        """Detect non-sequential turn numbers WITHOUT failing.
+
+        A sequencing anomaly is *repairable derived state*, so it must never
+        brick persistence (raising here is what permanently wedged a case after
+        a single interrupted turn). We log it for visibility; the actual repair —
+        backfilling ``SKIPPED`` placeholders so numbers stay consecutive and
+        existing turn_numbers (referenced by hypotheses/messages) stay valid — is
+        done by :meth:`Case.reconcile_turn_sequence` on load and before save.
+        """
         if len(v) > 1:
             for i in range(len(v) - 1):
                 if v[i].turn_number + 1 != v[i + 1].turn_number:
-                    raise ValueError("Turn numbers must be sequential")
+                    logger.warning(
+                        "Non-sequential turn_history at index %d (%s -> %s); "
+                        "will be reconciled.",
+                        i,
+                        v[i].turn_number,
+                        v[i + 1].turn_number,
+                    )
+                    break
         return v
+
+    @property
+    def effective_current_turn(self) -> int:
+        """The committed turn number: the last recorded ``turn_history`` number,
+        or ``current_turn`` when no turn has been recorded yet.
+
+        Repositories persist THIS (not the raw ``current_turn``) so the stored
+        counter can never run ahead of ``turn_history`` — the drift that wedged
+        cases. The in-memory ``current_turn`` (the in-flight turn number business
+        logic reads) is left untouched; on a successful turn the two are equal.
+        """
+        return (
+            self.turn_history[-1].turn_number
+            if self.turn_history
+            else self.current_turn
+        )
+
+    def reconcile_turn_sequence(self) -> int:
+        """Make ``turn_history`` strictly consecutive and ``current_turn`` consistent.
+
+        Returns the number of repairs applied (backfilled + renumbered turns);
+        ``0`` means the history was already healthy. **Never raises** — a
+        sequencing anomaly is repairable derived state, so it must never brick
+        persistence.
+
+        Repairs:
+
+        * **gap** (``next > prev + 1``) → backfill ``SKIPPED`` placeholder turns
+          for the missing numbers (timestamped from the preceding turn so the
+          history stays time-ordered), preserving every existing ``turn_number``
+          so references from hypotheses/messages stay valid.
+        * **duplicate / out-of-order** (``next <= prev``) or a **gap larger than
+          ``_MAX_TURN_BACKFILL``** (corruption, not a one-turn interruption) →
+          renumber the later entry to ``prev + 1``.
+
+        ``current_turn``: on the healthy fast path it is only ever *raised* to the
+        last number (never lowered, so an in-flight turn number is preserved);
+        when a repair rewrites the history, the now-authoritative last number
+        wins (so a destructive renumber can't leave the counter stranded ahead).
+
+        A no-op on healthy cases. Called on load and before save so a transient
+        anomaly self-heals into a visible, contained ``SKIPPED`` turn instead of
+        permanently wedging the case.
+        """
+        history = self.turn_history
+        if not history:
+            return 0
+
+        # Fast path: already consecutive → no allocation. Only keep current_turn
+        # from falling behind the last recorded turn (never lower it).
+        if all(
+            history[i].turn_number + 1 == history[i + 1].turn_number
+            for i in range(len(history) - 1)
+        ):
+            last = history[-1].turn_number
+            if self.current_turn < last:
+                self.current_turn = last
+            return 0
+
+        repairs = 0
+        rebuilt: List[TurnProgress] = [history[0]]
+        for entry in history[1:]:
+            prev = rebuilt[-1].turn_number
+            gap = entry.turn_number - prev - 1
+            if entry.turn_number <= prev or gap > _MAX_TURN_BACKFILL:
+                # duplicate / out-of-order, or a gap too large to be a normal
+                # one-turn interruption → renumber (TurnProgress is frozen).
+                if gap > _MAX_TURN_BACKFILL:
+                    logger.error(
+                        "Turn-sequence gap of %d on case %s exceeds cap (%d); "
+                        "renumbering instead of backfilling.",
+                        gap,
+                        getattr(self, "case_id", "?"),
+                        _MAX_TURN_BACKFILL,
+                    )
+                rebuilt.append(entry.model_copy(update={"turn_number": prev + 1}))
+                repairs += 1
+                continue
+            for missing in range(prev + 1, entry.turn_number):
+                rebuilt.append(
+                    TurnProgress(
+                        turn_number=missing,
+                        timestamp=rebuilt[-1].timestamp,
+                        outcome=TurnOutcome.SKIPPED,
+                        progress_made=False,
+                        user_message_summary="(turn not recorded)",
+                        agent_response_summary=(
+                            "(turn not recorded — recovered after an "
+                            "interrupted turn)"
+                        ),
+                    )
+                )
+                repairs += 1
+            rebuilt.append(entry)
+
+        self.turn_history = rebuilt
+        last = rebuilt[-1].turn_number
+        # Keep the monotonic guarantee: never lower an in-flight current_turn.
+        # The one exception is a cap-renumber that TRUNCATED the trailing number
+        # downward (corruption recovery) — there the lowered last is authoritative
+        # so the next turn doesn't re-open the huge gap.
+        if last < history[-1].turn_number or self.current_turn < last:
+            self.current_turn = last
+        logger.warning(
+            "Reconciled turn_history for case %s: %d repair(s), %d turns.",
+            getattr(self, "case_id", "?"),
+            repairs,
+            len(rebuilt),
+        )
+        return repairs
 
     @model_validator(mode="after")
     def validate_timestamp_ordering(self) -> "Case":
