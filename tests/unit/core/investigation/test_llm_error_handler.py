@@ -106,6 +106,40 @@ class TestErrorClassification:
         error = Exception("Request exceeds maximum context length")
         assert handler.is_token_limit_error(error) is True
 
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "This model's maximum context length is 8192 tokens",
+            "context_length_exceeded",
+            "Please reduce the length of the messages",
+            "prompt is too long: 250000 tokens > 200000 maximum",
+            "EOF while parsing a value",  # truncated JSON output
+            "Unterminated string starting at line 3",
+            "finishReason=MAX_TOKENS",  # Gemini output cap
+            '"finish_reason": "length"',  # OpenAI output cap
+        ],
+    )
+    def test_real_overflow_and_truncation_detected(self, handler, msg):
+        """Genuine context overflow / output truncation still triggers compress."""
+        assert handler.is_token_limit_error(Exception(msg)) is True
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            # The exact OpenAI 400 the over-greedy matcher used to misclassify
+            # as a context overflow (masking it as "Context too large").
+            "Unsupported parameter: 'max_tokens' is not supported with this "
+            "model. Use 'max_completion_tokens' instead.",
+            "OpenAI API error 400: invalid_request_error unsupported_parameter",
+            "Invalid authentication token",  # bare 'token' must not match
+            "Your max_tokens value must be a positive integer",  # param shape error
+        ],
+    )
+    def test_config_and_param_errors_not_token_limit(self, handler, msg):
+        """A request-shape / parameter error is NOT a token-limit overflow —
+        matching it would mask the real cause and loop on futile compression."""
+        assert handler.is_token_limit_error(Exception(msg)) is False
+
 
 class TestDelayCalculation:
     """Test exponential backoff delay calculation."""

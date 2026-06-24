@@ -131,20 +131,44 @@ class LLMErrorHandler:
         )
 
     def is_token_limit_error(self, error: Exception) -> bool:
-        """Check if error is related to token limits or JSON truncation."""
+        """Check if an error is a context-window overflow or output truncation.
+
+        These are the only token-related failures that COMPRESS_MEMORY can
+        recover (the prompt is too large for the context window, or the JSON
+        output was cut off at the generation cap). A request-shape 400 that
+        merely *names* a token parameter — e.g. OpenAI's "Unsupported parameter:
+        'max_tokens' is not supported with this model. Use
+        'max_completion_tokens' instead." — is a non-retryable config error, NOT
+        a context overflow. Matching it here masked the real cause as "Context
+        too large" and sent the engine into a futile compression loop, so we key
+        on specific overflow/truncation signatures and never on the bare word
+        "token"/"max_tokens", and bail early on unsupported-parameter errors.
+        """
         error_str = str(error).lower()
-        # Check for token limit errors OR JSON truncation errors
-        # JSON truncation errors manifest as: "EOF while parsing", "truncated", etc.
+        # A wrong/unsupported request parameter is a config error, not a limit.
+        if (
+            "unsupported parameter" in error_str
+            or "is not supported with this model" in error_str
+            or "unsupported_parameter" in error_str
+        ):
+            return False
         return any(
             pattern in error_str
             for pattern in (
-                "token",
+                # Context-window overflow (prompt too large).
                 "context length",
-                "too long",
-                "max_tokens",
+                "context_length_exceeded",
+                "maximum context length",
+                "context window",
+                "too long",  # "prompt is too long" (Anthropic), "...is too long"
+                "reduce the length",
+                # Output truncated at the generation cap (JSON cut off).
                 "truncated",
+                "unterminated",  # truncated JSON string
                 "eof while parsing",  # Pydantic JSON validation error
-                "finishreason=max_tokens",  # Gemini-specific
+                "finishreason=max_tokens",  # Gemini output hit the cap
+                'finish_reason": "length"',  # OpenAI output hit the cap
+                "finish_reason=length",
             )
         )
 
