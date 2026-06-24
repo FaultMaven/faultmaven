@@ -175,16 +175,7 @@ class FireworksProvider(BaseLLMProvider):
                     )
 
                     # Extract tool calls if present
-                    tool_calls = None
-                    if message.get("tool_calls"):
-                        from .base import ToolCall
-
-                        tool_calls = [
-                            ToolCall(
-                                id=tc["id"], type=tc["type"], function=tc["function"]
-                            )
-                            for tc in message["tool_calls"]
-                        ]
+                    tool_calls = self._extract_tool_calls_from_message(message)
 
                     # Extract token usage
                     usage = data.get("usage", {})

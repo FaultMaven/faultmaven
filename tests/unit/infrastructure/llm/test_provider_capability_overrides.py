@@ -518,6 +518,59 @@ class TestLocalProviderOverride:
         capability = provider.get_structured_output_capability("phi3-mini")
         assert capability == StructuredOutputCapability.BEST_EFFORT
 
+    def test_functionary_on_ollama_base_url_downgrades_to_best_effort(self):
+        """functionary/hermes on the Ollama transport CANNOT return tool_calls,
+        so the capability must downgrade to BEST_EFFORT — claiming
+        FUNCTION_CALLING would have the engine force a tool call the
+        /api/generate transport silently can't satisfy."""
+        config = ProviderConfig(
+            name="local",
+            api_key=None,
+            base_url="http://my-ollama-host:11434",
+            models=["functionary-7b-v2"],
+            default_model="functionary-7b-v2",
+        )
+        provider = LocalProvider(config)
+        assert (
+            provider.get_structured_output_capability("functionary-7b-v2")
+            == StructuredOutputCapability.BEST_EFFORT
+        )
+        assert provider.supports_tool_calling("functionary-7b-v2") is False
+
+    def test_hermes_with_ollama_in_model_name_downgrades(self):
+        """Ollama detection also keys off the model string (mirrors generate()'s
+        dispatch), not just base_url."""
+        config = ProviderConfig(
+            name="local",
+            api_key=None,
+            base_url="http://localhost:8080",
+            models=["hermes-2-pro-ollama"],
+            default_model="hermes-2-pro-ollama",
+        )
+        provider = LocalProvider(config)
+        assert (
+            provider.get_structured_output_capability("hermes-2-pro-ollama")
+            == StructuredOutputCapability.BEST_EFFORT
+        )
+        assert provider.supports_tool_calling("hermes-2-pro-ollama") is False
+
+    def test_functionary_on_openai_compatible_transport_keeps_function_calling(self):
+        """The OpenAI-compatible transport (no 'ollama' anywhere) keeps
+        FUNCTION_CALLING — that path does return tool_calls."""
+        config = ProviderConfig(
+            name="local",
+            api_key=None,
+            base_url="http://localhost:8000/v1",
+            models=["functionary-7b-v2"],
+            default_model="functionary-7b-v2",
+        )
+        provider = LocalProvider(config)
+        assert (
+            provider.get_structured_output_capability("functionary-7b-v2")
+            == StructuredOutputCapability.FUNCTION_CALLING
+        )
+        assert provider.supports_tool_calling("functionary-7b-v2") is True
+
 
 class TestHuggingFaceProviderOverride:
     """Test HuggingFace provider capability detection override"""

@@ -15,7 +15,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -178,22 +178,14 @@ class OpenAIProvider(BaseLLMProvider):
                         content = self._validate_response_content(content)
 
                     # Extract tool calls if present
-                    tool_calls = None
-                    if "tool_calls" in message and message["tool_calls"]:
-                        tool_calls = [
-                            ToolCall(
-                                id=tc["id"], type=tc["type"], function=tc["function"]
-                            )
-                            for tc in message["tool_calls"]
-                        ]
-
-                        # If tool_calls present but no content, parse function arguments as content
-                        if not content and tool_calls:
-                            # Use the first tool call's arguments as JSON content
-                            try:
-                                content = tool_calls[0].function.get("arguments", "{}")
-                            except Exception:
-                                content = "{}"
+                    tool_calls = self._extract_tool_calls_from_message(message)
+                    # If tool_calls present but no content, parse function
+                    # arguments as content.
+                    if tool_calls and not content:
+                        try:
+                            content = tool_calls[0].function.get("arguments", "{}")
+                        except Exception:
+                            content = "{}"
 
                     # Extract token usage
                     usage = data.get("usage", {})
