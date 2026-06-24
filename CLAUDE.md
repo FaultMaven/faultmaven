@@ -311,12 +311,14 @@ empty/degraded investigations. **Use a STRICT provider as `CHAT_PROVIDER`**
 `CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER` overrides but degrade primary CHAT.
 Capability is reported per-provider via `get_structured_output_capability()`.
 STRICT enforcement is necessary but not sufficient: a STRICT **thinking** model
-(Gemini 2.5+/3.x) bills hidden reasoning against `maxOutputTokens`, so the
-Gemini provider caps thinking on structured calls to keep it from starving the
-JSON output (otherwise deep-context turns truncate to `MAX_TOKENS` and 500). The
-cap schema differs by generation — `thinkingConfig.thinkingBudget` (integer) on
-2.5, `thinkingConfig.thinkingLevel` (string) on 3.x, which dropped the integer
-field.
+bills hidden reasoning against `maxOutputTokens`, which can starve the JSON
+output on deep-context turns (truncation to `MAX_TOKENS` → 500). The Gemini
+provider caps thinking on structured calls for **Gemini 3.x only** via
+`thinkingConfig.thinkingLevel: "low"` (3.x dropped the 2.5-era integer
+`thinkingBudget`). This is scoped to 3.x because that's where the starvation was
+observed (gemini-3.5-flash, the default); Gemini 2.5 is left at native dynamic
+thinking — it ran clean, and capping it would change a working reasoning path
+without evidence.
 
 ### Capability Overrides
 
