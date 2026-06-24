@@ -72,12 +72,20 @@ class GeminiProvider(BaseLLMProvider):
         # Gemini 1.0 (and any unrecognized model string) uses BEST_EFFORT
         return StructuredOutputCapability.BEST_EFFORT
 
-    # Thinking budget (tokens) for structured-output calls on thinking-capable
-    # models. Structured extraction does not need heavy hidden reasoning, and
-    # uncapped thinking starves the actual JSON output (see
-    # _structured_thinking_budget). Kept comfortably above gemini-2.5-pro's
-    # minimum thinking budget so the cap is valid for every thinking model.
+    # Thinking caps for structured-output calls on thinking-capable models.
+    # Structured extraction does not need heavy hidden reasoning, and uncapped
+    # thinking starves the actual JSON output (see _structured_thinking_config).
+    #
+    # The control knob differs by generation:
+    #   - Gemini 2.5: integer ``thinkingBudget`` (tokens, min ~128). Kept above
+    #     gemini-2.5-pro's minimum so the cap is valid for every 2.5 model.
+    #   - Gemini 3.x+: the integer field was DROPPED in favor of a string
+    #     ``thinkingLevel``; sending ``thinkingBudget`` to a 3.x model is a 400.
+    #     "low" is the lowest broadly-valid level — it bypasses the heavy
+    #     reasoning loop so output isn't starved, without depending on whether
+    #     "minimal" is in a given model's enum.
     _STRUCTURED_THINKING_BUDGET_TOKENS = 2048
+    _GEMINI_3X_STRUCTURED_THINKING_LEVEL = "low"
 
     @staticmethod
     def _is_thinking_model(model: str) -> bool:
@@ -90,27 +98,47 @@ class GeminiProvider(BaseLLMProvider):
         """
         return bool(re.search(r"gemini-(?:2\.5|[3-9]\.\d+|\d{2,}\.\d+)", model.lower()))
 
-    def _structured_thinking_budget(
+    @staticmethod
+    def _gemini_major_version(model: str) -> Optional[int]:
+        """Major version integer from a gemini model id (``gemini-3.5-flash`` ->
+        3), or None if not parseable. Used to pick the thinking-control schema."""
+        m = re.search(r"gemini-(\d+)\.", model.lower())
+        return int(m.group(1)) if m else None
+
+    def _structured_thinking_config(
         self, model: str, max_tokens: int, is_structured: bool
-    ) -> Optional[int]:
-        """Thinking-token budget for a structured-output call, or None to leave
-        ``thinkingConfig`` unset.
+    ) -> Optional[Dict[str, Any]]:
+        """``thinkingConfig`` payload for a structured-output call, or None to
+        leave it unset.
 
         Returns None for non-structured calls (partial text is still usable
         there, so starvation is not fatal) and for non-thinking models (which
-        reject ``thinkingConfig``). For thinking models on a structured call,
-        caps thinking at ``_STRUCTURED_THINKING_BUDGET_TOKENS`` but never more
-        than half of ``maxOutputTokens`` — guaranteeing the structured JSON
-        always has room and the response can't truncate to a MAX_TOKENS 500.
+        reject ``thinkingConfig`` outright). For thinking models on a structured
+        call, returns the generation-appropriate cap so the structured JSON
+        always has room and the response can't truncate to a MAX_TOKENS 500:
+
+        - Gemini 3.x+ -> ``{"thinkingLevel": "low"}`` (the 2.5-era integer
+          ``thinkingBudget`` 400s on these models).
+        - Gemini 2.5  -> ``{"thinkingBudget": N}`` capped at
+          ``_STRUCTURED_THINKING_BUDGET_TOKENS`` and never more than half of
+          ``maxOutputTokens``.
 
         Motivated by gemini-3.5-flash (the shipped Gemini default): a 3.x
-        thinking model whose dynamic thinking consumed nearly the entire
-        budget on deep-context turns, leaving only a few hundred chars of
-        output before finishReason=MAX_TOKENS.
+        thinking model whose dynamic thinking consumed nearly the entire output
+        budget on deep-context turns, leaving only a few hundred chars before
+        finishReason=MAX_TOKENS.
         """
         if not is_structured or not self._is_thinking_model(model):
             return None
-        return min(self._STRUCTURED_THINKING_BUDGET_TOKENS, max(0, max_tokens // 2))
+
+        major = self._gemini_major_version(model)
+        if major is not None and major >= 3:
+            # 3.x+ uses the string thinkingLevel; integer budget is rejected.
+            return {"thinkingLevel": self._GEMINI_3X_STRUCTURED_THINKING_LEVEL}
+
+        # Gemini 2.5: integer budget, reserving at least half the output.
+        budget = min(self._STRUCTURED_THINKING_BUDGET_TOKENS, max(0, max_tokens // 2))
+        return {"thinkingBudget": budget}
 
     async def generate(
         self,
@@ -223,13 +251,15 @@ class GeminiProvider(BaseLLMProvider):
         # gemini-3.5-flash consumed nearly the whole budget and the structured
         # response truncated (finishReason=MAX_TOKENS) into a 500. `rf` (JSON
         # schema/object) or `tools_param` (function calling) marks a structured
-        # call. generation_config is the same object referenced by
-        # request_body["generationConfig"], so mutating it here is sufficient.
-        thinking_budget = self._structured_thinking_budget(
+        # call. The cap schema differs by generation (see
+        # _structured_thinking_config). generation_config is the same object
+        # referenced by request_body["generationConfig"], so mutating it here is
+        # sufficient.
+        thinking_config = self._structured_thinking_config(
             selected_model, max_tokens, is_structured=bool(rf) or bool(tools_param)
         )
-        if thinking_budget is not None:
-            generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+        if thinking_config is not None:
+            generation_config["thinkingConfig"] = thinking_config
 
         # Add safety settings if provided
         if "safety_settings" in kwargs:

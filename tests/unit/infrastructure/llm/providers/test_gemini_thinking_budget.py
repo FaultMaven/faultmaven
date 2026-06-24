@@ -8,11 +8,15 @@ fallback in strict mode. The provider now sets a bounded
 ``generationConfig.thinkingConfig.thinkingBudget`` on structured calls so the
 output is never starved.
 
+The control knob differs by generation: Gemini 3.x dropped the integer
+``thinkingBudget`` for a string ``thinkingLevel`` (sending the integer to a 3.x
+model is a 400), while Gemini 2.5 still uses the integer budget.
+
 Pins:
-  1. structured call on a 3.x thinking model sets thinkingBudget, capped at
-     half the output budget;
-  2. the budget is the configured cap when that is smaller than half;
-  3. non-thinking models (1.5) never get thinkingConfig (they 400 on it);
+  1. structured call on a 3.x model sets ``thinkingLevel: low``;
+  2. structured call on a 2.5 model sets a ``thinkingBudget`` capped at the
+     configured cap and at half the output budget;
+  3. non-thinking models (1.5/2.0) never get thinkingConfig (they 400 on it);
   4. non-structured calls never get thinkingConfig (partial text is fine);
   5. the function-calling (tools) path is treated as structured too.
 """
@@ -82,33 +86,40 @@ async def _sent_generation_config(provider, **generate_kwargs):
 
 
 @pytest.mark.unit
-class TestStructuredThinkingBudgetHelper:
-    def test_caps_at_half_output_budget(self):
+class TestStructuredThinkingConfigHelper:
+    def test_gemini_3x_uses_thinking_level_string(self):
+        """3.x dropped the integer thinkingBudget for the string thinkingLevel;
+        sending thinkingBudget to a 3.x model is a 400."""
         provider = GeminiProvider(_config("gemini-3.5-flash"))
-        # max_tokens//2 = 256 < cap (2048) → reserve half for output.
-        assert (
-            provider._structured_thinking_budget("gemini-3.5-flash", 512, True) == 256
-        )
+        assert provider._structured_thinking_config("gemini-3.5-flash", 8000, True) == {
+            "thinkingLevel": "low"
+        }
 
-    def test_uses_cap_when_smaller_than_half(self):
-        provider = GeminiProvider(_config("gemini-3.5-flash"))
+    def test_gemini_25_caps_at_half_output_budget(self):
+        provider = GeminiProvider(_config("gemini-2.5-pro"))
+        # max_tokens//2 = 256 < cap (2048) → reserve half for output.
+        assert provider._structured_thinking_config("gemini-2.5-pro", 512, True) == {
+            "thinkingBudget": 256
+        }
+
+    def test_gemini_25_uses_cap_when_smaller_than_half(self):
+        provider = GeminiProvider(_config("gemini-2.5-pro"))
         # max_tokens//2 = 8000 > cap (2048) → cap wins.
-        assert (
-            provider._structured_thinking_budget("gemini-3.5-flash", 16000, True)
-            == 2048
-        )
+        assert provider._structured_thinking_config("gemini-2.5-pro", 16000, True) == {
+            "thinkingBudget": 2048
+        }
 
     def test_none_for_non_structured(self):
         provider = GeminiProvider(_config("gemini-3.5-flash"))
         assert (
-            provider._structured_thinking_budget("gemini-3.5-flash", 8000, False)
+            provider._structured_thinking_config("gemini-3.5-flash", 8000, False)
             is None
         )
 
     @pytest.mark.parametrize("model", ["gemini-1.5-pro", "gemini-1.5-flash"])
     def test_none_for_non_thinking_models(self, model):
         provider = GeminiProvider(_config(model))
-        assert provider._structured_thinking_budget(model, 8000, True) is None
+        assert provider._structured_thinking_config(model, 8000, True) is None
 
     @pytest.mark.parametrize(
         "model", ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.5-flash"]
@@ -120,6 +131,13 @@ class TestStructuredThinkingBudgetHelper:
     def test_non_thinking_models_detected(self, model):
         assert GeminiProvider._is_thinking_model(model) is False
 
+    @pytest.mark.parametrize(
+        "model,expected",
+        [("gemini-2.5-pro", 2), ("gemini-3.5-flash", 3), ("gemini-1.5-pro", 1)],
+    )
+    def test_major_version_parsing(self, model, expected):
+        assert GeminiProvider._gemini_major_version(model) == expected
+
 
 # --- live generate() wiring --------------------------------------------------
 
@@ -127,8 +145,16 @@ class TestStructuredThinkingBudgetHelper:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestGenerateThinkingConfigWiring:
-    async def test_structured_call_on_flash_sets_bounded_thinking_budget(self):
+    async def test_structured_call_on_flash_sets_thinking_level(self):
+        """gemini-3.5-flash (the shipped default) — 3.x string thinkingLevel."""
         provider = GeminiProvider(_config("gemini-3.5-flash"))
+        gen = await _sent_generation_config(
+            provider, response_format=_response_format(), max_tokens=8000
+        )
+        assert gen["thinkingConfig"] == {"thinkingLevel": "low"}
+
+    async def test_structured_call_on_25_pro_sets_bounded_budget(self):
+        provider = GeminiProvider(_config("gemini-2.5-pro"))
         gen = await _sent_generation_config(
             provider, response_format=_response_format(), max_tokens=8000
         )

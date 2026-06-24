@@ -312,9 +312,11 @@ empty/degraded investigations. **Use a STRICT provider as `CHAT_PROVIDER`**
 Capability is reported per-provider via `get_structured_output_capability()`.
 STRICT enforcement is necessary but not sufficient: a STRICT **thinking** model
 (Gemini 2.5+/3.x) bills hidden reasoning against `maxOutputTokens`, so the
-Gemini provider caps `thinkingConfig.thinkingBudget` on structured calls to
-keep thinking from starving the JSON output (otherwise deep-context turns
-truncate to `MAX_TOKENS` and 500).
+Gemini provider caps thinking on structured calls to keep it from starving the
+JSON output (otherwise deep-context turns truncate to `MAX_TOKENS` and 500). The
+cap schema differs by generation — `thinkingConfig.thinkingBudget` (integer) on
+2.5, `thinkingConfig.thinkingLevel` (string) on 3.x, which dropped the integer
+field.
 
 ### Capability Overrides
 
