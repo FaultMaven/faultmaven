@@ -55,20 +55,15 @@ def _cause_identified(case: "Case") -> bool:
         and getattr(case.progress, "cause_state", None) == CauseState.IDENTIFIED
     ):
         return True
+    # A disconfirmed RootCauseConclusion is retracted at its SOURCE
+    # (causal_graph.retract_disconfirmed_rcc, run each turn in the chain
+    # recompute), so by the time we read it here a stale/disproven cause is
+    # already None — every consumer (this gate, the report, the UI, KB runbooks)
+    # sees one truth. No per-reader disconfirmation guard is needed.
     if case.root_cause_conclusion and getattr(
         case.root_cause_conclusion, "root_cause", None
     ):
-        # ...but never trust a stale RCC whose cause has since been disconfirmed.
-        # cause_state already drops when the chain root is refuted; the RCC is the
-        # one cause-signal the chain-mode M6 retraction can miss (it only fires
-        # once cause_state reached IDENTIFIED), so guard it here so a disproven
-        # cause is never asserted at termination (NO-INCORRECT-CONCLUSION).
-        from faultmaven.core.investigation.causal_graph import (
-            representative_cause_disconfirmed,
-        )
-
-        if not representative_cause_disconfirmed(case):
-            return True
+        return True
     return bool(
         case.working_conclusion
         and getattr(case.working_conclusion, "statement", None)

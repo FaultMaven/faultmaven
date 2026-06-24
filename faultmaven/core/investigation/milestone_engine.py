@@ -43,6 +43,7 @@ from faultmaven.core.investigation.causal_graph import (
     ingest_emitted_chain,
     prune_abandoned_nodes,
     resolve_orphan_chains,
+    retract_disconfirmed_rcc,
     synthesize_rcc_from_validated_root,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
@@ -725,6 +726,12 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
     p = case.progress
     demote_disconfirmed_cause_via_evidence(case)
     derive_node_states(case)
+    # Source-of-truth retraction: clear a RootCauseConclusion whose named cause
+    # (validated_hypothesis_id) is now disconfirmed, so no consumer asserts a
+    # disproven cause. Covers the gap M6 misses when cause_state never reached
+    # IDENTIFIED. Runs BEFORE the cause_state branch so a freshly-validated root
+    # below re-synthesizes a correct RCC via synthesize_rcc_from_validated_root.
+    retract_disconfirmed_rcc(case)
     if any_chain_root_validated(case):
         p.cause_state = CauseState.IDENTIFIED
         # Case invariant: IDENTIFIED requires a positive likelihood + a method.
@@ -4409,12 +4416,12 @@ class MilestoneEngine:
             # own (its state_updates), nothing is fabricated, and internal
             # reasoning is never surfaced; on resolution turns the closure
             # summary carries the substantive text.
-            # Fire only when agent_response is genuinely MISSING/null (the "Field
-            # required" trigger) — never overwrite a model-provided empty string,
-            # which is a valid (if poor) value the model chose, not the defect.
-            if (
-                isinstance(content_obj, dict)
-                and content_obj.get("agent_response") is None
+            # Fire when agent_response is MISSING or non-string (None, or a
+            # malformed 0/[]/false the schema rejects) — i.e. not a usable reply.
+            # A model-provided string, including "", is a valid (if poor) value
+            # the model chose, NOT the defect, so it is never overwritten.
+            if isinstance(content_obj, dict) and not isinstance(
+                content_obj.get("agent_response"), str
             ):
                 placeholder = (
                     "I've updated the investigation based on the latest information."

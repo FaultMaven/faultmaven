@@ -558,13 +558,23 @@ def test_deductive_root_rcc_is_confident_grade():
     )  # degenerate chain
 
 
-# Terminal-gate soundness: a stale RCC whose cause has been disconfirmed must not
-# be asserted at termination. cause_state drops when the chain root is refuted,
-# but an RCC-grounded cause that never validated a chain root cannot trip the
-# chain-mode M6 retraction (gated on cause_state==IDENTIFIED), so the terminal
-# gate guards it via representative_cause_disconfirmed.
-def test_terminal_gate_refuses_a_disconfirmed_rcc():
-    from faultmaven.core.investigation.terminal_transitions import _cause_identified
+# Source-of-truth RCC retraction (soundness): a RootCauseConclusion whose NAMED
+# cause (validated_hypothesis_id) is disconfirmed is cleared at the source, so NO
+# consumer (terminal gate, report, UI, KB runbook) asserts a disproven cause.
+# Covers the gap M6 misses when cause_state never reached IDENTIFIED. Link-based
+# ONLY (no likelihood proxy) — so a valid RCC is never wrongly cleared.
+def _rcc(*, vhid=None):
+    return RootCauseConclusion(
+        root_cause="connection pool exhausted",
+        mechanism="leak",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+        validated_hypothesis_id=vhid,
+    )
+
+
+def test_retract_disconfirmed_rcc_clears_when_named_hyp_refuted():
+    from faultmaven.core.investigation.causal_graph import retract_disconfirmed_rcc
 
     hyp = _hyp(root_node_id=None, hypothesis_id="hyp_0000000000ab")
     # REFUTED set post-construction (the constructor validator requires a
@@ -572,25 +582,13 @@ def test_terminal_gate_refuses_a_disconfirmed_rcc():
     hyp.state = HypothesisState.REFUTED
     hyp.refutation_reason = "fix applied, problem persisted"
     case = _case(hyps=[hyp])
-    case.progress.cause_state = CauseState.UNKNOWN  # never reached IDENTIFIED
-    case.root_cause_conclusion = RootCauseConclusion(
-        root_cause="connection pool exhausted",
-        mechanism="leak",
-        confidence_level=ConfidenceLevel.VERIFIED,
-        likelihood=0.9,
-        validated_hypothesis_id=hyp.hypothesis_id,
-    )
-    # Before the guard this returned True via the RCC branch — asserting a
-    # disproven cause. It must now be False (keep investigating; fail-safe).
-    assert _cause_identified(case) is False
+    case.root_cause_conclusion = _rcc(vhid=hyp.hypothesis_id)
+    assert retract_disconfirmed_rcc(case) is True
+    assert case.root_cause_conclusion is None
 
 
-def test_terminal_gate_still_trusts_an_undisconfirmed_rcc():
-    # Control / regression guard for the documented under-report case: a
-    # substantiated RCC with a still-ACTIVE cause hypothesis (cause_state not yet
-    # IDENTIFIED) must still count — the guard rejects only on affirmative
-    # disconfirmation, never under-reporting a genuinely-known cause.
-    from faultmaven.core.investigation.terminal_transitions import _cause_identified
+def test_retract_disconfirmed_rcc_keeps_when_named_hyp_active():
+    from faultmaven.core.investigation.causal_graph import retract_disconfirmed_rcc
 
     hyp = _hyp(
         root_node_id=None,
@@ -598,12 +596,24 @@ def test_terminal_gate_still_trusts_an_undisconfirmed_rcc():
         state=HypothesisState.ACTIVE,
     )
     case = _case(hyps=[hyp])
-    case.progress.cause_state = CauseState.UNKNOWN
-    case.root_cause_conclusion = RootCauseConclusion(
-        root_cause="connection pool exhausted",
-        mechanism="leak",
-        confidence_level=ConfidenceLevel.VERIFIED,
-        likelihood=0.9,
-        validated_hypothesis_id=hyp.hypothesis_id,
-    )
-    assert _cause_identified(case) is True
+    rcc = _rcc(vhid=hyp.hypothesis_id)
+    case.root_cause_conclusion = rcc
+    assert retract_disconfirmed_rcc(case) is False
+    assert case.root_cause_conclusion is rcc  # untouched
+
+
+def test_retract_disconfirmed_rcc_ignores_unlinked_rcc():
+    # Link-based ONLY: a free-text RCC with no validated_hypothesis_id is left
+    # untouched even amid a refuted hypothesis — no likelihood proxy, so no
+    # false-clear of a possibly-valid conclusion (the regression the proxy caused;
+    # documented residual instead).
+    from faultmaven.core.investigation.causal_graph import retract_disconfirmed_rcc
+
+    refuted = _hyp(root_node_id=None, hypothesis_id="hyp_0000000000ad")
+    refuted.state = HypothesisState.REFUTED
+    refuted.refutation_reason = "ruled out"
+    case = _case(hyps=[refuted])
+    rcc = _rcc(vhid=None)
+    case.root_cause_conclusion = rcc
+    assert retract_disconfirmed_rcc(case) is False
+    assert case.root_cause_conclusion is rcc

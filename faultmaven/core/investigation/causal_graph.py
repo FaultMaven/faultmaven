@@ -492,12 +492,14 @@ def ingest_emitted_chain(
     # dedup is an O(1) dict lookup, not a full re-scan + re-normalization of every
     # node on every spec (this path runs each DIAGNOSIS turn and the graph grows
     # over a case). Newly-minted nodes are added to the index so intra-turn
-    # verbatim repeats also dedup; first id wins (the canonical node).
+    # verbatim repeats also dedup; first id wins (the canonical node). Skip the
+    # build entirely on the common no-emission turn — nothing to dedup against.
     canonical_by_key: dict[tuple, str] = {}
-    for nid, n in case.causal_nodes.items():
-        canonical_by_key.setdefault(
-            (n.node_type, _normalize_statement(n.statement)), nid
-        )
+    if nodes_to_add:
+        for nid, n in case.causal_nodes.items():
+            canonical_by_key.setdefault(
+                (n.node_type, _normalize_statement(n.statement)), nid
+            )
 
     created: list[str | None] = []
     for spec in nodes_to_add:
@@ -666,26 +668,41 @@ def _representative_cause_hypothesis(case: Case) -> Hypothesis | None:
     return max(case.hypotheses.values(), key=lambda h: h.initial_likelihood)
 
 
-def representative_cause_disconfirmed(case: Case) -> bool:
-    """True when the case's representative cause is disconfirmed — its
-    ``_representative_cause_hypothesis`` is REFUTED or net-refuted.
-
-    The terminal gate (``terminal_transitions._cause_identified``) trusts a
-    ``RootCauseConclusion`` as a cause-known signal *independently* of
-    ``cause_state``. But the M6 retraction that clears a stale RCC fires only
-    once ``cause_state`` reached IDENTIFIED (``_disconfirmed_cause_trigger``'s
-    gate). So an RCC-grounded cause that never validated a chain root (e.g. the
-    LLM authored a conclusion but no rung evidence) and is *later disconfirmed*
-    keeps a stale RCC that the terminal gate would otherwise assert — a
-    NO-INCORRECT-CONCLUSION violation. This predicate lets the terminal gate
-    refuse that stale RCC; in ambiguous cases it returns False (trust the RCC),
-    so it only rejects on an affirmative refutation and never under-reports a
-    genuinely-known cause.
-    """
-    hyp = _representative_cause_hypothesis(case)
-    if hyp is None:
-        return False
+def _hypothesis_disconfirmed(hyp: Hypothesis) -> bool:
+    """Hypothesis-side disconfirmation: REFUTED, or net-refuted (refuting
+    evidence at least matches support, ``_net_refuted``). The single definition
+    shared by the M6 trigger and the RCC retraction below so the two cannot
+    drift; the M6 trigger layers a node-side counterfactual clause on top."""
     return hyp.state == HypothesisState.REFUTED or _net_refuted(hyp)
+
+
+def retract_disconfirmed_rcc(case: Case) -> bool:
+    """Clear a ``RootCauseConclusion`` whose NAMED cause has been disconfirmed, at
+    the SOURCE — so a disproven cause is asserted by NO consumer (terminal gate,
+    report, copilot UI, KB-runbook conversion), not just one guarded reader.
+    Returns True if it retracted one.
+
+    Link-based ONLY — it acts solely on the RCC's explicit ``validated_hypothesis_id``
+    cause link. It deliberately does NOT infer the cause from a likelihood proxy:
+    ``_representative_cause_hypothesis``'s ``max(initial_likelihood)`` fallback would
+    refuse a valid RCC whenever an unrelated early-refuted alternative dominated
+    (a NO-COLLAPSE stall), since ``initial_likelihood`` never decays. This
+    complements the M6 retraction (``demote_disconfirmed_cause_via_evidence``,
+    gated on ``cause_state=IDENTIFIED``) by covering the gap where an RCC's
+    hypothesis is refuted but no chain root ever validated — so cause_state never
+    reached IDENTIFIED and M6's gate never fired. A free-text RCC with no
+    ``validated_hypothesis_id`` (no reliable cause link) is left untouched — a
+    documented residual, not a guess.
+    """
+    rcc = case.root_cause_conclusion
+    vhid = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
+    if not vhid:
+        return False
+    hyp = case.hypotheses.get(vhid)
+    if hyp is not None and _hypothesis_disconfirmed(hyp):
+        case.root_cause_conclusion = None
+        return True
+    return False
 
 
 _DISCONFIRMATION_REASON = (
@@ -731,14 +748,10 @@ def _disconfirmed_cause_trigger(
     if hyp is None:
         return None
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
-    disconfirmed = (
-        hyp.state == HypothesisState.REFUTED
-        or _net_refuted(hyp)
-        or (
-            node_side
-            and root is not None
-            and _node_has_counterfactual_refute(root, _evidence_category_map(case))
-        )
+    disconfirmed = _hypothesis_disconfirmed(hyp) or (
+        node_side
+        and root is not None
+        and _node_has_counterfactual_refute(root, _evidence_category_map(case))
     )
     if not disconfirmed:
         return None
