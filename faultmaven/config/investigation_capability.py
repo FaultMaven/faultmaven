@@ -20,6 +20,13 @@ catches transient tool failures on a normally-capable model) and to the
 deployment-coherence / LLM-credential gates — all three are explicit, fail-fast
 checks called from the lifespan.
 
+Scope is the **tool-calling** axis of the DA→CHAT investigation provider only.
+``STRUCTURED_OUTPUT_PROVIDER`` (which routes schema-bound calls to a possibly
+different provider) is a *separate* axis — schema enforcement — and is
+deliberately NOT gated here: structured output uses ``json_schema`` /
+``response_format``, which does not require tool calling, so a tool-incapable
+structured-output provider is not a problem this gate needs to catch.
+
 The registry is passed in (not imported) so this config-layer module stays free
 of an infrastructure import; the gate is skipped in test environments, matching
 the other startup service gates.
@@ -97,7 +104,10 @@ def resolve_investigation_capability(
             provider=provider_name,
             model=model,
             source=source,
-            reason=f"provider {provider_name!r} is not initialized (missing credential?)",
+            reason=(
+                f"provider {provider_name!r} is not initialized "
+                "(missing credential, or the provider failed to initialize)"
+            ),
         )
 
     capable = bool(provider.supports_tool_calling(model))
