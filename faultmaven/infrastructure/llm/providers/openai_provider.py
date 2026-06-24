@@ -6,6 +6,7 @@ This module implements the OpenAI LLM provider for GPT models.
 
 import asyncio
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -55,11 +56,14 @@ class OpenAIProvider(BaseLLMProvider):
     # models (gpt-4o, gpt-4, gpt-3.5) still take ``max_tokens``. Kept separate
     # from the STRICT indicators because the two axes don't coincide — gpt-4o is
     # STRICT but still uses ``max_tokens``.
-    _COMPLETION_TOKENS_MODEL_INDICATORS = (
-        "gpt-5",  # All GPT-5.x (gpt-5, gpt-5.4, gpt-5-mini, gpt-5.4-mini, ...)
-        "o1",  # o1 reasoning models
-        "o3",  # o3 reasoning models
-        "o4",  # o4 reasoning models
+    _COMPLETION_TOKENS_MODEL_FAMILIES = ("gpt-5", "o1", "o3", "o4")
+    # Anchored at the start of the (optionally ``vendor/``-prefixed) id so a
+    # family token embedded MID-name (e.g. ``my-gpt-4-o1-test``) does not
+    # false-match; the real families always LEAD the id (``o3-mini``,
+    # ``gpt-5.4-mini``, ``openai/o4-mini``). A trailing ``-``/``.``/end keeps
+    # ``o1`` from matching a hypothetical ``o10``.
+    _COMPLETION_TOKENS_MODEL_RE = re.compile(
+        r"(?:^|/)(?:" + "|".join(_COMPLETION_TOKENS_MODEL_FAMILIES) + r")(?:[-.]|$)"
     )
 
     @classmethod
@@ -72,10 +76,7 @@ class OpenAIProvider(BaseLLMProvider):
         that targets a different gateway (e.g. OpenRouter, whose unified API
         normalizes the legacy parameter itself) can opt out.
         """
-        model_lower = model_name.lower()
-        return any(
-            ind in model_lower for ind in cls._COMPLETION_TOKENS_MODEL_INDICATORS
-        )
+        return bool(cls._COMPLETION_TOKENS_MODEL_RE.search(model_name.lower()))
 
     @classmethod
     def _capability_for_model_name(cls, model_name: str) -> StructuredOutputCapability:
@@ -156,6 +157,12 @@ class OpenAIProvider(BaseLLMProvider):
 
         # GPT-5 / o-series models reject the legacy ``max_tokens`` parameter and
         # require ``max_completion_tokens``; older models keep ``max_tokens``.
+        # The token limit is owned by the explicit ``max_tokens`` arg + this
+        # selection; drop any stray copy from kwargs so the later
+        # ``payload.update(kwargs)`` can't inject a conflicting/duplicate key
+        # (sending both 400s on the models that reject the legacy name).
+        kwargs.pop("max_tokens", None)
+        kwargs.pop("max_completion_tokens", None)
         token_limit_param = (
             "max_completion_tokens"
             if self._uses_completion_tokens_param(effective_model)

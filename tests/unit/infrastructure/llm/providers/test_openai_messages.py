@@ -184,11 +184,16 @@ class TestOpenAIGenerateMessages:
             assert result.tokens_used == 50
 
 
-def _config_for(model: str) -> ProviderConfig:
+def _config_for(
+    model: str,
+    *,
+    name: str = "openai",
+    base_url: str = "https://api.openai.com/v1",
+) -> ProviderConfig:
     return ProviderConfig(
-        name="openai",
+        name=name,
         api_key="test-key",
-        base_url="https://api.openai.com/v1",
+        base_url=base_url,
         models=[model],
         default_model=model,
         timeout=30,
@@ -235,19 +240,33 @@ class TestOpenAITokenLimitParam:
             assert request_body[expected_param] == 512
             assert absent_param not in request_body
 
+    async def test_stray_token_kwarg_does_not_duplicate_the_param(self):
+        """A passthrough caller that forwards a token key via **kwargs must not
+        inject a conflicting/duplicate param into the payload (sending both
+        400s on the models that reject the legacy name). ``max_tokens`` is a
+        named arg, so the only key that can arrive via kwargs is
+        ``max_completion_tokens`` — for a gpt-4o request (which uses
+        ``max_tokens``) that stray key would otherwise be a second token param."""
+        provider = OpenAIProvider(_config_for("gpt-4o"))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi", max_tokens=512, max_completion_tokens=999)
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert request_body["max_tokens"] == 512
+            assert "max_completion_tokens" not in request_body
+
     async def test_openrouter_always_uses_legacy_max_tokens(self):
         """OpenRouter's unified gateway normalizes the parameter itself, so even
         a routed ``openai/gpt-5`` keeps ``max_tokens`` (the subclass opts out)."""
-        config = ProviderConfig(
-            name="openrouter",
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            models=["openai/gpt-5"],
-            default_model="openai/gpt-5",
-            timeout=30,
-            confidence_score=0.9,
+        provider = OpenRouterProvider(
+            _config_for(
+                "openai/gpt-5",
+                name="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
         )
-        provider = OpenRouterProvider(config)
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
@@ -260,14 +279,16 @@ class TestOpenAITokenLimitParam:
 
 @pytest.mark.unit
 def test_token_param_classifier_is_pure_and_case_insensitive():
+    uses = OpenAIProvider._uses_completion_tokens_param
     # Uppercase operator config (the exact OPENAI_MODEL=GPT-5.4 shape).
-    assert OpenAIProvider._uses_completion_tokens_param("GPT-5.4") is True
-    assert OpenAIProvider._uses_completion_tokens_param("gpt-4o") is False
-    # Fireworks/DeepSeek id must not false-positive match (no gpt-5/o1/o3/o4 substring).
-    assert (
-        OpenAIProvider._uses_completion_tokens_param(
-            "accounts/fireworks/models/deepseek-v3"
-        )
-        is False
-    )
+    assert uses("GPT-5.4") is True
+    assert uses("o4-mini") is True
+    assert uses("openai/o3-mini") is True  # vendor-prefixed id still matches
+    assert uses("gpt-4o") is False
+    # A family token embedded mid-name must NOT match (anchored at id start).
+    assert uses("my-gpt-4-o1-test") is False
+    assert uses("chatgpt-4o-latest") is False
+    # Fireworks/DeepSeek id must not false-positive match.
+    assert uses("accounts/fireworks/models/deepseek-v3") is False
+    # OpenRouter opts out unconditionally (gateway normalizes the param).
     assert OpenRouterProvider._uses_completion_tokens_param("openai/gpt-5") is False
