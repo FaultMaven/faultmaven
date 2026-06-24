@@ -424,6 +424,14 @@ def chain_path_to_problem(root_id: str, case: Case) -> list[str]:
     return []  # open chain — no route to D
 
 
+def _normalize_statement(s: str | None) -> str:
+    """Canonical key for exact-match node identity (engine ingest dedup):
+    whitespace-collapsed, lowercased, capped at the same 500 chars
+    ``CausalNode`` stores — so both operands of a comparison normalize
+    identically (no asymmetric truncation)."""
+    return " ".join((s or "")[:500].split()).lower()
+
+
 def ingest_emitted_chain(
     case: Case,
     nodes_to_add: list,
@@ -480,6 +488,17 @@ def ingest_emitted_chain(
     # duplicate from a distinct OR-sibling differing in one parameter (the
     # over-merge trap), so paraphrases are deliberately NOT merged here. Reuse
     # covers intra-turn repeats too (earlier nodes are already in causal_nodes).
+    # Index existing nodes by (type, normalized statement) ONCE — so the per-spec
+    # dedup is an O(1) dict lookup, not a full re-scan + re-normalization of every
+    # node on every spec (this path runs each DIAGNOSIS turn and the graph grows
+    # over a case). Newly-minted nodes are added to the index so intra-turn
+    # verbatim repeats also dedup; first id wins (the canonical node).
+    canonical_by_key: dict[tuple, str] = {}
+    for nid, n in case.causal_nodes.items():
+        canonical_by_key.setdefault(
+            (n.node_type, _normalize_statement(n.statement)), nid
+        )
+
     created: list[str | None] = []
     for spec in nodes_to_add:
         statement = (getattr(spec, "statement", None) or "").strip()
@@ -492,16 +511,17 @@ def ingest_emitted_chain(
             # type (a second PROBLEM node would violate the one-D-per-case index).
             created.append(None)
             continue
-        norm = " ".join(statement[:500].split()).lower()
-        canonical = next(
-            (
-                nid
-                for nid, n in case.causal_nodes.items()
-                if n.node_type == node_type
-                and " ".join((n.statement or "").split()).lower() == norm
-            ),
-            None,
-        )
+        # Identity reconciliation (engine-derive lane): an emitted statement that
+        # EXACTLY restates an existing same-type node REUSES it rather than minting
+        # a duplicate — so its id flows into edges, evidence, and the hypothesis
+        # root_ref, keeping one cause on one node. The LLM re-asserts a standing
+        # cause on later turns; prevention is the chain rendered in <causal_graph>
+        # (which it is told to reference), and this is the safe backstop for a
+        # verbatim re-emit. Exact normalized match ONLY: a fuzzy threshold cannot
+        # separate a true duplicate from a distinct OR-sibling differing in one
+        # parameter (the over-merge trap), so paraphrases are NOT merged here.
+        key = (node_type, _normalize_statement(statement))
+        canonical = canonical_by_key.get(key)
         if canonical is not None:
             created.append(canonical)  # reuse the canonical node, no duplicate
             continue
@@ -511,6 +531,7 @@ def ingest_emitted_chain(
             generated_at_turn=current_turn,
         )
         case.causal_nodes[node.node_id] = node
+        canonical_by_key[key] = node.node_id
         created.append(node.node_id)
 
     def _resolve(ref: str | None) -> str | None:
