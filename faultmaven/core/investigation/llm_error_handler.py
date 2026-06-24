@@ -23,6 +23,45 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+# Context-window overflow phrases (the prompt is too large for the window).
+# SHARED with milestone_engine._is_context_length_error (which imports this
+# tuple) so the two overflow classifiers cannot drift — a provider's overflow
+# wording (e.g. Cohere's "too many tokens") must route the same way through
+# either path. Deliberately length/window-specific: NO bare "token" or bare
+# "too long" (those fire on ordinary request-validation errors).
+CONTEXT_OVERFLOW_PHRASES: Tuple[str, ...] = (
+    "context length",
+    "context window",
+    "maximum context",
+    "context_length_exceeded",
+    "too many tokens",
+    "reduce the length of the messages",
+    "prompt is too long",
+    "input is too long",
+    "maximum context length",
+    "exceeds the maximum context",
+)
+
+# Output truncated at the generation cap: the response body is cut off, so the
+# JSON fails to parse. Distinct from input overflow but also COMPRESS_MEMORY-
+# class (freeing budget lets the retry complete the output).
+_OUTPUT_TRUNCATION_PHRASES: Tuple[str, ...] = (
+    "truncated",
+    "unterminated",  # truncated JSON string
+    "eof while parsing",  # Pydantic/JSON parse of a cut-off body
+    "finishreason=max_tokens",  # Gemini surfaces the output-cap reason
+)
+
+# A wrong/unsupported request parameter is a config error, NOT a token limit;
+# matching it as one masks the real cause and loops on futile compression
+# (e.g. OpenAI "Unsupported parameter: 'max_tokens' ... use
+# 'max_completion_tokens'").
+_PARAM_ERROR_GUARD_PHRASES: Tuple[str, ...] = (
+    "unsupported parameter",
+    "unsupported_parameter",
+    "is not supported with this model",
+)
+
 
 class ErrorAction(str, Enum):
     """Actions to take after error handling."""
@@ -131,21 +170,25 @@ class LLMErrorHandler:
         )
 
     def is_token_limit_error(self, error: Exception) -> bool:
-        """Check if error is related to token limits or JSON truncation."""
+        """Check if an error is a context-window overflow or output truncation.
+
+        These are the only token-related failures that COMPRESS_MEMORY can
+        recover (the prompt is too large for the context window, or the JSON
+        output was cut off at the generation cap). A request-shape 400 that
+        merely *names* a token parameter — e.g. OpenAI's "Unsupported parameter:
+        'max_tokens' is not supported with this model. Use
+        'max_completion_tokens' instead." — is a non-retryable config error, NOT
+        a context overflow. Matching it here masked the real cause as "Context
+        too large" and sent the engine into a futile compression loop, so we key
+        on specific overflow/truncation signatures and never on the bare word
+        "token"/"max_tokens", and bail early on unsupported-parameter errors.
+        """
         error_str = str(error).lower()
-        # Check for token limit errors OR JSON truncation errors
-        # JSON truncation errors manifest as: "EOF while parsing", "truncated", etc.
-        return any(
-            pattern in error_str
-            for pattern in (
-                "token",
-                "context length",
-                "too long",
-                "max_tokens",
-                "truncated",
-                "eof while parsing",  # Pydantic JSON validation error
-                "finishreason=max_tokens",  # Gemini-specific
-            )
+        # A wrong/unsupported request parameter is a config error, not a limit.
+        if any(guard in error_str for guard in _PARAM_ERROR_GUARD_PHRASES):
+            return False
+        return any(p in error_str for p in CONTEXT_OVERFLOW_PHRASES) or any(
+            p in error_str for p in _OUTPUT_TRUNCATION_PHRASES
         )
 
     def calculate_delay(self, retry_count: int) -> float:
