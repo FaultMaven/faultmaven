@@ -1,15 +1,13 @@
 """Gate 1b slice 2: chain-derived cause_state (Option A, §9.2) + M6 via Option (c).
 
-When ``enable_hypothesis_chain_emission`` is ON, ``cause_state=IDENTIFIED`` is
-derived from a VALIDATED chain root (real rung evidence), not flat assertion, and
-failed-treatment demotion is made durable by attaching an engine REFUTES fact to
-the root — so ``derive_node_states`` keeps it refuted across turns (no turn-28
-resurrection). The flat path (flag OFF) is unchanged.
+``cause_state=IDENTIFIED`` is derived from a VALIDATED chain root (real rung
+evidence), not flat assertion, and failed-treatment demotion is made durable by
+attaching an engine REFUTES fact to the root — so ``derive_node_states`` keeps it
+refuted across turns (no turn-28 resurrection).
 """
 
 import hashlib
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 
@@ -17,7 +15,6 @@ from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.causal_graph import (
     _attach_engine_refutation,
     any_chain_root_validated,
-    demote_disconfirmed_cause,
     demote_disconfirmed_cause_via_evidence,
     seed_problem_node,
 )
@@ -252,7 +249,7 @@ def test_demote_via_evidence_refutes_and_retracts():
     )  # durable refutation attached
 
 
-def test_turn28_no_resurrection_under_chain_mode():
+def test_turn28_no_resurrection_chain_derived():
     """The core Option-(c) guarantee: after a failed-treatment demotion, the root
     stays REFUTED on the NEXT recompute — it is not re-validated from the stale
     supporting evidence. (The turn-28 bug was exactly this resurrection.)"""
@@ -285,35 +282,12 @@ def test_turn28_no_resurrection_under_chain_mode():
 # ---------------------------------------------------------------------------
 
 
-def test_recompute_uses_chain_path_when_flag_on(monkeypatch):
+def test_recompute_uses_chain_path():
     case, root, hyp = _chain_case()
-    monkeypatch.setattr(
-        "faultmaven.config.settings.get_settings",
-        lambda: SimpleNamespace(
-            features=SimpleNamespace(enable_hypothesis_chain_emission=True)
-        ),
-    )
     _recompute_assessment_state(case)
     # chain path validated the root from its evidence
     assert root.node_state == NodeState.VALIDATED
     assert case.progress.cause_state == CauseState.IDENTIFIED
-
-
-def test_recompute_uses_flat_path_when_flag_off(monkeypatch):
-    """Flag OFF: the chain root is NOT consulted for cause_state (flat grounding
-    governs), so an evidence-backed root does not by itself flip IDENTIFIED."""
-    case, root, hyp = _chain_case()
-    monkeypatch.setattr(
-        "faultmaven.config.settings.get_settings",
-        lambda: SimpleNamespace(
-            features=SimpleNamespace(enable_hypothesis_chain_emission=False)
-        ),
-    )
-    _recompute_assessment_state(case)
-    # flat path: no RootCauseConclusion / grounding → not IDENTIFIED, and derive
-    # did not run, so the root is untouched.
-    assert root.node_state == NodeState.CANDIDATE
-    assert case.progress.cause_state != CauseState.IDENTIFIED
 
 
 # ---------------------------------------------------------------------------
@@ -371,28 +345,6 @@ def test_node_only_counterfactual_refute_retracts_conclusion():
     assert root.node_state == NodeState.REFUTED
     assert case.progress.cause_state != CauseState.IDENTIFIED
     assert case.root_cause_conclusion is None  # retracted via node-side trigger
-
-
-def test_flat_demote_ignores_node_side_counterfactual():
-    """The flat path must NOT demote a healthy hypothesis off a persisted node-side
-    counterfactual (a root reloaded after the flag was flipped off). Node-derived
-    disconfirmation is chain-mode-only."""
-    case, root, hyp = _chain_case()
-    case.progress.cause_state = CauseState.IDENTIFIED  # grounded (prior turn)
-    # The hypothesis itself is healthy (ACTIVE, not net-refuted), but its persisted
-    # root carries a counterfactual refute.
-    absent = _evidence("ev_absent", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
-    case.evidence.append(absent)
-    root.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=absent.evidence_id,
-            stance=EvidenceStance.REFUTES,
-            reasoning="stale counterfactual",
-            linked_at_turn=case.current_turn,
-        )
-    )
-    assert demote_disconfirmed_cause(case) is False  # flat path does not fire
-    assert hyp.state == HypothesisState.ACTIVE  # healthy hyp untouched
 
 
 def test_ordinary_refute_does_not_suppress_decisive_attach():

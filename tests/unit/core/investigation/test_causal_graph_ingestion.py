@@ -390,3 +390,57 @@ def test_ingest_accepts_real_emission_schema_objects():
         ),
     ]
     assert len(case.causal_nodes[root_id].evidence_links) == 1
+
+
+def test_ingest_dedup_reuses_node_on_exact_restatement():
+    # The LLM re-asserts a standing cause on a later turn. An exact restatement
+    # (modulo whitespace/case) must REUSE the existing same-type node, not mint a
+    # duplicate root — so one cause stays on one node and its grounding does not
+    # fragment. Reuse covers the cross-turn re-emission seen on kafka-consumer-lag.
+    case = _case()
+    first = ingest_emitted_chain(
+        case,
+        nodes_to_add=[
+            _node("Missing index on orders(customer_id)", NodeType.ROOT, produces="D")
+        ],
+        edges_to_add=[],
+        node_evidence=[],
+        current_turn=4,
+    )
+    root_id = first[0]
+    n_before = len(case.causal_nodes)
+    second = ingest_emitted_chain(
+        case,
+        nodes_to_add=[
+            # same cause, different whitespace + case -> normalized exact match
+            _node(
+                "missing index  on   ORDERS(customer_id)", NodeType.ROOT, produces="D"
+            )
+        ],
+        edges_to_add=[],
+        node_evidence=[],
+        current_turn=5,
+    )
+    assert second[0] == root_id  # reused the canonical node
+    assert len(case.causal_nodes) == n_before  # no duplicate minted
+    roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+    assert len(roots) == 1
+
+
+def test_ingest_dedup_does_not_merge_distinct_siblings():
+    # Two roots differing in one parameter are DISTINCT OR-siblings and must NOT
+    # be merged — exact match only, never a fuzzy collapse (the over-merge trap).
+    case = _case()
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[
+            _node("Missing index on orders(customer_id)", NodeType.ROOT, produces="D"),
+            _node("Missing index on orders(order_date)", NodeType.ROOT, produces="D"),
+        ],
+        edges_to_add=[],
+        node_evidence=[],
+        current_turn=4,
+    )
+    assert created[0] != created[1]
+    roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+    assert len(roots) == 2

@@ -1458,7 +1458,7 @@ if _is_debug_enabled(settings=_debug_settings):
         """Dump a case's causal graph + hypothesis-chain wiring (dev-only).
 
         Instrumentation hook for the 2D-hypothesis chain-emission validation
-        (``enable_hypothesis_chain_emission``). Returns the persisted causal
+        (chain emission is always active). Returns the persisted causal
         DAG (nodes/edges), each hypothesis's chain link (``root_node_id`` /
         ``path``), the engine-derived ``cause_state``, and the root-cause
         conclusion — enough for the simulator probe to detect well-formed

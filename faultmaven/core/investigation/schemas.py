@@ -568,9 +568,9 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
 # Chain-emission contract (Two-Dimensional Hypothesis Methodology §5/§9.1).
 # Carried to the LLM via the ``causal_nodes_to_add`` / ``causal_edges_to_add`` /
 # ``node_evidence_links`` fields on the investigation ``state_updates`` and
-# consumed by ``causal_graph.ingest_emitted_chain``. Both the prompt block that
-# teaches them and the engine ingestion are gated on the
-# ``enable_hypothesis_chain_emission`` flag (off by default).
+# consumed by ``causal_graph.ingest_emitted_chain``. Chain emission is always
+# active: the prompt block that teaches them and the engine ingestion both run
+# unconditionally.
 class CausalNodeToAdd(BaseModel):
     """A causal node emitted during lazy backward expansion (methodology §5/S3).
 
