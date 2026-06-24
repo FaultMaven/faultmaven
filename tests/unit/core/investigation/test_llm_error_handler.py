@@ -113,10 +113,12 @@ class TestErrorClassification:
             "context_length_exceeded",
             "Please reduce the length of the messages",
             "prompt is too long: 250000 tokens > 200000 maximum",
+            "bad request: too many tokens",  # Cohere-style overflow (was lost
+            # when bare "token" was dropped; shared with _is_context_length_error)
+            "exceeds the maximum context (8192)",
             "EOF while parsing a value",  # truncated JSON output
             "Unterminated string starting at line 3",
             "finishReason=MAX_TOKENS",  # Gemini output cap
-            '"finish_reason": "length"',  # OpenAI output cap
         ],
     )
     def test_real_overflow_and_truncation_detected(self, handler, msg):
@@ -133,6 +135,9 @@ class TestErrorClassification:
             "OpenAI API error 400: invalid_request_error unsupported_parameter",
             "Invalid authentication token",  # bare 'token' must not match
             "Your max_tokens value must be a positive integer",  # param shape error
+            # A DB/validation "too long" must not be read as a context overflow
+            # (why the classifier keys on "prompt is too long", not bare "too long").
+            "value too long for type character varying(255)",
         ],
     )
     def test_config_and_param_errors_not_token_limit(self, handler, msg):

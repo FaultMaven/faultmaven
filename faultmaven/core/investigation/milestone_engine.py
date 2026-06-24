@@ -58,7 +58,10 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
 )
-from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler
+from faultmaven.core.investigation.llm_error_handler import (
+    CONTEXT_OVERFLOW_PHRASES,
+    LLMErrorHandler,
+)
 from faultmaven.core.investigation.progress_monitor import (
     ProgressMonitor,
 )
@@ -303,19 +306,9 @@ def _is_context_length_error(exc: Exception) -> bool:
     request-validation errors and would trigger needless fallback retries.
     """
     msg = str(getattr(exc, "message", "") or exc).lower()
-    phrases = (
-        "context length",
-        "context window",
-        "maximum context",
-        "context_length_exceeded",
-        "too many tokens",
-        "reduce the length of the messages",
-        "prompt is too long",
-        "input is too long",
-        "maximum context length",
-        "exceeds the maximum context",
-    )
-    return any(p in msg for p in phrases)
+    # Shared with llm_error_handler.is_token_limit_error so the two overflow
+    # classifiers cannot drift (see CONTEXT_OVERFLOW_PHRASES).
+    return any(p in msg for p in CONTEXT_OVERFLOW_PHRASES)
 
 
 def _resolve_evidence_source(
