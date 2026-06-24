@@ -57,6 +57,16 @@ settings.is_standalone  # not is_cloud
 
 `DEPLOYMENT_MODE=standalone` keeps the simple defaults (local auth, SQLite, FakeRedis, single tenant); the gate flags only egregious mixes (e.g. standalone declaring `auth_mode=oauth`). The dangerous, asymmetric failure is **cloud silently running as standalone**, which the gate makes impossible. This replaces the three independent, unsynchronized "is cloud?" checks (`auth_mode`, `dashboard_url`, `tenant_provider`) with one canonical switch + one gate.
 
+### Investigation Tooling Gate (fail-fast, at boot)
+
+`validate_investigation_tooling(settings, registry)` (`config/investigation_capability.py`) runs during startup, alongside the coherence and credential gates, and **refuses to boot** when the **resolved investigation model** — `DA_PROVIDER`, falling back to `CHAT_PROVIDER` — does not support tool calling.
+
+**Why a hard gate, not a warning.** Directed Analysis (`search_file`, `deep_analysis`) is how the engine *gathers evidence*, and it requires function/tool calling. A tool-incapable investigation model can't reach the evidence yet will still emit conclusions from whatever is already in context — exactly the *premature / unfounded conclusion* the product guarantees against. A log line nobody reads doesn't protect that guarantee, and the condition is deterministically detectable at boot.
+
+**Explicit opt-out for degraded/offline mode.** `ALLOW_TOOLLESS_INVESTIGATION=true` is a knowing choice (e.g. a local model with no tools). With it set, the gate logs a loud warning and boots; `/health` then reports `status: degraded` with an `investigation` block (`tools_available: false`, provider/model/reason) so the state stays visible, not log-only. Degraded-by-choice is allowed; degraded-by-accident is not.
+
+**Scope.** Tool calling is required only for the **investigation role** (CHAT/DA); `CLASSIFIER_PROVIDER` / `SYNTHESIS_PROVIDER` overrides never call tools, so a tool-incapable model there is fine and untouched by the gate. The gate keys *solely* on the server's `DA_PROVIDER` → `CHAT_PROVIDER` resolution, so LLMs configured **outside** the FaultMaven server — e.g. a simulation/eval **persona** that only generates user text — are a separate config it never sees. A denylisted model such as `minimax-m2p7` is therefore perfectly valid as a sim persona; only its use as the *investigation* model is gated. The per-turn runtime fallback in `milestone_engine` (catch `ToolCallingUnsupportedError`, fall through to the non-tool path) remains the safety net for *transient* tool failures on an otherwise-capable model — defense in depth, not a substitute for the gate. The gate is skipped in test environments (`SKIP_SERVICE_CHECKS` / pytest), matching the other startup gates.
+
 ### Standalone Mode (`DEPLOYMENT_MODE=standalone`)
 
 | Aspect | Behavior |

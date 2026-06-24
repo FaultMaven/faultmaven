@@ -168,40 +168,12 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
     if has_provider:
         logger.info(f"✅ LLM Provider configured: {provider_name}")
 
-        # Check if effective DA provider supports tool calling
-        try:
-            from .infrastructure.llm.providers.registry import get_registry
-
-            registry = get_registry()
-            llm_settings = settings.llm
-
-            effective_da_provider = llm_settings.get_da_provider()
-            effective_da_model = llm_settings.get_da_model()
-            da_provider_name = (
-                effective_da_provider.value
-                if hasattr(effective_da_provider, "value")
-                else str(effective_da_provider)
-            )
-
-            da_provider_instance = registry.get_provider(da_provider_name)
-            if da_provider_instance and not da_provider_instance.supports_tool_calling(
-                effective_da_model
-            ):
-                source = (
-                    "DA_PROVIDER"
-                    if llm_settings.da_provider is not None
-                    else "CHAT_PROVIDER (no DA_PROVIDER override set)"
-                )
-                logger.warning(
-                    f"{da_provider_name}/{effective_da_model} does not support tool calling "
-                    f"(resolved from {source}). "
-                    "Directed Analysis features (search_file, deep_analysis) will be unavailable. "
-                    "Investigation responses will be limited to structural index summaries. "
-                    "To enable full investigation, set DA_PROVIDER to a tool-capable provider "
-                    "(anthropic, openai, gemini)."
-                )
-        except Exception as e:
-            logger.debug(f"Could not check DA provider tool calling capability: {e}")
+        # NOTE: the investigation model's tool-calling capability is enforced by
+        # the fail-fast gate in config/investigation_capability.py
+        # (validate_investigation_tooling), called earlier in the lifespan — it
+        # refuses to boot on a tool-incapable investigation model unless
+        # ALLOW_TOOLLESS_INVESTIGATION is set (then it warns + /health reports
+        # degraded). Kept there, not here, so there is a single source of truth.
     else:
         # Print prominent warning banner
         banner = """
@@ -297,6 +269,18 @@ async def lifespan(app: FastAPI):
             from .config.llm_validation import validate_llm_provider_credentials
 
             validate_llm_provider_credentials(settings)
+
+            # Fail fast if the resolved investigation model (DA → CHAT) can't do
+            # tool calling: the engine needs it to gather evidence
+            # (search_file, deep_analysis), and concluding without reaching the
+            # evidence is the premature-conclusion failure we guarantee against.
+            # Explicit opt-out: ALLOW_TOOLLESS_INVESTIGATION (degraded/offline).
+            from .config.investigation_capability import (
+                validate_investigation_tooling,
+            )
+            from .infrastructure.llm.providers.registry import get_registry
+
+            validate_investigation_tooling(settings, get_registry())
 
         # Validate workers configuration for in-memory storage
         workers = settings.server.workers
@@ -1800,6 +1784,32 @@ async def health_check():
     except Exception as e:
         logger.warning(f"Failed to get DI container health: {e}")
         health_status["services"]["di_container"] = "unknown"
+
+    # Investigation tool-calling capability. Normally the startup gate
+    # (validate_investigation_tooling) prevents boot on a tool-incapable model,
+    # so this is only ever degraded in the explicit ALLOW_TOOLLESS_INVESTIGATION
+    # opt-in — surface it so the degraded state stays visible, not just in logs.
+    try:
+        from .config.investigation_capability import (
+            resolve_investigation_capability,
+        )
+        from .config.settings import get_settings
+        from .infrastructure.llm.providers.registry import get_registry
+
+        cap = resolve_investigation_capability(get_settings(), get_registry())
+        health_status["investigation"] = {
+            "tools_available": cap.tool_capable,
+            "provider": cap.provider,
+            "model": cap.model,
+        }
+        if not cap.tool_capable:
+            health_status["investigation"]["reason"] = cap.reason
+            # Only downgrade from a healthy state; never upgrade a worse one.
+            if health_status.get("status") == "healthy":
+                health_status["status"] = "degraded"
+    except Exception as e:
+        # Health must never crash on a best-effort capability probe.
+        logger.debug(f"Could not resolve investigation capability for health: {e}")
 
     return health_status
 
