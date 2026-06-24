@@ -72,6 +72,46 @@ class GeminiProvider(BaseLLMProvider):
         # Gemini 1.0 (and any unrecognized model string) uses BEST_EFFORT
         return StructuredOutputCapability.BEST_EFFORT
 
+    # Thinking budget (tokens) for structured-output calls on thinking-capable
+    # models. Structured extraction does not need heavy hidden reasoning, and
+    # uncapped thinking starves the actual JSON output (see
+    # _structured_thinking_budget). Kept comfortably above gemini-2.5-pro's
+    # minimum thinking budget so the cap is valid for every thinking model.
+    _STRUCTURED_THINKING_BUDGET_TOKENS = 2048
+
+    @staticmethod
+    def _is_thinking_model(model: str) -> bool:
+        """Whether the model bills hidden 'thinking' tokens against
+        maxOutputTokens.
+
+        Gemini 2.5 and every 3.x+ release are thinking models; 1.5 and 2.0 are
+        not (and reject ``thinkingConfig`` with a 400). Matches gemini-2.5-*,
+        gemini-3.<n>-*, and any later major version.
+        """
+        return bool(re.search(r"gemini-(?:2\.5|[3-9]\.\d+|\d{2,}\.\d+)", model.lower()))
+
+    def _structured_thinking_budget(
+        self, model: str, max_tokens: int, is_structured: bool
+    ) -> Optional[int]:
+        """Thinking-token budget for a structured-output call, or None to leave
+        ``thinkingConfig`` unset.
+
+        Returns None for non-structured calls (partial text is still usable
+        there, so starvation is not fatal) and for non-thinking models (which
+        reject ``thinkingConfig``). For thinking models on a structured call,
+        caps thinking at ``_STRUCTURED_THINKING_BUDGET_TOKENS`` but never more
+        than half of ``maxOutputTokens`` — guaranteeing the structured JSON
+        always has room and the response can't truncate to a MAX_TOKENS 500.
+
+        Motivated by gemini-3.5-flash (the shipped Gemini default): a 3.x
+        thinking model whose dynamic thinking consumed nearly the entire
+        budget on deep-context turns, leaving only a few hundred chars of
+        output before finishReason=MAX_TOKENS.
+        """
+        if not is_structured or not self._is_thinking_model(model):
+            return None
+        return min(self._STRUCTURED_THINKING_BUDGET_TOKENS, max(0, max_tokens // 2))
+
     async def generate(
         self,
         prompt: str,
@@ -176,6 +216,20 @@ class GeminiProvider(BaseLLMProvider):
                 request_body["toolConfig"] = {"functionCallingConfig": {"mode": "ANY"}}
             elif tool_choice == "auto":
                 request_body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
+
+        # Cap thinking on structured-output calls so it can't starve the JSON
+        # output. Thinking-capable models (2.5+, 3.x) bill reasoning tokens
+        # against maxOutputTokens; without a cap, deep-context turns on
+        # gemini-3.5-flash consumed nearly the whole budget and the structured
+        # response truncated (finishReason=MAX_TOKENS) into a 500. `rf` (JSON
+        # schema/object) or `tools_param` (function calling) marks a structured
+        # call. generation_config is the same object referenced by
+        # request_body["generationConfig"], so mutating it here is sufficient.
+        thinking_budget = self._structured_thinking_budget(
+            selected_model, max_tokens, is_structured=bool(rf) or bool(tools_param)
+        )
+        if thinking_budget is not None:
+            generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
 
         # Add safety settings if provided
         if "safety_settings" in kwargs:

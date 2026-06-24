@@ -310,6 +310,11 @@ empty/degraded investigations. **Use a STRICT provider as `CHAT_PROVIDER`**
 `deepseek-v3`/minimax, Groq, HuggingFace, Local) are fine for cheap
 `CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER` overrides but degrade primary CHAT.
 Capability is reported per-provider via `get_structured_output_capability()`.
+STRICT enforcement is necessary but not sufficient: a STRICT **thinking** model
+(Gemini 2.5+/3.x) bills hidden reasoning against `maxOutputTokens`, so the
+Gemini provider caps `thinkingConfig.thinkingBudget` on structured calls to
+keep thinking from starving the JSON output (otherwise deep-context turns
+truncate to `MAX_TOKENS` and 500).
 
 ### Capability Overrides
 
