@@ -13,12 +13,34 @@ this document defines what the agent is *reasoning about* when it drives them.
 
 ## Status
 
-**Design specification (target state).** This methodology supersedes two
-implicit assumptions in the as-built engine: that a hypothesis is a single
-sentence, and that confidence is a per-mention counter. The data-model and
-prompt changes it implies are listed in [§9](#9-engine-alignment). Until
-those land, the lifecycle summary in framework §6 describes the *current*
-behavior and this document describes the *intended* behavior.
+**Core implemented; reasoning-rigor layer partially landed.** The central
+reframe — *a hypothesis is a causal chain, not a single sentence* — is now the
+engine's **actual** model: chain emission is the sole investigation path (the
+flat-sentence model and its transitional flag/bridge scaffolding were removed),
+and `cause_state` is derived from a validated chain root rather than asserted.
+The data-model and engine surface in [§9](#9-engine-alignment) landed across
+PRs #487–#507. What is built versus still design-intent:
+
+- **Built (merged):** the causal-graph schema (§9.1 — `CausalNode`/`CausalEdge`/
+  `NodeEvidenceLink`); chain emission as the only path; **node-identity
+  preservation** — the engine renders existing `cn_…` ids back into context so
+  the LLM *extends* a chain rather than re-emitting a cause as a duplicate node;
+  chain-derived `cause_state` (§9.2), never asserted (M4); engine-deterministic
+  failed-fix demotion (M6, §9.3); root-actionability (M1); AND-proof (M7); and
+  the deductive-exclusion primitive (§7.1.1).
+- **Design-intent, not yet built** — the LLM satisfies these *behaviorally*; no
+  engine gate enforces them: chain-level belief propagation (§9.4 — the engine
+  still uses the per-evidence `+0.15 / −0.20` counter from
+  [framework §6](./evidence-driven-investigation-framework.md#6-hypothesis-model));
+  F3 signature-screening (§4); the F4 family-completeness sweep; M5
+  solution-gating on a *mechanistically-validated* root (only a weaker "a
+  SOLUTION requires ≥1 hypothesis" gate exists today); and invalidation-first
+  search prioritization (§5). Each promotes to the methodology-invariant
+  registry (§0) as it is implemented.
+
+The lifecycle/confidence *mechanics* (states, the `+0.15/−0.20` counter, decay)
+remain specified in framework §6; this document defines the reasoning the agent
+applies on top of them.
 
 **Related documents**:
 
@@ -512,9 +534,12 @@ variables, milestones, and confidence stay consistent.
 
 ### 9.4 Confidence
 
+*Design-intent — not yet built. The engine currently uses the framework-§6
+`+0.15 / −0.20` per-evidence counter; the chain-level scheme below is the target.*
+
 Chain-level belief replaces per-mention counting: **AND rung = min / product of
 members; OR = noisy-OR / max** (§6.1). `HypothesisManager.update_likelihood_from_evidence`
-is rebuilt to propagate node beliefs through the gates instead of summing
+would propagate node beliefs through the gates instead of summing
 `+0.15 / −0.20` on a flat hypothesis.
 
 ---
