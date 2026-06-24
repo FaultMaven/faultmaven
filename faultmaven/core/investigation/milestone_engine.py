@@ -4409,21 +4409,41 @@ class MilestoneEngine:
             # own (its state_updates), nothing is fabricated, and internal
             # reasoning is never surfaced; on resolution turns the closure
             # summary carries the substantive text.
-            if isinstance(content_obj, dict) and not content_obj.get("agent_response"):
+            # Fire only when agent_response is genuinely MISSING/null (the "Field
+            # required" trigger) — never overwrite a model-provided empty string,
+            # which is a valid (if poor) value the model chose, not the defect.
+            if (
+                isinstance(content_obj, dict)
+                and content_obj.get("agent_response") is None
+            ):
                 placeholder = (
                     "I've updated the investigation based on the latest information."
                 )
                 base = pruned if dropped else content_obj
-                for candidate in (base, {**base, "state_updates": {}}):
+                # Prefer keeping the model's state_updates; only DROP them as a
+                # last resort — and say so, so a state-update loss is never logged
+                # as a mere field-fill.
+                for state_dropped, candidate in (
+                    (False, base),
+                    (True, {**base, "state_updates": {}}),
+                ):
                     try:
                         patched = {**candidate, "agent_response": placeholder}
                         parsed = schema_model.model_validate_json(json.dumps(patched))
                         logger.warning(
                             "structured_output_degraded: synthesized missing "
                             f"agent_response on {schema_model.__name__} (model "
-                            "omitted the required user-facing field) — turn "
-                            "preserved, no 500.",
-                            extra={"schema": schema_model.__name__},
+                            "omitted the required user-facing field)"
+                            + (
+                                " AND dropped all state_updates (unrepairable)"
+                                if state_dropped
+                                else ""
+                            )
+                            + " — turn preserved, no 500.",
+                            extra={
+                                "schema": schema_model.__name__,
+                                "state_updates_dropped": state_dropped,
+                            },
                         )
                         return parsed
                     except ValidationError:
@@ -5900,10 +5920,12 @@ class MilestoneEngine:
                     # IDENTIFIED signal. The milestone SYMBOL stays
                     # "root_cause_identified" for downstream maps/telemetry.
                     if field == "root_cause_identified":
-                        # cause_state is owned by the end-of-turn chain recompute (a validated chain root, §9.2); the LLM's grounded signal does not set it here.
-                        pass
+                        # Engine-owned: cause_state is set by the end-of-turn
+                        # chain recompute (a validated chain root, §9.2), not by
+                        # this LLM milestone signal — skip it here.
+                        continue
                     # Only append if transitioning from False to True
-                    elif not getattr(p, field, False):
+                    if not getattr(p, field, False):
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
 

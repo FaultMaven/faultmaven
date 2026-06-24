@@ -637,11 +637,34 @@ def _representative_cause_hypothesis(case: Case) -> Hypothesis | None:
     just-refuted believed-cause would vanish from a max-by-``likelihood`` pick.
     """
     rcc = case.root_cause_conclusion
-    if rcc and rcc.validated_hypothesis_id:
-        return case.hypotheses.get(rcc.validated_hypothesis_id)
+    vhid = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
+    if vhid:
+        return case.hypotheses.get(vhid)
     if not case.hypotheses:
         return None
     return max(case.hypotheses.values(), key=lambda h: h.initial_likelihood)
+
+
+def representative_cause_disconfirmed(case: Case) -> bool:
+    """True when the case's representative cause is disconfirmed — its
+    ``_representative_cause_hypothesis`` is REFUTED or net-refuted.
+
+    The terminal gate (``terminal_transitions._cause_identified``) trusts a
+    ``RootCauseConclusion`` as a cause-known signal *independently* of
+    ``cause_state``. But the M6 retraction that clears a stale RCC fires only
+    once ``cause_state`` reached IDENTIFIED (``_disconfirmed_cause_trigger``'s
+    gate). So an RCC-grounded cause that never validated a chain root (e.g. the
+    LLM authored a conclusion but no rung evidence) and is *later disconfirmed*
+    keeps a stale RCC that the terminal gate would otherwise assert — a
+    NO-INCORRECT-CONCLUSION violation. This predicate lets the terminal gate
+    refuse that stale RCC; in ambiguous cases it returns False (trust the RCC),
+    so it only rejects on an affirmative refutation and never under-reports a
+    genuinely-known cause.
+    """
+    hyp = _representative_cause_hypothesis(case)
+    if hyp is None:
+        return False
+    return hyp.state == HypothesisState.REFUTED or _net_refuted(hyp)
 
 
 _DISCONFIRMATION_REASON = (

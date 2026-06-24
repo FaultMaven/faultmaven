@@ -58,7 +58,17 @@ def _cause_identified(case: "Case") -> bool:
     if case.root_cause_conclusion and getattr(
         case.root_cause_conclusion, "root_cause", None
     ):
-        return True
+        # ...but never trust a stale RCC whose cause has since been disconfirmed.
+        # cause_state already drops when the chain root is refuted; the RCC is the
+        # one cause-signal the chain-mode M6 retraction can miss (it only fires
+        # once cause_state reached IDENTIFIED), so guard it here so a disproven
+        # cause is never asserted at termination (NO-INCORRECT-CONCLUSION).
+        from faultmaven.core.investigation.causal_graph import (
+            representative_cause_disconfirmed,
+        )
+
+        if not representative_cause_disconfirmed(case):
+            return True
     return bool(
         case.working_conclusion
         and getattr(case.working_conclusion, "statement", None)
