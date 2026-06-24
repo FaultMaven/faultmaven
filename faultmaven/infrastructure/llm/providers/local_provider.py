@@ -247,15 +247,44 @@ class LocalProvider(BaseLLMProvider):
                         self.logger.error(f"No choices: {error_msg}")
                         raise LLMException(error_msg)
 
-                    content = data["choices"][0]["message"]["content"]
+                    message = data["choices"][0]["message"]
+                    content = message.get("content") or ""
                     self.logger.debug(f"Raw content: {repr(content)}")
 
-                    try:
-                        content = self._validate_response_content(content)
-                        self.logger.debug(f"Validated content: {repr(content)}")
-                    except Exception as e:
-                        self.logger.error(f"Content validation failed: {e}")
-                        raise
+                    # Extract tool calls if present. FUNCTION_CALLING-capable
+                    # local models (functionary, hermes served via vLLM/llama.cpp
+                    # OpenAI-compatible endpoints) return structured output as
+                    # tool_calls with empty content. Without this, the engine's
+                    # FUNCTION_CALLING strategy gets no tool_calls back and the
+                    # validation below would raise on the empty content.
+                    tool_calls = None
+                    if message.get("tool_calls"):
+                        from .base import ToolCall
+
+                        tool_calls = [
+                            ToolCall(
+                                id=tc["id"], type=tc["type"], function=tc["function"]
+                            )
+                            for tc in message["tool_calls"]
+                        ]
+                        # If tool_calls present but no content, use the first
+                        # tool call's arguments as JSON content (mirrors the
+                        # OpenAI/Cohere providers).
+                        if not content:
+                            try:
+                                content = tool_calls[0].function.get("arguments", "{}")
+                            except Exception:
+                                content = "{}"
+
+                    # Only validate when there are no tool_calls — a valid
+                    # function-calling response legitimately has empty content.
+                    if not tool_calls:
+                        try:
+                            content = self._validate_response_content(content)
+                            self.logger.debug(f"Validated content: {repr(content)}")
+                        except Exception as e:
+                            self.logger.error(f"Content validation failed: {e}")
+                            raise
 
                     # Extract token usage
                     usage = data.get("usage", {})
@@ -274,6 +303,7 @@ class LocalProvider(BaseLLMProvider):
                         model=model,
                         tokens_used=tokens_used,
                         response_time_ms=response_time,
+                        tool_calls=tool_calls,
                     )
 
             except asyncio.TimeoutError as e:

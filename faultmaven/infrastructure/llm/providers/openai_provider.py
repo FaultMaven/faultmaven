@@ -33,6 +33,38 @@ class OpenAIProvider(BaseLLMProvider):
         """Get list of supported models"""
         return self.config.models.copy()
 
+    # Modern OpenAI models with strict json_schema support
+    # (response_format.type = "json_schema", strict=True).
+    # Order: most-specific first to avoid false-positive prefix matches.
+    _STRICT_MODEL_INDICATORS = (
+        "gpt-3.5-turbo-0125",  # GPT-3.5 Turbo with structured output (legacy carve-out)
+        "gpt-4o",  # All GPT-4 Omni variants (gpt-4o, gpt-4o-mini, ...)
+        "gpt-4-turbo",  # GPT-4 Turbo
+        "gpt-4-2024",  # GPT-4 with 2024 date suffix
+        "gpt-4.1",  # GPT-4.1 family
+        "gpt-4.5",  # GPT-4.5 family
+        "gpt-5",  # All GPT-5.x — matches "gpt-5", "gpt-5.4", "gpt-5-mini", ...
+        "chatgpt-4o",  # chatgpt-4o-latest
+        "o1",  # OpenAI o1 reasoning models
+        "o3",  # OpenAI o3 reasoning models
+    )
+
+    @classmethod
+    def _capability_for_model_name(cls, model_name: str) -> StructuredOutputCapability:
+        """Classify an OpenAI model *name* (no config lookup).
+
+        Pure string classifier so subclasses that route to OpenAI-named
+        models under a different namespace (e.g. OpenRouter's
+        ``openai/gpt-5``) can reuse the indicator list without going through
+        ``get_effective_model()`` (whose config.models won't contain the
+        stripped suffix).
+        """
+        model_lower = model_name.lower()
+        if any(ind in model_lower for ind in cls._STRICT_MODEL_INDICATORS):
+            return StructuredOutputCapability.STRICT
+        # Older OpenAI models support function calling as fallback
+        return StructuredOutputCapability.FUNCTION_CALLING
+
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:
@@ -56,30 +88,7 @@ class OpenAIProvider(BaseLLMProvider):
         Returns:
             StructuredOutputCapability: STRICT or FUNCTION_CALLING
         """
-        effective_model = self.get_effective_model(model)
-        model_lower = effective_model.lower()
-
-        # Modern models with strict json_schema support
-        # (response_format.type = "json_schema", strict=True).
-        # Order: most-specific first to avoid false-positive prefix matches.
-        strict_indicators = [
-            "gpt-3.5-turbo-0125",  # GPT-3.5 Turbo with structured output (legacy carve-out)
-            "gpt-4o",  # All GPT-4 Omni variants (gpt-4o, gpt-4o-mini, ...)
-            "gpt-4-turbo",  # GPT-4 Turbo
-            "gpt-4-2024",  # GPT-4 with 2024 date suffix
-            "gpt-4.1",  # GPT-4.1 family
-            "gpt-4.5",  # GPT-4.5 family
-            "gpt-5",  # All GPT-5.x — matches "gpt-5", "gpt-5.4", "gpt-5-mini", ...
-            "chatgpt-4o",  # chatgpt-4o-latest
-            "o1",  # OpenAI o1 reasoning models
-            "o3",  # OpenAI o3 reasoning models
-        ]
-
-        if any(indicator in model_lower for indicator in strict_indicators):
-            return StructuredOutputCapability.STRICT
-
-        # Older OpenAI models support function calling as fallback
-        return StructuredOutputCapability.FUNCTION_CALLING
+        return self._capability_for_model_name(self.get_effective_model(model))
 
     async def generate(
         self,

@@ -16,9 +16,83 @@ from faultmaven.infrastructure.llm.providers.groq_provider import GroqProvider
 from faultmaven.infrastructure.llm.providers.huggingface import HuggingFaceProvider
 from faultmaven.infrastructure.llm.providers.local_provider import LocalProvider
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
+from faultmaven.infrastructure.llm.providers.openrouter_provider import (
+    OpenRouterProvider,
+)
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
+
+
+def _openrouter_config(model):
+    """OpenRouter config — models is dynamic/empty, so default_model drives
+    capability detection (mirrors registry: available_models=[])."""
+    return ProviderConfig(
+        name="openrouter",
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        models=[],
+        default_model=model,
+    )
+
+
+class TestOpenRouterProviderOverride:
+    """OpenRouter routes ``vendor/model`` ids; capability must be detected
+    from the routed family, not OpenAI's name heuristics (which never match a
+    namespaced id and would collapse everything to FUNCTION_CALLING)."""
+
+    def test_openai_routed_model_returns_strict(self):
+        provider = OpenRouterProvider(_openrouter_config("openai/gpt-5"))
+        assert (
+            provider.get_structured_output_capability("openai/gpt-5")
+            == StructuredOutputCapability.STRICT
+        )
+
+    def test_openai_routed_4o_returns_strict(self):
+        provider = OpenRouterProvider(_openrouter_config("openai/gpt-4o-mini"))
+        assert (
+            provider.get_structured_output_capability("openai/gpt-4o-mini")
+            == StructuredOutputCapability.STRICT
+        )
+
+    def test_legacy_openai_routed_model_returns_function_calling(self):
+        provider = OpenRouterProvider(_openrouter_config("openai/gpt-3.5-turbo"))
+        assert (
+            provider.get_structured_output_capability("openai/gpt-3.5-turbo")
+            == StructuredOutputCapability.FUNCTION_CALLING
+        )
+
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "anthropic/claude-sonnet-4-6",  # the registry default
+            "google/gemini-2.5-flash",
+            "meta-llama/llama-3.3-70b-instruct",
+            "mistralai/mistral-large",
+        ],
+    )
+    def test_non_openai_vendors_return_function_calling(self, model_name):
+        """Non-OpenAI vendors use forced tool calling — the gateway-agnostic
+        enforcement path. We do NOT claim STRICT (json_schema passthrough is
+        per-route and unverified)."""
+        provider = OpenRouterProvider(_openrouter_config(model_name))
+        assert (
+            provider.get_structured_output_capability(model_name)
+            == StructuredOutputCapability.FUNCTION_CALLING
+        )
+
+    def test_default_model_used_when_none(self):
+        """Registry passes models=[] + default anthropic/claude — model=None
+        must resolve to the default and report FUNCTION_CALLING (not crash)."""
+        provider = OpenRouterProvider(_openrouter_config("anthropic/claude-sonnet-4-6"))
+        assert (
+            provider.get_structured_output_capability(None)
+            == StructuredOutputCapability.FUNCTION_CALLING
+        )
+
+    def test_provider_name_is_openrouter(self):
+        provider = OpenRouterProvider(_openrouter_config("anthropic/claude-sonnet-4-6"))
+        assert provider.provider_name == "openrouter"
 
 
 class TestOpenAIProviderOverride:
@@ -600,6 +674,7 @@ class TestProviderOverrideConsistency:
 
         providers = [
             OpenAIProvider,
+            OpenRouterProvider,
             AnthropicProvider,
             GroqProvider,
             GeminiProvider,
@@ -704,6 +779,16 @@ class TestProviderOverrideConsistency:
                     base_url="https://api.fireworks.ai/inference/v1",
                     models=["accounts/fireworks/models/llama-v3-70b-instruct"],
                     default_model="accounts/fireworks/models/llama-v3-70b-instruct",
+                ),
+            ),
+            (
+                OpenRouterProvider,
+                ProviderConfig(
+                    name="openrouter",
+                    api_key="test",
+                    base_url="https://openrouter.ai/api/v1",
+                    models=[],
+                    default_model="anthropic/claude-sonnet-4-6",
                 ),
             ),
         ]
