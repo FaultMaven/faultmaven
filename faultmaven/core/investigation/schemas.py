@@ -35,9 +35,15 @@ Applied to 23 list fields across all schemas (see git blame for specific changes
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, ClassVar, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent  # noqa: F401
 from faultmaven.modules.case.contracts import (
@@ -55,6 +61,26 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
     TurnOutcome,
 )
+
+
+def _coerce_none_to_empty_dict(v: Any) -> Any:
+    """Treat an explicit ``null`` for a required dict field as the empty default.
+
+    Some models (observed: gemini-3.5-flash) emit ``"field": null`` instead of
+    omitting the field or sending ``{}``. ``default_factory=dict`` only covers
+    the *absent* case, so a non-``Optional`` ``Dict`` field 500s on the explicit
+    ``null``. Coercing ``None`` → ``{}`` here tolerates that shape variant
+    provider-agnostically (the never-500 backstop's prune path can't repair a
+    top-level non-list field). See [[project_pydantic_shape_failures_backlog]].
+    """
+    return {} if v is None else v
+
+
+# A required ``Dict`` field that tolerates an explicit ``null`` from the LLM by
+# coercing it to ``{}`` before validation (mirrors ``default_factory=dict`` for
+# the explicit-null case). Apply to every non-Optional dict in the LLM response
+# schema, since any of them can be nulled by a less-disciplined model.
+_NoneTolerantDict = BeforeValidator(_coerce_none_to_empty_dict)
 
 # =============================================================================
 # Unified Ingestion Pipeline (v4.1)
@@ -125,7 +151,7 @@ class InternalReasoning(BaseModel):
         default_factory=list,
         description="Step-by-step reasoning from evidence to conclusions",
     )
-    milestone_justifications: Dict[str, Any] = Field(
+    milestone_justifications: Annotated[Dict[str, Any], _NoneTolerantDict] = Field(
         default_factory=dict,
         description=(
             "MANDATORY: For EVERY milestone set to True in milestones, provide a justification here. "
@@ -1294,7 +1320,9 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
         verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
+        hypotheses_to_update: Annotated[
+            Dict[str, HypothesisUpdate], _NoneTolerantDict
+        ] = Field(default_factory=dict)
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
@@ -1405,7 +1433,9 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
         milestones: Optional[MilestoneUpdates] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
+        hypotheses_to_update: Annotated[
+            Dict[str, HypothesisUpdate], _NoneTolerantDict
+        ] = Field(default_factory=dict)
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
@@ -1462,7 +1492,9 @@ class InvestigationResponse_General(BaseInteractionResponse):
         verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
+        hypotheses_to_update: Annotated[
+            Dict[str, HypothesisUpdate], _NoneTolerantDict
+        ] = Field(default_factory=dict)
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
