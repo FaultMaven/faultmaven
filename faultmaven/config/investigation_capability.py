@@ -141,8 +141,9 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
         return
 
     remedy = (
-        "Set DA_PROVIDER to a tool-capable provider (anthropic, openai, gemini), "
-        "or set ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
+        "Use a tool-capable CHAT_PROVIDER (anthropic, openai, gemini) — or set "
+        "DA_PROVIDER to override just the investigation provider — or set "
+        "ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
         "(no search_file/deep_analysis; responses limited to structural-index "
         "summaries)."
     )
