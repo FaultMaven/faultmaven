@@ -184,6 +184,20 @@ class LLMSettings(BaseSettings):
     # enforcement isn't needed.
     structured_output_provider: Optional[LLMProvider] = Field(default=None)
 
+    # Allow the investigation engine to run on a model that does NOT support
+    # tool calling. Tool calling powers Directed Analysis (search_file,
+    # deep_analysis) — the engine's evidence-gathering. Without it the engine
+    # can't reach the evidence yet still emits conclusions, which risks the
+    # premature/incorrect conclusion FaultMaven guarantees against. So the
+    # startup gate (config/investigation_capability.py) refuses to boot when the
+    # resolved investigation model (DA → CHAT) is tool-incapable, UNLESS this is
+    # explicitly set — a knowing opt-in to degraded/offline mode (e.g. a local
+    # model), never an accident. The per-turn runtime fallback still applies.
+    allow_toolless_investigation: bool = Field(
+        default=False,
+        validation_alias="ALLOW_TOOLLESS_INVESTIGATION",
+    )
+
     # API Keys (SecretStr for security)
     openai_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="OPENAI_API_KEY"

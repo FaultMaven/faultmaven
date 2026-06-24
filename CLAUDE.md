@@ -320,6 +320,20 @@ observed (gemini-3.5-flash, the default); Gemini 2.5 is left at native dynamic
 thinking — it ran clean, and capping it would change a working reasoning path
 without evidence.
 
+**Tool calling is required for the investigation role.** Directed Analysis
+(`search_file`, `deep_analysis`) needs function/tool calling; a tool-incapable
+model can't gather evidence yet would still conclude — the premature-conclusion
+failure FaultMaven guards against. A **startup fail-fast gate**
+(`config/investigation_capability.py`, `validate_investigation_tooling`, called
+from the lifespan beside the deployment-coherence and credential gates) **refuses
+to boot** when the resolved investigation model (`DA_PROVIDER` → `CHAT_PROVIDER`)
+can't do tool calling — unless `ALLOW_TOOLLESS_INVESTIGATION=true` (knowing
+opt-in to degraded/offline mode; `/health` then reports `degraded`). The per-turn
+runtime fallback in `milestone_engine` still covers transient tool failures on an
+otherwise-capable model. Capability is per-provider/model via
+`supports_tool_calling()` (HuggingFace: always False; Fireworks: a denylist for
+models that accept tools but time out on forced `tool_choice=required`).
+
 ### Capability Overrides
 
 Different LLM providers can be assigned to specific tasks:
