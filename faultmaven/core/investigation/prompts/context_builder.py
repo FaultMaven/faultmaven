@@ -2392,6 +2392,77 @@ def _allocate_sections(
     return ctx
 
 
+def _build_causal_graph_block(case: Case) -> str:
+    """Render the causal graph (hypotheses ARE chains, methodology M3).
+
+    Render the chain STRUCTURE with node ids — not flat statements — so the LLM
+    EXTENDS the existing graph: it references an existing node's ``cn_...`` id
+    (in produces / root_node_ref / node_evidence_links) instead of re-stating a
+    cause as a fresh duplicate node. That cross-turn re-emission is what
+    fragments grounding across duplicate roots and stalls cause_state at UNKNOWN
+    (the node-identity loop was previously open: the engine assigned ids but
+    never rendered them back, so the LLM could not reference them). REFUTED
+    hypotheses keep their refutation_reason inline (anti-amnesia, Rule 8:
+    prevents re-proposing a rejected theory); the pair-integrity invariant
+    guarantees it is non-empty when state=REFUTED.
+
+    Returns an empty string when the case has no active hypotheses and no
+    causal nodes (nothing to render yet).
+    """
+
+    def _stmt(s: str) -> str:
+        s = " ".join((s or "").split())
+        return s if len(s) <= 140 else s[:137] + "..."
+
+    nodes = case.causal_nodes or {}
+    active_h = [h for h in case.hypotheses.values() if h.state.value != "retired"]
+    if not (active_h or nodes):
+        return ""
+
+    on_path: set[str] = set()
+    lines = [
+        "<causal_graph>",
+        "Chains built so far (D = the problem). REFERENCE these cn_... ids when "
+        "extending — attach evidence or new rungs to an existing node rather "
+        "than re-stating a cause already present as a new node.",
+    ]
+    for h in active_h:
+        lines.append(
+            f"- {_stmt(h.statement)} "
+            f"(Confidence: {h.likelihood*100:.0f}%, State: {h.state.value})"
+        )
+        chain_ids = h.path or ([h.root_node_id] if h.root_node_id else [])
+        for nid in chain_ids:
+            n = nodes.get(nid)
+            if n is None or n.node_type.value == "problem":
+                continue
+            on_path.add(nid)
+            lines.append(
+                f"    {nid} [{n.node_type.value}/{n.node_state.value}] {_stmt(n.statement)}"
+            )
+        if h.state.value == "refuted" and h.refutation_reason:
+            lines.append(f"    Refuted because: {_stmt(h.refutation_reason)}")
+    # Standalone nodes on no hypothesis path — surface their ids so the LLM
+    # attaches/extends them instead of re-emitting the same cause.
+    orphans = [
+        n
+        for nid, n in nodes.items()
+        if nid not in on_path and n.node_type.value != "problem"
+    ]
+    if orphans:
+        lines.append(
+            "  Unattached causes already in the graph — reference these ids, "
+            "do not re-emit:"
+        )
+        for n in orphans:
+            lines.append(
+                f"    {n.node_id} [{n.node_type.value}/{n.node_state.value}] "
+                f"{_stmt(n.statement)}"
+            )
+    lines.append("</causal_graph>")
+    return "\n".join(lines)
+
+
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -2542,67 +2613,11 @@ def build_investigation_context(
     )
 
     # 5. Causal graph (hypotheses ARE chains, methodology M3).
-    #
-    # Render the chain STRUCTURE with node ids — not flat statements — so the LLM
-    # EXTENDS the existing graph: it references an existing node's ``cn_...`` id
-    # (in produces / root_node_ref / node_evidence_links) instead of re-stating a
-    # cause as a fresh duplicate node. That cross-turn re-emission is what
-    # fragments grounding across duplicate roots and stalls cause_state at UNKNOWN
-    # (the node-identity loop was previously open: the engine assigned ids but
-    # never rendered them back, so the LLM could not reference them). REFUTED
-    # hypotheses keep their refutation_reason inline (anti-amnesia, Rule 8:
-    # prevents re-proposing a rejected theory); the pair-integrity invariant
-    # guarantees it is non-empty when state=REFUTED.
-    def _stmt(s: str) -> str:
-        s = " ".join((s or "").split())
-        return s if len(s) <= 140 else s[:137] + "..."
-
-    hypothesis_str = ""
-    nodes = case.causal_nodes or {}
-    active_h = [h for h in case.hypotheses.values() if h.state.value != "retired"]
-    if active_h or nodes:
-        on_path: set[str] = set()
-        lines = [
-            "<causal_graph>",
-            "Chains built so far (D = the problem). REFERENCE these cn_... ids when "
-            "extending — attach evidence or new rungs to an existing node rather "
-            "than re-stating a cause already present as a new node.",
-        ]
-        for h in active_h:
-            lines.append(
-                f"- {_stmt(h.statement)} "
-                f"(Confidence: {h.likelihood*100:.0f}%, State: {h.state.value})"
-            )
-            chain_ids = h.path or ([h.root_node_id] if h.root_node_id else [])
-            for nid in chain_ids:
-                n = nodes.get(nid)
-                if n is None or n.node_type.value == "problem":
-                    continue
-                on_path.add(nid)
-                lines.append(
-                    f"    {nid} [{n.node_type.value}/{n.node_state.value}] {_stmt(n.statement)}"
-                )
-            if h.state.value == "refuted" and h.refutation_reason:
-                lines.append(f"    Refuted because: {_stmt(h.refutation_reason)}")
-        # Standalone nodes on no hypothesis path — surface their ids so the LLM
-        # attaches/extends them instead of re-emitting the same cause.
-        orphans = [
-            n
-            for nid, n in nodes.items()
-            if nid not in on_path and n.node_type.value != "problem"
-        ]
-        if orphans:
-            lines.append(
-                "  Unattached causes already in the graph — reference these ids, "
-                "do not re-emit:"
-            )
-            for n in orphans:
-                lines.append(
-                    f"    {n.node_id} [{n.node_type.value}/{n.node_state.value}] "
-                    f"{_stmt(n.statement)}"
-                )
-        lines.append("</causal_graph>")
-        hypothesis_str = "\n".join(lines)
+    # Rendered by _build_causal_graph_block — see its docstring for the
+    # node-identity-loop rationale (render ids back so the LLM extends rather
+    # than re-emits). The stage-specific loading below may later REPLACE this
+    # with a condensed <working_hypotheses> block on non-DIAGNOSIS stages.
+    hypothesis_str = _build_causal_graph_block(case)
 
     # 5a. Investigation Journal (durable long-term memory)
     # Compact, append-only record of key findings, decisions, and context.
