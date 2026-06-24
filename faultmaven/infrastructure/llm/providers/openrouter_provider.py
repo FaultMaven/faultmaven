@@ -30,6 +30,14 @@ class OpenRouterProvider(OpenAIProvider):
     def provider_name(self) -> str:
         return "openrouter"
 
+    @classmethod
+    def _uses_completion_tokens_param(cls, model_name: str) -> bool:
+        """OpenRouter's unified API uses the legacy ``max_tokens`` for every
+        routed vendor (it normalizes the parameter at its gateway), so we never
+        substitute ``max_completion_tokens`` — unlike direct OpenAI, where the
+        GPT-5 / o-series models reject ``max_tokens``."""
+        return False
+
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:

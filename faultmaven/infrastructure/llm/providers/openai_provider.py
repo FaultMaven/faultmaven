@@ -49,6 +49,34 @@ class OpenAIProvider(BaseLLMProvider):
         "o3",  # OpenAI o3 reasoning models
     )
 
+    # OpenAI model families that REQUIRE ``max_completion_tokens`` and reject the
+    # legacy ``max_tokens`` with a 400 ``unsupported_parameter`` error (the
+    # o-series reasoning models and the GPT-5 family). Older Chat Completions
+    # models (gpt-4o, gpt-4, gpt-3.5) still take ``max_tokens``. Kept separate
+    # from the STRICT indicators because the two axes don't coincide — gpt-4o is
+    # STRICT but still uses ``max_tokens``.
+    _COMPLETION_TOKENS_MODEL_INDICATORS = (
+        "gpt-5",  # All GPT-5.x (gpt-5, gpt-5.4, gpt-5-mini, gpt-5.4-mini, ...)
+        "o1",  # o1 reasoning models
+        "o3",  # o3 reasoning models
+        "o4",  # o4 reasoning models
+    )
+
+    @classmethod
+    def _uses_completion_tokens_param(cls, model_name: str) -> bool:
+        """Whether the model takes ``max_completion_tokens`` over ``max_tokens``.
+
+        The o-series and GPT-5 families reject ``max_tokens`` with a 400
+        ``unsupported_parameter`` error and require ``max_completion_tokens``
+        instead. Older models keep ``max_tokens``. Overridable so a subclass
+        that targets a different gateway (e.g. OpenRouter, whose unified API
+        normalizes the legacy parameter itself) can opt out.
+        """
+        model_lower = model_name.lower()
+        return any(
+            ind in model_lower for ind in cls._COMPLETION_TOKENS_MODEL_INDICATORS
+        )
+
     @classmethod
     def _capability_for_model_name(cls, model_name: str) -> StructuredOutputCapability:
         """Classify an OpenAI model *name* (no config lookup).
@@ -126,10 +154,17 @@ class OpenAIProvider(BaseLLMProvider):
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)
 
+        # GPT-5 / o-series models reject the legacy ``max_tokens`` parameter and
+        # require ``max_completion_tokens``; older models keep ``max_tokens``.
+        token_limit_param = (
+            "max_completion_tokens"
+            if self._uses_completion_tokens_param(effective_model)
+            else "max_tokens"
+        )
         payload = {
             "model": effective_model,
             "messages": messages if messages else [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
+            token_limit_param: max_tokens,
             "temperature": temperature,
         }
 

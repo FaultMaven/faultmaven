@@ -16,6 +16,9 @@ from faultmaven.infrastructure.llm.providers.base import (
     ToolCall,
 )
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
+from faultmaven.infrastructure.llm.providers.openrouter_provider import (
+    OpenRouterProvider,
+)
 
 
 @pytest.fixture
@@ -179,3 +182,92 @@ class TestOpenAIGenerateMessages:
             assert result.provider == "openai"
             assert result.model == "gpt-4o"
             assert result.tokens_used == 50
+
+
+def _config_for(model: str) -> ProviderConfig:
+    return ProviderConfig(
+        name="openai",
+        api_key="test-key",
+        base_url="https://api.openai.com/v1",
+        models=[model],
+        default_model=model,
+        timeout=30,
+        confidence_score=0.9,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestOpenAITokenLimitParam:
+    """The GPT-5 / o-series families reject the legacy ``max_tokens`` parameter
+    with a 400 ``unsupported_parameter`` and require ``max_completion_tokens``;
+    older models keep ``max_tokens``."""
+
+    @pytest.mark.parametrize(
+        "model,expected_param,absent_param",
+        [
+            ("gpt-4o", "max_tokens", "max_completion_tokens"),
+            ("gpt-4-turbo", "max_tokens", "max_completion_tokens"),
+            ("gpt-3.5-turbo-0125", "max_tokens", "max_completion_tokens"),
+            ("gpt-5.4-mini", "max_completion_tokens", "max_tokens"),
+            ("gpt-5", "max_completion_tokens", "max_tokens"),
+            ("o1", "max_completion_tokens", "max_tokens"),
+            ("o3-mini", "max_completion_tokens", "max_tokens"),
+            # Non-OpenAI ids must NOT trip the substring classifier (false-positive
+            # guard): a Fireworks/DeepSeek model keeps the legacy ``max_tokens``.
+            (
+                "accounts/fireworks/models/deepseek-v3",
+                "max_tokens",
+                "max_completion_tokens",
+            ),
+        ],
+    )
+    async def test_token_param_selected_by_model(
+        self, model, expected_param, absent_param
+    ):
+        provider = OpenAIProvider(_config_for(model))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi", max_tokens=512)
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert request_body[expected_param] == 512
+            assert absent_param not in request_body
+
+    async def test_openrouter_always_uses_legacy_max_tokens(self):
+        """OpenRouter's unified gateway normalizes the parameter itself, so even
+        a routed ``openai/gpt-5`` keeps ``max_tokens`` (the subclass opts out)."""
+        config = ProviderConfig(
+            name="openrouter",
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            models=["openai/gpt-5"],
+            default_model="openai/gpt-5",
+            timeout=30,
+            confidence_score=0.9,
+        )
+        provider = OpenRouterProvider(config)
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi", max_tokens=256)
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert request_body["max_tokens"] == 256
+            assert "max_completion_tokens" not in request_body
+
+
+@pytest.mark.unit
+def test_token_param_classifier_is_pure_and_case_insensitive():
+    # Uppercase operator config (the exact OPENAI_MODEL=GPT-5.4 shape).
+    assert OpenAIProvider._uses_completion_tokens_param("GPT-5.4") is True
+    assert OpenAIProvider._uses_completion_tokens_param("gpt-4o") is False
+    # Fireworks/DeepSeek id must not false-positive match (no gpt-5/o1/o3/o4 substring).
+    assert (
+        OpenAIProvider._uses_completion_tokens_param(
+            "accounts/fireworks/models/deepseek-v3"
+        )
+        is False
+    )
+    assert OpenRouterProvider._uses_completion_tokens_param("openai/gpt-5") is False
