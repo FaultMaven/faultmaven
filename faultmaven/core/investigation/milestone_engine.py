@@ -824,9 +824,18 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
 
     ``IDENTIFIED`` iff some live hypothesis's chain ROOT is VALIDATED from real
     rung evidence (``derive_node_states`` + ``any_chain_root_validated``), never
-    from a flat assertion — ``promote_grounded_chain_root``'s fabricated EMPIRICAL
-    grade is retired here. The chain is now load-bearing: a cause reaches
-    IDENTIFIED only by emitting a chain and grounding its root.
+    from a flat assertion. The chain is load-bearing: a cause reaches IDENTIFIED
+    only by emitting a chain and grounding its root.
+
+    Pure structural grounding by design — there is deliberately NO flat fallback
+    and NO separate disconfirmation guard. Disconfirmation is handled by the chain
+    itself: M6 attaches a durable refutation to the root and ``derive_node_states``
+    holds it REFUTED, so a disproven cause simply fails ``any_chain_root_validated``.
+    ``cause_state`` is a SOFT signal — under-reporting (the LLM emits a chain +
+    correct conclusion but does not attach the rung evidence) is backstopped for
+    terminal soundness by the ``RootCauseConclusion`` (``terminal_transitions.
+    _cause_identified`` reads cause_state OR the RCC OR the working conclusion), so
+    it costs only prompt-focus accuracy, never a wrong terminal conclusion.
 
     Order matters:
       1. M6 (Option c): a counterfactually-disconfirmed grounded cause gets a
