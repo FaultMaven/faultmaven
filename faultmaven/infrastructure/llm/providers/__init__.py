@@ -10,6 +10,7 @@ from .fireworks_provider import FireworksProvider
 from .groq_provider import GroqProvider
 from .local_provider import LocalProvider
 from .openai_provider import OpenAIProvider
+from .openrouter_provider import OpenRouterProvider
 from .registry import ProviderRegistry, get_registry, reset_registry
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "reset_registry",
     "FireworksProvider",
     "OpenAIProvider",
+    "OpenRouterProvider",
     "GroqProvider",
     "LocalProvider",
 ]

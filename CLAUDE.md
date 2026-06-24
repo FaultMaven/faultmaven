@@ -288,17 +288,37 @@ modules/auth/
 
 ### Supported LLM Providers
 
-| Provider | Environment Variable | Models | Notes |
-|----------|---------------------|--------|-------|
-| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | Recommended for logic |
-| OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | Recommended for consistency |
-| Google Gemini | `GEMINI_API_KEY` | gemini-3.5-flash | Fast multimodal; baseline |
-| Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v3 | Strong open weights |
-| Groq | `GROQ_API_KEY` | llama-3.3-70b-versatile | Ultra-fast inference |
-| HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | Open models — NOT recommended (no tool calling) |
-| Cohere | `COHERE_API_KEY` | command-r-plus | Enterprise RAG |
-| OpenRouter | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4-6 | Multi-model gateway |
-| Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | Private & offline |
+| Provider | Environment Variable | Models | Structured output | Notes |
+|----------|---------------------|--------|-------------------|-------|
+| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema enforced via forced tool use; recommended for logic |
+| OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | **STRICT** (gpt-4o+) | Recommended for consistency |
+| Google Gemini | `GEMINI_API_KEY` | gemini-3.5-flash | **STRICT** (1.5+) | Fast multimodal; baseline |
+| Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v3 | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
+| Groq | `GROQ_API_KEY` | llama-3.3-70b-versatile | BEST_EFFORT (STRICT on gpt-oss) | Ultra-fast inference |
+| HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | BEST_EFFORT | Open models — NOT recommended (no tool calling) |
+| Cohere | `COHERE_API_KEY` | command-r-plus | BEST_EFFORT | Enterprise RAG (json_object only; not schema-enforced) |
+| OpenRouter | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4-6 | depends on routed model | Multi-model gateway (STRICT for `openai/*`, else FUNCTION_CALLING) |
+| Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | FUNCTION_CALLING (functionary/hermes on OpenAI-compatible transport only), else BEST_EFFORT | Private & offline; Ollama `/api/generate` transport can't return tool_calls |
+
+**Structured-output enforcement matters.** The investigation engine drives state
+from large schema-constrained LLM responses. **STRICT** providers enforce the
+schema natively (tool calling / `json_schema` response_format) — the engine gets
+valid state. **BEST_EFFORT** providers only request the schema in-prompt: the
+model can omit required fields, the engine drops the `state_updates`, and you get
+empty/degraded investigations. **Use a STRICT provider as `CHAT_PROVIDER`**
+(OpenAI, Anthropic, Gemini 1.5+). BEST_EFFORT providers (Fireworks incl.
+`deepseek-v3`/minimax, Groq, HuggingFace, Local) are fine for cheap
+`CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER` overrides but degrade primary CHAT.
+Capability is reported per-provider via `get_structured_output_capability()`.
+STRICT enforcement is necessary but not sufficient: a STRICT **thinking** model
+bills hidden reasoning against `maxOutputTokens`, which can starve the JSON
+output on deep-context turns (truncation to `MAX_TOKENS` → 500). The Gemini
+provider caps thinking on structured calls for **Gemini 3.x only** via
+`thinkingConfig.thinkingLevel: "low"` (3.x dropped the 2.5-era integer
+`thinkingBudget`). This is scoped to 3.x because that's where the starvation was
+observed (gemini-3.5-flash, the default); Gemini 2.5 is left at native dynamic
+thinking — it ran clean, and capping it would change a working reasoning path
+without evidence.
 
 ### Capability Overrides
 

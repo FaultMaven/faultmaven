@@ -72,6 +72,59 @@ class GeminiProvider(BaseLLMProvider):
         # Gemini 1.0 (and any unrecognized model string) uses BEST_EFFORT
         return StructuredOutputCapability.BEST_EFFORT
 
+    # Thinking level for structured-output calls on Gemini 3.x+ models.
+    # 3.x thinking models bill hidden reasoning against maxOutputTokens; uncapped
+    # thinking starves the actual JSON output (see _structured_thinking_config).
+    # 3.x dropped the 2.5-era integer ``thinkingBudget`` for a string
+    # ``thinkingLevel``; "low" is the lowest broadly-valid level — it bypasses
+    # the heavy reasoning loop so output isn't starved, without depending on
+    # whether "minimal" is in a given model's enum.
+    #
+    # Scope note: this is deliberately 3.x-ONLY. Gemini 2.5 also bills thinking
+    # against maxOutputTokens, but the truncation→500 was only ever observed on
+    # 3.x flash; 2.5-pro ran clean (the .env default during validation). Capping
+    # 2.5 would change a working, reasoning-heavy path with no evidence of need,
+    # so 2.5 is intentionally left at its native dynamic thinking. Revisit only
+    # if 2.5 starvation is actually observed.
+    _GEMINI_3X_STRUCTURED_THINKING_LEVEL = "low"
+
+    @staticmethod
+    def _gemini_major_version(model: str) -> Optional[int]:
+        """Major version integer from a gemini model id (``gemini-3.5-flash`` ->
+        3), or None if not parseable. Used to scope the thinking cap to 3.x+."""
+        m = re.search(r"gemini-(\d+)\.", model.lower())
+        return int(m.group(1)) if m else None
+
+    def _structured_thinking_config(
+        self, model: str, is_structured: bool
+    ) -> Optional[Dict[str, Any]]:
+        """``thinkingConfig`` payload for a structured-output call, or None to
+        leave it unset.
+
+        Caps thinking ONLY on Gemini 3.x+ models, where dynamic thinking
+        starved the structured JSON output and truncated to a MAX_TOKENS 500
+        (observed on gemini-3.5-flash, the shipped Gemini default). Returns
+        ``{"thinkingLevel": "low"}`` there.
+
+        Returns None everywhere else:
+        - non-structured calls (partial text is still usable, so starvation is
+          not fatal);
+        - Gemini 1.5/2.0 (reject ``thinkingConfig`` with a 400);
+        - Gemini 2.5 — bills thinking against maxOutputTokens too, but was not
+          observed to starve; left at native dynamic thinking rather than
+          changing a working, reasoning-heavy path without evidence.
+        """
+        if not is_structured:
+            return None
+
+        major = self._gemini_major_version(model)
+        if major is not None and major >= 3:
+            # 3.x+ uses the string thinkingLevel; the 2.5-era integer
+            # thinkingBudget 400s on these models.
+            return {"thinkingLevel": self._GEMINI_3X_STRUCTURED_THINKING_LEVEL}
+
+        return None
+
     async def generate(
         self,
         prompt: str,
@@ -176,6 +229,21 @@ class GeminiProvider(BaseLLMProvider):
                 request_body["toolConfig"] = {"functionCallingConfig": {"mode": "ANY"}}
             elif tool_choice == "auto":
                 request_body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
+
+        # Cap thinking on structured-output calls so it can't starve the JSON
+        # output. Gemini 3.x thinking models bill reasoning tokens against
+        # maxOutputTokens; without a cap, deep-context turns on gemini-3.5-flash
+        # consumed nearly the whole budget and the structured response truncated
+        # (finishReason=MAX_TOKENS) into a 500. `rf` (JSON schema/object) or
+        # `tools_param` (function calling) marks a structured call (see
+        # _structured_thinking_config for the 3.x-only scope). generation_config
+        # is the same object referenced by request_body["generationConfig"], so
+        # mutating it here is sufficient.
+        thinking_config = self._structured_thinking_config(
+            selected_model, is_structured=bool(rf) or bool(tools_param)
+        )
+        if thinking_config is not None:
+            generation_config["thinkingConfig"] = thinking_config
 
         # Add safety settings if provided
         if "safety_settings" in kwargs:

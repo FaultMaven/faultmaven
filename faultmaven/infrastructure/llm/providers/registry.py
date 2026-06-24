@@ -28,6 +28,7 @@ from .groq_provider import GroqProvider
 from .huggingface import HuggingFaceProvider
 from .local_provider import LocalProvider
 from .openai_provider import OpenAIProvider
+from .openrouter_provider import OpenRouterProvider
 
 
 class ProviderHealth(Enum):
@@ -181,7 +182,9 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://openrouter.ai/api/v1",
         "default_model": "anthropic/claude-sonnet-4-6",
         "available_models": [],  # Dynamic — depends on OpenRouter's catalog
-        "provider_class": OpenAIProvider,  # Compatible API
+        # OpenAI-compatible wire protocol, but namespace-aware capability
+        # detection (vendor/model ids). See OpenRouterProvider.
+        "provider_class": OpenRouterProvider,
         "confidence_score": 0.8,
     },
     "anthropic": {

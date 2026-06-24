@@ -285,6 +285,34 @@ class BaseLLMProvider(ABC):
 
         raise ValueError(f"No valid model available for provider {self.provider_name}")
 
+    @staticmethod
+    def _extract_tool_calls_from_message(
+        message: Dict[str, Any],
+    ) -> Optional[List[ToolCall]]:
+        """Build a list of ToolCall from an OpenAI-style message dict, or None.
+
+        Shared by every provider that speaks the OpenAI chat-completions wire
+        format (OpenAI, OpenRouter, Groq, Fireworks, Cohere v2, local
+        OpenAI-compatible servers). Uses defensive ``.get()`` access so a
+        malformed tool_call (missing ``id``/``type``/``function`` — possible
+        from less-strict local/self-hosted servers) degrades to a best-effort
+        ToolCall instead of raising ``KeyError`` and failing the turn.
+
+        Returns ``None`` when the message carries no tool calls, so callers can
+        keep ``response.tool_calls = None`` as the "no structured call" signal.
+        """
+        raw = message.get("tool_calls")
+        if not raw:
+            return None
+        return [
+            ToolCall(
+                id=tc.get("id", ""),
+                type=tc.get("type", "function"),
+                function=tc.get("function", {}),
+            )
+            for tc in raw
+        ]
+
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:
         """Whether this provider/model supports function calling (tools API).
 

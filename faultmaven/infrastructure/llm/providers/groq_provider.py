@@ -19,7 +19,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 
 class GroqProvider(BaseLLMProvider):
@@ -174,10 +174,13 @@ class GroqProvider(BaseLLMProvider):
                             continue
                         if response.status != 200:
                             error_text = await response.text()
+                            # Pass status_code only; LLMException derives
+                            # retryable (429 + 5xx). An explicit
+                            # retryable=status==429 would wrongly force 5xx
+                            # to non-retryable.
                             raise LLMException(
                                 f"Groq API error {response.status}: {error_text}",
                                 status_code=response.status,
-                                retryable=response.status == 429,
                             )
                         data = await response.json()
                         break
@@ -194,20 +197,14 @@ class GroqProvider(BaseLLMProvider):
                     content = self._validate_response_content(content)
 
                 # Extract tool calls if present
-                tool_calls = None
-                if "tool_calls" in message and message["tool_calls"]:
-                    tool_calls = [
-                        ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
-                        for tc in message["tool_calls"]
-                    ]
-
-                    # If tool_calls present but no content, parse function arguments as content
-                    if not content and tool_calls:
-                        # Use the first tool call's arguments as JSON content
-                        try:
-                            content = tool_calls[0].function.get("arguments", "{}")
-                        except Exception:
-                            content = "{}"
+                tool_calls = self._extract_tool_calls_from_message(message)
+                # If tool_calls present but no content, parse function
+                # arguments as content.
+                if tool_calls and not content:
+                    try:
+                        content = tool_calls[0].function.get("arguments", "{}")
+                    except Exception:
+                        content = "{}"
 
                 # Extract token usage
                 usage = data.get("usage", {})

@@ -18,7 +18,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 
 class CohereProvider(BaseLLMProvider):
@@ -174,21 +174,14 @@ class CohereProvider(BaseLLMProvider):
                     content = message.get("content", "")
 
                     # Extract tool calls if present
-                    tool_calls = None
-                    if "tool_calls" in message and message["tool_calls"]:
-                        tool_calls = [
-                            ToolCall(
-                                id=tc["id"], type=tc["type"], function=tc["function"]
-                            )
-                            for tc in message["tool_calls"]
-                        ]
-
-                        # If tool_calls present but no content, use tool arguments as fallback content
-                        if not content and tool_calls:
-                            try:
-                                content = tool_calls[0].function.get("arguments", "{}")
-                            except Exception:
-                                content = "{}"
+                    tool_calls = self._extract_tool_calls_from_message(message)
+                    # If tool_calls present but no content, use tool arguments
+                    # as fallback content.
+                    if tool_calls and not content:
+                        try:
+                            content = tool_calls[0].function.get("arguments", "{}")
+                        except Exception:
+                            content = "{}"
 
                     # Only validate content if we don't have tool_calls (tool_calls can have empty content)
                     if (

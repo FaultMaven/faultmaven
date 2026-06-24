@@ -38,16 +38,33 @@ class LocalProvider(BaseLLMProvider):
         """Get list of supported models"""
         return self.config.models.copy()
 
+    def _uses_openai_compatible_transport(self, effective_model: str) -> bool:
+        """Whether this model will be served over the OpenAI-compatible
+        ``/v1/chat/completions`` path (the only local transport that returns
+        OpenAI-style ``tool_calls``).
+
+        ``generate()`` routes to the Ollama ``/api/generate`` transport when
+        ``base_url`` or the model name says "ollama" — that protocol does NOT
+        return ``tool_calls``, so function calling cannot work there. Mirrors
+        the dispatch in ``generate()``.
+        """
+        base = (self.config.base_url or "").lower()
+        return "ollama" not in base and "ollama" not in effective_model.lower()
+
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:
         """Check if the local model supports tool calling.
 
-        Only functionary and hermes models have native function calling support.
-        Other local models (Ollama, llama.cpp) do not support the tools API.
+        Only functionary and hermes models have native function calling support,
+        AND only over the OpenAI-compatible transport — the Ollama
+        ``/api/generate`` path cannot return ``tool_calls`` regardless of model.
+        Other local models (plain llama.cpp, etc.) do not support the tools API.
         """
         effective_model = self.get_effective_model(model)
         model_lower = effective_model.lower()
 
-        if "functionary" in model_lower or "hermes" in model_lower:
+        if ("functionary" in model_lower or "hermes" in model_lower) and (
+            self._uses_openai_compatible_transport(effective_model)
+        ):
             return True
 
         return False
@@ -59,8 +76,13 @@ class LocalProvider(BaseLLMProvider):
         Determine structured output capability for local models.
 
         Local models have varying structured output support:
-        - FUNCTION_CALLING: functionary and hermes models (native function calling)
-        - BEST_EFFORT: All other local models (prompt-based JSON generation)
+        - FUNCTION_CALLING: functionary/hermes models served over the
+          OpenAI-compatible transport (native function calling)
+        - BEST_EFFORT: all other local models (prompt-based JSON generation),
+          INCLUDING functionary/hermes on the Ollama transport — that path
+          can't return ``tool_calls``, so claiming FUNCTION_CALLING there would
+          make the engine request a forced tool call the transport silently
+          can't satisfy.
 
         Args:
             model: Model name to check (uses default if None)
@@ -71,11 +93,13 @@ class LocalProvider(BaseLLMProvider):
         effective_model = self.get_effective_model(model)
         model_lower = effective_model.lower()
 
-        # Models with native function calling support
-        if "functionary" in model_lower or "hermes" in model_lower:
+        # Native function calling — only on the OpenAI-compatible transport.
+        if ("functionary" in model_lower or "hermes" in model_lower) and (
+            self._uses_openai_compatible_transport(effective_model)
+        ):
             return StructuredOutputCapability.FUNCTION_CALLING
 
-        # All other local models use BEST_EFFORT (prompt-based)
+        # All other local models / transports use BEST_EFFORT (prompt-based)
         return StructuredOutputCapability.BEST_EFFORT
 
     async def generate(
@@ -247,15 +271,35 @@ class LocalProvider(BaseLLMProvider):
                         self.logger.error(f"No choices: {error_msg}")
                         raise LLMException(error_msg)
 
-                    content = data["choices"][0]["message"]["content"]
+                    message = data["choices"][0]["message"]
+                    content = message.get("content") or ""
                     self.logger.debug(f"Raw content: {repr(content)}")
 
-                    try:
-                        content = self._validate_response_content(content)
-                        self.logger.debug(f"Validated content: {repr(content)}")
-                    except Exception as e:
-                        self.logger.error(f"Content validation failed: {e}")
-                        raise
+                    # Extract tool calls if present. FUNCTION_CALLING-capable
+                    # local models (functionary, hermes served via vLLM/llama.cpp
+                    # OpenAI-compatible endpoints) return structured output as
+                    # tool_calls with empty content. Without this, the engine's
+                    # FUNCTION_CALLING strategy gets no tool_calls back and the
+                    # validation below would raise on the empty content.
+                    tool_calls = self._extract_tool_calls_from_message(message)
+                    # If tool_calls present but no content, use the first tool
+                    # call's arguments as JSON content (mirrors the OpenAI/Cohere
+                    # providers).
+                    if tool_calls and not content:
+                        try:
+                            content = tool_calls[0].function.get("arguments", "{}")
+                        except Exception:
+                            content = "{}"
+
+                    # Only validate when there are no tool_calls — a valid
+                    # function-calling response legitimately has empty content.
+                    if not tool_calls:
+                        try:
+                            content = self._validate_response_content(content)
+                            self.logger.debug(f"Validated content: {repr(content)}")
+                        except Exception as e:
+                            self.logger.error(f"Content validation failed: {e}")
+                            raise
 
                     # Extract token usage
                     usage = data.get("usage", {})
@@ -274,6 +318,7 @@ class LocalProvider(BaseLLMProvider):
                         model=model,
                         tokens_used=tokens_used,
                         response_time_ms=response_time,
+                        tool_calls=tool_calls,
                     )
 
             except asyncio.TimeoutError as e:

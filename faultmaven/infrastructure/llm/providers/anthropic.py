@@ -165,10 +165,13 @@ class AnthropicProvider(BaseLLMProvider):
                             continue
                         if response.status != 200:
                             error_text = await response.text()
+                            # Pass status_code only; LLMException derives
+                            # retryable (429 + 5xx). An explicit
+                            # retryable=status==429 would wrongly force 5xx
+                            # to non-retryable.
                             raise LLMException(
                                 f"Anthropic API request failed: {response.status} - {error_text}",
                                 status_code=response.status,
-                                retryable=response.status == 429,
                             )
                         response_data = await response.json()
                         break

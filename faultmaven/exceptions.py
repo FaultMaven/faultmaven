@@ -97,9 +97,16 @@ class LLMException(FaultMavenException):
         status_code: HTTP status code from the provider API (if applicable).
         retryable: Whether the error is worth retrying. Derived from
             status_code when provided, otherwise defaults to False (fail fast).
-            - 4xx → non-retryable (client error, same request will fail again)
+            - 429 → retryable (rate limited; transient, succeeds once the
+              window resets — see below)
+            - 4xx (other) → non-retryable (client error, same request fails again)
             - 5xx → retryable (transient server error)
             - No status code → non-retryable (callers must opt-in to retry)
+
+            Note: 429 is the one 4xx that is retryable. Providers should pass
+            ``status_code`` alone and let this derivation classify it — passing
+            an explicit ``retryable=status==429`` is an anti-pattern because it
+            silently forces 5xx to non-retryable.
     """
 
     def __init__(
@@ -113,7 +120,7 @@ class LLMException(FaultMavenException):
         if retryable is not None:
             self.retryable = retryable
         elif status_code is not None:
-            self.retryable = status_code >= 500
+            self.retryable = status_code >= 500 or status_code == 429
         else:
             self.retryable = False
         super().__init__(message, **kwargs)
