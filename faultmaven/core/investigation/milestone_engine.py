@@ -38,13 +38,12 @@ from faultmaven.core.investigation.causal_graph import (
     any_chain_root_inconclusive,
     any_chain_root_validated,
     chain_path_to_problem,
-    demote_disconfirmed_cause,
     demote_disconfirmed_cause_via_evidence,
     derive_node_states,
     ingest_emitted_chain,
-    promote_grounded_chain_root,
     prune_abandoned_nodes,
     resolve_orphan_chains,
+    retract_disconfirmed_rcc,
     synthesize_rcc_from_validated_root,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
@@ -691,134 +690,6 @@ def _investigation_confirmation_suggestions() -> list:
     ]
 
 
-def _cause_state_grounded(case: "Case") -> bool:
-    """Whether the root cause is grounded enough to record ``cause_state=IDENTIFIED``.
-
-    The engine-owned truth bar (R1), shared by ``_recompute_assessment_state``
-    (which derives cause_state) and the milestone-claim REVERT path (which must
-    not strip a cause that is grounded case-wide) so the two cannot disagree
-    within a turn. Case-wide (not current-turn-only): a cause grounded over
-    several turns stays grounded.
-
-    One coherent rule: **high confidence backed by something concrete.**
-
-    1. Confidence guard — the stated likelihood (the higher of the progress
-       signal and any recorded ``RootCauseConclusion``, since the LLM may set one
-       but not the other) must be >= 0.7. A low-confidence claim is held back
-       however it is expressed.
-    2. Concrete backing — that confidence must anchor to something real, not a
-       bare assertion. Either at least ONE causal-evidence row, OR a
-       *substantiated* ``RootCauseConclusion`` that cites a concrete basis
-       (non-empty ``evidence_basis`` or a ``validated_hypothesis_id``). A
-       conclusion that is pure narrative — no basis, no causal evidence — is the
-       same self-claim the engine must not trust, just in a conclusion's clothes,
-       and does NOT ground.
-
-    The ``>= 1`` (not ``>= 2``) causal bar matches the redesign's self-naming
-    premise — a cause can be identified from a single self-evident observation
-    (the error that names it). The milestone-claim validator still requires
-    ``>= 2`` and will flag a 1-causal claim, but the REVERT is skipped when this
-    returns True (a confidently-grounded cause is not torn down) — so there is no
-    revert-churn and no spurious "insufficient evidence" warning for the common
-    self-naming case.
-    """
-    p = case.progress
-    causal_count = sum(
-        1 for e in case.evidence if e.category == EvidenceCategory.CAUSAL_EVIDENCE
-    )
-
-    rcc = case.root_cause_conclusion
-    has_conclusion = bool(rcc and getattr(rcc, "root_cause", None))
-
-    # 1. Confidence guard (>= 0.7), tolerant of which field the LLM populated.
-    likelihood = p.root_cause_likelihood or 0.0
-    if has_conclusion:
-        likelihood = max(likelihood, getattr(rcc, "likelihood", 0.0) or 0.0)
-    if likelihood < 0.7:
-        return False
-
-    # 2. Concrete backing: a causal-evidence row, or a substantiated conclusion.
-    if causal_count >= 1:
-        return True
-    if has_conclusion and (
-        getattr(rcc, "evidence_basis", None)
-        or getattr(rcc, "validated_hypothesis_id", None)
-    ):
-        return True
-    return False
-
-
-def _mark_cause_identified(case: "Case") -> bool:
-    """Single chokepoint for recording ``cause_state=IDENTIFIED``.
-
-    The indicator follows the fact (R1): IDENTIFIED is recorded ONLY when the
-    cause is grounded case-wide (``_cause_state_grounded`` — a recorded
-    ``RootCauseConclusion`` or high-confidence causal evidence), NEVER from a
-    bare LLM ``root_cause_identified`` flag with an empty conclusion. This is
-    what makes cause_state a derived, engine-owned truth signal rather than a
-    claim the LLM can assert: a reflexive ``root_cause_identified`` on thin
-    evidence (which reasoning-validation strips) no longer leaves an ungrounded
-    IDENTIFIED behind (the bug where the indicator was "yes" while the
-    root-cause content was empty).
-
-    Also enforces the Case invariant ``root_cause_likelihood > 0 when
-    cause_state=IDENTIFIED`` by flooring the likelihood to the grounding bar
-    when a conclusion grounds the cause without a numeric confidence.
-
-    Returns True if cause_state is (now, or already) IDENTIFIED; False if the
-    cause is not grounded. Both the milestone-apply loop and
-    ``_recompute_assessment_state`` route through here so the two paths cannot
-    disagree and IDENTIFIED can never be set without grounding.
-    """
-    p = case.progress
-    # Gate a NEW transition on grounding; an existing IDENTIFIED is sticky
-    # (forward-only — never downgraded here, avoiding IDENTIFIED↔CANDIDATES
-    # oscillation) and falls through to re-enforce its invariant below.
-    if p.cause_state != CauseState.IDENTIFIED and not _cause_state_grounded(case):
-        return False
-    p.cause_state = CauseState.IDENTIFIED
-    # The Case ``root_cause_consistency`` invariant requires BOTH a positive
-    # likelihood AND a non-null ``root_cause_method`` when IDENTIFIED. Enforce
-    # both EVERY call (including the already-IDENTIFIED path) so save can never
-    # see IDENTIFIED with a zero likelihood / null method — regardless of which
-    # path reached it, whether the LLM supplied a confidence/method, or whether
-    # a later same-turn mutation reset these fields. Because ``_recompute_-
-    # assessment_state`` routes through here at end-of-turn, the invariant holds
-    # at save by construction. The LLM's own higher likelihood / explicit method
-    # still win where the apply loop applies them from the structured output.
-    if not p.root_cause_likelihood or p.root_cause_likelihood <= 0:
-        p.root_cause_likelihood = 0.8
-    if not p.root_cause_method:
-        p.root_cause_method = "direct_analysis"
-    return True
-
-
-def _chain_mode() -> bool:
-    """Whether causal-chain emission is active. The single source of truth for the
-    chain-vs-flat decision, read fresh (hot-reloadable) at each use: the
-    end-of-turn cause_state recompute and the mid-turn flat-grounding guard must
-    agree, so both call here rather than re-deriving the flag."""
-    from faultmaven.config.settings import get_settings
-
-    return get_settings().features.enable_hypothesis_chain_emission
-
-
-def _recompute_cause_state_flat(case: "Case") -> None:
-    """Flat-grounding ``cause_state`` derivation (the pre-chain path, used when
-    ``enable_hypothesis_chain_emission`` is OFF). Unchanged from the original
-    ``_recompute_assessment_state`` body: M6 demote, then the sticky grounded-only
-    IDENTIFIED chokepoint, else CANDIDATES/UNKNOWN from the active-hyp count."""
-    p = case.progress
-    demote_disconfirmed_cause(case)
-    if not _mark_cause_identified(case):
-        if HypothesisManager.count_active_hypotheses(case) >= 2:
-            p.cause_state = CauseState.CANDIDATES
-        else:
-            p.cause_state = CauseState.UNKNOWN
-    else:
-        promote_grounded_chain_root(case)
-
-
 def _recompute_cause_state_from_chain(case: "Case") -> None:
     """Chain-derived ``cause_state`` (Option A, methodology §9.2; flag ON).
 
@@ -855,6 +726,12 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
     p = case.progress
     demote_disconfirmed_cause_via_evidence(case)
     derive_node_states(case)
+    # Source-of-truth retraction: clear a RootCauseConclusion whose named cause
+    # (validated_hypothesis_id) is now disconfirmed, so no consumer asserts a
+    # disproven cause. Covers the gap M6 misses when cause_state never reached
+    # IDENTIFIED. Runs BEFORE the cause_state branch so a freshly-validated root
+    # below re-synthesizes a correct RCC via synthesize_rcc_from_validated_root.
+    retract_disconfirmed_rcc(case)
     if any_chain_root_validated(case):
         p.cause_state = CauseState.IDENTIFIED
         # Case invariant: IDENTIFIED requires a positive likelihood + a method.
@@ -884,24 +761,17 @@ def _recompute_assessment_state(case: "Case") -> None:
     ``_apply_investigation_updates`` so hypotheses/solutions added this turn
     are reflected.
 
-    - ``cause_state`` is delegated by the chain-emission flag (both helpers are
-      documented at their definitions):
-        * flag OFF → ``_recompute_cause_state_flat`` — the established flat
-          grounding: ``IDENTIFIED`` sticky/forward-only from grounded confidence
-          + causal evidence / a ``RootCauseConclusion``, else CANDIDATES/UNKNOWN.
-        * flag ON → ``_recompute_cause_state_from_chain`` (Option A, §9.2) —
-          ``IDENTIFIED`` iff a standing chain root is VALIDATED; NOT sticky (it
-          follows the root's evidence-derived truth, so M6 drops it on its own).
+    - ``cause_state`` is chain-derived (Option A, §9.2) via
+      ``_recompute_cause_state_from_chain`` (documented at its definition):
+      ``IDENTIFIED`` iff a standing chain root is VALIDATED; NOT sticky (it
+      follows the root's evidence-derived truth, so M6 drops it on its own).
     - ``solution_state``: ``SELECTED`` once a permanent SOLUTION has been
       proposed (or a Solution record exists). ``CANDIDATES`` (multi-solution
       deliberation) is reserved for a follow-on and not produced here.
     """
     p = case.progress
 
-    if _chain_mode():
-        _recompute_cause_state_from_chain(case)
-    else:
-        _recompute_cause_state_flat(case)
+    _recompute_cause_state_from_chain(case)
 
     if p.solution_state != SolutionState.SELECTED:
         if p.solution_proposed or bool(case.solutions):
@@ -4538,6 +4408,54 @@ class MilestoneEngine:
                 except ValidationError:
                     pass
 
+            # Rung: the model omitted the required user-facing agent_response
+            # ITSELF (observed on gemini-3.5-flash resolution turns) — the rungs
+            # above preserve agent_response and so cannot help. Synthesize a
+            # neutral placeholder so a turn whose state_updates are otherwise
+            # valid survives instead of 500ing. The conclusion stays the model's
+            # own (its state_updates), nothing is fabricated, and internal
+            # reasoning is never surfaced; on resolution turns the closure
+            # summary carries the substantive text.
+            # Fire when agent_response is MISSING or non-string (None, or a
+            # malformed 0/[]/false the schema rejects) — i.e. not a usable reply.
+            # A model-provided string, including "", is a valid (if poor) value
+            # the model chose, NOT the defect, so it is never overwritten.
+            if isinstance(content_obj, dict) and not isinstance(
+                content_obj.get("agent_response"), str
+            ):
+                placeholder = (
+                    "I've updated the investigation based on the latest information."
+                )
+                base = pruned if dropped else content_obj
+                # Prefer keeping the model's state_updates; only DROP them as a
+                # last resort — and say so, so a state-update loss is never logged
+                # as a mere field-fill.
+                for state_dropped, candidate in (
+                    (False, base),
+                    (True, {**base, "state_updates": {}}),
+                ):
+                    try:
+                        patched = {**candidate, "agent_response": placeholder}
+                        parsed = schema_model.model_validate_json(json.dumps(patched))
+                        logger.warning(
+                            "structured_output_degraded: synthesized missing "
+                            f"agent_response on {schema_model.__name__} (model "
+                            "omitted the required user-facing field)"
+                            + (
+                                " AND dropped all state_updates (unrepairable)"
+                                if state_dropped
+                                else ""
+                            )
+                            + " — turn preserved, no 500.",
+                            extra={
+                                "schema": schema_model.__name__,
+                                "state_updates_dropped": state_dropped,
+                            },
+                        )
+                        return parsed
+                    except ValidationError:
+                        continue
+
             raise original_error
 
     @staticmethod
@@ -6009,28 +5927,12 @@ class MilestoneEngine:
                     # IDENTIFIED signal. The milestone SYMBOL stays
                     # "root_cause_identified" for downstream maps/telemetry.
                     if field == "root_cause_identified":
-                        # Honor the LLM's signal ONLY when the cause is grounded
-                        # (a recorded conclusion / high-confidence causal
-                        # evidence). A bare flag with an empty conclusion must
-                        # NOT flip the indicator: route through the grounded
-                        # chokepoint so an ungrounded claim (which the
-                        # reasoning-validation strip rejects) leaves cause_state
-                        # untouched instead of stranding an IDENTIFIED with no
-                        # conclusion. Append the symbol only on a real,
-                        # grounded transition this turn.
-                        # In chain mode cause_state is owned by the end-of-turn
-                        # chain recompute (a validated chain root, §9.2); the flat
-                        # grounding chokepoint must NOT set IDENTIFIED here, or it
-                        # would leak a stale likelihood/method the chain recompute
-                        # then rejects — and could re-ground a chain-less cause.
-                        if (
-                            not _chain_mode()
-                            and p.cause_state != CauseState.IDENTIFIED
-                            and _mark_cause_identified(case)
-                        ):
-                            metadata["milestones_completed"].append(field)
+                        # Engine-owned: cause_state is set by the end-of-turn
+                        # chain recompute (a validated chain root, §9.2), not by
+                        # this LLM milestone signal — skip it here.
+                        continue
                     # Only append if transitioning from False to True
-                    elif not getattr(p, field, False):
+                    if not getattr(p, field, False):
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
 
@@ -6263,16 +6165,18 @@ class MilestoneEngine:
                     # ``root_cause_identified`` is no longer a bool field; it maps
                     # to the engine-derived ``cause_state`` enum.
                     if result.milestone == "root_cause_identified":
-                        # cause_state is engine-owned (R1). If the cause is
-                        # grounded CASE-WIDE, _recompute would immediately
-                        # re-derive IDENTIFIED — so reverting here would only
-                        # oscillate the state and tear the milestone out of
+                        # cause_state is engine-owned (R1) and recomputed at
+                        # end-of-turn from the chain (IDENTIFIED iff a chain root
+                        # is validated, §9.2). If a chain root is already
+                        # validated CASE-WIDE, that recompute will re-derive
+                        # IDENTIFIED — so reverting here would only oscillate the
+                        # state and tear the milestone out of
                         # ``milestones_completed`` with a misleading
                         # "insufficient evidence" warning (the validator counts
                         # current-turn evidence only). Skip the revert; let
-                        # _recompute own it. Only un-identify when genuinely
-                        # ungrounded case-wide.
-                        if _cause_state_grounded(case):
+                        # _recompute own it. Only un-identify when no chain root
+                        # is validated case-wide.
+                        if any_chain_root_validated(case):
                             continue
                         case.progress.cause_state = CauseState.UNKNOWN
                     elif hasattr(case.progress, result.milestone):
@@ -6522,20 +6426,16 @@ class MilestoneEngine:
 
         # Populate the causal graph from the LLM's emitted chain (lazy backward
         # expansion), then resolve any chain the LLM left unlinked. The graph is
-        # emission-only: the transitional flat->chain bridge (PR B2c) is gone, so
-        # cause_state/M6 derive from flat grounding when emission is off, and from
-        # real emitted chains when it is on. (cause_state derivation never reads
-        # the graph for truth — see _recompute_assessment_state.)
-        from faultmaven.config.settings import get_settings
-
-        if get_settings().features.enable_hypothesis_chain_emission:
-            self._apply_chain_emission(case, updates, metadata)
-            # Orphan-chain resolution (B2c invariant: every chain explaining D is
-            # attached to exactly one hypothesis). T1 re-attaches an unambiguous
-            # double-representation in place; any ambiguous orphan is surfaced to
-            # the LLM as a one-turn nudge (T2a) to re-root it or declare it
-            # separate, rather than guessing.
-            self._nudge_ambiguous_orphan_chains(case, metadata)
+        # always populated from the emitted chain; cause_state/M6 derive from the
+        # real emitted chains. (cause_state derivation never reads the graph for
+        # truth — see _recompute_assessment_state.)
+        self._apply_chain_emission(case, updates, metadata)
+        # Orphan-chain resolution (B2c invariant: every chain explaining D is
+        # attached to exactly one hypothesis). T1 re-attaches an unambiguous
+        # double-representation in place; any ambiguous orphan is surfaced to
+        # the LLM as a one-turn nudge (T2a) to re-root it or declare it
+        # separate, rather than guessing.
+        self._nudge_ambiguous_orphan_chains(case, metadata)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).

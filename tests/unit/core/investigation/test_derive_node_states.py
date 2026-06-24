@@ -1,8 +1,8 @@
 """Gate 1b: ``derive_node_states`` — evidence-grounded node validation (§7.1).
 
 A causal node reaches VALIDATED only on real CAUSAL_EVIDENCE-backed support plus
-the M7 AND-gate — the sound replacement for ``promote_grounded_chain_root``'s
-fabricated EMPIRICAL grade. ``cause_state=IDENTIFIED`` then reads
+the M7 AND-gate — never from a fabricated EMPIRICAL grade.
+``cause_state=IDENTIFIED`` then reads
 ``is_chain_root_validated`` (§9.2), so these tests pin what makes a root real.
 """
 

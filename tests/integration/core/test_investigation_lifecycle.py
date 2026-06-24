@@ -952,10 +952,14 @@ class TestEvidenceAccumulation:
         case = result["case_updated"]
 
         assert len(case.evidence) > count_after_turn3
-        # The grounded cause signal (likelihood 0.9 + causal evidence) maps to
-        # the engine-owned ``cause_state`` enum. A bare ``root_cause_identified``
-        # flag with no grounding would NOT reach IDENTIFIED.
-        assert case.progress.cause_state == CauseState.IDENTIFIED
+        # Chain-only model (flat cause_state path removed): flat evidence + a high
+        # likelihood + the root_cause_identified flag no longer reach IDENTIFIED on
+        # their own. cause_state=IDENTIFIED now requires a VALIDATED chain root (a
+        # node grounded by causal evidence via node_evidence_links). This turn
+        # emits NO chain, so the grounded-but-unchained cause stays UNKNOWN — the
+        # soft, under-reporting signal the chain redesign intends (RCC /
+        # working_conclusion backstop terminal disposition).
+        assert case.progress.cause_state == CauseState.UNKNOWN
 
     async def test_evidence_milestone_attribution(self, engine, case_repo):
         """Evidence advances_milestones correctly attributed via Tier 2 inference."""

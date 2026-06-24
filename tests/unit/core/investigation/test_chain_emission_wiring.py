@@ -1,7 +1,6 @@
-"""PR B2b: flag-gated chain-emission prompt block + engine wiring.
+"""Chain-emission prompt block + engine wiring.
 
-The prompt block is appended to the DIAGNOSIS instructions only when
-``enable_hypothesis_chain_emission`` is on (baseline unchanged when off);
+The prompt block is always appended to the DIAGNOSIS instructions;
 ``_apply_chain_emission`` ingests the emitted chain and links each hypothesis
 to its root.
 """
@@ -52,24 +51,11 @@ def _case() -> Case:
 
 
 # ---------------------------------------------------------------------------
-# Prompt gating — the only baseline-affecting surface
+# Prompt content — chain block is always present
 # ---------------------------------------------------------------------------
 
 
-def test_diagnosis_prompt_excludes_chain_block_when_flag_off():
-    # Default (flag off): the carefully-tuned baseline prompt is unchanged.
-    block = _select_diagnosis_block(_case())
-    assert "CAUSAL CHAINS" not in block
-
-
-def test_diagnosis_prompt_includes_chain_block_when_flag_on(monkeypatch):
-    import faultmaven.config.settings as settings_mod
-
-    stub = SimpleNamespace(
-        features=SimpleNamespace(enable_hypothesis_chain_emission=True)
-    )
-    monkeypatch.setattr(settings_mod, "get_settings", lambda: stub)
-
+def test_diagnosis_prompt_includes_chain_block():
     block = _select_diagnosis_block(_case())
     assert "CAUSAL CHAINS" in block
     # Step 3 spells out every required NodeEvidenceLinkToAdd field (the alignment).

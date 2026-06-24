@@ -1369,14 +1369,12 @@ is obvious.
 
 
 # Chain-emission addendum (Two-Dimensional Hypothesis Methodology §5/S3).
-# Appended to the DIAGNOSIS instructions by ``_select_diagnosis_block`` ONLY when
-# ``settings.features.enable_hypothesis_chain_emission`` is on, so the tuned
-# baseline prompt is byte-identical when the flag is off. It layers ON TOP of the
-# flat hypotheses_to_add + hypothesis-evidence ordering flow above: the chain IS
-# the hypothesis's structure — every hypothesis carries its root cause as a node,
-# not optional scaffolding beside a flat guess. (The engine still tolerates an
-# unlinked hypothesis as a best-effort fallback — graceful degradation; the
-# prompt's job is to make rooting the norm.)
+# Always appended to the DIAGNOSIS instructions by ``_select_diagnosis_block``.
+# It layers ON TOP of the hypotheses_to_add + hypothesis-evidence ordering flow
+# above: the chain IS the hypothesis's structure — every hypothesis carries its
+# root cause as a node, not optional scaffolding beside a flat guess. (The engine
+# still tolerates an unlinked hypothesis as a best-effort fallback — graceful
+# degradation; the prompt's job is to make rooting the norm.)
 _CHAIN_EMISSION_BLOCK = """
 **CAUSAL CHAINS (every hypothesis is a chain, not a flat guess):**
 A hypothesis is a CHAIN of cause→effect steps ending at the problem D. Its deepest
@@ -1385,6 +1383,13 @@ hypothesis you add or maintain MUST be anchored to a root node. A flat hypothesi
 with no root is INCOMPLETE: it asserts a cause without placing it in the causal
 structure. What is lazy is the DEPTH of the chain — the intermediate rungs between
 root and D — never WHETHER the hypothesis has a root.
+
+The chains you have already built are shown in `<causal_graph>` above, each node
+with its `cn_...` id. EXTEND that graph: when a cause or rung is already present,
+reference its existing `cn_...` id (in `produces`, `root_node_ref`, or
+`node_evidence_links`) and attach new evidence to it — emit a NEW node only for a
+genuinely new cause or rung. Never re-state a node already in the graph as a new
+node: that splits one cause across duplicate roots and prevents it from validating.
 
 1. Emit the cause as a node in `causal_nodes_to_add` (statement, node_type,
    produces):
@@ -2619,13 +2624,8 @@ def _select_diagnosis_block(case: Case) -> str:
     """
     focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
-    # Chain emission is flag-gated: when off, the baseline diagnosis prompt is
-    # unchanged; when on, teach lazy backward expansion (the engine ingests the
-    # emitted chain instead of running the bridge).
-    from faultmaven.config.settings import get_settings
-
-    if get_settings().features.enable_hypothesis_chain_emission:
-        block += _CHAIN_EMISSION_BLOCK
+    # Teach lazy backward expansion (the engine ingests the emitted chain).
+    block += _CHAIN_EMISSION_BLOCK
     return block
 
 

@@ -209,8 +209,8 @@ def _node_evidence_tally(
     Counts only links whose backing evidence row actually exists (a dangling
     ``evidence_id`` is ignored, never assumed). ``causal_supports`` is the subset
     of SUPPORTS links backed by ``CAUSAL_EVIDENCE`` — the §7.1 "direct observable
-    fact" bar (the same causal floor the flat ``_cause_state_grounded`` uses), so
-    a node validates only on real causal grounding. ``counterfactual_refutes`` is
+    fact" bar — so a node validates only on real causal grounding.
+    ``counterfactual_refutes`` is
     the subset of REFUTES links backed by ``CAUSAL_ABSENCE_EVIDENCE`` — a
     counterfactual disconfirmation (the cause was addressed yet ``D`` persisted),
     the §7.2 strongest grade, which refutes DECISIVELY (it is not outweighed by
@@ -236,8 +236,8 @@ def _node_evidence_tally(
 
 def derive_node_states(case: Case) -> bool:
     """Derive every causal node's ``node_state`` from its OWN rung evidence
-    (§7.1) plus the M7 AND-gate — the evidence-grounded replacement for
-    ``promote_grounded_chain_root``'s fabricated EMPIRICAL grade. This is what
+    (§7.1) plus the M7 AND-gate. A root reaches VALIDATED only from real rung
+    evidence — never from a fabricated EMPIRICAL grade. This is what
     makes ``cause_state=IDENTIFIED`` (via ``is_chain_root_validated``, §9.2) a
     derived truth signal: a root reaches VALIDATED only when real causal evidence
     bears it out, never because the flat model already "knew" the answer.
@@ -424,6 +424,14 @@ def chain_path_to_problem(root_id: str, case: Case) -> list[str]:
     return []  # open chain — no route to D
 
 
+def _normalize_statement(s: str | None) -> str:
+    """Canonical key for exact-match node identity (engine ingest dedup):
+    whitespace-collapsed, lowercased, capped at the same 500 chars
+    ``CausalNode`` stores — so both operands of a comparison normalize
+    identically (no asymmetric truncation)."""
+    return " ".join((s or "")[:500].split()).lower()
+
+
 def ingest_emitted_chain(
     case: Case,
     nodes_to_add: list,
@@ -469,6 +477,30 @@ def ingest_emitted_chain(
 
     # Pass 1: create the nodes; record ids in order for new_index_N resolution.
     # A skipped node holds None so later indices still line up.
+    #
+    # Identity reconciliation (engine-derive lane): if an emitted statement EXACTLY
+    # restates an existing same-type node, REUSE that node instead of minting a
+    # duplicate — so its id flows into edges, evidence, and the hypothesis root_ref,
+    # keeping one cause on one node. The LLM re-asserts a standing cause on later
+    # turns; prevention is the chain rendered in <causal_graph> (which it is told to
+    # reference), and this is the safe backstop for a verbatim re-emit it does
+    # anyway. Exact normalized match ONLY: a fuzzy threshold cannot separate a true
+    # duplicate from a distinct OR-sibling differing in one parameter (the
+    # over-merge trap), so paraphrases are deliberately NOT merged here. Reuse
+    # covers intra-turn repeats too (earlier nodes are already in causal_nodes).
+    # Index existing nodes by (type, normalized statement) ONCE — so the per-spec
+    # dedup is an O(1) dict lookup, not a full re-scan + re-normalization of every
+    # node on every spec (this path runs each DIAGNOSIS turn and the graph grows
+    # over a case). Newly-minted nodes are added to the index so intra-turn
+    # verbatim repeats also dedup; first id wins (the canonical node). Skip the
+    # build entirely on the common no-emission turn — nothing to dedup against.
+    canonical_by_key: dict[tuple, str] = {}
+    if nodes_to_add:
+        for nid, n in case.causal_nodes.items():
+            canonical_by_key.setdefault(
+                (n.node_type, _normalize_statement(n.statement)), nid
+            )
+
     created: list[str | None] = []
     for spec in nodes_to_add:
         statement = (getattr(spec, "statement", None) or "").strip()
@@ -481,12 +513,27 @@ def ingest_emitted_chain(
             # type (a second PROBLEM node would violate the one-D-per-case index).
             created.append(None)
             continue
+        # Identity reconciliation (engine-derive lane): an emitted statement that
+        # EXACTLY restates an existing same-type node REUSES it rather than minting
+        # a duplicate — so its id flows into edges, evidence, and the hypothesis
+        # root_ref, keeping one cause on one node. The LLM re-asserts a standing
+        # cause on later turns; prevention is the chain rendered in <causal_graph>
+        # (which it is told to reference), and this is the safe backstop for a
+        # verbatim re-emit. Exact normalized match ONLY: a fuzzy threshold cannot
+        # separate a true duplicate from a distinct OR-sibling differing in one
+        # parameter (the over-merge trap), so paraphrases are NOT merged here.
+        key = (node_type, _normalize_statement(statement))
+        canonical = canonical_by_key.get(key)
+        if canonical is not None:
+            created.append(canonical)  # reuse the canonical node, no duplicate
+            continue
         node = CausalNode(
             statement=statement[:500],
             node_type=node_type,
             generated_at_turn=current_turn,
         )
         case.causal_nodes[node.node_id] = node
+        canonical_by_key[key] = node.node_id
         created.append(node.node_id)
 
     def _resolve(ref: str | None) -> str | None:
@@ -579,40 +626,6 @@ def ingest_emitted_chain(
     return created
 
 
-def promote_grounded_chain_root(case: Case) -> bool:
-    """Mirror the engine's case-wide grounding onto the chain graph: when a
-    SPECIFIC hypothesis is named the validated cause
-    (``RootCauseConclusion.validated_hypothesis_id``), promote that chain's ROOT
-    node to VALIDATED so the graph reflects what the flat grounding already
-    knows. Returns True if a root was promoted.
-
-    Transitional (Option-1) and deliberately conservative: it fires ONLY on an
-    explicit ``validated_hypothesis_id`` — never guesses from "the sole active
-    chain". The EMPIRICAL method + ``actionable=True`` are fabricated here
-    because the flat model doesn't track them; PR B removes this once the LLM
-    supplies real validated chains. Idempotent (a root already VALIDATED is left
-    alone). Callers gate this on the case being grounded
-    (``cause_state=IDENTIFIED``); it is the prerequisite that gives M6 a
-    validated root to demote on counterfactual disconfirmation.
-    """
-    rcc = case.root_cause_conclusion
-    hyp_id = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
-    if not hyp_id:
-        return False
-    hyp = case.hypotheses.get(hyp_id)
-    if hyp is None or not hyp.root_node_id:
-        return False
-    root = case.causal_nodes.get(hyp.root_node_id)
-    if root is None or root.node_state == NodeState.VALIDATED:
-        return False
-    # Set method + actionable before state so the combination is valid at every
-    # step (M4: validated⇒method; M1: validated root⇒actionable).
-    root.validation_method = ValidationMethod.EMPIRICAL
-    root.actionable = True
-    root.node_state = NodeState.VALIDATED
-    return True
-
-
 def _net_refuted(hyp: Hypothesis) -> bool:
     """Decisive-disconfirmation test for M6: refuting evidence at least matches
     supporting evidence (and there is at least one refuting link).
@@ -647,11 +660,49 @@ def _representative_cause_hypothesis(case: Case) -> Hypothesis | None:
     just-refuted believed-cause would vanish from a max-by-``likelihood`` pick.
     """
     rcc = case.root_cause_conclusion
-    if rcc and rcc.validated_hypothesis_id:
-        return case.hypotheses.get(rcc.validated_hypothesis_id)
+    vhid = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
+    if vhid:
+        return case.hypotheses.get(vhid)
     if not case.hypotheses:
         return None
     return max(case.hypotheses.values(), key=lambda h: h.initial_likelihood)
+
+
+def _hypothesis_disconfirmed(hyp: Hypothesis) -> bool:
+    """Hypothesis-side disconfirmation: REFUTED, or net-refuted (refuting
+    evidence at least matches support, ``_net_refuted``). The single definition
+    shared by the M6 trigger and the RCC retraction below so the two cannot
+    drift; the M6 trigger layers a node-side counterfactual clause on top."""
+    return hyp.state == HypothesisState.REFUTED or _net_refuted(hyp)
+
+
+def retract_disconfirmed_rcc(case: Case) -> bool:
+    """Clear a ``RootCauseConclusion`` whose NAMED cause has been disconfirmed, at
+    the SOURCE — so a disproven cause is asserted by NO consumer (terminal gate,
+    report, copilot UI, KB-runbook conversion), not just one guarded reader.
+    Returns True if it retracted one.
+
+    Link-based ONLY — it acts solely on the RCC's explicit ``validated_hypothesis_id``
+    cause link. It deliberately does NOT infer the cause from a likelihood proxy:
+    ``_representative_cause_hypothesis``'s ``max(initial_likelihood)`` fallback would
+    refuse a valid RCC whenever an unrelated early-refuted alternative dominated
+    (a NO-COLLAPSE stall), since ``initial_likelihood`` never decays. This
+    complements the M6 retraction (``demote_disconfirmed_cause_via_evidence``,
+    gated on ``cause_state=IDENTIFIED``) by covering the gap where an RCC's
+    hypothesis is refuted but no chain root ever validated — so cause_state never
+    reached IDENTIFIED and M6's gate never fired. A free-text RCC with no
+    ``validated_hypothesis_id`` (no reliable cause link) is left untouched — a
+    documented residual, not a guess.
+    """
+    rcc = case.root_cause_conclusion
+    vhid = getattr(rcc, "validated_hypothesis_id", None) if rcc else None
+    if not vhid:
+        return False
+    hyp = case.hypotheses.get(vhid)
+    if hyp is not None and _hypothesis_disconfirmed(hyp):
+        case.root_cause_conclusion = None
+        return True
+    return False
 
 
 _DISCONFIRMATION_REASON = (
@@ -697,88 +748,14 @@ def _disconfirmed_cause_trigger(
     if hyp is None:
         return None
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
-    disconfirmed = (
-        hyp.state == HypothesisState.REFUTED
-        or _net_refuted(hyp)
-        or (
-            node_side
-            and root is not None
-            and _node_has_counterfactual_refute(root, _evidence_category_map(case))
-        )
+    disconfirmed = _hypothesis_disconfirmed(hyp) or (
+        node_side
+        and root is not None
+        and _node_has_counterfactual_refute(root, _evidence_category_map(case))
     )
     if not disconfirmed:
         return None
     return hyp, (hyp.refutation_reason or _DISCONFIRMATION_REASON)[:200]
-
-
-def demote_disconfirmed_cause(case: Case) -> bool:
-    """M6 — the turn-28 fix. On counterfactual disconfirmation of the grounded
-    root cause, demote it **deterministically** rather than waiting for the LLM
-    to volunteer a downgrade (which it did not, in case_e970a5c24fe1).
-
-    Acts ONLY on a grounded (sticky ``cause_state=IDENTIFIED``) case — the
-    precondition that makes a demotion meaningful, gives clean idempotency (after
-    it fires, ``cause_state`` is UNKNOWN so the next call no-ops), and lets it act
-    on the COMMON grounding shape, where the cause is grounded by causal evidence
-    / ``evidence_basis`` with NO ``validated_hypothesis_id`` (see
-    ``_representative_cause_hypothesis``) — not just an explicitly-named cause.
-
-    Triggers when that representative hypothesis is either:
-      - **A** already ``REFUTED`` (the LLM refuted it), or
-      - **B** *net-refuted* (``_net_refuted``) — refuting evidence flips/ties the
-        balance. A single contrary link is deliberately NOT decisive (it would
-        falsely demote a well-supported cause).
-
-    Demotion is atomic and four-part so the *sticky* ``cause_state`` can neither
-    keep a disproven cause, be re-grounded next turn, nor be reported as known by
-    the disposition layer:
-      1. refute the flat hypothesis via the canonical ``refute_hypothesis``
-         (zeroes likelihood, bumps the turn, logs), preserving any LLM reason,
-      2. refute the chain ROOT node and strip its now-stale validation marks
-         (a REFUTED node must not keep advertising EMPIRICAL/actionable),
-      3. RETRACT the ``RootCauseConclusion`` entirely — leaving it lets the
-         disposition layer (``_cause_identified`` reads ``root_cause`` text) keep
-         treating the cause as known and lets ``evidence_basis`` re-ground it, so
-         every grounding anchor must go, not just ``validated_hypothesis_id``,
-      4. un-stick the assessment — zero ``root_cause_likelihood`` and drop
-         ``cause_state`` out of IDENTIFIED; the caller's recompute then derives
-         CANDIDATES/UNKNOWN from the remaining active chains.
-
-    Returns True if it demoted; False when the case is not grounded, has no
-    representative cause, or that cause is not disconfirmed.
-    """
-    p = case.progress
-    # Flat path: node-side counterfactual disconfirmation does NOT apply (no
-    # emitted chain; persisted nodes must not demote a healthy flat hypothesis).
-    trigger = _disconfirmed_cause_trigger(case, node_side=False)
-    if trigger is None:
-        return False
-    hyp, reason = trigger
-
-    # 1. Refute the flat hypothesis via the canonical path (single source of
-    # truth: likelihood=0.0 + last_updated_turn + logging). Skip if already
-    # refuted so the LLM's own refutation reason is not clobbered.
-    if hyp.state != HypothesisState.REFUTED:
-        HypothesisManager().refute_hypothesis(hyp, case.current_turn, [], reason)
-
-    # 2. Refute the chain ROOT and clear its stale validation marks (reason
-    # before state so the REFUTED/refutation_reason pair is valid on round-trip).
-    root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
-    if root is not None and root.node_state != NodeState.REFUTED:
-        root.refutation_reason = reason
-        root.node_state = NodeState.REFUTED
-        root.validation_method = ValidationMethod.NONE
-        root.actionable = False
-
-    # 3. Retract the disconfirmed conclusion outright — clears EVERY grounding
-    # anchor (root_cause text, evidence_basis, validated_hypothesis_id) so the
-    # demotion is durable and cannot be defeated downstream.
-    case.root_cause_conclusion = None
-
-    # 4. Un-stick the assessment; recompute re-derives from remaining chains.
-    p.root_cause_likelihood = 0.0
-    p.cause_state = CauseState.UNKNOWN
-    return True
 
 
 # A hypothesis is a STANDING cause only while ACTIVE or VALIDATED — a REFUTED,
@@ -948,11 +925,11 @@ def _attach_engine_refutation(case: Case, node_id: str, reason: str) -> None:
 
 
 def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
-    """M6 for chain mode (Option c): on counterfactual disconfirmation of the
-    grounded cause, refute the flat hypothesis AND attach a DURABLE engine
-    refutation to its root, then retract the conclusion. Unlike the flat
-    ``demote_disconfirmed_cause`` (which imperatively flips ``node_state``), the
-    root's refutation is recorded as EVIDENCE so the subsequent
+    """M6 (Option c): on counterfactual disconfirmation of the grounded cause,
+    refute the flat hypothesis AND attach a DURABLE engine refutation to its
+    root, then retract the conclusion. Rather than imperatively flipping
+    ``node_state``, the root's refutation is recorded as EVIDENCE so the
+    subsequent
     ``derive_node_states`` — this turn and every later turn — keeps the root
     REFUTED instead of re-validating it from the now-stale supporting evidence.
 

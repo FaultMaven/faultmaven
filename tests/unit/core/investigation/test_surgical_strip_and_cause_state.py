@@ -15,9 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.milestone_engine import (
-    _mark_cause_identified,
     _recompute_assessment_state,
     validate_reasoning_first,
 )
@@ -39,21 +37,6 @@ def _response(milestones: MilestoneUpdates, justifications: dict):
     )
     state_updates = SimpleNamespace(milestones=milestones, evidence_to_add=[])
     return SimpleNamespace(internal_reasoning=ir, state_updates=state_updates)
-
-
-def _conclusion(*, substantiated=True, likelihood=0.9):
-    """A duck-typed ``RootCauseConclusion``.
-
-    ``substantiated`` cites a concrete basis (``evidence_basis``); an
-    unsubstantiated conclusion is a pure narrative with nothing behind it — the
-    self-claim the engine must not ground.
-    """
-    return SimpleNamespace(
-        root_cause="the cause",
-        likelihood=likelihood,
-        evidence_basis=["ev_1"] if substantiated else [],
-        validated_hypothesis_id=None,
-    )
 
 
 def _case(*, evidence=True):
@@ -120,178 +103,26 @@ class TestSurgicalStrip:
         assert offending == set()
 
 
-class TestCauseStateDerivation:
-    def _case_with_hyps(
-        self, n_active: int, *, causal_evidence=0, conclusion=False, substantiated=True
-    ):
-        hm = create_hypothesis_manager()
-        hyps = {}
-        for i in range(n_active):
-            h = hm.create_hypothesis(
-                statement=f"hypothesis {i}",
-                category="config",
-                initial_likelihood=0.5,
-                current_turn=1,
-            )
-            hyps[h.hypothesis_id] = h
-        progress = InvestigationProgress()
-        evidence = [
-            SimpleNamespace(category=EvidenceCategory.CAUSAL_EVIDENCE)
-            for _ in range(causal_evidence)
-        ]
-        rcc = _conclusion(substantiated=substantiated) if conclusion else None
+class TestSolutionStateDerivation:
+    """``solution_state`` derivation in ``_recompute_assessment_state``
+    (cause_state derivation itself is exercised by test_chain_cause_state.py)."""
+
+    def _case(self):
         return SimpleNamespace(
-            progress=progress,
-            hypotheses=hyps,
+            progress=InvestigationProgress(),
+            hypotheses={},
             solutions=[],
-            evidence=evidence,
-            root_cause_conclusion=rcc,
+            evidence=[],
+            causal_nodes={},
+            causal_edges={},
+            root_cause_conclusion=None,
         )
 
-    def test_unknown_with_fewer_than_two_active(self):
-        case = self._case_with_hyps(1)
-        _recompute_assessment_state(case)
-        assert case.progress.cause_state == CauseState.UNKNOWN
-
-    def test_candidates_with_two_or_more_active(self):
-        case = self._case_with_hyps(2)
-        _recompute_assessment_state(case)
-        assert case.progress.cause_state == CauseState.CANDIDATES
-
-    def test_identified_derived_from_likelihood_plus_one_causal(self):
-        # Follow-on B + self-naming premise: high confidence + a SINGLE causal
-        # row -> IDENTIFIED even though the LLM never set the milestone. One
-        # self-evident observation identifies a self-naming cause.
-        case = self._case_with_hyps(2, causal_evidence=1)  # would be CANDIDATES
-        case.progress.root_cause_likelihood = 0.8
-        _recompute_assessment_state(case)
-        assert case.progress.cause_state == CauseState.IDENTIFIED
-
-    def test_high_likelihood_zero_causal_is_not_identified(self):
-        # The floor: confidence alone, with no causal evidence at all, is not
-        # enough — derivation requires at least one causal row (or a conclusion).
-        case = self._case_with_hyps(0, causal_evidence=0)
-        case.progress.root_cause_likelihood = 0.9
-        _recompute_assessment_state(case)
-        assert case.progress.cause_state == CauseState.UNKNOWN
-
-    def test_low_likelihood_with_causal_is_not_identified(self):
-        # The confidence guard: causal evidence with sub-threshold likelihood
-        # (< 0.7) does not ground IDENTIFIED.
-        case = self._case_with_hyps(0, causal_evidence=2)
-        case.progress.root_cause_likelihood = 0.5
-        _recompute_assessment_state(case)
-        assert case.progress.cause_state == CauseState.UNKNOWN
-
-    def test_identified_derived_from_substantiated_conclusion(self):
-        # A substantiated, confident conclusion (cites a basis, likelihood 0.9)
-        # grounds the cause even with no causal-evidence rows of its own.
-        case = self._case_with_hyps(0, conclusion=True)
-        _recompute_assessment_state(case)
-        assert case.progress.cause_state == CauseState.IDENTIFIED
-
-    def test_unsubstantiated_conclusion_does_not_identify(self):
-        # A bare narrative conclusion — no basis, no causal evidence — is the
-        # self-claim the engine must not trust; it does NOT ground.
-        case = self._case_with_hyps(0, conclusion=True, substantiated=False)
-        _recompute_assessment_state(case)
-        assert case.progress.cause_state == CauseState.UNKNOWN
-
-    def test_identified_is_sticky(self):
-        case = self._case_with_hyps(3)  # would be CANDIDATES
-        case.progress.cause_state = CauseState.IDENTIFIED
-        case.progress.root_cause_likelihood = 0.9
-        case.progress.root_cause_method = "direct_analysis"
-        _recompute_assessment_state(case)
-        # forward-only: IDENTIFIED is not downgraded to CANDIDATES
-        assert case.progress.cause_state == CauseState.IDENTIFIED
-
     def test_solution_state_selected_when_proposed(self):
-        case = self._case_with_hyps(0)
+        case = self._case()
         case.progress.solution_proposed = True
         _recompute_assessment_state(case)
         assert case.progress.solution_state == SolutionState.SELECTED
-
-
-class TestCauseGroundedSharedBar:
-    """F1: the revert path and _recompute share one grounding bar so they cannot
-    disagree within a turn (no IDENTIFIED->UNKNOWN->IDENTIFIED oscillation)."""
-
-    def _case(self, *, likelihood, causal, conclusion=False, substantiated=True):
-        progress = InvestigationProgress()
-        progress.root_cause_likelihood = likelihood
-        evidence = [
-            SimpleNamespace(category=EvidenceCategory.CAUSAL_EVIDENCE)
-            for _ in range(causal)
-        ]
-        rcc = _conclusion(substantiated=substantiated) if conclusion else None
-        return SimpleNamespace(
-            progress=progress, evidence=evidence, root_cause_conclusion=rcc
-        )
-
-    def test_grounded_high_likelihood_one_causal(self):
-        # Self-naming premise: a single causal row + high confidence grounds.
-        from faultmaven.core.investigation.milestone_engine import (
-            _cause_state_grounded,
-        )
-
-        assert _cause_state_grounded(self._case(likelihood=0.8, causal=1)) is True
-
-    def test_not_grounded_zero_causal(self):
-        # The floor: high confidence but no causal evidence is not grounded.
-        from faultmaven.core.investigation.milestone_engine import (
-            _cause_state_grounded,
-        )
-
-        assert _cause_state_grounded(self._case(likelihood=0.9, causal=0)) is False
-
-    def test_not_grounded_low_likelihood(self):
-        from faultmaven.core.investigation.milestone_engine import (
-            _cause_state_grounded,
-        )
-
-        assert _cause_state_grounded(self._case(likelihood=0.5, causal=3)) is False
-
-    def test_grounded_by_substantiated_conclusion_without_causal_rows(self):
-        # A confident conclusion that cites a basis grounds even with no
-        # causal-evidence rows and a zero progress likelihood (the conclusion's
-        # own likelihood carries the confidence guard).
-        from faultmaven.core.investigation.milestone_engine import (
-            _cause_state_grounded,
-        )
-
-        assert (
-            _cause_state_grounded(self._case(likelihood=0.0, causal=0, conclusion=True))
-            is True
-        )
-
-    def test_not_grounded_by_unsubstantiated_conclusion(self):
-        # The #4 closure: a confident but BASIS-LESS conclusion (no evidence_basis,
-        # no causal rows) is a bare assertion and does NOT ground — the same
-        # self-claim the chokepoint rejects, just in a conclusion's clothes.
-        from faultmaven.core.investigation.milestone_engine import (
-            _cause_state_grounded,
-        )
-
-        assert (
-            _cause_state_grounded(
-                self._case(
-                    likelihood=0.0, causal=0, conclusion=True, substantiated=False
-                )
-            )
-            is False
-        )
-
-    def test_not_grounded_by_low_confidence_conclusion(self):
-        # Confidence guard applies to the conclusion path too: a substantiated
-        # conclusion whose likelihood is sub-threshold is held back.
-        from faultmaven.core.investigation.milestone_engine import (
-            _cause_state_grounded,
-        )
-
-        case = self._case(likelihood=0.0, causal=0, conclusion=True)
-        case.root_cause_conclusion.likelihood = 0.5
-        assert _cause_state_grounded(case) is False
 
 
 class TestDeferredImplementationClose:
@@ -447,6 +278,62 @@ class TestStructuredOutputDegradation:
         assert parsed.agent_response == "Survives as conversation."
         assert parsed.state_updates.evidence_to_add == []
 
+    def test_synthesizes_missing_agent_response_keeps_state(self, caplog):
+        # gemini-3.5-flash sometimes omits the required agent_response ITSELF on
+        # resolution turns. The rungs above preserve agent_response, so they
+        # cannot help; this rung synthesizes a placeholder and KEEPS the model's
+        # otherwise-valid state_updates instead of 500ing.
+        import logging
+
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+        )
+
+        eng = self._engine()
+        content = {
+            # no agent_response at all
+            "state_updates": {
+                "evidence_to_add": [
+                    {
+                        "summary": "good",
+                        "extract": "y",
+                        "category": "symptom_evidence",
+                        "source_type": "text",
+                        "source_file_id": "file_123",
+                    }
+                ]
+            },
+        }
+        with caplog.at_level(
+            logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
+        ):
+            parsed = eng._validate_with_degradation(
+                content, InvestigationResponse_Diagnosis
+            )
+        assert parsed.agent_response  # a non-empty placeholder was synthesized
+        # the model's valid work survives — state_updates are NOT dropped here
+        summaries = [e.summary for e in parsed.state_updates.evidence_to_add]
+        assert summaries == ["good"]
+        assert any(
+            "synthesized missing agent_response" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_synthesizes_missing_agent_response_drops_invalid_state(self):
+        # Both gaps at once (the turn-7 500 shape): no agent_response AND an
+        # unrepairable state_updates error. The turn must still survive — the
+        # placeholder is synthesized and the bad state is dropped, never a 500.
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Diagnosis,
+        )
+
+        eng = self._engine()
+        content = {"state_updates": {"evidence_to_add": "should-be-a-list"}}
+        parsed = eng._validate_with_degradation(
+            content, InvestigationResponse_Diagnosis
+        )
+        assert parsed.agent_response  # placeholder synthesized, no 500
+
     def test_fallback_logs_non_prunable_errors(self, caplog):
         # A NON-prunable error (loc has no list index) forces the conversational
         # fallback; that branch must log the offending loc/msg so each fallback is
@@ -478,85 +365,3 @@ class TestStructuredOutputDegradation:
         non_prunable = getattr(degraded[0], "non_prunable_errors", None)
         assert non_prunable, "fallback must log the non-prunable errors"
         assert any("evidence_to_add" in loc for loc, _msg in non_prunable)
-
-
-class TestMarkCauseIdentifiedChokepoint:
-    """The single grounded chokepoint for cause_state=IDENTIFIED.
-
-    Regression for the production 500 where the LLM reflexively asserted the
-    ``root_cause_identified`` milestone on thin evidence: reasoning-validation
-    stripped the milestone, but the eager apply-loop had already set
-    ``cause_state=IDENTIFIED`` with an empty conclusion and zero likelihood —
-    leaving the indicator "yes" while the fact was empty, which the Case
-    invariant (``root_cause_likelihood > 0 when IDENTIFIED``) rejects on save.
-    The chokepoint makes IDENTIFIED impossible without grounding.
-    """
-
-    def _case(
-        self, *, causal_evidence=0, conclusion=False, likelihood=0.0, substantiated=True
-    ):
-        progress = InvestigationProgress()
-        progress.root_cause_likelihood = likelihood
-        evidence = [
-            SimpleNamespace(category=EvidenceCategory.CAUSAL_EVIDENCE)
-            for _ in range(causal_evidence)
-        ]
-        rcc = _conclusion(substantiated=substantiated) if conclusion else None
-        return SimpleNamespace(
-            progress=progress, evidence=evidence, root_cause_conclusion=rcc
-        )
-
-    def test_ungrounded_claim_does_not_identify(self):
-        # No conclusion, no causal evidence, zero likelihood — a bare LLM flag.
-        case = self._case()
-        assert _mark_cause_identified(case) is False
-        assert case.progress.cause_state != CauseState.IDENTIFIED
-
-    def test_conclusion_grounds_and_satisfies_the_full_case_invariant(self):
-        # Grounded via a substantiated conclusion while the PROGRESS likelihood
-        # and method are still unset (0.0 / None) — the exact crash shape. Must
-        # set IDENTIFIED and satisfy the FULL ``root_cause_consistency`` invariant
-        # (likelihood > 0 AND root_cause_method set) by backfilling both. Proven
-        # by re-running the model validator — exactly what the repository does on
-        # save (the 500's origin) — not by asserting fields, which is what let the
-        # method leak slip through.
-        case = self._case(conclusion=True, likelihood=0.0)
-        assert _mark_cause_identified(case) is True
-        assert case.progress.cause_state == CauseState.IDENTIFIED
-        assert case.progress.root_cause_likelihood > 0
-        assert case.progress.root_cause_method is not None
-        # No ValidationError → no 500 on save.
-        InvestigationProgress.model_validate(case.progress.model_dump())
-
-    def test_unsubstantiated_conclusion_does_not_identify(self):
-        # The #4 closure at the chokepoint: a basis-less conclusion is not
-        # grounding, so IDENTIFIED is refused (the milestone-claim revert then
-        # proceeds normally instead of being suppressed).
-        case = self._case(conclusion=True, likelihood=0.0, substantiated=False)
-        assert _mark_cause_identified(case) is False
-        assert case.progress.cause_state != CauseState.IDENTIFIED
-
-    def test_high_confidence_causal_path_preserves_likelihood(self):
-        case = self._case(causal_evidence=1, likelihood=0.9)
-        assert _mark_cause_identified(case) is True
-        assert case.progress.cause_state == CauseState.IDENTIFIED
-        assert case.progress.root_cause_likelihood == 0.9  # not overwritten
-
-    def test_low_confidence_single_causal_is_not_grounded(self):
-        case = self._case(causal_evidence=1, likelihood=0.5)
-        assert _mark_cause_identified(case) is False
-        assert case.progress.cause_state != CauseState.IDENTIFIED
-
-    def test_already_identified_is_sticky_and_reenforces_invariant(self):
-        # An already-IDENTIFIED case whose likelihood/method were reset to an
-        # invalid state by a later same-turn mutation: the chokepoint (run via
-        # _recompute at end-of-turn) keeps IDENTIFIED (sticky, never downgrades)
-        # AND repairs the invariant instead of early-returning past it.
-        case = self._case(likelihood=0.0)
-        case.progress.cause_state = CauseState.IDENTIFIED
-        case.progress.root_cause_method = None
-        assert _mark_cause_identified(case) is True
-        assert case.progress.cause_state == CauseState.IDENTIFIED
-        assert case.progress.root_cause_likelihood > 0
-        assert case.progress.root_cause_method is not None
-        InvestigationProgress.model_validate(case.progress.model_dump())
