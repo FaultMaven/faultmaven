@@ -8,8 +8,8 @@ symptom_class:
   - data_loss
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: kb-researcher
 status: draft
 tags:
@@ -131,126 +131,115 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 ### Cause A: `delivery.timeout.ms` too short for network latency and broker processing time
 
-**Statement:** The producer's `delivery.timeout.ms` is configured below the sum of `linger.ms` plus `request.timeout.ms`, leaving no headroom for retries, so transient network delays cause messages to expire in the buffer before they can be delivered.
+**Statement:** The producer's `delivery.timeout.ms` is set below `linger.ms` plus `request.timeout.ms`, leaving no retry headroom, so transient network delays expire messages in the buffer before delivery.
 
-**Mechanism:** `delivery.timeout.ms` is the hard ceiling for the entire lifecycle of a message in the producer — from `send()` call through batching (`linger.ms`), network transit, broker processing, and any retries. If this value is shorter than `linger.ms + request.timeout.ms`, messages expire before the first request completes, making retries structurally impossible. Cross-region producers, brokers under load, and clusters with `min.insync.replicas=2` all incur higher per-request latency, requiring `delivery.timeout.ms` of at least 2–5 minutes in practice.
+**Chain:**
+- root: `delivery.timeout.ms` is configured below `linger.ms + request.timeout.ms`, the lifecycle ceiling for a record.
+- s1: messages expire before the first request completes, making retries structurally impossible.
+- s2: higher per-request latency (cross-region, broker load, `min.insync.replicas=2`) consumes the already-too-small budget.
+- D: records expire in the buffer and the producer raises `TimeoutException` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 1] log contains `Expiring N record(s) for topic-partition: delivery.timeout.ms expired`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "delivery.timeout.ms expired"} -->
+- root: [Step 2] `delivery.timeout.ms` value is less than or equal to `request.timeout.ms` (no retry budget remains after one request)
+- s2: [Step 5] `record_error_rate > 0` and `request_latency_avg` is high relative to `request.timeout.ms`
+  <!-- match: {"step": 5, "predicate": "threshold", "target": "record_error_rate", "op": ">", "value": 0} -->
 
-- [Step 1] log contains `Expiring N record(s) for topic-partition: delivery.timeout.ms expired`
-<!-- match: {"step": 1, "predicate": "contains", "target": "delivery.timeout.ms expired"} -->
-- [Step 2] `delivery.timeout.ms` value is less than or equal to `request.timeout.ms` (i.e., no retry budget remains after one request)
-- [Step 5] `record_error_rate > 0` and `request_latency_avg` is high relative to `request.timeout.ms`
-<!-- match: {"step": 5, "predicate": "threshold", "target": "record_error_rate", "op": ">", "value": 0} -->
+**Interventions:**
+- **remediation** (root): set `delivery.timeout.ms=300000` and `request.timeout.ms=60000` durably in producer config (constraint: `delivery.timeout.ms >= linger.ms + request.timeout.ms`).
 
-**Mitigation:**
+  ```bash
+  # Durable fix: add these to producer.properties (or application config) and deploy
+  # delivery.timeout.ms=300000
+  # request.timeout.ms=60000
+  # linger.ms=5
+  # Verify constraint: delivery.timeout.ms (300000) >= linger.ms (5) + request.timeout.ms (60000) = 60005 ✓
+  kubectl rollout restart deployment/<app>
+  ```
 
-- **Risk:** Increasing `delivery.timeout.ms` extends the window during which failed messages occupy buffer memory; size `buffer.memory` appropriately to hold the extra in-flight messages.
-- **Command:**
+  **Verification:** After restart, Step 5 shows `record_error_rate = 0` for 15 minutes; Step 1 grep returns no new `delivery.timeout.ms expired` lines; Step 6 end-to-end health check passes.
+- **mitigation** (root): raise `delivery.timeout.ms` to 5 minutes and `request.timeout.ms` to 60s to give 5–6 retry attempts immediately.
 
   ```bash
   # Set delivery.timeout.ms to 5 minutes (300000 ms) — gives 5–6 retry attempts at default request.timeout.ms=30s
   # Constraint: delivery.timeout.ms >= linger.ms + request.timeout.ms
-  # Update producer.properties and restart the application
-  # delivery.timeout.ms=300000
-  # request.timeout.ms=60000
   kubectl set env deployment/<app> \
     KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS=300000 \
     KAFKA_PRODUCER_REQUEST_TIMEOUT_MS=60000
   kubectl rollout restart deployment/<app>
   ```
 
-- **Duration:** Immediate after producer restart; re-evaluate after confirming `record_error_rate` returns to zero.
-
-**Resolution:**
-
-```bash
-# Durable fix: add these to producer.properties (or application config) and deploy
-# delivery.timeout.ms=300000
-# request.timeout.ms=60000
-# linger.ms=5
-# Verify constraint: delivery.timeout.ms (300000) >= linger.ms (5) + request.timeout.ms (60000) = 60005 ✓
-kubectl rollout restart deployment/<app>
-```
-
-**Impact:** Producer-level config change. Rolling restart; one rebalance-equivalent during the rollout.
-
-**Rollback:** Revert the env vars to previous values and `kubectl rollout restart deployment/<app>`.
-
-**Verification:** After restart, Step 5 shows `record_error_rate = 0` for 15 minutes; Step 1 grep returns no new `delivery.timeout.ms expired` lines; Step 6 end-to-end health check passes.
+  **Risk:** Increasing `delivery.timeout.ms` extends the window during which failed messages occupy buffer memory; size `buffer.memory` to hold the extra in-flight messages. **Duration:** Immediate after producer restart; re-evaluate after confirming `record_error_rate` returns to zero. **Verification:** Step 5 shows `record_error_rate = 0`; Step 1 grep returns no new `delivery.timeout.ms expired` lines.
 
 ### Cause B: `acks=0` or `acks=1` — silent message loss on broker failure
 
-**Statement:** The producer is configured with `acks=0` or `acks=1`, so messages are acknowledged before replication completes and are silently lost when the leader broker fails before replicas receive the data.
+**Statement:** The producer uses `acks=0` or `acks=1`, so messages are acknowledged before replication completes and are silently lost when the leader broker fails before replicas receive the data.
 
-**Mechanism:** With `acks=0` the producer sends and never waits for any broker response — fire-and-forget. With `acks=1` only the partition leader acknowledges; if the leader crashes before followers fetch the record, the record is lost. No `TimeoutException` is raised in either case — the producer callback reports success while consumers silently miss messages. Setting `acks=all` (equivalent to `acks=-1`) combined with `min.insync.replicas=2` on the topic ensures the leader waits for all ISR replicas to persist the record before acknowledging, providing durable delivery guarantees.
+**Chain:**
+- root: producer is configured with `acks=0` (fire-and-forget) or `acks=1` (leader-only acknowledgement).
+- s1: a record is acknowledged before followers fetch it, so it is unreplicated when the leader crashes.
+- s2: no `TimeoutException` is raised — the callback reports success while the record is gone.
+- D: consumers silently miss messages (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] `acks=0` or `acks=1` is present in producer configuration
+  <!-- match: {"step": 2, "predicate": "contains", "target": "acks=1"} -->
+- root: [Step 2] `enable.idempotence` is false or absent (default before Kafka 3.0)
+- D: [Symptom] consumer lag and offset growth do not match expected producer send count — loss detected only by comparing producer send-total with consumer receive-total
 
-- [Step 2] `acks=0` or `acks=1` is present in producer configuration
-<!-- match: {"step": 2, "predicate": "contains", "target": "acks=1"} -->
-- [Symptom] consumer lag and offset growth do not match expected producer send count — message loss is detected only by comparing producer send-total with consumer receive-total
-- [Step 2] `enable.idempotence` is false or absent (default before Kafka 3.0)
-
-**Mitigation:**
-
-- **Risk:** Switching to `acks=all` increases produce latency by 1–5 ms per request (waiting for ISR replication); workloads with strict sub-millisecond latency requirements must be tested. Requires `min.insync.replicas >= 2` on the topic, otherwise `acks=all` with a single-replica ISR behaves like `acks=1`.
-- **Command:**
+**Interventions:**
+- **remediation** (root): set `acks=all`, `enable.idempotence=true`, `retries=2147483647`, `max.in.flight.requests.per.connection=5` and `min.insync.replicas=2` on the topic for durable delivery.
 
   ```bash
-  # Update configuration and restart
-  # acks=all
-  # enable.idempotence=true
-  # retries=2147483647
-  # max.in.flight.requests.per.connection=5
+  # Producer: durable delivery baseline
   kubectl set env deployment/<app> \
     KAFKA_PRODUCER_ACKS=all \
     KAFKA_PRODUCER_ENABLE_IDEMPOTENCE=true \
     KAFKA_PRODUCER_RETRIES=2147483647 \
     KAFKA_PRODUCER_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION=5
   kubectl rollout restart deployment/<app>
+  # Topic: require 2 in-sync replicas before acknowledging
+  kafka-configs.sh --bootstrap-server kafka1:9092 \
+    --entity-type topics --entity-name <topic> \
+    --alter --add-config min.insync.replicas=2
   ```
 
-- **Duration:** Permanent — this is the production baseline for durable delivery.
-
-**Resolution:**
-
-```bash
-# Also set min.insync.replicas=2 on the topic for full durability
-kafka-configs.sh --bootstrap-server kafka1:9092 \
-  --entity-type topics --entity-name <topic> \
-  --alter --add-config min.insync.replicas=2
-# Verify
-kafka-configs.sh --bootstrap-server kafka1:9092 \
-  --entity-type topics --entity-name <topic> --describe \
-  | grep min.insync.replicas
-```
-
-**Impact:** Topic-level config change is cluster-wide and immediate; `min.insync.replicas=2` requires at least 2 in-sync replicas — topics with replication factor 1 will fail all produces until the replica count is raised. Producer restart is rolling.
-
-**Rollback:** Revert producer env vars; if `min.insync.replicas` change causes write errors due to ISR < 2, lower back with `--alter --add-config min.insync.replicas=1`.
-
-**Verification:** Run Step 6 end-to-end health check; kill one broker and confirm the test message is still consumed — no loss. Step 5 shows `record_error_rate = 0`.
+  **Verification:** Run Step 6 end-to-end health check; kill one broker and confirm the test message is still consumed — no loss. Step 5 shows `record_error_rate = 0`.
 
 ### Cause C: Broker unreachable — network partition, firewall, or DNS failure
 
 **Statement:** The producer cannot establish or maintain TCP connections to broker advertised listeners because of a firewall rule, security group, DNS misconfiguration, or network partition.
 
-**Mechanism:** Kafka producers bootstrap by connecting to `bootstrap.servers` and then fetch cluster metadata to learn the full broker list and partition leaders. If any broker is unreachable at the TCP level, the producer raises `NetworkException` for partitions whose leader is on that broker. If all brokers are unreachable, the producer cannot complete the metadata fetch and raises `TimeoutException` on every send. Kubernetes deployments commonly misconfigure `advertised.listeners` — the broker announces an internal cluster IP that the producer (running outside the cluster) cannot reach, causing metadata-informed connections to fail even when the bootstrap connection succeeded.
+**Chain:**
+- root: a firewall rule, security group, DNS error, network partition, or wrong `advertised.listeners` blocks TCP to a broker listener.
+- s1: the producer raises `NetworkException` for partitions whose leader is on the unreachable broker.
+- s2: if all brokers are unreachable, the metadata fetch cannot complete and every send raises `TimeoutException`.
+- D: produce requests fail with connectivity errors (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 3] `nc -zv` fails for one or more brokers — `Connection refused` or `timed out`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "timed out"} -->
+- s1: [Step 1] log contains `Connection to node -1 could not be established`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Connection to node -1 could not be established"} -->
+- s1: [Step 3] `kafka-broker-api-versions.sh` returns no output or `Error connecting to node`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "Error connecting to node"} -->
 
-- [Step 3] `nc -zv` fails for one or more brokers — `Connection refused` or `timed out`
-<!-- match: {"step": 3, "predicate": "contains", "target": "timed out"} -->
-- [Step 1] log contains `Connection to node -1 could not be established`
-<!-- match: {"step": 1, "predicate": "contains", "target": "Connection to node -1 could not be established"} -->
-- [Step 3] `kafka-broker-api-versions.sh` returns no output or `Error connecting to node`
-<!-- match: {"step": 3, "predicate": "contains", "target": "Error connecting to node"} -->
+**Interventions:**
+- **remediation** (root): correct `advertised.listeners` to an address the producer can reach, then roll the brokers.
 
-**Mitigation:**
+  ```bash
+  # For Kubernetes: verify advertised.listeners matches the external DNS/IP
+  kubectl exec -n kafka kafka-0 -- kafka-configs.sh \
+    --bootstrap-server localhost:9092 \
+    --entity-type brokers --entity-name 0 --describe \
+    | grep advertised.listeners
+  # Correct advertised.listeners in the StatefulSet env or Helm values, then roll:
+  kubectl rollout restart statefulset/kafka -n kafka
+  ```
 
-- **Risk:** Adjusting firewall or security group rules is environment-wide; validate with a staging producer before modifying production rules.
-- **Command:**
+  **Verification:** Step 3 shows `nc` succeeds for all brokers; `kafka-broker-api-versions.sh` returns the API version table; Step 6 end-to-end health check passes.
+- **mitigation** (s1): confirm per-broker port reachability and trace the network path to localize the block before changing production firewall rules.
 
   ```bash
   # From the producer host, confirm connectivity to each broker port
@@ -262,44 +251,40 @@ kafka-configs.sh --bootstrap-server kafka1:9092 \
   traceroute kafka1
   ```
 
-- **Duration:** Diagnostic; fix network/firewall rules per your infrastructure provider.
-
-**Resolution:**
-
-```bash
-# For Kubernetes: verify advertised.listeners matches the external DNS/IP
-kubectl exec -n kafka kafka-0 -- kafka-configs.sh \
-  --bootstrap-server localhost:9092 \
-  --entity-type brokers --entity-name 0 --describe \
-  | grep advertised.listeners
-# Correct advertised.listeners in the StatefulSet env or Helm values, then roll:
-kubectl rollout restart statefulset/kafka -n kafka
-```
-
-**Impact:** Broker restart required to apply `advertised.listeners` changes; rolling restart maintains availability if replication factor >= 2.
-
-**Rollback:** Revert the `advertised.listeners` change and roll the StatefulSet again.
-
-**Verification:** Step 3 shows `nc` succeeds for all brokers; `kafka-broker-api-versions.sh` returns the API version table; Step 6 end-to-end health check passes.
+  **Risk:** Adjusting firewall or security group rules is environment-wide; validate with a staging producer before modifying production rules. **Duration:** Diagnostic; fix network/firewall rules per your infrastructure provider. **Verification:** Step 3 shows `nc` succeeds for all brokers.
 
 ### Cause D: SSL/TLS handshake failure or certificate expiry
 
-**Statement:** The producer cannot complete the TLS handshake to broker SSL listeners because of an expired certificate, untrusted CA, or a hostname mismatch, causing all connection attempts to fail.
+**Statement:** The producer cannot complete the TLS handshake to broker SSL listeners because of an expired certificate, untrusted CA, or hostname mismatch, causing all connection attempts to fail.
 
-**Mechanism:** Kafka SSL listeners require mutual TLS or at least server-side certificate validation. On connection establishment the producer validates the broker certificate against its truststore. If the broker certificate is expired, the CA is not in the producer truststore, or `ssl.endpoint.identification.algorithm=https` is set and the certificate SAN does not match the broker hostname, the TLS handshake fails with `SSLHandshakeException` before any Kafka protocol bytes are exchanged. Every produce request on the affected connection fails with `NetworkException`, and `record-error-rate` rises while `record-send-rate` drops to zero.
+**Chain:**
+- root: the broker certificate is expired, its CA is missing from the producer truststore, or the SAN does not match the hostname under `ssl.endpoint.identification.algorithm=https`.
+- s1: the TLS handshake fails with `SSLHandshakeException` before any Kafka protocol bytes are exchanged.
+- s2: every produce request on the affected connection fails with `NetworkException`; `record-error-rate` rises and `record-send-rate` drops to zero.
+- D: all connection attempts to the SSL listener fail (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 1] log contains `SSLHandshakeException` or `PKIX path building failed` or `certificate_expired`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "SSLHandshakeException"} -->
+- root: [Step 3] `openssl s_client -connect kafka1:9093` output contains `Verify return code:` not equal to `0 (ok)`, or `notAfter` date is in the past
+  <!-- match: {"step": 3, "predicate": "contains", "target": "Verify return code"} -->
+- root: [Step 2] `security.protocol=SSL` or `SASL_SSL` is configured
 
-- [Step 1] log contains `SSLHandshakeException` or `PKIX path building failed` or `certificate_expired`
-<!-- match: {"step": 1, "predicate": "contains", "target": "SSLHandshakeException"} -->
-- [Step 3] `openssl s_client -connect kafka1:9093` output contains `Verify return code:` not equal to `0 (ok)`, or `notAfter` date is in the past
-<!-- match: {"step": 3, "predicate": "contains", "target": "Verify return code"} -->
-- [Step 2] `security.protocol=SSL` or `SASL_SSL` is configured
+**Interventions:**
+- **remediation** (root): import the new CA or broker certificate into the producer truststore and restart the producer.
 
-**Mitigation:**
+  ```bash
+  # Import the new CA or broker cert into the producer truststore
+  keytool -import -noprompt -alias kafka-ca \
+    -file /path/to/ca.crt \
+    -keystore /etc/<app>/kafka.client.truststore.jks \
+    -storepass changeit
+  # Restart the producer to load the new truststore
+  kubectl rollout restart deployment/<app>
+  ```
 
-- **Risk:** Rotating certificates causes a brief connectivity window during which the new certificate is being propagated; roll brokers one at a time.
-- **Command:**
+  **Verification:** Step 3 `openssl s_client` shows `Verify return code: 0 (ok)` and `notAfter` date is in the future; Step 6 end-to-end health check passes.
+- **mitigation** (root): check broker certificate expiry and the producer truststore contents to confirm the failing trust anchor before rotating.
 
   ```bash
   # Check broker certificate expiry
@@ -310,92 +295,87 @@ kubectl rollout restart statefulset/kafka -n kafka
     -storepass changeit | grep -A2 "kafka"
   ```
 
-- **Duration:** Diagnostic; rotate certificates before `notAfter` date.
-
-**Resolution:**
-
-```bash
-# Import the new CA or broker cert into the producer truststore
-keytool -import -noprompt -alias kafka-ca \
-  -file /path/to/ca.crt \
-  -keystore /etc/<app>/kafka.client.truststore.jks \
-  -storepass changeit
-# Restart the producer to load the new truststore
-kubectl rollout restart deployment/<app>
-```
-
-**Impact:** Producer-level restart. If a broker certificate is being rotated, all producers and consumers connecting to that broker will briefly fail until the new certificate is in place.
-
-**Rollback:** Import the previous CA certificate and restart the producer.
-
-**Verification:** Step 3 `openssl s_client` shows `Verify return code: 0 (ok)` and `notAfter` date is in the future; Step 6 end-to-end health check passes.
+  **Risk:** Rotating certificates causes a brief connectivity window during which the new certificate is being propagated; roll brokers one at a time. **Duration:** Diagnostic; rotate certificates before `notAfter` date. **Verification:** `openssl x509 -noout -dates` shows `notAfter` in the future.
 
 ### Cause E: `buffer.memory` exhausted under sustained high throughput
 
-**Statement:** The producer's send buffer has reached `buffer.memory` capacity because the application is producing faster than brokers can acknowledge, causing `max.block.ms` to expire and raising `BufferExhaustedException`.
+**Statement:** The producer's send buffer reaches `buffer.memory` capacity because the application produces faster than brokers can acknowledge, causing `max.block.ms` to expire and raising `BufferExhaustedException`.
 
-**Mechanism:** The producer maintains an in-memory pool of `buffer.memory` bytes (default 32 MB) for record batches awaiting send. When all buffer space is occupied and the application calls `send()`, the calling thread blocks for up to `max.block.ms` (default 60000 ms). If the buffer does not free within that window — because brokers are slow to acknowledge or the produce rate genuinely exceeds network capacity — `BufferExhaustedException` is thrown. This is distinct from `delivery.timeout.ms` expiry: `BufferExhaustedException` occurs before the record is even enqueued.
+**Chain:**
+- root: the application produces faster than brokers acknowledge, so all `buffer.memory` (default 32 MB) is occupied by record batches awaiting send.
+- s1: a `send()` call with no free buffer blocks the calling thread for up to `max.block.ms` (default 60000 ms).
+- s2: the buffer does not free within that window, so `BufferExhaustedException` is thrown before the record is even enqueued.
+- D: the calling thread blocks then fails on produce (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 1] log contains `BufferExhaustedException`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "BufferExhaustedException"} -->
+- s1: [Step 5] `buffer_available_bytes` is near zero and `waiting_threads > 0`
+  <!-- match: {"step": 5, "predicate": "threshold", "target": "waiting_threads", "op": ">", "value": 0} -->
+- root: [Step 5] `record_queue_time_avg` is much higher than `linger.ms`, indicating batches are waiting for broker acknowledgment rather than just for batch accumulation
 
-- [Step 1] log contains `BufferExhaustedException`
-<!-- match: {"step": 1, "predicate": "contains", "target": "BufferExhaustedException"} -->
-- [Step 5] `buffer_available_bytes` is near zero and `waiting_threads > 0`
-<!-- match: {"step": 5, "predicate": "threshold", "target": "waiting_threads", "op": ">", "value": 0} -->
-- [Step 5] `record_queue_time_avg` is much higher than `linger.ms`, indicating batches are waiting for broker acknowledgment rather than just for batch accumulation
+**Interventions:**
+- **remediation** (root): double `buffer.memory` to 64 MB and enable `lz4` compression to reduce bytes per record and relieve sustained buffer pressure.
 
-**Mitigation:**
+  ```bash
+  # Enable compression to reduce bytes per record — often 3–5x reduction for text/JSON
+  # buffer.memory=67108864 ; compression.type=lz4
+  kubectl set env deployment/<app> \
+    KAFKA_PRODUCER_BUFFER_MEMORY=67108864 \
+    KAFKA_PRODUCER_COMPRESSION_TYPE=lz4
+  kubectl rollout restart deployment/<app>
+  ```
 
-- **Risk:** Raising `buffer.memory` increases JVM heap requirements; add `buffer.memory / 2` of headroom to JVM `-Xmx`. If the producer is genuinely generating data faster than the network can carry it, more buffer only delays the failure.
-- **Command:**
+  **Verification:** Step 5 shows `buffer_available_bytes > 0` and `waiting_threads = 0` for 15 minutes; Step 1 grep returns no new `BufferExhaustedException` lines.
+- **mitigation** (s1): double `buffer.memory` to 64 MB and extend `max.block.ms` to 120s to absorb the burst while the durable fix is prepared.
 
   ```bash
   # Double buffer.memory to 64 MB and extend max.block.ms
-  # buffer.memory=67108864
-  # max.block.ms=120000
+  # buffer.memory=67108864 ; max.block.ms=120000
   kubectl set env deployment/<app> \
     KAFKA_PRODUCER_BUFFER_MEMORY=67108864 \
     KAFKA_PRODUCER_MAX_BLOCK_MS=120000
   kubectl rollout restart deployment/<app>
   ```
 
-- **Duration:** Immediate after restart; monitor for 15 minutes to confirm `waiting_threads` drops to zero.
-
-**Resolution:**
-
-```bash
-# Also enable compression to reduce bytes per record — often 3–5x reduction for text/JSON
-# compression.type=lz4
-kubectl set env deployment/<app> \
-  KAFKA_PRODUCER_BUFFER_MEMORY=67108864 \
-  KAFKA_PRODUCER_COMPRESSION_TYPE=lz4
-kubectl rollout restart deployment/<app>
-```
-
-**Impact:** Producer-level config change. LZ4 compression adds a few percent CPU overhead but significantly reduces network bandwidth and broker write I/O.
-
-**Rollback:** Revert env vars and `kubectl rollout restart deployment/<app>`.
-
-**Verification:** Step 5 shows `buffer_available_bytes > 0` and `waiting_threads = 0` for 15 minutes; Step 1 grep returns no new `BufferExhaustedException` lines.
+  **Risk:** Raising `buffer.memory` increases JVM heap requirements; add `buffer.memory / 2` of headroom to JVM `-Xmx`. If the producer genuinely generates data faster than the network can carry it, more buffer only delays the failure. **Duration:** Immediate after restart; monitor for 15 minutes to confirm `waiting_threads` drops to zero. **Verification:** Step 5 shows `waiting_threads = 0`.
 
 ### Cause F: Message exceeds `max.request.size` or topic `max.message.bytes`
 
 **Statement:** One or more messages exceed the producer `max.request.size` (default 1 MB) or the topic-level `max.message.bytes`, causing the broker to reject them with `RecordTooLargeException`.
 
-**Mechanism:** The producer enforces `max.request.size` locally before sending — messages larger than this limit are rejected immediately at the client. Brokers additionally enforce the topic-level `max.message.bytes` (or the broker-wide `message.max.bytes`) and return `RecordTooLargeException` in the produce response for oversized records. Because Kafka does not split messages, the record must be made smaller or the limit must be raised on both the producer and the broker/topic for delivery to succeed.
+**Chain:**
+- root: a record is larger than the producer `max.request.size` or the topic `max.message.bytes` / broker `message.max.bytes`.
+- s1: the producer rejects oversized records locally, or the broker returns `RecordTooLargeException` in the produce response.
+- s2: Kafka does not split messages, so delivery cannot succeed until the record shrinks or both limits are raised.
+- D: the broker rejects the message with `RecordTooLargeException` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 1] log contains `RecordTooLargeException`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "RecordTooLargeException"} -->
+- root: [Step 4] `kafka-configs.sh ... --describe` shows `max.message.bytes` lower than the actual message size
+  <!-- match: {"step": 4, "predicate": "contains", "target": "max.message.bytes"} -->
+- root: [Step 2] `max.request.size` is at the default 1048576 and application produces binary or JSON payloads that may exceed this
 
-- [Step 1] log contains `RecordTooLargeException`
-<!-- match: {"step": 1, "predicate": "contains", "target": "RecordTooLargeException"} -->
-- [Step 4] `kafka-configs.sh ... --describe` shows `max.message.bytes` lower than the actual message size
-<!-- match: {"step": 4, "predicate": "contains", "target": "max.message.bytes"} -->
-- [Step 2] `max.request.size` is at the default 1048576 and application produces binary or JSON payloads that may exceed this
+**Interventions:**
+- **remediation** (root): raise the topic `max.message.bytes`, producer `max.request.size`, and broker `replica.fetch.max.bytes` together (or prefer `compression.type=lz4`).
 
-**Mitigation:**
+  ```bash
+  # Raise the topic and broker replica-fetch limits so replicas can copy large records
+  kafka-configs.sh --bootstrap-server kafka1:9092 \
+    --entity-type topics --entity-name <topic> \
+    --alter --add-config max.message.bytes=5242880
+  kafka-configs.sh --bootstrap-server kafka1:9092 \
+    --entity-type brokers --entity-name 0 \
+    --alter --add-config replica.fetch.max.bytes=5242880
+  # Raise the producer limit and restart
+  kubectl set env deployment/<app> KAFKA_PRODUCER_MAX_REQUEST_SIZE=5242880
+  kubectl rollout restart deployment/<app>
+  # Alternatively prefer compression: compression.type=lz4 reduces JSON/text 3-5x without schema changes
+  ```
 
-- **Risk:** Raising `max.message.bytes` on the topic and `max.request.size` on the producer increases memory pressure on both sides — brokers allocate per-message receive buffers; producers allocate per-batch send buffers. Confirm broker `replica.fetch.max.bytes` is also raised or replicas cannot replicate the oversized records.
-- **Command:**
+  **Verification:** Step 6 end-to-end health check passes with a message near the new size limit; Step 1 grep returns no new `RecordTooLargeException` lines.
+- **mitigation** (s1): raise the topic `max.message.bytes` and producer `max.request.size` to admit the oversized payload while a compression/schema fix is evaluated.
 
   ```bash
   # Raise the topic limit (immediate, no broker restart required)
@@ -403,51 +383,46 @@ kubectl rollout restart deployment/<app>
     --entity-type topics --entity-name <topic> \
     --alter --add-config max.message.bytes=5242880
   # Raise the producer limit and restart
-  # max.request.size=5242880
-  kubectl set env deployment/<app> \
-    KAFKA_PRODUCER_MAX_REQUEST_SIZE=5242880
+  kubectl set env deployment/<app> KAFKA_PRODUCER_MAX_REQUEST_SIZE=5242880
   kubectl rollout restart deployment/<app>
   ```
 
-- **Duration:** Topic config change is immediate; producer restart takes effect on rollout.
-
-**Resolution:**
-
-```bash
-# Also raise broker replica.fetch.max.bytes so replicas can copy the large records
-# Add to /etc/kafka/server.properties on each broker and rolling-restart:
-# replica.fetch.max.bytes=5242880
-# Alternatively, prefer compressing messages instead of raising limits:
-# compression.type=lz4  — reduces JSON/text by 3-5x without schema changes
-kafka-configs.sh --bootstrap-server kafka1:9092 \
-  --entity-type brokers --entity-name 0 \
-  --alter --add-config replica.fetch.max.bytes=5242880
-```
-
-**Impact:** Broker-side config change via dynamic `kafka-configs.sh` takes effect without restart. Static `server.properties` change requires a rolling broker restart. Raising limits increases broker memory requirements.
-
-**Rollback:** `kafka-configs.sh --alter --delete-config max.message.bytes` on the topic and revert producer env var; brokers revert on next rolling restart.
-
-**Verification:** Step 6 end-to-end health check passes with a message near the new size limit; Step 1 grep returns no new `RecordTooLargeException` lines.
+  **Risk:** Raising `max.message.bytes` and `max.request.size` increases memory pressure on both sides — brokers allocate per-message receive buffers; producers allocate per-batch send buffers. Confirm broker `replica.fetch.max.bytes` is also raised or replicas cannot replicate the oversized records. **Duration:** Topic config change is immediate; producer restart takes effect on rollout. **Verification:** Step 1 grep returns no new `RecordTooLargeException` lines.
 
 ### Cause G: Broker overloaded — request handler threads exhausted
 
 **Statement:** The broker's request handler thread pool is fully saturated, causing produce requests to queue beyond `request.timeout.ms` and triggering `TimeoutException` on the producer.
 
-**Mechanism:** Each Kafka broker processes all network requests (produce, fetch, metadata) through a shared `num.io.threads` thread pool (default 8). Under high partition counts, large produce requests, or sustained high throughput, the pool saturates and requests queue in the network layer. The `RequestHandlerAvgIdlePercent` JMX metric falls below 0.30 (30% idle). When the queue delay plus processing time exceeds the producer's `request.timeout.ms`, the broker cannot respond in time and the producer retries — if retries are also delayed, `delivery.timeout.ms` is ultimately exceeded and messages are expired.
+**Chain:**
+- root: high partition counts, large requests, or sustained throughput saturate the broker's shared `num.io.threads` pool (default 8).
+- s1: produce requests queue in the network layer and `RequestHandlerAvgIdlePercent` falls below 0.30 (30% idle).
+- s2: queue delay plus processing time exceeds `request.timeout.ms`, so the producer retries against the same overloaded pool.
+- s3: retries are also delayed until `delivery.timeout.ms` is exceeded and messages expire.
+- D: the producer raises `TimeoutException` while TCP connectivity is healthy (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 4] broker JMX `RequestHandlerAvgIdlePercent < 0.30` (30%)
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "RequestHandlerAvgIdlePercent", "op": "<", "value": 0.30} -->
+- s2: [Step 5] `request_latency_avg` is high (>500 ms for a local cluster) — brokers are slow to respond
+  <!-- match: {"step": 5, "predicate": "threshold", "target": "request_latency_avg_ms", "op": ">", "value": 500} -->
+- D: [Step 1] `TimeoutException` appears in producer logs but Step 3 confirms TCP connectivity is healthy
 
-- [Step 4] broker JMX `RequestHandlerAvgIdlePercent < 0.30` (30%)
-<!-- match: {"step": 4, "predicate": "threshold", "target": "RequestHandlerAvgIdlePercent", "op": "<", "value": 0.30} -->
-- [Step 5] `request_latency_avg` is high (>500 ms for a local cluster) — brokers are slow to respond
-<!-- match: {"step": 5, "predicate": "threshold", "target": "request_latency_avg_ms", "op": ">", "value": 500} -->
-- [Step 1] `TimeoutException` appears in producer logs but Step 3 confirms TCP connectivity is healthy
+**Interventions:**
+- **remediation** (root): raise broker `num.io.threads` dynamically (no restart on Kafka 2.4+) to add request-handler capacity.
 
-**Mitigation:**
+  ```bash
+  # Raise broker io threads dynamically (no restart needed on Kafka 2.4+)
+  kafka-configs.sh --bootstrap-server kafka1:9092 \
+    --entity-type brokers --entity-name 0 \
+    --alter --add-config num.io.threads=16
+  # Verify the change is applied
+  kafka-configs.sh --bootstrap-server kafka1:9092 \
+    --entity-type brokers --entity-name 0 --describe \
+    | grep num.io.threads
+  ```
 
-- **Risk:** Increasing `num.io.threads` on the broker allocates more kernel threads; verify broker host CPU headroom. Adding partitions or brokers changes the cluster topology and may require consumer group rebalances.
-- **Command:**
+  **Verification:** Broker JMX `RequestHandlerAvgIdlePercent` rises above 0.50; Step 5 `request_latency_avg` drops to <100 ms; Step 1 grep shows no new `TimeoutException` lines.
+- **mitigation** (s2): raise the producer's `request.timeout.ms` and `delivery.timeout.ms` so requests survive the current broker load until capacity is added.
 
   ```bash
   # Immediate: raise producer timeout to survive current broker load
@@ -457,83 +432,49 @@ kafka-configs.sh --bootstrap-server kafka1:9092 \
   kubectl rollout restart deployment/<app>
   ```
 
-- **Duration:** Stop-gap. Durable fix requires broker capacity increase.
-
-**Resolution:**
-
-```bash
-# Raise broker io threads dynamically (no restart needed on Kafka 2.4+)
-kafka-configs.sh --bootstrap-server kafka1:9092 \
-  --entity-type brokers --entity-name 0 \
-  --alter --add-config num.io.threads=16
-# Verify the change is applied
-kafka-configs.sh --bootstrap-server kafka1:9092 \
-  --entity-type brokers --entity-name 0 --describe \
-  | grep num.io.threads
-```
-
-**Impact:** Broker-level dynamic config change; effective immediately without restart on Kafka 2.4+. Doubles thread count — measure CPU before and after to confirm headroom.
-
-**Rollback:** `kafka-configs.sh --alter --delete-config num.io.threads` reverts to the `server.properties` default.
-
-**Verification:** Broker JMX `RequestHandlerAvgIdlePercent` rises above 0.50; Step 5 `request_latency_avg` drops to <100 ms; Step 1 grep shows no new `TimeoutException` lines.
+  **Risk:** Increasing `num.io.threads` allocates more kernel threads; verify broker host CPU headroom. Adding partitions or brokers changes topology and may require consumer group rebalances. **Duration:** Stop-gap. Durable fix requires broker capacity increase. **Verification:** Step 1 grep shows no new `TimeoutException` lines.
 
 ### Cause H: `linger.ms` misconfiguration adding unnecessary latency
 
-**Statement:** `linger.ms` is set too high for the workload's latency requirements, causing records to sit in the batch buffer waiting for batch accumulation before being sent, which consumes `delivery.timeout.ms` budget before the first send attempt.
+**Statement:** `linger.ms` is set too high for the workload's latency requirements, so records sit in the batch buffer waiting for accumulation, consuming `delivery.timeout.ms` budget before the first send attempt.
 
-**Mechanism:** The producer accumulates records into batches for up to `linger.ms` milliseconds before flushing. A high `linger.ms` (e.g., 500 ms or more) is optimal for bulk throughput but toxic for latency-sensitive workloads — each `send()` waits up to `linger.ms` in the buffer before transit even begins. If the application expects `delivery.timeout.ms` to accommodate multiple retries but the delivery budget is consumed mostly by accumulation delay, the first send attempt arrives at the broker just as `delivery.timeout.ms` expires. Conversely, `linger.ms=0` with a high `batch.size` means batches only flush when full — small-message workloads under-batch and waste network round-trips.
+**Chain:**
+- root: `linger.ms` is larger than the workload's latency SLO (e.g. 500 ms for a 200 ms target).
+- s1: each `send()` waits up to `linger.ms` in the batch buffer before transit even begins.
+- s2: accumulation delay consumes most of the `delivery.timeout.ms` budget, leaving no room for retries.
+- D: the first send attempt arrives just as `delivery.timeout.ms` expires (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 5] `record_queue_time_avg` is significantly higher than expected end-to-end latency budget
+  <!-- match: {"step": 5, "predicate": "threshold", "target": "record_queue_time_avg_ms", "op": ">", "value": 100} -->
+- root: [Step 2] `linger.ms` value is larger than the application's latency SLO (e.g. `linger.ms=500` for a 200 ms end-to-end target)
+- s1: [Step 5] `batch_size_avg` is much smaller than `batch.size` — batches flush before filling, so `linger.ms` is not the bottleneck and could be increased for throughput
 
-- [Step 5] `record_queue_time_avg` is significantly higher than expected end-to-end latency budget
-<!-- match: {"step": 5, "predicate": "threshold", "target": "record_queue_time_avg_ms", "op": ">", "value": 100} -->
-- [Step 2] `linger.ms` value is larger than the application's latency SLO (e.g., `linger.ms=500` for a 200 ms end-to-end target)
-- [Step 5] `batch_size_avg` is much smaller than `batch.size` — batches flush before filling, meaning `linger.ms` is not the bottleneck and could be increased for throughput
-
-**Mitigation:**
-
-- **Risk:** Reducing `linger.ms` increases the number of produce requests per second and adds network round-trip overhead per record; verify broker `num.io.threads` headroom before tuning for low latency.
-- **Command:**
+**Interventions:**
+- **defensive_fix** (root): reduce `linger.ms` to 0–5 ms (with matching `batch.size`) for latency-sensitive workloads; raise it with `batch.size` for throughput-oriented ones.
 
   ```bash
   # For latency-sensitive workloads: reduce linger.ms to 0-5 ms
-  # linger.ms=5
-  # batch.size=16384
+  # linger.ms=5 ; batch.size=16384
   # For throughput-oriented workloads: increase linger.ms and batch.size together
-  # linger.ms=20
-  # batch.size=65536
-  # compression.type=lz4
+  # linger.ms=20 ; batch.size=65536 ; compression.type=lz4
   kubectl set env deployment/<app> \
     KAFKA_PRODUCER_LINGER_MS=5 \
     KAFKA_PRODUCER_BATCH_SIZE=16384
   kubectl rollout restart deployment/<app>
   ```
 
-- **Duration:** Permanent; adjust per workload profile.
-
-**Resolution:** Same as Mitigation.
-
-**Impact:** Producer-level config change. Lowering `linger.ms` increases broker produce-request rate; monitor `RequestHandlerAvgIdlePercent` after the change.
-
-**Rollback:** Revert env vars and `kubectl rollout restart deployment/<app>`.
-
-**Verification:** Step 5 shows `record_queue_time_avg` approximates the new `linger.ms`; end-to-end produce-to-consumer latency measured via Step 6 test falls within the application's SLO.
+  **Verification:** Step 5 shows `record_queue_time_avg` approximates the new `linger.ms`; end-to-end produce-to-consumer latency measured via Step 6 falls within the application's SLO.
 
 ### Cause Z: Unidentified
 
-**Statement:** Diagnostic steps confirm producers are failing to deliver messages but the indicators for Causes A through H did not match the gathered evidence.
+**Statement:** Diagnostic steps confirm producers are failing to deliver messages but no Cause A–H indicator matched the gathered evidence; a less common origin (authorization, producer fence, ISR shrinkage, leadership storm) is likely.
 
-**Mechanism:** Producer delivery failures are confirmed (Step 1 shows exceptions, Step 5 shows non-zero `record_error_rate`, Step 6 end-to-end test fails) but the decomposition did not isolate the root cause to timeout budget, ack configuration, network/DNS, TLS, buffer exhaustion, message size, broker overload, or linger misconfiguration. Less common origins include: Kafka authorization (`AuthorizationException` — topic ACL missing for the producer principal), transactional producer fence (`ProducerFencedException` when two producer instances share the same `transactional.id`), ISR shrinkage with `min.insync.replicas` not satisfiable (`NotEnoughReplicasException`), or a broker partition leadership storm following multiple simultaneous broker failures.
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] Steps 1–6 confirmed producer failures exist and common causes A–H were ruled out by the collected evidence
-
-**Mitigation:**
-
-- **Risk:** Skipping messages by resetting to latest offset is destructive and bypasses business logic that depends on those records. Only acceptable if data is reproducible or explicitly disposable.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic bundle and escalate to the Kafka platform on-call SME.
 
   ```bash
   # Collect a diagnostic bundle before escalation
@@ -546,11 +487,7 @@ kafka-configs.sh --bootstrap-server kafka1:9092 \
     /tmp/producer-errors.txt /tmp/broker-api.txt /tmp/topic-config.txt
   ```
 
-- **Duration:** Minutes. Collect, hand off, then escalate.
-
-**Resolution:** Out of runbook scope. Attach the `kafka-producer-bundle-*.tgz`, the full producer configuration dump (Step 2 output), the Prometheus producer metrics snapshot (Step 5 output), and the broker controller log to an incident ticket. Escalate to the Kafka platform on-call with the affected topic, producer `client.id`, exception types, and the time window of the regression.
-
-**Verification:** Hand-off acknowledged by the receiving engineer; incident ticket opened with artefacts attached and a follow-up owner assigned.
+  **Risk:** Skipping messages by resetting to latest offset is destructive and bypasses business logic that depends on those records; acceptable only if data is reproducible or explicitly disposable. **Duration:** Minutes — collect, hand off, then escalate to the Kafka platform on-call with the affected topic, producer `client.id`, exception types, and the regression time window. **Verification:** Hand-off acknowledged by the receiving engineer; incident ticket opened with artefacts attached and a follow-up owner assigned.
 
 ## Prevention
 

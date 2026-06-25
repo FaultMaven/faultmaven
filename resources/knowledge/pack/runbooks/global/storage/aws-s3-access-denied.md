@@ -7,9 +7,9 @@ symptom_class:
   - auth_failure
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
-verified_by: kb-researcher
+version: "2.0.0"
+last_updated: "2026-06-25"
+verified_by: "kb-researcher"
 status: draft
 tags:
   - aws
@@ -162,19 +162,44 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 
 **Statement:** No identity-based policy attached to the calling IAM user, role, or session grants the S3 action on the target bucket or object, so AWS implicitly denies the request.
 
-**Mechanism:** IAM evaluates the caller's identity-based policies (managed policies, inline policies, group policies, role policies) and finds no Allow statement that matches the action and resource ARN. Because IAM is deny-by-default, the absence of any Allow is an implicit deny — S3 returns `AccessDenied` with the enhanced context `because no identity-based policy allows the <action> action`. The bucket policy may be permissive, but identity-based policies are required for same-account requests by anyone other than the root user.
+**Chain:**
+- root: no Allow statement in any of the caller's identity-based policies (managed, inline, group, role) matches the action and resource ARN.
+- s1: IAM is deny-by-default, so the absence of any matching Allow is an implicit deny for the action.
+- D: S3 returns `403 AccessDenied` with context `because no identity-based policy allows the <action> action`.
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `simulate-principal-policy` returns `Decision: implicitDeny` for the action
+  <!-- match: {"step": 4, "predicate": "contains", "target": "implicitDeny"} -->
+- D: [Step 1] error message contains `because no identity-based policy allows`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "because no identity-based policy allows"} -->
 
-- [Step 1] error message contains `because no identity-based policy allows`
-<!-- match: {"step": 1, "predicate": "contains", "target": "because no identity-based policy allows"} -->
-- [Step 4] `simulate-principal-policy` returns `Decision: implicitDeny` for the action
-<!-- match: {"step": 4, "predicate": "contains", "target": "implicitDeny"} -->
+**Interventions:**
+- **remediation** (root): attach a least-privilege inline policy granting the needed S3 actions on the target ARNs.
 
-**Mitigation:**
+  ```bash
+  cat > /tmp/allow-s3-get.json <<'EOF'
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:ListBucket"],
+        "Resource": [
+          "arn:aws:s3:::<bucket>",
+          "arn:aws:s3:::<bucket>/<prefix>/*"
+        ]
+      }
+    ]
+  }
+  EOF
+  aws iam put-role-policy \
+    --role-name <caller-role-name> \
+    --policy-name AllowS3GetOnBucket \
+    --policy-document file:///tmp/allow-s3-get.json
+  ```
 
-- **Risk:** Attaching `AmazonS3ReadOnlyAccess` grants the caller read access to every bucket in the account, including buckets they should not see; use only while the durable least-privilege policy is being authored.
-- **Command:**
+  **Verification:** `aws iam simulate-principal-policy --policy-source-arn <caller-arn> --action-names s3:GetObject --resource-arns "arn:aws:s3:::<bucket>/<key>"` now returns `Decision: allowed`; re-running `aws s3api get-object ...` succeeds with HTTP 200.
+- **mitigation** (s1): temporarily attach the AWS-managed broad read policy to unblock the caller while the least-privilege policy is authored.
 
   ```bash
   aws iam attach-role-policy \
@@ -182,96 +207,91 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
     --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
   ```
 
-- **Duration:** Up to 24 hours, removed once the targeted policy in Resolution is in place.
-
-**Resolution:**
-
-```bash
-cat > /tmp/allow-s3-get.json <<'EOF'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:ListBucket"],
-      "Resource": [
-        "arn:aws:s3:::<bucket>",
-        "arn:aws:s3:::<bucket>/<prefix>/*"
-      ]
-    }
-  ]
-}
-EOF
-aws iam put-role-policy \
-  --role-name <caller-role-name> \
-  --policy-name AllowS3GetOnBucket \
-  --policy-document file:///tmp/allow-s3-get.json
-```
-
-**Impact:** Affects only the named role/user. Existing in-flight requests do not need to be re-signed; new requests pick up the grant within seconds of IAM propagation (typically <10 s, occasionally up to 1 minute).
-
-**Rollback:** `aws iam delete-role-policy --role-name <caller-role-name> --policy-name AllowS3GetOnBucket` and (if the temporary mitigation was used) `aws iam detach-role-policy --role-name <caller-role-name> --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess`.
-
-**Verification:** `aws iam simulate-principal-policy --policy-source-arn <caller-arn> --action-names s3:GetObject --resource-arns "arn:aws:s3:::<bucket>/<key>"` now returns `Decision: allowed`. Re-running the original failing call (`aws s3api get-object ...`) succeeds with HTTP 200.
+  **Risk:** `AmazonS3ReadOnlyAccess` grants read access to every bucket in the account, including buckets the caller should not see. **Duration:** Up to 24 hours, removed once the targeted remediation policy is in place (`aws iam detach-role-policy --role-name <caller-role-name> --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess`). **Verification:** the original failing call now succeeds with HTTP 200.
 
 ### Cause B: Bucket policy contains an explicit Deny matching the request
 
 **Statement:** A `Deny` statement in the bucket policy (or access-point policy) matches the caller, action, or request context and overrides any Allow elsewhere, blocking the request even when identity-based policies permit it.
 
-**Mechanism:** S3 evaluates the bucket policy as a resource-based policy. An explicit `Deny` always wins over an explicit `Allow`, regardless of where the Allow lives. Common Deny patterns are condition-gated: `aws:SourceIp` restricting access to a corporate CIDR, `aws:SourceVpce` requiring a specific VPC endpoint, `aws:MultiFactorAuthPresent` requiring MFA, `aws:SecureTransport` requiring HTTPS, `aws:PrincipalOrgID` restricting to an organization, or `s3:x-amz-server-side-encryption` requiring a specific SSE algorithm. The enhanced error message names the offending policy type.
+**Chain:**
+- root: the bucket (resource-based) policy contains a `Deny` whose Action and Resource match the failing call, often gated by a Condition.
+- s1: the Condition (`aws:SourceIp`, `aws:SourceVpce`, `aws:MultiFactorAuthPresent`, `aws:SecureTransport`, `aws:PrincipalOrgID`, or `s3:x-amz-server-side-encryption`) evaluates true for this request, excluding the caller.
+- s2: an explicit `Deny` always wins over any explicit `Allow`, regardless of where the Allow lives.
+- D: S3 returns `403 AccessDenied` with context naming the offending resource-based policy.
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] bucket policy contains an `"Effect": "Deny"` statement whose Action and Resource match the failing call
+  <!-- match: {"step": 3, "predicate": "contains", "target": "\"Effect\": \"Deny\""} -->
+- s1: [Step 3] policy Conditions reference `aws:SourceIp`, `aws:SourceVpce`, `aws:MultiFactorAuthPresent`, `aws:SecureTransport`, or `aws:PrincipalOrgID` that exclude the caller
+- D: [Step 1] error message contains `with an explicit deny in a resource-based policy`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "with an explicit deny in a resource-based policy"} -->
 
-- [Step 1] error message contains `with an explicit deny in a resource-based policy`
-<!-- match: {"step": 1, "predicate": "contains", "target": "with an explicit deny in a resource-based policy"} -->
-- [Step 3] bucket policy contains an `"Effect": "Deny"` statement whose Action and Resource match the failing call
-<!-- match: {"step": 3, "predicate": "contains", "target": "\"Effect\": \"Deny\""} -->
-- [Step 3] policy Conditions reference `aws:SourceIp`, `aws:SourceVpce`, `aws:MultiFactorAuthPresent`, `aws:SecureTransport`, or `aws:PrincipalOrgID` that exclude the caller
+**Interventions:**
+- **remediation** (root): delete the offending Deny statement or narrow its Condition (e.g. add the caller's CIDR to the allowed `aws:SourceIp`, or use a `StringNotEquals` exception list) and re-apply the corrected policy.
 
-**Mitigation:**
+  ```bash
+  # Edit /tmp/bucket-policy.fixed.json: either delete the Deny statement, or
+  # narrow the Condition (e.g., add caller's CIDR to aws:SourceIp's Allow side,
+  # or use StringNotEquals with an exception list per Example 7 in the S3 docs).
+  aws s3api put-bucket-policy --bucket <bucket> \
+    --policy file:///tmp/bucket-policy.fixed.json
+  ```
 
-- **Risk:** Removing a Deny statement may re-enable access from networks or principals the security team intentionally excluded; coordinate with the policy owner before editing.
-- **Command:**
+  **Verification:** re-run the failing call; the CloudTrail event for the new call has no `errorCode`, and `aws s3api get-bucket-policy --bucket <bucket> | python3 -m json.tool` shows the corrected statement.
+- **mitigation** (root): snapshot the live policy before any edit so the original Deny can be restored.
 
   ```bash
   aws s3api get-bucket-policy --bucket <bucket> --query 'Policy' --output text > /tmp/bucket-policy.backup.json
   ```
 
-- **Duration:** Backup only — keep until the corrected policy in Resolution is verified.
-
-**Resolution:**
-
-```bash
-# Edit /tmp/bucket-policy.backup.json: either delete the Deny statement, or
-# narrow the Condition (e.g., add caller's CIDR to aws:SourceIp's Allow side,
-# or use StringNotEquals with an exception list per Example 7 in the S3 docs).
-aws s3api put-bucket-policy --bucket <bucket> \
-  --policy file:///tmp/bucket-policy.fixed.json
-```
-
-**Impact:** Bucket-wide and immediate for every caller that previously matched the Deny condition. No client-side change needed; the next request uses the updated policy. Existing presigned URLs that were generated under the old policy continue to work for their remaining lifetime since S3 re-evaluates policy at request time.
-
-**Rollback:** `aws s3api put-bucket-policy --bucket <bucket> --policy file:///tmp/bucket-policy.backup.json` restores the original Deny.
-
-**Verification:** Re-run the failing call. The CloudTrail event for the new call has no `errorCode`, and `aws s3api get-bucket-policy --bucket <bucket> | python3 -m json.tool` shows the corrected statement.
+  **Risk:** editing the policy may re-enable access from networks or principals the security team intentionally excluded; coordinate with the policy owner before editing. **Duration:** backup only — keep until the corrected policy is verified, then restore with `aws s3api put-bucket-policy --bucket <bucket> --policy file:///tmp/bucket-policy.backup.json` if needed. **Verification:** `python3 -m json.tool /tmp/bucket-policy.backup.json` shows the original Deny is captured.
 
 ### Cause C: S3 Block Public Access strips a grant the bucket policy or ACL relied on
 
 **Statement:** Account-level or bucket-level S3 Block Public Access settings remove the public Allow grant in the bucket policy or ACL before evaluation, so callers relying on the public grant are denied.
 
-**Mechanism:** S3 Block Public Access has four settings: `BlockPublicAcls` and `IgnorePublicAcls` strip ACL-based public grants; `BlockPublicPolicy` rejects new bucket policies that grant public access; `RestrictPublicBuckets` strips existing public-policy grants from cross-account requests, leaving them visible only to AWS services and the bucket owner's account. S3 applies the most restrictive combination of account and bucket settings. The enhanced error message says explicitly `because public ACLs are prevented by the BlockPublicAcls setting` or, when `RestrictPublicBuckets` is in effect, the standard `with an explicit deny in a resource-based policy`.
+**Chain:**
+- root: the access path depends on a public grant — a wildcard-principal Allow (`"Principal": "*"`) in the bucket policy or a public ACL.
+- s1: a Block Public Access setting (`BlockPublicAcls`/`IgnorePublicAcls` for ACLs, `BlockPublicPolicy`/`RestrictPublicBuckets` for policies) is `true` at account or bucket level, applying the most restrictive combination.
+- s2: S3 strips the public grant before evaluation, leaving no remaining Allow for the caller.
+- D: S3 returns `403 AccessDenied`, naming the BlockPublicAcls/BlockPublicPolicy setting (or `with an explicit deny in a resource-based policy` under `RestrictPublicBuckets`).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] the bucket policy contains `"Principal": "*"` or `"Principal": {"AWS": "*"}` Allow statements
+  <!-- match: {"step": 3, "predicate": "contains", "target": "\"Principal\": \"*\""} -->
+- s1: [Step 5] account or bucket Block Public Access shows `BlockPublicAcls=true`, `IgnorePublicAcls=true`, `BlockPublicPolicy=true`, or `RestrictPublicBuckets=true`
+- D: [Step 1] error message contains the BlockPublicAcls setting hint
+  <!-- match: {"step": 1, "predicate": "contains", "target": "BlockPublicAcls setting in S3 Block Public Access"} -->
 
-- [Step 1] error message contains `because public ACLs are prevented by the BlockPublicAcls setting` or `because public policies are prevented by the BlockPublicPolicy setting`
-<!-- match: {"step": 1, "predicate": "contains", "target": "BlockPublicAcls setting in S3 Block Public Access"} -->
-- [Step 5] account or bucket Block Public Access shows `BlockPublicAcls=true`, `IgnorePublicAcls=true`, `BlockPublicPolicy=true`, or `RestrictPublicBuckets=true` and the bucket policy/ACL relies on a wildcard principal
-- [Step 3] the bucket policy contains `"Principal": "*"` or `"Principal": {"AWS": "*"}` Allow statements
+**Interventions:**
+- **remediation** (root): replace the wildcard-principal Allow with a principal-scoped Allow (which Block Public Access does not strip) and re-tighten BPA to the secure default.
 
-**Mitigation:**
+  ```bash
+  # Preferred durable fix: replace the wildcard-principal Allow with a principal-scoped Allow,
+  # which Block Public Access does not strip.
+  cat > /tmp/bucket-policy-scoped.json <<'EOF'
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {"AWS": ["arn:aws:iam::<consumer-account>:role/<consumer-role>"]},
+        "Action": ["s3:GetObject"],
+        "Resource": "arn:aws:s3:::<bucket>/*"
+      }
+    ]
+  }
+  EOF
+  aws s3api put-bucket-policy --bucket <bucket> \
+    --policy file:///tmp/bucket-policy-scoped.json
+  # Re-tighten Block Public Access to the secure default
+  aws s3api put-public-access-block --bucket <bucket> \
+    --public-access-block-configuration \
+    BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+  ```
 
-- **Risk:** Disabling Block Public Access exposes any latent public grant in the bucket policy or ACL; only relax for the single setting strictly needed (do not flip all four).
-- **Command:**
+  **Verification:** `aws s3api get-public-access-block --bucket <bucket>` shows all four flags `true`; `aws accessanalyzer validate-policy --policy-type RESOURCE_POLICY --policy-document file:///tmp/bucket-policy-scoped.json` returns no `ERROR` or `SECURITY_WARNING` findings; the intended caller re-runs the operation and succeeds.
+- **mitigation** (s1): loosen only the single BPA control causing the deny while validating the policy is the right vehicle.
 
   ```bash
   # Loosen ONLY the specific control causing the deny, after confirming
@@ -281,58 +301,67 @@ aws s3api put-bucket-policy --bucket <bucket> \
     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=true
   ```
 
-- **Duration:** Minutes — only while validating that the bucket policy is the right vehicle for the access grant. Re-enable the disabled setting and switch to an authenticated cross-account or IAM-based grant instead.
-
-**Resolution:**
-
-```bash
-# Preferred durable fix: replace the wildcard-principal Allow with a principal-scoped Allow,
-# which Block Public Access does not strip.
-cat > /tmp/bucket-policy-scoped.json <<'EOF'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {"AWS": ["arn:aws:iam::<consumer-account>:role/<consumer-role>"]},
-      "Action": ["s3:GetObject"],
-      "Resource": "arn:aws:s3:::<bucket>/*"
-    }
-  ]
-}
-EOF
-aws s3api put-bucket-policy --bucket <bucket> \
-  --policy file:///tmp/bucket-policy-scoped.json
-# Re-tighten Block Public Access to the secure default
-aws s3api put-public-access-block --bucket <bucket> \
-  --public-access-block-configuration \
-  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-```
-
-**Impact:** Cluster-wide for the bucket. Replacing wildcard principals with explicit principals removes the public-access risk and keeps Block Public Access intact across the AWS account.
-
-**Rollback:** Restore the previous bucket policy from `/tmp/bucket-policy.backup.json` and re-apply the previous Block Public Access configuration with `aws s3api put-public-access-block` using the snapshot from Step 5.
-
-**Verification:** `aws s3api get-public-access-block --bucket <bucket>` shows all four flags `true`. `aws accessanalyzer validate-policy --policy-type RESOURCE_POLICY --policy-document file:///tmp/bucket-policy-scoped.json` returns no findings of type `ERROR` or `SECURITY_WARNING`. The intended caller re-runs the operation and succeeds.
+  **Risk:** disabling a BPA setting exposes any latent public grant; relax only the single setting strictly needed (never all four). **Duration:** minutes — re-enable the disabled setting and switch to an authenticated IAM-based grant. **Verification:** the intended caller's request succeeds while the relaxed setting is in effect; re-enable and confirm the remediation grant holds.
 
 ### Cause D: Caller lacks KMS permissions for an SSE-KMS encrypted object
 
-**Statement:** The object is encrypted with SSE-KMS, the bucket-level or identity-level S3 permissions allow the call, but the caller does not have `kms:Decrypt` (for reads) or `kms:GenerateDataKey` (for writes) on the encrypting KMS key.
+**Statement:** The object is encrypted with SSE-KMS and S3 permissions allow the call, but the caller lacks `kms:Decrypt` (reads) or `kms:GenerateDataKey` (writes) on the encrypting KMS key.
 
-**Mechanism:** When S3 reads a KMS-encrypted object it asks KMS to decrypt the per-object data key. KMS evaluates its own key policy plus any IAM policies and grants. If neither path allows the cryptographic action for the caller, KMS returns `AccessDenied`, S3 cannot fulfil the request, and the SDK surfaces `An error occurred (AccessDenied) when calling the GetObject operation: Access Denied`. CloudTrail shows two events: a successful S3 authorization and an immediate `kms:Decrypt` failure on the same key. For cross-account access using the AWS managed key `aws/s3`, this is unsupported — only customer-managed keys can be shared.
+**Chain:**
+- root: neither the KMS key policy nor any IAM policy/grant allows the caller's cryptographic action (`kms:Decrypt`/`kms:GenerateDataKey`) on the encrypting key.
+- s1: S3 asks KMS to decrypt/generate the per-object data key, and KMS evaluates its key policy plus IAM and grants.
+- s2: KMS returns `AccessDenied` for the cryptographic operation, so S3 cannot fulfil the request.
+- D: the SDK surfaces `403 AccessDenied` on the S3 operation, with a paired KMS `AccessDenied` event in CloudTrail.
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] the KMS key policy has no Allow with `kms:Decrypt`/`kms:GenerateDataKey` whose Principal includes the caller, and `list-grants` returns no covering grant
+- s1: [Step 6] `head-object` reports `ServerSideEncryption: aws:kms` and a `SSEKMSKeyId`
+  <!-- match: {"step": 6, "predicate": "contains", "target": "aws:kms"} -->
+- s2: [Step 1] CloudTrail shows a `kms.amazonaws.com` event with `errorCode=AccessDenied` and `eventName=Decrypt` or `GenerateDataKey` correlated with the S3 403
+  <!-- match: {"step": 1, "predicate": "contains", "target": "kms:Decrypt"} -->
 
-- [Step 1] CloudTrail shows a `kms.amazonaws.com` event with `errorCode=AccessDenied` and `eventName=Decrypt` or `GenerateDataKey` correlated in time with the S3 403
-<!-- match: {"step": 1, "predicate": "contains", "target": "kms:Decrypt"} -->
-- [Step 6] `head-object` reports `ServerSideEncryption: aws:kms` and a `SSEKMSKeyId`
-<!-- match: {"step": 6, "predicate": "contains", "target": "aws:kms"} -->
-- [Step 7] the KMS key policy contains no Allow statement with `kms:Decrypt`/`kms:GenerateDataKey` whose Principal includes the caller's account or role, and `list-grants` returns no grant covering the caller
+**Interventions:**
+- **remediation** (root): grant the caller's role `kms:Decrypt`/`kms:GenerateDataKey` on the key via both the key policy and an identity-based policy (defense in depth).
 
-**Mitigation:**
+  ```bash
+  # Update the KMS key policy to grant the caller's role kms:Decrypt and kms:GenerateDataKey
+  cat > /tmp/kms-policy.fixed.json <<'EOF'
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "EnableRootPermissions",
+        "Effect": "Allow",
+        "Principal": {"AWS": "arn:aws:iam::<key-owner-account>:root"},
+        "Action": "kms:*",
+        "Resource": "*"
+      },
+      {
+        "Sid": "AllowS3CallerToUseKey",
+        "Effect": "Allow",
+        "Principal": {"AWS": "arn:aws:iam::<caller-account>:role/<caller-role>"},
+        "Action": ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
+        "Resource": "*"
+      }
+    ]
+  }
+  EOF
+  aws kms put-key-policy --key-id <key-arn> --policy-name default \
+    --policy file:///tmp/kms-policy.fixed.json
+  # Also grant the same actions on the caller's identity-based policy
+  aws iam put-role-policy --role-name <caller-role> --policy-name AllowKMSForS3 \
+    --policy-document '{
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+        "Resource": "<key-arn>"
+      }]
+    }'
+  ```
 
-- **Risk:** Adding a broad `kms:Decrypt` Allow to the key policy expands the blast radius of that key; prefer granting to a specific role ARN.
-- **Command:**
+  **Verification:** `aws kms encrypt --key-id <key-arn> --plaintext "test" --query CiphertextBlob` succeeds when run as the caller; the original S3 GET succeeds and CloudTrail shows no further `AccessDenied` on `s3.amazonaws.com` or `kms.amazonaws.com` for 15 minutes.
+- **mitigation** (root): identify which principals already use the key to scope the grant before editing (read-only; no live mitigation possible — move directly to remediation).
 
   ```bash
   # Inspect which principals already use the key
@@ -342,70 +371,39 @@ aws s3api put-public-access-block --bucket <bucket> \
     --query 'Events[].{User:Username,Event:EventName,Time:EventTime}'
   ```
 
-- **Duration:** Read-only command; no mitigation in place. Move directly to Resolution.
-
-**Resolution:**
-
-```bash
-# Update the KMS key policy to grant the caller's role kms:Decrypt and kms:GenerateDataKey
-cat > /tmp/kms-policy.fixed.json <<'EOF'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "EnableRootPermissions",
-      "Effect": "Allow",
-      "Principal": {"AWS": "arn:aws:iam::<key-owner-account>:root"},
-      "Action": "kms:*",
-      "Resource": "*"
-    },
-    {
-      "Sid": "AllowS3CallerToUseKey",
-      "Effect": "Allow",
-      "Principal": {"AWS": "arn:aws:iam::<caller-account>:role/<caller-role>"},
-      "Action": ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
-      "Resource": "*"
-    }
-  ]
-}
-EOF
-aws kms put-key-policy --key-id <key-arn> --policy-name default \
-  --policy file:///tmp/kms-policy.fixed.json
-# Also grant the same actions on the caller's identity-based policy
-aws iam put-role-policy --role-name <caller-role> --policy-name AllowKMSForS3 \
-  --policy-document '{
-    "Version": "2012-10-17",
-    "Statement": [{
-      "Effect": "Allow",
-      "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
-      "Resource": "<key-arn>"
-    }]
-  }'
-```
-
-**Impact:** Affects every S3 caller that uses this KMS key. Key-policy updates take effect immediately at KMS; identity-policy updates propagate within seconds.
-
-**Rollback:** Re-apply the previous key policy (back up before editing) with `aws kms put-key-policy --key-id <key-arn> --policy-name default --policy file:///tmp/kms-policy.backup.json` and remove the inline IAM policy with `aws iam delete-role-policy --role-name <caller-role> --policy-name AllowKMSForS3`.
-
-**Verification:** `aws kms encrypt --key-id <key-arn> --plaintext "test" --query CiphertextBlob` succeeds when run as the caller. The original S3 GET succeeds and CloudTrail shows no further `AccessDenied` on either `s3.amazonaws.com` or `kms.amazonaws.com` for the next 15 minutes.
+  **Risk:** adding a broad `kms:Decrypt` Allow expands the key's blast radius; prefer granting to a specific role ARN. **Duration:** read-only command; no mitigation in place — apply remediation immediately. **Verification:** the returned principal list confirms the role to scope into the remediation grant.
 
 ### Cause E: Object owned by a different account than the bucket and no policy grants the bucket owner access
 
-**Statement:** The object was uploaded by an external account into a bucket whose Object Ownership is `ObjectWriter` or `BucketOwnerPreferred`, and the upload did not include the `bucket-owner-full-control` ACL, so the bucket owner cannot read it.
+**Statement:** An external account uploaded the object into a bucket with `ObjectWriter`/`BucketOwnerPreferred` ownership without `bucket-owner-full-control`, so the bucket owner cannot read it.
 
-**Mechanism:** Before `BucketOwnerEnforced` existed, the uploader of an object retained ownership. If the uploader's account differed from the bucket owner's and the PUT did not specify `--acl bucket-owner-full-control`, the bucket owner has no implicit grant and the bucket policy cannot grant access to objects it does not own (bucket-policy Allow statements apply only to bucket-owned objects). The caller sees `AccessDenied` despite full s3 permissions on the bucket.
+**Chain:**
+- root: an external account uploaded the object without `--acl bucket-owner-full-control` into a bucket whose Object Ownership is `ObjectWriter` or `BucketOwnerPreferred`.
+- s1: the uploader's account retains object ownership, so the object's `Owner.ID` differs from the bucket owner's canonical ID.
+- s2: bucket-policy Allow statements apply only to bucket-owned objects, so the bucket owner has no grant on this object despite full S3 bucket permissions.
+- D: the bucket owner's call returns `403 AccessDenied` even though IAM simulation shows `allowed`.
 
-**Indicator:**
+**Indicators:**
+- root: [Step 9] `get-bucket-ownership-controls` returns `ObjectWriter` or `BucketOwnerPreferred`
+  <!-- match: {"step": 9, "predicate": "contains", "target": "ObjectWriter"} -->
+- s1: [Step 9] `get-object-acl` shows the `Owner.ID` is a different canonical ID than the bucket owner's canonical ID
+- D: [Step 4] `simulate-principal-policy` shows `allowed` for the action against the bucket but the runtime call still returns `AccessDenied`
 
-- [Step 9] `get-bucket-ownership-controls` returns `ObjectWriter` or `BucketOwnerPreferred`
-<!-- match: {"step": 9, "predicate": "contains", "target": "ObjectWriter"} -->
-- [Step 9] `get-object-acl` shows the `Owner.ID` is a different canonical ID than the bucket owner's canonical ID
-- [Step 4] `simulate-principal-policy` shows `allowed` for the action against the bucket but the runtime call still returns `AccessDenied`
+**Interventions:**
+- **remediation** (root): migrate the bucket to `BucketOwnerEnforced` ownership (disables ACLs; bucket policy alone controls access) and grant cross-account uploaders via policy.
 
-**Mitigation:**
+  ```bash
+  # Durable fix: migrate the bucket to BucketOwnerEnforced ownership.
+  # This disables ACLs entirely; bucket policy alone controls access.
+  aws s3api put-bucket-ownership-controls --bucket <bucket> \
+    --ownership-controls '{"Rules":[{"ObjectOwnership":"BucketOwnerEnforced"}]}'
+  # Ensure any cross-account uploaders are now granted via bucket policy or
+  # identity-based policy, not via ACLs.
+  aws s3api put-bucket-policy --bucket <bucket> --policy file:///tmp/bucket-policy.fixed.json
+  ```
 
-- **Risk:** Forcing the uploader to re-upload with the canned ACL is a one-shot workaround that does not prevent the same problem on future uploads; use only as a stopgap before migrating ownership.
-- **Command:**
+  **Verification:** `aws s3api get-bucket-ownership-controls --bucket <bucket>` returns `BucketOwnerEnforced`; the bucket-owner re-runs the failing GET and succeeds; for previously-stuck objects, the bucket-owner runs an in-place `copy-object` then GETs the new object.
+- **mitigation** (s1): have the object owner re-copy the object in place with the `bucket-owner-full-control` canned ACL.
 
   ```bash
   # Run as the object owner's account
@@ -414,97 +412,85 @@ aws iam put-role-policy --role-name <caller-role> --policy-name AllowKMSForS3 \
     --metadata-directive REPLACE
   ```
 
-- **Duration:** Per-object — keep applying until the durable fix below lands.
-
-**Resolution:**
-
-```bash
-# Durable fix: migrate the bucket to BucketOwnerEnforced ownership.
-# This disables ACLs entirely; bucket policy alone controls access.
-aws s3api put-bucket-ownership-controls --bucket <bucket> \
-  --ownership-controls '{"Rules":[{"ObjectOwnership":"BucketOwnerEnforced"}]}'
-# Ensure any cross-account uploaders are now granted via bucket policy or
-# identity-based policy, not via ACLs.
-aws s3api put-bucket-policy --bucket <bucket> --policy file:///tmp/bucket-policy.fixed.json
-```
-
-**Impact:** Bucket-wide and durable. After enabling `BucketOwnerEnforced`, all new uploads are owned by the bucket owner; existing objects retain their original ownership and may still need a one-time copy-in-place to transfer ownership. Cross-account writers must update their code to drop ACL parameters that target canonical IDs.
-
-**Rollback:** `aws s3api put-bucket-ownership-controls --bucket <bucket> --ownership-controls '{"Rules":[{"ObjectOwnership":"ObjectWriter"}]}'` reverts to the previous model, then re-apply prior bucket policy and ACL state from the snapshot.
-
-**Verification:** `aws s3api get-bucket-ownership-controls --bucket <bucket>` returns `BucketOwnerEnforced`. The bucket-owner principal re-runs the failing GET and succeeds; for previously-stuck objects, the bucket-owner runs an in-place `copy-object` then GETs the new object successfully.
+  **Risk:** a one-shot per-object workaround that does not prevent recurrence on future uploads. **Duration:** per-object — keep applying until the `BucketOwnerEnforced` remediation lands. **Verification:** the bucket owner GETs the re-copied object successfully.
 
 ### Cause F: VPC endpoint policy implicitly or explicitly denies the request
 
-**Statement:** The caller's request is routed through a VPC endpoint whose policy does not allow the bucket or action, so S3 rejects the call with a VPC endpoint-policy denial.
+**Statement:** The request is routed through a VPC endpoint whose policy does not allow the bucket or action, so S3 rejects the call with a VPC endpoint-policy denial.
 
-**Mechanism:** Gateway and Interface endpoints for S3 carry their own policy document. If the endpoint policy omits the bucket from the Resource list (implicit deny) or includes an explicit `Deny`, S3 will deny the request regardless of IAM or bucket-policy state. The CloudTrail event carries a `vpcEndpointId` field identifying which endpoint handled the request; same-account enhanced messages include `because no VPC endpoint policy allows` or `with an explicit deny in a VPC endpoint policy`.
+**Chain:**
+- root: the S3 VPC endpoint's policy is non-default and either omits the bucket from `Resource` (implicit deny) or contains a `Deny` matching the action.
+- s1: the caller's request is routed through that endpoint (CloudTrail `vpcEndpointId` identifies it), so the endpoint policy applies.
+- D: S3 returns `403 AccessDenied` regardless of IAM or bucket-policy state, with context `because no VPC endpoint policy allows` or `with an explicit deny in a VPC endpoint policy`.
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] the active endpoint's `PolicyDocument` is non-default and either omits the bucket from `Resource` or contains a `Deny` matching the action
+- s1: [Step 8] the failing CloudTrail event includes a `vpcEndpointId` field that maps to a custom-policy endpoint
+- D: [Step 1] error message contains `VPC endpoint policy`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "VPC endpoint policy"} -->
 
-- [Step 1] error message contains `VPC endpoint policy` (either implicit or explicit deny)
-<!-- match: {"step": 1, "predicate": "contains", "target": "VPC endpoint policy"} -->
-- [Step 8] the active endpoint's `PolicyDocument` is non-default and either omits the bucket from `Resource` or contains a `Deny` matching the action
-- [Step 8] the failing CloudTrail event includes a `vpcEndpointId` field that maps to a custom-policy endpoint
+**Interventions:**
+- **remediation** (root): update the endpoint policy to allow the required actions on the bucket ARNs.
 
-**Mitigation:**
+  ```bash
+  cat > /tmp/vpce-policy.fixed.json <<'EOF'
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": "*",
+        "Action": ["s3:GetObject", "s3:ListBucket", "s3:PutObject"],
+        "Resource": [
+          "arn:aws:s3:::<bucket>",
+          "arn:aws:s3:::<bucket>/*"
+        ]
+      }
+    ]
+  }
+  EOF
+  aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> \
+    --policy-document file:///tmp/vpce-policy.fixed.json
+  ```
 
-- **Risk:** Resetting the endpoint policy to allow-all temporarily re-opens every bucket reachable via the endpoint; only acceptable in a controlled change window.
-- **Command:**
+  **Verification:** `aws ec2 describe-vpc-endpoints --vpc-endpoint-ids <vpce-id> --query 'VpcEndpoints[0].PolicyDocument'` shows the updated policy; a test S3 call from an instance in the same VPC succeeds with HTTP 200 and CloudTrail confirms the request still carries the endpoint's `vpcEndpointId`.
+- **mitigation** (root): snapshot the current endpoint policy before editing so it can be restored.
 
   ```bash
   aws ec2 describe-vpc-endpoints --vpc-endpoint-ids <vpce-id> \
     --query 'VpcEndpoints[0].PolicyDocument' --output text > /tmp/vpce-policy.backup.json
   ```
 
-- **Duration:** Backup only; do not roll forward until the corrected policy is ready.
-
-**Resolution:**
-
-```bash
-cat > /tmp/vpce-policy.fixed.json <<'EOF'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": "*",
-      "Action": ["s3:GetObject", "s3:ListBucket", "s3:PutObject"],
-      "Resource": [
-        "arn:aws:s3:::<bucket>",
-        "arn:aws:s3:::<bucket>/*"
-      ]
-    }
-  ]
-}
-EOF
-aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> \
-  --policy-document file:///tmp/vpce-policy.fixed.json
-```
-
-**Impact:** Affects every workload in the VPC that sends S3 traffic through this endpoint. The change is applied immediately by the endpoint; no client restart is required.
-
-**Rollback:** `aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> --policy-document file:///tmp/vpce-policy.backup.json`.
-
-**Verification:** `aws ec2 describe-vpc-endpoints --vpc-endpoint-ids <vpce-id> --query 'VpcEndpoints[0].PolicyDocument'` shows the updated policy. A test S3 call from an instance in the same VPC succeeds with HTTP 200, and CloudTrail confirms the request still carries the endpoint's `vpcEndpointId`.
+  **Risk:** rolling forward to an allow-all endpoint policy temporarily re-opens every bucket reachable via the endpoint; acceptable only in a controlled change window. **Duration:** backup only — do not roll forward until the corrected policy is ready; restore with `aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> --policy-document file:///tmp/vpce-policy.backup.json`. **Verification:** `python3 -m json.tool /tmp/vpce-policy.backup.json` confirms the original policy is captured.
 
 ### Cause G: AWS Organizations SCP/RCP or permissions boundary denies the action
 
-**Statement:** A Service Control Policy, Resource Control Policy, or IAM permissions boundary attached upstream of the caller's account or principal denies the S3 action regardless of what the local IAM and bucket policies allow.
+**Statement:** An SCP, RCP, or IAM permissions boundary upstream of the caller's account or principal denies the S3 action regardless of what local IAM and bucket policies allow.
 
-**Mechanism:** SCPs and permissions boundaries cap the maximum permissions for a principal — they cannot grant access, only remove it. An action must be allowed by every applicable SCP, RCP, permissions boundary, and session policy in addition to IAM and bucket policies. If any of these upstream controls is missing the Allow or contains a Deny, S3 returns 403 with an enhanced message that names the upstream layer (`because no service control policy allows`, `with an explicit deny in a service control policy`, `with an explicit deny in a resource control policy`, `with an explicit deny in a permissions boundary`, `with an explicit deny in a session policy`). RCPs were introduced in 2024 and apply at the resource side, scoping what the resource's resource-based policy can permit.
+**Chain:**
+- root: an upstream control (SCP, RCP, permissions boundary, or session policy) is missing the Allow or contains a Deny for the S3 action.
+- s1: an action must be allowed by every applicable SCP/RCP/permissions-boundary/session policy in addition to IAM and bucket policies — these caps can only remove permissions, never grant them.
+- D: S3 returns `403 AccessDenied` naming the upstream layer (`because no service control policy allows`, or `with an explicit deny in a service control policy / resource control policy / permissions boundary / session policy`).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `simulate-principal-policy` returns `Decision: explicitDeny` with `MatchedStatements` pointing to an SCP/RCP/permissions-boundary/session policy, or `OrganizationsDecisionDetail.AllowedByOrganizations=false`
+- D: [Step 1] error message contains `service control policy`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "service control policy"} -->
 
-- [Step 1] error message contains `service control policy`, `resource control policy`, `permissions boundary`, or `session policy`
-<!-- match: {"step": 1, "predicate": "contains", "target": "service control policy"} -->
-- [Step 4] `simulate-principal-policy` returns `Decision: explicitDeny` and `MatchedStatements` points to an SCP, RCP, permissions-boundary, or session policy (not an IAM identity policy)
-- [Step 4] simulation result includes an `OrganizationsDecisionDetail.AllowedByOrganizations` flag set to `false`
+**Interventions:**
+- **remediation** (root): have the SCP/RCP/permissions-boundary owner edit the policy to allow the action, then re-apply it.
 
-**Mitigation:**
+  ```bash
+  # After the SCP/RCP/permissions-boundary owner edits the policy:
+  aws organizations update-policy --policy-id <scp-id> \
+    --content file:///tmp/scp.fixed.json
+  # Or, for permissions boundary:
+  aws iam put-user-permissions-boundary --user-name <caller> \
+    --permissions-boundary arn:aws:iam::<account>:policy/<updated-boundary>
+  ```
 
-- **Risk:** SCP/RCP changes apply organization-wide and must go through the security/governance team; do not bypass.
-- **Command:**
+  **Verification:** `aws iam simulate-principal-policy ...` now returns `allowed` for the action; the original S3 call succeeds and CloudTrail records no further `AccessDenied` for the same principal-action pair.
+- **mitigation** (root): identify which SCPs/RCPs are attached to the caller's account so the right policy can be routed to its owner (read-only; no live bypass appropriate).
 
   ```bash
   # Identify which SCPs/RCPs are attached to the caller's account
@@ -512,78 +498,51 @@ aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> \
   aws organizations list-policies-for-target --target-id <account-id> --filter RESOURCE_CONTROL_POLICY
   ```
 
-- **Duration:** Read-only — used to identify which policy needs editing. No live mitigation is appropriate.
-
-**Resolution:**
-
-```bash
-# After the SCP/RCP/permissions-boundary owner edits the policy:
-aws organizations update-policy --policy-id <scp-id> \
-  --content file:///tmp/scp.fixed.json
-# Or, for permissions boundary:
-aws iam put-user-permissions-boundary --user-name <caller> \
-  --permissions-boundary arn:aws:iam::<account>:policy/<updated-boundary>
-```
-
-**Impact:** SCP/RCP edits propagate to every account in the OU; permissions-boundary changes affect only the targeted user/role. Both apply within seconds at the IAM control plane.
-
-**Rollback:** Re-apply the prior policy content with `aws organizations update-policy --policy-id <scp-id> --content file:///tmp/scp.backup.json` or revert the permissions-boundary attachment via `aws iam delete-user-permissions-boundary`.
-
-**Verification:** `aws iam simulate-principal-policy ...` now returns `allowed` for the action. The original S3 call succeeds and CloudTrail records no further `AccessDenied` for the same principal-action pair.
+  **Risk:** SCP/RCP changes apply organization-wide and must go through the security/governance team; do not bypass. **Duration:** read-only — used to identify which policy needs editing; no live mitigation is appropriate. **Verification:** the listing names the attached SCP/RCP to escalate to its owner.
 
 ### Cause H: Requester Pays bucket called without the requester-pays request parameter
 
-**Statement:** The bucket is configured for Requester Pays, but the caller did not pass `--request-payer requester` (CLI) or the `x-amz-request-payer: requester` header (SDK), so S3 rejects the unparameterised request.
+**Statement:** The bucket is configured for Requester Pays but the caller did not pass `--request-payer requester` (CLI) or the `x-amz-request-payer: requester` header (SDK), so S3 rejects the unparameterised request.
 
-**Mechanism:** Requester Pays shifts data-transfer and request charges from the bucket owner to the caller. To opt in, every non-owner request must signal acceptance by setting the request-payer header or CLI flag; without it, S3 returns `AccessDenied` because the caller has not assumed the cost.
+**Chain:**
+- root: the bucket's Requester Pays is enabled (`Payer=Requester`), requiring every non-owner request to signal cost acceptance.
+- s1: the caller's request omits the `x-amz-request-payer: requester` header / `--request-payer requester` flag, so S3 sees no acceptance of charges.
+- D: S3 returns `403 AccessDenied` for the unparameterised non-owner request.
 
-**Indicator:**
+**Indicators:**
+- root: [Step 10] `get-bucket-request-payment` returns `Requester`
+  <!-- match: {"step": 10, "predicate": "contains", "target": "Requester"} -->
+- s1: [Step 1] the failing call has no `x-amz-request-payer` request header (visible in CloudTrail `requestParameters`, or absent in the CLI invocation)
+- D: [Step 2] the caller's account differs from the bucket owner's account
 
-- [Step 10] `get-bucket-request-payment` returns `Requester`
-<!-- match: {"step": 10, "predicate": "contains", "target": "Requester"} -->
-- [Step 1] the failing call has no `x-amz-request-payer` request header (visible in CloudTrail `requestParameters` for SDK callers, or absent in the CLI invocation)
-- [Step 2] the caller's account differs from the bucket owner's account
+**Interventions:**
+- **remediation** (s1): always pass the requester-pays parameter on every call to this bucket.
 
-**Mitigation:**
+  ```bash
+  # AWS CLI: add the flag to every command
+  aws s3 cp s3://<bucket>/<key> /local/path --request-payer requester
+  # AWS SDK (boto3): set request payer on the client call
+  python3 -c "import boto3; boto3.client('s3').get_object(Bucket='<bucket>', Key='<key>', RequestPayer='requester')"
+  ```
 
-- **Risk:** Passing `--request-payer requester` accepts charges on every call; verify cost expectations with the bucket owner before bulk operations.
-- **Command:**
+  **Verification:** the CLI/SDK call returns HTTP 200 and the object payload; CloudTrail `requestParameters.x-amz-request-payer` is `requester` on the successful event.
+- **mitigation** (s1): pass `--request-payer requester` on the single failing call to unblock immediately.
 
   ```bash
   aws s3api get-object --bucket <bucket> --key <key> --request-payer requester /tmp/out
   ```
 
-- **Duration:** Indefinite — this is the correct calling pattern for Requester Pays buckets; no rollback required.
-
-**Resolution:**
-
-```bash
-# AWS CLI: add the flag to every command
-aws s3 cp s3://<bucket>/<key> /local/path --request-payer requester
-# AWS SDK (boto3): set request payer on the client call
-python3 -c "import boto3; boto3.client('s3').get_object(Bucket='<bucket>', Key='<key>', RequestPayer='requester')"
-```
-
-**Impact:** Affects only the caller's own invocations; no shared infrastructure change. Each request charges the caller's account for both transfer and request cost.
-
-**Rollback:** Stop passing the request-payer parameter; calls revert to failing with `AccessDenied` (which is the safe default — no surprise charges).
-
-**Verification:** The CLI/SDK call now returns HTTP 200 and the object payload. CloudTrail `requestParameters.x-amz-request-payer` is `requester` on the successful event.
+  **Risk:** passing `--request-payer requester` accepts charges on every call; verify cost expectations with the bucket owner before bulk operations. **Duration:** indefinite — this is the correct calling pattern; dropping the flag reverts to failing (the safe, no-surprise-charges default). **Verification:** the single call returns HTTP 200 with the object payload.
 
 ### Cause Z: Unidentified
 
-**Statement:** A 403 Access Denied is confirmed against the bucket or object, but none of the indicators for Causes A through H match the gathered evidence.
+**Statement:** A 403 Access Denied is confirmed but none of the indicators for Causes A through H match the gathered evidence (e.g. Object Lock, Access Point network-origin restriction, expired/cross-region presigned URL, CloudFront OAC/OAI misconfiguration, or a cross-organization generic denial).
 
-**Mechanism:** S3 returns `AccessDenied` from a path not yet enumerated above. Less common causes include S3 Object Lock retention or legal hold blocking deletes, Access Point network-origin restrictions (`Internet` vs `VPC`), signature mismatch on presigned URLs that have expired or were generated against a different region, request signing against the wrong endpoint, an AWS Organizations privileged-session lockout from a bucket-policy self-lock, or a CloudFront OAC/OAI misconfiguration upstream of the bucket. The enhanced error message may be generic (`Access Denied`) when the caller is cross-organization, in which case no policy-type hint is present.
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] HTTP 403 with `AccessDenied` is confirmed (Step 1) but none of the Causes A-H indicators match
-
-**Mitigation:**
-
-- **Risk:** Capturing more diagnostic context is read-only and safe; enabling S3 server-access logging or CloudTrail data events may incur small storage costs.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot and escalate to the SME / AWS Support.
 
   ```bash
   # Capture full request/response context
@@ -601,11 +560,7 @@ python3 -c "import boto3; boto3.client('s3').get_object(Bucket='<bucket>', Key='
     | grep -E "x-amz-request-id|x-amz-id-2" | head -10
   ```
 
-- **Duration:** Minutes. Bundle the artifacts for handoff to AWS Support or the bucket owner.
-
-**Resolution:** Out of runbook scope. Package the captured `/tmp/diag-*.json` files, the `aws-debug.log`, the CloudTrail event JSON from Step 1, and both `x-amz-request-id` and `x-amz-id-2` values. Open an AWS Support case (Premium Support required for production cases) or escalate to the bucket owner's security team with the bucket ARN, caller ARN, action, and request IDs.
-
-**Verification:** Handoff acknowledged with a ticket number; an owner is assigned. AWS Support replies referencing the request IDs to confirm receipt.
+  **Risk:** capturing more diagnostic context is read-only and safe; enabling S3 server-access logging or CloudTrail data events may incur small storage costs. **Duration:** minutes — bundle the `/tmp/diag-*.json` files, `aws-debug.log`, the CloudTrail event JSON, and both `x-amz-request-id`/`x-amz-id-2` values, then open an AWS Support case (Premium Support for production) or escalate to the bucket owner's security team with the bucket ARN, caller ARN, action, and request IDs. **Verification:** handoff acknowledged with a ticket number and an owner assigned; AWS Support replies referencing the request IDs to confirm receipt.
 
 ## Prevention
 

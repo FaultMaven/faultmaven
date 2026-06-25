@@ -8,8 +8,8 @@ symptom_class:
   - timeout
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags:
@@ -124,7 +124,7 @@ WHERE datname = current_database();
 
 Expected output: `deadlocks = 0` under healthy operation. A non-zero, increasing value means deadlock detection has fired since `stats_reset`. Re-run after 5–10 minutes; if the value grows, deadlocks are recurring and an application-side lock-ordering fix is required (not just a one-off kill).
 
-### Step 6: Pull the deadlock detail from the server log
+### Step 6: Pull deadlock detail from the server log
 
 ```bash
 # Self-managed PostgreSQL
@@ -181,20 +181,18 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
 
 ### Cause A: Idle-in-transaction session holds locks indefinitely
 
-**Statement:** A session has issued `BEGIN` (or an implicit transaction) and acquired row or table locks, but the application path between the lock and the matching `COMMIT`/`ROLLBACK` never executes, so the locks persist and block every conflicting transaction.
-**Mechanism:** The backend reaches `idle in transaction` state — typically because the application makes an external API call inside the transaction, hits an unhandled exception that skips the commit, or returns control to a user waiting on input. The acquired locks (row-level `FOR UPDATE`, table-level `RowExclusiveLock`, etc.) remain held until the client disconnects or `idle_in_transaction_session_timeout` fires. Other sessions waiting on those locks accumulate in the queue and surface as latency or timeouts.
-
-**Indicator:**
-
-- [Step 7] one or more rows with `state = 'idle in transaction'` and `state_age` exceeding a few minutes
-- [Step 2] `blocking_state = 'idle in transaction'` for the dominant blocker
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "idle in transaction"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Terminating a stuck idle-in-transaction backend rolls back uncommitted work that the application has already abandoned; the client receives a connection error on its next query and reconnects.
-- **Command:**
+**Statement:** A session has issued `BEGIN` and acquired row or table locks, but the code path between the lock and the matching `COMMIT`/`ROLLBACK` never executes, so the locks persist and block conflicting transactions.
+**Chain:**
+- root: A session opens a transaction, acquires locks, then stalls in `idle in transaction` — an external API call inside the txn, an unhandled exception that skips the commit, or waiting on user input.
+- s1: The acquired locks (row-level `FOR UPDATE`, table-level `RowExclusiveLock`, etc.) stay held until the client disconnects or `idle_in_transaction_session_timeout` fires.
+- s2: Other sessions waiting on those locks accumulate in the lock queue.
+- D: Queued sessions surface as application latency and upstream timeouts (see Symptom Recognition).
+**Indicators:**
+- root: [Step 7] one or more rows with `state = 'idle in transaction'` and `state_age` exceeding a few minutes.
+- s1: [Step 2] `blocking_state = 'idle in transaction'` for the dominant blocker.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "idle in transaction"} -->
+**Interventions:**
+- **mitigation** (s1): terminate stuck idle-in-transaction backends to release their locks immediately.
 
   ```sql
   SELECT pg_terminate_backend(pid)
@@ -204,45 +202,38 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
     AND pid <> pg_backend_pid();
   ```
 
-- **Duration:** Locks release within seconds. Safe to leave running once but do not loop as a steady-state job — fix the application instead.
-
-**Resolution:**
-
-```sql
-ALTER SYSTEM SET idle_in_transaction_session_timeout = '5min';
-ALTER SYSTEM SET log_lock_waits = on;
-SELECT pg_reload_conf();
-```
-
-Then patch the offending service: wrap every `BEGIN` in a scope guard (Python `with`, Java try-with-resources, Go `defer tx.Rollback()`, Node `try/finally`) so every code path reaches `COMMIT` or `ROLLBACK`, and move external API calls and long computations outside the transaction boundary.
-
-- **Impact:** Cluster-wide. `idle_in_transaction_session_timeout` applies to every new session after reload; any application that legitimately holds an idle transaction longer than 5 minutes (rare) will start receiving `FATAL: terminating connection due to idle-in-transaction timeout`. `log_lock_waits` adds one log line per wait exceeding `deadlock_timeout` — bounded but non-zero log volume.
-- **Rollback:**
+  **Risk:** Low. Rolls back uncommitted work the application has already abandoned; the client gets a connection error on its next query and reconnects. **Duration:** Locks release within seconds; safe to run once, but do not loop as a steady-state job — fix the application instead. **Verification:** re-run Step 7; no idle-in-transaction rows older than a few minutes remain.
+- **defensive_fix** (s1): bound idle transactions server-wide so abandoned ones self-terminate.
 
   ```sql
-  ALTER SYSTEM RESET idle_in_transaction_session_timeout;
-  ALTER SYSTEM RESET log_lock_waits;
+  ALTER SYSTEM SET idle_in_transaction_session_timeout = '5min';
+  ALTER SYSTEM SET log_lock_waits = on;
   SELECT pg_reload_conf();
   ```
 
-**Verification:** Ten minutes after the reload, re-run Step 7 — expect zero rows with `state_age` greater than the configured timeout. `SHOW idle_in_transaction_session_timeout` returns `5min`. `pg_stat_database.deadlocks` stops growing.
+  **Verification:** `SHOW idle_in_transaction_session_timeout` returns `5min`; ten minutes after reload Step 7 shows zero rows with `state_age` greater than the timeout; `pg_stat_database.deadlocks` stops growing.
+- **remediation** (root): patch the offending service — wrap every `BEGIN` in a scope guard (Python `with`, Java try-with-resources, Go `defer tx.Rollback()`, Node `try/finally`) so every code path reaches `COMMIT`/`ROLLBACK`, and move external API calls and long computations outside the transaction boundary.
+
+  ```text
+  Application code change: deploy the scope-guarded transaction handling.
+  ```
+
+  **Verification:** after deploy, Step 7 shows no abandoned idle-in-transaction sessions during the same workload; lock-wait latency returns to baseline.
 
 ### Cause B: DDL holds AccessExclusiveLock while online traffic queues
 
-**Statement:** A migration or maintenance command (`CREATE INDEX` without `CONCURRENTLY`, table-rewriting `ALTER TABLE`, `REINDEX`, `CLUSTER`, `VACUUM FULL`, non-concurrent `REFRESH MATERIALIZED VIEW`) takes `AccessExclusiveLock` on a hot table and stalls every concurrent read and write against it.
-**Mechanism:** `AccessExclusiveLock` is the strongest table-level lock and conflicts with every other mode — including `AccessShareLock` taken by plain `SELECT`. PostgreSQL enqueues incoming sessions in arrival order, so once DDL is waiting, even subsequent read-only queries pile up behind it (the "lock queue" problem). The DDL itself may also block waiting for an existing transaction to release a weaker lock, multiplying the blast radius.
-
-**Indicator:**
-
-- [Step 3] `AccessExclusiveLock` present with `granted = true` and a non-trivial count of `granted = false` rows
-- [Step 8] one row in `active` state running `CREATE INDEX` (without `CONCURRENTLY`), `ALTER TABLE`, `REINDEX`, `CLUSTER`, `VACUUM FULL`, or `REFRESH MATERIALIZED VIEW`
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "AccessExclusiveLock"} -->
-
-**Mitigation:**
-
-- **Risk:** Medium. Cancelling a DDL command rolls back partial work — for an index build, the partially-built index is discarded; for a table rewrite, the new table file is dropped. Safe but wastes minutes-to-hours of build time.
-- **Command:**
+**Statement:** A migration or maintenance command (non-concurrent `CREATE INDEX`, table-rewriting `ALTER TABLE`, `REINDEX`, `CLUSTER`, `VACUUM FULL`, non-concurrent `REFRESH MATERIALIZED VIEW`) takes `AccessExclusiveLock` on a hot table and stalls every concurrent read and write.
+**Chain:**
+- root: A DDL/maintenance command requests `AccessExclusiveLock` — the strongest table-level lock — on a hot table.
+- s1: `AccessExclusiveLock` conflicts with every other mode, including the `AccessShareLock` a plain `SELECT` takes; the DDL may also wait on an existing transaction holding a weaker lock.
+- s2: PostgreSQL enqueues incoming sessions in arrival order, so even read-only queries pile up behind the waiting DDL (the lock-queue problem).
+- D: Concurrent reads and writes against the relation stall and surface as latency/timeouts (see Symptom Recognition).
+**Indicators:**
+- root: [Step 8] one row in `active` state running `CREATE INDEX` (without `CONCURRENTLY`), `ALTER TABLE`, `REINDEX`, `CLUSTER`, `VACUUM FULL`, or `REFRESH MATERIALIZED VIEW`.
+- s2: [Step 3] `AccessExclusiveLock` present with `granted = true` and a non-trivial count of `granted = false` rows.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "AccessExclusiveLock"} -->
+**Interventions:**
+- **mitigation** (s1): cancel (then terminate, if needed) the DDL session to release the lock now.
 
   ```sql
   -- Identify the DDL pid from Step 8, then cancel gracefully:
@@ -251,51 +242,43 @@ Then patch the offending service: wrap every `BEGIN` in a scope guard (Python `w
   SELECT pg_terminate_backend(<ddl_pid>);
   ```
 
-- **Duration:** Locks release within seconds of successful cancel. Queued application sessions drain in arrival order.
+  **Risk:** Medium. Rolls back partial work — a partially-built index is discarded, a table-rewrite's new file is dropped — wasting minutes-to-hours of build time. **Duration:** Locks release within seconds of a successful cancel; queued sessions drain in arrival order. **Verification:** re-run Step 8; no long-running DDL, queue drained.
+- **remediation** (root): run schema changes in non-blocking forms and fail fast on lock acquisition.
 
-**Resolution:**
+  ```sql
+  -- Always set a lock_timeout on DDL sessions so they fail fast instead of
+  -- camping at the head of the lock queue.
+  SET lock_timeout = '2s';
 
-```sql
--- Always set a lock_timeout on DDL sessions so they fail fast instead of
--- camping at the head of the lock queue.
-SET lock_timeout = '2s';
+  -- Use CONCURRENTLY for index DDL (no AccessExclusiveLock on the table):
+  CREATE INDEX CONCURRENTLY idx_orders_customer ON orders (customer_id);
+  REINDEX INDEX CONCURRENTLY idx_orders_customer;
 
--- Use CONCURRENTLY for index DDL (no AccessExclusiveLock on the table):
-CREATE INDEX CONCURRENTLY idx_orders_customer ON orders (customer_id);
-REINDEX INDEX CONCURRENTLY idx_orders_customer;
+  -- For ALTER TABLE ADD COLUMN with default, PG 11+ stores the default in
+  -- catalog metadata and avoids the table rewrite:
+  ALTER TABLE orders ADD COLUMN created_at timestamptz DEFAULT now();
 
--- For ALTER TABLE ADD COLUMN with default, PG 11+ stores the default in
--- catalog metadata and avoids the table rewrite:
-ALTER TABLE orders ADD COLUMN created_at timestamptz DEFAULT now();
+  -- For constraints, use NOT VALID then VALIDATE in a separate transaction:
+  ALTER TABLE orders ADD CONSTRAINT chk_amount CHECK (amount > 0) NOT VALID;
+  ALTER TABLE orders VALIDATE CONSTRAINT chk_amount;   -- SHARE UPDATE EXCLUSIVE, non-blocking
+  ```
 
--- For constraints, use NOT VALID then VALIDATE in a separate transaction:
-ALTER TABLE orders ADD CONSTRAINT chk_amount CHECK (amount > 0) NOT VALID;
-ALTER TABLE orders VALIDATE CONSTRAINT chk_amount;   -- SHARE UPDATE EXCLUSIVE, non-blocking
-```
-
-Schedule the remaining unavoidable DDL during a maintenance window.
-
-- **Impact:** Per-DDL session (`SET lock_timeout`) — only the DDL session is affected, no cluster-wide change. `CREATE INDEX CONCURRENTLY` runs longer (often 2–3×) and takes two scans of the table, but does not block readers/writers.
-- **Rollback:** Not applicable — these are per-statement choices made by the operator running the DDL.
-
-**Verification:** Re-run Step 3 after the DDL finishes — `AccessExclusiveLock` count returns to baseline (typically 0). Re-run Step 8 — no long-running DDL. Application p95 latency on the affected endpoints drops back to baseline within one traffic cycle.
+  Schedule any remaining unavoidable `AccessExclusiveLock` DDL during a maintenance window. **Verification:** re-run Step 3 after the DDL finishes — `AccessExclusiveLock` count returns to baseline (typically 0); re-run Step 8 — no long-running DDL; application p95 latency on affected endpoints returns to baseline within one traffic cycle.
 
 ### Cause C: Long-running query holds locks past application timeouts
 
-**Statement:** A query in `active` state runs long enough (missing index, accidental cross join, unbounded analytic scan) that the locks it holds — even ordinary `RowExclusiveLock` for an `UPDATE` — accumulate enough waiters to saturate the application's connection pool and surface as timeouts.
-**Mechanism:** An `UPDATE`/`DELETE`/`SELECT ... FOR UPDATE` takes row-level locks (and the matching `RowExclusiveLock` or `RowShareLock` at the relation level). If the query also performs a sequential scan because no index supports the predicate, it touches and locks far more rows than necessary, holding them for the full duration of the scan. Other transactions hitting the same rows queue with `wait_event_type = 'Lock'`. The blocker is `active` (not idle), so `idle_in_transaction_session_timeout` does not help — only `statement_timeout` does.
-
-**Indicator:**
-
-- [Step 7] one or more rows with `state = 'active'`, long `xact_duration`, and identifiable scan-heavy `last_query`
-- [Step 2] `blocking_state = 'active'` for the dominant blocker, with rising `blocked_duration`
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "active"} -->
-
-**Mitigation:**
-
-- **Risk:** Medium. Cancelling an active query returns an error to the originating request and may roll back partial work. Killing the wrong query (e.g., a long-running but legitimate batch import) can corrupt application state.
-- **Command:**
+**Statement:** A query in `active` state runs long enough (missing index, accidental cross join, unbounded analytic scan) that the locks it holds accumulate enough waiters to saturate the application's connection pool and surface as timeouts.
+**Chain:**
+- root: An `UPDATE`/`DELETE`/`SELECT ... FOR UPDATE` runs long because no index supports its predicate, forcing a sequential scan.
+- s1: The query takes row-level locks (and `RowExclusiveLock`/`RowShareLock` at the relation level) on far more rows than necessary, holding them for the full scan duration.
+- s2: Other transactions hitting the same rows queue with `wait_event_type = 'Lock'`; the blocker is `active`, so `idle_in_transaction_session_timeout` does not help — only `statement_timeout` does.
+- D: Waiters saturate the connection pool and surface as timeouts (see Symptom Recognition).
+**Indicators:**
+- root: [Step 7] one or more rows with `state = 'active'`, long `xact_duration`, and identifiable scan-heavy `last_query`.
+- s2: [Step 2] `blocking_state = 'active'` for the dominant blocker, with rising `blocked_duration`.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "active"} -->
+**Interventions:**
+- **mitigation** (s2): inspect, then cancel the offending active query to drain the queue.
 
   ```sql
   -- Inspect first, then cancel by pid (graceful):
@@ -308,55 +291,43 @@ Schedule the remaining unavoidable DDL during a maintenance window.
   -- Escalate to pg_terminate_backend only if cancel does not respond within ~10s.
   ```
 
-- **Duration:** Immediate. Re-run Step 2 after 30 seconds to confirm the queue has drained.
-
-**Resolution:**
-
-```sql
--- Bound query duration per role so a single bad query cannot pin the cluster.
-ALTER ROLE app_user       SET statement_timeout = '30s';
-ALTER ROLE reporting_user SET statement_timeout = '5min';
-
--- Identify the missing index using pg_stat_statements:
-SELECT query, calls, mean_exec_time, rows
-FROM pg_stat_statements
-WHERE query ILIKE '%<offending_table>%'
-ORDER BY mean_exec_time DESC
-LIMIT 10;
-
--- Add the supporting index (CONCURRENTLY to avoid stacking Cause B on top).
-CREATE INDEX CONCURRENTLY idx_orders_status_created
-  ON orders (status, created_at);
-```
-
-- **Impact:** Per-role. `statement_timeout` only affects sessions logging in as that role; existing sessions keep their old setting until reconnect. Concurrent index build runs longer than a blocking `CREATE INDEX` and writes WAL.
-- **Rollback:**
+  **Risk:** Medium. Returns an error to the originating request and may roll back partial work; killing the wrong query (e.g. a legitimate long batch import) can corrupt application state. **Duration:** Immediate; re-run Step 2 after 30 seconds to confirm the queue has drained. **Verification:** Step 2 shows no waiters behind the cancelled query.
+- **remediation** (root): bound query duration per role and add the missing supporting index.
 
   ```sql
-  ALTER ROLE app_user       RESET statement_timeout;
-  ALTER ROLE reporting_user RESET statement_timeout;
-  DROP INDEX CONCURRENTLY idx_orders_status_created;
+  -- Bound query duration per role so a single bad query cannot pin the cluster.
+  ALTER ROLE app_user       SET statement_timeout = '30s';
+  ALTER ROLE reporting_user SET statement_timeout = '5min';
+
+  -- Identify the missing index using pg_stat_statements:
+  SELECT query, calls, mean_exec_time, rows
+  FROM pg_stat_statements
+  WHERE query ILIKE '%<offending_table>%'
+  ORDER BY mean_exec_time DESC
+  LIMIT 10;
+
+  -- Add the supporting index (CONCURRENTLY to avoid stacking Cause B on top).
+  CREATE INDEX CONCURRENTLY idx_orders_status_created
+    ON orders (status, created_at);
   ```
 
-**Verification:** `pg_stat_statements.mean_exec_time` for the previously slow query drops to milliseconds. Step 7 shows no `active` queries with `xact_duration` greater than the configured `statement_timeout`. Application p95 latency returns to baseline.
+  **Verification:** `pg_stat_statements.mean_exec_time` for the previously slow query drops to milliseconds; Step 7 shows no `active` queries with `xact_duration` greater than the configured `statement_timeout`; application p95 latency returns to baseline.
 
 ### Cause D: Recurring deadlocks from inconsistent lock-acquisition order
 
-**Statement:** Two or more application code paths modify the same set of tables or rows but acquire locks in different orders, so under concurrency they deadlock and PostgreSQL aborts one transaction with `ERROR: deadlock detected`.
-**Mechanism:** Transaction T1 locks row R1 in table A, then attempts to lock row R2 in table B. Concurrently, T2 locks R2 in B first, then attempts R1 in A. Each is waiting on a lock the other holds; PostgreSQL's deadlock detector wakes after `deadlock_timeout` (default 1s), spots the cycle, and aborts the transaction with the smallest cost. The aborted session sees `ERROR: deadlock detected`; the surviving session proceeds. If the application retries the aborted transaction, the issue can recur immediately at the next concurrent collision.
-
-**Indicator:**
-
-- [Symptom] server log contains `ERROR: deadlock detected` lines
-- [Step 5] `pg_stat_database.deadlocks` is non-zero and growing across successive checks
-- [Step 6] log `DETAIL:` lines show the same pair of queries / tables involved
-
-<!-- match: {"step": 5, "predicate": "threshold", "target": "deadlocks", "op": ">", "value": 0} -->
-
-**Mitigation:**
-
-- **Risk:** Low. The deadlock detector self-resolves each individual deadlock by aborting one side. Application-side retry-with-backoff catches the abort cleanly. No operator command is needed during an in-flight deadlock — but each abort wastes the work done by the losing transaction.
-- **Command:**
+**Statement:** Two or more application code paths modify the same tables or rows but acquire locks in different orders, so under concurrency they deadlock and PostgreSQL aborts one transaction with `ERROR: deadlock detected`.
+**Chain:**
+- root: Multiple code paths touch the same objects but acquire their locks in different orders (T1 locks R1 in A then wants R2 in B; T2 locks R2 in B then wants R1 in A).
+- s1: Under concurrency each transaction waits on a lock the other holds, forming a cycle.
+- s2: The deadlock detector wakes after `deadlock_timeout` (default 1s), spots the cycle, and aborts the lowest-cost transaction with `ERROR: deadlock detected`; application retry hits the next concurrent collision and recurs.
+- D: Recurring aborts and retries surface as elevated error rates and latency (see Symptom Recognition).
+**Indicators:**
+- s2: [Symptom] server log contains `ERROR: deadlock detected` lines.
+- s2: [Step 5] `pg_stat_database.deadlocks` is non-zero and growing across successive checks.
+  <!-- match: {"step": 5, "predicate": "threshold", "target": "deadlocks", "op": ">", "value": 0} -->
+- root: [Step 6] log `DETAIL:` lines show the same pair of queries / tables involved.
+**Interventions:**
+- **mitigation** (s2): confirm the detector is active and tuned; rely on application retry-with-backoff to absorb individual aborts.
 
   ```sql
   -- Confirm the deadlock detector is active and the timeout is sane (default 1s):
@@ -366,102 +337,82 @@ CREATE INDEX CONCURRENTLY idx_orders_status_created
   SET deadlock_timeout = '1s';
   ```
 
-- **Duration:** Per-session. Apply the application-side fix in the same incident — raising `deadlock_timeout` does not eliminate deadlocks, it only changes how quickly they are detected.
+  **Risk:** Low. The detector self-resolves each deadlock by aborting one side; retry-with-backoff catches the abort cleanly, but each abort wastes the losing transaction's work. **Duration:** Per-session; apply the application-side fix in the same incident — raising `deadlock_timeout` only changes detection speed, not the deadlock itself. **Verification:** `SHOW deadlock_timeout` returns the intended value; aborts continue to self-resolve while the durable fix is deployed.
+- **remediation** (root): make every multi-object code path acquire locks in one canonical order; enforce it in code review.
 
-**Resolution:**
+  ```sql
+  -- Example: always lock account rows in ascending account_id order before transfer.
+  BEGIN;
+  SELECT * FROM accounts
+  WHERE id IN (:src, :dst)
+  ORDER BY id
+  FOR UPDATE;
 
-Fix the application so every code path that touches multiple objects acquires locks in the same canonical order. Document the order in the codebase and enforce it in code review.
+  UPDATE accounts SET balance = balance - :amount WHERE id = :src;
+  UPDATE accounts SET balance = balance + :amount WHERE id = :dst;
+  COMMIT;
+  ```
 
-```sql
--- Example: always lock account rows in ascending account_id order before transfer.
-BEGIN;
-SELECT * FROM accounts
-WHERE id IN (:src, :dst)
-ORDER BY id
-FOR UPDATE;
-
-UPDATE accounts SET balance = balance - :amount WHERE id = :src;
-UPDATE accounts SET balance = balance + :amount WHERE id = :dst;
-COMMIT;
-```
-
-For queue-like workloads, replace explicit `LOCK TABLE` and `SELECT ... FOR UPDATE` with `FOR UPDATE SKIP LOCKED` so workers do not contend on the same head-of-queue row.
-
-- **Impact:** Application code change — durability depends on deploy. Holds across the cluster after deploy because the change is in the client code path, not server config.
-- **Rollback:** Standard application revert (re-deploy the previous build). No server-side state to undo.
-
-**Verification:** Server log stops emitting `deadlock detected` lines for the patched code path. `pg_stat_database.deadlocks` plateaus and stops growing within one traffic cycle. Application error rate for the affected endpoint drops to zero.
+  For queue-like workloads, replace explicit `LOCK TABLE` and `SELECT ... FOR UPDATE` with `FOR UPDATE SKIP LOCKED` so workers do not contend on the same head-of-queue row. **Verification:** server log stops emitting `deadlock detected` lines for the patched path; `pg_stat_database.deadlocks` plateaus within one traffic cycle; application error rate for the endpoint drops to zero.
 
 ### Cause E: Explicit LOCK TABLE in application code serialises traffic
 
 **Statement:** Application code issues `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` (or `EXCLUSIVE`/`SHARE`) to coordinate work, but the lock blocks every concurrent reader or writer of the table for the duration of the holding transaction.
-**Mechanism:** `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` conflicts with every other table-level lock, including `AccessShareLock` taken by plain `SELECT`. While the lock is held, all DML and DDL against the table queues. Even weaker explicit modes (`EXCLUSIVE`, `SHARE ROW EXCLUSIVE`) block normal `UPDATE`/`DELETE`/`INSERT` because they conflict with `RowExclusiveLock`. The intent is usually application-level coordination (singleton job, leader election, cache rebuild) — for which a table-wide lock is the wrong tool.
-
-**Indicator:**
-
-- [Step 3] `AccessExclusiveLock` or `ExclusiveLock` present on `relation` lock types from an application backend
-- [Step 8] no DDL statement is active, yet a long-running session holds the strong table lock
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "ExclusiveLock"} -->
-
-**Mitigation:**
-
-- **Risk:** Medium. Cancelling the lock-holding session releases the table but aborts whatever the application was coordinating; the application must be safe to retry.
-- **Command:**
+**Chain:**
+- root: Application code uses `LOCK TABLE` (`ACCESS EXCLUSIVE`/`EXCLUSIVE`/`SHARE ROW EXCLUSIVE`) for application-level coordination (singleton job, leader election, cache rebuild) — the wrong tool for the job.
+- s1: The strong table lock conflicts with other table-level locks (`ACCESS EXCLUSIVE` even conflicts with the `AccessShareLock` of a plain `SELECT`; weaker explicit modes still conflict with `RowExclusiveLock`).
+- s2: While the lock is held, all DML/DDL against the table queues for the duration of the holding transaction.
+- D: Serialised traffic surfaces as latency and timeouts (see Symptom Recognition).
+**Indicators:**
+- s1: [Step 3] `AccessExclusiveLock` or `ExclusiveLock` present on `relation` lock types from an application backend.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "ExclusiveLock"} -->
+- root: [Step 8] no DDL statement is active, yet a long-running session holds the strong table lock.
+**Interventions:**
+- **mitigation** (s2): cancel the lock-holding session to release the table (the application must be safe to retry).
 
   ```sql
   -- Identify the holder from Step 2 / Step 3, then:
   SELECT pg_cancel_backend(<pid>);
   ```
 
-- **Duration:** Immediate.
+  **Risk:** Medium. Aborts whatever the application was coordinating; the application must be safe to retry. **Duration:** Immediate. **Verification:** re-run Step 3 — the strong `relation` lock from the application backend is gone; re-run Step 2 — no blocked sessions from the coordination path.
+- **remediation** (root): replace `LOCK TABLE` with a targeted coordination primitive.
 
-**Resolution:**
+  ```sql
+  -- (1) Application-level singleton: use a transaction-scoped advisory lock.
+  BEGIN;
+  SELECT pg_advisory_xact_lock(hashtext('job:cache-rebuild'));
+  -- ... do coordinated work, no other session can take the same key ...
+  COMMIT;   -- lock auto-released
 
-Replace table-level `LOCK TABLE` with one of the targeted patterns:
+  -- (2) Queue / worker pattern: row-level lock that skips contended rows.
+  SELECT id, payload
+  FROM task_queue
+  WHERE status = 'pending'
+  ORDER BY created_at
+  LIMIT 1
+  FOR UPDATE SKIP LOCKED;
 
-```sql
--- (1) Application-level singleton: use a transaction-scoped advisory lock.
-BEGIN;
-SELECT pg_advisory_xact_lock(hashtext('job:cache-rebuild'));
--- ... do coordinated work, no other session can take the same key ...
-COMMIT;   -- lock auto-released
+  -- (3) Per-row coordination: row-level FOR UPDATE on a sentinel row.
+  SELECT * FROM job_leader WHERE name = 'cache-rebuild' FOR UPDATE;
+  ```
 
--- (2) Queue / worker pattern: row-level lock that skips contended rows.
-SELECT id, payload
-FROM task_queue
-WHERE status = 'pending'
-ORDER BY created_at
-LIMIT 1
-FOR UPDATE SKIP LOCKED;
-
--- (3) Per-row coordination: row-level FOR UPDATE on a sentinel row.
-SELECT * FROM job_leader WHERE name = 'cache-rebuild' FOR UPDATE;
-```
-
-Advisory locks live in the same `pg_locks` view (`locktype = 'advisory'`), but never conflict with DML on real tables — they are pure application-level coordination primitives.
-
-- **Impact:** Application code change. Advisory locks are scoped to the session or transaction (depending on which API is used) and do not affect other workloads.
-- **Rollback:** Standard application revert.
-
-**Verification:** Re-run Step 3 — no more `ExclusiveLock`/`AccessExclusiveLock` from application backends. Re-run Step 2 — no blocked sessions caused by the coordination path. Application throughput for the affected endpoint rises as parallelism is restored.
+  Advisory locks live in the same `pg_locks` view (`locktype = 'advisory'`) but never conflict with DML on real tables. **Verification:** re-run Step 3 — no more `ExclusiveLock`/`AccessExclusiveLock` from application backends; application throughput for the affected endpoint rises as parallelism is restored.
 
 ### Cause F: Sequential scan on large table widens lock footprint
 
-**Statement:** A query lacking an index forces PostgreSQL into a sequential scan, which acquires row-level locks (under `FOR UPDATE` or implicit `UPDATE`) on every row visited rather than just the matching rows, multiplying the lock footprint and the contention surface.
-**Mechanism:** An `UPDATE`/`DELETE` with a `WHERE` predicate that has no supporting index runs as a sequential scan. Each visited row receives a tuple-level lock during the scan; if the table is large, the scan touches millions of rows and holds locks against all of them until commit. Concurrent transactions trying to update any of those rows wait on `wait_event = tuple`. The same `UPDATE` with a usable index acquires locks only on the rows that actually match the predicate.
-
-**Indicator:**
-
-- [Step 4] one relation shows a disproportionately large count of `RowExclusiveLock` rows compared to its expected write rate
-- [Step 2] multiple blocked sessions are waiting on tuple-level locks against the same relation
-
-<!-- match: {"step": 4, "predicate": "contains", "target": "RowExclusiveLock"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Adding a `LIMIT` and a tighter `WHERE` to the offending query reduces lock footprint immediately if the application can be patched. Otherwise, cancelling the scan via `pg_cancel_backend` is the only short-term lever.
-- **Command:**
+**Statement:** A query lacking an index forces PostgreSQL into a sequential scan, which acquires row-level locks (under `FOR UPDATE` or implicit `UPDATE`) on every row visited rather than just the matching rows, multiplying the lock footprint and contention surface.
+**Chain:**
+- root: An `UPDATE`/`DELETE` with a `WHERE` predicate that has no supporting index is planned as a sequential scan.
+- s1: Each visited row receives a tuple-level lock during the scan; on a large table the scan touches and locks millions of rows, holding them until commit.
+- s2: Concurrent transactions trying to update any of those rows wait on `wait_event = tuple` against the same relation.
+- D: The widened lock footprint accumulates waiters and surfaces as latency/timeouts (see Symptom Recognition).
+**Indicators:**
+- s1: [Step 4] one relation shows a disproportionately large count of `RowExclusiveLock` rows compared to its expected write rate.
+  <!-- match: {"step": 4, "predicate": "contains", "target": "RowExclusiveLock"} -->
+- s2: [Step 2] multiple blocked sessions are waiting on tuple-level locks against the same relation.
+**Interventions:**
+- **mitigation** (s1): confirm the scan with EXPLAIN, then narrow the query (tighter `WHERE`/`LIMIT`) or cancel the scan.
 
   ```sql
   -- Confirm the scan via EXPLAIN (do NOT use EXPLAIN ANALYZE on a live UPDATE):
@@ -469,54 +420,44 @@ Advisory locks live in the same `pg_locks` view (`locktype = 'advisory'`), but n
   -- Look for "Seq Scan on orders" with a high estimated row count.
   ```
 
-- **Duration:** EXPLAIN is read-only — safe to run on production.
-
-**Resolution:**
-
-```sql
--- Identify sequential-scan-heavy tables:
-SELECT schemaname, relname,
-       seq_scan, idx_scan,
-       seq_tup_read, idx_tup_fetch
-FROM pg_stat_user_tables
-WHERE seq_scan > idx_scan
-  AND seq_tup_read > 100000
-ORDER BY seq_tup_read DESC
-LIMIT 20;
-
--- Add the supporting index without blocking:
-CREATE INDEX CONCURRENTLY idx_orders_status_order_date
-  ON orders (status, order_date);
-
--- Verify the new plan uses Index Scan / Index Only Scan, not Seq Scan:
-EXPLAIN UPDATE orders SET status = 'shipped' WHERE order_date < now() - interval '30 days';
-```
-
-- **Impact:** New index consumes disk (roughly 30–60% of base-table size for the indexed columns) and adds write amplification on every `INSERT`/`UPDATE` to the indexed columns. Affects only the indexed table — no cluster-wide change.
-- **Rollback:**
+  **Risk:** Low. Adding a `LIMIT` and tighter `WHERE` reduces the lock footprint immediately if the application can be patched; otherwise cancelling via `pg_cancel_backend` is the only short-term lever. **Duration:** EXPLAIN is read-only — safe on production. **Verification:** the new plan no longer shows `Seq Scan` for the patched query; Step 4 hotspot count drops.
+- **remediation** (root): add the supporting index so the query plans an index scan, locking only matching rows.
 
   ```sql
-  DROP INDEX CONCURRENTLY idx_orders_status_order_date;
+  -- Identify sequential-scan-heavy tables:
+  SELECT schemaname, relname,
+         seq_scan, idx_scan,
+         seq_tup_read, idx_tup_fetch
+  FROM pg_stat_user_tables
+  WHERE seq_scan > idx_scan
+    AND seq_tup_read > 100000
+  ORDER BY seq_tup_read DESC
+  LIMIT 20;
+
+  -- Add the supporting index without blocking:
+  CREATE INDEX CONCURRENTLY idx_orders_status_order_date
+    ON orders (status, order_date);
+
+  -- Verify the new plan uses Index Scan / Index Only Scan, not Seq Scan:
+  EXPLAIN UPDATE orders SET status = 'shipped' WHERE order_date < now() - interval '30 days';
   ```
 
-**Verification:** `pg_stat_user_tables.seq_scan` for the table plateaus while `idx_scan` rises after the index is built. Re-run Step 4 — the relation no longer dominates the lock count. Concurrent `UPDATE` throughput on the table rises.
+  **Verification:** `pg_stat_user_tables.seq_scan` for the table plateaus while `idx_scan` rises; re-run Step 4 — the relation no longer dominates the lock count; concurrent `UPDATE` throughput rises.
 
 ### Cause G: Foreign-key check serialises updates to the parent row
 
 **Statement:** An `UPDATE`/`INSERT` on a child table triggers a foreign-key check that acquires `FOR KEY SHARE` on the referenced parent row; many concurrent child writes against the same parent row queue on that shared lock.
-**Mechanism:** When a child row is inserted or its FK column is updated, PostgreSQL acquires `FOR KEY SHARE` on the referenced parent row to prevent the parent from being deleted or having its key changed mid-transaction. `FOR KEY SHARE` is compatible with other `FOR KEY SHARE` and `FOR SHARE` locks, but conflicts with `FOR UPDATE` and `FOR NO KEY UPDATE`. If a long transaction does `SELECT ... FOR UPDATE` on the parent, every concurrent child write blocks until that transaction commits. Symptoms look like "random writes to unrelated child rows are slow" — but the FK to a hot parent is the actual coupling.
-
-**Indicator:**
-
-- [Step 2] blocked sessions are running INSERT/UPDATE on a child table; the blocker holds a lock on the parent
-- [Step 3] `RowShareLock` or `ShareLock` counts are elevated against the parent relation
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "ShareLock"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Shortening the parent-side transaction is the only safe quick fix; do not drop the FK constraint as a panic measure (it changes data integrity guarantees).
-- **Command:**
+**Chain:**
+- root: A long parent-side transaction holds `FOR UPDATE`/`FOR NO KEY UPDATE` on a hot parent row.
+- s1: Each child INSERT/FK-column UPDATE acquires `FOR KEY SHARE` on the referenced parent row to prevent the key changing mid-transaction.
+- s2: `FOR KEY SHARE` conflicts with the parent-side `FOR UPDATE`/`FOR NO KEY UPDATE`, so every concurrent child write blocks until the parent transaction commits — symptoms look like unrelated child rows being randomly slow.
+- D: The serialised child writes surface as latency/timeouts (see Symptom Recognition).
+**Indicators:**
+- s2: [Step 2] blocked sessions are running INSERT/UPDATE on a child table; the blocker holds a lock on the parent.
+- s1: [Step 3] `RowShareLock` or `ShareLock` counts are elevated against the parent relation.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "ShareLock"} -->
+**Interventions:**
+- **mitigation** (root): find and cancel the long parent-side `FOR UPDATE` transaction; do not drop the FK as a panic measure.
 
   ```sql
   -- Find the parent-side blocker (long FOR UPDATE / FOR NO KEY UPDATE transaction):
@@ -530,49 +471,29 @@ EXPLAIN UPDATE orders SET status = 'shipped' WHERE order_date < now() - interval
   SELECT pg_cancel_backend(<pid>);
   ```
 
-- **Duration:** Immediate.
-
-**Resolution:**
-
-Patch the parent-side transaction to commit before the FK-protected child writes start, or split the long parent transaction into smaller units. Where the FK is only needed for offline reporting (not real-time integrity), consider `DEFERRABLE INITIALLY DEFERRED`:
-
-```sql
--- Make the FK deferred so the check runs at COMMIT rather than at statement time.
--- Child writes no longer block on the parent's FOR KEY SHARE during long transactions.
-ALTER TABLE order_items
-  DROP CONSTRAINT order_items_order_id_fkey;
-ALTER TABLE order_items
-  ADD CONSTRAINT order_items_order_id_fkey
-    FOREIGN KEY (order_id) REFERENCES orders(id)
-    DEFERRABLE INITIALLY DEFERRED;
-```
-
-- **Impact:** Schema change. Deferred FKs still enforce integrity at commit time but report violations later — application error handling must catch FK violations on `COMMIT`, not just on the offending `INSERT`/`UPDATE`. `ALTER TABLE ... DROP CONSTRAINT` takes `AccessExclusiveLock` briefly on the child table.
-- **Rollback:**
+  **Risk:** Low. Shortening the parent-side transaction is the only safe quick fix; dropping the FK changes data-integrity guarantees. **Duration:** Immediate. **Verification:** re-run Step 2 — child INSERT/UPDATE no longer blocks on the parent lock.
+- **remediation** (root): commit the parent-side transaction before child writes, split long parent transactions, or make the FK deferred where real-time integrity is not required.
 
   ```sql
+  -- Make the FK deferred so the check runs at COMMIT rather than at statement time.
+  -- Child writes no longer block on the parent's FOR KEY SHARE during long transactions.
   ALTER TABLE order_items
     DROP CONSTRAINT order_items_order_id_fkey;
   ALTER TABLE order_items
     ADD CONSTRAINT order_items_order_id_fkey
-      FOREIGN KEY (order_id) REFERENCES orders(id);
+      FOREIGN KEY (order_id) REFERENCES orders(id)
+      DEFERRABLE INITIALLY DEFERRED;
   ```
 
-**Verification:** Re-run Step 2 during the same workload — child INSERT/UPDATE no longer blocks on parent locks. Application throughput on the child table rises in proportion to the removed serialisation.
+  Deferred FKs still enforce integrity at commit time but report violations at `COMMIT` — application error handling must catch FK violations there, not just on the offending statement. `DROP CONSTRAINT` takes a brief `AccessExclusiveLock` on the child table. **Verification:** re-run Step 2 during the same workload — child INSERT/UPDATE no longer blocks on parent locks; application throughput on the child table rises in proportion to the removed serialisation.
 
 ### Cause Z: Unidentified
 
 **Statement:** Diagnostic steps do not produce a clear signal — no obvious blocker in `pg_stat_activity`, no DDL in flight, no recurring deadlocks, no sequential-scan hotspots — yet the application reports query timeouts and lock-related latency.
-**Mechanism:** Lock-contention symptoms can be caused by interactions that the steps above do not directly probe: lightweight-lock (LWLock) contention on shared buffers under extreme write load, predicate locks under serializable isolation, replication-induced waits on standbys, autovacuum holding `ShareUpdateExclusiveLock` longer than expected, or kernel-level scheduler stalls masquerading as lock waits. Without a clear signal, applying any of the Cause A–G fixes risks masking the actual driver and recurring at the next peak.
-
-**Indicator:**
-
+**Indicators:**
 - [Default]
-
-**Mitigation:**
-
-- **Risk:** Diagnostic only — no system-state change.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot and escalate to the database SME/DBA on call.
 
   ```sql
   -- Snapshot the full lock and activity state for offline analysis:
@@ -593,10 +514,7 @@ ALTER TABLE order_items
   WHERE backend_type = 'autovacuum worker';
   ```
 
-- **Duration:** Read-only; safe to leave running.
-
-**Resolution:** Out of runbook scope. Escalate to the database SRE/DBA on call with the snapshots above, the time window of the application incident, and the dominant `wait_event_type` / `wait_event` pair observed. Add a follow-up runbook for the new failure mode once root cause is identified.
-**Verification:** Escalation acknowledged with snapshots attached; an incident review captures the new pattern.
+  Escalate to the database SRE/DBA on call with the snapshots above, the time window of the application incident, and the dominant `wait_event_type` / `wait_event` pair observed; add a follow-up runbook for the new failure mode once root cause is identified. **Risk:** Diagnostic only — read-only, no system-state change. **Duration:** Read-only; safe to leave running. **Verification:** escalation acknowledged with snapshots attached; an incident review captures the new pattern.
 
 ## Prevention
 

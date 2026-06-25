@@ -7,8 +7,8 @@ symptom_class:
   - auth_failure
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: kb-researcher
 status: draft
 tags:
@@ -207,24 +207,47 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 
 ## Causes
 
-### Cause A: Caller's identity-based policy does not allow the action (implicit deny)
+### Cause A: Identity-based policy implicit deny
 
 **Statement:** No identity-based policy attached to the calling IAM user, role, group, or session grants the action on the target resource, so AWS defaults to deny because no policy explicitly allows it.
 
-**Mechanism:** IAM evaluates the union of all identity-based policies attached to the caller — managed policies, inline policies, group policies for users — and finds no `Allow` statement whose `Action` and `Resource` match the request. Because IAM is deny-by-default, the absence of any matching Allow is an implicit deny; AWS returns `AccessDenied` with the enhanced context `because no identity-based policy allows the <action> action`. This is the most common Access Denied cause and is the path taken whenever a new principal, action, or resource has not yet been added to the caller's permission set.
+**Chain:**
+- root: no identity-based policy attached to the caller (managed, inline, or group) carries an Allow whose Action and Resource match the request.
+- s1: IAM evaluates the union of attached identity-based policies and finds no matching Allow statement.
+- s2: deny-by-default applies — the absence of any matching Allow is an implicit deny.
+- D: AWS returns HTTP 403 `AccessDenied` with `because no identity-based policy allows the <action> action` (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] no attached policy contains an `"Effect": "Allow"` statement whose `Action` and `Resource` match the failing call.
+- s2: [Step 3] `simulate-principal-policy` returns `Decision: implicitDeny` for the action.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "implicitDeny"} -->
+- D: [Step 1] error message contains `because no identity-based policy allows`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "because no identity-based policy allows"} -->
 
-- [Step 1] error message contains `because no identity-based policy allows`
-<!-- match: {"step": 1, "predicate": "contains", "target": "because no identity-based policy allows"} -->
-- [Step 3] `simulate-principal-policy` returns `Decision: implicitDeny` for the action
-<!-- match: {"step": 3, "predicate": "contains", "target": "implicitDeny"} -->
-- [Step 4] no attached policy contains an `"Effect": "Allow"` statement whose `Action` and `Resource` match the failing call
+**Interventions:**
+- **remediation** (root): author a targeted inline Allow scoped to the action and resource.
 
-**Mitigation:**
+  ```bash
+  cat > /tmp/targeted-allow.json <<'EOF'
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": ["<service:Operation>"],
+        "Resource": ["<resource-arn>"]
+      }
+    ]
+  }
+  EOF
+  aws iam put-role-policy \
+    --role-name <caller-role-name> \
+    --policy-name AllowTargetedAction \
+    --policy-document file:///tmp/targeted-allow.json
+  ```
 
-- **Risk:** Attaching a broad managed policy (e.g., `<service>FullAccess` such as `AmazonEC2FullAccess`, `AWSLambda_FullAccess`) grants every action in the service, exceeding least-privilege; use only while the targeted policy in Resolution is authored.
-- **Command:**
+  **Verification:** `aws iam simulate-principal-policy --policy-source-arn <caller-arn> --action-names <service:Operation> --resource-arns <resource-arn>` returns `Decision: allowed`; re-running the original call succeeds with HTTP 200 and CloudTrail records it with no `errorCode`.
+- **mitigation** (root): attach a broad managed policy while the targeted Allow is authored.
 
   ```bash
   aws iam attach-role-policy \
@@ -232,53 +255,40 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
     --policy-arn arn:aws:iam::aws:policy/<ServiceFullAccessPolicy>
   ```
 
-- **Duration:** Up to 24 hours, removed once the targeted policy in Resolution is in place.
+  **Risk:** `<service>FullAccess` (e.g., `AmazonEC2FullAccess`, `AWSLambda_FullAccess`) grants every action in the service, exceeding least-privilege. **Duration:** Up to 24 hours, removed once the targeted policy is in place (`aws iam detach-role-policy --role-name <caller-role-name> --policy-arn arn:aws:iam::aws:policy/<ServiceFullAccessPolicy>`). **Verification:** the original call succeeds; remove and confirm the targeted Allow alone still returns `Decision: allowed`.
 
-**Resolution:**
-
-```bash
-cat > /tmp/targeted-allow.json <<'EOF'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["<service:Operation>"],
-      "Resource": ["<resource-arn>"]
-    }
-  ]
-}
-EOF
-aws iam put-role-policy \
-  --role-name <caller-role-name> \
-  --policy-name AllowTargetedAction \
-  --policy-document file:///tmp/targeted-allow.json
-```
-
-**Impact:** Affects only the named role/user. The grant propagates to all regional STS/IAM endpoints within seconds (typically <10 s, occasionally up to 60 s for IAM eventual consistency).
-
-**Rollback:** `aws iam delete-role-policy --role-name <caller-role-name> --policy-name AllowTargetedAction` removes the inline policy. If the temporary mitigation managed policy was attached, also run `aws iam detach-role-policy --role-name <caller-role-name> --policy-arn arn:aws:iam::aws:policy/<ServiceFullAccessPolicy>`.
-
-**Verification:** `aws iam simulate-principal-policy --policy-source-arn <caller-arn> --action-names <service:Operation> --resource-arns <resource-arn>` returns `Decision: allowed`. Re-running the original failing call succeeds with HTTP 200, and CloudTrail records the new call without an `errorCode`.
-
-### Cause B: Identity-based policy contains an explicit Deny matching the request
+### Cause B: Identity-based policy explicit deny
 
 **Statement:** A `Deny` statement in one of the caller's identity-based policies matches the action or resource and overrides any Allow elsewhere, so the request is blocked even when other policies permit it.
 
-**Mechanism:** When AWS evaluates the caller's identity-based policies, an explicit `Deny` always wins over an explicit `Allow`, regardless of policy ordering or source. Common patterns: a "guardrail" inline policy added during an incident that was never removed; an `iam:DeleteVirtualMFADevice` deny added to prevent self-service MFA removal; a `*FullAccess` allow paired with a `Deny` on a specific resource ARN. The enhanced error message reads `with an explicit deny in an identity-based policy` and may include the offending policy ARN.
+**Chain:**
+- root: an attached identity-based policy carries a `Deny` statement whose Action and Resource match the request (e.g., an un-removed incident guardrail, an `iam:DeleteVirtualMFADevice` deny, or a `Deny` on a specific resource ARN paired with a `*FullAccess` allow).
+- s1: IAM evaluates the policies and an explicit `Deny` always wins over any explicit `Allow`, regardless of ordering or source.
+- D: AWS returns HTTP 403 with `with an explicit deny in an identity-based policy` (optionally `: <policy-arn>`) (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] an attached policy contains an `"Effect": "Deny"` statement whose `Action` and `Resource` match the failing call.
+- s1: [Step 3] `simulate-principal-policy` returns `Decision: explicitDeny` and `MatchedStatements` names an identity-policy ARN (not SCP, not permissions boundary).
+  <!-- match: {"step": 3, "predicate": "contains", "target": "explicitDeny"} -->
+- D: [Step 1] error message contains `with an explicit deny in an identity-based policy`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "with an explicit deny in an identity-based policy"} -->
 
-- [Step 1] error message contains `with an explicit deny in an identity-based policy`
-<!-- match: {"step": 1, "predicate": "contains", "target": "with an explicit deny in an identity-based policy"} -->
-- [Step 3] `simulate-principal-policy` returns `Decision: explicitDeny` and `MatchedStatements` names an identity-policy ARN (not SCP, not permissions boundary)
-<!-- match: {"step": 3, "predicate": "contains", "target": "explicitDeny"} -->
-- [Step 4] an attached policy contains an `"Effect": "Deny"` statement whose `Action` and `Resource` match the failing call
+**Interventions:**
+- **remediation** (root): publish a corrected policy version with the Deny removed or its Condition narrowed so the caller no longer matches.
 
-**Mitigation:**
+  ```bash
+  # Edit /tmp/policy-fixed.json: delete the Deny statement, or narrow its Condition
+  # so the caller no longer matches (e.g., add the caller's ARN to a NotPrincipal list).
+  aws iam create-policy-version \
+    --policy-arn <deny-policy-arn> \
+    --policy-document file:///tmp/policy-fixed.json \
+    --set-as-default
+  # Old version remains available for rollback until manually deleted.
+  aws iam list-policy-versions --policy-arn <deny-policy-arn>
+  ```
 
-- **Risk:** Removing a Deny statement may re-enable access that was intentionally restricted by the security team; coordinate with the policy owner before editing the live default version.
-- **Command:**
+  **Verification:** `aws iam simulate-principal-policy ...` now returns `Decision: allowed`; the original call succeeds; `aws iam get-policy --policy-arn <deny-policy-arn> --query 'Policy.DefaultVersionId'` shows the new version is in effect. Rollback with `aws iam set-default-policy-version --policy-arn <deny-policy-arn> --version-id <prior-version-id>`.
+- **mitigation** (root): back up the current default version before editing the live policy.
 
   ```bash
   POLICY_ARN=<deny-policy-arn>
@@ -287,101 +297,92 @@ aws iam put-role-policy \
     --query 'PolicyVersion.Document' > /tmp/policy-backup.json
   ```
 
-- **Duration:** Backup only — keep until the corrected policy version in Resolution is verified.
+  **Risk:** Removing a Deny may re-enable access the security team intentionally restricted; coordinate with the policy owner before editing the live default version. **Duration:** Backup only — keep until the corrected version is verified. **Verification:** `/tmp/policy-backup.json` contains the pre-edit document and can restore it.
 
-**Resolution:**
-
-```bash
-# Edit /tmp/policy-backup.json: delete the Deny statement, or narrow its Condition
-# so the caller no longer matches (e.g., add the caller's ARN to a NotPrincipal list).
-aws iam create-policy-version \
-  --policy-arn <deny-policy-arn> \
-  --policy-document file:///tmp/policy-fixed.json \
-  --set-as-default
-# Old version remains available for rollback until manually deleted.
-aws iam list-policy-versions --policy-arn <deny-policy-arn>
-```
-
-**Impact:** Every principal that has the modified policy attached is affected. The new default version takes effect within seconds of IAM propagation; existing sessions pick up the change on the next call.
-
-**Rollback:** `aws iam set-default-policy-version --policy-arn <deny-policy-arn> --version-id <prior-version-id>` restores the previous default. Optionally `aws iam delete-policy-version --policy-arn <deny-policy-arn> --version-id <new-version-id>` removes the broken version.
-
-**Verification:** `aws iam simulate-principal-policy ...` now returns `Decision: allowed`. The original failing call succeeds. `aws iam get-policy --policy-arn <deny-policy-arn> --query 'Policy.DefaultVersionId'` shows the new version ID is in effect.
-
-### Cause C: Permissions boundary on the caller does not allow the action
+### Cause C: Permissions boundary excludes the action
 
 **Statement:** A permissions boundary attached to the caller's IAM user or role caps the effective permissions and does not include the action, so the intersection of identity policies and boundary excludes the action even when the identity policies permit it.
 
-**Mechanism:** A permissions boundary is a managed policy that sets the maximum permissions an IAM entity can have. The effective permissions for a principal are the intersection of identity-based policies and the permissions boundary. An action must be allowed by both; otherwise it is implicitly denied. An explicit Deny in the boundary also overrides any Allow. Permissions boundaries are commonly used to delegate user creation while preventing privilege escalation, and to enforce account-wide allow-lists per team or workload. Boundaries do not constrain resource-based policies that grant directly to an IAM-user ARN (within the same account), but they do constrain access granted to an IAM-role ARN or an STS session.
+**Chain:**
+- root: a permissions boundary (a managed policy capping maximum permissions) is attached to the caller and either omits the action from any Allow or carries a `Deny` for it.
+- s1: the effective permissions are the intersection of identity-based policies and the boundary; an action must be allowed by both, and an explicit Deny in the boundary overrides any Allow.
+- s2: the action is excluded from the intersection (or explicitly denied by the boundary), so it is denied regardless of how permissive the identity policies are.
+- D: AWS returns HTTP 403 with `because no permissions boundary allows` or `with an explicit deny in a permissions boundary` (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] the caller has a non-null `PermissionsBoundary` whose policy document omits the action from any Allow or includes a Deny for it.
+- s2: [Step 3] `simulate-principal-policy` returns `PermissionsBoundaryDecisionDetail.AllowedByPermissionsBoundary: false`.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "AllowedByPermissionsBoundary"} -->
+- D: [Step 1] error message contains `permissions boundary`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "permissions boundary"} -->
 
-- [Step 1] error message contains `permissions boundary` (either `because no permissions boundary allows` or `with an explicit deny in a permissions boundary`)
-<!-- match: {"step": 1, "predicate": "contains", "target": "permissions boundary"} -->
-- [Step 3] `simulate-principal-policy` returns `PermissionsBoundaryDecisionDetail.AllowedByPermissionsBoundary: false`
-<!-- match: {"step": 3, "predicate": "contains", "target": "AllowedByPermissionsBoundary"} -->
-- [Step 5] the caller has a non-null `PermissionsBoundary` whose policy document omits the action from any Allow or includes a Deny for it
-
-**Mitigation:**
-
-- **Risk:** Detaching the permissions boundary removes the entire guardrail and may unintentionally expose other services the boundary was restricting; never detach in production without security-team approval.
-- **Command:**
+**Interventions:**
+- **remediation** (root): update the boundary policy to include the missing action.
 
   ```bash
-  # Capture the current boundary for restoration
+  BOUNDARY_ARN=$(aws iam get-role --role-name <caller-role-name> \
+    --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output text)
+  cat > /tmp/boundary-updated.json <<'EOF'
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": ["<existing-allowed-actions>", "<service:Operation>"],
+        "Resource": "*"
+      }
+    ]
+  }
+  EOF
+  aws iam create-policy-version \
+    --policy-arn "$BOUNDARY_ARN" \
+    --policy-document file:///tmp/boundary-updated.json \
+    --set-as-default
+  ```
+
+  **Verification:** `aws iam simulate-principal-policy ...` returns `AllowedByPermissionsBoundary: true` and `Decision: allowed`; the original call succeeds; `aws iam get-policy --policy-arn "$BOUNDARY_ARN" --query 'Policy.DefaultVersionId'` shows the updated version. Rollback with `aws iam set-default-policy-version --policy-arn "$BOUNDARY_ARN" --version-id <prior-version-id>`.
+- **mitigation** (root): capture the current boundary for restoration before changing it.
+
+  ```bash
   aws iam get-role --role-name <caller-role-name> --query 'Role.PermissionsBoundary' \
     > /tmp/boundary-backup.json
   ```
 
-- **Duration:** Backup only — keep until the corrected boundary version in Resolution is applied.
+  **Risk:** Detaching the boundary removes the entire guardrail and may expose other services it was restricting; never detach in production without security-team approval. **Duration:** Backup only — keep until the corrected boundary is applied. **Verification:** `/tmp/boundary-backup.json` holds the prior boundary reference for `aws iam put-role-permissions-boundary --role-name <caller-role-name> --permissions-boundary <prior-boundary-arn>`.
 
-**Resolution:**
-
-```bash
-# Preferred durable fix: update the boundary policy to include the missing action.
-BOUNDARY_ARN=$(aws iam get-role --role-name <caller-role-name> \
-  --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output text)
-cat > /tmp/boundary-updated.json <<'EOF'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["<existing-allowed-actions>", "<service:Operation>"],
-      "Resource": "*"
-    }
-  ]
-}
-EOF
-aws iam create-policy-version \
-  --policy-arn "$BOUNDARY_ARN" \
-  --policy-document file:///tmp/boundary-updated.json \
-  --set-as-default
-```
-
-**Impact:** Every principal sharing this boundary is affected. The change propagates within seconds at the IAM control plane; existing sessions pick up the new boundary on the next authorization decision (no resign needed).
-
-**Rollback:** `aws iam set-default-policy-version --policy-arn "$BOUNDARY_ARN" --version-id <prior-version-id>` reverts the boundary. Or, for a single principal: `aws iam put-role-permissions-boundary --role-name <caller-role-name> --permissions-boundary <prior-boundary-arn>`.
-
-**Verification:** `aws iam simulate-principal-policy ...` returns `AllowedByPermissionsBoundary: true` and `Decision: allowed`. The original failing call succeeds. `aws iam get-policy --policy-arn "$BOUNDARY_ARN" --query 'Policy.DefaultVersionId'` shows the updated version.
-
-### Cause D: Policy Condition keys exclude the caller's request context
+### Cause D: Policy Condition excludes the request context
 
 **Statement:** A Condition clause on an otherwise-permissive identity-based or resource-based policy does not match the caller's request context (source VPC, source IP, requested region, MFA state, principal/resource tags, time-of-day), turning the Allow into an implicit deny for this specific request.
 
-**Mechanism:** When an IAM policy statement carries a `Condition`, every key in the condition must evaluate true for the statement to apply. Common patterns: `aws:SourceVpc` restricts API calls to a specific VPC; `aws:SourceIp` restricts to corporate CIDR ranges; `aws:RequestedRegion` restricts to a region allow-list; `aws:MultiFactorAuthPresent: true` requires MFA on the session; `aws:RequestTag/<key>` enforces a tag on the request payload; `aws:ResourceTag/<key>` enforces a tag on the target resource; `aws:PrincipalOrgID` restricts to a specific AWS Organization. When a call arrives without the required context (no MFA, wrong region, missing tag), the Allow statement's condition fails and IAM evaluates as if the Allow were absent, producing an implicit deny.
+**Chain:**
+- root: a matching Allow statement carries a `Condition` (e.g., `aws:SourceVpc`, `aws:SourceIp`, `aws:RequestedRegion`, `aws:MultiFactorAuthPresent`, `aws:RequestTag/*`, `aws:ResourceTag/*`, `aws:PrincipalOrgID`) whose required value the caller's request context does not satisfy.
+- s1: the request arrives without the required context (no MFA, wrong region, missing tag), so the Condition evaluates false.
+- s2: IAM evaluates as if the conditioned Allow were absent, producing an implicit deny for this specific request.
+- D: AWS returns HTTP 403 with `because no identity-based policy allows the <action> action` even though the policies grammatically appear to permit the action (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 9] grep shows a `Condition` block on the matching Allow statement referencing the caller's request context (`aws:SourceVpc`, `aws:SourceIp`, `aws:RequestedRegion`, `aws:MultiFactorAuthPresent`, `aws:RequestTag/*`, `aws:ResourceTag/*`, `aws:PrincipalOrgID`).
+  <!-- match: {"step": 9, "predicate": "contains", "target": "aws:"} -->
+- s2: [Step 3] `simulate-principal-policy` returns `implicitDeny` despite Step 4 showing a matching Allow statement on paper.
+- D: [Step 1] error message contains `because no identity-based policy allows`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "because no identity-based policy allows"} -->
 
-- [Step 1] error message contains `because no identity-based policy allows` (the condition-failed Allow falls back to implicit deny) and the caller's policies grammatically appear to permit the action
-- [Step 3] `simulate-principal-policy` returns `implicitDeny` despite Step 4 showing a matching Allow statement on paper
-- [Step 9] grep shows a `Condition` block on the matching Allow statement that references the caller's request context (`aws:SourceVpc`, `aws:SourceIp`, `aws:RequestedRegion`, `aws:MultiFactorAuthPresent`, `aws:RequestTag/*`, `aws:ResourceTag/*`, `aws:PrincipalOrgID`)
-<!-- match: {"step": 9, "predicate": "contains", "target": "aws:"} -->
+**Interventions:**
+- **remediation** (root): satisfy the Condition by submitting the call from a matching context, adding the required tag, or (with security review) narrowing the Condition.
 
-**Mitigation:**
+  ```bash
+  # Option A: Submit the call from a context that matches the Condition (preferred).
+  aws --region <region-from-aws:RequestedRegion-allow-list> <service> <operation>
+  # Option B: Add a tag the policy requires.
+  aws <service> tag-resource --resource-arn <arn> --tags Key=Environment,Value=production
+  # Option C: If the Condition is over-restrictive for a legitimate use, narrow it
+  # via a policy version edit. Example: add a second CIDR to aws:SourceIp.
+  aws iam create-policy-version --policy-arn <policy-arn> \
+    --policy-document file:///tmp/policy-with-broader-condition.json --set-as-default
+  ```
 
-- **Risk:** Satisfying the condition (e.g., re-running the call from inside the required VPC, re-authenticating with MFA, adding the required tag) carries no IAM risk but may require operational changes (VPN, MFA-enabled session); do not weaken the condition without security review.
-- **Command:**
+  **Verification:** re-run the original call with the corrected context; it returns HTTP 200. `aws iam simulate-principal-policy --policy-source-arn <caller> --action-names <action> --resource-arns <resource> --context-entries ContextKeyName=aws:SourceVpc,ContextKeyValues=<vpc-id>,ContextKeyType=string` returns `Decision: allowed` when the simulated context matches. Option C rollback: `aws iam set-default-policy-version --policy-arn <policy-arn> --version-id <prior-version-id>`.
+- **mitigation** (s1): re-establish the request context the Condition expects without changing any policy.
 
   ```bash
   # Re-establish the request context the condition expects:
@@ -392,45 +393,50 @@ aws iam create-policy-version \
   # Source VPC: run from an instance inside the VPC, or use an interface endpoint
   ```
 
-- **Duration:** Indefinite — this is the correct way to satisfy a Condition; no rollback required.
+  **Risk:** Satisfying the condition carries no IAM risk but may require operational changes (VPN, MFA-enabled session); do not weaken the condition without security review. **Duration:** Indefinite — this is the correct way to satisfy a Condition; no rollback required. **Verification:** the re-run from the matching context returns HTTP 200.
 
-**Resolution:**
-
-```bash
-# Option A: Submit the call from a context that matches the Condition (preferred).
-aws --region <region-from-aws:RequestedRegion-allow-list> <service> <operation>
-# Option B: Add a tag the policy requires.
-aws <service> tag-resource --resource-arn <arn> --tags Key=Environment,Value=production
-# Option C: If the Condition is over-restrictive for a legitimate use, narrow it
-# via a policy version edit. Example: add a second CIDR to aws:SourceIp.
-aws iam create-policy-version --policy-arn <policy-arn> \
-  --policy-document file:///tmp/policy-with-broader-condition.json --set-as-default
-```
-
-**Impact:** Option A and B affect only the current call/resource. Option C is policy-wide: every caller using this policy gets the relaxed condition; treat as a security-team change.
-
-**Rollback:** For Option C: `aws iam set-default-policy-version --policy-arn <policy-arn> --version-id <prior-version-id>`. Options A and B have no rollback because they did not change configuration.
-
-**Verification:** Re-run the original call with the corrected context; it returns HTTP 200. `aws iam simulate-principal-policy --policy-source-arn <caller> --action-names <action> --resource-arns <resource> --context-entries ContextKeyName=aws:SourceVpc,ContextKeyValues=<vpc-id>,ContextKeyType=string` returns `Decision: allowed` when the simulated context matches the policy.
-
-### Cause E: Session policy passed to AssumeRole over-restricts the role's permissions
+### Cause E: Session policy over-restricts the assumed role
 
 **Statement:** A session policy supplied as the `Policy` or `PolicyArns` parameter to `sts:AssumeRole` (or to a federation call) does not allow the action, so the session's effective permissions — the intersection of the role's identity policies and the session policy — exclude the action.
 
-**Mechanism:** Session policies are passed at AssumeRole time and further restrict an assumed role for the lifetime of the session. The session's effective permissions are the intersection of the role's identity-based policies and the session policy (and the permissions boundary, if any). A common cause is CI/CD code or an SDK wrapper that automatically adds a session policy intended to scope the session, but which omits actions the workload actually needs. The enhanced error reads `because no session policy allows the <action> action` (implicit) or `with an explicit deny in a session policy` (explicit).
+**Chain:**
+- root: a session policy was passed at AssumeRole time (commonly by CI/CD code or an SDK wrapper) that omits an action the workload needs.
+- s1: the session's effective permissions are the intersection of the role's identity-based policies, the session policy, and any boundary — the missing action is excluded by the session policy.
+- D: AWS returns HTTP 403 with `because no session policy allows the <action> action` (implicit) or `with an explicit deny in a session policy` (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] the AssumeRole CloudTrail event for the current session has a non-empty `requestParameters.policy` or `requestParameters.policyArns`.
+  <!-- match: {"step": 8, "predicate": "contains", "target": "policy"} -->
+- s1: [Step 3] `simulate-principal-policy` against the role itself returns `allowed`, but the runtime call still fails — indicating a restriction beyond the role's identity policies.
+- D: [Step 1] error message contains `session policy`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "session policy"} -->
 
-- [Step 1] error message contains `session policy`
-<!-- match: {"step": 1, "predicate": "contains", "target": "session policy"} -->
-- [Step 8] the AssumeRole CloudTrail event for the current session has a non-empty `requestParameters.policy` or `requestParameters.policyArns`
-<!-- match: {"step": 8, "predicate": "contains", "target": "policy"} -->
-- [Step 3] `simulate-principal-policy` against the role itself returns `allowed`, but the runtime call still fails — indicating an additional restriction beyond the role's identity policies
+**Interventions:**
+- **remediation** (root): edit the caller (CI script, SDK wrapper, IAM Identity Center permission set) to drop the session policy or broaden it to include the missing action.
 
-**Mitigation:**
+  ```bash
+  # Edit the caller (CI script, SDK wrapper, IAM Identity Center permission set) to
+  # either drop the session policy or broaden it to include the missing action.
+  # Example boto3 fix:
+  python3 - <<'EOF'
+  import boto3, json
+  sts = boto3.client('sts')
+  session_policy = {
+      "Version": "2012-10-17",
+      "Statement": [
+          {"Effect": "Allow", "Action": ["<existing-actions>", "<service:Operation>"], "Resource": "*"}
+      ]
+  }
+  sts.assume_role(
+      RoleArn="<role-arn>",
+      RoleSessionName="<session-name>",
+      Policy=json.dumps(session_policy),
+  )
+  EOF
+  ```
 
-- **Risk:** Re-assuming the role without the session policy temporarily restores full role permissions, which may exceed what the workload should have for the duration of the session; use only as a stopgap.
-- **Command:**
+  **Verification:** a fresh AssumeRole produces a session whose decoded restrictions no longer include the missing action; re-run the failing call within that session — it succeeds with HTTP 200. Rollback by reverting the CI/SDK change; existing sessions pick up prior behaviour on next AssumeRole.
+- **mitigation** (s1): re-assume the role with no session policy as a stopgap.
 
   ```bash
   # Re-assume the role with no session policy
@@ -441,106 +447,86 @@ aws iam create-policy-version --policy-arn <policy-arn> \
   # Export the returned credentials into the shell and retry the failing call
   ```
 
-- **Duration:** One session (≤role's MaxSessionDuration). Restore session-policy usage as soon as the durable fix in Resolution lands.
+  **Risk:** Re-assuming without the session policy temporarily restores full role permissions, which may exceed what the workload should have for the session. **Duration:** One session (≤ role's `MaxSessionDuration`). Restore session-policy usage as soon as the durable fix lands. **Verification:** the retried call within the unrestricted session succeeds with HTTP 200.
 
-**Resolution:**
-
-```bash
-# Edit the caller (CI script, SDK wrapper, IAM Identity Center permission set) to
-# either drop the session policy or broaden it to include the missing action.
-# Example boto3 fix:
-python3 - <<'EOF'
-import boto3, json
-sts = boto3.client('sts')
-session_policy = {
-    "Version": "2012-10-17",
-    "Statement": [
-        {"Effect": "Allow", "Action": ["<existing-actions>", "<service:Operation>"], "Resource": "*"}
-    ]
-}
-sts.assume_role(
-    RoleArn="<role-arn>",
-    RoleSessionName="<session-name>",
-    Policy=json.dumps(session_policy),
-)
-EOF
-```
-
-**Impact:** Affects only sessions newly minted with the updated session-policy code path. Existing sessions keep the old policy until they expire (≤ `MaxSessionDuration`, default 1 hour).
-
-**Rollback:** Revert the CI/SDK change to restore the prior session policy. Existing sessions pick up the prior behaviour automatically on next AssumeRole.
-
-**Verification:** A fresh AssumeRole produces a session whose `aws sts get-session-token` decoded message no longer includes the missing action under restrictions. Re-run the failing call within that session; it succeeds with HTTP 200.
-
-### Cause F: VPC endpoint policy denies the request implicitly or explicitly
+### Cause F: VPC endpoint policy denies the request
 
 **Statement:** The caller's request traversed a VPC interface or gateway endpoint whose policy does not allow the action on the target resource, so the endpoint rejects the call before it reaches the service.
 
-**Mechanism:** Every VPC endpoint carries a policy that gates which calls may pass through it. If the endpoint policy is left at the default `Action: "*"`, no restriction applies. If the policy is customized to allow only specific actions or resources, calls that fall outside the allow-list (implicit deny) or match an explicit `Deny` are blocked at the endpoint. The CloudTrail event for the failed call carries a `vpcEndpointId` field identifying which endpoint handled it; same-account callers see `because no VPC endpoint policy allows` or `with an explicit deny in a VPC endpoint policy` in the enhanced error.
+**Chain:**
+- root: the VPC endpoint that handled the call carries a customized policy that omits the action/resource from its allow-list (implicit deny) or carries a `Deny` matching the action.
+- s1: the request is routed through that endpoint and gated by its policy before reaching the service.
+- s2: the endpoint rejects the call because it falls outside the allow-list or matches the explicit `Deny`.
+- D: AWS returns HTTP 403 with `because no VPC endpoint policy allows` or `with an explicit deny in a VPC endpoint policy` (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] the endpoint's `PolicyDocument` omits the resource ARN from `Resource` or includes a `Deny` matching the action.
+- s1: [Step 7] the CloudTrail event includes a `vpcEndpointId` field naming an endpoint with a non-default policy.
+- D: [Step 1] error message contains `VPC endpoint policy`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "VPC endpoint policy"} -->
 
-- [Step 1] error message contains `VPC endpoint policy`
-<!-- match: {"step": 1, "predicate": "contains", "target": "VPC endpoint policy"} -->
-- [Step 7] the CloudTrail event includes a `vpcEndpointId` field naming an endpoint with a non-default policy
-- [Step 7] the endpoint's `PolicyDocument` omits the resource ARN from `Resource` or includes a `Deny` matching the action
+**Interventions:**
+- **remediation** (root): add the action and resource to the endpoint policy.
 
-**Mitigation:**
+  ```bash
+  cat > /tmp/vpce-policy.fixed.json <<'EOF'
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": "*",
+        "Action": ["<service:Operation>", "<existing-allowed-actions>"],
+        "Resource": ["<resource-arn>", "<existing-allowed-resources>"]
+      }
+    ]
+  }
+  EOF
+  aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> \
+    --policy-document file:///tmp/vpce-policy.fixed.json
+  ```
 
-- **Risk:** Resetting an endpoint policy to allow-all temporarily exposes every resource reachable via the endpoint; only acceptable in a controlled change window with the network/security team.
-- **Command:**
+  **Verification:** `aws ec2 describe-vpc-endpoints --vpc-endpoint-ids <vpce-id> --query 'VpcEndpoints[0].PolicyDocument'` shows the updated policy; a test call from inside the VPC succeeds and CloudTrail shows the same `vpcEndpointId` with no `errorCode`. Rollback with `aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> --policy-document file:///tmp/vpce-policy.backup.json`.
+- **mitigation** (root): back up the endpoint's current policy before editing.
 
   ```bash
   aws ec2 describe-vpc-endpoints --vpc-endpoint-ids <vpce-id> \
     --query 'VpcEndpoints[0].PolicyDocument' --output text > /tmp/vpce-policy.backup.json
   ```
 
-- **Duration:** Backup only; do not roll forward without the corrected policy ready.
+  **Risk:** Resetting an endpoint policy to allow-all temporarily exposes every resource reachable via the endpoint; only acceptable in a controlled change window with the network/security team. **Duration:** Backup only; do not roll forward without the corrected policy ready. **Verification:** `/tmp/vpce-policy.backup.json` holds the pre-edit document for rollback.
 
-**Resolution:**
-
-```bash
-cat > /tmp/vpce-policy.fixed.json <<'EOF'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": "*",
-      "Action": ["<service:Operation>", "<existing-allowed-actions>"],
-      "Resource": ["<resource-arn>", "<existing-allowed-resources>"]
-    }
-  ]
-}
-EOF
-aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> \
-  --policy-document file:///tmp/vpce-policy.fixed.json
-```
-
-**Impact:** Affects every workload that sends traffic for this service through this endpoint. The change is applied by the endpoint within seconds; no client restart is needed.
-
-**Rollback:** `aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> --policy-document file:///tmp/vpce-policy.backup.json`.
-
-**Verification:** `aws ec2 describe-vpc-endpoints --vpc-endpoint-ids <vpce-id> --query 'VpcEndpoints[0].PolicyDocument'` shows the updated policy. A test call from an instance inside the VPC succeeds, and the CloudTrail entry shows the same `vpcEndpointId` with no `errorCode`.
-
-### Cause G: Service Control Policy or Resource Control Policy denies the action
+### Cause G: SCP or RCP denies the action
 
 **Statement:** An AWS Organizations Service Control Policy (SCP) attached to the caller's account or organizational unit, or a Resource Control Policy (RCP) attached to the target resource's account, denies the action and overrides any same-account IAM Allow.
 
-**Mechanism:** SCPs cap the maximum permissions for every principal in a member account; an action must be allowed by every SCP attached up the OU hierarchy. RCPs (introduced in 2024) apply at the resource side, scoping what the resource's resource-based policy and identity-based access can permit. An action denied at either layer fails regardless of how permissive the identity-based policies are. The enhanced error reads `because no service control policy allows` or `with an explicit deny in a service control policy` (similarly for `resource control policy`); the simulator returns `OrganizationsDecisionDetail.AllowedByOrganizations: false`.
+**Chain:**
+- root: an SCP up the caller's OU hierarchy (or an RCP on the resource account) carries a `Deny` matching the action, or an allow-list SCP omits it.
+- s1: SCPs cap the maximum permissions for every principal in the member account and RCPs scope what the resource side can permit; an action must clear every such layer.
+- s2: the action is denied at the Organizations layer regardless of how permissive the identity-based policies are.
+- D: AWS returns HTTP 403 with `because no service control policy allows` / `with an explicit deny in a service control policy` (or the `resource control policy` equivalent) (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] an SCP or RCP on the account contains a `"Effect": "Deny"` matching the action, or an Allow-list SCP omits it.
+- s2: [Step 3] `simulate-principal-policy` returns `OrganizationsDecisionDetail.AllowedByOrganizations: false`.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "AllowedByOrganizations"} -->
+- D: [Step 1] error message contains `service control policy`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "service control policy"} -->
 
-- [Step 1] error message contains `service control policy` or `resource control policy`
-<!-- match: {"step": 1, "predicate": "contains", "target": "service control policy"} -->
-- [Step 3] `simulate-principal-policy` returns `OrganizationsDecisionDetail.AllowedByOrganizations: false`
-<!-- match: {"step": 3, "predicate": "contains", "target": "AllowedByOrganizations"} -->
-- [Step 6] an SCP or RCP on the account contains a `"Effect": "Deny"` matching the action, or an Allow-list SCP omits it
+**Interventions:**
+- **remediation** (root): after the Organizations admin updates the policy content, apply and verify the corrected SCP/RCP.
 
-**Mitigation:**
+  ```bash
+  # After the Organizations admin updates the policy content:
+  aws organizations update-policy --policy-id <scp-or-rcp-id> \
+    --content file:///tmp/scp-fixed.json
+  # Verify the policy is reattached and propagated
+  aws organizations list-policies-for-target --target-id "$ACCOUNT_ID" \
+    --filter SERVICE_CONTROL_POLICY
+  ```
 
-- **Risk:** SCP/RCP changes apply organization-wide and must go through the security/governance team; do not bypass. The only safe live mitigation is to identify the offending policy and escalate.
-- **Command:**
+  **Verification:** `aws iam simulate-principal-policy ...` now returns `AllowedByOrganizations: true` and `Decision: allowed`; the original call succeeds and CloudTrail records no further `AccessDenied`. Rollback with `aws organizations update-policy --policy-id <id> --content file:///tmp/scp.backup.json`.
+- **mitigation** (root): identify the offending non-default SCP and escalate to the Organizations admin (no safe live policy change exists).
 
   ```bash
   ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -549,145 +535,103 @@ aws ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> \
     --query 'Policies[?Name!=`FullAWSAccess`].{Id:Id,Name:Name}'
   ```
 
-- **Duration:** Read-only command. No live mitigation appropriate; coordinate with the Organizations admin.
+  **Risk:** SCP/RCP changes apply organization-wide and must go through the security/governance team; do not bypass. **Duration:** Read-only command; no live mitigation appropriate — coordinate with the Organizations admin. **Verification:** the offending policy is named and a ticket is opened with the Organizations admin.
 
-**Resolution:**
-
-```bash
-# After the Organizations admin updates the policy content:
-aws organizations update-policy --policy-id <scp-or-rcp-id> \
-  --content file:///tmp/scp-fixed.json
-# Verify the policy is reattached and propagated
-aws organizations list-policies-for-target --target-id "$ACCOUNT_ID" \
-  --filter SERVICE_CONTROL_POLICY
-```
-
-**Impact:** Organization-wide for SCP; resource-owner-account-wide for RCP. Propagation to the IAM control plane is seconds; existing sessions pick up the new policy on the next authorization decision.
-
-**Rollback:** `aws organizations update-policy --policy-id <id> --content file:///tmp/scp.backup.json` restores the previous content (must be backed up before the edit).
-
-**Verification:** `aws iam simulate-principal-policy ...` now returns `AllowedByOrganizations: true` and `Decision: allowed`. The original call succeeds and CloudTrail records no further `AccessDenied` for the same action.
-
-### Cause H: Caller lacks iam:PassRole for the role being attached to a service
+### Cause H: Caller lacks iam:PassRole for the role being attached
 
 **Statement:** The failing call configures an AWS service with an IAM role (instance profile, Lambda execution role, ECS task role, CodePipeline service role, RDS monitoring role, etc.), but the caller does not have `iam:PassRole` on the role ARN, so AWS blocks the configuration call.
 
-**Mechanism:** Service-configuration APIs that accept a role ARN as input — `ec2:RunInstances` with `IamInstanceProfile`, `lambda:CreateFunction`/`lambda:UpdateFunctionConfiguration` with `Role`, `ecs:RegisterTaskDefinition` with `taskRoleArn`/`executionRoleArn`, `codepipeline:CreatePipeline` with the pipeline role, `rds:CreateDBInstance` with `MonitoringRoleArn` — require `iam:PassRole` on the passed role in addition to the service's own action. Without it, the parent call fails with `User: <arn> is not authorized to perform: iam:PassRole on resource: <role-arn>`. `iam:PassRole` itself does not appear in CloudTrail as an event — only the parent service call records the denial.
+**Chain:**
+- root: the caller has no Allow for `iam:PassRole` on the role ARN being passed (or a Deny matches it).
+- s1: the service-configuration API (e.g. `ec2:RunInstances`, `lambda:CreateFunction`, `ecs:RegisterTaskDefinition`, `rds:CreateDBInstance`) requires `iam:PassRole` on the passed role in addition to the service's own action.
+- D: the parent call fails with HTTP 403 `User: <arn> is not authorized to perform: iam:PassRole on resource: <role-arn>`; `iam:PassRole` records no CloudTrail event of its own — only the parent call logs the denial (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 10] `simulate-principal-policy` for `iam:PassRole` against the role ARN returns `implicitDeny` or `explicitDeny`.
+  <!-- match: {"step": 10, "predicate": "contains", "target": "implicitDeny"} -->
+- s1: [Step 10] the failing parent call's `requestParameters` (in CloudTrail) references a role ARN via `iamInstanceProfile`, `roleArn`, `executionRoleArn`, `taskRoleArn`, or `monitoringRoleArn`.
+- D: [Step 1] error message contains `iam:PassRole`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "iam:PassRole"} -->
 
-- [Step 1] error message contains `iam:PassRole`
-<!-- match: {"step": 1, "predicate": "contains", "target": "iam:PassRole"} -->
-- [Step 10] `simulate-principal-policy` for `iam:PassRole` against the role ARN returns `implicitDeny` or `explicitDeny`
-<!-- match: {"step": 10, "predicate": "contains", "target": "implicitDeny"} -->
-- [Step 10] the failing parent call's `requestParameters` (in CloudTrail) references a role ARN via `iamInstanceProfile`, `roleArn`, `executionRoleArn`, `taskRoleArn`, or `monitoringRoleArn`
-
-**Mitigation:**
-
-- **Risk:** Granting `iam:PassRole` on `Resource: "*"` allows the caller to pass any role to any service, enabling privilege escalation; always scope `Resource` to specific role ARNs and use the `iam:PassedToService` condition to bind it to the intended service.
-- **Command:**
+**Interventions:**
+- **remediation** (root): grant scoped `iam:PassRole` on the specific role ARN bound to the target service via `iam:PassedToService`.
 
   ```bash
-  # Inspect which roles the caller currently can pass
-  aws iam simulate-principal-policy \
-    --policy-source-arn <caller-arn> \
-    --action-names iam:PassRole \
-    --resource-arns <role-arn> \
-    --query 'EvaluationResults[].Decision'
-  ```
-
-- **Duration:** Read-only; move directly to the scoped Resolution.
-
-**Resolution:**
-
-```bash
-cat > /tmp/allow-passrole.json <<'EOF'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["iam:PassRole", "iam:GetRole"],
-      "Resource": "<role-arn-being-passed>",
-      "Condition": {
-        "StringEquals": {
-          "iam:PassedToService": "<service>.amazonaws.com"
+  cat > /tmp/allow-passrole.json <<'EOF'
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": ["iam:PassRole", "iam:GetRole"],
+        "Resource": "<role-arn-being-passed>",
+        "Condition": {
+          "StringEquals": {
+            "iam:PassedToService": "<service>.amazonaws.com"
+          }
         }
       }
-    }
-  ]
-}
-EOF
-aws iam put-role-policy \
-  --role-name <caller-role-name> \
-  --policy-name AllowPassRoleToService \
-  --policy-document file:///tmp/allow-passrole.json
-```
+    ]
+  }
+  EOF
+  aws iam put-role-policy \
+    --role-name <caller-role-name> \
+    --policy-name AllowPassRoleToService \
+    --policy-document file:///tmp/allow-passrole.json
+  ```
 
-**Impact:** Affects only the named caller. The `iam:PassedToService` condition restricts the grant to the specific service principal (e.g., `ec2.amazonaws.com`, `lambda.amazonaws.com`, `ecs-tasks.amazonaws.com`), preventing the caller from passing the role to other services.
+  **Verification:** `aws iam simulate-principal-policy --policy-source-arn <caller-arn> --action-names iam:PassRole --resource-arns <role-arn> --context-entries ContextKeyName=iam:PassedToService,ContextKeyValues=<service>.amazonaws.com,ContextKeyType=string` returns `Decision: allowed`; the original `RunInstances`/`CreateFunction`/`RegisterTaskDefinition` call succeeds. Rollback with `aws iam delete-role-policy --role-name <caller-role-name> --policy-name AllowPassRoleToService`. Never grant `iam:PassRole` on `Resource: "*"` — it enables privilege escalation.
 
-**Rollback:** `aws iam delete-role-policy --role-name <caller-role-name> --policy-name AllowPassRoleToService`.
-
-**Verification:** `aws iam simulate-principal-policy --policy-source-arn <caller-arn> --action-names iam:PassRole --resource-arns <role-arn> --context-entries ContextKeyName=iam:PassedToService,ContextKeyValues=<service>.amazonaws.com,ContextKeyType=string` returns `Decision: allowed`. The original `RunInstances`/`CreateFunction`/`RegisterTaskDefinition` call succeeds.
-
-### Cause I: IAM eventual consistency — the policy change has not propagated yet
+### Cause I: IAM eventual consistency — change not yet propagated
 
 **Statement:** A policy was recently created, updated, or attached that would grant the action, but the change has not yet propagated to all IAM endpoints, so AWS still evaluates with the stale (pre-change) state and denies the request.
 
-**Mechanism:** IAM is a globally distributed service with eventual consistency. Policy creates, updates, version-switches, attach/detach operations, role-creation, and access-key updates take seconds to a few minutes to propagate to every regional endpoint and to every service that caches IAM state. During the propagation window, a call routed to a region that has not yet seen the change observes the old state and rejects with `AccessDenied`. The same call seconds later succeeds with no further intervention. This is most visible in CI/CD pipelines that create a role and immediately use it.
+**Chain:**
+- root: an `iam:*` change (CreatePolicy, AttachRolePolicy, CreatePolicyVersion, CreateRole, PutRolePolicy) that would grant the action ran within the last ~2 minutes.
+- s1: IAM is globally distributed with eventual consistency; the change takes seconds to a few minutes to propagate to every regional endpoint and IAM-caching service.
+- s2: the call is routed to a region/cache that has not yet seen the change and observes the old (pre-change) state.
+- D: AWS returns HTTP 403 `AccessDenied`; the same call succeeds on retry after 30–120 seconds with no further change (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] the failing call ran within ~2 minutes of an `iam:*` (CreatePolicy, AttachRolePolicy, CreatePolicyVersion, CreateRole, PutRolePolicy) call in CloudTrail.
+- s2: [Step 3] `simulate-principal-policy` returns `Decision: allowed` (the simulator sees the new policy) but the runtime call still fails.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "allowed"} -->
+- D: [Symptom] the same call succeeds on retry after 30–120 seconds with no other change.
 
-- [Step 1] the failing call ran within ~2 minutes of an `iam:*` (CreatePolicy, AttachRolePolicy, CreatePolicyVersion, CreateRole, PutRolePolicy) call in CloudTrail
-- [Step 3] `simulate-principal-policy` returns `Decision: allowed` for the action (the simulator sees the new policy) but the runtime call still fails
-- [Symptom] the same call succeeds on retry after 30–120 seconds with no other change
+**Interventions:**
+- **remediation** (root): add exponential-backoff retry to the caller so propagation delays do not surface as 403s.
 
-**Mitigation:**
+  ```bash
+  # Add exponential-backoff retry to the caller's code path so propagation delays
+  # do not surface as user-visible 403s. Example bash retry loop:
+  for i in 1 2 3 4 5; do
+    aws <service> <operation> <args> && break
+    sleep $((2 ** i))
+  done
+  # In application code, configure the AWS SDK's standard retry mode with adaptive retries.
+  export AWS_RETRY_MODE=adaptive
+  export AWS_MAX_ATTEMPTS=5
+  ```
 
-- **Risk:** Retrying with exponential backoff is the canonical fix and carries no risk; do not add a broader policy to "work around" the propagation delay.
-- **Command:**
+  **Verification:** a scripted re-run after 60 seconds succeeds; `aws iam simulate-principal-policy` shows `allowed` both immediately and on retry, and the call's success on retry confirms propagation completed. Rollback by removing the retry loop or reverting `AWS_RETRY_MODE`; the underlying authorization is unchanged.
+- **mitigation** (root): wait out the propagation window and retry once.
 
   ```bash
   # Wait and retry
   sleep 60 && aws <service> <operation> <args>
   ```
 
-- **Duration:** ≤2 minutes typical; rarely up to 5 minutes for ABAC tag propagation.
-
-**Resolution:**
-
-```bash
-# Add exponential-backoff retry to the caller's code path so propagation delays
-# do not surface as user-visible 403s. Example bash retry loop:
-for i in 1 2 3 4 5; do
-  aws <service> <operation> <args> && break
-  sleep $((2 ** i))
-done
-# In application code, configure the AWS SDK's standard retry mode with adaptive retries.
-export AWS_RETRY_MODE=adaptive
-export AWS_MAX_ATTEMPTS=5
-```
-
-**Impact:** Per-call retry overhead during the propagation window only. No configuration change at the AWS side. After propagation completes, the call succeeds on the first attempt with no retry overhead.
-
-**Rollback:** Remove the retry loop or revert `AWS_RETRY_MODE` if the retries cause unwanted latency; the underlying authorization is unchanged.
-
-**Verification:** A scripted re-run after 60 seconds succeeds. `aws iam simulate-principal-policy` shows `allowed` both immediately after the change and on the retried call, confirming the policy is in place; the call's success on retry confirms propagation has completed.
+  **Risk:** Retrying with backoff carries no risk; do not add a broader policy to "work around" the propagation delay. **Duration:** ≤2 minutes typical; rarely up to 5 minutes for ABAC tag propagation. **Verification:** the retried call after the wait succeeds with HTTP 200.
 
 ### Cause Z: Unidentified
 
-**Statement:** An HTTP 403 with `AccessDenied`/`AccessDeniedException`/`UnauthorizedOperation` is confirmed against the AWS API, but none of the indicators for Causes A through I match the gathered evidence.
+**Statement:** An HTTP 403 (`AccessDenied`/`AccessDeniedException`/`UnauthorizedOperation`) is confirmed against the AWS API, but no Cause A–I indicator matches the evidence (a less common path: cross-account policy denial, missing service-linked role, or disabled access keys).
 
-**Mechanism:** The 403 originates from a path not enumerated above. Less common causes include resource-based policy denial when calling cross-account (S3 bucket, KMS key, Secrets Manager, SNS, Lambda function policies), missing service-linked role, trust-policy denial on `sts:AssumeRole` (see `aws-iam-role-assumption-failure`), disabled access keys, root-user-only actions, custom Lambda authorizer or API Gateway resource policy upstream, or cross-organization calls that suppress the enhanced message.
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] HTTP 403 confirmed (Step 1) but none of the Causes A–I indicators match the error message, simulator output, or attached policies
-
-**Mitigation:**
-
-- **Risk:** Capturing more diagnostic context is read-only and safe; CloudTrail data events may incur small storage costs when enabled for diagnostic purposes.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot and escalate to the SME / AWS Support.
 
   ```bash
   # Capture the full SDK debug log and a configuration snapshot
@@ -703,11 +647,7 @@ export AWS_MAX_ATTEMPTS=5
   grep -E "x-amz-request-id|x-amzn-RequestId" /tmp/aws-debug.log | head -5
   ```
 
-- **Duration:** Minutes. Bundle the artifacts for handoff to AWS Support or the resource owner's security team.
-
-**Resolution:** Out of runbook scope. Package the `/tmp/diag-*.json`, `/tmp/aws-debug.log`, CloudTrail JSON from Step 1, and both `x-amz-request-id` and `x-amzn-RequestId` values. Open an AWS Support case (Business or Enterprise plan required for production cases) with the caller ARN, action, resource ARN, error message verbatim, and request IDs. For cross-account paths, also escalate to the resource owner's security team with the same artifacts.
-
-**Verification:** Handoff acknowledged with a ticket number; an owner assigned. AWS Support replies referencing the request IDs to confirm receipt and begin investigation.
+  **Risk:** Capturing more diagnostic context is read-only and safe; CloudTrail data events may incur small storage costs when enabled for diagnostics. **Duration:** Minutes; bundle the artifacts for handoff. Package the `/tmp/diag-*.json`, `/tmp/aws-debug.log`, the CloudTrail JSON from Step 1, and both `x-amz-request-id` and `x-amzn-RequestId` values; open an AWS Support case (Business/Enterprise for production) with the caller ARN, action, resource ARN, error message verbatim, and request IDs. For cross-account paths, also escalate to the resource owner's security team. **Verification:** handoff acknowledged with a ticket number and an owner assigned; AWS Support replies referencing the request IDs.
 
 ## Prevention
 

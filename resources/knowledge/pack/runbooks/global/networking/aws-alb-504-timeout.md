@@ -6,8 +6,8 @@ service: aws-alb
 symptom_class: [timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [aws, alb, "504", gateway-timeout, load-balancer, idle-timeout, target-group]
@@ -160,22 +160,33 @@ Expected output: the target's keep-alive timeout must be strictly greater than t
 
 ### Cause A: Target response exceeds ALB idle timeout
 
-**Statement:** The target application does not return response headers before the ALB idle timeout expires, causing the ALB to close the connection and generate a 504.
+**Statement:** The target application does not return response headers before the ALB idle timeout expires, causing the ALB to close the connection and return 504.
 
-**Mechanism:** The ALB idle timeout (default 60 s) is the maximum time the ALB waits for any byte of a response from the target after forwarding a request. Slow endpoints — caused by long database queries, unguarded downstream API calls, large serialization payloads, or GC pauses — exhaust this budget. The ALB then closes the connection without receiving a response and returns 504 to the client.
+**Chain:**
+- root: a target endpoint is slow (long DB queries, unguarded downstream calls, large serialization, or GC pauses) and does not emit any response byte quickly
+- s1: the ALB idle timeout (default 60s) elapses while the ALB waits for the first response byte from the target
+- s2: the ALB closes the target connection without having received a response
+- D: the ALB returns HTTP 504 to the client (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] p99 `TargetResponseTime` approaches or exceeds the idle timeout value from Step 2
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "p99_TargetResponseTime", "op": ">=", "value": 55} -->
+- s2: [Step 1] `target_processing_time` is `-1` and `target_status_code` is `-` in access logs
+  <!-- match: {"step": 1, "predicate": "contains", "target": "-1"} -->
 
-- [Step 1] `target_processing_time` is `-1` and `target_status_code` is `-` in access logs
-- [Step 4] p99 `TargetResponseTime` approaches or exceeds the idle timeout value from Step 2
+**Interventions:**
+- **remediation** (root): Identify and optimize the slowest endpoints; apply connection-level timeouts in the application for all downstream calls.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "-1"} -->
-<!-- match: {"step": 4, "predicate": "threshold", "target": "p99_TargetResponseTime", "op": ">=", "value": 55} -->
+  ```bash
+  # Identify the slowest endpoints from ALB access logs
+  # field 7 = target_processing_time, field 13 = request URL
+  awk '$7 > 5 && $9 != 504 {print $7, $13}' /tmp/alb.log | sort -rn | head -20
+  ```
 
-**Mitigation:**
+  Profile and optimize the slow endpoints (query optimization, async offloading, caching). Endpoint optimization is application-scoped; no ALB restart required.
 
-- **Risk:** Increasing the idle timeout is a temporary measure; it does not fix slow targets and may increase resource consumption on long-held connections.
-- **Command:**
+  **Verification:** Monitor `HTTPCode_ELB_504_Count` Sum and `TargetResponseTime` p99 in CloudWatch for 15 minutes after optimization. Both metrics should trend to zero/below threshold.
+- **mitigation** (s1): Widen the ALB idle timeout so slow targets are not cut off while the application is optimized.
 
   ```bash
   aws elbv2 modify-load-balancer-attributes \
@@ -183,43 +194,34 @@ Expected output: the target's keep-alive timeout must be strictly greater than t
     --attributes Key=idle_timeout.timeout_seconds,Value=120
   ```
 
-- **Duration:** Immediate effect on new connections. Revert after optimizing the target application.
-
-**Resolution:**
-
-```bash
-# Identify the slowest endpoints from ALB access logs
-# field 7 = target_processing_time, field 13 = request URL
-awk '$7 > 5 && $9 != 504 {print $7, $13}' /tmp/alb.log | sort -rn | head -20
-```
-
-Profile and optimize the slow endpoints (query optimization, async offloading, caching). Apply connection-level timeouts in the application for all downstream calls.
-
-- **Impact:** Endpoint optimization is application-scoped; no ALB restart required.
-
-- **Rollback:** Revert idle timeout: `aws elbv2 modify-load-balancer-attributes --load-balancer-arn <alb-arn> --attributes Key=idle_timeout.timeout_seconds,Value=60`
-
-**Verification:** Monitor `HTTPCode_ELB_504_Count` Sum and `TargetResponseTime` p99 in CloudWatch for 15 minutes after optimization. Both metrics should trend to zero/below threshold.
-
----
+  **Risk:** Increasing the idle timeout is a temporary measure; it does not fix slow targets and may increase resource consumption on long-held connections. **Duration:** Immediate effect on new connections; revert after optimizing the target application (`Value=60`). **Verification:** `HTTPCode_ELB_504_Count` Sum drops while optimization proceeds.
 
 ### Cause B: All targets unhealthy — no target available to serve requests
 
 **Statement:** Every registered target in the target group is failing health checks, leaving the ALB with no healthy target to forward requests to.
 
-**Mechanism:** The ALB only routes requests to targets that have passed the configured health check. When all targets are unhealthy — due to application crashes, port mismatches, health check path returning non-2XX, or targets being overloaded — the ALB has no valid destination and returns 504 for all forwarded requests.
+**Chain:**
+- root: targets are failing the configured health check (application crashes, port mismatch, health check path returning non-2XX, or overload)
+- s1: the ALB marks every registered target `unhealthy` and removes them from the routing pool
+- s2: the ALB has no valid destination for forwarded requests
+- D: the ALB returns HTTP 504 for all forwarded requests (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 3] `describe-target-health` shows all targets with `State: unhealthy`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "unhealthy"} -->
+- s1: [Step 3] `UnHealthyHostCount` Maximum equals the total number of registered targets
 
-- [Step 3] `describe-target-health` shows all targets with `State: unhealthy`
-- [Step 3] `UnHealthyHostCount` Maximum equals the total number of registered targets
+**Interventions:**
+- **remediation** (root): Fix the underlying target failure — restart crashed processes, correct the health check path to return HTTP 200, match the health check port to the listening port, and resolve overload.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "unhealthy"} -->
+  ```bash
+  # Inspect the health check configuration
+  aws elbv2 describe-target-groups --target-group-arns <target-group-arn> \
+    --query "TargetGroups[].{Path:HealthCheckPath,Port:HealthCheckPort,Timeout:HealthCheckTimeoutSeconds,Interval:HealthCheckIntervalSeconds}"
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low — adjusting health check thresholds gives sick targets more recovery time without removing them from the pool prematurely.
-- **Command:**
+  **Verification:** Run `aws elbv2 describe-target-health --target-group-arn <target-group-arn>` and confirm at least one target shows `State: healthy`. Watch `HealthyHostCount` metric rise above zero.
+- **mitigation** (s1): Loosen health check thresholds so recovering targets are not evicted prematurely.
 
   ```bash
   aws elbv2 modify-target-group \
@@ -230,39 +232,33 @@ Profile and optimize the slow endpoints (query optimization, async offloading, c
     --unhealthy-threshold-count 5
   ```
 
-- **Duration:** 2-3 minutes for targets to accumulate passing health checks and re-enter the healthy pool.
+  **Risk:** Low — adjusting health check thresholds gives sick targets more recovery time without removing them from the pool prematurely. **Duration:** 2-3 minutes for targets to accumulate passing health checks and re-enter the healthy pool. **Verification:** `HealthyHostCount` rises above zero.
 
-**Resolution:**
+### Cause C: ALB cannot establish TCP connection to target
 
-```bash
-# Inspect the health check configuration
-aws elbv2 describe-target-groups --target-group-arns <target-group-arn> \
-  --query "TargetGroups[].{Path:HealthCheckPath,Port:HealthCheckPort,Timeout:HealthCheckTimeoutSeconds,Interval:HealthCheckIntervalSeconds}"
-```
+**Statement:** The ALB cannot complete a TCP handshake to the target within the 10-second connection timeout because the target process is not listening, the connection backlog is full, or a security group blocks the port.
 
-Fix the root cause: restart crashed application processes, correct the health check path to return HTTP 200, ensure the health check port matches the application's listening port, and verify the application is not overloaded.
+**Chain:**
+- root: the target is unreachable on the registered port (process not listening, wrong port, OS connection backlog exhausted under load, or the target security group blocks inbound from the ALB)
+- s1: the ALB's TCP handshake to the target fails and `TargetConnectionErrorCount` increments
+- s2: the ALB cannot forward the HTTP request to any target
+- D: the ALB returns HTTP 504 (points at Symptom Recognition)
 
-**Verification:** Run `aws elbv2 describe-target-health --target-group-arn <target-group-arn>` and confirm at least one target shows `State: healthy`. Watch `HealthyHostCount` metric rise above zero.
+**Indicators:**
+- s1: [Step 5] `TargetConnectionErrorCount` Sum is non-zero
+  <!-- match: {"step": 5, "predicate": "threshold", "target": "TargetConnectionErrorCount_Sum", "op": ">", "value": 0} -->
+- root: [Step 7] direct `curl` to the target IP and port times out or is refused
 
----
+**Interventions:**
+- **remediation** (root): Ensure the application process is running and bound to the correct port; fix a misconfigured target group port; scale out if the backlog is exhausted.
 
-### Cause C: ALB cannot establish TCP connection to target (TargetConnectionErrorCount > 0)
+  ```bash
+  # Confirm the application process is listening on the expected port (run on target via SSM)
+  ss -tlnp | grep <port>
+  ```
 
-**Statement:** The ALB cannot establish a TCP connection to the target within the 10-second connection timeout because the target process is not listening, the connection backlog is full, or a security group blocks the port.
-
-**Mechanism:** Before forwarding an HTTP request, the ALB must open a TCP connection to the target on the registered port. If the target process is not running, the port is wrong, the OS connection backlog is exhausted under load, or the target security group does not allow inbound traffic from the ALB, the TCP handshake fails and the ALB records a `TargetConnectionErrorCount` increment and may ultimately return 504.
-
-**Indicator:**
-
-- [Step 5] `TargetConnectionErrorCount` Sum is non-zero
-- [Step 7] Direct `curl` to the target IP and port times out or is refused
-
-<!-- match: {"step": 5, "predicate": "threshold", "target": "TargetConnectionErrorCount_Sum", "op": ">", "value": 0} -->
-
-**Mitigation:**
-
-- **Risk:** Low — verify and correct the target port and security group rule without service disruption.
-- **Command:**
+  **Verification:** `TargetConnectionErrorCount` Sum drops to 0 in CloudWatch; `describe-target-health` shows targets as healthy.
+- **mitigation** (root): Verify the registered port and add the missing ALB-to-target security group rule.
 
   ```bash
   # Verify registered target port matches what the application listens on
@@ -277,39 +273,26 @@ Fix the root cause: restart crashed application processes, correct the health ch
     --source-group <alb-sg-id>
   ```
 
-- **Duration:** Security group rules take effect within seconds.
-
-**Resolution:**
-
-```bash
-# Confirm the application process is listening on the expected port (run on target via SSM)
-ss -tlnp | grep <port>
-```
-
-Ensure the application process is running and bound to the correct port. Fix the target group port if it was misconfigured. Scale out the target group if the connection backlog is exhausted under load.
-
-**Verification:** `TargetConnectionErrorCount` Sum drops to 0 in CloudWatch; `describe-target-health` shows targets as healthy.
-
----
+  **Risk:** Low — verify and correct the target port and security group rule without service disruption. **Duration:** Security group rules take effect within seconds. **Verification:** `TargetConnectionErrorCount` Sum drops to 0.
 
 ### Cause D: Subnet NACL blocks ephemeral port return traffic
 
 **Statement:** The subnet Network ACL does not allow outbound traffic on ephemeral ports (1024–65535) from target subnets back to ALB nodes, silently dropping TCP responses.
 
-**Mechanism:** NACLs are stateless — unlike security groups, they do not automatically allow return traffic for established connections. When a target sends an HTTP response, the source port is the application port (e.g., 8080) and the destination port is an ephemeral port chosen by the ALB node (1024–65535). If the NACL outbound rule covering that port range is missing or denying, the response never reaches the ALB, which then times out and returns 504.
+**Chain:**
+- root: the target subnet NACL is missing or denying an outbound ALLOW rule for TCP ephemeral ports (1024–65535) toward the ALB subnets
+- s1: because NACLs are stateless, target HTTP responses (destined to an ALB-chosen ephemeral port) are silently dropped at the subnet boundary
+- s2: the ALB never receives the target response and its wait times out
+- D: the ALB returns HTTP 504 (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] NACL entries show no outbound `ALLOW` rule covering TCP ports 1024–65535 toward ALB subnets
+  <!-- match: {"step": 6, "predicate": "absent", "target": "1024-65535"} -->
+- s1: [Step 7] direct curl to the target succeeds but traffic through the ALB times out
+- s1: [Step 5] `TargetConnectionErrorCount` may be zero (TCP SYN reaches target) while 504s persist
 
-- [Step 6] NACL entries show no outbound `ALLOW` rule covering TCP ports 1024–65535 toward ALB subnets
-- [Step 5] `TargetConnectionErrorCount` may be zero (TCP SYN reaches target) while 504s persist
-- [Step 7] Direct curl to the target succeeds but traffic through the ALB times out
-
-<!-- match: {"step": 6, "predicate": "absent", "target": "1024-65535"} -->
-
-**Mitigation:**
-
-- **Risk:** Low — adding permissive NACL rules for ephemeral return traffic is the standard AWS recommendation.
-- **Command:**
+**Interventions:**
+- **remediation** (root): Add the missing NACL outbound rule for ephemeral return traffic; also verify the ALB subnet NACL allows inbound on ephemeral ports from the target subnet.
 
   ```bash
   aws ec2 create-network-acl-entry \
@@ -322,31 +305,25 @@ Ensure the application process is running and bound to the correct port. Fix the
     --egress
   ```
 
-- **Duration:** Immediate.
+  **Verification:** 504 rate drops to zero in CloudWatch `HTTPCode_ELB_504_Count` within 2-3 minutes. Confirm with a `curl` burst through the ALB DNS name.
 
-**Resolution:** Same as Mitigation — add the missing NACL outbound rule. Also verify the ALB subnet NACL allows inbound on ephemeral ports from the target subnet (for the reverse path).
+### Cause E: Keep-alive timeout mismatch
 
-**Verification:** 504 rate drops to zero in CloudWatch `HTTPCode_ELB_504_Count` within 2-3 minutes. Confirm with a `curl` burst through the ALB DNS name.
+**Statement:** The target's HTTP keep-alive timeout is equal to or shorter than the ALB idle timeout, causing the target to close a connection at the moment the ALB attempts to reuse it for a new request.
 
----
+**Chain:**
+- root: the target's keep-alive timeout is less than or equal to the ALB idle timeout (e.g., Nginx default 60s against a 60s ALB timeout)
+- s1: the target sends a TCP FIN to close an idle pooled connection just as the ALB selects that same connection for a new request
+- s2: the ALB receives a connection reset mid-request, producing intermittent 504s during low-traffic periods when connections sit idle longest
+- D: the ALB returns HTTP 504 (points at Symptom Recognition)
 
-### Cause E: Keep-alive timeout mismatch (target closes connection before ALB reuses it)
+**Indicators:**
+- root: [Step 8] target keep-alive timeout is less than or equal to the ALB idle timeout from Step 2
+  <!-- match: {"step": 8, "predicate": "threshold", "target": "target_keepalive_seconds", "op": "<=", "value": 60} -->
+- s2: [Step 1] 504s are intermittent, with `target_processing_time = -1` but no corresponding spike in `TargetConnectionErrorCount`
 
-**Statement:** The target's HTTP keep-alive timeout is equal to or shorter than the ALB idle timeout, causing the target to close a connection at the same moment the ALB attempts to reuse it for a new request.
-
-**Mechanism:** The ALB maintains a pool of persistent connections to targets and reuses them for multiple requests. If the target's keep-alive timeout expires (e.g., 60 s for Nginx default) at the exact moment the ALB picks that connection for a new request, the target sends a TCP FIN while the ALB is sending an HTTP request header. The ALB receives a connection reset and returns 504. This failure mode is intermittent, appears during low-traffic periods when connections sit idle longest, and is hard to reproduce on demand.
-
-**Indicator:**
-
-- [Step 1] 504s are intermittent, with `target_processing_time = -1` but no corresponding spike in `TargetConnectionErrorCount`
-- [Step 8] Target keep-alive timeout is less than or equal to the ALB idle timeout from Step 2
-
-<!-- match: {"step": 8, "predicate": "threshold", "target": "target_keepalive_seconds", "op": "<=", "value": 60} -->
-
-**Mitigation:**
-
-- **Risk:** Low — increasing keep-alive timeout on the target prevents premature connection closure.
-- **Command:**
+**Interventions:**
+- **remediation** (root): Set the target keep-alive timeout at least 5 seconds greater than the ALB idle timeout on all target application servers.
 
   ```bash
   # Nginx — set to ALB idle timeout + 5 seconds (e.g., 65 s for 60 s ALB timeout)
@@ -361,31 +338,39 @@ Ensure the application process is running and bound to the correct port. Fix the
   # server.headersTimeout = 66000;     // ms — must exceed keepAliveTimeout
   ```
 
-- **Duration:** Immediate after reload/restart.
-
-**Resolution:** Same as Mitigation — configure keep-alive timeout to be at least 5 seconds greater than the ALB idle timeout on all target application servers.
-
-**Verification:** Monitor `HTTPCode_ELB_504_Count` Sum over 30 minutes of normal traffic. Intermittent 504s during idle periods should cease.
-
----
+  **Verification:** Monitor `HTTPCode_ELB_504_Count` Sum over 30 minutes of normal traffic. Intermittent 504s during idle periods should cease.
 
 ### Cause F: Lambda target does not respond before connection timeout
 
-**Statement:** The Lambda function registered as an ALB target does not respond within the ALB's 10-second connection timeout for Lambda invocations.
+**Statement:** The Lambda function registered as an ALB target does not respond within the ALB's fixed 10-second connection timeout for Lambda invocations.
 
-**Mechanism:** For Lambda targets, the ALB invokes the function synchronously and waits up to 10 seconds for the Lambda service to respond. If the Lambda function has a cold start that exceeds 10 seconds, if the function itself times out (Lambda function timeout ≤ 10 s), or if the Lambda service is throttling, the ALB cannot get a response and returns 504. This is separate from the standard idle timeout — the 10-second limit for Lambda is fixed and cannot be changed via the ALB idle timeout setting.
+**Chain:**
+- root: the Lambda invocation does not complete within 10 seconds (cold start over 10s, Lambda function timeout ≤ 10s, or Lambda service throttling)
+- s1: the ALB's synchronous wait of up to 10 seconds for the Lambda service response expires (this limit is fixed and not governed by the ALB idle timeout)
+- s2: the ALB cannot obtain a response from the Lambda target
+- D: the ALB returns HTTP 504 (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 1] `target:port` (field 5) is `-` (Lambda target) and `target_status_code` is `-`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "lambda"} -->
+- s1: [Step 3] target group is of type `lambda`; CloudWatch `LambdaInternalError` or `LambdaUserError` metrics are non-zero
 
-- [Step 1] `target:port` (field 5) is `-` (Lambda target) and `target_status_code` is `-`
-- [Step 3] Target group is of type `lambda`; CloudWatch `LambdaInternalError` or `LambdaUserError` metrics are non-zero
+**Interventions:**
+- **remediation** (root): Restructure long-running operations to an async pattern and provision concurrency to eliminate cold starts.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "lambda"} -->
+  ```bash
+  # For long-running operations, restructure to async pattern:
+  # 1. Lambda returns immediately with 202 Accepted
+  # 2. Processing happens in a background Lambda triggered by SQS/SNS
+  # Provision concurrency to eliminate cold starts for latency-sensitive functions:
+  aws lambda put-provisioned-concurrency-config \
+    --function-name <function-name> \
+    --qualifier <alias-or-version> \
+    --provisioned-concurrent-executions 5
+  ```
 
-**Mitigation:**
-
-- **Risk:** Medium — increasing Lambda function timeout allows longer execution but does not fix the 10-second ALB connection timeout for the initial invoke.
-- **Command:**
+  **Verification:** `HTTPCode_ELB_504_Count` drops to zero; `LambdaInternalError` Sum returns to zero in CloudWatch.
+- **mitigation** (root): Increase the Lambda function timeout and check for throttling.
 
   ```bash
   # Increase Lambda function timeout (max 15 minutes)
@@ -403,39 +388,17 @@ Ensure the application process is running and bound to the correct port. Fix the
     --end-time $(date -u +%Y-%m-%dT%H:%M:%S)
   ```
 
-- **Duration:** Lambda configuration update takes effect within seconds.
+  **Risk:** Medium — increasing Lambda function timeout allows longer execution but does not fix the 10-second ALB connection timeout for the initial invoke. **Duration:** Lambda configuration update takes effect within seconds. **Verification:** `LambdaUserError`/`LambdaInternalError` Sum trends to zero.
 
-**Resolution:**
-
-```bash
-# For long-running operations, restructure to async pattern:
-# 1. Lambda returns immediately with 202 Accepted
-# 2. Processing happens in a background Lambda triggered by SQS/SNS
-# Provision concurrency to eliminate cold starts for latency-sensitive functions:
-aws lambda put-provisioned-concurrency-config \
-  --function-name <function-name> \
-  --qualifier <alias-or-version> \
-  --provisioned-concurrent-executions 5
-```
-
-**Verification:** `HTTPCode_ELB_504_Count` drops to zero; `LambdaInternalError` Sum returns to zero in CloudWatch.
-
----
-
-### Cause Z: Unidentified timeout cause
+### Cause Z: Unidentified
 
 **Statement:** The 504 timeout source cannot be determined from available metrics and logs.
 
-**Mechanism:** [Default]
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] Steps 1–8 did not conclusively identify the cause
-
-**Mitigation:**
-
-- **Risk:** Low — enabling access logs and increasing CloudWatch resolution costs money but does not affect production traffic.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): Capture a full diagnostic snapshot (enable ALB access logs, collect CloudWatch metric screenshots for the incident window, target group ARN, and access log fields 6–10, 13, 25) and escalate to the SME / AWS Support.
 
   ```bash
   # Enable ALB access logs if not already enabled
@@ -446,11 +409,7 @@ aws lambda put-provisioned-concurrency-config \
                  Key=access_logs.s3.prefix,Value=alb-logs
   ```
 
-- **Duration:** Logs available within 5 minutes of enabling.
-
-**Resolution:** Out of runbook scope — escalate with access log samples (fields 6–10, 13, 25), CloudWatch metric screenshots for the incident window, and the target group ARN. Engage AWS Support if the cause remains unclear after log analysis.
-
-**Verification:** Escalation path opened; access logs enabled for future diagnosis.
+  **Risk:** Low — enabling access logs and increasing CloudWatch resolution costs money but does not affect production traffic. **Duration:** Logs available within 5 minutes of enabling. **Verification:** Escalation path opened; access logs enabled for future diagnosis.
 
 ## Prevention
 

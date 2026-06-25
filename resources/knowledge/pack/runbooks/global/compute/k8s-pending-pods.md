@@ -7,8 +7,8 @@ symptom_class:
   - scheduling_failure
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: kb-researcher
 status: draft
 tags:
@@ -135,146 +135,149 @@ Expected output: the pod's declared `hostPort` values (if any), then a frequency
 
 ## Causes
 
-### Cause A: Cluster has no node with enough allocatable CPU or memory to fit the pod's requests
+### Cause A: No node has enough unallocated CPU or memory for the pod's requests
 
-**Statement:** The pod's aggregate `resources.requests.cpu` or `resources.requests.memory` exceeds the remaining unallocated capacity on every node, so the scheduler's `PodFitsResources` filter eliminates all candidates.
+**Statement:** The pod's aggregate `resources.requests.cpu` or `resources.requests.memory` exceeds the remaining unallocated capacity on every node, so the scheduler's `NodeResourcesFit` filter eliminates all candidates.
 
-**Mechanism:** The scheduler computes each node's allocatable capacity (node capacity minus the sum of requests of pods already bound to it). For each candidate node it runs the `NodeResourcesFit` predicate, which rejects nodes whose remaining headroom is smaller than the pod's request. When every node fails the same way, the scheduler emits `FailedScheduling` with `0/N nodes are available: N Insufficient cpu` or `0/N nodes are available: N Insufficient memory` and the pod stays Pending until either the request shrinks, a pod is removed, or a new node joins the cluster. The decision uses requests (not live usage), so a cluster can look idle in `kubectl top` and still refuse to schedule.
+**Chain:**
+- root: the pod's CPU/memory requests exceed remaining unallocated headroom on every node
+- s1: the `NodeResourcesFit` predicate rejects each node (request > node allocatable minus already-bound requests)
+- s2: zero candidate nodes survive filtering, so the scheduler emits `FailedScheduling` with `Insufficient cpu`/`Insufficient memory`
+- D: the pod stays Pending and is never bound to a node (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] scheduler event message contains `Insufficient cpu`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "Insufficient cpu"} -->
+- s2: [Step 2] scheduler event message contains `Insufficient memory`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "Insufficient memory"} -->
+- root: [Step 4] every node's `Allocated resources` block shows `cpu  Requests` or `memory  Requests` at or near 100% of allocatable (scheduler decides on requests, not `kubectl top` live usage)
 
-- [Step 2] scheduler event message contains `Insufficient cpu` or `Insufficient memory`
-<!-- match: {"step": 2, "predicate": "contains", "target": "Insufficient cpu"} -->
-- [Step 2] scheduler event message contains `Insufficient memory`
-<!-- match: {"step": 2, "predicate": "contains", "target": "Insufficient memory"} -->
-- [Step 4] every node's `Allocated resources` block shows `cpu  Requests` or `memory  Requests` at or near 100% of allocatable
+**Interventions:**
+- **remediation** (root): add capacity or right-size requests from observed usage so the request fits within some node's headroom.
 
-**Mitigation:**
+  ```bash
+  # Option 1: add a node (manual or via Cluster Autoscaler scale-up trigger)
+  kubectl get pods -n kube-system -l app.kubernetes.io/name=cluster-autoscaler
+  kubectl logs -n kube-system -l app.kubernetes.io/name=cluster-autoscaler --tail=50 | grep -i "scale up\|unschedulable"
+  # Option 2: right-size requests from observed usage (Prometheus / kubectl top history)
+  kubectl set resources deployment/<deployment-name> -n <namespace> \
+    --requests=cpu=<right-sized-cpu>,memory=<right-sized-mem>
+  kubectl rollout status deployment/<deployment-name> -n <namespace>
+  ```
 
-- **Risk:** Lowering `resources.requests` allows scheduling but risks CPU throttling or OOM kills if actual usage exceeds the reduced request; only safe when observed peak usage is well below the new request.
-- **Command:**
+  **Verification:** After the change, re-run Step 1; `kubectl get pod <pod-name> -n <namespace>` transitions to `Running` within 30 seconds and `kubectl describe node <assigned-node>` shows the pod under `Non-terminated Pods` with the new requests counted toward allocated.
+- **mitigation** (s1): lower `resources.requests` so the pod fits an existing node's headroom.
 
   ```bash
   kubectl set resources deployment/<deployment-name> -n <namespace> \
     --requests=cpu=<lower-cpu>,memory=<lower-mem>
   ```
 
-- **Duration:** Permanent if sized from observed p99 usage with 25-30% headroom; revisit if traffic patterns change.
-
-**Resolution:**
-
-```bash
-# Option 1: add a node (manual or via Cluster Autoscaler scale-up trigger)
-kubectl get pods -n kube-system -l app.kubernetes.io/name=cluster-autoscaler
-kubectl logs -n kube-system -l app.kubernetes.io/name=cluster-autoscaler --tail=50 | grep -i "scale up\|unschedulable"
-# Option 2: right-size requests from observed usage (Prometheus / kubectl top history)
-kubectl set resources deployment/<deployment-name> -n <namespace> \
-  --requests=cpu=<right-sized-cpu>,memory=<right-sized-mem>
-kubectl rollout status deployment/<deployment-name> -n <namespace>
-```
-
-**Impact:** Cluster-wide capacity change (new node) or per-deployment sizing change; the scheduler reschedules pods with the new requests, which can disturb bin-packing on existing nodes.
-**Rollback:** `kubectl set resources deployment/<deployment-name> -n <namespace> --requests=cpu=<previous-cpu>,memory=<previous-mem>` restores the prior sizing; for autoscaler-driven node adds, the autoscaler scales down idle nodes automatically.
-
-**Verification:** After the change, `kubectl get pod <pod-name> -n <namespace>` transitions to `Running` within 30 seconds and `kubectl describe node <assigned-node>` shows the pod under `Non-terminated Pods` with the new requests counted toward allocated.
+  **Risk:** Lowering requests risks CPU throttling or OOM kills if actual usage exceeds the reduced request; only safe when observed peak usage is well below the new request. **Duration:** Permanent if sized from observed p99 usage with 25-30% headroom; revisit if traffic patterns change. **Verification:** re-run Step 1; the pod reaches `Running` and `kubectl describe node <assigned-node>` counts the new requests toward allocated.
 
 ### Cause B: No node carries labels that satisfy the pod's nodeSelector or required node affinity
 
 **Statement:** The pod's `spec.nodeSelector` or `nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution` specifies label keys/values that no node in the cluster has, so the scheduler filters every node out before scoring.
 
-**Mechanism:** Required node affinity is a hard predicate: a node is feasible only if it carries every key/value matching the pod's `matchExpressions` (within a term, all expressions ANDed; across terms, ORed). When zero nodes pass, the scheduler emits `0/N nodes are available: N node(s) didn't match Pod's node affinity/selector` or `N node(s) didn't match Pod's nodeSelector` and the pod stays Pending. Common shapes: a workload pinned to `nodepool=gpu` on a cluster with no GPU node pool, a pod targeting `topology.kubernetes.io/zone=us-east-1a` after that zone's nodes were drained, or a typo in the label key (`kubernetes.io/arch` vs `beta.kubernetes.io/arch`).
+**Chain:**
+- root: the pod's `nodeSelector`/required `nodeAffinity` names label keys/values that no node carries
+- s1: required node affinity is a hard predicate, so every node lacking a matching label/value is filtered out
+- s2: zero nodes pass, so the scheduler emits `node(s) didn't match Pod's node affinity/selector` or `nodeSelector`
+- D: the pod stays Pending and is never bound to a node (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] scheduler event message contains `node(s) didn't match Pod's node affinity/selector`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't match Pod's node affinity"} -->
+- s2: [Step 2] scheduler event message contains `node(s) didn't match Pod's nodeSelector`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't match Pod's nodeSelector"} -->
+- root: [Step 6] no node in `kubectl get nodes --show-labels` satisfies every key/value pair in the pod's `nodeSelector` or `requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms` (common shapes: `nodepool=gpu` with no GPU pool, drained zone, or a typo like `beta.kubernetes.io/arch`)
 
-- [Step 2] scheduler event message contains `node(s) didn't match Pod's node affinity/selector`
-<!-- match: {"step": 2, "predicate": "contains", "target": "didn't match Pod's node affinity"} -->
-- [Step 2] scheduler event message contains `node(s) didn't match Pod's nodeSelector`
-<!-- match: {"step": 2, "predicate": "contains", "target": "didn't match Pod's nodeSelector"} -->
-- [Step 6] no node in `kubectl get nodes --show-labels` satisfies every key/value pair listed in the pod's `nodeSelector` or `requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms`
+**Interventions:**
+- **remediation** (root): provision a matching node pool, or relax the affinity from required to preferred so scheduling falls back to any node.
 
-**Mitigation:**
+  ```bash
+  # Option 1: provision a matching node pool (cluster-autoscaler / managed-service console) and let it auto-label
+  # Option 2: relax the affinity from required to preferred so scheduling falls back to any node
+  kubectl get deployment <deployment-name> -n <namespace> -o yaml > /tmp/<name>.yaml
+  # Edit nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution -> preferredDuringSchedulingIgnoredDuringExecution with weight: 100
+  kubectl apply -f /tmp/<name>.yaml
+  kubectl rollout status deployment/<deployment-name> -n <namespace>
+  ```
 
-- **Risk:** Adding a label to a node that does not actually have the property (e.g. labeling a non-GPU node `nodepool=gpu`) will let scheduling succeed but the workload will fail at runtime; only label nodes that genuinely match the property.
-- **Command:**
+  **Verification:** re-run Step 1; `kubectl get pod <pod-name> -n <namespace> -o wide` shows an assigned `NODE` and `kubectl describe node <assigned-node>` confirms the node carries the required labels.
+- **mitigation** (root): label an existing node so it satisfies the pod's selector.
 
   ```bash
   kubectl label node <node-name> <key>=<value>
   ```
 
-- **Duration:** Permanent until the node-pool composition changes; safe if the label reflects reality.
-
-**Resolution:**
-
-```bash
-# Option 1: provision a matching node pool (cluster-autoscaler / managed-service console) and let it auto-label
-# Option 2: relax the affinity from required to preferred so scheduling falls back to any node
-kubectl get deployment <deployment-name> -n <namespace> -o yaml > /tmp/<name>.yaml
-# Edit nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution -> preferredDuringSchedulingIgnoredDuringExecution with weight: 100
-kubectl apply -f /tmp/<name>.yaml
-kubectl rollout status deployment/<deployment-name> -n <namespace>
-```
-
-**Impact:** Workload-wide; switching required to preferred allows fallback scheduling, but the pod may land on a node that does not match the original intent (e.g. a CPU-only node when GPU was preferred). Provisioning a new node pool is cluster-wide.
-**Rollback:** Restore the original deployment manifest with `kubectl apply -f <previous-manifest>.yaml` or `kubectl rollout undo deployment/<deployment-name> -n <namespace>`.
-
-**Verification:** `kubectl get pod <pod-name> -n <namespace> -o wide` shows an assigned `NODE` and `kubectl describe node <assigned-node>` confirms the node carries the required labels.
+  **Risk:** Labeling a node that does not actually have the property (e.g. labeling a non-GPU node `nodepool=gpu`) lets scheduling succeed but the workload fails at runtime; only label nodes that genuinely match. **Duration:** Permanent until the node-pool composition changes; safe if the label reflects reality. **Verification:** re-run Step 1; the pod gets an assigned `NODE` and `kubectl describe node <assigned-node>` shows the new label.
 
 ### Cause C: Every candidate node has a NoSchedule taint the pod does not tolerate
 
 **Statement:** All nodes that would otherwise be feasible carry a `NoSchedule` (or `NoExecute`) taint, and the pod's `tolerations` array does not match that taint key/value/effect.
 
-**Mechanism:** The `TaintToleration` predicate filters out any node whose un-tolerated taints contain at least one `NoSchedule` or `NoExecute` entry. The scheduler emits `0/N nodes are available: N node(s) had taints that the pod didn't tolerate` (or `N node(s) had untolerated taint {<key>: <value>}`). Common shapes: dedicated node pools without matching toleration on the workload, control-plane-only nodes (`node-role.kubernetes.io/control-plane:NoSchedule`) when no worker pool exists, nodes auto-tainted by the lifecycle controller during resource pressure (`memory-pressure`, `disk-pressure`, `pid-pressure`), or a cordoned node carrying `node.kubernetes.io/unschedulable:NoSchedule`.
+**Chain:**
+- root: every otherwise-feasible node carries a `NoSchedule`/`NoExecute` taint the pod's `tolerations` do not match
+- s1: the `TaintToleration` predicate filters out each node with an un-tolerated `NoSchedule`/`NoExecute` taint
+- s2: zero nodes survive, so the scheduler emits `node(s) had taints that the pod didn't tolerate` / `untolerated taint`
+- D: the pod stays Pending and is never bound to a node (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] scheduler event message contains `node(s) had taints that the pod didn't tolerate`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "had taints that the pod didn't tolerate"} -->
+- s2: [Step 2] scheduler event message contains `untolerated taint`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "untolerated taint"} -->
+- root: [Step 5] every node listed shows at least one `NoSchedule`/`NoExecute` taint whose key is absent from the pod's `tolerations` (dedicated pools, control-plane-only nodes, pressure taints, or a cordoned `unschedulable` node)
 
-- [Step 2] scheduler event message contains `node(s) had taints that the pod didn't tolerate`
-<!-- match: {"step": 2, "predicate": "contains", "target": "had taints that the pod didn't tolerate"} -->
-- [Step 2] scheduler event message contains `untolerated taint`
-<!-- match: {"step": 2, "predicate": "contains", "target": "untolerated taint"} -->
-- [Step 5] every node listed shows at least one `NoSchedule` or `NoExecute` taint whose key is absent from the pod's `tolerations`
+**Interventions:**
+- **remediation** (root): add the matching toleration to the deployment so the pod can land on the tainted nodes.
 
-**Mitigation:**
+  ```bash
+  kubectl patch deployment <deployment-name> -n <namespace> --type=json \
+    -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"key":"<taint-key>","operator":"Equal","value":"<taint-value>","effect":"NoSchedule"}]}]'
+  kubectl rollout status deployment/<deployment-name> -n <namespace>
+  ```
 
-- **Risk:** Removing a taint from a node opens it to every pod that previously avoided it; only safe if the taint was applied as a stopgap, not as part of a dedicated-pool design.
-- **Command:**
+  **Verification:** re-run Step 1; `kubectl get pod <pod-name> -n <namespace> -o wide` shows `NODE` populated within 30 seconds and `kubectl describe node <assigned-node>` confirms the node still carries the taint while the pod tolerates it.
+- **mitigation** (root): remove the taint from a node so the pod can schedule (only if the taint was a stopgap, not a dedicated-pool design).
 
   ```bash
   kubectl taint nodes <node-name> <key>=<value>:NoSchedule-
   ```
 
-- **Duration:** Minutes-to-hours while triaging the workload's intended placement.
-
-**Resolution:**
-
-```bash
-# Add the matching toleration to the deployment so the pod can land on the tainted nodes
-kubectl patch deployment <deployment-name> -n <namespace> --type=json \
-  -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"key":"<taint-key>","operator":"Equal","value":"<taint-value>","effect":"NoSchedule"}]}]'
-kubectl rollout status deployment/<deployment-name> -n <namespace>
-```
-
-**Impact:** Workload-wide; rolling update cycles all replicas with the new toleration. The pod becomes schedulable on previously-blocked nodes but pressure-related taints (`memory-pressure`, `disk-pressure`) should rarely be tolerated — they indicate the node is unhealthy.
-**Rollback:** `kubectl rollout undo deployment/<deployment-name> -n <namespace>` restores the prior tolerations array.
-
-**Verification:** `kubectl get pod <pod-name> -n <namespace> -o wide` shows `NODE` populated within 30 seconds and `kubectl describe node <assigned-node>` confirms the node still carries the taint while the pod tolerates it.
+  **Risk:** Removing a taint opens the node to every pod that previously avoided it; pressure taints (`memory-pressure`, `disk-pressure`) should rarely be removed — they indicate the node is unhealthy. **Duration:** Minutes-to-hours while triaging the workload's intended placement. **Verification:** re-run Step 1; the pod gets an assigned `NODE` and Step 5 shows the taint removed.
 
 ### Cause D: PersistentVolumeClaim referenced by the pod is unbound under Immediate binding mode
 
 **Statement:** The pod mounts a PVC that is stuck `Pending` (no matching PV, provisioner failure, or no StorageClass) and the PVC's `volumeBindingMode` is `Immediate`, so the scheduler refuses to place the pod.
 
-**Mechanism:** When `volumeBindingMode: Immediate` (the default), the PVC binding controller attempts to bind the PVC as soon as it is created — independently of any pod. If binding fails (no matching PV, no StorageClass, provisioner returns `ProvisioningFailed`, requested capacity exceeds StorageClass quota), the PVC stays `Pending`. The scheduler's `VolumeBinding` predicate then fails any pod that references that PVC with `pod has unbound immediate PersistentVolumeClaims`. The dual case is a zone-topology mismatch: an EBS/Persistent-Disk PV exists in `us-east-1a` but the only nodes with capacity are in `us-east-1b`, and Immediate binding pre-committed the volume before the scheduler could pick a compatible node.
+**Chain:**
+- root: an `Immediate`-mode PVC the pod mounts fails to bind (no matching PV, no StorageClass, or `ProvisioningFailed`)
+- s1: the PVC stays `Pending` because Immediate binding tried to bind at creation, before pod scheduling
+- s2: the scheduler's `VolumeBinding` predicate fails any pod referencing that PVC with `pod has unbound immediate PersistentVolumeClaims`
+- D: the pod stays Pending and is never bound to a node (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] scheduler event message contains `pod has unbound immediate PersistentVolumeClaims`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "unbound immediate PersistentVolumeClaims"} -->
+- s1: [Step 7] one or more PVCs referenced by the pod show `STATUS: Pending` in `kubectl get pvc`
+- root: [Step 7] PVC events contain `ProvisioningFailed`, `no persistent volumes available for this claim and no storage class is set`, or `waiting for a volume to be created` (or a zone-topology mismatch: PV pre-committed in one zone, capacity only in another)
 
-- [Step 2] scheduler event message contains `pod has unbound immediate PersistentVolumeClaims`
-<!-- match: {"step": 2, "predicate": "contains", "target": "unbound immediate PersistentVolumeClaims"} -->
-- [Step 7] one or more PVCs referenced by the pod show `STATUS: Pending` in `kubectl get pvc`
-- [Step 7] PVC events contain `ProvisioningFailed`, `no persistent volumes available for this claim and no storage class is set`, or `waiting for a volume to be created`
+**Interventions:**
+- **remediation** (root): switch the StorageClass to `WaitForFirstConsumer` so binding defers to pod scheduling, or fix the underlying provisioner.
 
-**Mitigation:**
+  ```bash
+  # Option 1: switch the StorageClass to WaitForFirstConsumer so binding defers until pod scheduling picks a node
+  kubectl get storageclass <sc-name> -o yaml > /tmp/<sc>.yaml
+  # Edit volumeBindingMode: WaitForFirstConsumer, then recreate (StorageClass volumeBindingMode is immutable)
+  kubectl delete storageclass <sc-name> && kubectl apply -f /tmp/<sc>.yaml
+  # Option 2: fix the underlying provisioner (CSI driver pod not Ready, IAM permission missing, cloud-provider quota hit)
+  kubectl logs -n kube-system <csi-controller-pod> -c <csi-provisioner> --tail=100
+  ```
 
-- **Risk:** Manually creating a static PV that satisfies the PVC bypasses dynamic provisioning checks; the PV must match `storageClassName`, `accessModes`, and capacity exactly or it will not bind.
-- **Command:**
+  **Verification:** re-run Step 7; the PVC transitions to `Bound` and re-run Step 1 shows the pod transitions out of Pending within 60 seconds.
+- **mitigation** (root): manually create a static PV matching the PVC to unblock the single claim.
 
   ```bash
   kubectl describe pvc <pvc-name> -n <namespace>
@@ -283,180 +286,169 @@ kubectl rollout status deployment/<deployment-name> -n <namespace>
   kubectl get pods -A | grep -E 'csi|provisioner'
   ```
 
-- **Duration:** Diagnostic; fix the provisioner or StorageClass before relying on dynamic provisioning again.
-
-**Resolution:**
-
-```bash
-# Option 1: switch the StorageClass to WaitForFirstConsumer so binding defers until pod scheduling picks a node
-kubectl get storageclass <sc-name> -o yaml > /tmp/<sc>.yaml
-# Edit volumeBindingMode: WaitForFirstConsumer, then recreate (StorageClass volumeBindingMode is immutable)
-kubectl delete storageclass <sc-name> && kubectl apply -f /tmp/<sc>.yaml
-# Option 2: fix the underlying provisioner (CSI driver pod not Ready, IAM permission missing, cloud-provider quota hit)
-kubectl logs -n kube-system <csi-controller-pod> -c <csi-provisioner> --tail=100
-```
-
-**Impact:** StorageClass change is cluster-wide and affects all future PVCs using that class; existing bound PVs are unaffected. Provisioner fixes are infra-team scope (IAM, cloud quotas).
-**Rollback:** Recreate the original StorageClass YAML with the previous `volumeBindingMode`; existing PVs continue to function regardless.
-
-**Verification:** `kubectl get pvc -n <namespace>` shows the PVC transitions to `Bound` and `kubectl get pod <pod-name> -n <namespace>` transitions out of Pending within 60 seconds.
+  **Risk:** A manual static PV bypasses dynamic provisioning checks; it must match `storageClassName`, `accessModes`, and capacity exactly or it will not bind. **Duration:** Diagnostic; fix the provisioner or StorageClass before relying on dynamic provisioning again. **Verification:** re-run Step 7; the PVC reaches `Bound` and the pod leaves Pending.
 
 ### Cause E: Namespace ResourceQuota blocks the controller from creating the pod
 
 **Statement:** The namespace's ResourceQuota is exhausted, so the API server's quota admission plugin returns 403 on pod creation and the controlling ReplicaSet or StatefulSet cannot materialize the pod at all.
 
-**Mechanism:** ResourceQuota admission runs synchronously on every pod-create request, summing existing pods' requests and rejecting any new pod that would push the total over `hard`. The rejection is at admission, not scheduling, so the pod never appears in `kubectl get pods` — the controlling ReplicaSet records a `FailedCreate` event carrying the admission error `pods "<name>" is forbidden: exceeded quota: <quota>, requested: ..., used: ..., limited: ...`. When the quota covers `cpu`/`memory` but the pod omits explicit requests, admission also rejects with `must specify cpu,memory` unless a LimitRange supplies defaults.
+**Chain:**
+- root: the namespace ResourceQuota is exhausted (a `Used` row equals or would exceed `Hard`)
+- s1: quota admission runs synchronously on pod-create and rejects the request with `exceeded quota` / `is forbidden`
+- s2: the pod is never created, so the controlling ReplicaSet/StatefulSet records a `FailedCreate` event and replicas stay below desired
+- D: the workload never reaches its desired replica count; no Pending pod even appears (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 8] `kubectl get events --field-selector reason=FailedCreate` shows messages containing `exceeded quota`
+  <!-- match: {"step": 8, "predicate": "contains", "target": "exceeded quota"} -->
+- s1: [Step 8] `kubectl get events --field-selector reason=FailedCreate` shows messages containing `is forbidden`
+  <!-- match: {"step": 8, "predicate": "contains", "target": "is forbidden"} -->
+- root: [Step 8] `kubectl describe resourcequota` shows at least one row where `Used` equals `Hard`, and `kubectl get pods -n <namespace>` shows fewer replicas than the Deployment's `spec.replicas`
 
-- [Step 8] `kubectl get events --field-selector reason=FailedCreate` shows messages containing `exceeded quota`
-<!-- match: {"step": 8, "predicate": "contains", "target": "exceeded quota"} -->
-- [Step 8] `kubectl get events --field-selector reason=FailedCreate` shows messages containing `is forbidden`
-<!-- match: {"step": 8, "predicate": "contains", "target": "is forbidden"} -->
-- [Step 8] `kubectl describe resourcequota` shows at least one row where `Used` equals `Hard`, and `kubectl get pods -n <namespace>` shows fewer replicas than the Deployment's `spec.replicas`
+**Interventions:**
+- **remediation** (root): raise the quota if justified, reduce per-pod requests to fit, or add a LimitRange supplying default requests.
 
-**Mitigation:**
+  ```bash
+  # Option 1: raise the quota if justified (capacity review with the namespace owner)
+  kubectl edit resourcequota <quota-name> -n <namespace>
+  # Option 2: reduce per-pod requests so the workload fits within the existing quota
+  kubectl set resources deployment/<deployment-name> -n <namespace> \
+    --requests=cpu=<lower>,memory=<lower>
+  # Option 3: add a LimitRange providing defaults so pods missing explicit requests are not rejected
+  kubectl apply -f - <<EOF
+  apiVersion: v1
+  kind: LimitRange
+  metadata:
+    name: defaults
+    namespace: <namespace>
+  spec:
+    limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 500m
+        memory: 512Mi
+  EOF
+  ```
 
-- **Risk:** Deleting completed/failed pods to free up `count/pods` quota is safe; deleting active pods to free `requests.cpu`/`requests.memory` interrupts those services.
-- **Command:**
+  **Verification:** re-run Step 8; `kubectl describe resourcequota -n <namespace>` shows `Used` below `Hard` for the saturated row and `kubectl get deployment <deployment-name> -n <namespace>` reaches its desired replica count.
+- **mitigation** (s1): delete completed/failed pods to free quota headroom so the controller can create the new pod.
 
   ```bash
   kubectl delete pods -n <namespace> --field-selector=status.phase=Succeeded
   kubectl delete pods -n <namespace> --field-selector=status.phase=Failed
   ```
 
-- **Duration:** Immediate; revisit if the namespace fills again.
-
-**Resolution:**
-
-```bash
-# Option 1: raise the quota if justified (capacity review with the namespace owner)
-kubectl edit resourcequota <quota-name> -n <namespace>
-# Option 2: reduce per-pod requests so the workload fits within the existing quota
-kubectl set resources deployment/<deployment-name> -n <namespace> \
-  --requests=cpu=<lower>,memory=<lower>
-# Option 3: add a LimitRange providing defaults so pods missing explicit requests are not rejected
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: LimitRange
-metadata:
-  name: defaults
-  namespace: <namespace>
-spec:
-  limits:
-  - type: Container
-    defaultRequest:
-      cpu: 100m
-      memory: 128Mi
-    default:
-      cpu: 500m
-      memory: 512Mi
-EOF
-```
-
-**Impact:** Namespace-scoped. Raising quota consumes shared cluster capacity; adding a LimitRange retroactively forces defaults on new pods only (existing pods unchanged).
-**Rollback:** `kubectl edit resourcequota <quota-name> -n <namespace>` to restore previous `hard` values; `kubectl delete limitrange defaults -n <namespace>` to remove defaults.
-
-**Verification:** `kubectl describe resourcequota -n <namespace>` shows `Used` below `Hard` for the previously-saturated row, and `kubectl get deployment <deployment-name> -n <namespace>` reaches its desired replica count.
+  **Risk:** Deleting completed/failed pods to free `count/pods` quota is safe; deleting active pods to free `requests.cpu`/`requests.memory` interrupts those services. **Duration:** Immediate; revisit if the namespace fills again. **Verification:** re-run Step 8; the saturated quota row drops below `Hard` and the deployment reaches desired replicas.
 
 ### Cause F: Pod requests a hostPort already taken on every eligible node
 
 **Statement:** The pod declares a `hostPort` and every node in the cluster already has another pod bound to the same `(hostPort, protocol, hostIP)` tuple, so the `NodePorts` predicate eliminates all candidates.
 
-**Mechanism:** `hostPort` reserves a port on the host network namespace; only one pod per node may claim a given port/protocol/hostIP combination. The scheduler's `NodePorts` predicate filters out any node where the tuple is already in use. When a DaemonSet uses a hostPort (one replica per node by design), any additional pod requesting the same hostPort has zero feasible nodes and surfaces as `0/N nodes are available: N node(s) didn't have free ports for the requested pod ports`. Common shape: scaling a Deployment that uses hostPort beyond one replica per node, or two unrelated workloads contending on a metrics-exporter port (e.g. node-exporter and a custom Prometheus exporter both wanting `:9100`).
+**Chain:**
+- root: the pod declares a `hostPort` whose `(hostPort, protocol, hostIP)` tuple is already claimed on every node
+- s1: the `NodePorts` predicate filters out each node where the tuple is in use (only one pod per node may claim it)
+- s2: zero nodes survive, so the scheduler emits `node(s) didn't have free ports for the requested pod ports`
+- D: the pod stays Pending and is never bound to a node (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] scheduler event message contains `node(s) didn't have free ports for the requested pod ports`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't have free ports for the requested pod ports"} -->
+- root: [Step 10] the pod declares one or more `hostPort` values in `.spec.containers[*].ports[*].hostPort`
+- s1: [Step 10] the same hostPort is already claimed on every node (frequency table count equals or exceeds total node count — e.g. a DaemonSet hostPort, or two exporters contending on `:9100`)
 
-- [Step 2] scheduler event message contains `node(s) didn't have free ports for the requested pod ports`
-<!-- match: {"step": 2, "predicate": "contains", "target": "didn't have free ports for the requested pod ports"} -->
-- [Step 10] the pod declares one or more `hostPort` values in `.spec.containers[*].ports[*].hostPort`
-- [Step 10] the same hostPort is already claimed on every node (frequency table shows the count equals or exceeds total node count)
+**Interventions:**
+- **remediation** (root): replace the hostPort with a Service so the pod is reachable without consuming a host port (or pin to a DaemonSet if one-per-node is genuinely required).
 
-**Mitigation:**
+  ```bash
+  # Replace hostPort with a Service (NodePort or ClusterIP) so the pod is reachable without consuming a host port
+  kubectl expose deployment/<deployment-name> -n <namespace> --port=<pod-port> --target-port=<pod-port> --type=NodePort
+  # OR if a hostPort is genuinely required (e.g. ingress controller), constrain replicas to one per node via a DaemonSet
+  ```
 
-- **Risk:** Removing the hostPort changes the workload's external connectivity model; if downstream clients depend on reaching the pod via the node's IP+port, they will break until a Service replaces the hostPort.
-- **Command:**
+  **Verification:** re-run Step 1; `kubectl get pod -l <selector> -n <namespace> -o wide` shows all replicas scheduled and `kubectl get service <deployment-name> -n <namespace>` reports an assigned `CLUSTER-IP` (and `NodePort` if applicable).
+- **mitigation** (root): remove the hostPort from the pod template so the `NodePorts` predicate no longer filters nodes.
 
   ```bash
   kubectl patch deployment <deployment-name> -n <namespace> --type=json \
     -p='[{"op":"remove","path":"/spec/template/spec/containers/0/ports/0/hostPort"}]'
   ```
 
-- **Duration:** Permanent if a Service replaces the role of hostPort.
-
-**Resolution:**
-
-```bash
-# Replace hostPort with a Service (NodePort or ClusterIP) so the pod is reachable without consuming a host port
-kubectl expose deployment/<deployment-name> -n <namespace> --port=<pod-port> --target-port=<pod-port> --type=NodePort
-# OR if a hostPort is genuinely required (e.g. ingress controller), constrain replicas to one per node via a DaemonSet
-```
-
-**Impact:** Workload-wide. Switching from hostPort to a Service alters how clients reach the pod; coordinate with downstream owners.
-**Rollback:** Restore the original deployment manifest with `kubectl apply -f <previous-manifest>.yaml` and `kubectl delete service <deployment-name> -n <namespace>`.
-
-**Verification:** `kubectl get pod -l <selector> -n <namespace> -o wide` shows all replicas scheduled and `kubectl get service <deployment-name> -n <namespace>` reports an assigned `CLUSTER-IP` (and `NodePort` if applicable).
+  **Risk:** Removing the hostPort changes the workload's external connectivity model; downstream clients reaching the pod via node IP+port will break until a Service replaces the hostPort. **Duration:** Permanent if a Service replaces the role of hostPort. **Verification:** re-run Step 1; all replicas schedule and Step 10 shows the hostPort no longer declared.
 
 ### Cause G: Pod topology spread constraint with DoNotSchedule cannot be satisfied
 
 **Statement:** The pod's `topologySpreadConstraints` with `whenUnsatisfiable: DoNotSchedule` requires a maximum skew of pods across topology domains (zones, nodes) that no remaining node can satisfy without exceeding the skew.
 
-**Mechanism:** Topology spread enforces balanced distribution: with `maxSkew: 1` across `topology.kubernetes.io/zone`, no zone may contain more than 1 + min(matching pods elsewhere) replicas. The `PodTopologySpread` predicate rejects any node whose addition would breach the skew, so when a zone is depleted the workload accumulates as `node(s) didn't match pod topology spread constraints`. The dual case is required pod-anti-affinity with `topologyKey: kubernetes.io/hostname`, which enforces one-replica-per-node and surfaces as `node(s) didn't satisfy existing pods anti-affinity rules` once every node hosts a replica.
+**Chain:**
+- root: a `topologySpreadConstraints` with `whenUnsatisfiable: DoNotSchedule` (or required pod anti-affinity) demands balance no node can meet
+- s1: the `PodTopologySpread` predicate rejects any node whose addition would breach `maxSkew` (a depleted zone has no eligible node)
+- s2: zero nodes survive, so the scheduler emits `node(s) didn't match pod topology spread constraints` / `didn't satisfy existing pods anti-affinity rules`
+- D: the pod stays Pending and is never bound to a node (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] scheduler event message contains `node(s) didn't match pod topology spread constraints`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't match pod topology spread constraints"} -->
+- s2: [Step 2] scheduler event message contains `node(s) didn't satisfy existing pods anti-affinity rules`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't satisfy existing pods anti-affinity rules"} -->
+- root: [Step 6] the pod spec contains `topologySpreadConstraints` with `whenUnsatisfiable: DoNotSchedule` or `affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution`
 
-- [Step 2] scheduler event message contains `node(s) didn't match pod topology spread constraints`
-<!-- match: {"step": 2, "predicate": "contains", "target": "didn't match pod topology spread constraints"} -->
-- [Step 2] scheduler event message contains `node(s) didn't satisfy existing pods anti-affinity rules`
-<!-- match: {"step": 2, "predicate": "contains", "target": "didn't satisfy existing pods anti-affinity rules"} -->
-- [Step 6] the pod spec contains `topologySpreadConstraints` with `whenUnsatisfiable: DoNotSchedule` or `affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution`
+**Interventions:**
+- **remediation** (root): add capacity in the depleted topology domain (new node in the zone, or uncordon drained nodes), or raise `maxSkew` if looser balance is acceptable.
 
-**Mitigation:**
+  ```bash
+  # Option 1: add capacity in the depleted topology domain (new node in the zone, or restore drained nodes)
+  kubectl get nodes -L topology.kubernetes.io/zone
+  kubectl uncordon <drained-node>
+  # Option 2: increase maxSkew if the workload can tolerate looser balance
+  kubectl patch deployment <deployment-name> -n <namespace> --type=json \
+    -p='[{"op":"replace","path":"/spec/template/spec/topologySpreadConstraints/0/maxSkew","value":3}]'
+  ```
 
-- **Risk:** Relaxing `whenUnsatisfiable` from `DoNotSchedule` to `ScheduleAnyway` allows scheduling but lets the workload concentrate in one zone — a single-zone outage will then take all replicas down.
-- **Command:**
+  **Verification:** re-run Step 1; `kubectl get pod -l <selector> -n <namespace> -o wide` shows pods distributed across zones and all replicas reach `STATUS: Running`.
+- **mitigation** (root): relax `whenUnsatisfiable` from `DoNotSchedule` to `ScheduleAnyway` so the pod can schedule despite skew.
 
   ```bash
   kubectl patch deployment <deployment-name> -n <namespace> --type=json \
     -p='[{"op":"replace","path":"/spec/template/spec/topologySpreadConstraints/0/whenUnsatisfiable","value":"ScheduleAnyway"}]'
   ```
 
-- **Duration:** Hours-to-days; revert once the depleted zone has capacity again.
-
-**Resolution:**
-
-```bash
-# Option 1: add capacity in the depleted topology domain (new node in the zone, or restore drained nodes)
-kubectl get nodes -L topology.kubernetes.io/zone
-kubectl uncordon <drained-node>
-# Option 2: increase maxSkew if the workload can tolerate looser balance
-kubectl patch deployment <deployment-name> -n <namespace> --type=json \
-  -p='[{"op":"replace","path":"/spec/template/spec/topologySpreadConstraints/0/maxSkew","value":3}]'
-```
-
-**Impact:** Workload-wide. Higher `maxSkew` or `ScheduleAnyway` reduces resilience to single-zone failures; restoring capacity in the depleted zone is the durable fix.
-**Rollback:** `kubectl rollout undo deployment/<deployment-name> -n <namespace>` restores the prior topology constraints.
-
-**Verification:** `kubectl get pod -l <selector> -n <namespace> -o wide` shows pods distributed across zones (use `-o custom-columns=NAME:.metadata.name,ZONE:.spec.nodeName` plus the node-to-zone map), and `RESTARTS=0` is not relevant for Pending — confirm all replicas have `STATUS: Running`.
+  **Risk:** `ScheduleAnyway` lets the workload concentrate in one zone — a single-zone outage will then take all replicas down. **Duration:** Hours-to-days; revert once the depleted zone has capacity again. **Verification:** re-run Step 1; the pod reaches `Running` (note resilience is temporarily reduced until reverted).
 
 ### Cause H: Pod has scheduling gates that have not been cleared
 
-**Statement:** The pod's `.spec.schedulingGates` array is non-empty, so the scheduler does not even queue the pod for evaluation and the pod stays in `STATUS: SchedulingGated` indefinitely until a controller (or an operator) removes the gates.
+**Statement:** The pod's `.spec.schedulingGates` array is non-empty, so the scheduler does not even queue the pod for evaluation and the pod stays in `STATUS: SchedulingGated` indefinitely until a controller (or operator) removes the gates.
 
-**Mechanism:** Scheduling gates (GA in Kubernetes 1.30) let admission controllers, custom controllers, or quota-budget systems hold a pod out of the scheduling queue by setting one or more named gates at creation time. The scheduler skips any pod with non-empty `schedulingGates` and emits no `FailedScheduling` event — there is no scheduling decision to report. The `PodScheduled` condition reads `status: False, reason: SchedulingGated`. The pod becomes schedulable only after every gate is removed via a PATCH to `.spec.schedulingGates`. Gates can be removed but never added after creation, so a hung gate-controller blocks the pod permanently.
+**Chain:**
+- root: the pod's `.spec.schedulingGates` array is non-empty (set at creation by an admission/quota/custom controller)
+- s1: the scheduler skips any gated pod entirely — it never enters the scheduling queue and emits no `FailedScheduling` event
+- s2: the pod sits in `STATUS: SchedulingGated` with `PodScheduled False SchedulingGated` until every gate is PATCHed away (a hung gate-controller blocks it permanently)
+- D: the pod is never queued or bound to a node (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 1] pod `STATUS` is the literal string `SchedulingGated`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "SchedulingGated"} -->
+- s2: [Step 3] `PodScheduled  False  SchedulingGated` appears in the conditions output
+  <!-- match: {"step": 3, "predicate": "contains", "target": "SchedulingGated"} -->
+- s1: [Step 2] the Events table contains NO `FailedScheduling` event (the scheduler never considered the pod)
 
-- [Step 1] pod `STATUS` is the literal string `SchedulingGated`
-<!-- match: {"step": 1, "predicate": "contains", "target": "SchedulingGated"} -->
-- [Step 3] `PodScheduled  False  SchedulingGated` appears in the conditions output
-<!-- match: {"step": 3, "predicate": "contains", "target": "SchedulingGated"} -->
-- [Step 2] the Events table contains NO `FailedScheduling` event (the scheduler never considered the pod)
+**Interventions:**
+- **remediation** (root): identify and fix the controller that owns the gate, or remove the gate from the pod template if the controller is no longer needed.
 
-**Mitigation:**
+  ```bash
+  # Identify the controller that owns the gate (gate name often namespaced, e.g. example.com/quota-check)
+  kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.schedulingGates[*].name}'
+  # Inspect the controller's logs to find out why it has not cleared the gate
+  kubectl get pods --all-namespaces -l <controller-selector>
+  kubectl logs -n <controller-ns> <controller-pod> --tail=200
+  # Fix the controller, or remove the gate from the pod template if the controller is no longer needed
+  kubectl edit deployment <deployment-name> -n <namespace>   # remove spec.template.spec.schedulingGates
+  ```
 
-- **Risk:** Manually clearing a scheduling gate bypasses the controller that owns it; if the controller was holding the pod for a quota or admission check, the pod may run despite a policy violation. Confirm with the gate-owner before clearing.
-- **Command:**
+  **Verification:** re-run Step 1; the pod transitions from `SchedulingGated` to `Pending` then `Running`, and `kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.schedulingGates}'` returns empty/null.
+- **mitigation** (s2): manually clear the scheduling gate on the affected pod to release it from the queue hold.
 
   ```bash
   kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.schedulingGates}'
@@ -464,73 +456,56 @@ kubectl patch deployment <deployment-name> -n <namespace> --type=json \
     -p='[{"op":"replace","path":"/spec/schedulingGates","value":[]}]'
   ```
 
-- **Duration:** Permanent for the affected pod; new pods will be created with the gate again until the controller is fixed.
-
-**Resolution:**
-
-```bash
-# Identify the controller that owns the gate (gate name often namespaced, e.g. example.com/quota-check)
-kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.schedulingGates[*].name}'
-# Inspect the controller's logs to find out why it has not cleared the gate
-kubectl get pods --all-namespaces -l <controller-selector>
-kubectl logs -n <controller-ns> <controller-pod> --tail=200
-# Fix the controller, or remove the gate from the pod template if the controller is no longer needed
-kubectl edit deployment <deployment-name> -n <namespace>   # remove spec.template.spec.schedulingGates
-```
-
-**Verification:** `kubectl get pod <pod-name> -n <namespace>` transitions from `SchedulingGated` to `Pending` and then `Running`, and `kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.schedulingGates}'` returns an empty array or null.
+  **Risk:** Manually clearing a gate bypasses the controller that owns it; if it was holding the pod for a quota or admission check, the pod may run despite a policy violation. Confirm with the gate-owner first. **Duration:** Permanent for the affected pod; new pods will be created with the gate again until the controller is fixed. **Verification:** re-run Step 1; the pod leaves `SchedulingGated` and reaches `Running`.
 
 ### Cause I: kube-scheduler is down or partitioned from the API server
 
 **Statement:** No active kube-scheduler instance is processing pods cluster-wide, so every newly-created pod accumulates in Pending without any `FailedScheduling` event because no scheduler is generating events.
 
-**Mechanism:** Kubernetes runs the scheduler as one or more leader-elected pods in `kube-system`. If the leader pod crashes, loses its lease, or is partitioned from the API server, no scheduling decisions occur until a follower wins re-election. During the gap, every new pod sits in Pending with `PodScheduled  False  Unschedulable  no nodes available to schedule pods` or — more commonly — with no `Events` entries at all because the source of those events is offline. The symptom is cluster-wide: not just one pod but every recently-created pod is Pending. On managed services (EKS, GKE, AKS) the scheduler is operated by the vendor; this cause manifests as a control-plane health-check failure in the provider's console.
+**Chain:**
+- root: no active kube-scheduler leader is processing pods (leader crashed, lost its lease, or is partitioned from the API server)
+- s1: no scheduling decisions occur, so newly-created pods are never evaluated and the scheduler generates no events
+- s2: every recently-created pod across the cluster sits in Pending, often with empty `Events` (the event source is offline)
+- D: the pod (and all peers) stay Pending and are never bound to a node (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 9] `kubectl get pods -n kube-system -l component=kube-scheduler` shows no Running pod, or all replicas in `CrashLoopBackOff`, `Pending`, or `Error`
+- s1: [Step 9] `kubectl get events --field-selector source=default-scheduler` returns no events in the last several minutes despite multiple recently-created pods
+- s2: [Symptom] every recently-created pod across the cluster is Pending, not just the one being investigated
 
-- [Step 9] `kubectl get pods -n kube-system -l component=kube-scheduler` shows no Running pod, or all replicas in `CrashLoopBackOff`, `Pending`, or `Error`
-- [Step 9] `kubectl get events --field-selector source=default-scheduler` returns no events in the last several minutes despite multiple recently-created pods
-- [Symptom] every recently-created pod across the cluster is Pending, not just the one being investigated
+**Interventions:**
+- **remediation** (root): inspect scheduler logs/config and restore a healthy scheduler (self-hosted), or open a vendor support ticket (managed services).
 
-**Mitigation:**
+  ```bash
+  # Self-hosted clusters: inspect scheduler logs and config
+  kubectl logs -n kube-system -l component=kube-scheduler --tail=200 --previous
+  kubectl get configmap -n kube-system kube-scheduler-config -o yaml
+  # Managed services (EKS/GKE/AKS): the scheduler is vendor-operated — open a support ticket with the cluster ID, region, and approximate time of the outage.
+  ```
 
-- **Risk:** Restarting the scheduler pod is safe in HA setups (a follower takes over); in single-replica clusters there is a 10-30 second scheduling outage during restart.
-- **Command:**
+  **Verification:** re-run Step 9; `kubectl get pods -n kube-system -l component=kube-scheduler` shows `Running 1/1` (or expected HA count) and a new test pod (`kubectl run test --image=busybox --restart=Never -- sleep 60`) reaches `Running` within 30 seconds.
+- **mitigation** (root): restart the scheduler pod to force re-election of a healthy leader.
 
   ```bash
   kubectl delete pod -n kube-system -l component=kube-scheduler
   ```
 
-- **Duration:** Single restart cycle (seconds).
-
-**Resolution:**
-
-```bash
-# Self-hosted clusters: inspect scheduler logs and config
-kubectl logs -n kube-system -l component=kube-scheduler --tail=200 --previous
-kubectl get configmap -n kube-system kube-scheduler-config -o yaml
-# Managed services (EKS/GKE/AKS): the scheduler is vendor-operated — open a support ticket with the cluster ID, region, and approximate time of the outage.
-```
-
-**Impact:** Cluster-wide. Until the scheduler is healthy no new pods anywhere will be placed, including system-critical workloads (CoreDNS, ingress controllers if they roll).
-**Rollback:** Restore the previous scheduler ConfigMap with `kubectl apply -f <previous-scheduler-config>.yaml` if a configuration change preceded the outage.
-
-**Verification:** `kubectl get pods -n kube-system -l component=kube-scheduler` shows `Running 1/1` (or the expected HA replica count) and a new test pod (`kubectl run test --image=busybox --restart=Never -- sleep 60`) reaches `Running` within 30 seconds.
+  **Risk:** Restarting is safe in HA setups (a follower takes over); in single-replica clusters there is a 10-30 second scheduling outage during restart. **Duration:** Single restart cycle (seconds). **Verification:** re-run Step 9; the scheduler returns to `Running` and a new test pod schedules within 30 seconds.
 
 ### Cause Z: Unidentified
 
 **Statement:** The pod is stuck in Pending (or `SchedulingGated`) but no indicator from Causes A through I matches the gathered evidence.
 
-**Mechanism:** The scheduler is failing to place the pod or the pod has not entered the scheduling queue, but the collected event message, node ledger, taints, labels, PVC state, quota, hostPort, topology, gates, and scheduler health do not point to any standard failure mode. Less common causes include a custom `schedulerName` whose scheduler is the failing component, an admission webhook silently dropping bind events, preemption blocked by PriorityClass victim selection, Cluster Autoscaler with no node-pool template matching the pod's profile, or a custom PreFilter plugin rejecting the pod without surfacing a reason.
+**Chain:**
+- root: the scheduler is failing to place the pod (or the pod is not queued) for a reason outside Causes A-I
+- s1: the collected event, node ledger, taints, labels, PVC state, quota, hostPort, topology, gates, and scheduler health point to no standard failure mode (e.g. custom `schedulerName`, admission webhook dropping bind, blocked preemption, autoscaler with no matching template, custom PreFilter plugin)
+- D: the pod stays Pending or `SchedulingGated` and is never bound to a node (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Default] Pod confirmed `Pending` or `SchedulingGated` ([Step 1], [Step 3]) but Causes A-I indicators do not match the gathered evidence
 
-- [Default] Pod confirmed `Pending` or `SchedulingGated` (Step 1, Step 3) but Causes A-I indicators do not match the gathered evidence
-
-**Mitigation:**
-
-- **Risk:** Recreating the pod from a simplified manifest (strip nodeSelector, tolerations, affinity, topology constraints, hostPort) tests whether the scheduling rejection is from the pod's constraints or from infrastructure; the simplified pod may bypass intended placement rules and should be deleted after triage.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot and escalate to the SME.
 
   ```bash
   kubectl run probe --image=registry.k8s.io/pause:3.9 --restart=Never -n <namespace>
@@ -538,11 +513,7 @@ kubectl get configmap -n kube-system kube-scheduler-config -o yaml
   kubectl delete pod probe -n <namespace>
   ```
 
-- **Duration:** Single probe cycle (under 1 minute).
-
-**Resolution:** Out of runbook scope. Capture the artefacts from Steps 1-10 (pod description, scheduler event verbatim, structured conditions, node resource ledger, node taints/labels, pod affinity/topology spec, PVC inventory, quota state, scheduler health, hostPort frequency table) plus the pod's `.spec.schedulerName` and any custom scheduler logs, and escalate to the platform on-call or the cluster operator with the failure-mode summary.
-
-**Verification:** Hand-off acknowledged by the receiving engineer; an incident ticket is opened with the captured artefacts attached and a follow-up owner assigned.
+  Capture the artefacts from Steps 1-10 (pod description, scheduler event verbatim, structured conditions, node resource ledger, node taints/labels, pod affinity/topology spec, PVC inventory, quota state, scheduler health, hostPort frequency table) plus the pod's `.spec.schedulerName` and any custom scheduler logs, and escalate to the platform on-call or cluster operator with the failure-mode summary. **Risk:** The probe pod (stripped of nodeSelector, tolerations, affinity, topology, hostPort) may bypass intended placement rules; delete it after triage. **Duration:** Single probe cycle (under 1 minute). **Verification:** hand-off acknowledged by the receiving engineer; an incident ticket is opened with the captured artefacts attached and a follow-up owner assigned.
 
 ## Prevention
 

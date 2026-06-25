@@ -6,8 +6,8 @@ service: rabbitmq
 symptom_class: [latency, throughput_degradation]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [rabbitmq, queue, backlog, dead-letter, dlx, prefetch, consumer, quorum]
@@ -124,18 +124,26 @@ Expected output: Queues with `x-overflow: drop-head` discard old messages silent
 
 **Statement:** The number of consumer processes is too low to drain the queue at the incoming publish rate, causing messages to accumulate.
 
-**Mechanism:** RabbitMQ delivers messages round-robin across available consumers. When the aggregate consumer throughput (consumers × per-consumer ack rate) falls below the publish rate, `messages_ready` grows continuously. Without additional consumers, the backlog compounds until either publisher flow control is triggered or the queue hits its memory/disk limit.
+**Chain:**
+- root: aggregate consumer throughput (consumers × per-consumer ack rate) is below the publish rate
+- s1: `messages_ready` grows continuously because deliveries cannot keep pace with publishes
+- s2: backlog compounds until publisher flow control triggers or the queue hits its memory/disk limit
+- D: queue backlog and end-to-end latency exceed SLA (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] publish rate significantly exceeds ack rate with no sign of convergence
+  <!-- match: {"step": 2, "predicate": "threshold", "target": "publish_rate_minus_ack_rate", "op": ">", "value": 10} -->
+- s1: [Step 1] `consumers` count is low (1–2) while `messages_ready` is in the thousands or growing
 
-- [Step 1] `consumers` count is low (1–2) while `messages_ready` is in the thousands or growing
-- [Step 2] publish rate significantly exceeds ack rate with no sign of convergence
-<!-- match: {"step": 2, "predicate": "threshold", "target": "publish_rate_minus_ack_rate", "op": ">", "value": 10} -->
+**Interventions:**
+- **remediation** (root): set a permanent replica count via deployment manifest or autoscaling policy so consumer capacity tracks load.
 
-**Mitigation:**
+  ```bash
+  kubectl apply -f consumer-hpa.yaml
+  ```
 
-- **Risk:** Adding consumers increases broker connection count and channel count. Ensure broker `max_connections` headroom.
-- **Command:**
+  **Verification:** `messages_ready` on the affected queue decreases monotonically over 5–10 minutes; ack rate in Step 2 exceeds publish rate.
+- **mitigation** (s1): scale the consumer deployment up immediately to drain the existing backlog.
 
   ```bash
   # Scale consumer deployment (Kubernetes example)
@@ -145,116 +153,111 @@ Expected output: Queues with `x-overflow: drop-head` discard old messages silent
   rabbitmqctl list_consumers queue_name consumer_tag | grep "my-queue"
   ```
 
-- **Duration:** Consumer registration is immediate; backlog drain time depends on depth and per-message processing time.
-
-**Resolution:**
-
-```bash
-# Set permanent replica count via deployment manifest or autoscaling policy
-kubectl apply -f consumer-hpa.yaml
-```
-
-- **Impact:** Additional pods increase broker connection/channel load cluster-wide; monitor `rabbitmq_connections_total`.
-- **Rollback:** `kubectl scale deployment my-consumer --replicas=<previous>`
-
-**Verification:** `messages_ready` on the affected queue decreases monotonically over 5–10 minutes. Ack rate in Step 2 exceeds publish rate.
+  **Risk:** Adding consumers increases broker connection and channel count cluster-wide; ensure broker `max_connections` headroom and monitor `rabbitmq_connections_total`. **Duration:** Consumer registration is immediate; keep scaled until backlog drains, then revert via `kubectl scale deployment my-consumer --replicas=<previous>`. **Verification:** ack rate in Step 2 rises above publish rate; `messages_ready` trends down.
 
 ### Cause B: Consumer prefetch count set too low
 
 **Statement:** A `basic.qos` prefetch count of 1 (or similarly low value) prevents the broker from pipelining messages to consumers, capping single-consumer throughput to one round-trip latency per message.
 
-**Mechanism:** With `prefetch_count=1`, the broker waits for the consumer to acknowledge each message before delivering the next. At 100 ms processing time, throughput is capped at 10 msg/s per consumer regardless of broker capacity. Increasing prefetch allows the broker to keep the consumer's processing pipeline full, multiplying effective throughput by the prefetch depth.
+**Chain:**
+- root: consumer `basic.qos` prefetch count is set to 1 (or a similarly low value)
+- s1: broker waits for each ack before delivering the next message, capping throughput to 1 message per round-trip
+- s2: per-consumer throughput stays well below broker capacity, so `messages_ready` climbs
+- D: queue backlog and latency exceed SLA (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `prefetch_count` is 1 for channels on the affected queue while `messages_ready` is large
+  <!-- match: {"step": 3, "predicate": "contains", "target": "prefetch_count\t1"} -->
+- s1: [Step 3] `messages_unacknowledged` is 1 per channel (matching the low prefetch)
 
-- [Step 3] `prefetch_count` is 1 for channels on the affected queue while `messages_ready` is large
-<!-- match: {"step": 3, "predicate": "contains", "target": "prefetch_count\t1"} -->
-- [Step 3] `messages_unacknowledged` is 1 per channel (matching the low prefetch)
+**Interventions:**
+- **remediation** (root): set prefetch in consumer application code and redeploy (50–100 for throughput-oriented consumers; use 1 only when strict per-message ordering is required).
 
-**Mitigation:**
+  ```bash
+  # Set prefetch in consumer application code, redeploy
+  # Python pika: channel.basic_qos(prefetch_count=50)
+  # Java:        channel.basicQos(50)
+  ```
 
-- **Risk:** Higher prefetch means more messages are in-flight in consumer memory. If the consumer crashes, those messages are redelivered (not lost if queue is durable), increasing redelivery storm risk.
-- **Command:**
+  **Verification:** `messages_unacknowledged` per channel rises to ~prefetch_count; ack rate in Step 2 increases proportionally; Step 3 shows the new prefetch value.
+- **mitigation** (s1): raise prefetch via a config change and restart consumers to apply the new value immediately.
 
   ```bash
   # Update consumer application configuration (code-level change)
-  # Python pika example: channel.basic_qos(prefetch_count=50)
-  # Java example: channel.basicQos(50)
-  # Restart consumer after config change to apply new prefetch
+  # Set prefetch_count to 50, then restart consumer to apply
   ```
 
-- **Duration:** Effective immediately after consumer restart.
-
-**Resolution:**
-
-```bash
-# Set prefetch in consumer application code, redeploy
-# Recommended: 50–100 for throughput-oriented consumers
-# Use prefetch=1 only when strict per-message ordering is required
-```
-
-**Verification:** `messages_unacknowledged` per channel rises to ~prefetch_count. Ack rate in Step 2 increases proportionally. Step 3 shows new prefetch value.
+  **Risk:** Higher prefetch means more in-flight messages in consumer memory; on consumer crash they are redelivered (not lost if the queue is durable), increasing redelivery-storm risk. **Duration:** Effective immediately after consumer restart; keep as the new baseline. **Verification:** Step 3 shows the higher prefetch and `messages_unacknowledged` rising toward it.
 
 ### Cause C: Consumer requeue loop — nack with requeue=true without retry limit
 
 **Statement:** Consumers issue `basic.nack` with `requeue=true` on every failure, sending messages back to the queue head indefinitely and creating a tight retry loop that starves other messages.
 
-**Mechanism:** When a consumer requeues a message, RabbitMQ places it back at the front of the queue (for classic queues) and immediately re-delivers it to the same or another consumer. If the underlying error (database unavailability, deserialization failure) is persistent, the message cycles at the broker's delivery rate, consuming consumer CPU and preventing downstream messages from being processed. `redeliver_details.rate` approaches `deliver_details.rate`, and `messages_ready` for later messages climbs.
+**Chain:**
+- root: consumer code issues `basic.nack(requeue=true)` on every failure with no retry/attempt limit
+- s1: a persistently failing message (DB unavailability, deserialization error) is requeued to the head and re-delivered immediately
+- s2: the poison message cycles at broker delivery rate, burning consumer CPU and blocking downstream messages; `redeliver_details.rate` approaches `deliver_details.rate`
+- D: backlog grows for later messages and latency exceeds SLA (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] consumer logs show the same error message repeated at high frequency
+- s2: [Step 2] `redeliver` rate is close to or exceeds `ack` rate
+  <!-- match: {"step": 2, "predicate": "threshold", "target": "redeliver_rate_vs_ack_rate", "op": ">", "value": 0.5} -->
+- s2: [Step 4] DLQ depth is zero despite consumer errors (no DLX configured, or nack requeues instead of routing to DLX)
 
-- [Step 2] `redeliver` rate is close to or exceeds `ack` rate
-<!-- match: {"step": 2, "predicate": "threshold", "target": "redeliver_rate_vs_ack_rate", "op": ">", "value": 0.5} -->
-- [Step 4] DLQ depth is zero despite consumer errors (no DLX configured, or nack sends requeue=true instead of routing to DLX)
-- [Step 5] Consumer logs show the same error message repeated at high frequency
-
-**Mitigation:**
-
-- **Risk:** Changing nack behavior to `requeue=false` will dead-letter or discard messages immediately; ensure a DLX is configured before deploying the fix.
-- **Command:**
+**Interventions:**
+- **remediation** (root): implement retry-with-backoff using the `x-death` header count; after N attempts route the poison pill to a permanent DLQ via `basic.nack(requeue=false)`.
 
   ```bash
-  # Deploy updated consumer code that:
-  # 1. Catches exceptions
-  # 2. Increments x-death retry counter
-  # 3. Dead-letters after N attempts via basic.nack(requeue=false)
-  # Verify DLX is configured first:
-  rabbitmqctl list_queues name arguments | grep "x-dead-letter-exchange"
+  # Permanent fix: implement retry-with-backoff in consumer
+  # Use x-death header count to detect poison pills after N retries
+  # Route to permanent DLQ after max retries via basic.nack(requeue=false)
   ```
 
-- **Duration:** Fix takes effect immediately on consumer redeploy.
+  **Verification:** Step 2 shows `redeliver` rate drops to near zero; DLQ in Step 4 begins receiving messages (poison pill routed, not looping).
+- **loop_break** (s1): deploy consumer code that stops requeuing the poison message by dead-lettering after N attempts; confirm a DLX exists first so it is not discarded.
 
-**Resolution:**
+  ```bash
+  # Verify DLX is configured before deploying the fix:
+  rabbitmqctl list_queues name arguments | grep "x-dead-letter-exchange"
+  # Deploy updated consumer: catch exceptions, increment x-death,
+  # and basic.nack(requeue=false) after N attempts.
+  ```
 
-```bash
-# Permanent fix: implement retry-with-backoff in consumer
-# Use x-death header count to detect poison pills after N retries
-# Route to permanent DLQ after max retries via basic.nack(requeue=false)
-```
-
-**Verification:** Step 2 shows `redeliver` rate drops to near zero. DLQ in Step 4 begins receiving messages (confirming the poison pill is correctly routed, not looping).
+  **Verification:** Step 2 redeliver rate falls toward zero; the repeated error in Step 5 stops recurring.
 
 ### Cause D: Dead-letter queue has no consumer — rejected messages accumulate silently
 
 **Statement:** A dead-letter exchange is configured but the dead-letter queue has no attached consumer, causing all rejected or expired messages to pile up indefinitely.
 
-**Mechanism:** When a consumer issues `basic.nack(requeue=false)` or a message TTL expires, RabbitMQ routes the message to the configured dead-letter exchange. If the DLQ bound to that exchange has no consumer, messages accumulate without being processed, inspected, or alerted on. Over time, the DLQ consumes broker memory and disk, and the root-cause failures remain uninvestigated.
+**Chain:**
+- root: the dead-letter queue bound to the configured DLX has no attached consumer
+- s1: every `basic.nack(requeue=false)` or TTL-expired message is routed to the DLQ but never processed
+- s2: DLQ depth grows unbounded, consuming broker memory and disk while root-cause failures stay uninvestigated
+- D: dead-letter accumulation and broker resource pressure appear (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] DLQ row shows `consumers=0`
+  <!-- match: {"step": 4, "predicate": "contains", "target": "consumers\t0"} -->
+- s2: [Step 4] DLQ depth is non-zero and growing
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "dlq_messages", "op": ">", "value": 0} -->
 
-- [Step 4] DLQ depth is non-zero and growing
-<!-- match: {"step": 4, "predicate": "threshold", "target": "dlq_messages", "op": ">", "value": 0} -->
-- [Step 4] DLQ row shows `consumers=0`
-<!-- match: {"step": 4, "predicate": "contains", "target": "consumers\t0"} -->
+**Interventions:**
+- **remediation** (root): deploy a permanent DLQ consumer service that logs every dead-lettered message with `x-death` context, retries retriable errors with backoff, and archives + alerts on non-retriable ones.
 
-**Mitigation:**
+  ```bash
+  # Deploy a permanent DLQ consumer service that:
+  # - Logs every dead-lettered message with x-death header context
+  # - Applies retry logic with exponential backoff for retriable errors
+  # - Archives non-retriable messages and fires an alert
+  ```
 
-- **Risk:** Low. Attaching a consumer to the DLQ is read-only relative to the main queue.
-- **Command:**
+  **Verification:** DLQ depth in Step 4 decreases; an alert fires when DLQ depth exceeds 0 going forward.
+- **mitigation** (s2): drain the accumulated DLQ now — inspect messages, then redrive back to the original queue with the Shovel plugin if safe.
 
   ```bash
   # Start a dedicated DLQ inspector consumer that logs and acks each message
-  # Or use the Management UI to peek at DLQ message content (Get Messages)
+  # Or use the Management UI to peek at DLQ content (Get Messages)
 
   # Redrive DLQ messages back to original queue using Shovel plugin (if safe):
   rabbitmqctl set_parameter shovel my-dlq-redrive \
@@ -263,78 +266,71 @@ kubectl apply -f consumer-hpa.yaml
       "src-delete-after":"queue-length"}'
   ```
 
-- **Duration:** Shovel redrive completes when DLQ depth reaches zero.
-
-**Resolution:**
-
-```bash
-# Deploy a permanent DLQ consumer service that:
-# - Logs every dead-lettered message with x-death header context
-# - Applies retry logic with exponential backoff for retriable errors
-# - Archives non-retriable messages and fires an alert
-
-# Remove the temporary shovel after redrive completes:
-rabbitmqctl clear_parameter shovel my-dlq-redrive
-```
-
-**Verification:** DLQ depth in Step 4 decreases. An alert fires in your monitoring system when DLQ depth exceeds 0 going forward.
+  **Risk:** Redriving messages whose root cause is unfixed re-creates the original failure; only redrive once the consumer-side error is resolved. **Duration:** Shovel redrive completes when DLQ depth reaches zero; remove it afterward with `rabbitmqctl clear_parameter shovel my-dlq-redrive`. **Verification:** DLQ depth in Step 4 reaches zero and the shovel parameter is cleared.
 
 ### Cause E: Downstream dependency failure causing consumer processing stalls
 
 **Statement:** An external dependency (database, API, cache) that consumers call during message processing has failed, causing all consumers to block until timeout and stop acknowledging messages.
 
-**Mechanism:** Consumers fetch messages from the queue (counted as `messages_unacknowledged`) and begin processing. If the downstream call blocks waiting for a connection that never comes, the consumer holds the message unacknowledged until the client timeout fires. With `prefetch_count` slots fully occupied by blocked messages, no new messages are delivered. The queue drains at zero rate while the downstream outage persists.
+**Chain:**
+- root: a downstream dependency (database, API, cache) called during message processing has failed or is unreachable
+- s1: consumers block on the downstream call holding messages unacknowledged until the client timeout fires
+- s2: all `prefetch_count` slots fill with blocked messages so the broker delivers no new ones; the queue drains at zero rate
+- D: queue backlog grows and latency exceeds SLA while the outage persists (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] consumer logs contain downstream errors: `connection refused`, `timeout`, `ECONNREFUSED`, or `upstream connect error`
+  <!-- match: {"step": 5, "predicate": "contains", "target": "connection refused"} -->
+- s2: [Step 3] `messages_unacknowledged` equals `prefetch_count` across all channels for the affected queue
+  <!-- match: {"step": 3, "predicate": "threshold", "target": "unack_to_prefetch_ratio", "op": ">=", "value": 1.0} -->
 
-- [Step 3] `messages_unacknowledged` equals `prefetch_count` across all channels for the affected queue
-<!-- match: {"step": 3, "predicate": "threshold", "target": "unack_to_prefetch_ratio", "op": ">=", "value": 1.0} -->
-- [Step 5] Consumer logs contain downstream errors: `connection refused`, `timeout`, `ECONNREFUSED`, or `upstream connect error`
-<!-- match: {"step": 5, "predicate": "contains", "target": "connection refused"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Restarting consumer without fixing the downstream causes it to re-stall. Fix the downstream dependency first.
-- **Command:**
+**Interventions:**
+- **remediation** (root): add a circuit breaker plus explicit connection timeout (e.g. 5s) to all downstream calls in consumer code; on open circuit, fast-fail with `nack(requeue=false)` to the DLX.
 
   ```bash
-  # Identify the failing downstream service
-  # Check its health endpoint or connection from consumer host:
+  # Permanent fix: implement circuit breaker + timeout in consumer code
+  # Set explicit connection timeout (e.g., 5s) for all downstream calls
+  # Implement fast-fail path: if circuit is open, nack+requeue=false to DLX
+  ```
+
+  **Verification:** After downstream recovery, `messages_unacknowledged` drops from prefetch_count to normal; ack rate in Step 2 recovers to match publish rate.
+- **mitigation** (s2): once the downstream is restored, force-close stalled consumer connections to free up the saturated prefetch slots.
+
+  ```bash
+  # Confirm the downstream is healthy first:
   curl -s --max-time 5 http://downstream-service/health
 
-  # If dependency is temporary, consumers will self-recover once it returns
   # Force-close stalled consumer connections to free up queue slots:
   rabbitmqctl close_connection <conn_name> "upstream recovered"
   ```
 
-- **Duration:** Recovery is automatic once the downstream dependency is restored.
-
-**Resolution:**
-
-```bash
-# Permanent fix: implement circuit breaker + timeout in consumer code
-# Set explicit connection timeout (e.g., 5s) for all downstream calls
-# Implement fast-fail path: if circuit is open, nack+requeue=false to DLX
-```
-
-**Verification:** After downstream recovery, `messages_unacknowledged` drops from prefetch_count to normal levels. Ack rate in Step 2 recovers to match publish rate.
+  **Risk:** Restarting or force-closing consumers before the downstream is fixed just re-stalls them; fix the dependency first. **Duration:** Recovery is automatic once the downstream is restored; this only accelerates slot release. **Verification:** Step 3 `messages_unacknowledged` falls below `prefetch_count`; Step 2 ack rate recovers.
 
 ### Cause F: Message TTL too short — messages expire before consumers process them
 
 **Statement:** The queue's `x-message-ttl` is configured shorter than the consumer processing time, causing messages to expire in-queue and route to the dead-letter exchange before being consumed.
 
-**Mechanism:** RabbitMQ evaluates message TTL lazily at the head of the queue. When a message at the head expires, it is dead-lettered or discarded (if no DLX is configured). If consumer throughput is low (due to slow processing or insufficient count), a large fraction of messages expire before being consumed. The queue may appear shallow in `messages_ready` while the DLQ grows rapidly — the backlog manifests as message loss rather than depth.
+**Chain:**
+- root: the queue's `x-message-ttl` is set shorter than the actual consumer processing/throughput time
+- s1: messages at the queue head expire and are dead-lettered (or discarded if no DLX) before a consumer reaches them
+- s2: a large fraction of traffic is lost to expiry; `messages_ready` looks shallow while DLQ depth grows rapidly
+- D: backlog manifests as message loss / dead-letter accumulation rather than depth (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] `x-message-ttl` is set to a value (e.g., 60000 ms) shorter than observed consumer processing time
+  <!-- match: {"step": 6, "predicate": "contains", "target": "x-message-ttl"} -->
+- s2: [Step 4] DLQ depth grows rapidly even when consumers are active and `messages_ready` is low
 
-- [Step 6] `x-message-ttl` is set to a value (e.g., 60000 ms) shorter than observed consumer processing time
-<!-- match: {"step": 6, "predicate": "contains", "target": "x-message-ttl"} -->
-- [Step 4] DLQ depth grows rapidly even when consumers are active and `messages_ready` is low
+**Interventions:**
+- **remediation** (root): set TTL from the business SLA, not implementation convenience; if messages must never expire, remove the TTL policy and add `x-max-length` with `reject-publish` as a safety valve.
 
-**Mitigation:**
+  ```bash
+  # Set TTL based on business SLA; if messages must not expire, remove it:
+  rabbitmqctl clear_policy ttl-fix
+  ```
 
-- **Risk:** Increasing TTL keeps messages in-queue longer, potentially increasing memory pressure during bursts.
-- **Command:**
+  **Verification:** DLQ growth rate in Step 4 drops to near zero; Step 6 shows the updated TTL; consumers process without expiry-related dead-lettering.
+- **mitigation** (root): widen the TTL immediately via policy (no queue deletion required) so in-flight traffic stops expiring.
 
   ```bash
   # Update TTL via policy (preferred — does not require queue deletion)
@@ -345,37 +341,35 @@ rabbitmqctl clear_parameter shovel my-dlq-redrive
   rabbitmqctl list_policies
   ```
 
-- **Duration:** Policy changes apply to new messages immediately; existing messages retain their original TTL.
-
-**Resolution:**
-
-```bash
-# Set TTL based on business SLA, not implementation convenience
-# If messages must not expire, remove the TTL policy entirely:
-rabbitmqctl clear_policy ttl-fix
-```
-
-- **Impact:** Removing TTL means queue can grow unbounded during consumer outages; set `x-max-length` with `reject-publish` overflow as a safety valve.
-- **Rollback:** `rabbitmqctl set_policy ttl-fix "^my-queue$" '{"message-ttl": <old_value>}' --apply-to queues`
-
-**Verification:** DLQ growth rate in Step 4 drops to near zero. Step 6 shows updated TTL. Consumer application processes messages without expiry-related dead-lettering.
+  **Risk:** Longer TTL keeps messages in-queue longer, raising memory pressure during bursts; existing messages keep their original TTL. **Duration:** Applies to new messages immediately; roll back with `rabbitmqctl set_policy ttl-fix "^my-queue$" '{"message-ttl": <old_value>}' --apply-to queues`. **Verification:** Step 6 shows the wider TTL and Step 4 DLQ growth slows.
 
 ### Cause G: Queue overflow set to drop-head — silent message loss masking the real backlog
 
 **Statement:** The queue `x-overflow` policy is set to `drop-head`, causing the oldest messages to be silently discarded when the queue reaches `x-max-length`, masking the true accumulation rate.
 
-**Mechanism:** When a queue reaches its `x-max-length` limit with `drop-head` overflow, RabbitMQ drops the oldest message from the head to make room for each new arrival. The `messages_ready` metric appears stable (bounded), but messages are being lost. Publishers see no errors and consumers see no backlog — the symptom is silent data loss, not queue depth growth. This masking prevents escalation until downstream data inconsistencies appear.
+**Chain:**
+- root: the queue `x-overflow` policy is set to `drop-head` with an `x-max-length` limit
+- s1: at the length limit, the broker silently drops the oldest message from the head for each new arrival
+- s2: `messages_ready` appears bounded and publishers/consumers see no errors, so the real accumulation is masked as silent data loss
+- D: downstream data inconsistencies surface instead of visible backlog (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] `x-overflow: drop-head` is present in queue arguments or applied policy
+  <!-- match: {"step": 6, "predicate": "contains", "target": "drop-head"} -->
+- s1: [Step 6] `x-max-length` is set and `messages_ready` is exactly at that limit
 
-- [Step 6] `x-overflow: drop-head` is present in queue arguments or applied policy
-<!-- match: {"step": 6, "predicate": "contains", "target": "drop-head"} -->
-- [Step 6] `x-max-length` is set and `messages_ready` is exactly at that limit
+**Interventions:**
+- **remediation** (root): switch overflow to `reject-publish-dlx` so over-limit messages are preserved to a DLX and publishers receive correct backpressure.
 
-**Mitigation:**
+  ```bash
+  # Permanent: use reject-publish-dlx if messages must not be lost
+  rabbitmqctl set_policy overflow-fix "^my-queue$" \
+    '{"overflow": "reject-publish-dlx", "dead-letter-exchange": "my-exchange.dlx"}' \
+    --apply-to queues
+  ```
 
-- **Risk:** Changing overflow to `reject-publish` will cause publishers to receive `basic.return` for rejected messages or encounter channel errors, surfacing the real backlog pressure.
-- **Command:**
+  **Verification:** Step 6 shows the new overflow mode; publishers handle `basic.return` / publisher-confirm failures when the queue is full, confirming backpressure is visible.
+- **mitigation** (root): immediately stop the silent loss by switching overflow to `reject-publish`, surfacing the real backlog pressure to publishers.
 
   ```bash
   # Change overflow to reject-publish to apply backpressure instead of losing data
@@ -383,36 +377,17 @@ rabbitmqctl clear_policy ttl-fix
     '{"overflow": "reject-publish"}' --apply-to queues
   ```
 
-- **Duration:** Effective immediately for new messages.
+  **Risk:** Publishers will now receive `basic.return` for rejected messages or hit channel errors when the queue is full — intended, but unprepared publishers may error. **Duration:** Effective immediately for new messages; roll back with `rabbitmqctl clear_policy overflow-fix`. **Verification:** Step 6 shows `x-overflow: reject-publish`; publishers log message-return events when the queue is full.
 
-**Resolution:**
+### Cause Z: Unidentified
 
-```bash
-# Permanent: use reject-publish-dlx if messages must not be lost
-rabbitmqctl set_policy overflow-fix "^my-queue$" \
-  '{"overflow": "reject-publish-dlx", "dead-letter-exchange": "my-exchange.dlx"}' \
-  --apply-to queues
-```
+**Statement:** The queue backlog or dead-letter accumulation root cause could not be identified from the diagnostic steps above.
 
-- **Impact:** Publishers will need to handle `basic.return` callbacks or `publisher confirms` failures when the queue is full — this is the correct backpressure signal.
-- **Rollback:** `rabbitmqctl clear_policy overflow-fix`
+**Indicators:**
+- [Default]
 
-**Verification:** Step 6 shows `x-overflow: reject-publish`. Publisher applications log message-return events when queue is full, confirming backpressure is now visible.
-
-### Cause Z: Unidentified — queue backlog root cause not determined by steps above
-
-**Statement:** The queue backlog or dead-letter accumulation root cause could not be identified from the diagnostic steps.
-
-**Mechanism:** Complex multi-cause scenarios (e.g., network partition causing consumer disconnects combined with TTL expiry, or a broker-level resource alarm suppressing delivery) may not reduce to a single indicator. Broker-level logs and cluster health diagnostics are required for further isolation.
-
-**Indicator:**
-
-- [Default] None of the above causes match the observed diagnostics
-
-**Mitigation:**
-
-- **Risk:** Low. Diagnostic-only steps.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot (broker alarms, logs, cluster status) and escalate to the RabbitMQ administrator / SME.
 
   ```bash
   # Check broker-level alarms (memory, disk)
@@ -425,11 +400,7 @@ rabbitmqctl set_policy overflow-fix "^my-queue$" \
   rabbitmq-diagnostics cluster_status
   ```
 
-- **Duration:** Diagnostic only; no change to production system.
-
-**Resolution:** Out of runbook scope. Escalate to RabbitMQ administrator with output of all diagnostic steps and broker logs.
-
-**Verification:** N/A — escalation path.
+  **Risk:** Low — diagnostic-only commands with no change to the production system. **Duration:** One-off; escalate immediately with the captured output. **Verification:** N/A — escalation path; SME continues isolation from the snapshot.
 
 ## Prevention
 

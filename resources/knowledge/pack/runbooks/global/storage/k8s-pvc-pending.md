@@ -7,8 +7,8 @@ symptom_class:
   - scheduling_failure
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: kb-researcher
 status: draft
 tags:
@@ -147,137 +147,144 @@ Expected output: empty (no pre-binding — the PVC is using dynamic provisioning
 
 **Statement:** The PVC references a StorageClass name that is not present in the cluster, or omits `storageClassName` while no default StorageClass is configured, so the controller has no provisioner to invoke.
 
-**Mechanism:** When the PVC carries `storageClassName: <name>` the controller looks up that exact StorageClass; if the lookup returns NotFound, the controller emits `ProvisioningFailed` with `storageclass.storage.k8s.io "<name>" not found` and the PVC stays `Pending`. When the PVC omits the field, Kubernetes falls back to the StorageClass annotated `storageclass.kubernetes.io/is-default-class: "true"`; if no class carries the annotation, the PVC is admitted with an empty `storageClassName`, dynamic provisioning is skipped entirely, and the PVC remains `Pending` until a matching pre-existing PV appears.
+**Chain:**
+- root: the PVC's referenced StorageClass is missing, or no default class exists when `storageClassName` is omitted.
+- s1: the controller cannot resolve a provisioner — it either emits `ProvisioningFailed` `... not found` or admits an empty `storageClassName` and skips dynamic provisioning entirely.
+- D: no `CreateVolume` is ever issued, so the PVC stays `Pending` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] `storageClassName` is empty AND [Step 3] no StorageClass carries the `storageclass.kubernetes.io/is-default-class: "true"` annotation.
+- s1: [Step 1] event message contains `storageclass.storage.k8s.io` and `not found`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "not found"} -->
+- s1: [Step 3] `kubectl get storageclass <class-name>` returns `Error from server (NotFound)`.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "NotFound"} -->
 
-- [Step 1] event message contains `storageclass.storage.k8s.io` and `not found`
-<!-- match: {"step": 1, "predicate": "contains", "target": "not found"} -->
-- [Step 3] `kubectl get storageclass <class-name>` returns `Error from server (NotFound)`
-<!-- match: {"step": 3, "predicate": "contains", "target": "NotFound"} -->
-- [Step 2] `storageClassName` is empty AND [Step 3] no StorageClass has the `is-default-class` annotation set to `true`
+**Interventions:**
+- **remediation** (root): create the missing StorageClass, mark an existing class as default, or recreate the PVC pointing at an existing class.
 
-**Mitigation:**
+  ```bash
+  # Option A: create the missing StorageClass (example for AWS EBS gp3)
+  cat > /tmp/sc.yaml <<'EOF'
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+    name: gp3
+    annotations:
+      storageclass.kubernetes.io/is-default-class: "true"
+  provisioner: ebs.csi.aws.com
+  volumeBindingMode: WaitForFirstConsumer
+  reclaimPolicy: Delete
+  allowVolumeExpansion: true
+  parameters:
+    type: gp3
+    fsType: ext4
+  EOF
+  kubectl apply -f /tmp/sc.yaml
 
-- **Risk:** Patching the PVC to use a different class requires deleting and recreating the PVC (the field is immutable), which loses any pre-bound state; coordinate the recreate window with the workload owner.
-- **Command:**
+  # Option B: mark an existing class as the default
+  kubectl patch storageclass <existing-class> \
+    -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+
+  # Option C: recreate the PVC pointing at an existing class
+  kubectl get pvc <pvc-name> -n <namespace> -o yaml > /tmp/pvc.yaml
+  # edit /tmp/pvc.yaml to set spec.storageClassName, then:
+  kubectl delete pvc <pvc-name> -n <namespace>
+  kubectl apply -f /tmp/pvc.yaml
+  ```
+
+  **Verification:** `kubectl get storageclass` shows the target class and `(default)` where intended; `kubectl get pvc <pvc-name> -n <namespace>` transitions from `Pending` to `Bound` within 30 seconds (Immediate) or once a consumer pod schedules (WaitForFirstConsumer).
+- **mitigation** (root): inventory existing classes to pick a known-good one for the durable fix.
 
   ```bash
   kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.provisioner}{"\n"}{end}'
   ```
 
-- **Duration:** Read-only inventory; use the output to pick a known-good class for the durable resolution.
-
-**Resolution:**
-
-```bash
-# Option A: create the missing StorageClass (example for AWS EBS gp3)
-cat > /tmp/sc.yaml <<'EOF'
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: gp3
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
-provisioner: ebs.csi.aws.com
-volumeBindingMode: WaitForFirstConsumer
-reclaimPolicy: Delete
-allowVolumeExpansion: true
-parameters:
-  type: gp3
-  fsType: ext4
-EOF
-kubectl apply -f /tmp/sc.yaml
-
-# Option B: mark an existing class as the default
-kubectl patch storageclass <existing-class> \
-  -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
-
-# Option C: recreate the PVC pointing at an existing class
-kubectl get pvc <pvc-name> -n <namespace> -o yaml > /tmp/pvc.yaml
-# edit /tmp/pvc.yaml to set spec.storageClassName, then:
-kubectl delete pvc <pvc-name> -n <namespace>
-kubectl apply -f /tmp/pvc.yaml
-```
-
-**Impact:** Cluster-wide for Options A and B (every PVC that omits `storageClassName` will start using the new default; verify that legacy workloads are not surprised). Option C is scoped to the single PVC; deleting a `Pending` PVC is safe because no PV is yet bound.
-
-**Rollback:** `kubectl delete storageclass <new-class>` for Option A; `kubectl annotate storageclass <existing-class> storageclass.kubernetes.io/is-default-class-` for Option B; redeploy the previous PVC manifest for Option C.
-
-**Verification:** `kubectl get storageclass` shows the target class and `(default)` next to it where intended. `kubectl get pvc <pvc-name> -n <namespace>` transitions from `Pending` to `Bound` within 30 seconds (Immediate binding) or once a consumer pod schedules (WaitForFirstConsumer).
+  **Risk:** Patching the PVC to a different class requires deleting and recreating it (the field is immutable), losing any pre-bound state; coordinate the recreate window with the workload owner. **Duration:** Read-only inventory; use the output immediately to drive the durable fix. **Verification:** the chosen class appears in `kubectl get storageclass` with a known provisioner.
 
 ### Cause B: CSI controller pods are not Running
 
 **Statement:** The CSI driver responsible for the StorageClass is uninstalled, crashed, or has no Ready controller pod, so the `CreateVolume` RPC cannot be dispatched and the PVC sits with repeating `ExternalProvisioning` events.
 
-**Mechanism:** The `external-provisioner` sidecar in the CSI controller deployment watches PVCs whose StorageClass references the driver's name and issues `CreateVolume` gRPC calls to the driver-plugin container. If the controller pod is `CrashLoopBackOff`, `Pending`, or `ImagePullBackOff`, no sidecar is alive to take the lease; if the pod is missing entirely (driver never installed), the PVC controller surfaces `ExternalProvisioning` indefinitely with `waiting for a volume to be created, either by external provisioner "<driver>" or manually created by system administrator`.
+**Chain:**
+- root: the CSI controller deployment for the provisioner is uninstalled, `CrashLoopBackOff`, `ImagePullBackOff`, or `Pending`.
+- s1: no live `external-provisioner` sidecar holds the lease, so no `CreateVolume` gRPC call is issued to the driver plugin.
+- D: the PVC controller surfaces `ExternalProvisioning` indefinitely and the PVC stays `Pending` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] one or more CSI controller/node pods are in `CrashLoopBackOff`, `ImagePullBackOff`, `Pending`, or `Error` state.
+  <!-- match: {"step": 4, "predicate": "contains", "target": "CrashLoopBackOff"} -->
+- root: [Step 4] `kubectl get csidrivers` does not list the provisioner named in the StorageClass.
+- s1: [Step 1] PVC event reason is `ExternalProvisioning` with message `waiting for a volume to be created, either by external provisioner`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "ExternalProvisioning"} -->
 
-- [Step 4] one or more CSI controller/node pods are in `CrashLoopBackOff`, `ImagePullBackOff`, `Pending`, or `Error` state
-<!-- match: {"step": 4, "predicate": "contains", "target": "CrashLoopBackOff"} -->
-- [Step 1] PVC event reason is `ExternalProvisioning` with message `waiting for a volume to be created, either by external provisioner`
-<!-- match: {"step": 1, "predicate": "contains", "target": "ExternalProvisioning"} -->
-- [Step 4] `kubectl get csidrivers` does not list the provisioner named in the StorageClass
+**Interventions:**
+- **remediation** (root): install the driver if missing, fix the crashing controller's root failure, or wire the IRSA role so the controller becomes Ready.
 
-**Mitigation:**
+  ```bash
+  # 1) If the driver is missing, install the official Helm chart (AWS EBS shown)
+  helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
+  helm repo update
+  helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+    --namespace kube-system
 
-- **Risk:** A blanket restart of the controller deployment briefly drops the `external-provisioner` lease; in-flight CreateVolume calls may be retried. Acceptable during incident windows.
-- **Command:**
+  # 2) If the driver is installed but crashing, inspect logs for the root failure
+  kubectl logs -n kube-system -l app=ebs-csi-controller -c ebs-plugin --tail=200
+  # Typical fixes:
+  #   - missing IAM permissions (Cause D)
+  #   - missing IRSA role annotation on the controller ServiceAccount
+  #   - wrong image tag pinned in a chart values override
+
+  # 3) For IRSA on EKS, attach the role on the controller SA
+  kubectl annotate -n kube-system serviceaccount ebs-csi-controller-sa \
+    eks.amazonaws.com/role-arn=arn:aws:iam::<account>:role/<ebs-csi-irsa-role> --overwrite
+  kubectl rollout restart deployment -n kube-system ebs-csi-controller
+  ```
+
+  **Verification:** `kubectl get pods -n kube-system -l app=ebs-csi-controller` shows all pods `Running` and Ready; a fresh `kubectl describe pvc <pvc-name>` shows a new `Provisioning`/`ProvisioningSucceeded` pair within 60 seconds and the PVC transitions to `Bound`.
+- **mitigation** (s1): restart the controller deployment to recover a wedged but installed sidecar.
 
   ```bash
   kubectl rollout restart deployment -n kube-system ebs-csi-controller
   kubectl rollout status deployment -n kube-system ebs-csi-controller --timeout=120s
   ```
 
-- **Duration:** Up to 5 minutes while pods reschedule.
-
-**Resolution:**
-
-```bash
-# 1) If the driver is missing, install the official Helm chart (AWS EBS shown)
-helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
-helm repo update
-helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
-  --namespace kube-system
-
-# 2) If the driver is installed but crashing, inspect logs for the root failure
-kubectl logs -n kube-system -l app=ebs-csi-controller -c ebs-plugin --tail=200
-# Typical fixes:
-#   - missing IAM permissions (Cause D)
-#   - missing IRSA role annotation on the controller ServiceAccount
-#   - wrong image tag pinned in a chart values override
-
-# 3) For IRSA on EKS, attach the role on the controller SA
-kubectl annotate -n kube-system serviceaccount ebs-csi-controller-sa \
-  eks.amazonaws.com/role-arn=arn:aws:iam::<account>:role/<ebs-csi-irsa-role> --overwrite
-kubectl rollout restart deployment -n kube-system ebs-csi-controller
-```
-
-**Impact:** Cluster-wide for the driver — every PVC bound to this provisioner depends on it. Restart causes a brief leader-election gap (seconds); already-bound PVs are unaffected because the kubelet-side node plugin handles mount/unmount independently of the controller's CreateVolume path.
-
-**Rollback:** `helm rollback aws-ebs-csi-driver <previous-revision>` for chart upgrades; remove the IRSA annotation with `kubectl annotate ... eks.amazonaws.com/role-arn-` if it was misapplied.
-
-**Verification:** `kubectl get pods -n kube-system -l app=ebs-csi-controller` shows all pods `Running` and Ready. A fresh `kubectl describe pvc <pvc-name>` shows a new `Provisioning`/`ProvisioningSucceeded` event pair within 60 seconds, and the PVC transitions to `Bound`.
+  **Risk:** A blanket restart briefly drops the `external-provisioner` lease; in-flight CreateVolume calls may be retried — acceptable during incident windows. **Duration:** Up to 5 minutes while pods reschedule. **Verification:** the controller pods return to `Running`/Ready and a new `Provisioning` event appears on the PVC.
 
 ### Cause C: StorageClass uses WaitForFirstConsumer and no consumer pod is scheduled
 
 **Statement:** The StorageClass has `volumeBindingMode: WaitForFirstConsumer`, so the controller intentionally defers `CreateVolume` until a pod that references the PVC is scheduled to a node — and no such pod is yet schedulable.
 
-**Mechanism:** Under `WaitForFirstConsumer`, the controller emits `WaitForPodScheduled` / `WaitForFirstConsumer` events and waits. Once a referencing pod is scheduled, the controller selects the pod's node zone and topology, then calls `CreateVolume` with `accessibility_requirements` matching that node. If the pod is itself unschedulable (insufficient CPU/memory, missing tolerations, no PVC consumer at all), no zone is chosen and the PVC remains `Pending` forever. This is normal operating behavior, not a fault of the provisioner — but it blocks every workload that assumes Immediate binding.
+**Chain:**
+- root: the StorageClass uses `volumeBindingMode: WaitForFirstConsumer`, deferring provisioning until a consumer pod schedules.
+- s1: no referencing pod is schedulable (none exists, or every one is `Pending`/`Unschedulable`/`SchedulingGated`), so no node zone is selected.
+- D: the controller emits `WaitForFirstConsumer` and never calls `CreateVolume`, leaving the PVC `Pending` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `volumeBindingMode` is `WaitForFirstConsumer`.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "WaitForFirstConsumer"} -->
+- s1: [Step 1] PVC event reason is `WaitForPodScheduled` or `WaitForFirstConsumer` with message `waiting for first consumer to be created before binding`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "waiting for first consumer to be created before binding"} -->
+- s1: [Step 8] no pod references the PVC, or every referencing pod is `Pending` with `reason: Unschedulable` / `SchedulingGated`.
 
-- [Step 1] PVC event reason is `WaitForPodScheduled` or `WaitForFirstConsumer` with message `waiting for first consumer to be created before binding`
-<!-- match: {"step": 1, "predicate": "contains", "target": "waiting for first consumer to be created before binding"} -->
-- [Step 3] `volumeBindingMode` is `WaitForFirstConsumer`
-<!-- match: {"step": 3, "predicate": "contains", "target": "WaitForFirstConsumer"} -->
-- [Step 8] no pod references the PVC, or every referencing pod is `Pending` with `reason: Unschedulable` / `SchedulingGated`
+**Interventions:**
+- **remediation** (s1): make the consumer pod schedulable (reduce requests, add tolerations, or relax affinity) so binding can proceed.
 
-**Mitigation:**
+  ```bash
+  # Fix the consumer pod's scheduling issue so it can land on a node.
+  # Common patterns:
+  #   - reduce resource requests so the pod fits an existing node
+  kubectl set resources deployment/<deployment> -n <namespace> \
+    --requests=cpu=100m,memory=128Mi
+  #   - add a toleration if all candidate nodes are tainted
+  kubectl patch deployment/<deployment> -n <namespace> --type=json -p='[{"op":"add","path":"/spec/template/spec/tolerations/-","value":{"key":"workload","operator":"Equal","value":"general","effect":"NoSchedule"}}]'
+  #   - relax node affinity / nodeSelector that no node satisfies
+  kubectl edit deployment/<deployment> -n <namespace>
+  # Verify the pod transitions and the PVC binds
+  kubectl get pvc <pvc-name> -n <namespace> -w
+  ```
 
-- **Risk:** Patching the PVC to a class with `Immediate` binding pre-provisions a volume in an arbitrary zone, which can later collide with a pod that needs a different zone; only use when no consumer pod is expected and the PVC must be pre-bound for inspection.
-- **Command:**
+  **Verification:** `kubectl get pod <consumer-pod> -n <namespace>` reaches `Running`; `kubectl get pvc <pvc-name> -n <namespace>` shows `Bound` with a non-empty `VOLUME`; `kubectl describe pvc` shows `ProvisioningSucceeded` with the new PV name.
+- **mitigation** (s1): inspect the consumer pod's scheduling events to find the blocker before fixing it.
 
   ```bash
   kubectl get pods -n <namespace> -o wide \
@@ -286,48 +293,48 @@ kubectl rollout restart deployment -n kube-system ebs-csi-controller
     | sed -n '/Events:/,$p'
   ```
 
-- **Duration:** Read-only; the next step is to make the consumer pod schedulable.
-
-**Resolution:**
-
-```bash
-# Fix the consumer pod's scheduling issue so it can land on a node.
-# Common patterns:
-#   - reduce resource requests so the pod fits an existing node
-kubectl set resources deployment/<deployment> -n <namespace> \
-  --requests=cpu=100m,memory=128Mi
-#   - add a toleration if all candidate nodes are tainted
-kubectl patch deployment/<deployment> -n <namespace> --type=json -p='[{"op":"add","path":"/spec/template/spec/tolerations/-","value":{"key":"workload","operator":"Equal","value":"general","effect":"NoSchedule"}}]'
-#   - relax node affinity / nodeSelector that no node satisfies
-kubectl edit deployment/<deployment> -n <namespace>
-# Verify the pod transitions and the PVC binds
-kubectl get pvc <pvc-name> -n <namespace> -w
-```
-
-**Impact:** Scoped to the consumer Deployment/StatefulSet. Once the pod schedules, the CSI driver provisions the volume in the same zone as the chosen node and the PVC binds within ~30 seconds. Pre-existing pods on other nodes are not affected.
-
-**Rollback:** Revert the deployment with `kubectl rollout undo deployment/<deployment> -n <namespace>`; the previous unschedulable pod spec returns and the PVC reverts to `Pending`.
-
-**Verification:** `kubectl get pod <consumer-pod> -n <namespace>` reaches `Running`, `kubectl get pvc <pvc-name> -n <namespace>` shows `Bound` with a non-empty `VOLUME` column, and `kubectl describe pvc` shows a `ProvisioningSucceeded` event with the new PV name.
+  **Risk:** Patching the PVC to an `Immediate`-binding class instead pre-provisions a volume in an arbitrary zone that can later collide with a pod needing a different zone; only do so when no consumer pod is expected. **Duration:** Read-only; the next step is to make the consumer pod schedulable. **Verification:** the pod's `Events` name the precise scheduling constraint (insufficient resources, taint, affinity).
 
 ### Cause D: CSI driver lacks cloud-provider IAM permissions
 
 **Statement:** The CSI controller's service account has no IAM/identity grant for the cloud-provider volume APIs (such as `ec2:CreateVolume`, `compute.disks.insert`, `Microsoft.Compute/disks/write`), so every `CreateVolume` call returns an authorization error and the PVC stays `Pending`.
 
-**Mechanism:** The CSI controller authenticates to the cloud provider via instance profile, IRSA (EKS), Workload Identity (GKE), or AAD Pod Identity / Managed Identity (AKS). When the bound identity is missing the required permissions, the controller-plugin container logs the cloud-API error verbatim (`UnauthorizedOperation`, `AccessDenied`, `PERMISSION_DENIED`) and the `external-provisioner` sidecar surfaces it on the PVC as `ProvisioningFailed` with `rpc error: code = Internal desc = ...`. On EKS this most commonly means the `ebs-csi-controller-sa` ServiceAccount lacks the `eks.amazonaws.com/role-arn` annotation or the role lacks `AmazonEBSCSIDriverPolicy` / `AmazonEBSCSIDriverPolicyV2`.
+**Chain:**
+- root: the CSI controller's bound identity (instance profile, IRSA, Workload Identity, Managed Identity) lacks the required volume-API permissions.
+- s1: each `CreateVolume` cloud-API call is rejected with `UnauthorizedOperation`/`AccessDenied`/`PERMISSION_DENIED`, logged verbatim by the controller-plugin container.
+- s2: the `external-provisioner` sidecar surfaces it on the PVC as `ProvisioningFailed` with `rpc error: code = Internal desc = ...`.
+- D: no volume is created and the PVC stays `Pending` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] the controller ServiceAccount is missing the cloud-identity annotation (e.g. `eks.amazonaws.com/role-arn` on EKS, `iam.gke.io/gcp-service-account` on GKE).
+- s1: [Step 5] controller logs contain `is not authorized to perform: ec2:CreateVolume` or `googleapi: Error 403: Required '<permission>' permission`.
+  <!-- match: {"step": 5, "predicate": "contains", "target": "is not authorized to perform"} -->
+- s2: [Step 1] event message contains `UnauthorizedOperation`, `AccessDenied`, or `PERMISSION_DENIED`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "UnauthorizedOperation"} -->
 
-- [Step 1] event message contains `UnauthorizedOperation`, `AccessDenied`, or `PERMISSION_DENIED`
-<!-- match: {"step": 1, "predicate": "contains", "target": "UnauthorizedOperation"} -->
-- [Step 5] controller logs contain `is not authorized to perform: ec2:CreateVolume` or `googleapi: Error 403: Required '<permission>' permission`
-<!-- match: {"step": 5, "predicate": "contains", "target": "is not authorized to perform"} -->
-- [Step 4] the controller ServiceAccount is missing the cloud-identity annotation (for example `eks.amazonaws.com/role-arn` on EKS, `iam.gke.io/gcp-service-account` on GKE)
+**Interventions:**
+- **remediation** (root): grant the CSI controller identity the scoped volume permissions and confirm the identity annotation, then restart so it picks up credentials.
 
-**Mitigation:**
+  ```bash
+  # AWS EKS: attach the v2 managed policy (scoped via tag-based conditions)
+  aws iam attach-role-policy \
+    --role-name <ebs-csi-irsa-role> \
+    --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicyV2
+  # Confirm IRSA annotation
+  kubectl annotate -n kube-system serviceaccount ebs-csi-controller-sa \
+    eks.amazonaws.com/role-arn=arn:aws:iam::<account>:role/<ebs-csi-irsa-role> --overwrite
+  # Restart so the controller picks up new credentials immediately
+  kubectl rollout restart deployment -n kube-system ebs-csi-controller
+  # GKE: bind a Google service account via Workload Identity
+  gcloud projects add-iam-policy-binding <project> \
+    --member="serviceAccount:<gsa>@<project>.iam.gserviceaccount.com" \
+    --role="roles/compute.storageAdmin"
+  kubectl annotate serviceaccount -n kube-system csi-gce-pd-controller \
+    iam.gke.io/gcp-service-account=<gsa>@<project>.iam.gserviceaccount.com --overwrite
+  ```
 
-- **Risk:** Attaching a broad managed policy (for example `AmazonEBSCSIDriverPolicy`) grants the role permissions across every EBS volume in the account; acceptable as a short-term unblock but pair with a restricted custom policy in the durable resolution.
-- **Command:**
+  **Verification:** `kubectl logs -n kube-system -l app=ebs-csi-controller -c ebs-plugin --tail=50` shows a fresh `CreateVolume` succeed with no `UnauthorizedOperation` line; the PVC transitions to `Bound` and `kubectl describe pvc` includes `ProvisioningSucceeded`.
+- **mitigation** (root): attach the broad managed policy as a short-term unblock until the scoped policy lands.
 
   ```bash
   aws iam attach-role-policy \
@@ -335,52 +342,46 @@ kubectl get pvc <pvc-name> -n <namespace> -w
     --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
   ```
 
-- **Duration:** Up to 24 hours, replaced by the scoped policy below.
-
-**Resolution:**
-
-```bash
-# AWS EKS: attach the v2 managed policy (scoped via tag-based conditions)
-aws iam attach-role-policy \
-  --role-name <ebs-csi-irsa-role> \
-  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicyV2
-# Confirm IRSA annotation
-kubectl annotate -n kube-system serviceaccount ebs-csi-controller-sa \
-  eks.amazonaws.com/role-arn=arn:aws:iam::<account>:role/<ebs-csi-irsa-role> --overwrite
-# Restart so the controller picks up new credentials immediately
-kubectl rollout restart deployment -n kube-system ebs-csi-controller
-# GKE: bind a Google service account via Workload Identity
-gcloud projects add-iam-policy-binding <project> \
-  --member="serviceAccount:<gsa>@<project>.iam.gserviceaccount.com" \
-  --role="roles/compute.storageAdmin"
-kubectl annotate serviceaccount -n kube-system csi-gce-pd-controller \
-  iam.gke.io/gcp-service-account=<gsa>@<project>.iam.gserviceaccount.com --overwrite
-```
-
-**Impact:** Cluster-wide for the driver — every future provisioning succeeds against the cloud provider. No effect on already-bound PVs. STS token rotation propagates within ~60 seconds after the controller restart.
-
-**Rollback:** `aws iam detach-role-policy --role-name <ebs-csi-irsa-role> --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicyV2` (or remove the GCP IAM binding), then `kubectl rollout restart deployment -n kube-system ebs-csi-controller`.
-
-**Verification:** `kubectl logs -n kube-system -l app=ebs-csi-controller -c ebs-plugin --tail=50` shows a fresh `CreateVolume` succeed with no `UnauthorizedOperation` line. The original PVC transitions to `Bound`; `kubectl describe pvc` includes `ProvisioningSucceeded` referencing the new PV.
+  **Risk:** `AmazonEBSCSIDriverPolicy` grants permissions across every EBS volume in the account; acceptable short-term but pair with a restricted custom policy in the durable fix. **Duration:** Up to 24 hours, replaced by the scoped policy. **Verification:** a fresh `CreateVolume` in the controller logs succeeds and the PVC binds.
 
 ### Cause E: Cloud-provider quota or capacity is exhausted
 
 **Statement:** The cloud provider rejects new volume creation in the cluster region because the account quota for that volume class is reached or the requested AZ has insufficient capacity.
 
-**Mechanism:** Each cloud provider enforces per-region limits on the number of volumes, total provisioned capacity (TiB), provisioned IOPS, and throughput. When the CSI driver's `CreateVolume` call exceeds any of these, the cloud API returns `VolumeLimitExceeded`, `RequestLimitExceeded`, `QUOTA_EXCEEDED`, `InsufficientResourceCapacity`, or `OperationNotAllowed: QuotaExceeded`. The CSI driver surfaces the error verbatim as `ProvisioningFailed`; the `external-provisioner` retries with exponential backoff, so the PVC stays `Pending` until the quota is raised or volumes are freed.
+**Chain:**
+- root: the cloud account's per-region limit (volume count, total capacity, IOPS, or throughput) is reached, or the AZ lacks capacity.
+- s1: each `CreateVolume` cloud-API call returns `VolumeLimitExceeded`/`RequestLimitExceeded`/`QUOTA_EXCEEDED`/`InsufficientResourceCapacity`.
+- s2: the CSI driver surfaces it as `ProvisioningFailed` and the `external-provisioner` retries with exponential backoff.
+- D: no volume is created and the PVC stays `Pending` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] current volume count is at or above the configured service quota.
+- s1: [Step 1] event message contains `VolumeLimitExceeded`, `RequestLimitExceeded`, `QUOTA_EXCEEDED`, or `InsufficientResourceCapacity`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "VolumeLimitExceeded"} -->
+- s2: [Step 5] controller logs contain `You have reached the maximum number of EBS volumes` or `Quota '<resource>' exceeded` from the cloud API.
+  <!-- match: {"step": 5, "predicate": "contains", "target": "maximum number"} -->
 
-- [Step 1] event message contains `VolumeLimitExceeded`, `RequestLimitExceeded`, `QUOTA_EXCEEDED`, or `InsufficientResourceCapacity`
-<!-- match: {"step": 1, "predicate": "contains", "target": "VolumeLimitExceeded"} -->
-- [Step 5] controller logs contain `You have reached the maximum number of EBS volumes` or `Quota '<resource>' exceeded` from the cloud API
-<!-- match: {"step": 5, "predicate": "contains", "target": "maximum number"} -->
-- [Step 6] current volume count is at or above the configured service quota
+**Interventions:**
+- **remediation** (root): request a quota increase for the volume class in the region (and reduce demand by deleting orphaned `Released` PVs).
 
-**Mitigation:**
+  ```bash
+  # AWS: request a quota increase for EBS volume count in the region
+  aws service-quotas request-service-quota-increase \
+    --service-code ebs \
+    --quota-code L-D18FCD1D \
+    --desired-value <new-limit>
+  # GCP: request quota in the console or via gcloud
+  gcloud compute project-info update --quota-target='SSD_TOTAL_GB' --quota-limit=<new-limit>
+  # Azure: request a quota increase via support ticket or
+  az support tickets create --ticket-name "<name>" --issue-type quota \
+    --quota-ticket-details file://quota-request.json
+  # Reduce demand: enable VolumeSnapshot lifecycle and delete orphaned PVs
+  kubectl get pv -o jsonpath='{range .items[?(@.status.phase=="Released")]}{.metadata.name}{"\n"}{end}' \
+    | xargs -r -I{} kubectl delete pv {}
+  ```
 
-- **Risk:** Deleting orphaned volumes recovers quota immediately but is destructive — confirm each volume is unattached and not referenced by any Bound PV before deletion.
-- **Command:**
+  **Verification:** `aws service-quotas get-service-quota --service-code ebs --quota-code L-D18FCD1D` returns the new limit and `aws ec2 describe-volumes | jq '.Volumes | length'` is below it; the PVC binds once the backoff retry fires (up to 5 minutes).
+- **mitigation** (root): reclaim quota immediately by deleting clearly orphaned, unattached volumes.
 
   ```bash
   # AWS: list available (unattached) EBS volumes for cleanup candidates
@@ -392,208 +393,164 @@ kubectl annotate serviceaccount -n kube-system csi-gce-pd-controller \
   gcloud compute disks list --filter='-users:*' --format='table(name,sizeGb,zone,creationTimestamp)'
   ```
 
-- **Duration:** Minutes; only delete clearly orphaned volumes that are not referenced by any cluster PV.
-
-**Resolution:**
-
-```bash
-# AWS: request a quota increase for EBS volume count in the region
-aws service-quotas request-service-quota-increase \
-  --service-code ebs \
-  --quota-code L-D18FCD1D \
-  --desired-value <new-limit>
-# GCP: request quota in the console or via gcloud
-gcloud compute project-info update --quota-target='SSD_TOTAL_GB' --quota-limit=<new-limit>
-# Azure: request a quota increase via support ticket or
-az support tickets create --ticket-name "<name>" --issue-type quota \
-  --quota-ticket-details file://quota-request.json
-# Reduce demand: enable VolumeSnapshot lifecycle and delete orphaned PVs
-kubectl get pv -o jsonpath='{range .items[?(@.status.phase=="Released")]}{.metadata.name}{"\n"}{end}' \
-  | xargs -r -I{} kubectl delete pv {}
-```
-
-**Impact:** Quota-increase requests are processed by the cloud provider (typically minutes to hours, depending on the limit and region) and apply to every workload in the account. Deleting `Released` PVs reclaims storage immediately and is bounded to volumes the cluster previously owned.
-
-**Rollback:** Quota increases are non-reversible at the workload layer (the higher limit simply remains). Restore deleted volumes from snapshot if the deletion was premature; CSI drivers do not auto-recreate.
-
-**Verification:** `aws service-quotas get-service-quota --service-code ebs --quota-code L-D18FCD1D` returns the new limit and `aws ec2 describe-volumes | jq '.Volumes | length'` is below it. A re-test PVC binds within 60 seconds and the original PVC transitions to `Bound` once the controller's exponential-backoff retry fires (up to 5 minutes).
+  **Risk:** Deleting volumes is destructive — confirm each is unattached and not referenced by any Bound PV before deletion. **Duration:** Minutes; only delete clearly orphaned volumes not referenced by any cluster PV. **Verification:** the freed volume count drops below the quota and a re-test PVC provisions.
 
 ### Cause F: PVC access mode is not supported by the provisioner
 
 **Statement:** The PVC requests an access mode (typically `ReadWriteMany`) that the CSI driver behind the StorageClass does not support, so the controller cannot select any topology that satisfies both the access mode and the requested storage class.
 
-**Mechanism:** Block-storage CSI drivers (`ebs.csi.aws.com`, `disk.csi.azure.com`, `pd.csi.storage.gke.io`) only implement `ReadWriteOnce` and `ReadWriteOncePod`; shared-filesystem drivers (`efs.csi.aws.com`, `file.csi.azure.com`, `cephfs.csi.ceph.com`, NFS) implement `ReadWriteMany`. When a PVC asks for `ReadWriteMany` against a block driver, validation may pass at admission time but `CreateVolume` returns `INVALID_ARGUMENT` with `multi-attach not supported` or the provisioner refuses to attempt the call. Symptoms can be subtle when an admission webhook accepts the PVC but the driver rejects it later.
+**Chain:**
+- root: the PVC requests `ReadWriteMany` against a block-storage driver that implements only `ReadWriteOnce`/`ReadWriteOncePod`.
+- s1: admission may accept the PVC but `CreateVolume` returns `INVALID_ARGUMENT` with `multi-attach not supported`, or the provisioner refuses to attempt the call.
+- D: no compatible volume can be created and the PVC stays `Pending` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] `accessModes` contains `ReadWriteMany` AND [Step 3] provisioner is a block-storage driver (`ebs.csi.aws.com`, `disk.csi.azure.com`, `pd.csi.storage.gke.io`, `driver.longhorn.io` without RWX add-on).
+- s1: [Step 1] event message contains `multi-attach`, `not supported`, or `INVALID_ARGUMENT`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "INVALID_ARGUMENT"} -->
+- s1: [Step 5] controller logs contain `accessMode <mode> not supported by driver`.
 
-- [Step 1] event message contains `multi-attach`, `not supported`, or `INVALID_ARGUMENT`
-<!-- match: {"step": 1, "predicate": "contains", "target": "INVALID_ARGUMENT"} -->
-- [Step 2] `accessModes` contains `ReadWriteMany` AND [Step 3] provisioner is a block-storage driver (`ebs.csi.aws.com`, `disk.csi.azure.com`, `pd.csi.storage.gke.io`, `driver.longhorn.io` without RWX add-on)
-- [Step 5] controller logs contain `accessMode <mode> not supported by driver`
+**Interventions:**
+- **remediation** (root): recreate the PVC against a shared-filesystem class that supports RWX (or switch the workload to `ReadWriteOnce` if shared access is not truly needed).
 
-**Mitigation:**
+  ```bash
+  # Pick a shared-filesystem class for RWX
+  kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.provisioner}{"\n"}{end}' \
+    | grep -E 'efs|file|nfs|cephfs'
+  # Recreate the PVC pointing at that class
+  cat > /tmp/pvc-rwx.yaml <<EOF
+  apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: <pvc-name>
+    namespace: <namespace>
+  spec:
+    accessModes: ["ReadWriteMany"]
+    storageClassName: <efs-or-equivalent-class>
+    resources:
+      requests:
+        storage: <size>
+  EOF
+  kubectl delete pvc <pvc-name> -n <namespace>
+  kubectl apply -f /tmp/pvc-rwx.yaml
+  # Alternative: change the workload to ReadWriteOnce when shared access is not actually required
+  ```
 
-- **Risk:** Recreating the PVC with a different access mode invalidates any pre-bound state and any workload pod-volume bindings; perform during a maintenance window for the consuming workload.
-- **Command:**
+  **Verification:** `kubectl get pvc <pvc-name> -n <namespace>` reaches `Bound` against the new StorageClass; `kubectl describe pvc` shows `ProvisioningSucceeded`; consumer pods reach `Running` and shared writes from multiple pods succeed.
+- **mitigation** (root): back up the original PVC manifest before recreating it.
 
   ```bash
   kubectl get pvc <pvc-name> -n <namespace> -o yaml > /tmp/pvc-orig.yaml
   ```
 
-- **Duration:** Backup only — apply the durable fix immediately.
-
-**Resolution:**
-
-```bash
-# Pick a shared-filesystem class for RWX
-kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.provisioner}{"\n"}{end}' \
-  | grep -E 'efs|file|nfs|cephfs'
-# Recreate the PVC pointing at that class
-cat > /tmp/pvc-rwx.yaml <<EOF
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: <pvc-name>
-  namespace: <namespace>
-spec:
-  accessModes: ["ReadWriteMany"]
-  storageClassName: <efs-or-equivalent-class>
-  resources:
-    requests:
-      storage: <size>
-EOF
-kubectl delete pvc <pvc-name> -n <namespace>
-kubectl apply -f /tmp/pvc-rwx.yaml
-# Alternative: change the workload to ReadWriteOnce when shared access is not actually required
-```
-
-**Impact:** Scoped to the single PVC and its consumer workload. The volume's underlying storage moves from block to shared-filesystem, which changes performance and pricing characteristics — validate with the workload owner before deploying.
-
-**Rollback:** `kubectl apply -f /tmp/pvc-orig.yaml` to recreate the original PVC. The original `Pending` state returns.
-
-**Verification:** `kubectl get pvc <pvc-name> -n <namespace>` reaches `Bound` against the new StorageClass; `kubectl describe pvc` shows `ProvisioningSucceeded`. Consumer pods that mount the PVC reach `Running` and shared writes from multiple pods succeed (`kubectl exec` on two pods writing to the same path).
+  **Risk:** Recreating the PVC invalidates any pre-bound state and workload pod-volume bindings; perform during a maintenance window. **Duration:** Backup only — apply the durable fix immediately. **Verification:** `/tmp/pvc-orig.yaml` exists and round-trips with `kubectl apply --dry-run=client`.
 
 ### Cause G: PVC requests a size, type, or zone the provisioner cannot satisfy
 
 **Statement:** The PVC requests a storage size below the provisioner's minimum, an invalid volume type for the cloud, or a topology that conflicts with the StorageClass's `allowedTopologies`, so the cloud API rejects `CreateVolume` with a validation error.
 
-**Mechanism:** EBS minimum volume size is 1 GiB for gp2/gp3 and 4 GiB for io1/io2; GCE PD minimum is 10 GiB for `pd-standard`, 200 GiB for `pd-extreme`. Below the floor, the cloud API returns `InvalidParameterValue: requested size is below the minimum` and the driver surfaces it as `ProvisioningFailed`. Similarly, `allowedTopologies` on the StorageClass restricts where the provisioner may place the volume; under `WaitForFirstConsumer`, if the consumer pod schedules to a node in a zone not listed in `allowedTopologies`, the driver cannot provision and returns `INVALID_ARGUMENT` with a topology mismatch.
+**Chain:**
+- root: the PVC requests a size below the provisioner minimum, an invalid volume type, or a zone excluded by the StorageClass `allowedTopologies`.
+- s1: the cloud API rejects `CreateVolume` with `InvalidParameterValue`/`InvalidVolumeSize` or an `INVALID_ARGUMENT` topology mismatch.
+- D: no volume is created and the PVC stays `Pending` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] `requestedStorage` is below the provisioner-class minimum (1 GiB EBS gp3, 10 GiB GCE pd-standard, etc.).
+- root: [Step 7] StorageClass `allowedTopologies` excludes every zone where a candidate consumer node lives.
+- s1: [Step 1] event message contains `InvalidVolumeSize`, `requested size`, `InvalidParameterValue`, `topology`, or `accessibility requirements`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "InvalidParameterValue"} -->
 
-- [Step 1] event message contains `InvalidVolumeSize`, `requested size`, `InvalidParameterValue`, `topology`, or `accessibility requirements`
-<!-- match: {"step": 1, "predicate": "contains", "target": "InvalidParameterValue"} -->
-- [Step 2] `requestedStorage` is below the provisioner-class minimum (1 GiB EBS gp3, 10 GiB GCE pd-standard, etc.)
-- [Step 7] StorageClass `allowedTopologies` excludes every zone where a candidate consumer node lives
+**Interventions:**
+- **remediation** (root): recreate the PVC with a valid size/type, widen the StorageClass topology, or constrain the consumer pod to an allowed zone.
 
-**Mitigation:**
+  ```bash
+  # Edit /tmp/pvc-resize.yaml to set spec.resources.requests.storage to a valid value
+  # (e.g., 1Gi for EBS gp3, 10Gi for GCE pd-standard) and an accessMode the driver supports.
+  kubectl delete pvc <pvc-name> -n <namespace>
+  kubectl apply -f /tmp/pvc-resize.yaml
+  # For topology mismatch, widen the StorageClass to cover the candidate zones
+  kubectl get storageclass <class> -o yaml > /tmp/sc.yaml
+  # edit /tmp/sc.yaml to remove allowedTopologies or add the missing zones, then:
+  kubectl apply -f /tmp/sc.yaml
+  # Or constrain the consumer pod to a zone the class already covers
+  kubectl patch deployment <deployment> -n <namespace> \
+    --type=json \
+    -p='[{"op":"add","path":"/spec/template/spec/affinity","value":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"topology.kubernetes.io/zone","operator":"In","values":["<allowed-zone>"]}]}]}}}}]'
+  ```
 
-- **Risk:** Increasing the requested size is non-reversible without a volume migration; verify the workload tolerates the larger volume and the new cost.
-- **Command:**
+  **Verification:** `kubectl get pvc <pvc-name> -n <namespace>` reaches `Bound` with a non-empty `VOLUME`; `kubectl describe pvc` shows `ProvisioningSucceeded`; the consumer pod schedules to a permitted zone and the volume mounts.
+- **mitigation** (root): back up the PVC manifest before editing and recreating it.
 
   ```bash
   kubectl get pvc <pvc-name> -n <namespace> -o yaml > /tmp/pvc-resize.yaml
   ```
 
-- **Duration:** Backup only.
-
-**Resolution:**
-
-```bash
-# Edit /tmp/pvc-resize.yaml to set spec.resources.requests.storage to a valid value
-# (e.g., 1Gi for EBS gp3, 10Gi for GCE pd-standard) and an accessMode the driver supports.
-kubectl delete pvc <pvc-name> -n <namespace>
-kubectl apply -f /tmp/pvc-resize.yaml
-# For topology mismatch, widen the StorageClass to cover the candidate zones
-kubectl get storageclass <class> -o yaml > /tmp/sc.yaml
-# edit /tmp/sc.yaml to remove allowedTopologies or add the missing zones, then:
-kubectl apply -f /tmp/sc.yaml
-# Or constrain the consumer pod to a zone the class already covers
-kubectl patch deployment <deployment> -n <namespace> \
-  --type=json \
-  -p='[{"op":"add","path":"/spec/template/spec/affinity","value":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"topology.kubernetes.io/zone","operator":"In","values":["<allowed-zone>"]}]}]}}}}]'
-```
-
-**Impact:** PVC re-creation scopes the change to the single claim. Editing `allowedTopologies` on the StorageClass affects every future PVC bound to it; widen with care and confirm the cloud provider supports volumes in the added zones.
-
-**Rollback:** Restore `/tmp/pvc-resize.yaml` from backup with `kubectl apply -f /tmp/pvc-resize.yaml.bak`; revert the StorageClass with the prior YAML; remove the pod-affinity patch via `kubectl rollout undo deployment/<deployment>`.
-
-**Verification:** `kubectl get pvc <pvc-name> -n <namespace>` reaches `Bound` with a non-empty `VOLUME` column. `kubectl describe pvc` shows `ProvisioningSucceeded`. The consumer pod schedules to a node in a zone that the StorageClass permits and the volume mounts successfully.
+  **Risk:** Increasing the requested size is non-reversible without a volume migration; verify the workload tolerates the larger volume and cost. **Duration:** Backup only. **Verification:** `/tmp/pvc-resize.yaml` exists and round-trips with `kubectl apply --dry-run=client`.
 
 ### Cause H: Pre-bound PV is missing or incompatible
 
 **Statement:** The PVC sets `spec.volumeName` referencing a specific PV, but that PV does not exist, is in `Released` state, or has incompatible attributes (StorageClass, size, access mode), so the PVC cannot bind to it.
 
-**Mechanism:** When `volumeName` is set, the controller skips dynamic provisioning entirely and tries to bind directly to the named PV. The controller checks that the PV exists, is `Available` (or `Bound` to this same PVC), has matching `storageClassName`, supports the requested access modes, and has at least the requested capacity. Any mismatch keeps the PVC `Pending` with no `ProvisioningFailed` event (because no provisioning is attempted). A `Released` PV retains a stale `claimRef` from a deleted PVC and cannot be re-bound until the `claimRef` is manually cleared.
+**Chain:**
+- root: `spec.volumeName` references a PV that is missing, `Released` (stale `claimRef`), or has mismatched `storageClassName`/`accessModes`/`capacity`.
+- s1: with `volumeName` set the controller skips dynamic provisioning and tries to bind directly, but the existence/compatibility check fails.
+- D: no `ProvisioningFailed` event is emitted and the PVC simply stays `Pending` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] `volumeName` is set to a non-empty value.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "volumeName="} -->
+- s1: [Step 10] the named PV does not exist (NotFound) OR its `phase` is `Released` OR its `storageClassName`/`accessModes`/`capacity` differs from the PVC.
+- s1: [Step 1] PVC events show no `ProvisioningFailed` and no `Provisioning` activity — only the implicit Pending state.
 
-- [Step 2] `volumeName` is set to a non-empty value
-<!-- match: {"step": 2, "predicate": "contains", "target": "volumeName="} -->
-- [Step 10] the named PV does not exist (NotFound) OR its `phase` is `Released` OR its `storageClassName`/`accessModes`/`capacity` differs from the PVC
-- [Step 1] PVC events show no `ProvisioningFailed` and no `Provisioning` activity — only the implicit Pending state
+**Interventions:**
+- **remediation** (root): clear a stale `claimRef`, create the missing PV, or recreate the PVC without `volumeName` to let dynamic provisioning handle it.
 
-**Mitigation:**
+  ```bash
+  # Case 1: PV is Released and needs to be made Available
+  kubectl patch pv <pv-name> --type=json \
+    -p='[{"op":"remove","path":"/spec/claimRef"}]'
+  kubectl get pv <pv-name>  # should now show STATUS=Available
+  # Case 2: PV does not exist and is needed — create it
+  cat > /tmp/pv.yaml <<EOF
+  apiVersion: v1
+  kind: PersistentVolume
+  metadata:
+    name: <pv-name>
+  spec:
+    capacity:
+      storage: <size>
+    accessModes: ["ReadWriteOnce"]
+    storageClassName: <matching-class>
+    csi:
+      driver: ebs.csi.aws.com
+      volumeHandle: <existing-cloud-volume-id>
+  EOF
+  kubectl apply -f /tmp/pv.yaml
+  # Case 3: PV exists but attributes mismatch — recreate the PVC without volumeName
+  # and let dynamic provisioning handle it
+  kubectl delete pvc <pvc-name> -n <namespace>
+  # remove spec.volumeName from PVC manifest, then:
+  kubectl apply -f <pvc-manifest>
+  ```
 
-- **Risk:** Clearing a PV `claimRef` makes the PV immediately re-bindable; if another `Pending` PVC matches its size and class, that PVC may grab it before the intended one. Apply during a low-traffic window or pre-bind explicitly.
-- **Command:**
+  **Verification:** `kubectl get pv <pv-name>` shows `STATUS=Bound` and `CLAIM=<namespace>/<pvc-name>`; `kubectl get pvc <pvc-name> -n <namespace>` shows `STATUS=Bound` with the matching `VOLUME`; the consumer pod mounts the volume.
+- **mitigation** (root): back up the PV before mutating its `claimRef`.
 
   ```bash
   kubectl get pv <pv-name> -o yaml > /tmp/pv-backup.yaml
   ```
 
-- **Duration:** Backup only.
-
-**Resolution:**
-
-```bash
-# Case 1: PV is Released and needs to be made Available
-kubectl patch pv <pv-name> --type=json \
-  -p='[{"op":"remove","path":"/spec/claimRef"}]'
-kubectl get pv <pv-name>  # should now show STATUS=Available
-# Case 2: PV does not exist and is needed — create it
-cat > /tmp/pv.yaml <<EOF
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: <pv-name>
-spec:
-  capacity:
-    storage: <size>
-  accessModes: ["ReadWriteOnce"]
-  storageClassName: <matching-class>
-  csi:
-    driver: ebs.csi.aws.com
-    volumeHandle: <existing-cloud-volume-id>
-EOF
-kubectl apply -f /tmp/pv.yaml
-# Case 3: PV exists but attributes mismatch — recreate the PVC without volumeName
-# and let dynamic provisioning handle it
-kubectl delete pvc <pvc-name> -n <namespace>
-# remove spec.volumeName from PVC manifest, then:
-kubectl apply -f <pvc-manifest>
-```
-
-**Impact:** Scoped to the targeted PV and PVC. Clearing `claimRef` makes the PV immediately bindable cluster-wide for any matching PVC; create the new PVC promptly to avoid an unintended bind. PV creation does not affect other workloads.
-
-**Rollback:** `kubectl apply -f /tmp/pv-backup.yaml` restores the previous `claimRef`; `kubectl delete pv <pv-name>` removes a PV created in error (only safe when no PVC is bound).
-
-**Verification:** `kubectl get pv <pv-name>` shows `STATUS=Bound` and `CLAIM=<namespace>/<pvc-name>`. `kubectl get pvc <pvc-name> -n <namespace>` shows `STATUS=Bound` with the matching `VOLUME`. The consumer pod schedules and mounts the volume successfully (`kubectl exec ... -- mount | grep <mount-path>`).
+  **Risk:** Clearing a PV `claimRef` makes it immediately re-bindable; another `Pending` PVC matching its size/class may grab it first. Apply during a low-traffic window or pre-bind explicitly. **Duration:** Backup only. **Verification:** `/tmp/pv-backup.yaml` exists and `kubectl apply -f /tmp/pv-backup.yaml` restores the prior `claimRef`.
 
 ### Cause Z: Unidentified
 
-**Statement:** The PVC is confirmed Pending and dynamic provisioning is enabled, but none of the indicators for Causes A through H match the gathered evidence.
+**Statement:** The PVC is confirmed Pending with dynamic provisioning enabled, but none of the indicators for Causes A through H match the gathered evidence.
 
-**Mechanism:** Less common paths include: PVC admission webhooks silently mutating the spec; cluster-scoped `LimitRange` rejecting the requested storage size; OPA/Gatekeeper policies denying creation of PVs in the target namespace; CNI failures preventing the CSI controller from reaching the cloud-provider API; an `external-provisioner` sidecar pinned to an old API version incompatible with the in-cluster Kubernetes; bug states in specific CSI driver versions; or partial cluster upgrades that left in-flight provisioning state stranded. The PVC may also be in an explicit `LostVolume` scenario where the bound PV's backing storage was deleted out-of-band.
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] PVC is `Pending` (Step 1 confirmed) but none of Causes A-H indicators match the gathered evidence
-
-**Mitigation:**
-
-- **Risk:** Capturing additional diagnostic context is read-only and safe; enabling verbose CSI logging may surface secrets in logs — redact before sharing externally.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot and escalate to the platform/CSI-driver SME or cloud provider.
 
   ```bash
   # Bundle all relevant state for handoff
@@ -609,11 +566,7 @@ kubectl apply -f <pvc-manifest>
   tar czf /tmp/pvc-diag.tar.gz -C /tmp pvc-diag
   ```
 
-- **Duration:** Minutes. Hand the bundle to the platform team, the CSI driver maintainers, or the cloud provider's support channel.
-
-**Resolution:** Out of runbook scope. Open a support case with the cloud provider (for cloud-CSI drivers) or file a bug against the CSI driver repository (for OSS drivers like Longhorn, Rook-Ceph). Include the diagnostic bundle, the Kubernetes minor version, the CSI driver version (`kubectl get pods -n kube-system -l app=ebs-csi-controller -o jsonpath='{.items[0].spec.containers[*].image}'`), and the exact PVC event message timeline.
-
-**Verification:** Support case is acknowledged with a ticket ID. Once a workaround or fix is provided, re-test on the original PVC and confirm transition to `Bound`.
+  **Risk:** Capturing context is read-only and safe; enabling verbose CSI logging may surface secrets — redact before sharing externally. **Duration:** Minutes; hand the bundle to the platform team, CSI driver maintainers, or the cloud provider's support channel. **Verification:** the support case is acknowledged with a ticket ID; once a workaround is provided, re-test the original PVC and confirm transition to `Bound`.
 
 ## Prevention
 
