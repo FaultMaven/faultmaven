@@ -1,8 +1,8 @@
 # Runbook Content Architecture: Structuring Knowledge for AI-Driven Troubleshooting
 
 **Document Type:** Component Specification
-**Version:** 3.0
-**Status:** Design — v3 redesign (see [Implementation Status](#implementation-status))
+**Version:** 4.0
+**Status:** Current — causal-chain template (see [Implementation Status](#implementation-status))
 
 ## Purpose
 
@@ -132,18 +132,34 @@ Chunking parameters (implemented in `kb_toolkit/core/chunker.py`):
 | Min chunk size | 100 characters | Tiny sections merged with adjacent section |
 | Fallback | Sentence-boundary splitting | For structureless text without headers |
 | Frontmatter | Stripped before chunking | Metadata stored separately in ChromaDB, not embedded |
-| HTML comments | Stripped before chunking | Predicate hints lifted to ChromaDB metadata (see [runbook-cause-matching.md §6](../investigation-engine/runbook-cause-matching.md#6-chromadb-metadata-schema)) |
+| HTML comments | Stripped before chunking | Predicate hints lifted to per-Cause metadata (see [runbook-cause-matching.md §6](../investigation-engine/runbook-cause-matching.md#6-where-the-cause-graph-structure-lives)) |
 
 This means:
 
-- **Each Cause subsection is one chunk.** Every `### Cause N` becomes a single chunk containing the cause statement, mechanism, indicator, mitigation, resolution, and verification together. Retrieval surfaces the complete cause-fix tuple — not a fragment, not a multi-chunk reconstruction.
-- **Section size matters.** Aim for 400-900 characters per Cause subsection. Subsections over 3000 chars get split at sentence boundaries, breaking field co-location. Subsections under 100 chars get merged with neighbors, losing their header context.
+- **Each Cause subsection is one chunk.** Every `### Cause N` becomes a single chunk carrying the cause statement, its causal chain, per-rung indicators, and the quadrant-tagged interventions together. Retrieval surfaces the complete cause→fix unit — not a fragment, not a multi-chunk reconstruction.
+- **Section size matters.** Aim for 400-1200 characters per Cause subsection. Subsections over 3000 chars get split at sentence boundaries, breaking field co-location. Subsections under 100 chars get merged with neighbors, losing their header context.
 - **Each Cause subsection is self-contained** — a chunk that says "as described in Cause A" provides no value. The retrieved chunk may be the only chunk the agent sees for a given query.
 - **Only actionable content in the runbook body** — authoring guidelines, rationale, and commentary belong in this architecture doc, not in the runbook itself. Every sentence in the runbook gets embedded; non-actionable text dilutes the embedding and wastes retrieval signal.
 
 ### The Template
 
-This template structures each runbook around **per-Cause sections**. Each `### Cause N` subsection is a self-contained chunk carrying the cause statement, mechanism, indicator, and inline mitigation/resolution/verification. This design lets retrieval surface complete cause-fix tuples in a single chunk and lets case completion populate `RootCauseConclusion` + `Solution` by direct field copy without an LLM extraction call.
+This template structures each runbook around **per-Cause causal chains**. Each
+`### Cause N` declares **exactly one ROOT cause** and the chain from that root
+down to the problem `D`, with per-rung indicators and quadrant-tagged
+interventions. This mirrors the engine's two-dimensional hypothesis model (a
+hypothesis is a causal chain, not a sentence — see
+[two-dimensional-hypothesis-methodology.md](../investigation-engine/two-dimensional-hypothesis-methodology.md)),
+so a retrieved Cause maps onto the case's causal graph by direct field copy.
+
+**One Cause = one ROOT (no AND-sets).** A failure that needs two co-necessary
+conditions is **not** two roots: fold both conditions into the single root
+`Statement` and give each fix its own quadrant-tagged intervention. The engine's
+AND-machinery exists for conjunctions the *engine* forms at runtime; runbooks do
+not pre-author them. This keeps each Cause one validate/refute/demote unit and
+maps cleanly to the engine's single-root `Hypothesis`.
+
+**`Chain` is optional.** Omit it and the Cause is a degenerate `root → D` chain —
+ingestion stays tolerant (no runbook breaks for lacking a decomposed ladder).
 
 **Design rule:** The template below contains ONLY what should appear in the final runbook. Authoring guidance is in the [Authoring Rationale](#authoring-rationale) section below the template.
 
@@ -182,36 +198,37 @@ Expected output: list of idle-in-transaction sessions with age.
 
 ### Cause A: Idle transactions exhausting the pool
 **Statement:** Sessions in `idle in transaction` hold connection slots indefinitely, exhausting `max_connections` under steady churn.
-**Mechanism:** Each idle-in-transaction session retains a connection slot until it commits, rolls back, or is forcibly terminated. With pooled clients that fail to release on application errors, slots accumulate faster than they are released, eventually reaching `max_connections` and blocking new connections.
-**Indicator:**
-- [Step 1] active connections > 80% of max_connections
-- [Step 2] sessions with state = 'idle in transaction' older than 30 minutes present
-<!-- match: {"step": 2, "predicate": "contains", "target": "idle in transaction"} -->
-**Mitigation:**
-- **Risk:** Forcibly terminating connections may roll back in-flight transactions on application clients.
-- **Command:**
+**Chain:**
+- root: idle-in-transaction sessions never release their connection slot
+- s1: free connection slots accumulate toward zero
+- s2: `max_connections` reached; new connections are refused
+- D: clients fail with "too many connections"
+**Indicators:**
+- root: [Step 2] sessions with state = 'idle in transaction' older than 30 minutes present
+  <!-- match: {"step": 2, "predicate": "contains", "target": "idle in transaction"} -->
+- s1: [Step 1] active connections > 80% of max_connections
+  <!-- match: {"step": 1, "predicate": "threshold", "target": "active_pct", "op": ">", "value": 0.8} -->
+**Interventions:**
+- **remediation** (root): bound idle-in-transaction lifetime so slots are reclaimed.
+  ```sql
+  ALTER SYSTEM SET idle_in_transaction_session_timeout = '30s';
+  SELECT pg_reload_conf();
+  ```
+  **Verification:** re-run Step 2; sessions older than the new timeout no longer accumulate.
+- **mitigation** (s1): terminate the oldest idle-in-transaction sessions to free slots now.
   ```sql
   SELECT pg_terminate_backend(pid) FROM pg_stat_activity
   WHERE state = 'idle in transaction' AND query_start < now() - interval '30 minutes';
   ```
-- **Duration:** Safe for up to 24 hours while root cause is addressed.
-**Resolution:**
-```sql
-ALTER SYSTEM SET idle_in_transaction_session_timeout = '30s';
-SELECT pg_reload_conf();
-```
-**Verification:** Re-run Step 2; sessions older than the new timeout should not accumulate.
+  **Risk:** may roll back in-flight client transactions. **Duration:** safe up to 24h. **Verification:** re-run Step 1; active connections drop.
 
 ### Cause B: Connection pool undersized for current load
-**Statement:** Allocated pool size is below the steady-state working set of concurrent connections.
-**Mechanism:** Application connection demand exceeds the pool's `max_pool_size`, causing new requests to wait or fail. Unlike Cause A, no idle-in-transaction sessions accumulate; the pool is genuinely saturated by active work.
-**Indicator:**
-- [Step 1] active connections > 80% of max_connections
-- [Step 2] no sessions in idle-in-transaction state
-<!-- match: {"step": 1, "predicate": "threshold", "target": "active_pct", "op": ">", "value": 0.8} -->
-**Mitigation:**
-- **Risk:** Increasing pool size raises memory consumption on the database.
-- **Command:**
+**Statement:** Allocated pool size is below the steady-state working set of concurrent connections, so the pool saturates with genuinely active work.
+**Indicators:**
+- root: [Step 1] active connections > 80% of max_connections, and [Step 2] no idle-in-transaction sessions
+  <!-- match: {"step": 1, "predicate": "threshold", "target": "active_pct", "op": ">", "value": 0.8} -->
+**Interventions:**
+- **remediation** (root): raise the pool size once DB memory headroom is confirmed.
   ```ini
   # pgbouncer.ini
   max_pool_size = 50  # increase from default 20
@@ -219,21 +236,15 @@ SELECT pg_reload_conf();
   ```bash
   pgbouncer -R  # reload config
   ```
-- **Duration:** Permanent once memory headroom confirmed.
-**Resolution:** Same as Mitigation.
-**Verification:** Re-run Step 1; active connections should stabilize below 70% of the new pool size under normal load.
+  **Verification:** re-run Step 1; active connections stabilize below 70% of the new pool size under normal load.
 
 ### Cause Z: Unidentified
 **Statement:** None of the documented causes match the observed evidence.
-**Mechanism:** The runbook's known failure patterns do not cover this case; root cause requires investigation outside the runbook's scope.
-**Indicator:**
+**Indicators:**
 - [Default]
-**Mitigation:**
-- **Risk:** Generic mitigation may not address the underlying cause; collect more evidence before applying.
-- **Command:** Capture full `pg_stat_activity` snapshot and PostgreSQL log tail; consult database SME.
-- **Duration:** Diagnostic only.
-**Resolution:** Out of runbook scope. Escalate.
-**Verification:** N/A.
+**Interventions:**
+- **mitigation** (D): capture a full `pg_stat_activity` snapshot and the PostgreSQL log tail; escalate to the database SME.
+  **Risk:** diagnostic only. **Duration:** until SME review. **Verification:** N/A.
 
 ## Prevention
 - Set `idle_in_transaction_session_timeout` in postgresql.conf (prevents idle connection buildup)
@@ -253,14 +264,13 @@ This section explains WHY each template section is structured the way it is. Thi
 |---------|------------|------------------------|
 | **Symptom Recognition** | First retrieval signal. The agent matches user-reported symptoms against this section via vector similarity. | **Symptom-only co-location.** Keep alerts, error messages, and metric patterns together as a tight block. Do not mix with applicability or mechanism. Generic descriptions ("database is slow") match too many runbooks; specificity wins retrieval. |
 | **Applicability** | Confirms whether the runbook applies to the user's environment. Scope context — system version, required tools, access requirements. | Concrete versions and tool names. The agent surfaces applicability when proposing the runbook to the user; vague scope ("works on Postgres") leads to misapplication. |
-| **Diagnostic Steps** | The agent proposes these commands to the user during DIAGNOSIS. Each step's finding feeds Indicator evaluation in the active Cause. | **Procedure only — no interpretation.** Command, expected output shape, nothing else. The interpretation of what each finding *means* lives in each Cause's `Indicator` field, not here. Splitting them prevents the same interpretation from appearing in two chunks (Diagnostic Step chunk AND Cause chunk), which would dilute retrieval signal. |
-| **Causes → `### Cause N`** | Each Cause subsection is one chunk. Retrieval surfaces a complete cause-fix tuple. Engine reads `Statement` + `Mechanism` for `RootCauseConclusion`; reads `Mitigation` / `Resolution` for `Solution`. | Per-Cause inlining of all relevant fields (statement, mechanism, indicator, mitigation, resolution, verification) keeps the chunk self-contained. Hard char limits on `Statement` (≤300) and `Mechanism` (≤800) enforce conciseness — these fields are copied verbatim into engine state, not summarized. |
-| **Causes → `Statement`** | Direct copy → `RootCauseConclusion.root_cause` at case completion. | Single declarative sentence stating the cause. Not a fix, not a symptom — the cause. ≤300 characters. |
-| **Causes → `Mechanism`** | Direct copy → `RootCauseConclusion.mechanism`. | How the cause produces the symptom — the causal chain. ≤800 characters. |
-| **Causes → `Indicator`** | Engine evaluates against case evidence to attribute the active Cause. | Bullet list referencing `[Step N]` findings or `[Symptom]` patterns. Each entry must contain at least one reference token. Use `[Default]` for the `Cause Z: Unidentified` fallback. Optional `<!-- match: ... -->` HTML comment provides a machine-readable predicate; see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary) for vocabulary. |
-| **Causes → `Mitigation` / `Resolution`** | `Mitigation` = quick risk-tagged fix (supports mitigation-first investigation). `Resolution` = durable fix. | Each block contains command + risk + duration (Mitigation) or command + durable change (Resolution). When the two are identical, use `**Resolution:** Same as Mitigation.` in the generation prompt; the generator expands the duplication at render time so the on-disk runbook always carries both fields populated. |
-| **Causes → `Verification`** | Cause-specific check that confirms THIS fix worked. Feeds the `solution_verified` confirmation prompt. | Specific to the Cause's fix, not generic. Per-Cause verification because "did the fix work?" is per-Cause; "is the symptom gone?" is the engine's terminal gate, not a runbook concern. |
-| **`### Cause Z: Unidentified`** | Fallback when no other Cause's Indicator matches. Engine selects this Cause when Indicator evaluation returns zero matches. | Mandatory in every runbook. Indicator is `[Default]`. Mitigation describes a safe diagnostic/escalation path; Resolution is typically "Out of scope". |
+| **Diagnostic Steps** | The agent proposes these commands to the user during DIAGNOSIS. Each step's finding feeds per-rung Indicator evaluation in the active Cause. | **Procedure only — no interpretation.** Command, expected output shape, nothing else. The interpretation of what each finding *means* lives in each Cause's `Indicators`, not here. Splitting them prevents the same interpretation from appearing in two chunks (Diagnostic Step chunk AND Cause chunk), which would dilute retrieval signal. |
+| **Causes → `### Cause N`** | Each Cause subsection is one chunk and one **causal chain** terminating in a single ROOT. Retrieval surfaces a complete cause→fix unit. The root `Statement` seeds `RootCauseConclusion.root_cause`; `Interventions` seed `Solution` (`immediate_action`/`longterm_fix` by quadrant). | Per-Cause inlining of `Statement` / `Chain` / `Indicators` / `Interventions` keeps the chunk self-contained. One ROOT per Cause maps to the engine's single-root `Hypothesis`; no AND-sets are authored. |
+| **Causes → `Statement`** | Direct copy → `RootCauseConclusion.root_cause`. | Single declarative sentence stating the **single root** cause (fold any co-necessary condition in here). Not a fix, not a symptom. ≤300 characters. |
+| **Causes → `Chain`** *(optional)* | Decomposes the causal ladder into rung nodes the engine instantiates as `CausalNode`s. Absence → degenerate `root → D` chain. | Linear `root → s1 → … → D`; each rung a short ref (`root`, `s1`, …, reserved `D`). No AND-gate — co-necessity folds into the root. Each rung ≤300 chars. |
+| **Causes → `Indicators`** | The engine evaluates each rung's indicator against case evidence to attribute / refute the chain. | Bullet list addressed by rung ref. Each entry carries a `[Step N]` finding, `[Symptom]` pattern, or `[Default]` (fallback only) — at least one token. Optional `<!-- match: ... -->` HTML comment supplies a machine-readable predicate; see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary). |
+| **Causes → `Interventions`** | Each intervention seeds a `Solution` tagged with an `InterventionQuadrant` and the node it targets. | Per-node, quadrant-tagged: `remediation` (permanent @ root), `defensive_fix` (permanent @ intermediate), `mitigation` (temporary @ intermediate — carries **Risk** + **Duration**), `loop_break`. One root may carry two interventions (e.g. a `defensive_fix` and a `remediation`). Every intervention carries a `Verification` (feeds the `solution_verified` prompt). |
+| **`### Cause Z: Unidentified`** | Fallback when no other Cause's Indicators match. Engine selects this Cause when indicator evaluation returns zero matches. | Mandatory in every runbook. Indicators is `[Default]`. Its single intervention is a `mitigation`/`loop_break` describing a safe diagnostic/escalation path. |
 | **Prevention** | Used in post-resolution recommendations and report generation. **Rarely retrieved during active investigation** — Prevention chunks don't match symptom queries. They become relevant after the problem is resolved, when the agent generates recommendations. | Configuration changes, monitoring alerts, capacity thresholds — concrete actions. |
 | **Sources** | Provenance for the knowledge. Enables verification and updates. | URL + brief description of what was used from each source. |
 
@@ -269,13 +279,13 @@ This section explains WHY each template section is structured the way it is. Thi
 1. **All 6 H2 sections required.** `Symptom Recognition`, `Applicability`, `Diagnostic Steps`, `Causes`, `Prevention`, `Sources`. Missing or renamed sections fail ingestion as a hard error.
 2. **`## Causes` must contain ≥1 real `### Cause <X>` subsection plus exactly one fallback Cause** whose Indicator includes the `[Default]` token. The fallback Cause is conventionally named `### Cause Z: Unidentified` (validator enforces this heading for consistency); engine-side fallback detection reads only the `[Default]` Indicator token, not the heading text. Validator hard error if the real Cause count is zero or if no Cause carries `[Default]`.
 3. **Cause heading convention.** Real Causes use `### Cause <X>: <name>` where `<X>` is a single uppercase letter `A` through `Y`. `Z` is reserved for the fallback. Validator hard error on heading format violation.
-4. **Each `### Cause <X>` must contain all 6 sub-fields:** `**Statement:**`, `**Mechanism:**`, `**Indicator:**`, `**Mitigation:**`, `**Resolution:**`, `**Verification:**`. Validator hard error on missing field.
-5. **Hard character limits.** `Statement` ≤300 chars, `Mechanism` ≤800 chars. Validator hard error on overflow. Generation pipeline re-prompts the LLM on overflow.
-6. **Indicator format.** Each `**Indicator:**` entry must contain at least one of `[Step N]` (N must resolve to an existing numbered Diagnostic Step), `[Symptom]` (free-form reference back to Symptom Recognition), or `[Default]` (reserved for the fallback Cause). Validator hard error on missing token.
-7. **Match-hint comments are optional but must be strict JSON when present.** The body of any `<!-- match: ... -->` block must be `json.loads()`-parseable (quoted keys, double quotes, no trailing commas, no JSON5/YAML-flow syntax) and must use a predicate from the controlled vocabulary (see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary)). Validator hard error on malformed JSON or unregistered predicate.
-8. **Section titles must match exactly.** The quality gate linter checks for these headers. Variant names (e.g., "Troubleshooting" instead of "Diagnostic Steps") will fail validation.
-9. **Indicator overlap warning.** Validator soft warning if two Causes within the same runbook share identical Indicator sets — Indicators should typically be mutually exclusive within a runbook (multi-match policy in [runbook-cause-matching.md §4](../investigation-engine/runbook-cause-matching.md#4-multi-match-policy)).
-10. **Code blocks expected in Mitigation/Resolution.** Validator issues a quality warning (not a hard error) when code blocks are absent from a Cause's Mitigation or Resolution, because some fixes are procedural rather than command-based (e.g., "escalate to vendor", "failover to secondary region").
+4. **Each `### Cause <X>` must contain the required sub-fields** `**Statement:**`, `**Indicators:**`, `**Interventions:**`; `**Chain:**` is optional. Validator hard error on a missing required field. (One ROOT per Cause; no AND-sets — fold co-necessity into the root `Statement`.)
+5. **Hard character limits.** `Statement` ≤300 chars; each `Chain` rung ≤300 chars (soft warning). Validator hard error on `Statement` overflow; generation pipeline re-prompts on overflow.
+6. **Indicator format.** Each `**Indicators:**` entry carries a rung ref and must contain at least one of `[Step N]` (N must resolve to an existing numbered Diagnostic Step), `[Symptom]` (free-form reference back to Symptom Recognition), or `[Default]` (reserved for the fallback Cause). Validator hard error on missing token.
+7. **Interventions are quadrant-tagged.** Each `**Interventions:**` entry must lead with a valid quadrant — `remediation`, `defensive_fix`, `mitigation`, or `loop_break`. Validator hard error on a missing or unknown quadrant. Soft warnings: a `mitigation` should declare **Risk** + **Duration**; interventions should carry a **Verification**; command-based fixes should include a fenced code block.
+8. **Match-hint comments are optional but must be strict JSON when present.** The body of any `<!-- match: ... -->` block must be `json.loads()`-parseable (quoted keys, double quotes, no trailing commas, no JSON5/YAML-flow syntax) and must use a predicate from the controlled vocabulary (see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary)). Validator hard error on malformed JSON or unregistered predicate.
+9. **Section titles must match exactly.** The quality gate linter checks for these headers. Variant names (e.g., "Troubleshooting" instead of "Diagnostic Steps") will fail validation.
+10. **`Chain` is optional and tolerant.** Omitting `Chain` yields a degenerate `root → D` chain (no error). When present it must be a linear `<ref>:` ladder; `converges: <Cause>.<ref>` is the only cross-chain construct. There is **no** AND grammar in authored runbooks.
 
 ---
 
@@ -305,22 +315,23 @@ Validates the markdown document contains required sections, subsections, and fie
 
 - All 6 required H2 headers must be present: `Symptom Recognition`, `Applicability`, `Diagnostic Steps`, `Causes`, `Prevention`, `Sources`
 - `## Causes` must contain ≥1 real `### Cause <X>` subsection where `<X>` is `A`–`Y`
-- `## Causes` must contain exactly one fallback Cause subsection whose Indicator includes `[Default]` (conventionally named `### Cause Z: Unidentified`)
-- Each `### Cause <X>` must contain all 6 sub-fields: `**Statement:**`, `**Mechanism:**`, `**Indicator:**`, `**Mitigation:**`, `**Resolution:**`, `**Verification:**`
-- `Statement` ≤300 chars, `Mechanism` ≤800 chars
-- Each `**Indicator:**` entry must contain at least one of `[Step N]`, `[Symptom]`, or `[Default]`
+- `## Causes` must contain exactly one fallback Cause subsection whose Indicators include `[Default]` (conventionally named `### Cause Z: Unidentified`)
+- Each `### Cause <X>` must contain the required sub-fields `**Statement:**`, `**Indicators:**`, `**Interventions:**` (`**Chain:**` optional)
+- `Statement` ≤300 chars (each `Chain` rung ≤300 chars — soft warning)
+- Each `**Indicators:**` entry must carry a rung ref and at least one of `[Step N]`, `[Symptom]`, or `[Default]`
 - `[Step N]` references must resolve to existing numbered Diagnostic Steps
+- Each `**Interventions:**` entry must carry a valid quadrant (`remediation` / `defensive_fix` / `mitigation` / `loop_break`)
 - Any `<!-- match: ... -->` HTML comment must parse as **strict JSON** (`json.loads()`-parseable; no JSON5/YAML-flow) and must use a predicate from the controlled vocabulary (see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary))
-- No section or sub-field is empty
+- No required section or sub-field is empty
 
 **Quality warnings (do not block, flagged for author review):**
 
-- No fenced code blocks found in any Cause's Mitigation or Resolution (some fixes are procedural, e.g., "escalate to vendor")
-- Two Causes within the runbook share identical Indicator sets (Indicator overlap — see [runbook-cause-matching.md §4](../investigation-engine/runbook-cause-matching.md#4-multi-match-policy))
-- Content length below 500 characters
-- No external references or links
+- A `mitigation` intervention without **Risk** + **Duration**
+- A Cause's `Interventions` with no **Verification**, or no fenced code block when the fix is command-based (some fixes are procedural, e.g., "escalate to vendor")
+- A `Chain` rung over 300 chars, or a `Chain` missing a `root:` / `D:` rung
+- Content length below 500 characters; no external references or links
 
-**Implementation:** `RunbookValidator` rewritten for v3 schema in `kb_toolkit/core/validator.py`. Section and subsection presence checked via header regex; sub-field presence checked per-Cause via labelled-field regex; Indicator tokens validated against the Diagnostic Steps inventory; match-hint JSON parsed and predicate name checked against the registered vocabulary.
+**Implementation:** `RunbookValidator` rewritten for the v4 causal-chain schema in `kb_toolkit/core/validator.py`. Section and subsection presence checked via header regex; required sub-fields (`Statement`/`Indicators`/`Interventions`, optional `Chain`) checked per-Cause via labelled-field regex; `Chain` validated tolerantly (absence = degenerate); Indicator tokens validated against the Diagnostic Steps inventory; intervention quadrants checked against the controlled set; match-hint JSON parsed and predicate name checked against the registered vocabulary.
 
 ### Gate 3: Semantic Density Check (Planned)
 
@@ -385,40 +396,49 @@ The first three sources are sufficient for common infrastructure failure modes. 
 | Stale commands | Outdated CLI flags or deprecated dashboards erode trust. User follows the step, it fails, trust in FaultMaven drops. | Version the runbook, review on schedule |
 | Mega-runbooks across symptoms | "Everything about Service X" — covers multiple unrelated symptom classes; only a small section matches any given query, but the whole document competes in retrieval. | Split into one runbook per symptom class. Multiple `### Cause N` subsections within a runbook are expected and correct; multiple symptom classes are not. |
 | Copy-pasted vendor docs | Low signal density. Chunks contain boilerplate that dilutes the embedding. | Summarize the relevant parts, add your operational context |
-| Missing per-Cause verification | A Cause without its own `**Verification:**` field gives the engine no fix-specific check; `solution_verified` falls back to generic prompts and the agent cannot confirm the right fix worked. | Every `### Cause N` must carry `**Verification:**` for its specific Mitigation/Resolution |
+| Missing per-intervention verification | An intervention without a `**Verification:**` gives the engine no fix-specific check; `solution_verified` falls back to generic prompts and the agent cannot confirm the right fix worked. | Every intervention under `**Interventions:**` carries its own `**Verification:**` |
+| Two roots / AND-sets in one Cause | A Cause with two roots (or an authored AND-gate) reads as duplicate nodes and does not map to the engine's single-root `Hypothesis`. | One Cause = one ROOT. Fold the co-necessary condition into the root `Statement`; give each fix its own quadrant-tagged intervention (a `defensive_fix` *and* a `remediation` if needed). |
 | Overlapping Indicators | Two Causes within one runbook whose Indicator sets cannot be distinguished from case evidence force the engine into the multi-match branch every time. | Author Indicators as mutually exclusive sets; lean on Diagnostic Steps whose findings differ between Causes |
-| Indicator without step or symptom reference | An `**Indicator:**` entry that lacks `[Step N]` / `[Symptom]` / `[Default]` cannot be matched deterministically and offers no anchor for `case_evidence_qa` either. | Every Indicator entry must carry at least one reference token |
+| Indicator without step or symptom reference | An `**Indicators:**` entry that lacks `[Step N]` / `[Symptom]` / `[Default]` cannot be matched deterministically and offers no anchor for `case_evidence_qa` either. | Every Indicators entry carries a rung ref and at least one reference token |
 
 ---
 
 ## Implementation Status
 
-This section tracks what is implemented versus planned. v3 redesign requires regeneration of all existing runbooks via the KB toolkit — no migration shim, no backward-compatibility for v2-shaped runbooks.
+This section tracks what is implemented versus planned. The v4 causal-chain
+template is a **clean break** from v3 — no migration shim, no backward-compat for
+v3-shaped runbooks (the validator rejects them).
 
-**Current template in use (v3):** All 59 built-in runbooks have been regenerated to the v3 schema (`Symptom Recognition`, `Applicability`, `Diagnostic Steps`, `Causes`, `Prevention`, `Sources`). `kb_toolkit/core/validator.py` has been fully rewritten for v3: it enforces the 6 required H2 sections, per-Cause sub-fields with char limits, Indicator token validation with step-number resolution, and match-hint JSON parsing with predicate vocabulary checks. The FaultMaven API's `runbook_validator.py` (used by the document-to-runbook conversion pipeline) still enforces v2 section headers — updating it to v3 is the remaining gap.
+**Toolkit (`faultmaven-kb-toolkit`) is on v4.** `validator.py`, `config.py`,
+`quality.py`, `kb_init.py`, the `kb-researcher` author prompt, and `chunker.py`
+all enforce/produce the v4 schema (`Statement` / optional `Chain` / `Indicators`
+/ quadrant-tagged `Interventions`, one ROOT per Cause). The chunker strips
+`<!-- match -->` comments and lifts per-Cause metadata + parsed predicates.
+
+**Content migration is in progress.** The **32 new backlog runbooks** are authored
+in v4. The **59 pre-existing built-in runbooks are still v3** and must be
+regenerated to v4 (the clean break means v3 runbooks fail v4 validation — they are
+not deployed alongside v4 content). The FaultMaven API's `runbook_validator.py`
+(document-to-runbook conversion) still enforces v3/v2 headers — its v4 update is a
+remaining gap.
 
 | Feature | Status | Location |
 | --- | --- | --- |
-| YAML frontmatter parsing | Implemented | `conversion_service.py` scan workflow |
-| v3 structural linting (6 H2s + Cause subsections + sub-fields) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_structure()`, `_validate_causes()`, `_validate_cause_subfields()` |
-| Char-limit enforcement (Statement ≤300, Mechanism ≤800) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_cause_subfields()` |
-| Indicator token validation (`[Step N]`, `[Symptom]`, `[Default]`) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_indicator_field()` with step-number cross-reference |
-| Match-hint JSON parsing + predicate vocabulary check | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_match_hints()`; chunker metadata lift still pending |
-| Per-Cause metadata fields (`cause_statement`, `cause_mechanism`, `cause_indicators`, `match_predicates`, `cause_mitigation`, `cause_resolution`, `cause_verification`, `is_fallback_cause`) | **Pending** | `kb_toolkit/core/ingester.py` — see [runbook-cause-matching.md §6](../investigation-engine/runbook-cause-matching.md#6-chromadb-metadata-schema) |
-| FaultMaven API `runbook_validator.py` v3 update | **Pending** | `modules/knowledge/domain/services/runbook_validator.py` — still enforces v2 `REQUIRED_SECTIONS` |
-| Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags`, `document_type` propagated per chunk |
-| Domain/service hard pre-filter | Implemented | `filter_mode="hard"` injects `domain`/`service` into ChromaDB `where` clause |
-| Verification-weighted retrieval | Implemented | Status bonuses in four-signal reranker: `verified` +0.40, `draft` -0.10, `deprecated` -0.30 |
-| Staleness warning in retrieval context | Implemented | `UnifiedKBConfig.format_chunk_metadata()` injects age-based warnings; reranker freshness signal applies half-life decay |
-| Staleness detection (6-month auto-transition) | **Implemented (toolkit only)** | `kb-stale-check` CLI scans `last_updated`. FaultMaven API has no background job for state transitions yet. |
+| v4 structural linting (6 H2s + `Statement`/`Chain`/`Indicators`/`Interventions`) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` — `_validate_causes()`, `_validate_cause_subfields()`, `_validate_chain()`, `_validate_interventions()` |
+| Char-limit enforcement (`Statement` ≤300; `Chain` rung ≤300 soft) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` |
+| Indicator token validation (`[Step N]`, `[Symptom]`, `[Default]`) | **Implemented (toolkit)** | `_validate_indicator_field()` with step-number cross-reference |
+| Intervention quadrant validation | **Implemented (toolkit)** | `_validate_interventions()` against `valid_quadrants` |
+| Match-hint stripping + per-Cause metadata at chunk time | **Implemented (toolkit)** | `kb_toolkit/core/chunker.py` — `_post_process_chunk()` lifts `cause_*` + parsed `match_predicates`, `is_fallback_cause` |
+| Per-Cause metadata carried into KB pack | **Pending** | `kb_toolkit/core/pack_builder.py` — `build_pack` keeps chunk text only; carry chunk metadata into `pack.json` (graph record for the matcher — see [runbook-cause-matching.md](../investigation-engine/runbook-cause-matching.md)) |
+| FaultMaven API `runbook_validator.py` v4 update | **Pending** | `modules/knowledge/domain/services/runbook_validator.py` — still pre-v4 |
+| Regenerate the 59 built-in runbooks to v4 | **Pending** | toolkit batch generation (same path as the 32) |
+| Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags` propagated per chunk |
+| Domain/service hard pre-filter; verification-weighted + staleness-aware retrieval | Implemented | four-signal reranker; `UnifiedKBConfig` |
 | Semantic density check (LLM-driven) | **Not implemented** | Planned for Gate 3 |
-| Usage tracking | Implemented | `KnowledgeItem.view_count`, `helpful_count`, `not_helpful_count` |
-| Ingestion pipeline with draft tracking | Implemented | `conversion_service.py` scan → verify workflow (`conversion_drafts` table) |
 
 ### Implementation Priority
 
-1. **Per-Cause metadata in ingester** — lift `cause_statement`, `cause_mechanism`, `cause_indicators`, `match_predicates` into ChromaDB chunk metadata at ingest time. Required before engine-side `AnswerFromKB.cause` field and the indicator-resolution path can land.
-2. **FaultMaven API `runbook_validator.py` v3 update** — align `REQUIRED_SECTIONS` and sub-field checks with the v3 schema so the document-to-runbook conversion pipeline produces v3-compliant runbooks.
-3. **Chunker match-hint stripping** — strip `<!-- match: ... -->` HTML comments before chunking and lift predicates to ChromaDB metadata.
-4. **Semantic density check (Gate 3)** — Reject runbooks containing only architectural descriptions. Requires classifier-tier LLM integration.
-5. **Staleness background job** — Compare `last_updated` against current date and auto-transition `verified` → `stale` at the 6-month threshold. Requires job scheduler integration.
+1. **Regenerate the 59 built-in runbooks to v4** — the clean break means the KB cannot mix v3 + v4; the existing 59 must be brought to v4 before deploy alongside the 32 new ones.
+2. **Per-Cause metadata into the KB pack** — carry the chunker's per-Cause metadata (incl. parsed predicates) into `pack.json` so the engine matcher can instantiate the causal subgraph (forward-investment; consumed when the matcher lands).
+3. **FaultMaven API `runbook_validator.py` v4 update** — align it with the v4 schema so the document-to-runbook conversion pipeline produces v4-compliant runbooks.
+4. **Semantic density check (Gate 3)** — reject runbooks that are architectural description without actionable procedures. Requires classifier-tier LLM integration.
