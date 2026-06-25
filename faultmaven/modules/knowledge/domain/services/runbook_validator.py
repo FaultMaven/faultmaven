@@ -237,8 +237,8 @@ class RunbookValidator:
             for sub in ("Statement", "Indicators", "Interventions"):
                 if not re.search(rf"\*\*{sub}:\*\*", content):
                     warnings.append(
-                        f"No `**{sub}:**` sub-field found under any Cause "
-                        "(v4 requires Statement / Indicators / Interventions per Cause)"
+                        f"No `**{sub}:**` sub-field found anywhere in the runbook "
+                        "(v4 Causes use Statement / Indicators / Interventions)"
                     )
             if re.search(r"\*\*Interventions:\*\*", content) and not re.search(
                 r"\*\*(remediation|defensive_fix|mitigation|loop_break)\*\*", content
