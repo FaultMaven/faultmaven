@@ -68,6 +68,15 @@ def test_diagnosis_prompt_includes_chain_block():
     assert "REQUIRED FOR EVERY HYPOTHESIS" in block
 
 
+def test_diagnosis_prompt_includes_f3_signature_screening():
+    """F3 (methodology §4): the formation prompt instructs the LLM to reject a
+    cause whose mechanism cannot produce D's observed signature, before emitting
+    it. A future edit that drops the screening rule trips here."""
+    block = _select_diagnosis_block(_case())
+    assert "Signature-screen before you emit" in block
+    assert "observed signature" in block.lower()
+
+
 # ---------------------------------------------------------------------------
 # Engine wiring — _apply_chain_emission
 # ---------------------------------------------------------------------------
