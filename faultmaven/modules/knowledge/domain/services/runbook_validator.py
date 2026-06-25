@@ -1,7 +1,9 @@
-"""Inline runbook validation and quality scoring.
+"""Inline runbook validation and quality scoring (v4 causal-chain schema).
 
 Replicated from faultmaven-kb-toolkit to avoid cross-repo dependency.
-Rules are aligned with the KB Toolkit's RunbookValidator and QualityScorer.
+Rules are aligned with the KB Toolkit's RunbookValidator and QualityScorer:
+each `### Cause` declares one ROOT with sub-fields **Statement** / optional
+**Chain** / **Indicators** / quadrant-tagged **Interventions**.
 """
 
 import re
@@ -229,6 +231,28 @@ class RunbookValidator:
                     "No fallback Cause with [Default] indicator found — "
                     "add a '### Cause Z: Unidentified' with [Default] indicator"
                 )
+            # v4: each ### Cause carries Statement / Indicators / Interventions
+            # (Chain optional); interventions are quadrant-tagged. Coarse,
+            # document-level checks (drafts get human review before activation).
+            for sub in ("Statement", "Indicators", "Interventions"):
+                if not re.search(rf"\*\*{sub}:\*\*", content):
+                    warnings.append(
+                        f"No `**{sub}:**` sub-field found under any Cause "
+                        "(v4 requires Statement / Indicators / Interventions per Cause)"
+                    )
+            if re.search(r"\*\*Interventions:\*\*", content) and not re.search(
+                r"\*\*(remediation|defensive_fix|mitigation|loop_break)\*\*", content
+            ):
+                warnings.append(
+                    "Interventions present but no quadrant tag "
+                    "(remediation / defensive_fix / mitigation / loop_break)"
+                )
+            # v4 has no AND-sets in authored runbooks; flag legacy v3 sub-fields.
+            if re.search(r"\*\*(Mechanism|Mitigation|Resolution):\*\*", content):
+                warnings.append(
+                    "Found v3 Cause sub-field(s) (Mechanism/Mitigation/Resolution) — "
+                    "v4 uses Statement / Chain / Indicators / quadrant-tagged Interventions"
+                )
 
     def _validate_quality(self, content: str, warnings: List[str]) -> None:
         content_body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, flags=re.DOTALL)
@@ -391,15 +415,17 @@ class QualityScorer:
         elif len(diagnostic_keywords) >= 5:
             score += 5
 
-        # v3: resolution/verification are per-Cause sub-fields, not top-level sections
+        # v4: fixes are quadrant-tagged Interventions per Cause, not top-level sections
         causes_section = re.search(r"(?i)^#{1,4}\s*Causes", content, re.MULTILINE)
         if causes_section:
             score += 10
 
-        has_resolution = re.search(
-            r"(?i)\*\*Resolution:\*\*|\*\*Mitigation:\*\*", content
+        has_fix = re.search(
+            r"(?im)^\s*\*\*Interventions:\*\*"
+            r"|^\s*-\s*\*\*(remediation|defensive_fix|mitigation|loop_break)\*\*",
+            content,
         )
-        if has_resolution:
+        if has_fix:
             score += 5
 
         command_explanations = re.findall(r"```.*?```\s*\n\s*[A-Z]", content, re.DOTALL)
@@ -423,7 +449,7 @@ class QualityScorer:
 
         root_cause = re.findall(
             r"(?i)(?:root cause|why this happens|underlying issue|permanent fix"
-            r"|\*\*Statement:\*\*|\*\*Mechanism:\*\*)",
+            r"|\*\*Statement:\*\*|\*\*Chain:\*\*)",
             content,
         )
         if len(root_cause) >= 1:
