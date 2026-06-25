@@ -1384,6 +1384,16 @@ with no root is INCOMPLETE: it asserts a cause without placing it in the causal
 structure. What is lazy is the DEPTH of the chain — the intermediate rungs between
 root and D — never WHETHER the hypothesis has a root.
 
+**Signature-screen before you emit (free falsification).** Before adding a cause,
+confirm its mechanism could actually produce D's OBSERVED signature. Different
+signatures imply different mechanism families — a *timeout* is not a
+*connection-refused* is not an *authentication-failed* is not a *post-connect
+warning*. A cause whose mechanism cannot produce the observed signature is already
+wrong, at zero test cost: do NOT emit it, and screen its whole family out. E.g.
+for a connection *timeout*, a post-connect collation warning or a wrong-password
+auth error are signature-incompatible — they produce a different signature, so
+they are not candidates.
+
 The chains you have already built are shown in `<causal_graph>` above, each node
 with its `cn_...` id. EXTEND that graph: when a cause or rung is already present,
 reference its existing `cn_...` id (in `produces`, `root_node_ref`, or
