@@ -28,11 +28,13 @@ PRs #487–#507. What is built versus still design-intent:
   chain-derived `cause_state` (§9.2), never asserted (M4); engine-deterministic
   failed-fix demotion (M6, §9.3); root-actionability (M1); AND-proof (M7); the
   deductive-exclusion primitive (§7.1.1); and **M5 solution-gating** — a SOLUTION
-  is registered only once the root is mechanistically validated (`cause_state ==
-  IDENTIFIED`), else downgraded to a diagnostic with a recovery reason (engine
-  veto, extends INV-23; mitigation exempt). *Quadrant-level precision (exempting
-  `defensive_fix`) is deferred until the solution emission carries an
-  `InterventionQuadrant`.*
+  is registered only once the cause is *established*, using the **same predicate
+  as the resolution gate** (`_cause_identified`: `cause_state == IDENTIFIED`, a
+  set `RootCauseConclusion`, or a working conclusion ≥ 0.6) so M5 is never
+  stricter than the gate that lets a case resolve; else downgraded to a
+  diagnostic with a recovery reason (engine veto, extends INV-23; mitigation
+  exempt). *Quadrant-level precision (exempting `defensive_fix`) is deferred
+  until the solution emission carries an `InterventionQuadrant`.*
 - **Design-intent, not yet built** — the LLM satisfies these *behaviorally*; no
   engine gate enforces them: chain-level belief propagation (§9.4 — the engine
   still uses the per-evidence `+0.15 / −0.20` counter from
