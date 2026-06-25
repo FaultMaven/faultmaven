@@ -408,10 +408,11 @@ class RunbookCreateRequest(BaseModel):
     causes: str = Field(
         min_length=10,
         description=(
-            "Pre-formatted markdown with ### Cause N subsections. "
-            "Each cause needs Statement, Mechanism, Indicator, Mitigation, "
-            "Resolution, Verification sub-fields. Include ### Cause Z: Unidentified "
-            "with [Default] indicator as fallback."
+            "Pre-formatted markdown with ### Cause N subsections (one ROOT each). "
+            "Each cause needs Statement, an optional Chain (root->D rungs), "
+            "Indicators (per-rung, [Step N]-anchored), and quadrant-tagged "
+            "Interventions (remediation/defensive_fix/mitigation/loop_break). "
+            "Include ### Cause Z: Unidentified with a [Default] indicator as fallback."
         ),
     )
     prevention: str = Field(min_length=10)

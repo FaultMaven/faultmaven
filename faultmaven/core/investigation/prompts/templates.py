@@ -1491,34 +1491,34 @@ for the user to execute — their compliance implies acceptance and transitions 
 □ MUST search KB (`kb_qa` / `search_knowledge`) for the symptom ONCE at the start of
   Zone 2 (after symptom_verified=True, before forming hypotheses independently).
   Do NOT call kb_qa in Zone 1 — it contains procedures, not incident facts.
-□ Retrieved v3 runbooks are structured around per-Cause subsections (`### Cause A`,
+□ Retrieved runbooks are structured around per-Cause subsections (`### Cause A`,
   `### Cause B`, ..., plus a mandatory fallback `### Cause Z: Unidentified`). Each
-  Cause carries six labelled sub-fields: **Statement:** (the cause), **Mechanism:**
-  (how it produces the symptom), **Indicator:** (criteria that should be true if this
-  Cause is active — references `[Step N]` Diagnostic Steps and `[Symptom]` patterns),
-  **Mitigation:** (quick fix), **Resolution:** (durable fix), **Verification:**
-  (cause-specific check).
+  Cause is a causal chain with exactly one ROOT, carrying: **Statement:** (the
+  single root cause), an optional **Chain:** (the causal ladder of intermediate
+  states written as `root` → `s1` → ... → `D`, where `D` is the problem),
+  **Indicators:** (per-rung observables that should be true if that rung is active —
+  each references a `[Step N]` Diagnostic Step or a `[Symptom]` pattern), and
+  **Interventions:** (fixes, each tagged with one quadrant — `remediation`
+  permanent@root, `defensive_fix` permanent@intermediate, `mitigation`
+  temporary@intermediate, `loop_break` — and each carrying a **Verification:**).
 
-  Legacy runbooks without `### Cause N` subsections may still be in the KB during
-  the v3 transition. If a retrieval returns one, treat its body as background
-  procedural guidance and form hypotheses independently from the evidence
-  (YOUR PROGRESSION below).
-
-□ **Cause attribution.** Match each retrieved Cause's **Indicator:** entries against
+□ **Cause attribution.** Match each retrieved Cause's **Indicators:** against
   current case evidence. Outcomes:
   - **Exactly one Cause matches:** that Cause IS your hypothesis — create a
     `hypotheses_to_add` record where `statement` is the Cause's **Statement:** field
-    (verbatim) and `description` is the Cause's **Mechanism:** field (verbatim).
-    Set initial state=ACTIVE; it will become VALIDATED at resolution time. Also emit
-    `knowledge_match` in state_updates so the TREATMENT-stage KB-RESOLUTION VARIANT
-    can reference the attribution later:
+    (verbatim) and `description` summarizes the Cause's **Chain:** as the causal
+    pathway from root to the problem (≤800 chars; if the Cause has no Chain, restate
+    the Statement). Set initial state=ACTIVE; it will become VALIDATED at resolution
+    time. Also emit `knowledge_match` in state_updates so the TREATMENT-stage
+    KB-RESOLUTION VARIANT can reference the attribution later:
       match_type: "runbook" | "past_case" | "documentation"
       match_likelihood: 0.0–1.0 (your confidence the Cause applies)
       match_summary: "Cause <X>: <name> — <one-sentence summary>"
-      suggested_solution: brief quote of the Cause's **Mitigation:** or **Resolution:**
-    Then propose that Cause's fix via a SolutionToAdd record — its
-    **Mitigation:** if impact is severe and needs stabilizing now, otherwise
-    its **Resolution:**. Skip independent hypothesis generation.
+      suggested_solution: brief quote of one of the Cause's **Interventions:**
+    Then propose that Cause's fix via a SolutionToAdd record — a `mitigation`
+    intervention if impact is severe and needs stabilizing now, otherwise a
+    `remediation` or `defensive_fix` intervention. Skip independent hypothesis
+    generation.
   - **Two or more Causes plausibly match:** ask a disambiguating question that runs
     a specific Diagnostic Step whose finding distinguishes them. Do NOT propose
     multiple Causes' fixes simultaneously. Do NOT yet emit `knowledge_match`.
@@ -1530,7 +1530,7 @@ for the user to execute — their compliance implies acceptance and transitions 
 □ **Persistence for TREATMENT direct-copy.** The hypothesis record you wrote in the
   attribution step above IS the persistence the TREATMENT-stage KB-RESOLUTION
   VARIANT reads from. It will copy Cause Statement back from `hypothesis.statement`
-  into `root_cause_conclusion.root_cause`, and Cause Mechanism back from
+  into `root_cause_conclusion.root_cause`, and the Cause's chain summary back from
   `hypothesis.description` into `root_cause_conclusion.mechanism` (verbatim, no
   paraphrasing). The original Cause text may not be in context by the
   resolution turn; the hypothesis fields are. Get them right here.
@@ -2035,8 +2035,8 @@ REQUIRED EMISSIONS IN THE SAME TURN:
    ```
    root_cause: copy from hypothesis.statement (the Cause's Statement
      field; ≤300 chars; verbatim)
-   mechanism: copy from hypothesis.description (the Cause's Mechanism
-     field; ≤800 chars; verbatim)
+   mechanism: copy from hypothesis.description (the Cause's chain summary;
+     ≤800 chars; verbatim)
    likelihood: 0.85+ (KB-attributed causes with user-confirmed fix are
      high-confidence by construction)
    evidence_ids: include the IDs of the diagnostic evidence rows from
@@ -2050,9 +2050,9 @@ REQUIRED EMISSIONS IN THE SAME TURN:
    ```
    description: a one-sentence summary of the applied fix
    solution_type: per existing SolutionType enum
-   commands: copy from the Cause's **Mitigation:** "Command" block
-     and/or **Resolution:** code block
-   risks: copy from the Cause's **Mitigation:** "Risk" field
+   commands: copy from the attributed **Interventions:** code block(s)
+     (the proposed quadrant's fix command)
+   risks: copy from the `mitigation` intervention's **Risk:** field
    estimated_impact: brief
    ```
 
