@@ -180,6 +180,29 @@ def _case_has_symptom_evidence(case: Case) -> bool:
     return any(e.category == EvidenceCategory.SYMPTOM_EVIDENCE for e in case.evidence)
 
 
+def _solution_cause_validated(case: Case) -> bool:
+    """M5 gate predicate: may a permanent-fix SOLUTION be registered?
+
+    True iff the cause is *mechanistically validated* — ``cause_state ==
+    IDENTIFIED``, i.e. some chain's root node has been validated by evidence
+    (methodology M5 / §9.2: IDENTIFIED "unlocks solution work"). A permanent
+    remediation proposed before this is the premature-fix / test-recorded-as-a-
+    solution failure M5 forbids; the gate downgrades it to DIAGNOSTIC so the
+    flow continues (the LLM validates the root, or proposes a mitigation).
+
+    Scope (deliberate, non-over-engineered): this gates the engine's SOLUTION
+    action class as a whole. The methodology exempts mitigation *and*
+    defensive_fix (permanent @ intermediate) from M5, but the current solution
+    emission carries no ``InterventionQuadrant`` — the engine cannot tell a
+    defensive_fix from a remediation (both are non-WORKAROUND SOLUTIONs). Per-
+    quadrant precision (exempting defensive_fix) is deferred until the emission
+    carries a quadrant; until then the gate treats every permanent fix as
+    remediation-grade, the safe "never propose an ungrounded permanent fix"
+    direction. Pure over case state; no side effects.
+    """
+    return case.progress.cause_state == CauseState.IDENTIFIED
+
+
 def _determine_action_type(
     case: Case, solution_type: SolutionType
 ) -> InvestigationActionType:
@@ -6326,18 +6349,40 @@ class MilestoneEngine:
                 action_type = _determine_action_type(case, s_item.solution_type)
                 downgrade_reason: str | None = None
 
-                # 3C: Hypothesis gate — SOLUTION requires at least one hypothesis.
-                # If no hypotheses exist, downgrade to DIAGNOSTIC to prevent
-                # premature TREATMENT entry.
+                # 3C / M5: Solution-validation gate — a SOLUTION (permanent fix)
+                # requires the cause to be mechanistically validated, i.e.
+                # cause_state == IDENTIFIED (some chain's root validated by
+                # evidence — methodology M5 / §9.2). Proposing a permanent
+                # remediation before the root is validated is the premature-fix /
+                # diagnostic-test-recorded-as-a-solution failure M5 forbids.
+                # Downgrade to DIAGNOSTIC and tell the LLM how to recover. This
+                # subsumes the prior weaker "≥1 hypothesis" check (IDENTIFIED
+                # implies hypotheses). Mitigation (WORKAROUND) is exempt by
+                # design — it precedes a known root and is gated on symptom
+                # evidence by 3D instead. Graceful denial (no stall): the flow
+                # continues as DIAGNOSTIC; the LLM grounds the root and
+                # re-proposes, or proposes a mitigation.
                 if (
                     action_type == InvestigationActionType.SOLUTION
-                    and not case.hypotheses
+                    and not _solution_cause_validated(case)
                 ):
                     logger.warning(
                         f"Downgrading SOLUTION to DIAGNOSTIC for case {case.case_id}: "
-                        f"no hypotheses exist yet"
+                        f"cause_state={case.progress.cause_state.value} (M5 — a "
+                        f"permanent fix requires a mechanistically-validated root)"
                     )
                     action_type = InvestigationActionType.DIAGNOSTIC
+                    downgrade_reason = (
+                        "Your previous SOLUTION proposal was downgraded to "
+                        "DIAGNOSTIC because the root cause is not yet "
+                        "mechanistically validated (cause_state is not "
+                        "IDENTIFIED): no chain root has been confirmed by "
+                        "evidence. A permanent fix must target a validated root "
+                        "— a diagnostic test is not a solution (M5). Validate "
+                        "the root by gathering causal evidence that confirms it, "
+                        "then re-propose the fix; or, to intervene now, propose "
+                        "a temporary mitigation (WORKAROUND) instead."
+                    )
 
                 # 3D: Symptom-evidence gate — MITIGATION requires at least one
                 # SYMPTOM_EVIDENCE row on the case. The mitigation must target
