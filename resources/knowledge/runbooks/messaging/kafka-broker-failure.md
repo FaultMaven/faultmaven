@@ -6,8 +6,8 @@ service: kafka
 symptom_class: [service_unavailable]
 severity: critical
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [kafka, broker, under-replicated-partitions, leader-election, isr, kraft, zookeeper]
@@ -147,19 +147,34 @@ Expected output: ZooKeeper-mode clusters should show ≤4,000 partition replicas
 
 **Statement:** The broker's JVM ran out of heap memory, causing the Linux kernel to send SIGKILL to the process.
 
-**Mechanism:** Kafka brokers with misconfigured heap (`KAFKA_HEAP_OPTS`) or an unusually large partition count exhaust the JVM heap and trigger full GC. When GC cannot free sufficient memory the JVM throws `OutOfMemoryError`; if the Java process RSS exceeds the cgroup or host memory limit the kernel OOM-killer intervenes. Either path terminates the broker process abruptly.
+**Chain:**
+- root: misconfigured `KAFKA_HEAP_OPTS` or excessive partition count exhausts the JVM heap
+- s1: full GC cannot reclaim enough memory; JVM throws `OutOfMemoryError` and/or RSS exceeds the cgroup/host memory limit
+- s2: the kernel OOM-killer sends SIGKILL and the broker process terminates abruptly
+- D: broker offline, partitions whose leaders lived on it become under-replicated or offline (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] partition replica count on the broker is unusually high, or heap is undersized relative to load
+- s1: [Step 3] `OutOfMemoryError` present in `/var/log/kafka/server.log`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "OutOfMemoryError"} -->
+- s2: [Step 3] `Out of memory: Kill process` matching the Kafka PID in `dmesg` output
+  <!-- match: {"step": 3, "predicate": "contains", "target": "Out of memory: Kill process"} -->
 
-- [Step 3] `OutOfMemoryError` present in `/var/log/kafka/server.log`
-- [Step 3] `Out of memory: Kill process` matching the Kafka PID in `dmesg` output
+**Interventions:**
+- **remediation** (root): set heap in `kafka-env.sh` or a systemd drop-in and add G1GC flags so the heap is sized correctly and GC overhead stays bounded.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "OutOfMemoryError"} -->
+  ```bash
+  # Durable fix: set heap in kafka-env.sh or systemd drop-in, add G1GC flags
+  # In /opt/kafka/bin/kafka-env.sh or equivalent:
+  # export KAFKA_HEAP_OPTS="-Xms6g -Xmx6g"
+  # export KAFKA_JVM_PERFORMANCE_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=20 \
+  #   -XX:InitiatingHeapOccupancyPercent=35 -XX:+ExplicitGCInvokesConcurrent \
+  #   -Xlog:gc*:file=/var/log/kafka/gc.log:time,tags:filecount=10,filesize=100m"
+  systemctl restart kafka
+  ```
 
-**Mitigation:**
-
-- **Risk:** Restarting without increasing heap causes an immediate repeat OOM; follower catch-up after restart generates replication traffic spike.
-- **Command:**
+  **Verification:** after restart confirm `UnderReplicatedPartitions` returns to 0 within 10 minutes (re-run Step 2); monitor `jstat -gcutil <pid> 5s` to confirm GC overhead stays below 5%.
+- **mitigation** (s1): raise the heap and restart the broker to clear the immediate OOM condition.
 
   ```bash
   # Edit the systemd override or kafka-env.sh to raise heap
@@ -170,46 +185,41 @@ Expected output: ZooKeeper-mode clusters should show ≤4,000 partition replicas
   systemctl start kafka
   ```
 
-- **Duration:** Restart takes 30–120 s; ISR catch-up minutes to hours depending on lag volume.
-
-**Resolution:**
-
-```bash
-# Durable fix: set heap in kafka-env.sh or systemd drop-in, add G1GC flags
-# In /opt/kafka/bin/kafka-env.sh or equivalent:
-# export KAFKA_HEAP_OPTS="-Xms6g -Xmx6g"
-# export KAFKA_JVM_PERFORMANCE_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=20 \
-#   -XX:InitiatingHeapOccupancyPercent=35 -XX:+ExplicitGCInvokesConcurrent \
-#   -Xlog:gc*:file=/var/log/kafka/gc.log:time,tags:filecount=10,filesize=100m"
-systemctl restart kafka
-```
-
-- **Impact:** Requires broker restart (rolling — one broker at a time in a healthy cluster). Cluster-wide: if heap is set too high it can cause swap pressure on the host.
-- **Rollback:** Revert heap value in `kafka-env.sh` / systemd drop-in and `systemctl restart kafka`.
-
-**Verification:** After restart confirm `UnderReplicatedPartitions` returns to 0 within 10 minutes. Monitor `jstat -gcutil <pid> 5s` to confirm GC overhead stays below 5%.
-
----
+  **Risk:** restarting without increasing heap causes an immediate repeat OOM; follower catch-up after restart generates a replication traffic spike. **Duration:** restart takes 30–120 s; ISR catch-up minutes to hours depending on lag volume. **Verification:** broker re-registers (Step 1) and `UnderReplicatedPartitions` trends to 0 (Step 2).
 
 ### Cause B: Disk Full or I/O Error on Log Directory
 
 **Statement:** The broker's Kafka log directory filesystem reached 100% utilisation or a hardware-level I/O error made the directory unwritable, causing `KafkaStorageException`.
 
-**Mechanism:** Kafka continuously appends messages to log segment files. When the underlying filesystem is full or returns I/O errors, segment writes fail with `KafkaStorageException`. The broker marks the affected log directory as offline (JBOD mode) or shuts down entirely (single log directory). Partitions whose data lives on that directory become unavailable.
+**Chain:**
+- root: the Kafka log directory filesystem fills to 100% or the disk returns hardware I/O errors
+- s1: segment-file appends fail and the broker raises `KafkaStorageException`
+- s2: the broker marks the affected log directory offline (JBOD) or shuts down entirely (single log directory)
+- D: partitions hosted on that directory become unavailable; survivors report under-replicated/offline partitions (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `df -h` shows 100% utilisation on `/var/kafka-logs`, or `dmesg` contains disk error strings (`I/O error`, `failed command`)
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "disk_use_pct", "op": ">=", "value": 100} -->
+- s1: [Step 3] `KafkaStorageException` present in `/var/log/kafka/server.log`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "KafkaStorageException"} -->
+- s2: [Step 4] `kafka-log-dirs.sh` reports the directory with an `error`/`offline` field
 
-- [Step 3] `KafkaStorageException` present in `/var/log/kafka/server.log`
-- [Step 4] `df -h` shows 100% utilisation on `/var/kafka-logs`
-- [Step 4] `dmesg` contains disk error strings (`I/O error`, `failed command`)
+**Interventions:**
+- **remediation** (root): expand the volume or add a JBOD log directory, then restore the original retention once space is reclaimed.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "KafkaStorageException"} -->
-<!-- match: {"step": 4, "predicate": "threshold", "target": "disk_use_pct", "op": ">=", "value": 100} -->
+  ```bash
+  # Durable: expand the volume or add a JBOD log directory, then restore retention
+  # 1. Expand EBS / add disk, mount at /var/kafka-logs2
+  # 2. Add to server.properties:  log.dirs=/var/kafka-logs,/var/kafka-logs2
+  # 3. Restart broker
+  # 4. Restore topic retention to original value after space reclaimed:
+  kafka-configs.sh --bootstrap-server kafka1:9092 \
+    --entity-type topics --entity-name <topic-name> \
+    --alter --delete-config retention.ms
+  ```
 
-**Mitigation:**
-
-- **Risk:** Deleting log segments causes data loss if retention is still needed. Expanding the volume may not be instant on cloud providers.
-- **Command:**
+  **Verification:** `df -h /var/kafka-logs` shows ≥20% free (Step 4); `kafka-log-dirs.sh` returns no `error` fields; `UnderReplicatedPartitions` returns to 0 (Step 2).
+- **mitigation** (root): cut retention on the highest-volume topics so the log cleaner frees space immediately.
 
   ```bash
   # Identify largest topic log directories
@@ -221,45 +231,36 @@ systemctl restart kafka
     --alter --add-config retention.ms=3600000
   ```
 
-- **Duration:** Log cleaner purges old segments within minutes of the retention change; verify with `du`.
-
-**Resolution:**
-
-```bash
-# Durable: expand the volume or add a JBOD log directory, then restore retention
-# 1. Expand EBS / add disk, mount at /var/kafka-logs2
-# 2. Add to server.properties:  log.dirs=/var/kafka-logs,/var/kafka-logs2
-# 3. Restart broker
-# 4. Restore topic retention to original value after space reclaimed:
-kafka-configs.sh --bootstrap-server kafka1:9092 \
-  --entity-type topics --entity-name <topic-name> \
-  --alter --delete-config retention.ms
-```
-
-- **Impact:** Adding a `log.dirs` entry requires broker restart; Kafka automatically rebalances new partitions across available directories.
-- **Rollback:** Remove the new directory from `log.dirs` and restart (only safe if no partitions have been assigned to it yet).
-
-**Verification:** `df -h /var/kafka-logs` shows ≥20% free; `kafka-log-dirs.sh` returns no `error` fields; `UnderReplicatedPartitions` returns to 0.
-
----
+  **Risk:** deleting log segments causes data loss if retention is still needed; expanding the volume may not be instant on cloud providers. **Duration:** the log cleaner purges old segments within minutes of the retention change; verify with `du`. **Verification:** `df -h` shows reclaimed space (Step 4).
 
 ### Cause C: Network Partition Isolating the Broker
 
-**Statement:** A network failure severed the broker's connectivity to other brokers and to ZooKeeper (or the KRaft quorum), causing the cluster to treat it as dead even though the process was still running.
+**Statement:** A network failure severed the broker's connectivity to other brokers and to ZooKeeper (or the KRaft quorum), causing the cluster to evict it even though the process was still running.
 
-**Mechanism:** Kafka brokers maintain heartbeats to ZooKeeper (ZooKeeper mode) or to the KRaft quorum controller (KRaft mode). If the broker cannot reach its peers within `zookeeper.session.timeout.ms` (default 18 s) or the KRaft equivalent `replica.lag.time.max.ms`, the cluster removes the broker from the ISR and triggers leader election without the isolated broker actually crashing. Network partitions can be caused by switch failures, NIC bonding misconfiguration, or firewall rule changes.
+**Chain:**
+- root: a switch failure, NIC bonding misconfiguration, or firewall change severs the broker's network path to peers and ZooKeeper/KRaft
+- s1: the broker misses heartbeats beyond `zookeeper.session.timeout.ms` (default 18 s) or the KRaft `replica.lag.time.max.ms` equivalent
+- s2: the cluster removes the broker from ISR and triggers leader election without the broker actually crashing
+- D: producers/consumers fail for the affected partitions; survivors report under-replicated partitions (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] broker process is running (`jps` shows the PID, `systemctl status kafka` active) but absent from the registered broker list
+- s1: [Step 3] `server.log` contains `ZooKeeper session expired`, `Lost connection to ZooKeeper`, or KRaft `Disconnected from controller quorum`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "ZooKeeper session expired"} -->
 
-- [Step 1] Broker process is running (`jps` shows the PID, `systemctl status kafka` shows active) but absent from the registered broker list
-- [Step 3] `server.log` contains `ZooKeeper session expired` or `Lost connection to ZooKeeper` or KRaft `Disconnected from controller quorum`
+**Interventions:**
+- **remediation** (root): restore the network path (switch/firewall/NIC fix — environment-specific), then restart the broker for a clean reconnection.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "ZooKeeper session expired"} -->
+  ```bash
+  # Restore network path (switch/firewall/NIC fix — environment-specific)
+  # Then restart the broker to force a clean reconnection:
+  systemctl restart kafka
+  # Verify re-registration:
+  kafka-broker-api-versions.sh --bootstrap-server kafka1:9092 2>&1 | grep "<broker-hostname>"
+  ```
 
-**Mitigation:**
-
-- **Risk:** Reconnecting the isolated broker while its data is stale may trigger ISR divergence for any writes that committed to only the ISR without the isolated broker.
-- **Command:**
+  **Verification:** `kafka-broker-api-versions.sh` shows the broker re-registered (Step 1); `UnderReplicatedPartitions` returns to 0 as the recovered broker re-joins all ISR sets (Step 2).
+- **mitigation** (s1): confirm the connectivity break from the isolated broker so you target the right network fault before reconnecting.
 
   ```bash
   # Verify connectivity from the isolated broker to peer brokers
@@ -270,89 +271,82 @@ kafka-configs.sh --bootstrap-server kafka1:9092 \
   ping -c 20 -s 8192 kafka2
   ```
 
-- **Duration:** Once network is restored the broker re-registers within one ZooKeeper session timeout cycle (~18 s).
-
-**Resolution:**
-
-```bash
-# Restore network path (switch/firewall/NIC fix — environment-specific)
-# Then restart the broker to force a clean reconnection:
-systemctl restart kafka
-# Verify re-registration:
-kafka-broker-api-versions.sh --bootstrap-server kafka1:9092 2>&1 | grep "<broker-hostname>"
-```
-
-- **Impact:** Broker restart is safe in a cluster with RF≥2 and min.insync.replicas properly set.
-- **Rollback:** Not applicable — network fix is the only path.
-
-**Verification:** `kafka-broker-api-versions.sh` shows the broker re-registered; `UnderReplicatedPartitions` returns to 0 as the recovered broker re-joins all ISR sets.
-
----
+  **Risk:** reconnecting the isolated broker while its data is stale may trigger ISR divergence for writes that committed to only the ISR without it. **Duration:** once the network is restored the broker re-registers within one ZooKeeper session-timeout cycle (~18 s). **Verification:** `nc -zv` to peers and ZooKeeper succeeds.
 
 ### Cause D: GC Pause Exceeding ZooKeeper Session Timeout
 
 **Statement:** A prolonged stop-the-world GC pause caused the broker to miss ZooKeeper heartbeats, triggering a session expiry and broker eviction while the process was still alive.
 
-**Mechanism:** During a GC pause the JVM halts all application threads, including the ZooKeeper client heartbeat thread. If the pause exceeds `zookeeper.session.timeout.ms` (default 18 s), ZooKeeper expires the ephemeral session, removes the broker from the cluster metadata, and triggers leader election. The broker then sees its session is gone and shuts itself down. This is common when the heap is too large for G1GC or when CMS is used on multi-GB heaps.
+**Chain:**
+- root: an oversized heap on G1GC, or CMS on a multi-GB heap, produces a long stop-the-world GC pause
+- s1: the GC pause halts the ZooKeeper client heartbeat thread for longer than `zookeeper.session.timeout.ms` (default 18 s)
+- s2: ZooKeeper expires the ephemeral session, removes the broker from metadata, and triggers leader election
+- s3: the broker observes its session is gone and shuts itself down
+- D: broker offline; survivors report under-replicated/offline partitions (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 3] `/var/log/kafka/gc.log` shows pause times exceeding 10 s
+- s2: [Step 3] `server.log` contains `ZooKeeper session expired` or `Expiring session` immediately following GC log entries
+  <!-- match: {"step": 3, "predicate": "contains", "target": "Expiring session"} -->
 
-- [Step 3] `server.log` contains `ZooKeeper session expired` or `Expiring session` immediately following GC log entries
-- [Step 3] GC log at `/var/log/kafka/gc.log` shows pause times exceeding 10 s
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "Expiring session"} -->
-
-**Mitigation:**
-
-- **Risk:** Increasing `zookeeper.session.timeout.ms` delays genuine failure detection. Switching GC flags requires a restart.
-- **Command:**
+**Interventions:**
+- **remediation** (root): replace CMS/ParallelGC with G1GC and a pause target so GC pauses stay short; optionally widen the session timeout if topology warrants.
 
   ```bash
-  # Check worst-case GC pause in gc.log
-  grep -oP 'Pause.*? \K[0-9]+\.[0-9]+ms' /var/log/kafka/gc.log | sort -n | tail -5
-
-  # Restart with G1GC and a pause target (edit kafka-env.sh first)
+  # In kafka-env.sh, replace CMS/ParallelGC with G1GC:
+  # export KAFKA_JVM_PERFORMANCE_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=20 \
+  #   -XX:InitiatingHeapOccupancyPercent=35 \
+  #   -Xlog:gc*:file=/var/log/kafka/gc.log:time,tags:filecount=10,filesize=100m"
+  # In server.properties, increase session timeout if cluster topology warrants it:
+  # zookeeper.session.timeout.ms=30000
   systemctl restart kafka
   ```
 
-- **Duration:** GC tuning takes effect immediately after restart.
+  **Verification:** monitor `/var/log/kafka/gc.log` for 24 h post-change — GC pause times stay below `MaxGCPauseMillis`; no further `ZooKeeper session expired` entries (Step 3).
+- **defensive_fix** (s1): widen `zookeeper.session.timeout.ms` so a transient long pause no longer trips a session expiry while GC tuning takes effect.
 
-**Resolution:**
+  ```bash
+  # Confirm worst-case GC pause, then restart with G1GC / higher timeout applied
+  grep -oP 'Pause.*? \K[0-9]+\.[0-9]+ms' /var/log/kafka/gc.log | sort -n | tail -5
+  systemctl restart kafka
+  ```
 
-```bash
-# In kafka-env.sh, replace CMS/ParallelGC with G1GC:
-# export KAFKA_JVM_PERFORMANCE_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=20 \
-#   -XX:InitiatingHeapOccupancyPercent=35 \
-#   -Xlog:gc*:file=/var/log/kafka/gc.log:time,tags:filecount=10,filesize=100m"
-# In server.properties, increase session timeout if cluster topology warrants it:
-# zookeeper.session.timeout.ms=30000
-systemctl restart kafka
-```
-
-- **Impact:** Broker restart required. `zookeeper.session.timeout.ms` change delays failure detection by the delta (e.g., 18 s → 30 s adds 12 s to detection time).
-- **Rollback:** Revert `kafka-env.sh` GC flags and `server.properties` timeout value; restart.
-
-**Verification:** Monitor `/var/log/kafka/gc.log` for 24 h post-change — GC pause times should stay below `MaxGCPauseMillis`. No further `ZooKeeper session expired` entries.
-
----
+  **Verification:** worst-case pause in `gc.log` is below the configured `zookeeper.session.timeout.ms`; no `Expiring session` entries recur (Step 3).
 
 ### Cause E: Partition Count Overload and File-Descriptor Exhaustion
 
-**Statement:** The broker hosted too many partition replicas relative to its OS file-descriptor limit, causing the broker to fail when it could not open new log segment files.
+**Statement:** The broker hosted too many partition replicas relative to its OS file-descriptor limit, causing it to fail when it could not open new log segment files.
 
-**Mechanism:** Each Kafka partition replica requires at least two open file descriptors (the active log segment and its index file). When the number of partition replicas on a broker approaches the OS `nofile` limit (often 65535 by default but may be lower), the broker fails to open new segment files, logs `Too many open files` exceptions, and eventually shuts down. The theoretical maximum is approximately 4,000 replicas per broker in ZooKeeper mode (due to ZooKeeper watch limits) and 14,000 in KRaft mode (memory-bound).
+**Chain:**
+- root: the broker hosts too many partition replicas relative to its OS `nofile` limit (each replica needs ≥2 FDs: active log segment + index)
+- s1: the broker cannot open new segment files and logs `Too many open files`
+- s2: the broker shuts down once it can no longer service partitions
+- D: broker offline; survivors report under-replicated/offline partitions (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] partition replica count on the failed broker is near or above 4,000 (ZooKeeper) or 14,000 (KRaft)
+- s1: [Step 3] `server.log` contains `Too many open files`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "Too many open files"} -->
 
-- [Step 6] Partition replica count on the failed broker is near or above 4,000 (ZooKeeper) or 14,000 (KRaft)
-- [Step 3] `server.log` contains `Too many open files`
+**Interventions:**
+- **remediation** (root): after raising the FD limit, reassign excess partitions off the broker to bring its replica count back within bounds.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "Too many open files"} -->
+  ```bash
+  # After raising the FD limit, reassign excess partitions to other brokers:
+  kafka-reassign-partitions.sh --bootstrap-server kafka1:9092 \
+    --topics-to-move-json-file topics.json \
+    --broker-list "1,2,4" --generate > reassignment.json
 
-**Mitigation:**
+  kafka-reassign-partitions.sh --bootstrap-server kafka1:9092 \
+    --reassignment-json-file reassignment.json \
+    --execute --throttle 50000000
 
-- **Risk:** Reassigning partitions generates significant inter-broker replication traffic; throttle appropriately.
-- **Command:**
+  kafka-reassign-partitions.sh --bootstrap-server kafka1:9092 \
+    --reassignment-json-file reassignment.json --verify
+  ```
+
+  **Verification:** `kafka-topics.sh --describe` shows the formerly overloaded broker with fewer replicas (Step 6); `ls /proc/<pid>/fd | wc -l` is well below `LimitNOFILE`.
+- **mitigation** (s1): raise the OS file-descriptor limit so the broker can open new segments and come back up immediately.
 
   ```bash
   # Raise OS file-descriptor limit for the Kafka process (immediate, no restart)
@@ -365,48 +359,38 @@ systemctl restart kafka
   systemctl daemon-reload && systemctl restart kafka
   ```
 
-- **Duration:** Limit change takes effect at next process start.
-
-**Resolution:**
-
-```bash
-# After raising the FD limit, reassign excess partitions to other brokers:
-kafka-reassign-partitions.sh --bootstrap-server kafka1:9092 \
-  --topics-to-move-json-file topics.json \
-  --broker-list "1,2,4" --generate > reassignment.json
-
-kafka-reassign-partitions.sh --bootstrap-server kafka1:9092 \
-  --reassignment-json-file reassignment.json \
-  --execute --throttle 50000000
-
-kafka-reassign-partitions.sh --bootstrap-server kafka1:9092 \
-  --reassignment-json-file reassignment.json --verify
-```
-
-- **Impact:** Partition reassignment is non-disruptive (leaders remain live on other brokers) but consumes 50 MB/s inter-broker bandwidth per the throttle setting.
-- **Rollback:** Revert the reassignment JSON with broker IDs swapped if needed; re-execute.
-
-**Verification:** `kafka-topics.sh --describe` shows the formerly overloaded broker with fewer replicas; `ls /proc/<pid>/fd | wc -l` is well below `LimitNOFILE`.
-
----
+  **Risk:** reassigning partitions generates significant inter-broker replication traffic; throttle appropriately. **Duration:** the limit change takes effect at next process start. **Verification:** `cat /proc/<pid>/limits | grep 'open files'` reflects the new limit and the broker stays up (Step 1).
 
 ### Cause F: Unclean Shutdown or Corrupted Log Segment During Rolling Upgrade
 
 **Statement:** A broker that was not cleanly shut down during a rolling upgrade left partially written log segments, causing log recovery to fail or take excessively long on restart.
 
-**Mechanism:** Kafka marks broker shutdown as "clean" when `controlled.shutdown.enable=true` and the controller successfully migrates all partition leaders away before the JVM exits. An unclean shutdown (SIGKILL, power loss, or `controlled.shutdown.max.retries` exhausted) leaves the `.log` suffix files without a corresponding `.timeindex` or `.index`, forcing the broker into a potentially lengthy log recovery scan on next startup. In extreme cases, a corrupt segment causes `CorruptRecordException` and prevents the broker from coming online.
+**Chain:**
+- root: the broker was stopped without controlled shutdown (SIGKILL, power loss, or `controlled.shutdown.max.retries` exhausted), often during a failed rolling upgrade
+- s1: `.log` files are left without a matching `.index`/`.timeindex`, forcing a lengthy log-recovery scan on next startup
+- s2: in extreme cases a corrupt segment raises `CorruptRecordException` and prevents the broker from coming online
+- D: broker fails to (re)join the cluster; partitions stay under-replicated/offline (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] broker was last stopped without `controlled.shutdown.enable=true` or during a failed rolling upgrade
+- s2: [Step 3] `server.log` contains `CorruptRecordException` or `Recovering unflushed producer state`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "CorruptRecordException"} -->
 
-- [Step 1] Broker was last stopped without `controlled.shutdown.enable=true` or during a failed rolling upgrade
-- [Step 3] `server.log` contains `CorruptRecordException` or `Recovering unflushed producer state`
+**Interventions:**
+- **remediation** (root): ensure controlled shutdown is enabled and wait for `UnderReplicatedPartitions=0` before stopping each broker in a rolling upgrade.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "CorruptRecordException"} -->
+  ```bash
+  # Durable: ensure controlled shutdown is enabled in server.properties:
+  # controlled.shutdown.enable=true
+  # controlled.shutdown.max.retries=3
+  # controlled.shutdown.retry.backoff.ms=5000
+  # For rolling upgrades, wait for UnderReplicatedPartitions=0 before shutting down each broker:
+  watch -n 5 'kafka-topics.sh --bootstrap-server kafka1:9092 \
+    --describe --under-replicated-partitions | wc -l'
+  ```
 
-**Mitigation:**
-
-- **Risk:** Deleting a corrupt segment causes data loss for messages in that segment. Only proceed if the segment is confirmed corrupt and data loss is acceptable or recoverable from producers.
-- **Command:**
+  **Verification:** broker starts and joins the cluster with `UnderReplicatedPartitions` returning to 0 (Step 2); no `CorruptRecordException` in `server.log` for new segments (Step 3).
+- **mitigation** (s1): let log recovery complete on startup (or delete a confirmed-corrupt segment) so the broker can come online.
 
   ```bash
   # Allow log recovery to complete (may take several minutes for large logs)
@@ -415,41 +399,17 @@ kafka-reassign-partitions.sh --bootstrap-server kafka1:9092 \
   journalctl -u kafka -f | grep -i "recover\|Loading\|corrupt"
   ```
 
-- **Duration:** Log recovery typically takes 1–10 minutes per log directory; corrupt-segment deletion is near-instant.
-
-**Resolution:**
-
-```bash
-# Durable: ensure controlled shutdown is enabled in server.properties:
-# controlled.shutdown.enable=true
-# controlled.shutdown.max.retries=3
-# controlled.shutdown.retry.backoff.ms=5000
-# For rolling upgrades, wait for UnderReplicatedPartitions=0 before shutting down each broker:
-watch -n 5 'kafka-topics.sh --bootstrap-server kafka1:9092 \
-  --describe --under-replicated-partitions | wc -l'
-```
-
-- **Impact:** `controlled.shutdown.enable` is a per-broker `server.properties` change; restart required to apply if not already set.
-- **Rollback:** Not applicable — enabling controlled shutdown has no negative effects.
-
-**Verification:** Broker starts and joins the cluster with `UnderReplicatedPartitions` returning to 0; no `CorruptRecordException` in `server.log` for new segments.
-
----
+  **Risk:** deleting a corrupt segment causes data loss for messages in that segment; only proceed if the segment is confirmed corrupt and the loss is acceptable or recoverable from producers. **Duration:** log recovery typically takes 1–10 minutes per log directory; corrupt-segment deletion is near-instant. **Verification:** recovery completes and the broker registers (Step 1).
 
 ### Cause Z: Unidentified Broker Failure
 
 **Statement:** The broker went offline for a reason not deterministically identified by the preceding diagnostic steps.
 
-**Mechanism:** Not applicable — root cause remains unknown. [Default]
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] None of Causes A–F indicators match. Broker offline confirmed by Step 1; under-replicated partitions confirmed by Step 2; Steps 3–6 yield no conclusive evidence.
-
-**Mitigation:**
-
-- **Risk:** Restarting a broker whose failure cause is unknown may result in repeat failure.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): collect a full diagnostic bundle (thread dump, heap histogram, logs), attempt a restart, and escalate to the Kafka cluster owner with the bundle and the failure-window `server.log`.
 
   ```bash
   # Collect a full diagnostic bundle before attempting restart
@@ -462,11 +422,7 @@ watch -n 5 'kafka-topics.sh --bootstrap-server kafka1:9092 \
   journalctl -u kafka -f
   ```
 
-- **Duration:** Diagnostic collection takes 2–5 minutes; restart outcome determines next step.
-
-**Resolution:** Out of runbook scope — escalate to Kafka cluster owner with the diagnostic bundle from `/tmp/kafka-diagnostics.txt` and the full `server.log` from the time of failure.
-
-**Verification:** `UnderReplicatedPartitions` returns to 0 after restart; no recurrence within the monitoring window.
+  **Risk:** restarting a broker whose failure cause is unknown may result in a repeat failure. **Duration:** diagnostic collection takes 2–5 minutes; the restart outcome determines the next step. **Verification:** `UnderReplicatedPartitions` returns to 0 after restart and no recurrence within the monitoring window; otherwise escalate to the Kafka cluster owner with `/tmp/kafka-diagnostics.txt` and the full `server.log`.
 
 ## Prevention
 

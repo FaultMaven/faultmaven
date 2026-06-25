@@ -6,8 +6,8 @@ service: postgresql
 symptom_class: [latency]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [pg-stat-statements, explain-analyze, indexes, query-optimization, autovacuum, work-mem]
@@ -32,7 +32,7 @@ difficulty: intermediate
 
 ## Diagnostic Steps
 
-### Step 1: Identify top queries by cumulative execution time
+### Step 1: Rank queries by cumulative execution time
 
 ```sql
 SELECT
@@ -50,7 +50,7 @@ LIMIT 20;
 
 Expected output: ranked list of normalized queries. Focus on the top entries — high `total_time_ms` indicates cumulative load, high `mean_time_ms` indicates individually slow queries. Note the `queryid` of suspects for use in later steps.
 
-### Step 2: Identify queries with high block reads per call
+### Step 2: Find queries with high block reads per call
 
 ```sql
 SELECT
@@ -162,46 +162,37 @@ Expected output: tables with `dead_pct` above 20% are bloated — queries must r
 
 **Statement:** A required index is absent, forcing PostgreSQL to sequentially scan the entire table for every query execution.
 
-**Mechanism:** Without an index matching the query's WHERE clause or JOIN condition, the planner must read every data page of the table to find qualifying rows. On tables larger than a few thousand rows, this produces dramatically higher I/O and CPU cost than an index scan. Each sequential scan locks out shared buffer pages longer, compounding latency under concurrent load.
+**Chain:**
+- root: No index matches the query's WHERE clause or JOIN condition on the target table.
+- s1: The planner must read every data page of the table to find qualifying rows (sequential scan).
+- s2: Per-execution I/O and CPU cost scales with table size, far exceeding an index scan; scans hold shared buffers longer under concurrency.
+- D: Query latency is elevated and database host CPU/I/O is high (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] Table appears with a high `excess_seq_scans` value.
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "excess_seq_scans", "op": ">", "value": 1000} -->
+- s1: [Step 3] Plan contains `Seq Scan on <table>` where `rows` is large (thousands or more).
+  <!-- match: {"step": 3, "predicate": "contains", "target": "Seq Scan"} -->
 
-- [Step 3] Plan contains `Seq Scan on <table>` where `rows` is large (thousands or more)
-- [Step 4] Table appears with high `excess_seq_scans` value
+**Interventions:**
+- **remediation** (root): create the missing index so the planner can use an index scan. Use a partial index when queries filter on a common condition.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "Seq Scan"} -->
-<!-- match: {"step": 4, "predicate": "threshold", "target": "excess_seq_scans", "op": ">", "value": 1000} -->
+  ```sql
+  -- Partial index when queries filter on a common condition
+  CREATE INDEX CONCURRENTLY idx_orders_active
+    ON orders (created_at)
+    WHERE status = 'active';
+  ```
 
-**Mitigation:**
-
-- **Risk:** `CREATE INDEX CONCURRENTLY` is safe for production; without `CONCURRENTLY` the table is locked for writes during build.
-- **Command:**
+  **Verification:** Re-run Step 3 on the same query; plan must show `Index Scan` or `Bitmap Index Scan` instead of `Seq Scan`. Confirm `mean_exec_time` in Step 1 dropped for the affected `queryid`.
+- **mitigation** (root): build a straight index online to immediately restore an index path.
 
   ```sql
   CREATE INDEX CONCURRENTLY idx_table_column
     ON table_name (column_name);
   ```
 
-- **Duration:** Index build time scales with table size; a 10 GB table typically takes 1–5 minutes.
-
-**Resolution:**
-
-```sql
--- Partial index when queries filter on a common condition
-CREATE INDEX CONCURRENTLY idx_orders_active
-  ON orders (created_at)
-  WHERE status = 'active';
-```
-
-**Impact:** Immediate for new queries once the index is marked valid. Existing connections unaffected.
-
-**Rollback:**
-
-```sql
-DROP INDEX CONCURRENTLY idx_table_column;
-```
-
-**Verification:** Re-run Step 3 on the same query; plan must show `Index Scan` or `Bitmap Index Scan` instead of `Seq Scan`. Confirm `mean_exec_time` in Step 1 dropped for the affected `queryid`.
+  **Risk:** `CREATE INDEX CONCURRENTLY` is safe for production; without `CONCURRENTLY` the table is locked for writes during build. Rollback: `DROP INDEX CONCURRENTLY idx_table_column;`. **Duration:** Index build time scales with table size; a 10 GB table typically takes 1–5 minutes. **Verification:** Re-run Step 3; plan shows an index scan for the affected query.
 
 ---
 
@@ -209,48 +200,36 @@ DROP INDEX CONCURRENTLY idx_table_column;
 
 **Statement:** Outdated row-count and histogram statistics cause the query planner to select an inefficient execution plan such as a nested loop over a hash join.
 
-**Mechanism:** The planner relies on `pg_statistic` data (maintained by ANALYZE) to estimate row counts and selectivity. When statistics are stale — because autovacuum hasn't run or the table changes faster than the default scale factors — estimated row counts diverge significantly from actual counts. The planner may choose a nested loop expecting 10 rows when 50,000 are returned, producing catastrophic performance.
+**Chain:**
+- root: Table statistics in `pg_statistic` are stale because autovacuum hasn't analyzed or churn outpaces the default scale factors.
+- s1: The planner's estimated row counts and selectivity diverge significantly from actual counts.
+- s2: The planner picks an inefficient strategy (e.g. a nested loop expecting 10 rows when 50,000 are returned).
+- D: Query latency is elevated due to the catastrophic plan choice (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] Table appears with `n_mod_since_analyze` exceeding 10% of `n_live_tup`.
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "n_mod_since_analyze_ratio", "op": ">", "value": 0.10} -->
+- s1: [Step 3] Estimated `rows` in plan differs from `actual rows` by more than 10x.
 
-- [Step 3] Estimated `rows` in plan differs from `actual rows` by more than 10x
-- [Step 6] Table appears with `n_mod_since_analyze` exceeding 10% of `n_live_tup`
+**Interventions:**
+- **remediation** (root): tune autovacuum to analyze high-churn tables more aggressively so statistics stay fresh.
 
-<!-- match: {"step": 6, "predicate": "threshold", "target": "n_mod_since_analyze_ratio", "op": ">", "value": 0.10} -->
+  ```sql
+  -- Tune autovacuum to analyze more aggressively on high-churn tables
+  ALTER TABLE high_churn_table SET (
+    autovacuum_analyze_threshold    = 100,
+    autovacuum_analyze_scale_factor = 0.02
+  );
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low. `ANALYZE` holds only a brief `ShareUpdateExclusiveLock` and does not block reads or writes.
-- **Command:**
+  **Verification:** Re-run Step 6 — `n_mod_since_analyze` should be near 0. Re-run Step 3 — estimated rows must align within 2x of actual rows, and the plan must not show an unexpectedly expensive join strategy. Rollback: `ALTER TABLE high_churn_table RESET (autovacuum_analyze_threshold, autovacuum_analyze_scale_factor);`.
+- **mitigation** (root): refresh statistics immediately on the affected table.
 
   ```sql
   ANALYZE table_name;
   ```
 
-- **Duration:** Seconds to minutes depending on table size and `default_statistics_target`.
-
-**Resolution:**
-
-```sql
--- Tune autovacuum to analyze more aggressively on high-churn tables
-ALTER TABLE high_churn_table SET (
-  autovacuum_analyze_threshold    = 100,
-  autovacuum_analyze_scale_factor = 0.02
-);
-```
-
-**Impact:** Per-table storage parameter change; takes effect at next autovacuum cycle. No restart needed.
-
-**Rollback:**
-
-```sql
-ALTER TABLE high_churn_table RESET (
-  autovacuum_analyze_threshold,
-  autovacuum_analyze_scale_factor
-);
-```
-
-**Verification:** Re-run Step 6 — `n_mod_since_analyze` should be near 0 for the affected table. Re-run Step 3 — estimated rows must align within 2x of actual rows, and plan must not show an unexpectedly expensive join strategy.
+  **Risk:** Low. `ANALYZE` holds only a brief `ShareUpdateExclusiveLock` and does not block reads or writes. **Duration:** Seconds to minutes depending on table size and `default_statistics_target`; statistics drift again as churn continues. **Verification:** Re-run Step 6 — `n_mod_since_analyze` near 0 for the table.
 
 ---
 
@@ -258,19 +237,26 @@ ALTER TABLE high_churn_table RESET (
 
 **Statement:** Insufficient `work_mem` causes sort and hash join operations to spill intermediate data to temporary disk files, adding seconds of latency.
 
-**Mechanism:** Each sort node and hash join in a query plan is allocated up to `work_mem` bytes of memory. When the dataset exceeds this limit, PostgreSQL writes temporary files to disk for merge passes (Sort) or additional batches (Hash Join). A single query plan with multiple sort/hash nodes multiplies memory demand. Disk I/O for temp files is orders of magnitude slower than RAM-based operations, and temp file creation contends with regular table I/O.
+**Chain:**
+- root: `work_mem` is too small for the query's sort and hash join working sets.
+- s1: When a dataset exceeds `work_mem`, PostgreSQL writes temporary files to disk (external merge sorts, extra hash batches).
+- s2: Temp-file disk I/O is orders of magnitude slower than RAM and contends with regular table I/O; multiple sort/hash nodes multiply the demand.
+- D: Query execution time is disproportionately high (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] Query has high `mean_exec_time` while `shared_blks_read` is only moderate — execution time is disproportionate to block reads.
+- s1: [Step 3] Plan shows `Sort Method: external merge Disk` or `Batches: N` greater than 1 on a Hash node.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "external merge Disk"} -->
 
-- [Step 3] Plan shows `Sort Method: external merge Disk` or `Batches: N` greater than 1 on a Hash node
-- [Step 1] Query has high `mean_exec_time` and `shared_blks_read` is moderate but execution time is disproportionate
+**Interventions:**
+- **remediation** (root): raise `work_mem` persistently for the workload's role.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "external merge Disk"} -->
+  ```sql
+  ALTER ROLE analytics_user SET work_mem = '512MB';
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low-medium. Setting `work_mem` too high globally causes out-of-memory if many connections use sort/hash concurrently. Prefer per-role or per-session setting.
-- **Command:**
+  **Verification:** Re-run `EXPLAIN (ANALYZE, BUFFERS)` on the affected query. Sort nodes must show `Sort Method: quicksort` (in-memory) and Hash Join nodes must show `Batches: 1`. Rollback: `ALTER ROLE analytics_user RESET work_mem;`.
+- **mitigation** (root): raise `work_mem` for the current session (or single role) to test the effect quickly.
 
   ```sql
   -- Per-session (immediate, for testing)
@@ -280,72 +266,44 @@ ALTER TABLE high_churn_table RESET (
   ALTER ROLE analytics_user SET work_mem = '256MB';
   ```
 
-- **Duration:** Per-session change is immediate; per-role takes effect at next connection.
-
-**Resolution:**
-
-```sql
-ALTER ROLE analytics_user SET work_mem = '512MB';
-```
-
-**Impact:** Affects all new sessions for the role. Monitor total memory consumption if many concurrent analytics sessions are expected.
-
-**Rollback:**
-
-```sql
-ALTER ROLE analytics_user RESET work_mem;
-```
-
-**Verification:** Re-run `EXPLAIN (ANALYZE, BUFFERS)` on the affected query. Sort nodes must show `Sort Method: quicksort` (in-memory) and Hash Join nodes must show `Batches: 1`.
+  **Risk:** Low-medium. Setting `work_mem` too high globally causes out-of-memory if many connections use sort/hash concurrently. Prefer per-role or per-session setting. **Duration:** Per-session change is immediate and reverts at session close; per-role takes effect at next connection. **Verification:** Re-run `EXPLAIN (ANALYZE, BUFFERS)` — sort nodes show `quicksort`, hash nodes show `Batches: 1`.
 
 ---
 
 ### Cause D: Table Bloat Inflating Scan Costs
 
-**Statement:** Dead tuples from un-vacuumed rows force sequential scans to read additional data pages, increasing I/O cost even when row counts are unchanged.
+**Statement:** Dead tuples from un-vacuumed rows force scans to read additional data pages, increasing I/O cost even when row counts are unchanged.
 
-**Mechanism:** PostgreSQL's MVCC model retains old tuple versions as dead rows until VACUUM reclaims them. When autovacuum is misconfigured or disabled, dead tuples accumulate inside data pages. A sequential scan must read every page including those dominated by dead tuples, inflating the effective table size read from disk. Index scans are similarly degraded when index entries point to dead heap pages that must be visited before the dead tuple is skipped.
+**Chain:**
+- root: Autovacuum is misconfigured or disabled, so VACUUM does not reclaim dead tuples.
+- s1: Dead tuple versions accumulate inside the table's data pages (bloat).
+- s2: Sequential scans read every page including those dominated by dead tuples, and index scans must visit dead heap pages — inflating effective I/O.
+- D: Query latency is elevated and host I/O is high without a row-count increase (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] Table has `dead_pct` above 20% and appears in top results.
+  <!-- match: {"step": 7, "predicate": "threshold", "target": "dead_pct", "op": ">", "value": 20} -->
+- s1: [Step 3] Plan shows higher-than-expected cost for a table whose row count alone does not justify it.
 
-- [Step 7] Table has `dead_pct` above 20% and appears in top results
-- [Step 3] Plan shows higher-than-expected cost for a table whose row count alone does not justify it
+**Interventions:**
+- **remediation** (root): tune autovacuum to reclaim dead tuples more aggressively on the bloated table.
 
-<!-- match: {"step": 7, "predicate": "threshold", "target": "dead_pct", "op": ">", "value": 20} -->
+  ```sql
+  -- Tune autovacuum to reclaim dead tuples more aggressively
+  ALTER TABLE bloated_table SET (
+    autovacuum_vacuum_threshold    = 50,
+    autovacuum_vacuum_scale_factor = 0.01
+  );
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low. `VACUUM` holds `ShareUpdateExclusiveLock` — reads and writes proceed normally. `VACUUM FULL` locks the table exclusively; avoid in production unless absolutely necessary.
-- **Command:**
+  **Verification:** Re-run Step 7 — `dead_pct` must drop below 5% after VACUUM completes. Re-run Step 1 — `total_exec_time` for affected queries should decrease proportionally to the page reduction. Rollback: `ALTER TABLE bloated_table RESET (autovacuum_vacuum_threshold, autovacuum_vacuum_scale_factor);`.
+- **mitigation** (s1): run a manual VACUUM to reclaim the accumulated dead tuples now.
 
   ```sql
   VACUUM (VERBOSE) bloated_table;
   ```
 
-- **Duration:** Minutes to hours depending on table size and dead tuple count.
-
-**Resolution:**
-
-```sql
--- Tune autovacuum to reclaim dead tuples more aggressively
-ALTER TABLE bloated_table SET (
-  autovacuum_vacuum_threshold    = 50,
-  autovacuum_vacuum_scale_factor = 0.01
-);
-```
-
-**Impact:** Per-table parameter; takes effect at next autovacuum cycle. Does not require restart.
-
-**Rollback:**
-
-```sql
-ALTER TABLE bloated_table RESET (
-  autovacuum_vacuum_threshold,
-  autovacuum_vacuum_scale_factor
-);
-```
-
-**Verification:** Re-run Step 7 — `dead_pct` must drop below 5% after VACUUM completes. Re-run Step 1 — `total_exec_time` for affected queries should decrease proportionally to the page reduction.
+  **Risk:** Low. `VACUUM` holds `ShareUpdateExclusiveLock` — reads and writes proceed normally. `VACUUM FULL` locks the table exclusively; avoid in production unless absolutely necessary. **Duration:** Minutes to hours depending on table size and dead tuple count; bloat returns if autovacuum stays untuned. **Verification:** Re-run Step 7 — `dead_pct` drops below 5%.
 
 ---
 
@@ -353,19 +311,19 @@ ALTER TABLE bloated_table RESET (
 
 **Statement:** The query itself is structurally inefficient — using a correlated subquery executed once per outer row or selecting all columns with SELECT *, causing unnecessary I/O.
 
-**Mechanism:** A correlated subquery references the outer query's columns and is re-executed for each row of the outer result set. With 100,000 outer rows, this produces 100,000 individual subquery executions regardless of indexing. SELECT * forces PostgreSQL to transfer all column data from storage and network even when only a few columns are needed, multiplying I/O proportional to row width and increasing shared buffer pressure.
+**Chain:**
+- root: The query uses a correlated subquery and/or `SELECT *` rather than a JOIN and an explicit column list.
+- s1: A correlated subquery is re-executed once per outer row (e.g. 100,000 outer rows → 100,000 subquery runs); `SELECT *` transfers all column data regardless of need.
+- s2: Per-row subquery execution and wide column transfer multiply I/O and shared buffer pressure regardless of indexing.
+- D: Query mean execution time is elevated (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] Plan shows `SubPlan` or `InitPlan` nodes with a high `loops` count equal to the outer row count.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "SubPlan"} -->
+- s1: [Step 2] Query has very high `rows_per_call` but the number does not match expected business logic result size.
 
-- [Step 3] Plan shows `SubPlan` or `InitPlan` nodes with high `loops` count equal to outer row count
-- [Step 2] Query has very high `rows_per_call` but the number does not match expected business logic result size
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "SubPlan"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Query rewrite is safe in a transaction and can be tested before deployment.
-- **Command:**
+**Interventions:**
+- **remediation** (root): rewrite the query to use explicit JOINs instead of correlated subqueries, and list only required columns instead of `SELECT *`.
 
   ```sql
   -- Replace correlated subquery with a JOIN
@@ -375,11 +333,7 @@ ALTER TABLE bloated_table RESET (
   WHERE t.status = 'active';
   ```
 
-- **Duration:** Immediate — no schema change required.
-
-**Resolution:** Rewrite the query to use explicit JOINs instead of correlated subqueries, and list only required columns instead of SELECT *.
-
-**Verification:** Re-run Step 3 on the rewritten query — `SubPlan` nodes must be absent and total estimated cost must decrease materially. Confirm Step 1 shows reduced `mean_exec_time` for the normalized query.
+  **Verification:** Re-run Step 3 on the rewritten query — `SubPlan` nodes must be absent and total estimated cost must decrease materially. Confirm Step 1 shows reduced `mean_exec_time` for the normalized query.
 
 ---
 
@@ -387,60 +341,50 @@ ALTER TABLE bloated_table RESET (
 
 **Statement:** A prepared statement compiled with a generic plan performs poorly for specific parameter values where a custom plan would choose a different access path.
 
-**Mechanism:** PostgreSQL caches a generic execution plan for prepared statements after five executions with the same statement. The generic plan is built without knowing the actual parameter values, relying on average statistics. When parameter values have high selectivity variance — such as a column with skewed value distribution — the generic plan may use a sequential scan for a value that a custom plan would handle with an index scan. This causes individual queries with rare or common parameter values to underperform.
+**Chain:**
+- root: A prepared statement runs on a column with skewed value distribution, so one cached plan cannot suit all parameter values.
+- s1: After five executions PostgreSQL caches a generic plan built without knowing actual parameter values, relying on average statistics.
+- s2: For high-selectivity-variance values the generic plan uses a sequential scan where a custom plan would use an index scan.
+- D: Queries with rare or common parameter values underperform, with variable latency across executions (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] High `stddev_exec_time` relative to `mean_exec_time` for the same `queryid` (variable performance across executions).
+- s1: [Step 3] Plan shows `Seq Scan` but adding `WHERE column = <literal>` produces an index scan in a separate EXPLAIN.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "Generic Plan"} -->
 
-- [Step 3] Plan shows `Seq Scan` but adding `WHERE column = <literal>` produces an index scan in a separate EXPLAIN
-- [Step 1] High `stddev_exec_time` relative to `mean_exec_time` for the same `queryid` (variable performance across executions)
+**Interventions:**
+- **remediation** (root): force custom plans for the affected application role.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "Generic Plan"} -->
+  ```sql
+  -- Force custom plans for the affected application role
+  ALTER ROLE app_user SET plan_cache_mode = 'force_custom_plan';
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low. Per-session setting reverts at session close. Per-role setting applies to future sessions only.
-- **Command:**
+  **Verification:** Re-run Step 3 using `EXPLAIN (ANALYZE, BUFFERS)` after setting `force_custom_plan` — plan must show `Index Scan` for selective parameter values. Confirm `mean_exec_time` in Step 1 is stable with lower `stddev_exec_time`. Rollback: `ALTER ROLE app_user RESET plan_cache_mode;`.
+- **mitigation** (root): force a custom plan for the current session to confirm the diagnosis.
 
   ```sql
   -- Force custom plan for current session
   SET plan_cache_mode = 'force_custom_plan';
   ```
 
-- **Duration:** Effective immediately for the current session.
-
-**Resolution:**
-
-```sql
--- Force custom plans for the affected application role
-ALTER ROLE app_user SET plan_cache_mode = 'force_custom_plan';
-```
-
-**Impact:** Increases planning time per query for the role; acceptable for OLTP but avoid for high-frequency batch jobs.
-
-**Rollback:**
-
-```sql
-ALTER ROLE app_user RESET plan_cache_mode;
-```
-
-**Verification:** Re-run Step 3 using `EXPLAIN (ANALYZE, BUFFERS)` after setting `force_custom_plan` — plan must show `Index Scan` for selective parameter values. Confirm `mean_exec_time` in Step 1 is stable with lower `stddev_exec_time`.
+  **Risk:** Low. Per-session setting reverts at session close; forcing custom plans increases planning time per query (acceptable for OLTP, avoid for high-frequency batch jobs). **Duration:** Effective immediately for the current session only. **Verification:** Re-run Step 3; plan shows `Index Scan` for selective values.
 
 ---
 
-### Cause Z: Unidentified Cause [Default]
+### Cause Z: Unidentified
 
 **Statement:** The slow query cause could not be identified from available diagnostic data and requires deeper investigation or escalation.
 
-**Mechanism:** Some slow query root causes require extended observability not captured by `pg_stat_statements` alone — for example, lock waits not yet visible, OS-level I/O scheduler pressure, network latency to storage, or bugs in query planner edge cases. The standard diagnostic steps above did not isolate the cause to a known pattern.
+**Chain:**
+- root: The root cause lies outside what `pg_stat_statements` and Steps 1–7 expose (e.g. lock waits, OS I/O scheduler pressure, storage network latency, or a planner edge case).
+- D: The slow query persists with no known pattern matched (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Default] None of the preceding causes matched the diagnostic output.
 
-- [Default] None of the preceding causes matched the diagnostic output
-
-**Mitigation:**
-
-- **Risk:** Low. Enabling additional logging temporarily increases disk I/O for log writes.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot, then escalate to the database SME. Enable `auto_explain` to record plans of slow queries automatically.
 
   ```sql
   -- Enable auto_explain to capture plans of slow queries automatically
@@ -450,11 +394,7 @@ ALTER ROLE app_user RESET plan_cache_mode;
   SET auto_explain.log_buffers = true;
   ```
 
-- **Duration:** Per-session; disable when investigation is complete.
-
-**Resolution:** Out of runbook scope. Escalate with: (1) output of Steps 1–7, (2) full `EXPLAIN (ANALYZE, BUFFERS)` plan, (3) relevant PostgreSQL log lines with timestamps, (4) OS-level I/O and CPU metrics from the database host during the slow period.
-
-**Verification:** Escalation ticket created with full diagnostic artifacts attached.
+  **Risk:** Low. Enabling additional logging temporarily increases disk I/O for log writes. **Duration:** Per-session; disable when investigation is complete. **Verification:** Escalation ticket created with: (1) output of Steps 1–7, (2) full `EXPLAIN (ANALYZE, BUFFERS)` plan, (3) relevant PostgreSQL log lines with timestamps, (4) OS-level I/O and CPU metrics from the database host during the slow period.
 
 ## Prevention
 

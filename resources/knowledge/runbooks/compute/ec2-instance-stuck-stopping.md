@@ -6,8 +6,8 @@ service: aws-ec2
 symptom_class: [service_unavailable]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [aws, ec2, stopping, shutting-down, force-stop, ebs]
@@ -24,7 +24,7 @@ Applies to Amazon EBS-backed EC2 instances in any AWS region and any Linux or Wi
 
 ## Diagnostic Steps
 
-### Step 1: Confirm Instance State and Elapsed Time
+### Step 1: Confirm instance state and elapsed time
 
 ```bash
 aws ec2 describe-instances --instance-ids i-0abc123def456789 \
@@ -34,7 +34,7 @@ aws ec2 describe-instances --instance-ids i-0abc123def456789 \
 
 Expected output: `State` is `stopping`, `Reason` contains a timestamp such as `User initiated (2026-05-12 10:00:00 GMT)`, `RootDeviceType` is `ebs`. If `RootDeviceType` is `instance-store`, termination is the only option.
 
-### Step 2: Check System and Instance Status Checks
+### Step 2: Check system and instance status checks
 
 ```bash
 aws ec2 describe-instance-status --instance-ids i-0abc123def456789 \
@@ -45,7 +45,7 @@ aws ec2 describe-instance-status --instance-ids i-0abc123def456789 \
 
 Expected output: `SystemStatus` and `InstanceStatus` values. A `failed` system status or a listed `instance-retirement` or `system-maintenance` event confirms underlying host failure. Absence of events suggests an OS-level hang rather than a hardware fault.
 
-### Step 3: Check EBS Volume Health
+### Step 3: Check EBS volume health
 
 ```bash
 VOLS=$(aws ec2 describe-instances --instance-ids i-0abc123def456789 \
@@ -58,7 +58,7 @@ aws ec2 describe-volume-status --volume-ids $VOLS \
 
 Expected output: All volumes show `Status: ok`. Any volume with `Status: impaired` indicates a storage-layer issue contributing to the stuck state.
 
-### Step 4: Retrieve Console Output for Shutdown Clues
+### Step 4: Retrieve console output for shutdown clues
 
 ```bash
 aws ec2 get-console-output --instance-id i-0abc123def456789 --latest --output text
@@ -66,7 +66,7 @@ aws ec2 get-console-output --instance-id i-0abc123def456789 --latest --output te
 
 Expected output: Last OS messages before the hang. Look for lines such as `A stop job is running for <service name>`, `Waiting for NFS`, `filesystem sync`, or no output at all (indicating the OS was already unresponsive).
 
-### Step 5: Inspect Pre-Stop CPU and EBS I/O Metrics
+### Step 5: Inspect pre-stop CPU and EBS I/O metrics
 
 ```bash
 aws cloudwatch get-metric-statistics \
@@ -82,180 +82,158 @@ Expected output: CPU utilization percentages for the last 2 hours. Sustained val
 
 ## Causes
 
-### Cause A: Underlying Host Hardware Failure
+### Cause A: Underlying host hardware failure
 
 **Statement:** The EC2 hypervisor host has encountered an irrecoverable hardware fault that prevents it from completing the instance shutdown sequence.
 
-**Mechanism:** When EC2 detects irreparable hardware failure, it may initiate a stop on the instance. If the physical host is unresponsive, the hypervisor cannot perform the clean EBS volume detach, leaving the instance in `stopping`. The system status check reports `failed` and AWS often schedules a retirement event for the affected host.
+**Chain:**
+- root: The physical hypervisor host has an irreparable hardware fault and is unresponsive.
+- s1: The hypervisor cannot perform the clean EBS volume detach for the instance.
+- s2: AWS reports a `failed` system status and often schedules a host retirement event.
+- D: The instance stays in `stopping` and never reaches `stopped` (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] `SystemStatus` is `failed`.
+- s2: [Step 2] `Events` contains an `instance-retirement` or `system-maintenance` event.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "instance-retirement"} -->
 
-- [Step 2] `SystemStatus` is `failed`
-- [Step 2] `Events` contains an `instance-retirement` or `system-maintenance` event
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "instance-retirement"} -->
-
-**Mitigation:**
-
-- **Risk:** Force stop may not succeed if the host itself is unresponsive; a second attempt with `--skip-os-shutdown` may be required.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): force-stop the instance to power it off without a clean host shutdown.
 
   ```bash
   aws ec2 stop-instances --instance-ids i-0abc123def456789 --force
   ```
 
-- **Duration:** Allow 10 minutes; if not stopped, add `--skip-os-shutdown` on a second call.
+  **Risk:** Force stop may not succeed if the host itself is unresponsive; a second attempt with `--skip-os-shutdown` may be required. **Duration:** Allow 10 minutes; if not stopped, add `--skip-os-shutdown` on a second call. **Verification:** Run `aws ec2 wait instance-stopped --instance-ids i-0abc123def456789`, then confirm `State.Name` is `stopped`.
+- **remediation** (root): hard power-off with skip-OS-shutdown to recover the stuck instance off the failing host.
 
-**Resolution:**
+  ```bash
+  aws ec2 stop-instances \
+    --instance-ids i-0abc123def456789 \
+    --force --skip-os-shutdown
+  ```
 
-```bash
-aws ec2 stop-instances \
-  --instance-ids i-0abc123def456789 \
-  --force --skip-os-shutdown
-```
+  **Verification:** Run `aws ec2 wait instance-stopped --instance-ids i-0abc123def456789` then `aws ec2 describe-instances --instance-ids i-0abc123def456789 --query 'Reservations[0].Instances[0].State.Name' --output text`. Output must be `stopped`. After restart, confirm both status checks are `ok` (EBS caches are not flushed on hard power-off; run filesystem checks after restart).
 
-- **Impact:** Force stop with skip OS shutdown is a hard power-off; EBS caches are not flushed. Run filesystem checks after restart. Single-instance blast radius.
-- **Rollback:** Not applicable — this recovers a stuck instance; reverting to the stuck state is not possible.
-
-**Verification:** Run `aws ec2 wait instance-stopped --instance-ids i-0abc123def456789` then `aws ec2 describe-instances --instance-ids i-0abc123def456789 --query 'Reservations[0].Instances[0].State.Name' --output text`. Output must be `stopped`. After restart, confirm both status checks are `ok`.
-
-### Cause B: OS-Level Service Blocking Shutdown
+### Cause B: OS-level service blocking shutdown
 
 **Statement:** A user-space service or process on the guest OS is not responding to the ACPI shutdown signal within the hypervisor's timeout window, preventing the instance from stopping.
 
-**Mechanism:** When EC2 sends a stop request, it delivers an ACPI power-button event to the guest OS. The OS then runs its shutdown sequence, which stops systemd units in reverse dependency order. A single service with an unbounded `ExecStop` (such as a database dump script, NFS flush, or log-shipping agent) blocks the shutdown sequence indefinitely until the hypervisor times out. Console output captures the blocking service name.
+**Chain:**
+- root: A guest systemd unit has an unbounded `ExecStop` (e.g. DB dump, NFS flush, log-shipping agent).
+- s1: The OS shutdown sequence blocks on that unit and never completes.
+- s2: The guest never acknowledges the ACPI power-button event before the hypervisor timeout.
+- D: The instance remains in `stopping` past the timeout window (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 4] Console output contains `A stop job is running for` followed by a service name.
+  <!-- match: {"step": 4, "predicate": "contains", "target": "A stop job is running for"} -->
+- s1: [Step 4] Console output contains `Waiting for NFS` or a network mount name.
+- root: [Step 5] CPU utilization was low before the stop, ruling out a compute-related timeout.
 
-- [Step 4] Console output contains `A stop job is running for` followed by a service name
-- [Step 4] Console output contains `Waiting for NFS` or a network mount name
-- [Step 5] CPU utilization was low before the stop, ruling out a compute-related timeout
-
-<!-- match: {"step": 4, "predicate": "contains", "target": "A stop job is running for"} -->
-
-**Mitigation:**
-
-- **Risk:** Force stop bypasses the service's graceful shutdown; in-flight writes may be lost.
-- **Command:**
+**Interventions:**
+- **mitigation** (s2): force-stop to bypass the blocked graceful shutdown.
 
   ```bash
   aws ec2 stop-instances --instance-ids i-0abc123def456789 --force
   ```
 
-- **Duration:** Usually completes in 1–5 minutes.
+  **Risk:** Force stop bypasses the service's graceful shutdown; in-flight writes may be lost. **Duration:** Usually completes in 1–5 minutes. **Verification:** Confirm `State.Name` reaches `stopped`.
+- **defensive_fix** (root): cap the offending unit's shutdown time so it can never block again.
 
-**Resolution:**
+  ```bash
+  # After restarting the instance, cap shutdown time for the offending service
+  sudo mkdir -p /etc/systemd/system/<service>.service.d/
+  cat <<'EOF' | sudo tee /etc/systemd/system/<service>.service.d/timeout.conf
+  [Service]
+  TimeoutStopSec=30
+  EOF
+  sudo systemctl daemon-reload
+  ```
 
-```bash
-# After restarting the instance, cap shutdown time for the offending service
-sudo mkdir -p /etc/systemd/system/<service>.service.d/
-cat <<'EOF' | sudo tee /etc/systemd/system/<service>.service.d/timeout.conf
-[Service]
-TimeoutStopSec=30
-EOF
-sudo systemctl daemon-reload
-```
+  **Verification:** Stop and start the instance normally. Console output should no longer show `stop job is running` messages, and the instance should reach `stopped` within 3 minutes. To rollback, remove the drop-in file and run `sudo systemctl daemon-reload`.
 
-- **Impact:** Applies to a single systemd unit; requires daemon-reload but no restart. For all services, set `DefaultTimeoutStopSec=30s` in `/etc/systemd/system.conf.d/shutdown-timeout.conf`.
-- **Rollback:** Remove the drop-in file and run `sudo systemctl daemon-reload`.
-
-**Verification:** Stop and start the instance normally. Console output should no longer show `stop job is running` messages, and the instance should reach `stopped` within 3 minutes.
-
-### Cause C: EBS Volume Impaired or Detach Blocked
+### Cause C: EBS volume impaired or detach blocked
 
 **Statement:** An attached EBS volume is in an impaired state or has a large unflushed write backlog that prevents the hypervisor from safely detaching it during shutdown.
 
-**Mechanism:** The EC2 stop sequence requires all attached EBS volumes to detach cleanly before the instance reaches `stopped`. If a volume is impaired due to hardware degradation on the storage backend, or if the I/O queue depth is very high (pending writes that cannot complete), the detach operation stalls. EBS volume status checks expose the impaired state; CloudWatch `VolumeQueueLength` reveals I/O saturation.
+**Chain:**
+- root: An attached EBS volume is impaired or has a very high I/O queue depth of pending writes.
+- s1: The volume's detach operation stalls because it cannot complete cleanly.
+- s2: The stop sequence cannot finish, since all volumes must detach before `stopped`.
+- D: The instance remains in `stopping` waiting on the stalled detach (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] Any volume shows `Status: impaired`.
+  <!-- match: {"step": 3, "predicate": "contains", "target": "impaired"} -->
+- root: [Step 5] Pre-stop `CPUUtilization` shows normal levels but EBS I/O metrics show high activity.
 
-- [Step 3] Any volume shows `Status: impaired`
-- [Step 5] Pre-stop `CPUUtilization` shows normal levels but EBS I/O metrics show high activity
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "impaired"} -->
-
-**Mitigation:**
-
-- **Risk:** Force stop does not wait for I/O to flush; impaired volumes may have corrupted data.
-- **Command:**
+**Interventions:**
+- **mitigation** (s1): force-stop without waiting for I/O to flush.
 
   ```bash
   aws ec2 stop-instances --instance-ids i-0abc123def456789 --force
   ```
 
-- **Duration:** Usually 1–5 minutes; if no change, add `--skip-os-shutdown`.
+  **Risk:** Force stop does not wait for I/O to flush; impaired volumes may have corrupted data. **Duration:** Usually 1–5 minutes; if no change, add `--skip-os-shutdown`. **Verification:** Confirm `State.Name` reaches `stopped`.
+- **remediation** (root): migrate to a higher-IOPS volume type so I/O drains before shutdown.
 
-**Resolution:**
+  ```bash
+  # After force stop, check EBS volume queue depth over the past 24 hours
+  aws cloudwatch get-metric-statistics \
+    --namespace AWS/EBS \
+    --metric-name VolumeQueueLength \
+    --dimensions Name=VolumeId,Value=vol-0abc123def456789 \
+    --start-time $(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ) \
+    --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+    --period 300 --statistics Average --output table
+  ```
 
-```bash
-# After force stop, check EBS volume queue depth over the past 24 hours
-aws cloudwatch get-metric-statistics \
-  --namespace AWS/EBS \
-  --metric-name VolumeQueueLength \
-  --dimensions Name=VolumeId,Value=vol-0abc123def456789 \
-  --start-time $(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ) \
-  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  --period 300 --statistics Average --output table
-```
+  If sustained `VolumeQueueLength` exceeds 1, migrate to a gp3 or io2 volume type with higher provisioned IOPS to reduce queue buildup at shutdown. Migration requires a snapshot, volume replacement, and instance restart (no data loss from a stopped state); reattach the original volume if the migrated volume has issues.
 
-If sustained `VolumeQueueLength` exceeds 1, migrate to a gp3 or io2 volume type with higher provisioned IOPS to reduce queue buildup at shutdown.
+  **Verification:** After restart, confirm volume status is `ok` with `aws ec2 describe-volume-status --volume-ids <vol-id> --query 'VolumeStatuses[0].VolumeStatus.Status' --output text`. Run `sudo fsck -n /dev/xvda1` inside the instance to check filesystem integrity.
 
-- **Impact:** Volume type migration requires a snapshot, volume replacement, and instance restart. No data loss during migration if done from a stopped state.
-- **Rollback:** Reattach the original volume if the migrated volume has issues.
-
-**Verification:** After restart, confirm volume status is `ok` with `aws ec2 describe-volume-status --volume-ids <vol-id> --query 'VolumeStatuses[0].VolumeStatus.Status' --output text`. Run `sudo fsck -n /dev/xvda1` inside the instance to check filesystem integrity.
-
-### Cause D: Instance Store Root Volume (Not Stoppable)
+### Cause D: Instance store root volume (not stoppable)
 
 **Statement:** The instance has an instance store root volume, which cannot be stopped and will remain in `stopping` or `shutting-down` indefinitely if a graceful OS shutdown fails.
 
-**Mechanism:** EC2 stop/start is only supported for EBS-backed instances. Instance store volumes are ephemeral and tied to the physical host; AWS does not support stopping them because there is no persistent root volume to preserve. Issuing a stop command on an instance store instance may leave it in `stopping` without resolution.
+**Chain:**
+- root: The instance has an ephemeral instance store root volume, not an EBS root volume.
+- s1: AWS does not support stop/start because there is no persistent root volume to preserve.
+- D: A stop command leaves the instance in `stopping`/`shutting-down` without resolution (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] `RootDeviceType` is `instance-store`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "instance-store"} -->
 
-- [Step 1] `RootDeviceType` is `instance-store`
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "instance-store"} -->
-
-**Mitigation:**
-
-- **Risk:** Termination is permanent; all instance store data is lost. Ensure any needed data has been copied to S3 or EBS before proceeding.
-- **Command:**
+**Interventions:**
+- **remediation** (root): terminate the instance, since stop is unsupported for instance store roots.
 
   ```bash
   aws ec2 terminate-instances --instance-ids i-0abc123def456789
   ```
 
-- **Duration:** AWS guarantees eventual termination within a few hours even if the instance stalls in `shutting-down`.
-
-**Resolution:** Same as Mitigation.
-
-**Verification:** `aws ec2 describe-instances --instance-ids i-0abc123def456789 --query 'Reservations[0].Instances[0].State.Name' --output text` returns `terminated`.
+  **Verification:** `aws ec2 describe-instances --instance-ids i-0abc123def456789 --query 'Reservations[0].Instances[0].State.Name' --output text` returns `terminated`. AWS guarantees eventual termination within a few hours even if the instance stalls in `shutting-down`. Ensure any needed data was copied to S3 or EBS first — termination is permanent and all instance store data is lost.
 
 ### Cause Z: Unidentified
 
 **Statement:** The instance is stuck in stopping state but the cause cannot be determined from the available diagnostic output.
 
-**Mechanism:** Rare platform-level or hypervisor issues may produce a stuck stopping state without obvious indicators in console output, status checks, or volume health. AWS internal systems may resolve the condition automatically, or manual escalation to AWS Support may be required.
+**Chain:**
+- root: A rare platform-level or hypervisor issue produces a stuck stopping state with no obvious indicators.
+- D: The instance remains in `stopping` despite normal status checks, console output, and volume health (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Default] All diagnostic steps above return normal results yet the instance remains stuck in `stopping`.
 
-- [Default] All diagnostic steps above return normal results yet the instance remains stuck in `stopping`
-
-**Mitigation:**
-
-- **Risk:** Force stop may not resolve a platform-level issue; escalation to AWS Support may be needed.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot, attempt a hard power-off, and escalate to AWS Support.
 
   ```bash
   aws ec2 stop-instances --instance-ids i-0abc123def456789 --force --skip-os-shutdown
   ```
 
-- **Duration:** Wait 10 minutes. If still stuck, open an AWS Support case with the instance ID and steps taken.
-
-**Resolution:** Out of runbook scope. If force stop fails after 10 minutes, submit a request to AWS re:Post or open a technical support case in the Support Center with the instance ID, region, and a description of steps taken.
-
-**Verification:** `aws ec2 describe-instances --instance-ids i-0abc123def456789 --query 'Reservations[0].Instances[0].State.Name' --output text` returns `stopped`.
+  **Risk:** Force stop may not resolve a platform-level issue; escalation to AWS Support may be needed. **Duration:** Wait 10 minutes. If still stuck, open an AWS re:Post or technical support case in the Support Center with the instance ID, region, and a description of the steps taken. **Verification:** `aws ec2 describe-instances --instance-ids i-0abc123def456789 --query 'Reservations[0].Instances[0].State.Name' --output text` returns `stopped`.
 
 ## Prevention
 

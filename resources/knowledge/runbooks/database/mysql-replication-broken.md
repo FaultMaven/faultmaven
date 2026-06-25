@@ -8,8 +8,8 @@ symptom_class:
   - service_unavailable
 severity: critical
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags:
@@ -133,20 +133,38 @@ Expected output: `SERVICE_STATE = ON` for the connection, and zero rows from the
 
 ### Cause A: Duplicate key error on replica (data drift)
 
-**Statement:** A row was inserted directly on the replica that conflicts with an incoming replication event, causing the SQL thread to stop with error 1062.
-**Mechanism:** Direct writes to the replica (without `super_read_only`) create rows that already exist on the source. When the source later replicates the original INSERT or UPDATE for those rows, InnoDB finds a primary key or unique key conflict. The SQL thread stops and reports error 1062. Every subsequent event from the source is blocked until the conflict is resolved or skipped.
+**Statement:** A row inserted directly on the replica conflicts with an incoming replication event, causing the SQL thread to stop with error 1062.
+**Chain:**
+- root: A direct write to the replica (no `super_read_only`) created a row that also exists on the source.
+- s1: The source later replicates the original INSERT/UPDATE for that row.
+- s2: InnoDB finds a primary/unique key conflict and the SQL thread stops with error 1062.
+- D: The SQL thread is stopped and all subsequent source events are blocked (Symptom).
+**Indicators:**
+- root: [Step 4] replica `gtid_executed` carries the replica's own server UUID, evidence of a local write.
+- s2: [Step 1] `Last_SQL_Errno: 1062` and `Last_SQL_Error` contains `Duplicate entry`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Duplicate entry"} -->
+- D: [Step 1] `Replica_SQL_Running: No`, `Replica_IO_Running: Yes`.
+**Interventions:**
+- **remediation** (root): block future direct writes and reconcile existing drift.
 
-**Indicator:**
+  ```bash
+  # Set super_read_only to prevent future direct writes
+  mysql -e "SET GLOBAL super_read_only = ON;"
+  # Reconcile data differences with Percona Toolkit
+  pt-table-checksum --replicate=percona.checksums --host=SOURCE_HOST
+  pt-table-sync --replicate=percona.checksums --host=SOURCE_HOST --print
+  pt-table-sync --replicate=percona.checksums --host=SOURCE_HOST --execute
+  ```
 
-- [Step 1] `Last_SQL_Errno: 1062` and `Last_SQL_Error` contains `Duplicate entry`
-- [Step 1] `Replica_SQL_Running: No`, `Replica_IO_Running: Yes`
+  Persist in `my.cnf`:
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "Duplicate entry"} -->
+  ```ini
+  [mysqld]
+  super_read_only = ON
+  ```
 
-**Mitigation:**
-
-- **Risk:** High. Skipping events causes permanent data drift between source and replica. Only skip if you can confirm the data impact is acceptable (e.g., the conflicting row is identical on both sides).
-- **Command:**
+  **Verification:** After `pt-table-sync`, re-run `pt-table-checksum` and confirm zero diffs. Re-run Step 1 and confirm both threads show `Yes`, `Last_SQL_Errno: 0`, and `Seconds_Behind_Master` approaching 0.
+- **mitigation** (s2): skip the conflicting event to unblock the SQL thread.
 
   ```bash
   mysql -e "
@@ -156,44 +174,34 @@ Expected output: `SERVICE_STATE = ON` for the connection, and zero rows from the
   "
   ```
 
-- **Duration:** Immediate. Monitor `SHOW REPLICA STATUS` for additional errors on subsequent events.
-
-**Resolution:**
-
-```bash
-# Set super_read_only to prevent future direct writes
-mysql -e "SET GLOBAL super_read_only = ON;"
-# Reconcile data differences with Percona Toolkit
-pt-table-checksum --replicate=percona.checksums --host=SOURCE_HOST
-pt-table-sync --replicate=percona.checksums --host=SOURCE_HOST --print
-pt-table-sync --replicate=percona.checksums --host=SOURCE_HOST --execute
-```
-
-Persist in `my.cnf`:
-
-```ini
-[mysqld]
-super_read_only = ON
-```
-
-**Verification:** After `pt-table-sync`, re-run `pt-table-checksum` and confirm zero diffs. Re-run Step 1 and confirm both threads show `Yes`, `Last_SQL_Errno: 0`, and `Seconds_Behind_Master` approaching 0.
+  **Risk:** High. Skipping events causes permanent data drift between source and replica. Only skip if the data impact is acceptable (e.g., the conflicting row is identical on both sides). **Duration:** Immediate; monitor `SHOW REPLICA STATUS` for additional errors on subsequent events. **Verification:** Re-run Step 1 and confirm `Replica_SQL_Running: Yes` with no new 1062 error.
 
 ### Cause B: Missing row error on replica (error 1032)
 
-**Statement:** A row was deleted or modified directly on the replica that the source then tries to UPDATE or DELETE via replication, causing the SQL thread to stop with error 1032.
-**Mechanism:** Direct deletes or updates on the replica remove rows that the source expects to exist. When the source replicates a DELETE or UPDATE targeting those rows, the replica's SQL thread cannot find the row by primary key, reports error 1032 (`Can't find record in '<table>'`), and stops. The gap persists until the event is skipped or the replica is resynchronized.
+**Statement:** A row deleted or modified directly on the replica is later targeted by a source UPDATE/DELETE, causing the SQL thread to stop with error 1032.
+**Chain:**
+- root: A direct delete/update on the replica removed a row the source expects to exist.
+- s1: The source replicates a DELETE/UPDATE targeting that missing row.
+- s2: The SQL thread cannot find the row by primary key and stops with error 1032 (`Can't find record`).
+- D: The SQL thread is stopped and the gap persists until skipped or resynced (Symptom).
+**Indicators:**
+- root: [Step 4] replica `gtid_executed` carries the replica's own server UUID, evidence of a local write.
+- s2: [Step 1] `Last_SQL_Errno: 1032` and `Last_SQL_Error` contains `Can't find record`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Can't find record"} -->
+- D: [Step 1] `Replica_SQL_Running: No`, `Replica_IO_Running: Yes`.
+**Interventions:**
+- **remediation** (root): block future drift-causing writes and reconcile the affected table.
 
-**Indicator:**
+  ```bash
+  # Prevent future writes that cause drift
+  mysql -e "SET GLOBAL super_read_only = ON;"
+  # Reconcile the affected table
+  pt-table-checksum --replicate=percona.checksums --tables=<db.table> --host=SOURCE_HOST
+  pt-table-sync --replicate=percona.checksums --tables=<db.table> --host=SOURCE_HOST --execute
+  ```
 
-- [Step 1] `Last_SQL_Errno: 1032` and `Last_SQL_Error` contains `Can't find record`
-- [Step 1] `Replica_SQL_Running: No`, `Replica_IO_Running: Yes`
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "Can't find record"} -->
-
-**Mitigation:**
-
-- **Risk:** High. Skipping the event removes the source's intended change from the replica, widening data drift.
-- **Command:**
+  **Verification:** Re-run `pt-table-checksum` and confirm zero differences on the affected table. Re-run Step 1 and confirm both threads are `Yes`, no SQL errors remain, and lag is decreasing.
+- **mitigation** (s2): skip the missing-row event to unblock the SQL thread.
 
   ```bash
   mysql -e "
@@ -203,36 +211,23 @@ super_read_only = ON
   "
   ```
 
-- **Duration:** Immediate.
-
-**Resolution:**
-
-```bash
-# Prevent future writes that cause drift
-mysql -e "SET GLOBAL super_read_only = ON;"
-# Reconcile the affected table
-pt-table-checksum --replicate=percona.checksums --tables=<db.table> --host=SOURCE_HOST
-pt-table-sync --replicate=percona.checksums --tables=<db.table> --host=SOURCE_HOST --execute
-```
-
-**Verification:** Re-run `pt-table-checksum` and confirm zero differences on the affected table. Re-run Step 1 and confirm both threads are `Yes`, no SQL errors remain, and lag is decreasing.
+  **Risk:** High. Skipping the event removes the source's intended change from the replica, widening data drift. **Duration:** Immediate. **Verification:** Re-run Step 1 and confirm `Replica_SQL_Running: Yes` with no new 1032 error.
 
 ### Cause C: GTID gap — source purged required binary logs (error 1236)
 
-**Statement:** The source has purged binary logs that contain GTIDs the replica has not yet applied, making it impossible for the replica to catch up without a full rebuild.
-**Mechanism:** MySQL automatically purges old binary logs based on `binlog_expire_logs_seconds`. If a replica was offline, paused, or lagging for longer than the retention period, the source deletes the logs before the replica can fetch them. When the IO thread reconnects with `SOURCE_AUTO_POSITION=1`, the source detects that the needed GTIDs are gone and returns error 1236. The IO thread stops immediately because there is no binary log to fetch.
-
-**Indicator:**
-
-- [Step 1] `Last_IO_Errno: 1236` and `Last_IO_Error` contains `purged binary logs`
-- [Step 3] the binary log file referenced in `Master_Log_File` from Step 1 is absent from `SHOW BINARY LOGS` output on the source
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "purged binary logs"} -->
-
-**Mitigation:**
-
-- **Risk:** High. A full replica rebuild is required. The replica is unavailable during the rebuild. All read traffic must be rerouted to another replica or the source.
-- **Command:**
+**Statement:** The source purged binary logs containing GTIDs the replica has not yet applied, making catch-up impossible without a full rebuild.
+**Chain:**
+- root: The replica was offline/paused/lagging longer than `binlog_expire_logs_seconds` retention.
+- s1: The source automatically purged the old binary logs before the replica could fetch them.
+- s2: The IO thread reconnects with `SOURCE_AUTO_POSITION=1` and the source finds the needed GTIDs are gone.
+- s3: The source returns error 1236 and the IO thread stops — there is no binary log to fetch.
+- D: Replication is broken and the replica cannot catch up (Symptom).
+**Indicators:**
+- s3: [Step 1] `Last_IO_Errno: 1236` and `Last_IO_Error` contains `purged binary logs`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "purged binary logs"} -->
+- s1: [Step 3] the binary log file referenced in `Master_Log_File` from Step 1 is absent from `SHOW BINARY LOGS` on the source.
+**Interventions:**
+- **remediation** (root): rebuild the replica from a consistent backup, then widen retention to prevent recurrence.
 
   ```bash
   # On source: take a consistent backup including GTID positions
@@ -256,37 +251,56 @@ pt-table-sync --replicate=percona.checksums --tables=<db.table> --host=SOURCE_HO
   "
   ```
 
-- **Duration:** Minutes to hours depending on database size and network throughput. For large databases, use `xtrabackup` or `mysqlsh dumpInstance` instead of `mysqldump`.
+  After the rebuild, increase binary log retention on the source to at least 7 days:
 
-**Resolution:** Same as Mitigation. After the rebuild, increase binary log retention on the source to at least 7 days to reduce recurrence:
+  ```sql
+  SET GLOBAL binlog_expire_logs_seconds = 604800;
+  ```
 
-```sql
-SET GLOBAL binlog_expire_logs_seconds = 604800;
-```
+  Persist in `my.cnf`:
 
-Persist in `my.cnf`:
+  ```ini
+  [mysqld]
+  binlog_expire_logs_seconds = 604800
+  ```
 
-```ini
-[mysqld]
-binlog_expire_logs_seconds = 604800
-```
+  **Verification:** After rebuild, re-run Step 1 and confirm both threads are `Yes`. Re-run Step 4 and confirm replica's `gtid_executed` is approaching source's `gtid_executed`. Monitor `Seconds_Behind_Master` for at least 30 minutes to confirm catch-up.
+- **defensive_fix** (root): widen retention on the source so a lagging replica never outruns the logs. For large databases, prefer `xtrabackup` or `mysqlsh dumpInstance` over `mysqldump` for the rebuild.
 
-**Verification:** After rebuild, re-run Step 1 and confirm both threads are `Yes`. Re-run Step 4 and confirm replica's `gtid_executed` is approaching source's `gtid_executed`. Monitor `Seconds_Behind_Master` for at least 30 minutes to confirm catch-up.
+  ```sql
+  SET GLOBAL binlog_expire_logs_seconds = 604800;
+  ```
+
+  **Verification:** Re-run `SELECT @@GLOBAL.binlog_expire_logs_seconds;` on the source and confirm it returns `604800`.
 
 ### Cause D: Errant transactions on the replica (GTID mismatch)
 
-**Statement:** Writes made directly on the replica created GTIDs that are not present on the source, causing GTID set divergence that may break replication on reconnect or during failover.
-**Mechanism:** Every transaction committed on the replica (not via replication) generates a GTID tagged with the replica's own server UUID. The source does not have these GTIDs. When a new source is promoted during failover, other replicas reject the errant GTIDs as unknown. Additionally, after a replica restart with `gtid_mode=ON`, the divergent GTID set causes auto-positioning to fail if the source cannot reconcile the gap.
+**Statement:** Writes made directly on the replica created GTIDs absent from the source, diverging the GTID set and breaking replication on reconnect or failover.
+**Chain:**
+- root: A transaction committed directly on the replica generated a GTID tagged with the replica's own server UUID.
+- s1: The source's GTID set does not contain these replica-UUID GTIDs.
+- s2: On reconnect/restart with `gtid_mode=ON`, auto-positioning cannot reconcile the gap (or a promoted source rejects the unknown GTIDs at failover).
+- D: The IO thread fails to position and replication breaks (Symptom).
+**Indicators:**
+- root: [Step 4] the replica's `gtid_executed` contains GTIDs with the replica's own server UUID (distinct from the source UUID).
+- s2: [Step 1] `Auto_Position: 1` and `Replica_IO_Running: No` with no error 1236 in `Last_IO_Error`.
+**Interventions:**
+- **remediation** (root): block future direct writes to the replica.
 
-**Indicator:**
+  ```bash
+  # Prevent future writes to the replica
+  mysql -e "SET GLOBAL super_read_only = ON;"
+  ```
 
-- [Step 4] the replica's `gtid_executed` contains GTIDs with the replica's own server UUID (distinct from the source UUID)
-- [Step 1] `Auto_Position: 1` and `Replica_IO_Running: No` with no error 1236 in `Last_IO_Error`
+  Persist in `my.cnf`:
 
-**Mitigation:**
+  ```ini
+  [mysqld]
+  super_read_only = ON
+  ```
 
-- **Risk:** Moderate. Injecting empty transactions on the source covers the errant GTIDs so all replicas converge, but does not undo the data written by the errant transactions on the affected replica.
-- **Command:**
+  **Verification:** Re-run Step 4 — the replica's `gtid_executed` should now be a strict subset of the source's after empty transactions are applied and replication resumes. Re-run Step 1 and confirm both threads are `Yes`.
+- **mitigation** (s1): inject empty transactions on the source to cover the errant GTIDs so all replicas converge.
 
   ```bash
   # Identify errant GTID range (replica UUID transactions not present on source)
@@ -302,40 +316,39 @@ binlog_expire_logs_seconds = 604800
   "
   ```
 
-- **Duration:** Seconds for empty transaction injection. If errant GTIDs are numerous, a full rebuild (see Cause C) is faster.
-
-**Resolution:**
-
-```bash
-# Prevent future writes to the replica
-mysql -e "SET GLOBAL super_read_only = ON;"
-```
-
-Persist in `my.cnf`:
-
-```ini
-[mysqld]
-super_read_only = ON
-```
-
-**Verification:** Re-run Step 4 — the replica's `gtid_executed` should now be a strict subset of the source's after empty transactions are applied and replication resumes. Re-run Step 1 and confirm both threads are `Yes`.
+  **Risk:** Moderate. Empty transactions cover the errant GTIDs so replicas converge, but do not undo the data written by the errant transactions on the affected replica. **Duration:** Seconds for injection; if errant GTIDs are numerous, a full rebuild (see Cause C) is faster. **Verification:** Re-run Step 4 and confirm the replica's `gtid_executed` is a strict subset of the source's.
 
 ### Cause E: Relay log corruption
 
 **Statement:** Relay log files on the replica are damaged after an unclean shutdown or disk failure, preventing the SQL thread from reading and applying events.
-**Mechanism:** The SQL thread reads events sequentially from relay log files written by the IO thread. If the relay log is truncated, has a checksum mismatch, or contains an incomplete event block from a crash mid-write, the SQL thread raises a relay log read failure and stops. The IO thread may continue writing new events to a new relay log segment, but the corrupt file blocks the SQL thread from advancing past it.
+**Chain:**
+- root: An unclean shutdown or disk failure truncated a relay log file or left an incomplete event block / checksum mismatch.
+- s1: The SQL thread reads sequentially and hits the damaged event block.
+- s2: The SQL thread raises a relay log read failure and stops at the corrupt file.
+- D: The SQL thread cannot advance past the corrupt relay log and replication stalls (Symptom).
+**Indicators:**
+- s2: [Step 2] error log contains `relay log read failure` or `Could not parse relay log event entry`.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "relay log read failure"} -->
+- D: [Step 1] `Replica_SQL_Running: No`, `Last_SQL_Error` contains `relay log` or `corrupt`.
+**Interventions:**
+- **remediation** (root): enable relay log durability so future crashes do not corrupt the relay log.
 
-**Indicator:**
+  ```bash
+  # Enable relay log durability to prevent future corruption
+  mysql -e "SET GLOBAL sync_relay_log = 1;"
+  mysql -e "SET GLOBAL relay_log_recovery = ON;"
+  ```
 
-- [Step 2] error log contains `relay log read failure` or `Could not parse relay log event entry`
-- [Step 1] `Replica_SQL_Running: No`, `Last_SQL_Error` contains `relay log` or `corrupt`
+  Persist in `my.cnf`:
 
-<!-- match: {"step": 2, "predicate": "contains", "target": "relay log read failure"} -->
+  ```ini
+  [mysqld]
+  sync_relay_log = 1
+  relay_log_recovery = ON
+  ```
 
-**Mitigation:**
-
-- **Risk:** Moderate. `RESET REPLICA` deletes all relay log files and re-fetches from the source based on the last applied GTID. If the source has purged the needed binary logs, this will fail (see Cause C).
-- **Command:**
+  **Verification:** Re-run Step 1 — both threads should show `Yes`, and `Last_SQL_Error` should be empty. Re-run Step 2 and confirm no new relay log error entries appear. Monitor for 30 minutes to confirm the SQL thread does not stop again.
+- **mitigation** (s2): discard the corrupt relay logs and re-fetch from the source.
 
   ```bash
   mysql -e "
@@ -345,42 +358,37 @@ super_read_only = ON
   "
   ```
 
-- **Duration:** Minutes. The IO thread re-fetches events from the source starting at the last applied GTID position.
-
-**Resolution:**
-
-```bash
-# Enable relay log durability to prevent future corruption
-mysql -e "SET GLOBAL sync_relay_log = 1;"
-mysql -e "SET GLOBAL relay_log_recovery = ON;"
-```
-
-Persist in `my.cnf`:
-
-```ini
-[mysqld]
-sync_relay_log = 1
-relay_log_recovery = ON
-```
-
-**Verification:** Re-run Step 1 — both threads should show `Yes`, and `Last_SQL_Error` should be empty. Re-run Step 2 and confirm no new relay log error entries appear. Monitor for 30 minutes to confirm the SQL thread does not stop again.
+  **Risk:** Moderate. `RESET REPLICA` deletes all relay log files and re-fetches from the source based on the last applied GTID. If the source has purged the needed binary logs, this fails (see Cause C). **Duration:** Minutes; the IO thread re-fetches events from the last applied GTID position. **Verification:** Re-run Step 1 and confirm `Replica_SQL_Running: Yes` with `Last_SQL_Error` empty.
 
 ### Cause F: Disk full on replica stops IO thread
 
-**Statement:** The replica's MySQL data directory filesystem has reached 100 % capacity, preventing the IO thread from writing new relay log events.
-**Mechanism:** The IO thread writes incoming binary log events to relay log files in the MySQL data directory. When the filesystem is at capacity, the write fails with a disk-full error, the IO thread stops, and the replica falls progressively further behind. A stopped SQL thread (from any other cause) accelerates disk exhaustion because relay logs accumulate without being consumed and purged.
+**Statement:** The replica's MySQL data directory filesystem reached 100 % capacity, preventing the IO thread from writing new relay log events.
+**Chain:**
+- root: The MySQL data directory filesystem on the replica reached 100 % capacity.
+- s1: The IO thread's relay log write fails with a disk-full error and the IO thread stops.
+- s2: The replica falls progressively further behind; a stopped SQL thread accelerates exhaustion as relay logs accumulate unconsumed.
+- D: The IO thread is stopped and replication cannot advance (Symptom).
+**Indicators:**
+- root: [Step 6] `df -h /var/lib/mysql` shows the filesystem at or near 100 % used.
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "disk_pct_used", "op": ">", "value": 95} -->
+- s1: [Step 1] `Replica_IO_Running: No` and `Last_IO_Error` contains `disk` or `write` failure, or the error log shows `disk full`.
+**Interventions:**
+- **remediation** (root): cap relay log disk usage so growth cannot fill the volume again.
 
-**Indicator:**
+  ```bash
+  # Cap relay log disk usage (example: 10 GB)
+  mysql -e "SET GLOBAL relay_log_space_limit = 10737418240;"
+  ```
 
-- [Step 6] `df -h /var/lib/mysql` shows the filesystem at or near 100 % used
-- [Step 1] `Replica_IO_Running: No` and `Last_IO_Error` contains `disk` or `write` failure, or the error log shows `disk full`
+  Persist in `my.cnf`:
 
-<!-- match: {"step": 6, "predicate": "threshold", "target": "disk_pct_used", "op": ">", "value": 95} -->
+  ```ini
+  [mysqld]
+  relay_log_space_limit = 10737418240
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low. Freeing disk space by deleting old relay logs or expanding the volume does not alter data.
-- **Command:**
+  **Verification:** Re-run Step 6 and confirm `df -h` shows available space. Re-run Step 1 and confirm `Replica_IO_Running: Yes` and `Seconds_Behind_Master` is decreasing. Alert threshold at 80 % disk should fire before the filesystem fills again.
+- **mitigation** (s1): free disk space and restart the IO thread.
 
   ```bash
   # Purge processed relay logs (MySQL tracks which are safe to delete)
@@ -393,79 +401,57 @@ relay_log_recovery = ON
   mysql -e "START REPLICA IO_THREAD;"
   ```
 
-- **Duration:** Until disk is reclaimed. Set `relay_log_space_limit` to cap future relay log growth.
-
-**Resolution:**
-
-```bash
-# Cap relay log disk usage (example: 10 GB)
-mysql -e "SET GLOBAL relay_log_space_limit = 10737418240;"
-```
-
-Persist in `my.cnf`:
-
-```ini
-[mysqld]
-relay_log_space_limit = 10737418240
-```
-
-**Verification:** Re-run Step 6 and confirm `df -h` shows available space. Re-run Step 1 and confirm `Replica_IO_Running: Yes` and `Seconds_Behind_Master` is decreasing. Alert threshold at 80 % disk should fire before the filesystem fills again.
+  **Risk:** Low. Freeing disk space by deleting old relay logs or expanding the volume does not alter data. **Duration:** Until disk is reclaimed; set `relay_log_space_limit` to cap future relay log growth. **Verification:** Re-run Step 6 to confirm free space and Step 1 to confirm `Replica_IO_Running: Yes`.
 
 ### Cause G: Network interruption disconnected IO thread
 
-**Statement:** A transient or persistent network failure between the replica and source caused the IO thread to disconnect, stopping binary log retrieval.
-**Mechanism:** The IO thread maintains a persistent TCP connection to the source's MySQL port. A network interruption drops the TCP session. The IO thread detects the broken connection, waits per `replica_net_timeout` (default 60 seconds), then attempts to reconnect. If the network issue persists beyond the retry window, the IO thread stops with a connection error. Firewall rule changes, VPC reconfiguration, DNS failure, and security group changes are common triggers.
+**Statement:** A transient or persistent network failure between the replica and source dropped the IO thread's connection, stopping binary log retrieval.
+**Chain:**
+- root: A network failure (firewall change, VPC/security-group reconfig, DNS failure) dropped the IO thread's TCP session to the source.
+- s1: The IO thread detects the broken connection and waits per `replica_net_timeout` (default 60 s), then attempts to reconnect.
+- s2: The network issue persists beyond the retry window and the IO thread stops with a connection error.
+- D: Binary log retrieval halts and the replica stops fetching events (Symptom).
+**Indicators:**
+- root: [Step 5] connectivity test `mysql -h SOURCE_HOST -u repl_user -p -e "SELECT 1"` fails or times out.
+  <!-- match: {"step": 5, "predicate": "contains", "target": "Can't connect"} -->
+- s2: [Step 1] `Replica_IO_Running: Connecting` or `No`, `Last_IO_Error` contains `Lost connection` or `Can't connect`.
+**Interventions:**
+- **remediation** (root): confirm the network path is stable and tolerate brief interruptions going forward.
 
-**Indicator:**
+  ```bash
+  # Verify network path is stable before considering resolved
+  mysql -e "SHOW REPLICA STATUS\G" | grep -E "Replica_IO_Running|Seconds_Behind"
 
-- [Step 5] connectivity test `mysql -h SOURCE_HOST -u repl_user -p -e "SELECT 1"` fails or times out
-- [Step 1] `Replica_IO_Running: Connecting` or `No`, `Last_IO_Error` contains `Lost connection` or `Can't connect`
+  # Increase replica_net_timeout to tolerate brief interruptions (default: 60 seconds)
+  mysql -e "SET GLOBAL replica_net_timeout = 120;"
+  ```
 
-<!-- match: {"step": 5, "predicate": "contains", "target": "Can't connect"} -->
+  Persist in `my.cnf`:
 
-**Mitigation:**
+  ```ini
+  [mysqld]
+  replica_net_timeout = 120
+  ```
 
-- **Risk:** Low. Restarting replication threads simply resumes from where it left off.
-- **Command:**
+  **Verification:** Re-run Step 1 after 5 minutes and confirm `Replica_IO_Running: Yes`. Re-run Step 5 to confirm stable connectivity. If the IO thread drops again within an hour, the network issue is persistent and must be resolved at the infrastructure level.
+- **mitigation** (s2): restart the replication threads to resume fetching.
 
   ```bash
   mysql -e "STOP REPLICA; START REPLICA;"
   ```
 
-- **Duration:** Immediate. The IO thread reconnects and resumes fetching binary log events.
-
-**Resolution:**
-
-```bash
-# Verify network path is stable before considering resolved
-mysql -e "SHOW REPLICA STATUS\G" | grep -E "Replica_IO_Running|Seconds_Behind"
-
-# Increase replica_net_timeout to tolerate brief interruptions (default: 60 seconds)
-mysql -e "SET GLOBAL replica_net_timeout = 120;"
-```
-
-Persist in `my.cnf`:
-
-```ini
-[mysqld]
-replica_net_timeout = 120
-```
-
-**Verification:** Re-run Step 1 after 5 minutes and confirm `Replica_IO_Running: Yes`. Re-run Step 5 to confirm stable connectivity. If the IO thread drops again within an hour, the network issue is persistent and must be resolved at the infrastructure level.
+  **Risk:** Low. Restarting replication threads simply resumes from where it left off. **Duration:** Immediate; the IO thread reconnects and resumes fetching binary log events. **Verification:** Re-run Step 1 and confirm `Replica_IO_Running: Yes`.
 
 ### Cause Z: Unidentified
 
-**Statement:** Diagnostic steps do not point to any single cause above, or the error message does not match known patterns, and a confident root cause cannot be assigned.
-**Mechanism:** MySQL replication can fail due to interactions not covered by Causes A–G: binary log format incompatibility (STATEMENT vs ROW vs MIXED), `max_allowed_packet` mismatch causing large events to fail, multithreaded replication GTID gaps when `slave_preserve_commit_order` is off, schema changes applied out of order, or third-party tools that alter GTID state. Without a clear signal, applying any targeted fix risks masking the actual driver.
-
-**Indicator:**
-
-- [Default]
-
-**Mitigation:**
-
-- **Risk:** Diagnostic only.
-- **Command:**
+**Statement:** Diagnostic steps do not point to any single cause above, or the error does not match known patterns, and a confident root cause cannot be assigned.
+**Chain:**
+- root: The replication failure is driven by an interaction not covered by Causes A–G (e.g., binlog format mismatch, `max_allowed_packet` mismatch, MTS GTID gaps with `slave_preserve_commit_order` off, out-of-order schema changes, third-party GTID tooling).
+- D: Replication is broken with no matching signal, so any targeted fix risks masking the actual driver (Symptom).
+**Indicators:**
+- root: [Default]
+**Interventions:**
+- **mitigation** (D): collect a full diagnostic snapshot and escalate to the SME.
 
   ```bash
   # Collect full replication state for offline analysis
@@ -479,10 +465,9 @@ replica_net_timeout = 120
   tail -500 /var/log/mysql/error.log >> /tmp/replica_status.txt
   ```
 
-- **Duration:** Diagnostic only — does not change replication state.
+  Escalate to the database SRE/DBA on call with the diagnostic bundle above, the MySQL version (`SELECT VERSION();` on both servers), and the exact error messages from Steps 1 and 2.
 
-**Resolution:** Out of runbook scope. Escalate to the database SRE/DBA on call with the diagnostic bundle above, the MySQL version (`SELECT VERSION();` on both servers), and the exact error messages from Steps 1 and 2.
-**Verification:** Escalation acknowledged with diagnostic bundle attached; a follow-up runbook or incident review is opened to capture the new failure mode.
+  **Risk:** Diagnostic only — does not change replication state. **Duration:** Diagnostic only — does not change replication state. **Verification:** Escalation acknowledged with diagnostic bundle attached; a follow-up runbook or incident review is opened to capture the new failure mode.
 
 ## Prevention
 

@@ -6,8 +6,8 @@ service: elasticsearch
 symptom_class: [latency, oom]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [elasticsearch, latency, gc-pressure, circuit-breaker, slow-queries, heap, thread-pool]
@@ -112,22 +112,34 @@ Expected output: index table sorted by segment count descending; read-only histo
 
 ### Cause A: Expensive query pattern
 
-**Statement:** A query using leading wildcards, regex, unbounded terms aggregations, or Painless scripts causes full index scans, consuming disproportionate CPU and heap on every execution.
+**Statement:** A query using leading wildcards, regex, unbounded terms aggregations, or Painless scripts forces full index scans, consuming disproportionate CPU and heap on every execution.
 
-**Mechanism:** Leading-wildcard and regex queries rewrite into a union of every matching term in the inverted index before scoring, scaling with index cardinality rather than result set size. Deep unbounded `terms` aggregations load all bucket values into the request circuit breaker scope. Each execution amplifies resource consumption across all shards touched by the scatter-gather.
+**Chain:**
+- root: A query uses a leading wildcard, regex, unbounded `terms` aggregation, or Painless script.
+- s1: The query rewrites into a union of every matching term, scaling with index cardinality rather than result-set size.
+- s2: Each scatter-gather execution amplifies CPU and heap consumption across all shards touched.
+- D: Search response times rise to seconds or time out (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] slow log entries repeat the same query `source` pattern across multiple shards
+  <!-- match: {"step": 5, "predicate": "contains", "target": "wildcard"} -->
+  <!-- match: {"step": 5, "predicate": "contains", "target": "script"} -->
+- s2: [Step 6] `build_scorer` or `next_doc` `time_in_nanos` dominates the profile breakdown for the slow query
 
-- [Step 5] slow log entries repeat the same query `source` pattern across multiple shards
-- [Step 6] `build_scorer` or `next_doc` `time_in_nanos` dominates the profile breakdown for the slow query
+**Interventions:**
+- **remediation** (root): Set a cluster-wide `max_buckets` safety net (ES 7.0+) so any aggregation exceeding 10 000 buckets returns `too_many_buckets_exception`. No restart required. Rollback: set `search.max_buckets` to `null` to restore the default.
 
-<!-- match: {"step": 5, "predicate": "contains", "target": "wildcard"} -->
-<!-- match: {"step": 5, "predicate": "contains", "target": "script"} -->
+  ```bash
+  curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "persistent": {
+        "search.max_buckets": 10000
+      }
+    }'
+  ```
 
-**Mitigation:**
-
-- **Risk:** Query changes may alter result relevance; test in staging before deploying.
-- **Command:**
+  **Verification:** Run `curl -s "http://localhost:9200/_nodes/stats/indices/search?pretty" | grep query_time` before and after; confirm `query_time_in_millis` growth rate is lower after the query change is deployed.
+- **defensive_fix** (s1): Rewrite the leading-wildcard query as a `match` on an analyzed field and cap `terms` aggregation cardinality. Test in staging first — query changes may alter result relevance. Effective immediately once the new query is deployed.
 
   ```bash
   # Replace leading-wildcard with match on an analyzed field
@@ -143,24 +155,7 @@ Expected output: index table sorted by segment count descending; read-only histo
     }'
   ```
 
-- **Duration:** Immediate once the new query is deployed.
-
-**Resolution:**
-
-```bash
-# Set cluster-wide max_buckets safety net (ES 7.0+)
-curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
-  -H 'Content-Type: application/json' -d '{
-    "persistent": {
-      "search.max_buckets": 10000
-    }
-  }'
-```
-
-- **Impact:** Cluster-wide; any aggregation exceeding 10 000 buckets returns a `too_many_buckets_exception`. No restart required.
-- **Rollback:** Set `search.max_buckets` to `null` to restore the default.
-
-**Verification:** Run `curl -s "http://localhost:9200/_nodes/stats/indices/search?pretty" | grep query_time` before and after; confirm `query_time_in_millis` growth rate is lower after query change is deployed.
+  **Verification:** Re-run Step 6; confirm `build_scorer`/`next_doc` no longer dominate the profile breakdown.
 
 ---
 
@@ -168,19 +163,27 @@ curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
 
 **Statement:** Sustained JVM heap utilization above 75% triggers frequent stop-the-world old-generation garbage collection pauses that directly add to query response time.
 
-**Mechanism:** Elasticsearch holds segment metadata, field data caches, query results, and request buffers in heap. When the old generation fills, the G1GC collector stops all JVM threads (stop-the-world) for tens to hundreds of milliseconds to reclaim space. Queries in flight during a pause accumulate wall-clock latency equal to the GC pause duration. A heap flatlined above 85–90% indicates GC thrashing where the collector runs continuously but cannot free enough memory to reduce pressure.
+**Chain:**
+- root: JVM heap utilization is sustained above 75% on a data node.
+- s1: Segment metadata, field data caches, query results, and request buffers fill the old generation.
+- s2: The G1GC collector stops all JVM threads for tens to hundreds of milliseconds to reclaim space; above 85–90% it thrashes continuously without freeing enough memory.
+- s3: Queries in flight during a pause accumulate wall-clock latency equal to the GC pause duration.
+- D: Search response times rise to seconds or time out (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `heap_used_percent` above 75 on any data node
+  <!-- match: {"step": 3, "predicate": "threshold", "target": "heap_used_percent", "op": ">", "value": 75} -->
+- s2: [Step 3] old-generation `collection_time_in_millis` increasing rapidly (more than 5 collections per minute)
 
-- [Step 3] `heap_used_percent` above 75 on any data node
-- [Step 3] old-generation `collection_time_in_millis` increasing rapidly (more than 5 collections per minute)
+**Interventions:**
+- **remediation** (root): Add coordinating-only nodes to absorb scatter-gather heap cost, then rebalance shards (automatic after node addition) to reduce per-node shard density. Adding nodes is a topology change. Rollback: remove added nodes via shrink API or decommission procedure.
 
-<!-- match: {"step": 3, "predicate": "threshold", "target": "heap_used_percent", "op": ">", "value": 75} -->
+  ```bash
+  curl -s "http://localhost:9200/_cat/allocation?v&h=node,shards,disk.used_percent"
+  ```
 
-**Mitigation:**
-
-- **Risk:** Heap above 31 GB loses compressed ordinary object pointers (OOPs), reducing effective addressable memory per byte. Never exceed 50% of physical RAM; the other half is required for the OS file system cache used for segment reads.
-- **Command:**
+  **Verification:** `curl -s "http://localhost:9200/_nodes/stats/jvm?pretty" | grep heap_used_percent` — confirm all nodes below 75% and sustained over 30 minutes of peak traffic.
+- **mitigation** (root): Raise the JVM heap by setting `-Xms`/`-Xmx` to the same value in `jvm.options`, then rolling-restart one node at a time.
 
   ```bash
   # Edit /etc/elasticsearch/jvm.options — set both to the same value
@@ -190,20 +193,7 @@ curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
   sudo systemctl restart elasticsearch
   ```
 
-- **Duration:** Takes effect after node restart; complete rolling restart before declaring resolved.
-
-**Resolution:**
-
-```bash
-# Add coordinating-only nodes to absorb scatter-gather heap cost
-# Then rebalance shards to reduce per-node shard density:
-curl -s "http://localhost:9200/_cat/allocation?v&h=node,shards,disk.used_percent"
-```
-
-- **Impact:** Adding nodes requires cluster topology change. Reducing heap per-node shard count requires shard rebalancing (automatic after node addition).
-- **Rollback:** Remove added nodes via shrink API or decommission procedure.
-
-**Verification:** `curl -s "http://localhost:9200/_nodes/stats/jvm?pretty" | grep heap_used_percent` — confirm all nodes below 75% and sustained over 30 minutes of peak traffic.
+  **Risk:** Heap above 31 GB loses compressed ordinary object pointers (OOPs), reducing effective addressable memory per byte. Never exceed 50% of physical RAM; the other half is required for the OS file system cache used for segment reads. **Duration:** Takes effect after node restart; complete the rolling restart before declaring resolved. **Verification:** re-run Step 3; confirm `heap_used_percent` drops below 75 on the restarted nodes.
 
 ---
 
@@ -211,19 +201,34 @@ curl -s "http://localhost:9200/_cat/allocation?v&h=node,shards,disk.used_percent
 
 **Statement:** A circuit breaker (`request`, `fielddata`, or `parent`) has tripped, rejecting memory-intensive operations to prevent OOM, causing `429` errors and apparent latency.
 
-**Mechanism:** The parent circuit breaker (default 95% of real heap) acts as a combined limit across all child breakers. When the `request` breaker (60% of heap) trips on a large aggregation, or the `fielddata` breaker (40% of heap) trips on field data loading, Elasticsearch rejects those operations with `CircuitBreakingException`. The remaining non-rejected queries complete normally, but applications without proper retry logic surface these as high-latency or timeout errors.
+**Chain:**
+- root: A large aggregation or field data load exceeds a breaker limit (request 60%, fielddata 40%, or parent 95% of heap).
+- s1: Elasticsearch rejects the offending operation with `CircuitBreakingException` to prevent OOM.
+- s2: Applications without proper retry/backoff logic surface the rejection as high-latency or timeout errors.
+- D: Application sees HTTP `429` with `circuit_breaking_exception` and apparent latency (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `tripped` counter is non-zero on any breaker for any node
+  <!-- match: {"step": 4, "predicate": "contains", "target": "\"tripped\" : 1"} -->
+- s2: [Symptom] HTTP 429 responses with body containing `circuit_breaking_exception`
 
-- [Step 4] `tripped` counter is non-zero on any breaker for any node
-- [Symptom] HTTP 429 responses with body containing `circuit_breaking_exception`
+**Interventions:**
+- **remediation** (root): Convert text fields used in aggregations to `keyword` to eliminate field data loading. Mapping changes do not backfill existing documents (reindex required); new documents benefit immediately. Rollback: reindex to original mapping if the keyword sub-field is not desired.
 
-<!-- match: {"step": 4, "predicate": "contains", "target": "\"tripped\" : 1"} -->
+  ```bash
+  curl -X PUT "http://localhost:9200/<INDEX>/_mapping?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "properties": {
+        "<FIELD>": {
+          "type": "text",
+          "fields": { "keyword": { "type": "keyword" } }
+        }
+      }
+    }'
+  ```
 
-**Mitigation:**
-
-- **Risk:** Lowering the request breaker limit causes more queries to be rejected with 429 but protects the remaining queries from OOM. Application must handle `CircuitBreakingException` gracefully with backoff.
-- **Command:**
+  **Verification:** `curl -s "http://localhost:9200/_nodes/stats/breaker?pretty" | grep tripped` — confirm `tripped` counters stop increasing and the 429 error rate drops to zero.
+- **mitigation** (s1): Temporarily lower the request breaker to fail expensive queries fast, and clear the field data cache if the fielddata breaker tripped.
 
   ```bash
   # Temporarily lower request breaker to fail fast expensive queries
@@ -237,27 +242,7 @@ curl -s "http://localhost:9200/_cat/allocation?v&h=node,shards,disk.used_percent
   curl -X POST "http://localhost:9200/_cache/clear?fielddata=true&pretty"
   ```
 
-- **Duration:** Immediate; transient settings persist until node restart or explicit reset.
-
-**Resolution:**
-
-```bash
-# Convert text fields used in aggregations to keyword to eliminate field data loading
-curl -X PUT "http://localhost:9200/<INDEX>/_mapping?pretty" \
-  -H 'Content-Type: application/json' -d '{
-    "properties": {
-      "<FIELD>": {
-        "type": "text",
-        "fields": { "keyword": { "type": "keyword" } }
-      }
-    }
-  }'
-```
-
-- **Impact:** Mapping changes do not backfill existing documents; reindex required for existing data. New documents immediately benefit.
-- **Rollback:** Reindex to original mapping if keyword sub-field is not desired.
-
-**Verification:** `curl -s "http://localhost:9200/_nodes/stats/breaker?pretty" | grep tripped` — confirm `tripped` counters stop increasing and 429 error rate drops to zero.
+  **Risk:** Lowering the request breaker limit rejects more queries with 429 but protects the rest from OOM; the application must handle `CircuitBreakingException` gracefully with backoff. **Duration:** Immediate; transient settings persist until node restart or explicit reset. **Verification:** re-run Step 4; confirm the offending breaker stops tripping.
 
 ---
 
@@ -265,22 +250,31 @@ curl -X PUT "http://localhost:9200/<INDEX>/_mapping?pretty" \
 
 **Statement:** The search thread pool is exhausted, causing incoming queries to queue and eventually be rejected, producing rising latency and 429 errors.
 
-**Mechanism:** The search thread pool defaults to `(vCPU * 3 / 2) + 1` threads with a queue of 1000. Each search request touching N primary shards consumes N thread slots on the coordinating node's thread pool during the scatter-gather phase. Indices with excessive primary shards amplify thread consumption per query. When the queue fills, Elasticsearch rejects new search requests immediately with a `rejected` error rather than queuing indefinitely.
+**Chain:**
+- root: Indices with excessive primary shards (or high concurrency) consume search thread slots faster than they free (default `(vCPU * 3 / 2) + 1` threads, queue 1000).
+- s1: Each request touching N primary shards consumes N coordinating-node thread slots during scatter-gather, and the queue fills.
+- s2: Elasticsearch rejects new search requests immediately rather than queuing indefinitely.
+- D: Rising latency and HTTP `429` errors as requests are rejected (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] `rejected` column non-zero and increasing across polling intervals
+  <!-- match: {"step": 2, "predicate": "threshold", "target": "rejected", "op": ">", "value": 0} -->
+- s1: [Step 2] `queue` column consistently above 500 during peak traffic
 
-- [Step 2] `rejected` column non-zero and increasing across polling intervals
-- [Step 2] `queue` column consistently above 500 during peak traffic
-
-<!-- match: {"step": 2, "predicate": "threshold", "target": "rejected", "op": ">", "value": 0} -->
-
-**Mitigation:**
-
-- **Risk:** Increasing queue size delays timeout detection; clients wait longer before failing. Coordinate with application teams on timeout settings before increasing.
-- **Command:**
+**Interventions:**
+- **remediation** (root): Add coordinating-only nodes to handle scatter-gather and free data-node threads, and reduce primary shard count on over-sharded indices via the shrink API. Shrink requires the index read-only with all shards relocated to one node first — plan a maintenance window. Rollback: shrink cannot be undone; retain the original index until verified.
 
   ```bash
-  # Increase search queue size (dynamic in ES 7.x+)
+  curl -X POST "http://localhost:9200/<INDEX>/_shrink/<SHRUNK_INDEX>?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "settings": { "index.number_of_shards": 1 }
+    }'
+  ```
+
+  **Verification:** `curl -s "http://localhost:9200/_cat/thread_pool/search?v&h=node_name,active,queue,rejected"` — confirm `rejected` stops increasing and `queue` stays below 200 during peak.
+- **mitigation** (s1): Increase the search queue size (dynamic in ES 7.x+) to buy time without dropping requests.
+
+  ```bash
   curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
     -H 'Content-Type: application/json' -d '{
       "transient": {
@@ -289,23 +283,7 @@ curl -X PUT "http://localhost:9200/<INDEX>/_mapping?pretty" \
     }'
   ```
 
-- **Duration:** Immediate; buys time to investigate root cause without dropping requests.
-
-**Resolution:**
-
-```bash
-# Add coordinating-only nodes to handle scatter-gather and free data node threads
-# Reduce primary shard count on over-sharded indices using shrink API:
-curl -X POST "http://localhost:9200/<INDEX>/_shrink/<SHRUNK_INDEX>?pretty" \
-  -H 'Content-Type: application/json' -d '{
-    "settings": { "index.number_of_shards": 1 }
-  }'
-```
-
-- **Impact:** Shrink API requires the index to be read-only and all shards relocated to one node first; plan a maintenance window.
-- **Rollback:** Shrink cannot be undone; retain original index until verified.
-
-**Verification:** `curl -s "http://localhost:9200/_cat/thread_pool/search?v&h=node_name,active,queue,rejected"` — confirm `rejected` count stops increasing and `queue` stays below 200 during peak.
+  **Risk:** A larger queue delays timeout detection; clients wait longer before failing. Coordinate with application teams on timeout settings before increasing. **Duration:** Immediate; buys time to investigate the root cause without dropping requests. **Verification:** re-run Step 2; confirm `rejected` stops increasing while the root cause is addressed.
 
 ---
 
@@ -313,44 +291,42 @@ curl -X POST "http://localhost:9200/<INDEX>/_shrink/<SHRUNK_INDEX>?pretty" \
 
 **Statement:** An index accumulates hundreds of segments per shard due to insufficient background merging, forcing queries to union results across all segments and increasing per-query overhead.
 
-**Mechanism:** Elasticsearch writes new data in small Lucene segments. Background merge policies consolidate segments, but high write throughput can outpace merging. Each query must open and search every segment independently then merge results. Segment metadata (bloom filters, field stats) consumes heap proportional to count. Read-only historical indices that were never force-merged retain the high segment count from their active indexing period indefinitely.
+**Chain:**
+- root: High write throughput outpaces background merge policy, so an index accumulates hundreds of small Lucene segments per shard (never force-merged once read-only).
+- s1: Each query must open and search every segment independently, then merge results.
+- s2: Segment metadata (bloom filters, field stats) consumes heap proportional to segment count, amplifying per-query overhead.
+- D: Per-query overhead rises and search latency increases (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] `segments.count` above 200 per shard on indices that are no longer receiving writes
+  <!-- match: {"step": 8, "predicate": "threshold", "target": "segments.count", "op": ">", "value": 200} -->
+- root: [Step 8] read-only time-based indices (e.g., Logstash `logstash-YYYY.MM.DD`) with high segment counts
 
-- [Step 8] `segments.count` above 200 per shard on indices that are no longer receiving writes
-- [Step 8] read-only time-based indices (e.g., Logstash `logstash-YYYY.MM.DD`) with high segment counts
-
-<!-- match: {"step": 8, "predicate": "threshold", "target": "segments.count", "op": ">", "value": 200} -->
-
-**Mitigation:**
-
-- **Risk:** Force merge triggers intensive I/O. Run only during off-peak hours. Never force merge actively written indices — it interferes with normal merge policy and can create segments larger than intended.
-- **Command:**
+**Interventions:**
+- **remediation** (root): Force-merge the closed/read-only index to 1 segment (off-peak only).
 
   ```bash
-  # Force merge a closed/read-only index to 1 segment (off-peak only)
   curl -X POST "http://localhost:9200/<INDEX_NAME>/_forcemerge?max_num_segments=1&pretty"
   ```
 
-- **Duration:** Minutes to hours depending on index size and disk throughput; monitor `_cat/tasks` to track progress.
+  **Verification:** `curl -s "http://localhost:9200/_cat/indices/<INDEX_NAME>?v&h=index,segments.count"` — confirm `segments.count` at or near 1 after force merge completes.
+- **defensive_fix** (root): Increase the refresh interval during active indexing and tune the merge policy to reduce segment creation rate on actively indexed indices.
 
-**Resolution:**
+  ```bash
+  # Increase refresh interval during active indexing to reduce segment creation rate
+  curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "index.refresh_interval": "30s"
+    }'
+  # Tune merge policy for actively indexed indices
+  curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "index.merge.policy.segments_per_tier": 5,
+      "index.merge.policy.max_merge_at_once": 5
+    }'
+  ```
 
-```bash
-# Increase refresh interval during active indexing to reduce segment creation rate
-curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
-  -H 'Content-Type: application/json' -d '{
-    "index.refresh_interval": "30s"
-  }'
-# Tune merge policy for actively indexed indices
-curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
-  -H 'Content-Type: application/json' -d '{
-    "index.merge.policy.segments_per_tier": 5,
-    "index.merge.policy.max_merge_at_once": 5
-  }'
-```
-
-**Verification:** `curl -s "http://localhost:9200/_cat/indices/<INDEX_NAME>?v&h=index,segments.count"` — confirm `segments.count` at or near 1 after force merge completes.
+  **Verification:** Re-run Step 8; confirm new segment accumulation slows on the actively indexed index.
 
 ---
 
@@ -358,77 +334,69 @@ curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
 
 **Statement:** Queries using `from` + `size` exceeding 10 000 force Elasticsearch to load and discard large result windows from every shard, causing memory pressure and latency proportional to the pagination depth.
 
-**Mechanism:** Each shard must retrieve and sort all `from + size` documents before the coordinating node can select the final page. For a query with `from=9000, size=100`, every shard sends 9 100 hits to the coordinating node. With many shards, this results in gigabytes of heap allocation per query and triggers the request circuit breaker when `index.max_result_window` is set above the default 10 000.
+**Chain:**
+- root: A query uses `from` + `size` exceeding 10 000 (with `index.max_result_window` raised above the default).
+- s1: Each shard must retrieve and sort all `from + size` documents before the coordinating node selects the final page (e.g. `from=9000, size=100` sends 9 100 hits per shard).
+- s2: With many shards this allocates gigabytes of heap per query and can trip the request circuit breaker.
+- D: Memory pressure and latency proportional to pagination depth (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] slow log entries showing `from` values above 5 000 in the query `source`
+  <!-- match: {"step": 5, "predicate": "contains", "target": "\"from\""} -->
+- s2: [Step 4] `request` breaker `estimated_size` spikes correlated with pagination-heavy traffic
 
-- [Step 5] slow log entries showing `from` values above 5 000 in the query `source`
-- [Step 4] `request` breaker `estimated_size` spikes correlated with pagination-heavy traffic
-
-<!-- match: {"step": 5, "predicate": "contains", "target": "\"from\""} -->
-
-**Mitigation:**
-
-- **Risk:** Requires application-side change; interim mitigation is to cap `index.max_result_window` to prevent heap exhaustion.
-- **Command:**
+**Interventions:**
+- **remediation** (root): Migrate to `search_after` with a Point-in-Time (PIT) for stateless cursor pagination instead of `from`+`size`.
 
   ```bash
-  # Enforce hard cap on deep pagination (returns 400 for requests exceeding limit)
+  # Step 1: Open a PIT
+  curl -X POST "http://localhost:9200/<INDEX_NAME>/_pit?keep_alive=1m&pretty"
+  # Step 2: Use search_after with sort and pit.id from Step 1
+  curl -s -X GET "http://localhost:9200/_search?pretty" \
+    -H 'Content-Type: application/json' -d '{
+      "size": 100,
+      "query": { "match_all": {} },
+      "sort": [{ "@timestamp": "desc" }, { "_shard_doc": "desc" }],
+      "pit": { "id": "<PIT_ID>", "keep_alive": "1m" }
+    }'
+  ```
+
+  **Verification:** Confirm no slow log entries contain `"from"` values above 1 000 and that request circuit breaker `estimated_size` stops spiking during pagination-heavy traffic windows.
+- **mitigation** (root): Enforce a hard cap on deep pagination via `index.max_result_window` (returns 400 for requests exceeding the limit) as an interim measure pending the application-side change.
+
+  ```bash
   curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
     -H 'Content-Type: application/json' -d '{
       "index.max_result_window": 10000
     }'
   ```
 
-- **Duration:** Immediate; blocks new deep-pagination requests.
-
-**Resolution:**
-
-```bash
-# Migrate to search_after with Point-in-Time for stateless cursor pagination
-# Step 1: Open a PIT
-curl -X POST "http://localhost:9200/<INDEX_NAME>/_pit?keep_alive=1m&pretty"
-# Step 2: Use search_after with sort and pit.id from Step 1
-curl -s -X GET "http://localhost:9200/_search?pretty" \
-  -H 'Content-Type: application/json' -d '{
-    "size": 100,
-    "query": { "match_all": {} },
-    "sort": [{ "@timestamp": "desc" }, { "_shard_doc": "desc" }],
-    "pit": { "id": "<PIT_ID>", "keep_alive": "1m" }
-  }'
-```
-
-**Verification:** Confirm no slow log entries contain `"from"` values above 1 000 and that request circuit breaker `estimated_size` stops spiking during pagination-heavy traffic windows.
+  **Risk:** Requires an eventual application-side change; the cap rejects deep-pagination requests with 400 in the meantime. **Duration:** Immediate; blocks new deep-pagination requests. **Verification:** re-run Step 4; confirm `request` breaker `estimated_size` stops spiking during pagination-heavy windows.
 
 ---
 
-### Cause Z: Unidentified cause [Default]
+### Cause Z: Unidentified
 
 **Statement:** Search latency is elevated but the diagnostic steps do not clearly point to a single known cause.
 
-**Mechanism:** Latency can arise from combinations of causes (e.g., moderate heap pressure plus moderate thread pool saturation), from transient cluster events (network partition, shard relocation storm), or from application-side issues (connection pool exhaustion upstream of Elasticsearch). The interaction of multiple moderate stressors may not surface as a clear single indicator.
+**Chain:**
+- root: No single threshold or pattern from Causes A–F matched after all diagnostic steps.
+- s1: Latency arises from a combination of moderate stressors, a transient cluster event (network partition, shard relocation storm), or an application-side issue upstream of Elasticsearch.
+- D: Search latency is elevated with no clear single indicator (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Default] All Steps 1–8 completed and no single threshold or pattern from Causes A–F matched
 
-- [Default] All Steps 1–8 completed and no single threshold or pattern from Causes A–F matched
-
-**Mitigation:**
-
-- **Risk:** Escalation path; no cluster changes until cause is identified.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): Capture a full diagnostic snapshot for escalation, then escalate to Elasticsearch support or a platform engineer with the snapshot files and GC log excerpts.
 
   ```bash
-  # Capture a full diagnostic snapshot for escalation
   curl -s "http://localhost:9200/_cluster/stats?pretty" > /tmp/es-cluster-stats.json
   curl -s "http://localhost:9200/_nodes/stats?pretty" > /tmp/es-nodes-stats.json
   curl -s "http://localhost:9200/_tasks?detailed=true&actions=*search*&pretty" > /tmp/es-search-tasks.json
   ```
 
-- **Duration:** Safe indefinitely; no cluster changes made.
-
-**Resolution:** Out of runbook scope — escalate to Elasticsearch support or a platform engineer with the diagnostic snapshot files and GC log excerpts.
-
-**Verification:** Latency returns to baseline within SLA after escalation team applies targeted fix and 24-hour monitoring period elapses.
+  **Risk:** Escalation path; no cluster changes are made until the cause is identified. **Duration:** Safe indefinitely; no cluster changes made. **Verification:** Latency returns to baseline within SLA after the escalation team applies a targeted fix and a 24-hour monitoring period elapses.
 
 ## Prevention
 
