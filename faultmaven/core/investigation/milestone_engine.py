@@ -181,26 +181,43 @@ def _case_has_symptom_evidence(case: Case) -> bool:
 
 
 def _solution_cause_validated(case: Case) -> bool:
-    """M5 gate predicate: may a permanent-fix SOLUTION be registered?
+    """M5 gate predicate: is the cause established enough to register a SOLUTION?
 
-    True iff the cause is *mechanistically validated* — ``cause_state ==
-    IDENTIFIED``, i.e. some chain's root node has been validated by evidence
-    (methodology M5 / §9.2: IDENTIFIED "unlocks solution work"). A permanent
-    remediation proposed before this is the premature-fix / test-recorded-as-a-
-    solution failure M5 forbids; the gate downgrades it to DIAGNOSTIC so the
-    flow continues (the LLM validates the root, or proposes a mitigation).
+    Delegates to the **same** "cause established" predicate the terminal /
+    resolution gate uses (``terminal_transitions._cause_identified``):
+    ``cause_state == IDENTIFIED`` **or** a set ``RootCauseConclusion`` **or** a
+    ``working_conclusion`` at ≥ 0.6. This shared predicate is load-bearing for
+    two reasons:
 
-    Scope (deliberate, non-over-engineered): this gates the engine's SOLUTION
-    action class as a whole. The methodology exempts mitigation *and*
-    defensive_fix (permanent @ intermediate) from M5, but the current solution
-    emission carries no ``InterventionQuadrant`` — the engine cannot tell a
-    defensive_fix from a remediation (both are non-WORKAROUND SOLUTIONs). Per-
-    quadrant precision (exempting defensive_fix) is deferred until the emission
-    carries a quadrant; until then the gate treats every permanent fix as
-    remediation-grade, the safe "never propose an ungrounded permanent fix"
-    direction. Pure over case state; no side effects.
+    1. **Consistency — no deadlock.** M5 must never be *stricter* than the gate
+       that lets a case RESOLVE. The resolution gate accepts the RCC / working-
+       conclusion backstop because ``cause_state`` is a SOFT, under-reporting
+       signal (see ``_recompute_cause_state_from_chain``). Keying M5 on the raw
+       ``cause_state == IDENTIFIED`` alone would block a permanent fix on a case
+       the engine would otherwise let the user resolve — the engine refusing to
+       register the very fix that resolves the case.
+    2. **Same-turn correctness — no false stall.** This turn's ``cause_state`` is
+       recomputed only at the END of ``_apply_investigation_updates`` (after
+       chain emission), *after* this gate runs, so reading ``cause_state`` here
+       yields the PRIOR turn's value. The ``RootCauseConclusion`` is applied
+       early in the same method (before this gate), so on the opportunistic
+       same-turn "validate the root AND propose the fix" path the RCC branch of
+       ``_cause_identified`` correctly sees this turn's grounding.
+
+    A premature SOLUTION (cause not established by any signal) is downgraded to
+    DIAGNOSTIC — flow continues; the LLM grounds the root or proposes a
+    mitigation. Mitigation (WORKAROUND) is exempt.
+
+    Scope (deferred): the methodology also exempts ``defensive_fix`` (permanent @
+    intermediate), but the solution emission carries no ``InterventionQuadrant``,
+    so the engine cannot distinguish it from a remediation — per-quadrant
+    precision waits until the emission carries a quadrant. Pure; no side effects.
     """
-    return case.progress.cause_state == CauseState.IDENTIFIED
+    # Local import mirrors the module's other terminal_transitions uses (avoids
+    # an import cycle) and keeps M5 and the resolution gate on ONE predicate.
+    from faultmaven.core.investigation.terminal_transitions import _cause_identified
+
+    return _cause_identified(case)
 
 
 def _determine_action_type(
@@ -6368,20 +6385,21 @@ class MilestoneEngine:
                 ):
                     logger.warning(
                         f"Downgrading SOLUTION to DIAGNOSTIC for case {case.case_id}: "
-                        f"cause_state={case.progress.cause_state.value} (M5 — a "
-                        f"permanent fix requires a mechanistically-validated root)"
+                        f"cause_state={case.progress.cause_state.value}, "
+                        f"rcc={'set' if case.root_cause_conclusion else 'none'} "
+                        f"(M5 — a permanent fix requires an established root cause)"
                     )
                     action_type = InvestigationActionType.DIAGNOSTIC
                     downgrade_reason = (
                         "Your previous SOLUTION proposal was downgraded to "
-                        "DIAGNOSTIC because the root cause is not yet "
-                        "mechanistically validated (cause_state is not "
-                        "IDENTIFIED): no chain root has been confirmed by "
-                        "evidence. A permanent fix must target a validated root "
-                        "— a diagnostic test is not a solution (M5). Validate "
-                        "the root by gathering causal evidence that confirms it, "
-                        "then re-propose the fix; or, to intervene now, propose "
-                        "a temporary mitigation (WORKAROUND) instead."
+                        "DIAGNOSTIC because the root cause is not yet established "
+                        "— no validated chain root, no root-cause conclusion, and "
+                        "no high-confidence working conclusion. A permanent fix "
+                        "must target an established root cause — a diagnostic test "
+                        "is not a solution (M5). State the root cause (a "
+                        "root_cause_conclusion) backed by the evidence that "
+                        "confirms it, then re-propose the fix; or, to intervene "
+                        "now, propose a temporary mitigation (WORKAROUND) instead."
                     )
 
                 # 3D: Symptom-evidence gate — MITIGATION requires at least one

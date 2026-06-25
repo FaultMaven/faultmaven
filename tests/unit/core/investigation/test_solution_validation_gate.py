@@ -1,11 +1,14 @@
 """Tests for the M5 SOLUTION-validation gate.
 
 M5 (two-dimensional-hypothesis-methodology §0): a permanent-fix SOLUTION may not
-be registered before its root is *mechanistically validated* — i.e. before
-``cause_state == IDENTIFIED``. A premature remediation is downgraded to
-DIAGNOSTIC with a recovery ``downgrade_reason`` (graceful — the flow continues;
-the LLM validates the root or proposes a mitigation). Mitigation (WORKAROUND) is
-exempt by design.
+be registered before the cause is *established*. M5 reuses the resolution gate's
+``_cause_identified`` predicate (cause_state == IDENTIFIED OR a set
+RootCauseConclusion OR working_conclusion ≥ 0.6) so it is never stricter than the
+gate that lets a case RESOLVE, and so the RCC branch covers the same-turn
+validate-and-fix path (cause_state is recomputed only after this gate runs). A
+premature remediation is downgraded to DIAGNOSTIC with a recovery
+``downgrade_reason`` (graceful — flow continues; the LLM grounds the root or
+proposes a mitigation). Mitigation (WORKAROUND) is exempt by design.
 
 - ``TestSolutionCauseValidatedPredicate`` — the pure gate predicate.
 - ``TestM5SolutionGate`` — the gate wired into ``_apply_investigation_updates``
@@ -18,6 +21,7 @@ same call site).
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,13 +34,34 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
     CauseState,
+    ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
     InvestigationActionType,
+    RootCauseConclusion,
     SolutionType,
+    WorkingConclusion,
 )
+
+
+def _rcc() -> RootCauseConclusion:
+    return RootCauseConclusion(
+        root_cause="the connection pool is exhausted",
+        mechanism="all pool slots are held by stuck queries",
+        likelihood=0.8,
+        confidence_level=ConfidenceLevel.from_score(0.8),
+    )
+
+
+def _wc(likelihood: float) -> WorkingConclusion:
+    return WorkingConclusion(
+        statement="the pool is exhausted",
+        reasoning="observed stuck queries holding all slots",
+        likelihood=likelihood,
+    )
+
 
 pytestmark = pytest.mark.unit
 
@@ -112,9 +137,9 @@ class _Updates:
         return None
 
 
-def _updates(solution_type: SolutionType) -> _Updates:
-    return _Updates(
-        solutions_to_add=[
+def _updates(solution_type: SolutionType, *, with_rcc: bool = False) -> _Updates:
+    fields = {
+        "solutions_to_add": [
             SolutionToAdd(
                 description="Apply the permanent fix",
                 solution_type=solution_type,
@@ -123,7 +148,18 @@ def _updates(solution_type: SolutionType) -> _Updates:
                 commands=["kubectl apply -f fix.yaml"],
             )
         ]
-    )
+    }
+    if with_rcc:
+        # The LLM's root_cause_conclusion, applied to the case early in
+        # _apply_investigation_updates (before the M5 gate). Shape per the apply
+        # block: reads root_cause / mechanism / evidence_ids / likelihood.
+        fields["root_cause_conclusion"] = SimpleNamespace(
+            root_cause="the connection pool is exhausted",
+            mechanism="all pool slots are held by stuck queries",
+            evidence_ids=[],
+            likelihood=0.8,
+        )
+    return _Updates(**fields)
 
 
 # ---------------------------------------------------------------------------
@@ -132,14 +168,32 @@ def _updates(solution_type: SolutionType) -> _Updates:
 
 
 class TestSolutionCauseValidatedPredicate:
-    def test_unknown_is_not_validated(self):
-        assert _solution_cause_validated(_make_case(CauseState.UNKNOWN)) is False
+    """M5 shares the resolution gate's `_cause_identified` predicate: cause is
+    established via cause_state==IDENTIFIED OR a set RCC OR working_conclusion
+    >= 0.6. (Consistency with the resolution gate prevents a deadlock; the RCC
+    branch covers the same-turn validate+fix path — see the gate timing.)"""
 
-    def test_candidates_is_not_validated(self):
+    def test_nothing_established_is_false(self):
+        assert _solution_cause_validated(_make_case(CauseState.UNKNOWN)) is False
         assert _solution_cause_validated(_make_case(CauseState.CANDIDATES)) is False
 
-    def test_identified_is_validated(self):
+    def test_cause_state_identified_is_true(self):
         assert _solution_cause_validated(_make_case(CauseState.IDENTIFIED)) is True
+
+    def test_rcc_backstop_is_true_even_when_cause_state_not_identified(self):
+        case = _make_case(CauseState.UNKNOWN)
+        case.root_cause_conclusion = _rcc()
+        assert _solution_cause_validated(case) is True
+
+    def test_working_conclusion_at_threshold_is_true(self):
+        case = _make_case(CauseState.CANDIDATES)
+        case.working_conclusion = _wc(0.6)
+        assert _solution_cause_validated(case) is True
+
+    def test_working_conclusion_below_threshold_is_false(self):
+        case = _make_case(CauseState.CANDIDATES)
+        case.working_conclusion = _wc(0.59)
+        assert _solution_cause_validated(case) is False
 
 
 # ---------------------------------------------------------------------------
@@ -149,9 +203,10 @@ class TestSolutionCauseValidatedPredicate:
 
 @pytest.mark.asyncio
 class TestM5SolutionGate:
-    async def test_solution_downgraded_when_cause_not_identified(self):
-        """A permanent fix proposed before the root is validated → DIAGNOSTIC,
-        with an M5 recovery reason; no premature solution_proposed."""
+    async def test_solution_downgraded_when_cause_not_established(self):
+        """A permanent fix proposed before the cause is established (no IDENTIFIED,
+        no RCC, no working conclusion) → DIAGNOSTIC, with an M5 recovery reason;
+        no premature solution_proposed."""
         case = _make_case(CauseState.CANDIDATES)
         eng = _make_engine()
 
@@ -162,12 +217,12 @@ class TestM5SolutionGate:
         action = case.proposed_actions[-1]
         assert action.action_type == InvestigationActionType.DIAGNOSTIC
         assert action.downgrade_reason is not None
-        assert "IDENTIFIED" in action.downgrade_reason
+        assert "root cause is not yet established" in action.downgrade_reason
         assert case.progress.solution_proposed is False
 
     async def test_solution_allowed_when_cause_identified(self):
-        """With a mechanistically-validated root (IDENTIFIED), the SOLUTION
-        action stands and solution_proposed is set."""
+        """With a validated root (cause_state IDENTIFIED), the SOLUTION action
+        stands and solution_proposed is set."""
         case = _make_case(CauseState.IDENTIFIED)
         eng = _make_engine()
 
@@ -175,6 +230,27 @@ class TestM5SolutionGate:
             case, _updates(SolutionType.CODE_FIX), _meta()
         )
 
+        action = case.proposed_actions[-1]
+        assert action.action_type == InvestigationActionType.SOLUTION
+        assert action.downgrade_reason is None
+        assert case.progress.solution_proposed is True
+
+    async def test_solution_allowed_same_turn_root_cause_conclusion(self):
+        """REGRESSION (the ordering bug): the LLM grounds the root (emits a
+        root_cause_conclusion) AND proposes the fix in the SAME turn. cause_state
+        for this turn is recomputed only at the end of the method (after the
+        gate), so it is still UNKNOWN at gate time — but the RCC is applied
+        BEFORE the gate, so M5 (via _cause_identified) must allow the SOLUTION.
+        Keying M5 on raw cause_state would wrongly downgrade this."""
+        case = _make_case(CauseState.UNKNOWN)
+        eng = _make_engine()
+
+        await eng._apply_investigation_updates(
+            case, _updates(SolutionType.CODE_FIX, with_rcc=True), _meta()
+        )
+
+        # The RCC was applied this turn, before the gate.
+        assert case.root_cause_conclusion is not None
         action = case.proposed_actions[-1]
         assert action.action_type == InvestigationActionType.SOLUTION
         assert action.downgrade_reason is None
