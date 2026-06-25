@@ -132,7 +132,7 @@ Chunking parameters (implemented in `kb_toolkit/core/chunker.py`):
 | Min chunk size | 100 characters | Tiny sections merged with adjacent section |
 | Fallback | Sentence-boundary splitting | For structureless text without headers |
 | Frontmatter | Stripped before chunking | Metadata stored separately in ChromaDB, not embedded |
-| HTML comments | Stripped before chunking | Predicate hints lifted to ChromaDB metadata (see [runbook-cause-matching.md §6](../investigation-engine/runbook-cause-matching.md#6-chromadb-metadata-schema)) |
+| HTML comments | Stripped before chunking | Predicate hints lifted to per-Cause metadata (see [runbook-cause-matching.md §6](../investigation-engine/runbook-cause-matching.md#6-where-the-cause-graph-structure-lives)) |
 
 This means:
 
