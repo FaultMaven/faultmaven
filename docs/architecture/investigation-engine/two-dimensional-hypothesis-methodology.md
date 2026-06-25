@@ -26,17 +26,22 @@ PRs #487–#507. What is built versus still design-intent:
   preservation** — the engine renders existing `cn_…` ids back into context so
   the LLM *extends* a chain rather than re-emitting a cause as a duplicate node;
   chain-derived `cause_state` (§9.2), never asserted (M4); engine-deterministic
-  failed-fix demotion (M6, §9.3); root-actionability (M1); AND-proof (M7); and
-  the deductive-exclusion primitive (§7.1.1).
+  failed-fix demotion (M6, §9.3); root-actionability (M1); AND-proof (M7); the
+  deductive-exclusion primitive (§7.1.1); and **M5 solution-gating** — a SOLUTION
+  is registered only once the cause is *established*, using the **same predicate
+  as the resolution gate** (`_cause_identified`: `cause_state == IDENTIFIED`, a
+  set `RootCauseConclusion`, or a working conclusion ≥ 0.6) so M5 is never
+  stricter than the gate that lets a case resolve; else downgraded to a
+  diagnostic with a recovery reason (engine veto, extends INV-23; mitigation
+  exempt). *Quadrant-level precision (exempting `defensive_fix`) is deferred
+  until the solution emission carries an `InterventionQuadrant`.*
 - **Design-intent, not yet built** — the LLM satisfies these *behaviorally*; no
   engine gate enforces them: chain-level belief propagation (§9.4 — the engine
   still uses the per-evidence `+0.15 / −0.20` counter from
   [framework §6](./evidence-driven-investigation-framework.md#6-hypothesis-model));
-  F3 signature-screening (§4); the F4 family-completeness sweep; M5
-  solution-gating on a *mechanistically-validated* root (only a weaker "a
-  SOLUTION requires ≥1 hypothesis" gate exists today); and invalidation-first
-  search prioritization (§5). Each promotes to the methodology-invariant
-  registry (§0) as it is implemented.
+  F3 signature-screening (§4); the F4 family-completeness sweep; and
+  invalidation-first search prioritization (§5). Each promotes to the
+  methodology-invariant registry (§0) as it is implemented.
 
 The lifecycle/confidence *mechanics* (states, the `+0.15/−0.20` counter, decay)
 remain specified in framework §6; this document defines the reasoning the agent
