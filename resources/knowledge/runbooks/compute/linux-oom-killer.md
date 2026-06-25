@@ -6,8 +6,8 @@ service: linux
 symptom_class: [oom]
 severity: critical
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [linux, oom, memory, kernel, dmesg, overcommit, cgroups, memory-leak, swap, slab]
@@ -29,7 +29,7 @@ Applies to Linux systems running kernel 4.18 or later with any memory configurat
 
 ## Diagnostic Steps
 
-### Step 1: Confirm OOM Kill and Identify the Victim
+### Step 1: Confirm OOM kill and identify the victim
 
 ```bash
 dmesg -T | grep -E "oom-killer|Out of memory|Killed process"
@@ -41,7 +41,7 @@ Expected output: one or more timestamped lines such as `[Tue May 12 04:23:11 202
 journalctl -k --grep="oom|Killed process" --no-pager
 ```
 
-### Step 2: Determine Kill Timeline and Frequency
+### Step 2: Determine kill timeline and frequency
 
 ```bash
 dmesg -T | grep "Killed process" | awk '{print $1, $2, $3, $NF}'
@@ -55,7 +55,7 @@ systemctl status <service-name> --no-pager
 
 Expected output: `Active: active (running)` means it auto-restarted. `Active: failed` or `exit-code=137` means it is not running.
 
-### Step 3: Assess Current Memory Pressure
+### Step 3: Assess current memory pressure
 
 ```bash
 free -h
@@ -69,7 +69,7 @@ grep -E "MemTotal|MemAvailable|SwapTotal|SwapFree|Committed_AS|CommitLimit|Slab"
 
 Expected output: key values for committed vs limit comparison. If `Committed_AS` exceeds `CommitLimit`, allocations are failing under strict overcommit mode.
 
-### Step 4: Identify Top Memory Consumers
+### Step 4: Identify top memory consumers
 
 ```bash
 ps -eo pid,user,rss,vsz,comm --sort=-rss | head -20
@@ -77,7 +77,7 @@ ps -eo pid,user,rss,vsz,comm --sort=-rss | head -20
 
 Expected output: processes sorted by RSS (resident set — actual physical pages) descending. The top entries are the largest current consumers. Note the PID and process name for the suspected offender.
 
-### Step 5: Check for Memory Growth (Leak Detection)
+### Step 5: Check for memory growth (leak detection)
 
 ```bash
 ps -eo pid,lstart,rss,comm --sort=-rss | head -10
@@ -91,7 +91,7 @@ watch -n 30 'grep VmRSS /proc/<PID>/status'
 
 Expected output: `VmRSS` value increasing monotonically over successive readings indicates a leak.
 
-### Step 6: Inspect OOM Scores
+### Step 6: Inspect OOM scores
 
 ```bash
 for pid in /proc/[0-9]*/; do
@@ -105,7 +105,7 @@ done | sort -t= -k2 -rn | head -20
 
 Expected output: processes with the highest OOM score (most likely to be killed next). `oom_score_adj` of -1000 means the process is never killed; +1000 means it is killed first.
 
-### Step 7: Check Cgroup Memory Limits (Containers / systemd Units)
+### Step 7: Check cgroup memory limits (containers / systemd units)
 
 ```bash
 # cgroups v2 — host-level current slice
@@ -118,7 +118,7 @@ docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}"
 
 Expected output: `memory.max` shows the cgroup ceiling; `memory.current` shows current usage. A container showing usage at or near its limit triggered a cgroup-level OOM kill independent of host memory state.
 
-### Step 8: Check Overcommit Settings
+### Step 8: Check overcommit settings
 
 ```bash
 sysctl vm.overcommit_memory vm.overcommit_ratio
@@ -127,7 +127,7 @@ grep -E "CommitLimit|Committed_AS" /proc/meminfo
 
 Expected output: `vm.overcommit_memory` value of 0 (heuristic), 1 (always allow — dangerous), or 2 (strict). Under mode 2, `CommitLimit = swap + RAM × (overcommit_ratio / 100)`. If `Committed_AS > CommitLimit`, new allocations fail with ENOMEM and surviving processes may OOM-kill when trying to fault in pages.
 
-### Step 9: Check Kernel Slab Cache Size
+### Step 9: Check kernel slab cache size
 
 ```bash
 grep "^Slab:" /proc/meminfo
@@ -138,74 +138,68 @@ Expected output: `Slab:` total in kB. Values exceeding 1 GB on hosts with modest
 
 ## Causes
 
-### Cause A: Application Memory Leak
+### Cause A: Application memory leak
 
 **Statement:** A long-running process continuously allocates memory without releasing it, exhausting physical RAM and swap over time.
 
-**Mechanism:** The application retains references to allocated objects (unclosed file handles, unbounded in-memory caches, circular references in GC languages) preventing the allocator from returning pages to the OS. Virtual and resident set sizes grow without bound until the kernel OOM killer intervenes.
+**Chain:**
+- root: process retains references to allocated objects (unclosed handles, unbounded caches, circular references) so the allocator cannot return pages to the OS
+- s1: the process's virtual and resident set sizes grow without bound across hours
+- s2: growing RSS drives total memory demand past physical RAM and swap
+- D: the kernel OOM killer fires and kills the leaking process ([Symptom])
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 5] `VmRSS` for the process increases monotonically across 30-minute intervals without stabilising
+  <!-- match: {"step": 5, "predicate": "contains", "target": "VmRSS"} -->
+- s1: [Step 4] the same process appears at the top of the RSS ranking for multiple hours
+- D: [Step 1] dmesg identifies the same process name killed repeatedly across reboots
 
-- [Step 5] `VmRSS` for the process increases monotonically across 30-minute intervals without stabilising
-- [Step 4] The same process appears at the top of the RSS ranking for multiple hours
-- [Step 1] dmesg identifies the same process name killed repeatedly across reboots
-
-<!-- match: {"step": 5, "predicate": "contains", "target": "VmRSS"} -->
-
-**Mitigation:**
-
-- **Risk:** Application restart loses in-flight state; if the leak resumes after restart, the kill will recur without the root fix.
-- **Command:**
+**Interventions:**
+- **mitigation** (s1): restart the service to release leaked memory and buy time.
 
   ```bash
   systemctl restart <service-name>
   ```
 
-- **Duration:** Temporary relief — hours to days depending on leak rate. Root fix required.
+  **Risk:** Application restart loses in-flight state; if the leak resumes after restart, the kill will recur without the root fix. **Duration:** Temporary relief — hours to days depending on leak rate. Root fix required. **Verification:** service returns to `Active: active (running)`; `VmRSS` resets to warm-up baseline.
+- **remediation** (root): profile the application to find the leak site and patch it.
 
-**Resolution:**
+  ```bash
+  # C/C++
+  valgrind --leak-check=full --show-leak-kinds=all ./myapp
 
-Profile the application to find the leak site and patch it:
+  # Java — heap dump for analysis in Eclipse MAT
+  jmap -dump:live,format=b,file=/tmp/heap.hprof $(pgrep -o java)
 
-```bash
-# C/C++
-valgrind --leak-check=full --show-leak-kinds=all ./myapp
+  # Python — add to app code at startup
+  # import tracemalloc; tracemalloc.start()
 
-# Java — heap dump for analysis in Eclipse MAT
-jmap -dump:live,format=b,file=/tmp/heap.hprof $(pgrep -o java)
+  # Node.js — start with inspector, attach Chrome DevTools heap profiler
+  node --inspect myapp.js
+  ```
 
-# Python — add to app code at startup
-# import tracemalloc; tracemalloc.start()
-
-# Node.js — start with inspector, attach Chrome DevTools heap profiler
-node --inspect myapp.js
-```
-
-- **Impact:** Code-level fix; requires deploy. Restart is cluster-wide if replicated.
-- **Rollback:** Revert to previous application version if the patch introduces regressions.
-
-**Verification:** After patching and redeploying, run `watch -n 60 'grep VmRSS /proc/$(pgrep -o <name>)/status'` for 2 hours under production load. RSS must plateau and not grow beyond initial warm-up allocation. No new OOM entries in `dmesg -T`.
+  **Verification:** After patching and redeploying, run `watch -n 60 'grep VmRSS /proc/$(pgrep -o <name>)/status'` for 2 hours under production load. RSS must plateau and not grow beyond initial warm-up allocation. No new OOM entries in `dmesg -T`.
 
 ---
 
-### Cause B: Undersized Instance / Steady-State Demand Exceeds RAM
+### Cause B: Undersized instance / steady-state demand exceeds RAM
 
 **Statement:** The combined steady-state memory requirement of all workloads on the host permanently exceeds available physical RAM, making OOM kills inevitable under any sustained load.
 
-**Mechanism:** As workloads start and warm up (JVM heap, OS page cache, connection pools), total RSS surpasses physical RAM. Swap absorbs the excess briefly but is slower by 10–100×, increasing latency until swap is also exhausted, at which point the OOM killer fires.
+**Chain:**
+- root: aggregate steady-state RSS of all workloads on the host permanently exceeds physical RAM
+- s1: as workloads warm up (JVM heap, page cache, connection pools), total RSS surpasses physical RAM
+- s2: swap absorbs the excess but is 10–100× slower, raising latency until swap is exhausted
+- D: with RAM and swap exhausted the OOM killer fires ([Symptom])
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] total RSS of top 10 processes exceeds 90% of `MemTotal`
+- s1: [Step 3] `available` memory is below 200 MB even at quiet hours (low traffic periods)
+  <!-- match: {"step": 3, "predicate": "threshold", "target": "available_mb", "op": "<", "value": 200} -->
+- s2: [Step 3] swap is more than 50% used during normal operations
 
-- [Step 3] `available` memory is below 200 MB even at quiet hours (low traffic periods)
-- [Step 3] swap is more than 50% used during normal operations
-- [Step 4] total RSS of top 10 processes exceeds 90% of `MemTotal`
-
-<!-- match: {"step": 3, "predicate": "threshold", "target": "available_mb", "op": "<", "value": 200} -->
-
-**Mitigation:**
-
-- **Risk:** Adding swap is slower than RAM — acceptable as interim relief, harmful if relied on long-term.
-- **Command:**
+**Interventions:**
+- **mitigation** (s2): add a temporary swap file to absorb the excess until resize.
 
   ```bash
   sudo fallocate -l 4G /swapfile
@@ -214,44 +208,37 @@ node --inspect myapp.js
   sudo swapon /swapfile
   ```
 
-- **Duration:** Until instance resize. Remove with `swapoff /swapfile && rm /swapfile` after resize.
+  **Risk:** Adding swap is slower than RAM — acceptable as interim relief, harmful if relied on long-term. **Duration:** Until instance resize. Remove with `swapoff /swapfile && rm /swapfile` after resize. **Verification:** `swapon --show` lists the swapfile; OOM kills pause under current load.
+- **remediation** (root): resize the instance or VM to provide at least 20% headroom above peak RSS.
 
-**Resolution:**
+  ```bash
+  # Estimate required RAM
+  echo "Peak RSS (kB):"
+  ps -eo rss --sort=-rss | awk 'NR>1{sum+=$1} END{print sum}'
+  echo "Current MemTotal (kB):"
+  grep MemTotal /proc/meminfo | awk '{print $2}'
+  ```
 
-Resize the instance or VM to provide at least 20% headroom above peak RSS:
-
-```bash
-# Estimate required RAM
-echo "Peak RSS (kB):"
-ps -eo rss --sort=-rss | awk 'NR>1{sum+=$1} END{print sum}'
-echo "Current MemTotal (kB):"
-grep MemTotal /proc/meminfo | awk '{print $2}'
-```
-
-- **Impact:** Instance resize causes a restart. Schedule during maintenance window.
-- **Rollback:** Not applicable — downsize requires another resize operation.
-
-**Verification:** After resize, `free -h` shows `available` above 20% of `MemTotal` under peak load. Swap usage stays under 10% of total swap. No OOM entries in `dmesg -T` for 24 hours post-resize.
+  **Verification:** After resize, `free -h` shows `available` above 20% of `MemTotal` under peak load. Swap usage stays under 10% of total swap. No OOM entries in `dmesg -T` for 24 hours post-resize.
 
 ---
 
-### Cause C: No or Insufficient Swap Space
+### Cause C: No or insufficient swap space
 
 **Statement:** The host has no swap configured (or swap is smaller than peak memory bursts), so transient allocation spikes that exceed RAM have no safety buffer and immediately trigger OOM kills.
 
-**Mechanism:** Linux uses swap as overflow storage for anonymous pages evicted from RAM during memory pressure. Without swap, even a brief spike that exhausts physical RAM forces the OOM killer to act immediately rather than allowing time for the spike to subside.
+**Chain:**
+- root: host has no swap (or swap smaller than peak bursts), so there is no overflow store for anonymous pages
+- s1: a transient allocation spike exhausts physical RAM with no buffer to evict anonymous pages into
+- D: the OOM killer fires immediately rather than letting the spike subside ([Symptom])
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `SwapTotal: 0 kB` or `SwapFree` equals `SwapTotal` (swap full)
+  <!-- match: {"step": 3, "predicate": "contains", "target": "SwapTotal:          0 kB"} -->
+- s1: [Step 1] OOM kill occurs during a known batch job or traffic spike (transient event)
 
-- [Step 3] `SwapTotal: 0 kB` or `SwapFree` equals `SwapTotal` (swap full)
-- [Step 1] OOM kill occurs during a known batch job or traffic spike (transient event)
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "SwapTotal:          0 kB"} -->
-
-**Mitigation:**
-
-- **Risk:** HDD-backed swap causes severe latency (10–100× slower than RAM). SSD-backed swap is acceptable short-term. Never use swap as a substitute for right-sizing.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): add a swap file now to give transient spikes a buffer.
 
   ```bash
   sudo fallocate -l 4G /swapfile
@@ -260,43 +247,36 @@ grep MemTotal /proc/meminfo | awk '{print $2}'
   sudo swapon /swapfile
   ```
 
-- **Duration:** Immediate and persistent across the session until the node reboots or swap is removed.
+  **Risk:** HDD-backed swap causes severe latency (10–100× slower than RAM). SSD-backed swap is acceptable short-term. Never use swap as a substitute for right-sizing. **Duration:** Immediate and persistent across the session until the node reboots or swap is removed. **Verification:** `swapon --show` lists the swapfile; `free -h` shows non-zero `SwapTotal`.
+- **remediation** (root): make swap persistent across reboots and tune swappiness.
 
-**Resolution:**
+  ```bash
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.d/99-swap.conf
+  sudo sysctl -p /etc/sysctl.d/99-swap.conf
+  ```
 
-Make swap persistent across reboots and tune swappiness:
-
-```bash
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.d/99-swap.conf
-sudo sysctl -p /etc/sysctl.d/99-swap.conf
-```
-
-- **Impact:** Host-wide, survives reboots. Low swappiness (10) means the kernel prefers reclaiming page cache before using swap — appropriate for servers.
-- **Rollback:** `swapoff /swapfile && rm /swapfile` and remove the `/etc/fstab` line.
-
-**Verification:** `swapon --show` lists the swapfile with the expected size. `free -h` shows non-zero `SwapTotal`. No subsequent OOM events for the same transient workload pattern.
+  **Verification:** `swapon --show` lists the swapfile with the expected size. `free -h` shows non-zero `SwapTotal`. No subsequent OOM events for the same transient workload pattern.
 
 ---
 
-### Cause D: Cgroup Memory Limit Hit (Containerized Workload)
+### Cause D: Cgroup memory limit hit (containerized workload)
 
 **Statement:** A container or systemd unit hit its cgroup memory ceiling, triggering a cgroup-level OOM kill even though the host has sufficient free memory.
 
-**Mechanism:** Cgroup v2 enforces `memory.max` as a hard limit per control group. When a container's RSS reaches this ceiling, the cgroup OOM killer fires against that container's PID namespace regardless of host-level memory availability. The host `dmesg` may show a reduced-context kill message mentioning `memory cgroup`.
+**Chain:**
+- root: a container or systemd unit's `memory.max` cgroup ceiling is set below its actual peak RSS
+- s1: the container's RSS climbs to the cgroup ceiling regardless of host-level free memory
+- D: the cgroup OOM killer fires against that container's PID namespace ([Symptom])
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] `memory.current` approaches `memory.max` for the target cgroup
+- s1: [Step 7] `docker stats` shows a container at or above its memory limit
+- D: [Step 1] dmesg contains `memory cgroup out of memory` or `oom-kill-constraint` referencing a cgroup path
+  <!-- match: {"step": 7, "predicate": "contains", "target": "memory cgroup out of memory"} -->
 
-- [Step 7] `docker stats` shows a container at or above its memory limit
-- [Step 7] `memory.current` approaches `memory.max` for the target cgroup
-- [Step 1] dmesg contains `memory cgroup out of memory` or `oom-kill-constraint` referencing a cgroup path
-
-<!-- match: {"step": 7, "predicate": "contains", "target": "memory cgroup out of memory"} -->
-
-**Mitigation:**
-
-- **Risk:** Increasing the limit allows the container to consume more host memory; verify there is headroom before doing so.
-- **Command:**
+**Interventions:**
+- **mitigation** (s1): raise the cgroup limit to stop the immediate kills (only if host has headroom).
 
   ```bash
   # Docker
@@ -307,105 +287,87 @@ sudo sysctl -p /etc/sysctl.d/99-swap.conf
   sudo systemctl daemon-reload && sudo systemctl restart <unit>.service
   ```
 
-- **Duration:** Immediate; persists until next config change.
+  **Risk:** Increasing the limit allows the container to consume more host memory; verify there is headroom before doing so. **Duration:** Immediate; persists until next config change. **Verification:** `docker stats` shows usage below the new ceiling; no cgroup OOM kills for the container.
+- **remediation** (root): set the limit to 20% above observed peak RSS, or optimise the app to reduce peak footprint.
 
-**Resolution:**
+  ```bash
+  # Find peak RSS for a running container
+  docker stats --no-stream --format "{{.MemUsage}}" <container-name>
+  ```
 
-Set the memory limit to 20% above observed peak RSS in the container, or optimise the application to reduce peak footprint:
-
-```bash
-# Find peak RSS for a running container
-docker stats --no-stream --format "{{.MemUsage}}" <container-name>
-```
-
-- **Impact:** Single container / unit. No host restart needed.
-- **Rollback:** `docker update --memory 0 <container-id>` removes the limit (use cautiously).
-
-**Verification:** Run the workload pattern that previously triggered the OOM kill. `docker stats` shows memory usage stabilising below the new limit. No OOM entries for that container in `dmesg -T` or `journalctl -k`.
+  **Verification:** Run the workload pattern that previously triggered the OOM kill. `docker stats` shows memory usage stabilising below the new limit. No OOM entries for that container in `dmesg -T` or `journalctl -k`.
 
 ---
 
-### Cause E: Kernel Slab Cache Exhaustion
+### Cause E: Kernel slab cache exhaustion
 
 **Statement:** The kernel's internal slab allocator (dentries, inodes, network buffers) grows unboundedly on filesystem- or network-heavy workloads, consuming RAM that user-space processes cannot reclaim.
 
-**Mechanism:** Slab caches hold frequently used kernel objects. Workloads that create large numbers of files, directories, or network connections cause these caches to grow. Unlike user-space memory, slab is not automatically evicted; `vm.vfs_cache_pressure` controls how aggressively the kernel reclaims dentry and inode caches relative to page cache.
+**Chain:**
+- root: a filesystem- or network-heavy workload creates large numbers of kernel objects (dentries, inodes, buffers)
+- s1: slab caches grow holding these objects and are not automatically evicted like user-space pages
+- s2: slab consumes RAM that user-space processes cannot reclaim, lowering `MemAvailable`
+- D: with reclaimable memory exhausted the OOM killer fires ([Symptom])
 
-**Indicator:**
+**Indicators:**
+- root: [Step 9] `slabtop` shows `dentry`, `inode_cache`, or `ext4_inode_cache` as the largest consumers
+- s1: [Step 9] `Slab:` in `/proc/meminfo` exceeds 1 GB
+  <!-- match: {"step": 9, "predicate": "threshold", "target": "slab_kb", "op": ">", "value": 1048576} -->
+- s2: [Step 3] `MemAvailable` is low despite few large user-space processes in Step 4
 
-- [Step 9] `Slab:` in `/proc/meminfo` exceeds 1 GB
-- [Step 9] `slabtop` shows `dentry`, `inode_cache`, or `ext4_inode_cache` as the largest consumers
-- [Step 3] `MemAvailable` is low despite few large user-space processes in Step 4
-
-<!-- match: {"step": 9, "predicate": "threshold", "target": "slab_kb", "op": ">", "value": 1048576} -->
-
-**Mitigation:**
-
-- **Risk:** Raising `vfs_cache_pressure` aggressively shrinks caches which may increase filesystem latency as dentries must be reloaded from disk.
-- **Command:**
+**Interventions:**
+- **mitigation** (s2): raise `vfs_cache_pressure` to force the kernel to reclaim slab caches now.
 
   ```bash
   sudo sysctl -w vm.vfs_cache_pressure=200
   ```
 
-- **Duration:** Immediate; slab reclaim begins within seconds. Revert if latency increases.
+  **Risk:** Raising `vfs_cache_pressure` aggressively shrinks caches which may increase filesystem latency as dentries must be reloaded from disk. **Duration:** Immediate; slab reclaim begins within seconds. Revert if latency increases. **Verification:** `grep "^Slab:" /proc/meminfo` shows a declining value within minutes.
+- **remediation** (root): persist the pressure setting and investigate the workload generating excessive dentries/inodes.
 
-**Resolution:**
+  ```bash
+  echo 'vm.vfs_cache_pressure=200' | sudo tee /etc/sysctl.d/99-slab.conf
+  sudo sysctl -p /etc/sysctl.d/99-slab.conf
+  ```
 
-Persist the pressure setting and investigate the workload generating excessive directory entries or inodes:
-
-```bash
-echo 'vm.vfs_cache_pressure=200' | sudo tee /etc/sysctl.d/99-slab.conf
-sudo sysctl -p /etc/sysctl.d/99-slab.conf
-```
-
-- **Impact:** Host-wide, survives reboots. Tune value between 100 (default) and 500.
-- **Rollback:** `sudo sysctl -w vm.vfs_cache_pressure=100` and remove the sysctl.d file.
-
-**Verification:** `grep "^Slab:" /proc/meminfo` shows a declining value over 30 minutes. `MemAvailable` increases accordingly. No new OOM kills in `dmesg -T`.
+  **Verification:** `grep "^Slab:" /proc/meminfo` shows a declining value over 30 minutes. `MemAvailable` increases accordingly. No new OOM kills in `dmesg -T`.
 
 ---
 
-### Cause F: Aggressive Overcommit Allowing Runaway Allocation
+### Cause F: Aggressive overcommit allowing runaway allocation
 
 **Statement:** `vm.overcommit_memory=1` permits unlimited memory overcommit, allowing processes to commit far more virtual memory than physically exists, making OOM kills likely when pages are actually faulted in.
 
-**Mechanism:** In mode 1, the kernel never refuses a `mmap`/`malloc` call regardless of how much memory has already been committed. Processes that over-allocate virtual memory succeed initially; the OOM killer fires when pages are faulted in and no physical memory is available. Mode 1 is intended for specific workloads (e.g., fork-heavy scientific computing) and is inappropriate for general server use.
+**Chain:**
+- root: `vm.overcommit_memory=1` makes the kernel never refuse a `mmap`/`malloc` regardless of committed memory
+- s1: processes over-allocate virtual memory far beyond physical RAM and the allocations succeed
+- s2: when those committed pages are faulted in, no physical memory is available to back them
+- D: the OOM killer fires with no prior gradual climb in monitoring ([Symptom])
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] `vm.overcommit_memory = 1`
+  <!-- match: {"step": 8, "predicate": "contains", "target": "vm.overcommit_memory = 1"} -->
+- s1: [Step 8] `Committed_AS` is 2× or more `MemTotal`
+- D: [Step 1] OOM kills occur without prior warning — no gradual memory climb visible in monitoring
 
-- [Step 8] `vm.overcommit_memory = 1`
-- [Step 8] `Committed_AS` is 2× or more `MemTotal`
-- [Step 1] OOM kills occur without prior warning — no gradual memory climb visible in monitoring
-
-<!-- match: {"step": 8, "predicate": "contains", "target": "vm.overcommit_memory = 1"} -->
-
-**Mitigation:**
-
-- **Risk:** Switching to mode 2 (strict overcommit) will cause allocations that exceed `CommitLimit` to fail immediately with `ENOMEM`. Applications that do not handle `malloc` returning NULL will crash instead of being OOM-killed; this is safer but may surface application bugs.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): switch to strict overcommit (mode 2) and test application behaviour before persisting.
 
   ```bash
   sudo sysctl -w vm.overcommit_memory=2
   sudo sysctl -w vm.overcommit_ratio=80
   ```
 
-- **Duration:** Immediate; test application behaviour before making persistent.
+  **Risk:** Switching to mode 2 (strict overcommit) will cause allocations that exceed `CommitLimit` to fail immediately with `ENOMEM`. Applications that do not handle `malloc` returning NULL will crash instead of being OOM-killed; this is safer but may surface application bugs. **Duration:** Immediate; test application behaviour before making persistent. **Verification:** `sysctl vm.overcommit_memory` returns `2`; `Committed_AS` stays below `CommitLimit`.
+- **remediation** (root): persist the stricter overcommit policy.
 
-**Resolution:**
+  ```bash
+  echo 'vm.overcommit_memory=2' | sudo tee /etc/sysctl.d/99-overcommit.conf
+  echo 'vm.overcommit_ratio=80' | sudo tee -a /etc/sysctl.d/99-overcommit.conf
+  sudo sysctl -p /etc/sysctl.d/99-overcommit.conf
+  ```
 
-Persist the stricter overcommit policy:
-
-```bash
-echo 'vm.overcommit_memory=2' | sudo tee /etc/sysctl.d/99-overcommit.conf
-echo 'vm.overcommit_ratio=80' | sudo tee -a /etc/sysctl.d/99-overcommit.conf
-sudo sysctl -p /etc/sysctl.d/99-overcommit.conf
-```
-
-- **Impact:** Host-wide. `CommitLimit = SwapTotal + MemTotal × 0.80`. Monitor `Committed_AS` vs `CommitLimit` in `/proc/meminfo` after change.
-- **Rollback:** `sudo sysctl -w vm.overcommit_memory=0` restores heuristic mode.
-
-**Verification:** `sysctl vm.overcommit_memory` returns `2`. `Committed_AS` stays below `CommitLimit` in `/proc/meminfo`. OOM kills cease and any process that would previously have been killed now receives `ENOMEM` at allocation time.
+  **Verification:** `sysctl vm.overcommit_memory` returns `2`. `Committed_AS` stays below `CommitLimit` in `/proc/meminfo`. OOM kills cease and any process that would previously have been killed now receives `ENOMEM` at allocation time.
 
 ---
 
@@ -413,16 +375,15 @@ sudo sysctl -p /etc/sysctl.d/99-overcommit.conf
 
 **Statement:** The OOM kill cause cannot be determined from the available diagnostic output and does not match any of the above patterns.
 
-**Mechanism:** Memory exhaustion may result from an unusual combination of slab growth, network buffer pressure, NUMA imbalance, HugePages misconfiguration, or a kernel bug. Further kernel-level tracing is required.
+**Chain:**
+- root: the OOM kill arises from an unusual combination (slab growth, network buffer pressure, NUMA imbalance, HugePages misconfiguration, or a kernel bug) not matched above
+- D: memory exhaustion triggers the OOM killer with no identified pattern ([Symptom])
 
-**Indicator:**
+**Indicators:**
+- root: [Default] None of Causes A–F match the diagnostic output
 
-- [Default] None of Causes A–F match the diagnostic output
-
-**Mitigation:**
-
-- **Risk:** Low — the following actions are read-only data collection steps.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot and escalate to kernel/platform engineering.
 
   ```bash
   # Full memory snapshot
@@ -432,11 +393,7 @@ sudo sysctl -p /etc/sysctl.d/99-overcommit.conf
   slabtop -o --sort=c >> /tmp/meminfo-snapshot.txt
   ```
 
-- **Duration:** Collect snapshots for 30 minutes during a reproduction window.
-
-**Resolution:** Out of runbook scope — escalate to kernel/platform engineering with the collected snapshots and `dmesg` output. Reference: Linux kernel OOM documentation at `https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html`.
-
-**Verification:** N/A — escalation required.
+  **Risk:** Low — the snapshot commands are read-only data collection steps. **Duration:** Collect snapshots for 30 minutes during a reproduction window, then escalate. **Verification:** N/A — escalation required. Escalate to kernel/platform engineering with the collected snapshots and `dmesg` output. Reference: Linux kernel OOM documentation at `https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html`.
 
 ## Prevention
 

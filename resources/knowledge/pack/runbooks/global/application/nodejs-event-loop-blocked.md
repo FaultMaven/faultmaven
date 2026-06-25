@@ -6,8 +6,8 @@ service: nodejs
 symptom_class: [latency]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [nodejs, event-loop, latency, performance, cpu, worker-threads, clinic]
@@ -148,21 +148,37 @@ Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applie
 
 ### Cause A: Synchronous blocking API in a request handler
 
-**Statement:** A `*Sync` method (`fs.readFileSync`, `crypto.pbkdf2Sync`, `zlib.deflateSync`, `child_process.execSync`) is called inside a request handler, monopolizing the main thread for the duration of each call.
+**Statement:** A `*Sync` method (`fs.readFileSync`, `crypto.pbkdf2Sync`, `zlib.deflateSync`, `child_process.execSync`) is called inside a request handler, monopolizing the single main thread for the duration of each call.
 
-**Mechanism:** Node.js executes JavaScript on a single thread. Synchronous APIs block the event loop phases until they return, preventing all other callbacks — including timers, health checks, and other request handlers — from running. A single call to `fs.readFileSync` on a network-mounted filesystem can block for hundreds of milliseconds to seconds.
+**Chain:**
+- root: a `*Sync` API call lives on a request-handler code path
+- s1: each invocation runs synchronously on the single JavaScript thread, blocking all event loop phases until it returns
+- s2: timers, health checks, and other request handlers cannot run while the call is in progress (a network-mounted `fs.readFileSync` blocks hundreds of ms to seconds)
+- D: response times spike and the event loop lags (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `grep` output lists one or more `*Sync(` calls inside `src/` handler files
+  <!-- match: {"step": 3, "predicate": "contains", "target": "Sync("} -->
+- s2: [Step 4] flame graph shows a wide bar for a `fs`, `crypto`, or `zlib` synchronous call originating from a route handler
 
-- [Step 3] `grep` output lists one or more `*Sync(` calls inside `src/` handler files
-- [Step 4] Flame graph shows a wide bar for a `fs`, `crypto`, or `zlib` synchronous call originating from a route handler
+**Interventions:**
+- **remediation** (root): replace the synchronous call with its async equivalent so the handler no longer blocks the thread.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "Sync("} -->
+  ```javascript
+  // Replace synchronous file reads with async equivalents
+  // BEFORE
+  const data = fs.readFileSync('/path/to/file', 'utf8');
 
-**Mitigation:**
+  // AFTER (promise-based)
+  const data = await fs.promises.readFile('/path/to/file', 'utf8');
 
-- **Risk:** None for replacing `*Sync` with async equivalents during a deployment; request handlers will continue processing.
-- **Command:**
+  // AFTER (streams for large files)
+  const stream = fs.createReadStream('/path/to/file');
+  stream.pipe(res);
+  ```
+
+  **Verification:** Re-run Step 1 after deploying the fix. p99 event loop lag should drop below 20 ms, and Step 3 grep should return no `*Sync` calls in request handler paths.
+- **mitigation** (root): enumerate all `*Sync` call sites with file + line to scope the replacement (no temporary runtime mitigation exists without a restart).
 
   ```bash
   # Identify all Sync call sites with file + line for targeted replacement
@@ -170,45 +186,46 @@ Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applie
   cat /tmp/sync-calls.txt
   ```
 
-- **Duration:** Permanent code change; no temporary mitigation available without a restart.
-
-**Resolution:**
-
-```javascript
-// Replace synchronous file reads with async equivalents
-// BEFORE
-const data = fs.readFileSync('/path/to/file', 'utf8');
-
-// AFTER (promise-based)
-const data = await fs.promises.readFile('/path/to/file', 'utf8');
-
-// AFTER (streams for large files)
-const stream = fs.createReadStream('/path/to/file');
-stream.pipe(res);
-```
-
-**Verification:** Re-run Step 1 after deploying the fix. p99 event loop lag should drop below 20 ms. Confirm Step 3 grep returns no `*Sync` calls in request handler paths.
+  **Risk:** None — this is read-only enumeration; replacing `*Sync` with async equivalents during a deployment lets handlers keep processing. **Duration:** Permanent code change; the snapshot stays valid until the calls are removed. **Verification:** confirm `/tmp/sync-calls.txt` lists every site flagged in Step 3.
 
 ---
 
 ### Cause B: Large JSON serialization or deserialization on the main thread
 
-**Statement:** Calling `JSON.parse()` or `JSON.stringify()` on payloads larger than approximately 10 MB blocks the main thread for hundreds of milliseconds to over a second.
+**Statement:** `JSON.parse()` or `JSON.stringify()` runs on payloads larger than approximately 10 MB inside a request handler, blocking the main thread for hundreds of milliseconds to over a second.
 
-**Mechanism:** The V8 JSON parser and serializer are synchronous and run on the main thread. Benchmarks show `JSON.stringify()` on a 50 MB object takes approximately 0.7 seconds and `JSON.parse()` takes approximately 1.3 seconds, blocking all other callbacks for the duration. Large request bodies passed without a size limit allow any client to trigger this block on demand.
+**Chain:**
+- root: a request handler calls `JSON.parse()`/`JSON.stringify()` on a large (>~10 MB) payload with no upstream size limit
+- s1: the synchronous V8 JSON parser/serializer runs on the main thread (a 50 MB object: ~0.7 s to stringify, ~1.3 s to parse)
+- s2: any client can send a large body on demand, blocking all other callbacks for the duration of each call
+- D: response times spike and the event loop lags (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `grep` finds `JSON.parse` or `JSON.stringify` inside a request handler
+  <!-- match: {"step": 3, "predicate": "contains", "target": "JSON.parse"} -->
+- s1: [Step 4] flame graph shows a wide `JSON.parse` or `JSON.stringify` bar
+- s2: [Symptom] lag spikes correlate with large-payload requests visible in access logs
 
-- [Step 3] `grep` finds `JSON.parse` or `JSON.stringify` inside a request handler
-- [Step 4] Flame graph shows a wide `JSON.parse` or `JSON.stringify` bar
-- [Symptom] Lag spikes correlate with large-payload requests visible in access logs
+**Interventions:**
+- **remediation** (root): cap request body size, and stream-parse payloads that legitimately exceed the cap.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "JSON.parse"} -->
+  ```javascript
+  // Set a payload size limit in Express
+  app.use(express.json({ limit: '1mb' }));
 
-**Mitigation:**
+  // For payloads that must exceed 1 MB, use streaming JSON parsers:
+  const { createStream } = require('stream-json');
+  const { streamArray } = require('stream-json/streamers/StreamArray');
 
-- **Risk:** Low; adding a payload size limit rejects oversized requests with a 413 error before parsing occurs.
-- **Command:**
+  const pipeline = fs.createReadStream('large.json')
+    .pipe(createStream())
+    .pipe(streamArray());
+
+  pipeline.on('data', ({ value }) => processItem(value));
+  ```
+
+  **Verification:** Re-run Step 1 under load with a payload at or below the new limit. Lag should remain below 20 ms p99, and oversized payloads should return 413.
+- **defensive_fix** (s2): add a body size limit so oversized requests are rejected with a 413 before any parse occurs.
 
   ```bash
   # For Express: set body size limit immediately to prevent further blocking
@@ -217,26 +234,7 @@ stream.pipe(res);
   grep -rn "express.json\|bodyParser.json" --include="*.js" --include="*.ts" src/
   ```
 
-- **Duration:** Permanent — apply the limit and deploy.
-
-**Resolution:**
-
-```javascript
-// Set a payload size limit in Express
-app.use(express.json({ limit: '1mb' }));
-
-// For payloads that must exceed 1 MB, use streaming JSON parsers:
-const { createStream } = require('stream-json');
-const { streamArray } = require('stream-json/streamers/StreamArray');
-
-const pipeline = fs.createReadStream('large.json')
-  .pipe(createStream())
-  .pipe(streamArray());
-
-pipeline.on('data', ({ value }) => processItem(value));
-```
-
-**Verification:** Re-run Step 1 under load with a payload at or below the new limit. Lag should remain below 20 ms p99. Confirm 413 responses for oversized payloads.
+  **Verification:** confirm 413 responses for oversized payloads and that the grep locates the body-parser registration point.
 
 ---
 
@@ -244,20 +242,41 @@ pipeline.on('data', ({ value }) => processItem(value));
 
 **Statement:** A request handler performs a CPU-intensive synchronous computation — sorting, encryption, hashing, data transformation, or nested iteration — that takes more than 5 ms per call and monopolizes the main thread.
 
-**Mechanism:** Any synchronous JavaScript that runs for more than a few milliseconds on the main thread prevents the event loop from advancing. Unlike `*Sync` I/O calls, these are pure-JavaScript algorithms where the only fix is to offload the work to a Worker Thread or restructure the algorithm. Common patterns are O(n²) nested loops over arrays received from user input and synchronous crypto operations on large data.
+**Chain:**
+- root: a request handler runs a pure-JavaScript CPU-intensive algorithm (O(n²) nested loops, heavy crypto/transform) taking >5 ms per call
+- s1: the synchronous computation occupies the single main thread, preventing the event loop from advancing for its full duration
+- s2: under request volume the main thread CPU pins near 100% during the computation window
+- D: response times spike and the event loop lags (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] main thread CPU stays near 100% during lag spikes
+  <!-- match: {"step": 2, "predicate": "threshold", "target": "cpu_pct", "op": ">", "value": 90} -->
+- root: [Step 4] flame graph shows a wide bar for an application function (not a Node core function)
+- s1: [Step 1] p99 lag spikes correlate with request volume, not a fixed interval
 
-- [Step 1] p99 lag spikes correlate with request volume, not a fixed interval
-- [Step 2] Main thread CPU stays near 100% during lag spikes
-- [Step 4] Flame graph shows a wide bar for an application function (not a Node core function)
+**Interventions:**
+- **remediation** (root): offload the CPU-intensive work to a Worker Thread pool so it no longer runs on the main thread.
 
-<!-- match: {"step": 2, "predicate": "threshold", "target": "cpu_pct", "op": ">", "value": 90} -->
+  ```javascript
+  // Offload CPU-intensive work to a worker thread pool using piscina
+  const Piscina = require('piscina');
+  const pool = new Piscina({ filename: './worker.js', maxThreads: 4 });
 
-**Mitigation:**
+  // In request handler — now non-blocking
+  app.post('/compute', async (req, res) => {
+    const result = await pool.run(req.body);
+    res.json(result);
+  });
 
-- **Risk:** Low; adding Worker Thread offloading is non-breaking and isolates the computation.
-- **Command:**
+  // worker.js — runs in separate thread
+  module.exports = ({ data }) => {
+    // CPU-intensive work here — does NOT block the event loop
+    return expensiveTransform(data);
+  };
+  ```
+
+  **Verification:** Re-run Step 1 and Step 2 under load after deploying the worker pool. Main thread CPU should drop below 20%, and p99 lag should fall below 20 ms.
+- **mitigation** (s2): scale horizontally to absorb load while the worker-pool fix is prepared.
 
   ```bash
   # Identify the blocking function name from Step 4 profile output
@@ -268,29 +287,7 @@ pipeline.on('data', ({ value }) => processItem(value));
   kubectl scale deployment <name> -n <namespace> --replicas=4
   ```
 
-- **Duration:** Horizontal scale is a temporary measure; the Worker Thread fix is the permanent resolution.
-
-**Resolution:**
-
-```javascript
-// Offload CPU-intensive work to a worker thread pool using piscina
-const Piscina = require('piscina');
-const pool = new Piscina({ filename: './worker.js', maxThreads: 4 });
-
-// In request handler — now non-blocking
-app.post('/compute', async (req, res) => {
-  const result = await pool.run(req.body);
-  res.json(result);
-});
-
-// worker.js — runs in separate thread
-module.exports = ({ data }) => {
-  // CPU-intensive work here — does NOT block the event loop
-  return expensiveTransform(data);
-};
-```
-
-**Verification:** Re-run Step 1 and Step 2 under load after deploying the worker pool. Main thread CPU should drop below 20%, and p99 lag should fall below 20 ms.
+  **Risk:** Low; adding replicas is non-breaking and isolates blast radius, but each blocked worker still stalls its own requests. **Duration:** Temporary stopgap until the Worker Thread remediation ships. **Verification:** confirm added replicas are Ready and per-pod p99 lag eases under the same load.
 
 ---
 
@@ -298,20 +295,33 @@ module.exports = ({ data }) => {
 
 **Statement:** A regular expression with nested quantifiers or overlapping alternations is applied to untrusted user input, causing exponential backtracking that blocks the main thread indefinitely.
 
-**Mechanism:** Patterns such as `/(a+)+/`, `/(\/.+)+$/`, or `/(a|a)*/` exhibit super-linear worst-case complexity. A carefully crafted input string (e.g., 100 forward slashes followed by a newline) can cause the V8 regex engine to spend seconds or minutes exploring exponentially many match paths, pinning the main thread. This is a denial-of-service vector exploitable by any client.
+**Chain:**
+- root: a vulnerable regex (`/(a+)+/`, `/(\/.+)+$/`, `/(a|a)*/`) with nested quantifiers is applied to untrusted user input
+- s1: a crafted input (e.g., 100 forward slashes followed by a newline) drives the V8 regex engine into exponential backtracking, exploring exponentially many match paths for seconds to minutes
+- s2: the regex evaluation pins the single main thread — a denial-of-service vector exploitable by any client
+- D: response times spike and the event loop lags (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] `safe-regex` reports `VULNERABLE` for a pattern present in the codebase
+  <!-- match: {"step": 7, "predicate": "contains", "target": "VULNERABLE"} -->
+- s2: [Step 4] flame graph shows a wide `RegExp.exec` or `String.match` bar
+- s1: [Symptom] lag spikes occur only on specific input shapes, not uniformly under load
 
-- [Step 7] `safe-regex` reports `VULNERABLE` for a pattern present in the codebase
-- [Step 4] Flame graph shows a wide `RegExp.exec` or `String.match` bar
-- [Symptom] Lag spikes occur only on specific input shapes, not uniformly under load
+**Interventions:**
+- **remediation** (root): eliminate the vulnerable pattern — replace with a simple string method or a linear-time RE2 engine.
 
-<!-- match: {"step": 7, "predicate": "contains", "target": "VULNERABLE"} -->
+  ```javascript
+  // Option 1: Replace with simple string methods
+  if (filePath.indexOf('/') !== -1) { /* safe */ }
 
-**Mitigation:**
+  // Option 2: Use Google RE2 (linear-time engine) as drop-in replacement
+  const RE2 = require('re2');
+  const safePattern = new RE2(/complex-but-valid-pattern/);
+  if (safePattern.test(userInput)) { /* safe */ }
+  ```
 
-- **Risk:** Low; replacing vulnerable patterns with `String.indexOf` or `re2` does not change externally observable behavior for valid inputs.
-- **Command:**
+  **Verification:** Re-run Step 7 — `safe-regex` should report no `VULNERABLE` patterns. Replay the Step 7 input that triggered the vulnerability; response time should stay under 100 ms.
+- **mitigation** (root): swap the simplest path checks to `String.indexOf` and stage `re2` as a drop-in for untrusted-input patterns.
 
   ```bash
   # Replace simple path checks with indexOf to eliminate regex exposure immediately
@@ -321,42 +331,45 @@ module.exports = ({ data }) => {
   # Use re2 as a drop-in replacement for untrusted-input patterns
   ```
 
-- **Duration:** Permanent code change.
-
-**Resolution:**
-
-```javascript
-// Option 1: Replace with simple string methods
-if (filePath.indexOf('/') !== -1) { /* safe */ }
-
-// Option 2: Use Google RE2 (linear-time engine) as drop-in replacement
-const RE2 = require('re2');
-const safePattern = new RE2(/complex-but-valid-pattern/);
-if (safePattern.test(userInput)) { /* safe */ }
-```
-
-**Verification:** Re-run Step 7 — `safe-regex` should report no `VULNERABLE` patterns. Apply input from Step 7 that triggered the vulnerability; response time should remain under 100 ms.
+  **Risk:** Low; replacing vulnerable patterns with `String.indexOf` or `re2` does not change externally observable behavior for valid inputs. **Duration:** Permanent code change; safe to leave in place. **Verification:** re-run Step 7 against the touched patterns and confirm no `VULNERABLE` result.
 
 ---
 
 ### Cause E: libuv thread pool saturation blocking async I/O
 
-**Statement:** The default libuv thread pool size of 4 is insufficient for the workload, causing async operations (DNS lookups via `dns.lookup`, file I/O, crypto) to queue and appear as event loop lag even though the main thread is not CPU-bound.
+**Statement:** The default libuv thread pool size of 4 is insufficient for the workload, causing thread-pool-backed async operations (`dns.lookup`, file I/O, crypto) to queue and appear as event loop lag even though the main thread is not CPU-bound.
 
-**Mechanism:** Node.js delegates certain "async" operations — `dns.lookup()`, `fs.*` callbacks, and `crypto.randomBytes()` — to a pool of libuv worker threads. With the default pool size of 4, only 4 such operations can execute in parallel. Additional operations queue on the event loop until a thread is free, creating measurable lag without main-thread CPU saturation.
+**Chain:**
+- root: thread-pool-backed async operations (`dns.lookup()`, `fs.*` callbacks, `crypto.randomBytes()`) are issued faster than `UV_THREADPOOL_SIZE` (default 4) can service
+- s1: only 4 such operations run in parallel; the rest queue on the event loop waiting for a free libuv worker thread
+- s2: requests wait on the queue and complete late, producing measurable lag without main-thread CPU saturation
+- D: response times spike and the event loop lags (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] active requests consistently at or above `UV_THREADPOOL_SIZE` value
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "active_requests", "op": ">=", "value": 4} -->
+- s2: [Step 2] main thread CPU is low (below 30%) during lag spikes
+- s1: [Step 1] lag is present but no blocking patterns found in Step 3 or Step 4
 
-- [Step 6] Active requests consistently at or above `UV_THREADPOOL_SIZE` value
-- [Step 2] Main thread CPU is low (below 30%) during lag spikes
-- [Step 1] Lag is present but no blocking patterns found in Step 3 or Step 4
+**Interventions:**
+- **remediation** (root): reduce thread-pool demand by routing DNS off the pool, and/or raise `UV_THREADPOOL_SIZE` to match concurrency.
 
-<!-- match: {"step": 6, "predicate": "threshold", "target": "active_requests", "op": ">=", "value": 4} -->
+  ```javascript
+  // For DNS-heavy workloads, switch from dns.lookup() (thread pool)
+  // to dns.resolve() (c-ares, bypasses thread pool entirely)
+  const dns = require('dns');
 
-**Mitigation:**
+  // BEFORE (uses thread pool)
+  dns.lookup('example.com', (err, address) => { /* ... */ });
 
-- **Risk:** Low; each additional thread uses approximately 1 MB of stack memory.
-- **Command:**
+  // AFTER (bypasses thread pool)
+  dns.resolve4('example.com', (err, addresses) => { /* ... */ });
+  ```
+
+  Impact: `UV_THREADPOOL_SIZE` increase is process-wide and applies to all async I/O and crypto in the same process; requires restart. Rollback: set `UV_THREADPOOL_SIZE=4` and restart.
+
+  **Verification:** Re-run Step 6 after restart. Active requests should stay consistently below `UV_THREADPOOL_SIZE`, and Step 1 p99 lag should fall below 20 ms.
+- **mitigation** (s1): raise `UV_THREADPOOL_SIZE` to relieve the queue immediately.
 
   ```bash
   export UV_THREADPOOL_SIZE=16
@@ -369,26 +382,7 @@ if (safePattern.test(userInput)) { /* safe */ }
   kubectl set env deployment/<name> UV_THREADPOOL_SIZE=16 -n <namespace>
   ```
 
-- **Duration:** Requires application restart; effective immediately after restart.
-
-**Resolution:**
-
-```javascript
-// For DNS-heavy workloads, switch from dns.lookup() (thread pool)
-// to dns.resolve() (c-ares, bypasses thread pool entirely)
-const dns = require('dns');
-
-// BEFORE (uses thread pool)
-dns.lookup('example.com', (err, address) => { /* ... */ });
-
-// AFTER (bypasses thread pool)
-dns.resolve4('example.com', (err, addresses) => { /* ... */ });
-```
-
-- **Impact:** `UV_THREADPOOL_SIZE` increase is process-wide; applies to all async I/O and crypto in the same process. Requires restart.
-- **Rollback:** Set `UV_THREADPOOL_SIZE=4` and restart.
-
-**Verification:** Re-run Step 6 after restart. Active requests should stay consistently below `UV_THREADPOOL_SIZE`. Re-run Step 1; p99 lag should fall below 20 ms.
+  **Risk:** Low; each additional thread uses approximately 1 MB of stack memory. **Duration:** Effective immediately after the required restart; keep until the DNS/off-pool remediation ships. **Verification:** re-run Step 6 after restart; active requests should stay below the new `UV_THREADPOOL_SIZE`.
 
 ---
 
@@ -396,20 +390,36 @@ dns.resolve4('example.com', (err, addresses) => { /* ... */ });
 
 **Statement:** V8 Mark-Compact (full GC) pauses exceed 100 ms because the application heap has grown too large or the allocation rate is too high, causing periodic event loop stalls.
 
-**Mechanism:** V8's GC must pause the JavaScript thread during Mark-Compact collection to compact and free old-generation memory. As heap size grows, scan time increases proportionally. Applications with high object allocation rates or large caches held in memory produce frequent, long GC pauses that appear as periodic event loop lag spikes even when no application code is blocking.
+**Chain:**
+- root: high object allocation rate or large in-memory caches keep the old-generation heap large
+- s1: V8 must pause the JavaScript thread for Mark-Compact (full GC), and scan time grows proportionally with heap size, exceeding 100 ms
+- s2: these stalls recur on a fixed interval (every 30–120 s) as GC cycles fire, independent of request volume
+- D: response times spike and the event loop lags (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 5] `--trace-gc` output shows `Mark-Compact` lines with pause times above 100 ms
+  <!-- match: {"step": 5, "predicate": "contains", "target": "Mark-Compact"} -->
+- s2: [Step 1] lag spikes occur at a regular interval (every 30–120 s) rather than correlating with request volume
+- root: [Step 2] main thread CPU spikes briefly (5–15 s) and returns to baseline between spikes
 
-- [Step 5] `--trace-gc` output shows `Mark-Compact` lines with pause times above 100 ms
-- [Step 1] Lag spikes occur at a regular interval (every 30–120 s) rather than correlating with request volume
-- [Step 2] Main thread CPU spikes briefly (5–15 s) and returns to baseline between spikes
+**Interventions:**
+- **remediation** (root): lower the allocation rate by reusing objects and capping in-memory caches with LRU eviction.
 
-<!-- match: {"step": 5, "predicate": "contains", "target": "Mark-Compact"} -->
+  ```javascript
+  // Reduce allocation rate by reusing objects and capping in-memory caches
+  const LRU = require('lru-cache');
+  const cache = new LRU({ max: 500, ttl: 1000 * 60 * 5 });  // 500-item LRU, 5-min TTL
 
-**Mitigation:**
+  // Avoid patterns that create many short-lived large objects in hot paths
+  // BEFORE (new array each request)
+  const sorted = [...largeArray].sort(compareFn);
 
-- **Risk:** Low; `--max-old-space-size` increase allows V8 to defer GC, which reduces pause frequency at the cost of higher memory usage.
-- **Command:**
+  // AFTER (reuse a pre-allocated buffer when possible)
+  largeArray.sort(compareFn);  // in-place if mutation is acceptable
+  ```
+
+  **Verification:** Re-run Step 5 after applying changes. Mark-Compact pause durations should drop below 50 ms, and Step 1 periodic lag spikes should disappear.
+- **mitigation** (s1): raise `--max-old-space-size` so V8 defers GC, reducing pause frequency.
 
   ```bash
   # Increase old-space limit to reduce GC frequency (restart required)
@@ -418,24 +428,7 @@ dns.resolve4('example.com', (err, addresses) => { /* ... */ });
   node -e "const v8=require('v8'); console.log(v8.getHeapStatistics())"
   ```
 
-- **Duration:** Requires restart; effective immediately.
-
-**Resolution:**
-
-```javascript
-// Reduce allocation rate by reusing objects and capping in-memory caches
-const LRU = require('lru-cache');
-const cache = new LRU({ max: 500, ttl: 1000 * 60 * 5 });  // 500-item LRU, 5-min TTL
-
-// Avoid patterns that create many short-lived large objects in hot paths
-// BEFORE (new array each request)
-const sorted = [...largeArray].sort(compareFn);
-
-// AFTER (reuse a pre-allocated buffer when possible)
-largeArray.sort(compareFn);  // in-place if mutation is acceptable
-```
-
-**Verification:** Re-run Step 5 after applying changes. Mark-Compact pause durations should drop below 50 ms. Re-run Step 1; periodic lag spikes should disappear.
+  **Risk:** Low; deferring GC reduces pause frequency at the cost of higher memory usage (and a larger heap means longer individual Mark-Compact scans). **Duration:** Requires restart; effective immediately and safe until the allocation-rate remediation ships. **Verification:** re-run Step 5; Mark-Compact frequency drops and pauses stay bounded.
 
 ---
 
@@ -443,16 +436,15 @@ largeArray.sort(compareFn);  // in-place if mutation is acceptable
 
 **Statement:** Event loop lag is confirmed but the root cause cannot be identified from the diagnostic steps above.
 
-**Mechanism:** [Default]
+**Chain:**
+- root: lag is real but Steps 1–7 surface no specific blocking call, vulnerable pattern, or GC cause
+- D: response times spike and the event loop lags (Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Default] Steps 1–7 show elevated lag but no specific pattern, blocking call, or GC cause is identified
 
-- [Default] Steps 1–7 show elevated lag but no specific pattern, blocking call, or GC cause is identified
-
-**Mitigation:**
-
-- **Risk:** Low; Clinic.js Doctor performs non-invasive profiling and produces an HTML report without requiring code changes.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot with Clinic.js (non-invasive profiling) and escalate the report to the SME.
 
   ```bash
   npx clinic doctor -- node app.js
@@ -461,11 +453,9 @@ largeArray.sort(compareFn);  // in-place if mutation is acceptable
   # Generate load, then Ctrl+C
   ```
 
-- **Duration:** Profile session (typically 60–120 s of load); no application changes required.
+  Escalate with the Clinic Doctor HTML report and flame graph to the Node.js maintainer or application team for deeper investigation — out of runbook scope.
 
-**Resolution:** Out of runbook scope. Escalate with the Clinic Doctor HTML report and flame graph to the Node.js maintainer or application team for deeper investigation.
-
-**Verification:** The Clinic Doctor report diagnoses one of: "Event loop is blocked" (red), "I/O issue" (orange), "Memory issue" (orange), or "Healthy" (green). Use the identified category to return to the appropriate Cause subsection above.
+  **Risk:** Low; Clinic.js Doctor performs non-invasive profiling and produces an HTML report without requiring code changes. **Duration:** Profile session (typically 60–120 s of load); no application changes required. **Verification:** the Clinic Doctor report diagnoses one of: "Event loop is blocked" (red), "I/O issue" (orange), "Memory issue" (orange), or "Healthy" (green). Use the identified category to return to the appropriate Cause subsection above.
 
 ## Prevention
 

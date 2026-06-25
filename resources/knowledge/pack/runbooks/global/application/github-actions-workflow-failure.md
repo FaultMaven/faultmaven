@@ -6,8 +6,8 @@ service: github-actions
 symptom_class: [timeout, auth_failure]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [github-actions, ci-cd, workflow, automation, pipelines]
@@ -103,21 +103,21 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 
 ### Cause A: Runner Out of Memory
 
-**Statement:** The workflow step was killed by the OS because the runner process exceeded available memory, producing exit code 137.
+**Statement:** A memory-intensive workflow step exceeded the runner's available RAM, causing the Linux OOM killer to send SIGKILL and produce exit code 137.
 
-**Mechanism:** GitHub-hosted `ubuntu-latest` runners have approximately 14 GB RAM shared across all concurrent steps and Docker daemons. Memory-intensive steps such as large Docker builds, JVM-based test suites, or parallel webpack compilations exhaust available RAM, causing the Linux OOM killer to send SIGKILL (exit code 137) to the offending process. Self-hosted runners may have less RAM or be sharing the host with other workloads.
+**Chain:**
+- root: A step's working set exceeds the runner's available RAM (≈14 GB shared on GitHub-hosted `ubuntu-latest`, often less on self-hosted hosts shared with other workloads).
+- s1: The Linux OOM killer sends SIGKILL to the offending process (large Docker build, JVM test suite, or parallel webpack compilation).
+- D: The step terminates with exit code 137 and the workflow run shows a red status (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] On self-hosted runners, `free -m` shows available memory below 2 GB at the time of failure.
+- s1: [Step 2] Log line contains `Killed` or `OOMKilled`.
+- D: [Step 1] Log line contains `exit code 137`.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "exit code 137"} -->
 
-- [Step 1] Log line contains `exit code 137`
-- [Step 2] Log line contains `Killed` or `OOMKilled`
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "exit code 137"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Reducing parallelism or setting memory flags does not affect correctness; upgrading runner size increases billing cost.
-- **Command:**
+**Interventions:**
+- **mitigation** (s1): Reduce per-process memory pressure so the OOM killer is not triggered.
 
   ```yaml
   - name: Build with reduced parallelism
@@ -127,38 +127,34 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
       # docker build --build-arg MAKEFLAGS="-j2" .
   ```
 
-- **Duration:** Immediate after pushing the workflow file change.
+  **Risk:** Low. Reducing parallelism or setting memory flags does not affect correctness, but it lengthens build time. **Duration:** Effective immediately after pushing the workflow file change; safe to leave permanently. **Verification:** Re-run the workflow; the build step completes without a `Killed`/`OOMKilled` log line.
+- **remediation** (root): Provision more RAM by switching to a larger runner class (requires GitHub Team or Enterprise plan).
 
-**Resolution:**
+  ```yaml
+  # Switch to a larger runner class (requires GitHub Team or Enterprise plan)
+  jobs:
+    build:
+      runs-on: ubuntu-latest-16-cores
+  ```
 
-```yaml
-# Switch to a larger runner class (requires GitHub Team or Enterprise plan)
-jobs:
-  build:
-    runs-on: ubuntu-latest-16-cores
-```
-
-**Verification:** Re-run the workflow. `gh run view <NEW_RUN_ID> --log | grep "exit code 137"` returns no matches and the job completes successfully.
-
----
+  **Verification:** Re-run the workflow. `gh run view <NEW_RUN_ID> --log | grep "exit code 137"` returns no matches and the job completes successfully.
 
 ### Cause B: Runner Disk Space Exhaustion
 
 **Statement:** The runner filesystem reached capacity, causing build steps, cache writes, or Docker layer operations to fail with "No space left on device."
 
-**Mechanism:** GitHub-hosted `ubuntu-latest` runners include pre-installed Android SDKs, .NET runtimes, and Docker image layers that consume approximately 20–25 GB of the available disk before the workflow starts. Large Docker builds, npm/pip caches, or test artifact accumulation consume the remaining headroom. Self-hosted runners additionally accumulate Docker layers and tool caches across runs.
+**Chain:**
+- root: Pre-installed toolchains (Android SDKs, .NET runtimes, Docker layers consuming ≈20–25 GB) plus accumulated build artifacts and caches consume the runner's finite disk.
+- s1: A build step, cache write, or Docker layer write requests space that is no longer available.
+- D: The step fails with `No space left on device` and the workflow run shows a red status (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] On self-hosted runners, `df -h /home/runner` shows disk usage above 90%.
+- D: [Step 2] Log line contains `No space left on device`.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "No space left on device"} -->
 
-- [Step 2] Log line contains `No space left on device`
-- [Step 3] `df -h` shows disk usage above 90% on self-hosted runners
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "No space left on device"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Removes pre-installed toolchains not needed by most workflows.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): Reclaim disk by removing pre-installed toolchains the workflow does not need before the build runs.
 
   ```yaml
   - name: Free disk space
@@ -168,83 +164,73 @@ jobs:
       df -h
   ```
 
-- **Duration:** 1–3 minutes added to workflow execution time; safe to leave permanently.
+  **Risk:** Low. Removes pre-installed toolchains not needed by most workflows; a workflow that depends on a removed toolchain will break. **Duration:** Adds 1–3 minutes to workflow execution time; safe to leave permanently. **Verification:** The `df -h` output in the same step shows freed headroom and the previously failing step succeeds.
+- **remediation** (root): For self-hosted runner pools, reclaim disk durably via a post-job hook or cron so layers and logs do not accumulate across runs.
 
-**Resolution:**
+  ```bash
+  # For self-hosted runners: add to the runner's cron or post-job hook
+  docker system prune -af --volumes
+  find /home/runner/_work -name "*.log" -mtime +7 -delete
+  ```
 
-```bash
-# For self-hosted runners: add to the runner's cron or post-job hook
-docker system prune -af --volumes
-find /home/runner/_work -name "*.log" -mtime +7 -delete
-```
-
-- **Impact:** Cluster-wide for self-hosted runner pools; single-run for GitHub-hosted runners.
-
-- **Rollback:** Not applicable — disk reclamation is non-destructive.
-
-**Verification:** `df -h /home/runner` shows usage below 70% after cleanup. The previously failing step succeeds on the next run.
-
----
+  **Verification:** `df -h /home/runner` shows usage below 70% after cleanup. The previously failing step succeeds on the next run. (Disk reclamation is non-destructive — no rollback needed.)
 
 ### Cause C: Missing or Incorrectly Scoped Secret
 
-**Statement:** A workflow step failed authentication because a referenced secret was absent, misspelled, or scoped to a different environment than the job.
+**Statement:** A referenced secret was absent, misspelled, or scoped to a different environment than the job, so it expanded to an empty string and downstream authentication failed.
 
-**Mechanism:** GitHub resolves `${{ secrets.X }}` at job startup; missing secrets silently expand to empty strings rather than raising an error. Steps that pass these empty strings to CLI tools, API calls, or environment variables then fail with authentication errors (HTTP 401, 403, or tool-specific "invalid token" messages). Environment-scoped secrets require the job's `environment:` key to match the secret's scope; without it the secret is invisible to the job.
+**Chain:**
+- root: A `${{ secrets.X }}` reference has no matching secret in the job's scope (missing, misspelled, or environment-scoped without the job declaring `environment:`).
+- s1: GitHub resolves the reference at job startup to an empty string instead of raising an error.
+- s2: The step passes the empty credential to a CLI tool, API call, or environment variable, which rejects it (HTTP 401/403 or tool-specific "invalid token").
+- D: The authentication step fails and the workflow run shows a red status (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] A secret name referenced in the workflow YAML is absent from `gh secret list` (or the env-scoped `gh secret list --env production`) output.
+- s2: [Step 2] Log contains `SecretNotFound`, `invalid token`, or a 401/403 response from an external service.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "SecretNotFound"} -->
 
-- [Step 5] Secret name referenced in workflow YAML is absent from `gh secret list` output
-- [Step 2] Log contains `SecretNotFound`, `invalid token`, or a 401/403 response from an external service
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "SecretNotFound"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Updating a secret value does not affect workflow logic.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): Set or correct the secret value (including its environment scope) so the next run resolves it.
 
   ```bash
   gh secret set MY_SECRET --body "$SECRET_VALUE"
   gh secret set DEPLOY_TOKEN --env production --body "$TOKEN_VALUE"
   ```
 
-- **Duration:** Immediate; secret is available to the next triggered run.
+  **Risk:** Low. Updating a secret value does not affect workflow logic, but a wrong value will still fail auth. **Duration:** Immediate; secret is available to the next triggered run. **Verification:** Re-run; the previously failing authentication step completes and secrets appear as `***` in the logs.
+- **remediation** (root): Declare the correct `environment:` on the job so environment-scoped secrets become visible to it.
 
-**Resolution:**
+  ```yaml
+  # Ensure the job declares the correct environment for environment-scoped secrets
+  jobs:
+    deploy:
+      environment: production
+      steps:
+        - run: ./deploy.sh
+          env:
+            DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+  ```
 
-```yaml
-# Ensure the job declares the correct environment for environment-scoped secrets
-jobs:
-  deploy:
-    environment: production
-    steps:
-      - run: ./deploy.sh
-        env:
-          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
-```
-
-**Verification:** Re-run the workflow. The previously failing authentication step completes without errors. Secrets appear as `***` in the logs when correctly loaded.
-
----
+  **Verification:** Re-run the workflow. The previously failing authentication step completes without errors. Secrets appear as `***` in the logs when correctly loaded.
 
 ### Cause D: Dependency Installation Failure from Registry Throttling or Network Error
 
-**Statement:** Package installation (npm, pip, Maven, etc.) failed due to rate limiting, transient network errors, or a registry outage.
+**Statement:** Package installation failed because a public registry rate-limited the shared runner IP pool or a transient network error interrupted the request.
 
-**Mechanism:** Public registries (npm, PyPI, Maven Central) apply rate limits to unauthenticated or shared-IP requests. GitHub-hosted runners share IP address pools, so concurrent CI runs from many tenants can collectively exhaust registry rate limits, producing HTTP 429 or ETIMEDOUT errors. Transient DNS resolution failures and TLS handshake timeouts produce ECONNREFUSED or ETIMEDOUT errors that succeed on retry.
+**Chain:**
+- root: A public registry (npm, PyPI, Maven Central) rate-limits the shared GitHub-hosted runner IP pool, or a transient DNS/TLS network fault occurs.
+- s1: An install step's request returns HTTP 429 / `ETIMEDOUT` / `ECONNREFUSED` instead of the package.
+- D: The install step exits non-zero and the workflow run shows a red status (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] `gh api /rate_limit` shows `remaining` at or near 0 (the `GITHUB_TOKEN` default is 1,000 requests/hour), implicating throttling.
+- s1: [Step 2] Log contains `ETIMEDOUT`, `ECONNREFUSED`, or `HTTP 429`.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "ETIMEDOUT"} -->
+- D: [Step 1] The failed step is a package install step (`npm ci`, `pip install`, `mvn install`, etc.).
 
-- [Step 2] Log contains `ETIMEDOUT`, `ECONNREFUSED`, or `HTTP 429`
-- [Step 1] Failed step is a package install step (npm ci, pip install, mvn install, etc.)
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "ETIMEDOUT"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Adding retry logic and caching reduces network dependency without changing build output.
-- **Command:**
+**Interventions:**
+- **defensive_fix** (s1): Add bounded retries plus dependency caching at the install rung so a transient registry fault no longer fails the step.
 
   ```yaml
   - uses: actions/setup-node@v4
@@ -255,41 +241,37 @@ jobs:
     run: for i in 1 2 3; do npm ci && break || sleep 10; done
   ```
 
-- **Duration:** 5 minutes for workflow file update; cache benefits appear on the second run.
+  **Verification:** Re-run the workflow; the install step succeeds despite a transient error, and subsequent runs do not show registry timeout errors.
+- **remediation** (root): Cache dependencies across runs so most installs no longer hit the public registry at all.
 
-**Resolution:**
+  ```yaml
+  # Pin a specific registry mirror and use caching for all install steps
+  - uses: actions/cache@v4
+    with:
+      path: ~/.npm
+      key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+      restore-keys: |
+        ${{ runner.os }}-node-
+  ```
 
-```yaml
-# Pin a specific registry mirror and use caching for all install steps
-- uses: actions/cache@v4
-  with:
-    path: ~/.npm
-    key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-    restore-keys: |
-      ${{ runner.os }}-node-
-```
-
-**Verification:** `gh run view <RUN_ID> --log | grep -i "cache hit"` returns matches. Subsequent runs do not show registry timeout errors.
-
----
+  **Verification:** `gh run view <RUN_ID> --log | grep -i "cache hit"` returns matches. Subsequent runs do not show registry timeout errors.
 
 ### Cause E: Job Timeout — Step Hanging or Insufficient Timeout Configuration
 
-**Statement:** The workflow job reached GitHub's maximum execution time (360 minutes default) because a step hung waiting for a network call, service health check, or external resource that never responded.
+**Statement:** A step deadlocked waiting for a network call, service health check, or subprocess that never responded, so the job ran until GitHub's maximum execution time (360 minutes default).
 
-**Mechanism:** GitHub terminates any job that runs longer than `timeout-minutes` (default: 360). A hanging step — typically waiting for a TCP connection, HTTP response, or subprocess that deadlocked — consumes the full timeout budget. Without step-level timeouts, a single stuck step blocks all subsequent steps and ties up the runner slot for up to 6 hours.
+**Chain:**
+- root: A step blocks indefinitely on an external dependency (TCP connection, HTTP response, or deadlocked subprocess) that never returns.
+- s1: With no step-level `timeout-minutes`, the hung step consumes the full job timeout budget and ties up the runner slot.
+- D: The job is terminated at the maximum execution time with `The job running on runner … has exceeded the maximum execution time` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 2] Log contains `timeout`, or the last line before termination is a network or wait command with no further output.
+- D: [Step 1] Log ends with `The job running on runner … has exceeded the maximum execution time`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "exceeded the maximum execution time"} -->
 
-- [Step 1] Log ends with `The job running on runner … has exceeded the maximum execution time`
-- [Step 2] Log contains `timeout` or the last line before termination is a network or wait command
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "exceeded the maximum execution time"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Explicit timeouts cause faster failure without affecting successful runs.
-- **Command:**
+**Interventions:**
+- **defensive_fix** (s1): Add explicit job- and step-level `timeout-minutes` so a hung step fails fast instead of consuming the full budget.
 
   ```yaml
   jobs:
@@ -302,37 +284,33 @@ jobs:
           run: npm test
   ```
 
-- **Duration:** Immediate after pushing the workflow file change.
+  **Verification:** Re-run the workflow. Jobs that previously hung now fail fast at the configured timeout; `gh run view <RUN_ID> --log-failed` shows the specific hanging step within the timeout window.
+- **remediation** (root): Identify the step where the log stream stops and fix the underlying hang.
 
-**Resolution:**
+  ```bash
+  # Identify the hanging step by checking where the log stream stops:
+  gh run view <RUN_ID> --log | tail -50
+  # Then add timeout-minutes to that specific step and investigate the underlying hang
+  ```
 
-```bash
-# Identify the hanging step by checking where the log stream stops:
-gh run view <RUN_ID> --log | tail -50
-# Then add timeout-minutes to that specific step and investigate the underlying hang
-```
-
-**Verification:** Re-run the workflow. Jobs that previously hung now fail fast at the configured timeout. `gh run view <RUN_ID> --log-failed` shows the specific hanging step within the timeout window.
-
----
+  **Verification:** Re-run the workflow. The previously hanging step now completes normally and the job finishes well within its timeout.
 
 ### Cause F: No Runner Matches the runs-on Label
 
-**Statement:** The workflow job queued indefinitely because no online runner has the label specified in the job's `runs-on` field.
+**Statement:** No online runner carries the label specified in the job's `runs-on` field, so the job queued indefinitely waiting for a runner that never appears.
 
-**Mechanism:** GitHub compares the job's `runs-on` value against all registered runners' label sets. If no online runner carries the required label — due to a label typo, runner going offline, or a label change in the runner configuration without a corresponding workflow update — the job stays in `queued` state until manually cancelled or until the runner comes online. Self-hosted runner services that stop or crash without re-registration are a common source.
+**Chain:**
+- root: A label typo, a runner going offline/crashing without re-registration, or a runner label change without a matching workflow update leaves no online runner whose label set satisfies `runs-on`.
+- s1: GitHub finds no eligible runner and holds the job in `queued` state.
+- D: The job stays queued for more than 10 minutes with no runner picking it up (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] No runner in the `gh api .../actions/runners` response has a label matching the job's `runs-on` value (or no runner is `"status": "online"`).
+- D: [Step 8] `gh run list --status=queued` shows the job stuck for more than 10 minutes.
+  <!-- match: {"step": 8, "predicate": "contains", "target": "queued"} -->
 
-- [Step 8] `gh run list --status=queued` shows the job stuck for more than 10 minutes
-- [Step 8] No runner in the API response has a label matching the job's `runs-on` value
-
-<!-- match: {"step": 8, "predicate": "contains", "target": "queued"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Correcting the label or restarting the runner service has no side effects.
-- **Command:**
+**Interventions:**
+- **mitigation** (s1): Restart the self-hosted runner service so it re-registers and becomes eligible again.
 
   ```bash
   # Restart the runner service on the self-hosted host:
@@ -341,37 +319,33 @@ gh run view <RUN_ID> --log | tail -50
   # runs-on: self-hosted  →  runs-on: [self-hosted, linux, x64]
   ```
 
-- **Duration:** Immediate after runner service restart or workflow file push.
+  **Risk:** Low. Restarting the runner service has no side effects on a healthy host, but interrupts any in-progress job on that runner. **Duration:** Immediate after runner service restart; effective until the runner stops again. **Verification:** `gh run list --status=queued` no longer shows the stuck job and it transitions to `in_progress`.
+- **remediation** (root): Inspect the available runner labels and correct the workflow `runs-on` value to match an online runner.
 
-**Resolution:**
+  ```bash
+  # Verify available labels and fix the workflow runs-on value:
+  gh api /repos/{owner}/{repo}/actions/runners \
+    | jq '.runners[] | {name, status, labels: [.labels[].name]}'
+  ```
 
-```bash
-# Verify available labels and fix the workflow runs-on value:
-gh api /repos/{owner}/{repo}/actions/runners \
-  | jq '.runners[] | {name, status, labels: [.labels[].name]}'
-```
-
-**Verification:** `gh run list --status=queued` shows no stuck jobs. The previously queued run is picked up by a runner and transitions to `in_progress` within 30 seconds.
-
----
+  **Verification:** `gh run list --status=queued` shows no stuck jobs. The previously queued run is picked up by a runner and transitions to `in_progress` within 30 seconds.
 
 ### Cause G: Workflow YAML Syntax or Expression Error
 
-**Statement:** The workflow failed at the parsing stage because of invalid YAML structure, an unsupported expression, or a reference to an unknown action or step output.
+**Statement:** The workflow YAML contains invalid structure, an unsupported expression, or a reference to an unknown action or step output, so it fails at the parsing stage before any runner is assigned.
 
-**Mechanism:** GitHub parses workflow YAML before any runner is assigned. Structural errors (incorrect indentation, invalid `${{ }}` expressions, missing required fields) cause the entire run to fail immediately with a workflow parse error. Common mistakes include unquoted strings containing special YAML characters, referencing `steps.X.outputs.Y` from steps that may not have run, and using deprecated action versions.
+**Chain:**
+- root: The workflow file has a structural defect (bad indentation, invalid `${{ }}` expression, missing required field, unquoted YAML special characters, or a reference to an output from a step that may not have run).
+- s1: GitHub parses the workflow before assigning a runner and rejects it with a workflow parse error.
+- D: The entire run fails immediately, before any job is assigned a runner (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `actionlint` reports one or more errors with line numbers and descriptions (`unknown action`, `invalid expression`, `undefined output`).
+  <!-- match: {"step": 4, "predicate": "contains", "target": "error"} -->
+- D: [Step 1] The failed run shows an error before any job is assigned a runner.
 
-- [Step 4] `actionlint` reports one or more errors with line numbers
-- [Step 1] Failed run shows error before any job is assigned a runner
-
-<!-- match: {"step": 4, "predicate": "contains", "target": "error"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Fixing YAML syntax is a safe change.
-- **Command:**
+**Interventions:**
+- **remediation** (root): Fix the reported YAML/expression errors at the source.
 
   ```bash
   actionlint .github/workflows/ci.yml
@@ -380,64 +354,49 @@ gh api /repos/{owner}/{repo}/actions/runners \
   # - Use if: always() or if: ${{ !cancelled() }} for cleanup steps
   ```
 
-- **Duration:** Immediate after pushing the corrected workflow file.
-
-**Resolution:** Same as Mitigation.
-
-**Verification:** `actionlint .github/workflows/ci.yml` exits 0 with no output. Re-triggering the workflow shows jobs assigned to runners rather than failing at parse time.
-
----
+  **Verification:** `actionlint .github/workflows/ci.yml` exits 0 with no output. Re-triggering the workflow shows jobs assigned to runners rather than failing at parse time.
 
 ### Cause H: GitHub Platform Incident
 
-**Statement:** Workflow failures are caused by a GitHub Actions platform outage or degraded performance, not by any issue within the repository.
+**Statement:** A GitHub Actions platform outage or degraded performance — not any repository issue — is causing the workflow failures.
 
-**Mechanism:** GitHub Actions is a distributed platform; infrastructure incidents affecting runner allocation, artifact storage, or the Actions API produce failures that are indistinguishable from application-level failures in the workflow log. When the platform status page shows `degraded_performance` or `major_outage` for Actions components, re-running workflows will not help until the incident is resolved.
+**Chain:**
+- root: A GitHub Actions infrastructure incident degrades runner allocation, artifact storage, or the Actions API.
+- s1: Affected workflows fail with errors indistinguishable from application-level failures in the log; re-running does not help until the incident clears.
+- D: The workflow run shows a red status (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] The GitHub status API returns a `"status"` other than `"operational"` for an Actions component.
+  <!-- match: {"step": 6, "predicate": "absent", "target": "operational"} -->
+- s1: [Symptom] Multiple unrelated workflows across the repository fail simultaneously with no recent code changes.
 
-- [Step 6] GitHub status API returns `"status"` other than `"operational"` for an Actions component
-- [Symptom] Multiple unrelated workflows across the repository fail simultaneously with no recent code changes
-
-<!-- match: {"step": 6, "predicate": "absent", "target": "operational"} -->
-
-**Mitigation:**
-
-- **Risk:** None. Waiting for platform resolution requires no action.
-- **Command:**
+**Interventions:**
+- **mitigation** (s1): Wait for platform resolution, monitoring the status page until Actions returns to operational.
 
   ```bash
   # Monitor until status returns to operational:
   watch -n 60 'curl -s https://www.githubstatus.com/api/v2/summary.json | jq ".components[] | select(.name | test(\"Actions\")) | {name, status}"'
   ```
 
-- **Duration:** Until GitHub resolves the incident (typically minutes to hours).
+  **Risk:** None. Waiting for platform resolution requires no change to the repository. **Duration:** Until GitHub resolves the incident (typically minutes to hours). **Verification:** The status API reports `operational` for all Actions components.
+- **remediation** (root): After the incident clears, re-run the failed workflow.
 
-**Resolution:**
+  ```bash
+  # After status returns to operational, re-run the failed workflow:
+  gh run rerun <RUN_ID>
+  ```
 
-```bash
-# After status returns to operational, re-run the failed workflow:
-gh run rerun <RUN_ID>
-```
+  **Verification:** `gh run watch <RUN_ID>` shows the re-run completing successfully with `conclusion: success`.
 
-**Verification:** `gh run watch <RUN_ID>` shows the re-run completing successfully with `conclusion: success`.
+### Cause Z: Unidentified
 
----
+**Statement:** The workflow failure cause could not be determined from available diagnostic output, due to a transient infrastructure issue, undocumented behavior, or interacting concurrent causes.
 
-### Cause Z: Unidentified Workflow Failure
+**Indicators:**
+- [Default] None of the above causes matched the diagnostic output.
 
-**Statement:** The workflow failure cause could not be determined from available diagnostic output. [Default]
-
-**Mechanism:** Some failures involve transient infrastructure issues, undocumented GitHub Actions behavior, or interactions between multiple concurrent causes that do not produce a clear single error signature. Further investigation using debug logging and GitHub Support is required.
-
-**Indicator:**
-
-- [Default] None of the above causes matched diagnostic output
-
-**Mitigation:**
-
-- **Risk:** Low. Enabling debug logging may expose sensitive environment variable names in logs.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): Capture a full diagnostic snapshot by enabling step debug logging, re-run to gather additional signal, then escalate to the SME / GitHub Support with the run ID and workflow file.
 
   ```bash
   # Enable Actions step debug logging for the next run:
@@ -445,13 +404,10 @@ gh run rerun <RUN_ID>
   gh secret set ACTIONS_RUNNER_DEBUG --body "true"
   # Then re-run:
   gh run rerun <RUN_ID> --debug
+  # Escalate with the run ID and workflow file: https://support.github.com
   ```
 
-- **Duration:** Remove debug secrets after investigation to avoid log noise.
-
-**Resolution:** Out of runbook scope. Escalate to [GitHub Support](https://support.github.com) with the run ID and workflow file.
-
-**Verification:** Debug logs from the re-run provide additional signal for root cause identification.
+  **Risk:** Low. Enabling debug logging may expose sensitive environment variable names in logs. **Duration:** Remove the debug secrets after investigation to avoid log noise. **Verification:** Debug logs from the re-run provide additional signal for root cause identification and escalation.
 
 ## Prevention
 

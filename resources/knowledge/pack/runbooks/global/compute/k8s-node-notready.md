@@ -6,8 +6,8 @@ service: kubernetes
 symptom_class: [node_failure]
 severity: critical
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [kubernetes, nodes, kubelet, resource-pressure, containerd, certificates]
@@ -117,86 +117,77 @@ Expected output: `notAfter` dates in the future for healthy certs. If `notAfter`
 
 ### Cause A: Kubelet process stopped or crashed
 
-**Statement:** The kubelet systemd service exited or was killed, causing the node to stop sending heartbeats to the API server.
+**Statement:** The kubelet systemd service exited or was killed, so the node stopped sending heartbeats to the API server.
 
-**Mechanism:** The kubelet is the primary node agent responsible for posting Node status updates and renewing the kube-node-lease Lease object every 10 seconds. When the kubelet process terminates (due to a panic, OOM kill, configuration error, or a failed upgrade), heartbeats stop immediately. After `node-monitor-grace-period` (default 40 seconds) the node controller marks `Ready: Unknown` and taints the node.
+**Chain:**
+- root: The kubelet systemd service exited (panic, OOM kill, config error, or failed upgrade).
+- s1: The kubelet stops posting Node status and renewing the kube-node-lease Lease every 10 seconds.
+- s2: After `node-monitor-grace-period` (default 40s) the node controller marks `Ready: Unknown` and taints the node.
+- D: The node reports NotReady (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `systemctl status kubelet` shows `Active: failed` or `Active: inactive (dead)`; journal shows `kubelet.service: Main process exited`.
+  <!-- match: {"step": 4, "predicate": "contains", "target": "Main process exited"} -->
+- D: [Symptom] node shows `NotReady` in `kubectl get nodes`.
 
-- [Step 4] `systemctl status kubelet` shows `Active: failed` or `Active: inactive (dead)`.
-- [Step 4] Journal contains `kubelet.service: Main process exited` or `failed with result 'exit-code'`.
-
-<!-- match: {"step": 4, "predicate": "contains", "target": "Main process exited"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Running containers continue while kubelet is down; restarting kubelet reconnects without stopping containers.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): restart the kubelet to restore heartbeats without stopping running containers.
 
   ```bash
   sudo systemctl restart kubelet
   sudo systemctl status kubelet
   ```
 
-- **Duration:** Kubelet reconnects and node transitions to Ready within 30–60 seconds.
+  **Risk:** Low. Running containers continue while kubelet is down; restarting kubelet reconnects without stopping containers. **Duration:** Kubelet reconnects and node transitions to Ready within 30–60 seconds. **Verification:** `kubectl get node <node-name>` shows `Ready` within 60 seconds.
+- **remediation** (root): find and fix the underlying exit cause so kubelet stays up.
 
-**Resolution:**
+  ```bash
+  # Identify why kubelet exited and fix root cause
+  sudo journalctl -u kubelet -n 500 --no-pager | grep -i "error\|panic\|fatal"
+  # For config errors: validate kubelet config
+  sudo kubelet --config /var/lib/kubelet/config.yaml --dry-run 2>&1 | head -20
+  ```
 
-```bash
-# Identify why kubelet exited and fix root cause
-sudo journalctl -u kubelet -n 500 --no-pager | grep -i "error\|panic\|fatal"
-# For config errors: validate kubelet config
-sudo kubelet --config /var/lib/kubelet/config.yaml --dry-run 2>&1 | head -20
-```
-
-- **Impact:** Single-node. Restarting kubelet causes a brief reporting gap but does not evict pods.
-- **Rollback:** If kubelet fails to start after a bad config change, restore the previous config from backup and restart.
-
-**Verification:** `kubectl get node <node-name>` shows `Ready` within 60 seconds. `kubectl get lease <node-name> -n kube-node-lease -o jsonpath='{.spec.renewTime}'` is within the last 15 seconds.
+  **Verification:** `kubectl get node <node-name>` shows `Ready`; `kubectl get lease <node-name> -n kube-node-lease -o jsonpath='{.spec.renewTime}'` is within the last 15 seconds. If a bad config caused the exit, restore the previous config from backup and restart.
 
 ---
 
 ### Cause B: Container runtime (containerd) crashed or is unresponsive
 
-**Statement:** The containerd runtime crashed or became unresponsive, causing the kubelet to lose the CRI socket connection and report NotReady.
+**Statement:** The containerd runtime crashed or hung, so the kubelet lost the CRI socket connection and reported NotReady.
 
-**Mechanism:** The kubelet communicates with the container runtime exclusively through the CRI (Container Runtime Interface) socket. When containerd crashes or hangs, the kubelet cannot list pods, create containers, or retrieve PLEG (Pod Lifecycle Event Generator) events. The kubelet logs a PLEG health failure and stops reporting a healthy node status. The node control plane marks it NotReady.
+**Chain:**
+- root: containerd crashed or became unresponsive on the node.
+- s1: The kubelet loses the CRI socket and cannot list pods, create containers, or get PLEG events.
+- s2: The kubelet logs a PLEG health failure and stops reporting a healthy node status.
+- D: The control plane marks the node NotReady (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] `systemctl status containerd` shows `Active: failed` or `Active: inactive`; `crictl ps` fails with `connect: no such file or directory`.
+  <!-- match: {"step": 5, "predicate": "contains", "target": "connect: no such file or directory"} -->
+- s2: [Step 4] kubelet journal contains `PLEG is not healthy` or `failed to connect to containerd`.
+  <!-- match: {"step": 4, "predicate": "contains", "target": "PLEG is not healthy"} -->
 
-- [Step 5] `systemctl status containerd` shows `Active: failed` or `Active: inactive`.
-- [Step 4] Kubelet journal contains `"PLEG is not healthy"` or `"failed to connect to containerd"`.
-- [Step 5] `crictl ps` fails with `"connect: no such file or directory"` on the socket path.
-
-<!-- match: {"step": 4, "predicate": "contains", "target": "PLEG is not healthy"} -->
-
-**Mitigation:**
-
-- **Risk:** Medium. Restarting containerd briefly disrupts all containers on the node; containers with restart policies recover automatically.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): restart containerd and kubelet to re-establish the CRI connection.
 
   ```bash
   sudo systemctl restart containerd
   sudo systemctl restart kubelet
   ```
 
-- **Duration:** Containers are briefly disrupted; node should return Ready within 2–5 minutes.
+  **Risk:** Medium. Restarting containerd briefly disrupts all containers on the node; containers with restart policies recover automatically. **Duration:** Containers are briefly disrupted; node should return Ready within 2–5 minutes. **Verification:** `sudo crictl ps` lists running containers; node transitions to `Ready`.
+- **remediation** (root): clear corrupted containerd metadata when it repeatedly fails to start.
 
-**Resolution:**
+  ```bash
+  sudo systemctl stop kubelet
+  sudo systemctl stop containerd
+  sudo rm -f /var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db
+  sudo systemctl start containerd
+  sudo systemctl start kubelet
+  ```
 
-```bash
-# If containerd repeatedly fails, check for corrupted metadata
-sudo systemctl stop kubelet
-sudo systemctl stop containerd
-sudo rm -f /var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db
-sudo systemctl start containerd
-sudo systemctl start kubelet
-```
-
-- **Impact:** Single-node. Deleting `meta.db` forces containerd to rediscover running containers; containers already running on the host are not killed but may be temporarily invisible.
-- **Rollback:** Restore `meta.db` from a pre-deletion backup, or simply restart containerd again (it will rebuild the metadata from running container state).
-
-**Verification:** `sudo crictl ps` lists running containers. `kubectl get node <node-name>` transitions to `Ready`. PLEG health error disappears from kubelet journal.
+  **Verification:** `sudo crictl ps` lists running containers; PLEG health error disappears from kubelet journal; node transitions to `Ready`. Deleting `meta.db` forces containerd to rediscover running containers; restore the file from backup or restart containerd again if needed.
 
 ---
 
@@ -204,20 +195,20 @@ sudo systemctl start kubelet
 
 **Statement:** The node's root or data filesystem reached the kubelet eviction threshold, triggering DiskPressure and eventually preventing kubelet from writing state files.
 
-**Mechanism:** The kubelet continuously polls filesystem utilization. When `nodefs.available` drops below `evictionHard.nodefs.available` (default 10%) or `imagefs.available` falls below its threshold (default 15%), the kubelet sets `DiskPressure: True`, evicts pods consuming ephemeral storage, and prunes unused container images. If the disk fills completely (100%), kubelet cannot write its own state files or container logs and becomes unresponsive, causing the node to transition to NotReady.
+**Chain:**
+- root: A node filesystem filled toward capacity (logs, images, ephemeral data).
+- s1: `nodefs.available` < `evictionHard.nodefs.available` (10%) or `imagefs.available` < threshold (15%); kubelet sets `DiskPressure: True`, evicts pods, prunes images.
+- s2: At 100% full, kubelet cannot write its own state files or container logs and becomes unresponsive.
+- D: The node transitions to NotReady (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 1] `kubectl describe node` shows `DiskPressure: True`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "DiskPressure"} -->
+- root: [Step 6] `df -h` shows a filesystem at 90%+ on `/`, `/var`, or the containerd data directory.
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "disk_usage_pct", "op": ">", "value": 0.9} -->
 
-- [Step 1] `kubectl describe node` shows `DiskPressure: True`.
-- [Step 6] `df -h` shows filesystem at 90%+ utilization on `/`, `/var`, or the containerd data directory.
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "DiskPressure"} -->
-<!-- match: {"step": 6, "predicate": "threshold", "target": "disk_usage_pct", "op": ">", "value": 0.9} -->
-
-**Mitigation:**
-
-- **Risk:** Low to medium. Pruning images and exited containers is safe; removing log files requires care.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): reclaim disk by pruning images, exited containers, and vacuuming journal logs.
 
   ```bash
   sudo crictl rmi --prune
@@ -226,44 +217,37 @@ sudo systemctl start kubelet
   sudo du -sh /var/log/* | sort -rh | head -10
   ```
 
-- **Duration:** DiskPressure condition clears within 60 seconds of the kubelet's next housekeeping cycle once disk is freed.
+  **Risk:** Low to medium. Pruning images and exited containers is safe; removing log files requires care. **Duration:** DiskPressure clears within 60 seconds of the kubelet's next housekeeping cycle once disk is freed. **Verification:** `df -h` shows utilization below eviction threshold.
+- **remediation** (root): bound container log growth via kubelet log rotation to prevent recurrence.
 
-**Resolution:**
+  ```yaml
+  # /var/lib/kubelet/config.yaml
+  containerLogMaxSize: "50Mi"
+  containerLogMaxFiles: 3
+  ```
 
-```bash
-# Prevent recurrence: configure log rotation in kubelet config
-# /var/lib/kubelet/config.yaml
-# containerLogMaxSize: "50Mi"
-# containerLogMaxFiles: 3
-sudo systemctl restart kubelet
-```
-
-- **Impact:** Single-node. Log rotation limits apply to new container log files only.
-- **Rollback:** Remove `containerLogMaxSize`/`containerLogMaxFiles` from kubelet config and restart kubelet.
-
-**Verification:** `df -h` shows utilization below eviction threshold. `kubectl describe node <node-name> | grep DiskPressure` shows `False`. Node transitions to `Ready`.
+  **Verification:** after `sudo systemctl restart kubelet`, `kubectl describe node <node-name> | grep DiskPressure` shows `False` and the node returns `Ready`. Log rotation limits apply to new container log files only; remove the fields and restart kubelet to roll back.
 
 ---
 
 ### Cause D: Node memory pressure (OOM or MemoryPressure eviction)
 
-**Statement:** The node exhausted available memory, causing the Linux OOM killer to terminate the kubelet or containerd process, or triggering the kubelet's MemoryPressure eviction path.
+**Statement:** The node exhausted available memory, causing the Linux OOM killer to terminate kubelet or containerd, or triggering the kubelet's MemoryPressure eviction path.
 
-**Mechanism:** The kubelet monitors `memory.available` via cgroups. When available memory drops below `evictionHard.memory.available` (default 100Mi), the kubelet sets `MemoryPressure: True` and begins evicting BestEffort and Burstable pods. If the Linux kernel OOM killer fires first and kills the kubelet or containerd process, the node immediately loses heartbeat and transitions to NotReady without triggering the kubelet eviction path.
+**Chain:**
+- root: A workload or process drove node memory toward exhaustion.
+- s1: `memory.available` < `evictionHard.memory.available` (100Mi); kubelet sets `MemoryPressure: True` and evicts BestEffort/Burstable pods.
+- s2: If the kernel OOM killer fires first, it kills the kubelet or containerd process, immediately stopping heartbeats.
+- D: The node transitions to NotReady (Symptom), bypassing the eviction path if OOM-killed.
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 1] `kubectl describe node` shows `MemoryPressure: True` or `MemoryPressure: Unknown`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "MemoryPressure"} -->
+- s2: [Step 6] `dmesg | grep -i "oom"` shows `oom-kill` entries naming `kubelet` or `containerd`; `free -h` shows near-zero `available`.
+  <!-- match: {"step": 6, "predicate": "contains", "target": "oom-kill"} -->
 
-- [Step 1] `kubectl describe node` shows `MemoryPressure: True` or `MemoryPressure: Unknown`.
-- [Step 6] `free -h` shows near-zero `available` memory.
-- [Step 6] `dmesg | grep -i "oom"` shows `oom-kill` entries naming `kubelet` or `containerd`.
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "MemoryPressure"} -->
-<!-- match: {"step": 6, "predicate": "contains", "target": "oom-kill"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Restarting processes after OOM kill is safe; identify the memory consumer before pods respawn and repeat the OOM cycle.
-- **Command:**
+**Interventions:**
+- **mitigation** (s2): restart the OOM-killed processes and identify the memory consumer before pods respawn.
 
   ```bash
   sudo systemctl restart kubelet
@@ -271,49 +255,46 @@ sudo systemctl restart kubelet
   kubectl top pods --all-namespaces --sort-by=memory | head -20
   ```
 
-- **Duration:** Node returns Ready within 60–90 seconds after service restart, but memory pressure may persist if the root consumer is not removed.
+  **Risk:** Low. Restarting processes after OOM kill is safe; identify the memory consumer before pods respawn and repeat the OOM cycle. **Duration:** Node returns Ready within 60–90 seconds after service restart, but pressure may persist if the root consumer is not removed. **Verification:** `free -h` shows healthy `available` memory; node returns `Ready`.
+- **remediation** (root): bound workload memory and reserve memory for node daemons.
 
-**Resolution:**
+  ```bash
+  # Set memory limits on workloads identified in kubectl top output
+  kubectl set resources deployment/<name> --limits=memory=512Mi --requests=memory=256Mi -n <namespace>
+  ```
 
-```bash
-# Set memory limits on workloads identified in kubectl top output
-kubectl set resources deployment/<name> --limits=memory=512Mi --requests=memory=256Mi -n <namespace>
+  ```yaml
+  # Reserve memory for system and kubelet in /var/lib/kubelet/config.yaml:
+  systemReserved:
+    memory: "256Mi"
+  kubeReserved:
+    memory: "256Mi"
+  evictionHard:
+    memory.available: "200Mi"
+  ```
 
-# Reserve memory for system and kubelet in /var/lib/kubelet/config.yaml:
-# systemReserved:
-#   memory: "256Mi"
-# kubeReserved:
-#   memory: "256Mi"
-# evictionHard:
-#   memory.available: "200Mi"
-```
-
-- **Impact:** Deployment-level (limits) or node-wide (reserved resources). Reserved resources reduce allocatable capacity on the node.
-- **Rollback:** Remove or raise limits in deployment spec; reduce `systemReserved`/`kubeReserved` values in kubelet config and restart kubelet.
-
-**Verification:** `free -h` shows healthy `available` memory. `kubectl describe node <node-name> | grep MemoryPressure` shows `False`. `dmesg | grep oom` produces no new entries after fix.
+  **Verification:** `kubectl describe node <node-name> | grep MemoryPressure` shows `False`; `dmesg | grep oom` produces no new entries after fix. Reserved resources reduce allocatable capacity; remove or raise limits and reduce reserved values to roll back.
 
 ---
 
 ### Cause E: Network partition between node and API server
 
-**Statement:** A firewall rule change, routing failure, or physical network fault severed connectivity between the node and the Kubernetes API server, preventing kubelet heartbeats from reaching the control plane.
+**Statement:** A firewall rule change, routing failure, or physical network fault severed connectivity between the node and the Kubernetes API server, blocking kubelet heartbeats.
 
-**Mechanism:** The kubelet connects to the API server over HTTPS (port 6443) to renew the kube-node-lease Lease object every 10 seconds and to post node status updates. If the TCP path is blocked or lost, the kubelet queues updates locally and retries with exponential backoff but cannot reach the server. The node controller, not receiving any heartbeat, marks `Ready: Unknown` after the grace period. The kubelet itself may be fully operational on the node and all local containers continue running normally.
+**Chain:**
+- root: A firewall, routing, or physical fault severed the node-to-API-server TCP path (HTTPS port 6443).
+- s1: The kubelet cannot renew the kube-node-lease or post status; it queues updates and retries with backoff but cannot reach the server.
+- s2: The node controller receives no heartbeat and marks `Ready: Unknown` after the grace period; local containers keep running.
+- D: The node reports NotReady (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] `curl -k https://<api-server-ip>:6443/healthz` times out or returns `connection refused`; `ping` fails or shows high loss.
+  <!-- match: {"step": 7, "predicate": "contains", "target": "context deadline exceeded"} -->
+- s1: [Step 4] kubelet journal contains `connection refused` or `context deadline exceeded` contacting the API server.
+  <!-- match: {"step": 4, "predicate": "contains", "target": "connection refused"} -->
 
-- [Step 7] `curl -k https://<api-server-ip>:6443/healthz` times out or returns `connection refused`.
-- [Step 7] `ping <api-server-ip>` fails or has high packet loss.
-- [Step 4] Kubelet journal contains `"context deadline exceeded"` or `"connection refused"` when contacting the API server.
-
-<!-- match: {"step": 7, "predicate": "contains", "target": "context deadline exceeded"} -->
-<!-- match: {"step": 4, "predicate": "contains", "target": "connection refused"} -->
-
-**Mitigation:**
-
-- **Risk:** Medium. Modifying firewall or routing rules can affect other traffic; verify before applying.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): inspect node firewall and routing to locate the blocked path.
 
   ```bash
   # Check iptables rules on the node
@@ -323,88 +304,75 @@ kubectl set resources deployment/<name> --limits=memory=512Mi --requests=memory=
   traceroute <api-server-ip>
   ```
 
-- **Duration:** Node returns Ready within 60 seconds of restoring network connectivity.
+  **Risk:** Medium. Modifying firewall or routing rules can affect other traffic; verify before applying. **Duration:** Node returns Ready within 60 seconds of restoring network connectivity. **Verification:** `curl -k https://<api-server-ip>:6443/healthz` returns `ok`.
+- **remediation** (root): restore the blocked route or remove the offending firewall rule.
 
-**Resolution:**
+  ```bash
+  # If an iptables rule is blocking port 6443, remove it:
+  sudo iptables -D OUTPUT -d <api-server-ip> -p tcp --dport 6443 -j DROP
+  # If a routing change broke the path, restore the route:
+  sudo ip route add <api-server-subnet> via <gateway-ip>
+  ```
 
-```bash
-# If an iptables rule is blocking port 6443, remove it:
-sudo iptables -D OUTPUT -d <api-server-ip> -p tcp --dport 6443 -j DROP
-# If a routing change broke the path, restore the route:
-sudo ip route add <api-server-subnet> via <gateway-ip>
-```
-
-- **Impact:** Node-level or network-level depending on root cause. Firewall changes may need coordination with network team.
-- **Rollback:** Re-add dropped iptables rule; remove restored route if it caused other traffic issues.
-
-**Verification:** `curl -k https://<api-server-ip>:6443/healthz` returns `ok`. Node transitions to `Ready` within 60 seconds of kubelet reconnecting.
+  **Verification:** `curl -k https://<api-server-ip>:6443/healthz` returns `ok`; node transitions to `Ready` within 60 seconds of kubelet reconnecting. Re-add the dropped rule or remove the restored route to roll back; coordinate firewall changes with the network team.
 
 ---
 
 ### Cause F: Expired kubelet client certificate
 
-**Statement:** The kubelet's TLS client certificate expired, preventing it from authenticating to the API server even though it is running and the network is reachable.
+**Statement:** The kubelet's TLS client certificate expired, so it cannot authenticate to the API server even though it is running and the network is reachable.
 
-**Mechanism:** The kubelet uses a client certificate (stored at `/var/lib/kubelet/pki/kubelet-client-current.pem`) to authenticate to the Kubernetes API server. If certificate auto-rotation is disabled or the CSR approval controller is not running, this certificate expires after its validity period (typically 1 year for kubeadm clusters). Once expired, all API server calls fail with `x509: certificate has expired or not yet valid`, halting heartbeats even though the kubelet process continues running.
+**Chain:**
+- root: Certificate auto-rotation is disabled (or CSR approval is not running), so the kubelet client cert expired past its validity period.
+- s1: Every API server call fails with `x509: certificate has expired or not yet valid`.
+- s2: Heartbeats stop reaching the control plane even though the kubelet process keeps running.
+- D: The node reports NotReady (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] `openssl x509 -in /var/lib/kubelet/pki/kubelet-client-current.pem -noout -dates` shows `notAfter` in the past.
+  <!-- match: {"step": 8, "predicate": "contains", "target": "notAfter"} -->
+- s1: [Step 4] kubelet journal contains `x509: certificate has expired or not yet valid`.
+  <!-- match: {"step": 4, "predicate": "contains", "target": "x509: certificate has expired"} -->
 
-- [Step 8] `openssl x509 -in /var/lib/kubelet/pki/kubelet-client-current.pem -noout -dates` shows `notAfter` in the past.
-- [Step 4] Kubelet journal contains `"x509: certificate has expired or not yet valid"`.
-
-<!-- match: {"step": 4, "predicate": "contains", "target": "x509: certificate has expired"} -->
-<!-- match: {"step": 8, "predicate": "contains", "target": "notAfter"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Renewing certificates on a kubeadm cluster does not disrupt running workloads.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): renew the certificates and restart kubelet to restore authentication.
 
   ```bash
   sudo kubeadm certs renew all
   sudo systemctl restart kubelet
   ```
 
-- **Duration:** Node returns Ready within 60 seconds after certificate renewal and kubelet restart.
+  **Risk:** Low. Renewing certificates on a kubeadm cluster does not disrupt running workloads. **Duration:** Node returns Ready within 60 seconds after certificate renewal and kubelet restart. **Verification:** `sudo openssl x509 -in /var/lib/kubelet/pki/kubelet-client-current.pem -noout -dates` shows `notAfter` well in the future.
+- **remediation** (root): enable certificate auto-rotation and confirm the CSR approval controller is active.
 
-**Resolution:**
+  ```bash
+  # Enable rotateCertificates: true in /var/lib/kubelet/config.yaml, then verify
+  # the CSR approval controller is active:
+  kubectl get csr --sort-by='.metadata.creationTimestamp' | tail -5
+  ```
 
-```bash
-# Enable auto-rotation in kubelet config to prevent recurrence:
-# /var/lib/kubelet/config.yaml
-# rotateCertificates: true
-
-# Verify the CSR approval controller is active:
-kubectl get csr --sort-by='.metadata.creationTimestamp' | tail -5
-# Auto-approved CSRs are handled by the controller-manager with:
-# --cluster-signing-cert-file and --cluster-signing-key-file set
-```
-
-- **Impact:** All nodes in the cluster benefit from enabling `rotateCertificates: true`; change requires kubelet config update and restart on each node.
-- **Rollback:** Remove `rotateCertificates: true` from kubelet config and restart kubelet if rotation causes unexpected CSR storms.
-
-**Verification:** `sudo openssl x509 -in /var/lib/kubelet/pki/kubelet-client-current.pem -noout -dates` shows `notAfter` well in the future. Node transitions to `Ready`.
+  **Verification:** node transitions to `Ready`; new CSRs are auto-approved by controller-manager (`--cluster-signing-cert-file`/`--cluster-signing-key-file` set). Remove `rotateCertificates: true` and restart kubelet if rotation causes CSR storms.
 
 ---
 
 ### Cause G: Node PID pressure (process ID exhaustion)
 
-**Statement:** The number of running processes on the node approached or exceeded the kernel `pid_max` limit, causing the kubelet to report PIDPressure and preventing new process creation.
+**Statement:** The number of running processes on the node approached or exceeded the kernel `pid_max` limit, triggering PIDPressure and preventing new process creation.
 
-**Mechanism:** The kubelet monitors process count via `/proc/sys/kernel/pid_max` and the cgroup PID controller. When processes exceed the kubelet's `evictionHard.pid.available` threshold (default 1000 remaining PIDs), the kubelet sets `PIDPressure: True` and evicts pods. At extreme exhaustion, the kubelet itself cannot fork new processes to check container status, causing it to stall and stop sending heartbeats. PID leaks typically originate from zombie processes or runaway forking workloads.
+**Chain:**
+- root: A PID leak (zombie processes or runaway forking workload) drove process count toward `pid_max`.
+- s1: Remaining PIDs fall below `evictionHard.pid.available` (1000); kubelet sets `PIDPressure: True` and evicts pods.
+- s2: At extreme exhaustion the kubelet cannot fork to check container status, stalls, and stops sending heartbeats.
+- D: The node transitions to NotReady (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 1] `kubectl describe node` shows `PIDPressure: True`.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "PIDPressure"} -->
+- root: [Step 6] `ps aux | wc -l` is within 10% of `cat /proc/sys/kernel/pid_max`.
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "pid_count_pct_of_pid_max", "op": ">", "value": 0.9} -->
 
-- [Step 1] `kubectl describe node` shows `PIDPressure: True`.
-- [Step 6] `ps aux | wc -l` is within 10% of `cat /proc/sys/kernel/pid_max`.
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "PIDPressure"} -->
-<!-- match: {"step": 6, "predicate": "threshold", "target": "pid_count_pct_of_pid_max", "op": ">", "value": 0.9} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Identifying and killing leaked processes is safe; killing zombie parents is higher risk.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): identify and reap leaked or zombie processes to free PIDs.
 
   ```bash
   # Find top process-owning users
@@ -415,54 +383,49 @@ kubectl get csr --sort-by='.metadata.creationTimestamp' | tail -5
   kill -9 <parent-pid>
   ```
 
-- **Duration:** PIDPressure clears within 60 seconds after process count drops below the eviction threshold.
+  **Risk:** Low. Identifying and killing leaked processes is safe; killing zombie parents is higher risk. **Duration:** PIDPressure clears within 60 seconds after process count drops below the eviction threshold. **Verification:** `ps aux | wc -l` is substantially below `pid_max`.
+- **remediation** (root): cap pods per namespace and reserve PIDs for system processes.
 
-**Resolution:**
+  ```bash
+  # Set PID limits per namespace to prevent runaway pods:
+  kubectl create resourcequota pid-quota --hard=pods=100,count/pods=100 -n <namespace>
+  ```
 
-```bash
-# Set PID limits per namespace to prevent runaway pods:
-kubectl create resourcequota pid-quota --hard=pods=100,count/pods=100 -n <namespace>
+  ```yaml
+  # Reserve PIDs for system processes in /var/lib/kubelet/config.yaml:
+  systemReserved:
+    pid: "1000"
+  evictionHard:
+    pid.available: "500"
+  ```
 
-# Reserve PIDs for system processes in kubelet config:
-# /var/lib/kubelet/config.yaml
-# systemReserved:
-#   pid: "1000"
-# evictionHard:
-#   pid.available: "500"
-```
-
-- **Impact:** Namespace-level quota limits affect all pods in that namespace; kubelet reserved PIDs reduce schedulable capacity.
-- **Rollback:** Delete the resourcequota; remove PID reserved fields from kubelet config and restart kubelet.
-
-**Verification:** `ps aux | wc -l` is substantially below `pid_max`. `kubectl describe node <node-name> | grep PIDPressure` shows `False`. Node transitions to `Ready`.
+  **Verification:** `kubectl describe node <node-name> | grep PIDPressure` shows `False`; node transitions to `Ready`. Delete the resourcequota and remove the reserved PID fields (then restart kubelet) to roll back.
 
 ---
 
-### Cause Z: Unidentified cause
+### Cause Z: Unidentified
 
-**Statement:** The node is NotReady but the cause does not match any of the specific patterns in this runbook.
+**Statement:** The node is NotReady but the cause does not match any specific pattern in this runbook.
 
-**Mechanism:** Less common causes include kernel panic requiring hard reboot, hardware failure (disk I/O error, NIC fault), cloud provider instance health failure (EC2 system status check, GCE live migration failure), severe clock skew causing TLS failures or lease expiration, or a Node Problem Detector event for a kernel bug. These require deeper OS-level or infrastructure-layer investigation.
+**Chain:**
+- root: An out-of-runbook condition (kernel panic, hardware fault, cloud instance health failure, severe clock skew, or an NPD-detected kernel bug) is degrading the node.
+- D: The node reports NotReady (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Default] None of the above Cause A–G indicators match.
 
-- [Default] None of the above Cause A–G indicators match.
-
-**Mitigation:**
-
-- **Risk:** Medium. Draining the node safely migrates workloads before further investigation.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): cordon and drain the node, then capture a full diagnostic snapshot and escalate to the infrastructure SME.
 
   ```bash
   kubectl cordon <node-name>
   kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data --timeout=120s
+  sudo dmesg | tail -100
+  sudo journalctl -k -n 200
+  kubectl cluster-info dump --namespaces kube-system
   ```
 
-- **Duration:** Drain completes in 2–10 minutes depending on pod count and grace periods.
-
-**Resolution:** Out of runbook scope — escalate to infrastructure team. Gather: `sudo dmesg | tail -100`, `sudo journalctl -k -n 200`, cloud provider instance status page, and `kubectl cluster-info dump --namespaces kube-system`.
-
-**Verification:** After drain and cordon, workloads reschedule to other nodes. The affected node is investigated or replaced before uncordoning.
+  **Risk:** Medium. Draining the node safely migrates workloads before further investigation. **Duration:** Drain completes in 2–10 minutes depending on pod count and grace periods. **Verification:** workloads reschedule to other nodes after drain and cordon; the affected node is investigated or replaced before uncordoning. Also gather the cloud provider instance status page for the SME.
 
 ## Prevention
 

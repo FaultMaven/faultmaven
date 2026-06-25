@@ -6,8 +6,8 @@ service: aws-iam
 symptom_class: [auth_failure]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [sts, assume-role, trust-policy, external-id, cross-account, role-chaining, irsa, scp]
@@ -82,7 +82,7 @@ aws iam get-role --role-name TargetRole \
 
 Expected output: `[3600, "AROA..."]`. Default is 3600 s (1 h). Role chaining caps at 3600 s regardless of this value. If the caller's `DurationSeconds` exceeds the returned value the call fails.
 
-### Step 4: Simulate whether the caller's identity-based policy permits AssumeRole
+### Step 4: Simulate the caller's identity-based policy
 
 ```bash
 aws iam simulate-principal-policy \
@@ -106,7 +106,7 @@ aws cloudtrail lookup-events \
 
 Expected output: the exact `errorMessage` string that distinguishes trust-policy denial from SCP denial from session-duration rejection.
 
-### Step 6: Check caller's identity-based policy includes sts:AssumeRole on the target ARN
+### Step 6: Check caller's identity policy grants AssumeRole
 
 ```bash
 aws iam list-attached-role-policies --role-name CallerRole
@@ -133,7 +133,7 @@ aws organizations list-policies-for-target \
 
 Expected output: policy names. Retrieve each policy with `aws organizations describe-policy --policy-id <id>` and inspect for `Deny` on `sts:AssumeRole`.
 
-### Step 8: Validate OIDC provider for federated (IRSA/GitHub Actions) assumption
+### Step 8: Validate OIDC provider for federated assumption
 
 ```bash
 # List providers
@@ -149,23 +149,36 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 
 ## Causes
 
-### Cause A: Caller principal not listed in the role's trust policy
+### Cause A: Caller principal not in trust policy
 
 **Statement:** The calling IAM principal (user, role, or service) is absent from the `Principal` element of the target role's trust policy.
 
-**Mechanism:** AWS evaluates the trust policy as a resource-based policy attached to the role. If the `Principal` does not match the caller's ARN or account, `AssumeRole` is denied before any identity-based policy is consulted. A previously valid trust entry becomes invalid if the original principal is deleted and re-created, because IAM replaces the ARN with the principal's unique ID; re-creation generates a new unique ID that no longer matches the stored entry.
+**Chain:**
+- root: the caller's ARN or account is missing from the target role's trust-policy `Principal` element (or its prior unique-ID was invalidated by principal delete/re-create).
+- s1: AWS evaluates the trust policy (resource-based) first and finds no matching `Principal`, so `AssumeRole` is denied before any identity policy is consulted.
+- D: `sts:AssumeRole` returns `AccessDenied` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] `Principal` in the trust policy does not contain the caller's ARN or account returned by Step 1
+- s1: [Step 5] `errorMessage` contains `is not authorized to perform: sts:AssumeRole`
+  <!-- match: {"step": 5, "predicate": "contains", "target": "is not authorized to perform: sts:AssumeRole"} -->
 
-- [Step 2] `Principal` in the trust policy does not contain the caller's ARN or account returned by Step 1
-- [Step 5] `errorMessage` contains `is not authorized to perform: sts:AssumeRole`
+**Interventions:**
+- **remediation** (root): add the specific caller principal to the trust policy.
 
-<!-- match: {"step": 5, "predicate": "contains", "target": "is not authorized to perform: sts:AssumeRole"} -->
+  ```bash
+  aws iam update-assume-role-policy --role-name TargetRole --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"AWS": "arn:aws:iam::111111111111:role/CallerRole"},
+      "Action": "sts:AssumeRole"
+    }]
+  }'
+  ```
 
-**Mitigation:**
-
-- **Risk:** Temporarily adding `arn:aws:iam::111111111111:root` as principal allows any principal in that account to assume the role during the window.
-- **Command:**
+  **Verification:** Run `aws sts assume-role --role-arn arn:aws:iam::222222222222:role/TargetRole --role-session-name verify` and confirm `Credentials.AccessKeyId` is returned with no error.
+- **mitigation** (root): temporarily trust the whole source account to unblock while the scoped entry is prepared.
 
   ```bash
   aws iam update-assume-role-policy --role-name TargetRole --policy-document '{
@@ -178,45 +191,24 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
   }'
   ```
 
-- **Duration:** Up to 4 hours; restore the scoped principal before leaving.
+  **Risk:** Trusting `arn:aws:iam::111111111111:root` allows any principal in that account to assume the role during the window. **Duration:** Up to 4 hours; restore the scoped principal before leaving. **Verification:** Run `aws sts assume-role --role-arn ... --role-session-name verify` and confirm credentials are returned.
 
-**Resolution:**
-
-```bash
-aws iam update-assume-role-policy --role-name TargetRole --policy-document '{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {"AWS": "arn:aws:iam::111111111111:role/CallerRole"},
-    "Action": "sts:AssumeRole"
-  }]
-}'
-```
-
-- **Impact:** Trust policy change is effective within seconds; no restart required. Scoped to `TargetRole` only.
-- **Rollback:** Re-run `update-assume-role-policy` replacing the ARN with the prior principal or reverting to the previous policy document retrieved in Step 2.
-
-**Verification:** Run `aws sts assume-role --role-arn arn:aws:iam::222222222222:role/TargetRole --role-session-name verify` and confirm `Credentials.AccessKeyId` is returned with no error.
-
----
-
-### Cause B: Missing or incorrect ExternalId in the AssumeRole call
+### Cause B: Missing or incorrect ExternalId
 
 **Statement:** The target role's trust policy requires an `sts:ExternalId` condition but the caller's `AssumeRole` request omits it or supplies the wrong value.
 
-**Mechanism:** ExternalId is a confused-deputy countermeasure for cross-account third-party access. When `StringEquals: {sts:ExternalId: "expected-id"}` is present in the trust policy's `Condition` block, AWS evaluates that condition before granting assumption. If the caller omits `--external-id` or passes a different string, the condition fails and the request is denied even if the `Principal` matches.
+**Chain:**
+- root: the trust policy's `Condition` block requires `StringEquals: {sts:ExternalId: "expected-id"}` for confused-deputy protection.
+- s1: the caller omits `--external-id` or passes a different string, so AWS evaluates the condition and it fails even though the `Principal` matches.
+- D: `sts:AssumeRole` is denied with `AccessDenied` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] Trust policy `Condition` block contains `"sts:ExternalId"` key
+  <!-- match: {"step": 2, "predicate": "contains", "target": "sts:ExternalId"} -->
+- s1: [Step 5] `errorMessage` contains `is not authorized to perform: sts:AssumeRole` while Step 2 confirms the `sts:ExternalId` condition is present
 
-- [Step 2] Trust policy `Condition` block contains `"sts:ExternalId"` key
-- [Step 5] `errorMessage` contains `is not authorized to perform: sts:AssumeRole` and Step 2 confirms `sts:ExternalId` condition present
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "sts:ExternalId"} -->
-
-**Mitigation:**
-
-- **Risk:** Passing the correct external ID in the CLI call is safe; it does not change any AWS resource.
-- **Command:**
+**Interventions:**
+- **remediation** (root): update all callers to pass the correct external ID on every `AssumeRole` call.
 
   ```bash
   aws sts assume-role \
@@ -225,89 +217,72 @@ aws iam update-assume-role-policy --role-name TargetRole --policy-document '{
     --external-id "your-external-id-value"
   ```
 
-- **Duration:** Permanent fix — update all callers to include the external ID.
+  **Verification:** Run `aws sts assume-role --role-arn ... --external-id correct-external-id --role-session-name verify` and confirm temporary credentials are returned.
+- **mitigation** (root): if callers cannot be updated, relax the required external ID on the trust policy.
 
-**Resolution:**
+  ```bash
+  aws iam update-assume-role-policy --role-name TargetRole --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"AWS": "arn:aws:iam::111111111111:role/CallerRole"},
+      "Action": "sts:AssumeRole",
+      "Condition": {"StringEquals": {"sts:ExternalId": "correct-external-id"}}
+    }]
+  }'
+  ```
 
-```bash
-# If callers cannot be updated and the external ID requirement must be relaxed:
-aws iam update-assume-role-policy --role-name TargetRole --policy-document '{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {"AWS": "arn:aws:iam::111111111111:role/CallerRole"},
-    "Action": "sts:AssumeRole",
-    "Condition": {"StringEquals": {"sts:ExternalId": "correct-external-id"}}
-  }]
-}'
-```
-
-- **Impact:** Removing the ExternalId condition weakens confused-deputy protection. Only do this if the caller is an internal account you fully control.
-- **Rollback:** Re-add the `Condition` block with the original ExternalId value.
-
-**Verification:** Run `aws sts assume-role --role-arn ... --external-id correct-external-id --role-session-name verify` and confirm temporary credentials are returned.
-
----
+  **Risk:** Removing the ExternalId condition weakens confused-deputy protection; only do this for an internal account you fully control. **Duration:** Until callers are corrected; re-add the original `Condition` block to restore protection. **Verification:** Re-run `aws sts assume-role` with the corrected external ID and confirm credentials are returned.
 
 ### Cause C: Session duration exceeds MaxSessionDuration
 
-**Statement:** The `DurationSeconds` value requested by the caller exceeds the `MaxSessionDuration` configured on the target role, or role chaining limits the session to one hour.
+**Statement:** The `DurationSeconds` value requested by the caller exceeds the `MaxSessionDuration` configured on the target role.
 
-**Mechanism:** AWS validates `DurationSeconds` against the role's `MaxSessionDuration` (900–43200 s; default 3600 s). When a role is assumed via role chaining (an assumed-role session calling AssumeRole again), AWS enforces a hard cap of 3600 s regardless of `MaxSessionDuration`. Either condition causes a parameter-validation rejection before trust-policy evaluation.
+**Chain:**
+- root: the caller requests a `DurationSeconds` larger than the role's `MaxSessionDuration` (valid range 900–43200 s; default 3600 s).
+- s1: AWS validates `DurationSeconds` against `MaxSessionDuration` during parameter validation, before trust-policy evaluation, and rejects the call.
+- D: `sts:AssumeRole` fails with `DurationSeconds exceeds the MaxSessionDuration` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `MaxSessionDuration` value is less than the `DurationSeconds` the caller requests
+- s1: [Step 5] `errorMessage` contains `DurationSeconds exceeds the MaxSessionDuration`
+  <!-- match: {"step": 5, "predicate": "contains", "target": "DurationSeconds exceeds the MaxSessionDuration"} -->
 
-- [Step 3] `MaxSessionDuration` value is less than the `DurationSeconds` the caller requests
-- [Step 5] `errorMessage` contains `DurationSeconds exceeds the MaxSessionDuration`
-
-<!-- match: {"step": 5, "predicate": "contains", "target": "DurationSeconds exceeds the MaxSessionDuration"} -->
-
-**Mitigation:**
-
-- **Risk:** Increasing `MaxSessionDuration` means compromised credentials remain valid longer.
-- **Command:**
+**Interventions:**
+- **remediation** (root): raise the role's `MaxSessionDuration` to cover the required duration (max 43200 s = 12 h).
 
   ```bash
-  # Reduce the caller's requested duration below current MaxSessionDuration
+  aws iam update-role --role-name TargetRole --max-session-duration 14400
+  ```
+
+  **Verification:** Run `aws sts assume-role ... --duration-seconds <new-value>` and confirm `Credentials.Expiration` reflects the requested duration.
+- **mitigation** (root): reduce the caller's requested duration below the current `MaxSessionDuration` to unblock immediately.
+
+  ```bash
   aws sts assume-role \
     --role-arn arn:aws:iam::222222222222:role/TargetRole \
     --role-session-name test-session \
     --duration-seconds 3600
   ```
 
-- **Duration:** Immediate — verify this unblocks the caller, then decide whether to increase MaxSessionDuration.
+  **Risk:** None to security; the caller simply gets a shorter session and must refresh sooner. **Duration:** Immediate; verify this unblocks the caller, then decide whether to increase MaxSessionDuration. **Verification:** Confirm credentials are returned with the requested shorter duration.
 
-**Resolution:**
+### Cause D: Caller's identity policy does not grant AssumeRole
 
-```bash
-# Increase MaxSessionDuration (max 43200 = 12 hours)
-aws iam update-role --role-name TargetRole --max-session-duration 14400
-```
+**Statement:** For cross-account assumption the caller has no identity-based policy granting `sts:AssumeRole` on the target role ARN, and the trust policy alone is insufficient.
 
-- **Impact:** Affects all future sessions for this role; does not invalidate existing sessions.
-- **Rollback:** `aws iam update-role --role-name TargetRole --max-session-duration 3600`
+**Chain:**
+- root: for cross-account assumption, BOTH the target trust policy must trust the caller AND the caller must have an identity policy granting `sts:AssumeRole` on the target ARN; the identity grant is missing.
+- s1: with no identity policy granting the action, IAM evaluates the request as an implicit deny even when the trust policy is correct.
+- D: `sts:AssumeRole` returns `AccessDenied` (points at Symptom Recognition).
 
-**Verification:** Run `aws sts assume-role ... --duration-seconds <new-value>` and confirm `Credentials.Expiration` reflects the requested duration.
+**Indicators:**
+- root: [Step 6] No attached or inline policy grants `sts:AssumeRole` on the target role ARN
+- s1: [Step 4] `EvalDecision` is `implicitDeny`
+  <!-- match: {"step": 4, "predicate": "contains", "target": "implicitDeny"} -->
 
----
-
-### Cause D: Caller's identity-based policy does not grant sts:AssumeRole
-
-**Statement:** The calling IAM principal has no identity-based policy that explicitly allows `sts:AssumeRole` on the target role ARN, and the trust policy alone is insufficient for cross-account assumption.
-
-**Mechanism:** For cross-account assumption both gates must pass: the trust policy must list the caller as a trusted principal, AND the caller must have an identity-based (or inline) policy granting `sts:AssumeRole` on the target role's ARN. For same-account assumption either gate is sufficient. If the caller is in a different account than the role and no identity policy grants the action, the call is denied even when the trust policy is correct.
-
-**Indicator:**
-
-- [Step 4] `EvalDecision` is `implicitDeny`
-- [Step 6] No attached or inline policy grants `sts:AssumeRole` on the target role ARN
-
-<!-- match: {"step": 4, "predicate": "contains", "target": "implicitDeny"} -->
-
-**Mitigation:**
-
-- **Risk:** Attaching a wildcard resource (`"Resource": "*"`) to the policy allows assumption of any role; scope to the specific ARN.
-- **Command:**
+**Interventions:**
+- **remediation** (root): attach a scoped identity policy granting `sts:AssumeRole` on the target role ARN.
 
   ```bash
   aws iam put-role-policy \
@@ -323,173 +298,136 @@ aws iam update-role --role-name TargetRole --max-session-duration 14400
     }'
   ```
 
-- **Duration:** Permanent until the policy is removed or modified.
+  **Verification:** Re-run Step 4 and confirm `EvalDecision` is `allowed`, then verify `aws sts assume-role` succeeds.
 
-**Resolution:** **Same as Mitigation.**
-
-- **Impact:** Grants the caller role permission to assume one specific role; scoped to `CallerRole` only.
-- **Rollback:** `aws iam delete-role-policy --role-name CallerRole --policy-name AllowAssumeTargetRole`
-
-**Verification:** Re-run Step 4 and confirm `EvalDecision` is `allowed`, then verify `aws sts assume-role` succeeds.
-
----
-
-### Cause E: Service Control Policy (SCP) blocks sts:AssumeRole
+### Cause E: Service Control Policy blocks AssumeRole
 
 **Statement:** An SCP attached to the source or target account's organizational unit explicitly denies `sts:AssumeRole`, overriding any identity-based or trust-policy allow.
 
-**Mechanism:** SCPs act as guardrails on AWS accounts in AWS Organizations. An SCP with `Effect: Deny` on `sts:AssumeRole` takes precedence over all identity-based and resource-based policies in the affected account. The CloudTrail error message includes the phrase `with an explicit deny in a service control policy` when an SCP is responsible. The `simulate-principal-policy` command returns `explicitDeny` but does not identify SCPs by name.
+**Chain:**
+- root: an SCP with `Effect: Deny` on `sts:AssumeRole` is attached to an OU governing the source or target account.
+- s1: in AWS Organizations an explicit SCP deny takes precedence over all identity-based and resource-based allows in the affected account.
+- D: `sts:AssumeRole` is denied with `explicit deny in a service control policy` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `EvalDecision` is `explicitDeny`
+- s1: [Step 5] `errorMessage` contains `explicit deny in a service control policy`
+  <!-- match: {"step": 5, "predicate": "contains", "target": "explicit deny in a service control policy"} -->
 
-- [Step 4] `EvalDecision` is `explicitDeny`
-- [Step 5] `errorMessage` contains `explicit deny in a service control policy`
-
-<!-- match: {"step": 5, "predicate": "contains", "target": "explicit deny in a service control policy"} -->
-
-**Mitigation:**
-
-- **Risk:** Modifying an SCP affects every account attached to that OU. Coordinate with your organization administrator.
-- **Command:**
+**Interventions:**
+- **remediation** (root): have the Organizations admin add an exception to the SCP or move the target account to a less restrictive OU.
 
   ```bash
-  # Identify the blocking SCP
+  aws organizations move-account \
+    --account-id 222222222222 \
+    --source-parent-id ou-xxxx-source \
+    --destination-parent-id ou-xxxx-destination
+  ```
+
+  **Verification:** Re-run Step 4 and confirm `EvalDecision` changes to `allowed`, then verify `aws sts assume-role` succeeds.
+- **mitigation** (root): read-only — identify the blocking SCP so the admin can act; this does not unblock by itself.
+
+  ```bash
   aws organizations describe-policy --policy-id p-xxxxxxxxxxxx \
     --query 'Policy.Content' --output text | python3 -m json.tool
   ```
 
-- **Duration:** Read-only; escalate to the Organizations admin to modify or detach the SCP.
-
-**Resolution:**
-
-```bash
-# Organizations admin: update the SCP to add an exception for the specific role ARN
-# or move the target account to an OU with a less restrictive SCP:
-aws organizations move-account \
-  --account-id 222222222222 \
-  --source-parent-id ou-xxxx-source \
-  --destination-parent-id ou-xxxx-destination
-```
-
-- **Impact:** Moving an account changes all SCPs applied to it. Review all SCP effects before proceeding.
-- **Rollback:** `aws organizations move-account` back to the original OU.
-
-**Verification:** Re-run Step 4 and confirm `EvalDecision` changes to `allowed`, then verify `aws sts assume-role` succeeds.
-
----
+  **Risk:** None — read-only inspection; any actual SCP change affects every account attached to that OU and needs the Organizations admin. **Duration:** Read-only; escalate to the Organizations admin to modify or detach the SCP. **Verification:** Confirm the dumped policy content shows the `Deny` on `sts:AssumeRole`.
 
 ### Cause F: STS not activated in the target region
 
 **Statement:** The `sts:AssumeRole` call is made against an STS endpoint in an AWS region where STS is not activated for the account.
 
-**Mechanism:** By default, STS is available in the global endpoint (`sts.amazonaws.com`) and a subset of regional endpoints. If the caller or SDK is configured to use a regional STS endpoint (`sts.<region>.amazonaws.com`) in a region that has not been activated for the account, the request returns `RegionDisabled`. This is common when `AWS_DEFAULT_REGION` is set to a newer region or when SDKs are pinned to a regional endpoint.
+**Chain:**
+- root: the caller or SDK is configured to use a regional STS endpoint (`sts.<region>.amazonaws.com`) in a region not activated for the account.
+- s1: STS rejects the regional request because that endpoint is inactive for the account, returning `RegionDisabled` (HTTP 403) rather than `AccessDenied`.
+- D: the `AssumeRole` call fails with `STS is not activated in the requested region` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] `errorCode` is `RegionDisabled` or error message contains `STS is not activated in the requested region`
+  <!-- match: {"step": 5, "predicate": "contains", "target": "STS is not activated in the requested region"} -->
+- s1: [Symptom] Error class is `RegionDisabled` (HTTP 403), not `AccessDenied`
 
-- [Step 5] `errorCode` is `RegionDisabled` or error message contains `STS is not activated in the requested region`
-- [Symptom] Error class is `RegionDisabled` (HTTP 403), not `AccessDenied`
-
-<!-- match: {"step": 5, "predicate": "contains", "target": "STS is not activated in the requested region"} -->
-
-**Mitigation:**
-
-- **Risk:** Switching to the global endpoint removes regional isolation benefits; safe for most use cases.
-- **Command:**
+**Interventions:**
+- **remediation** (root): activate STS in the target region account-wide (IAM console or CLI as account root).
 
   ```bash
-  # Redirect the call to the global endpoint
+  aws iam set-security-token-service-preferences \
+    --global-endpoint-token-version v2Token
+  # Or activate via IAM console: Account settings -> STS endpoints -> activate region
+  ```
+
+  **Verification:** Run `aws sts assume-role` without the `--endpoint-url` override and confirm it succeeds in the target region.
+- **mitigation** (root): redirect the call to the global STS endpoint until the regional endpoint is activated.
+
+  ```bash
   aws sts assume-role \
     --role-arn arn:aws:iam::222222222222:role/TargetRole \
     --role-session-name test-session \
     --endpoint-url https://sts.amazonaws.com
   ```
 
-- **Duration:** Immediate; use the global endpoint until the regional endpoint is activated.
+  **Risk:** Switching to the global endpoint removes regional isolation benefits; safe for most use cases. **Duration:** Immediate; use the global endpoint until the regional endpoint is activated. **Verification:** Confirm `aws sts assume-role` against the global endpoint returns credentials.
 
-**Resolution:**
+### Cause G: OIDC provider mismatch for federated assumption
 
-```bash
-# Activate STS in the target region (requires IAM console or AWS CLI as account root)
-aws iam set-security-token-service-preferences \
-  --global-endpoint-token-version v2Token
-# Or activate via IAM console: Account settings -> STS endpoints -> activate region
-```
+**Statement:** The OIDC identity provider ARN, issuer URL, or audience registered in IAM does not match the token presented by the federated caller, rejecting `AssumeRoleWithWebIdentity`.
 
-- **Impact:** STS activation is account-wide and cannot be scoped to individual roles.
-- **Rollback:** Deactivate the regional endpoint via IAM console: Account settings -> STS endpoints.
+**Chain:**
+- root: the registered OIDC provider URL, thumbprint, `ClientIDList` (audience), or the trust policy `sub`/`aud` condition does not match the token the federated caller (EKS IRSA / GitHub Actions) presents.
+- s1: AWS validates the web-identity token against the registered provider and trust-policy condition; the mismatch fails validation.
+- D: `AssumeRoleWithWebIdentity` is denied with `AccessDenied` (points at Symptom Recognition).
 
-**Verification:** Run `aws sts assume-role` without the `--endpoint-url` override and confirm it succeeds in the target region.
+**Indicators:**
+- root: [Step 8] `URL` in the OIDC provider does not match the token issuer, or `ClientIDList` does not include `sts.amazonaws.com`
+  <!-- match: {"step": 8, "predicate": "absent", "target": "sts.amazonaws.com"} -->
+- s1: [Step 2] Trust policy `Condition` `StringEquals` subject/audience values differ from what the provider token contains
 
----
-
-### Cause G: OIDC provider mismatch for federated assumption (IRSA/GitHub Actions)
-
-**Statement:** The OIDC identity provider ARN, issuer URL, or audience registered in IAM does not match the token presented by the federated caller, causing `AssumeRoleWithWebIdentity` to be rejected.
-
-**Mechanism:** EKS IRSA and GitHub Actions OIDC federation require an OIDC provider registered in IAM whose URL exactly matches the token issuer field. The trust policy's `Condition` block uses `StringEquals` on `token.actions.githubusercontent.com:sub` (GitHub) or `oidc.eks.{region}.amazonaws.com/id/{cluster-id}:sub` (EKS). A mismatch on any of: provider URL, thumbprint validity, `ClientIDList` (audience), or `sub`/`aud` claim values in the token causes `AccessDenied` on `AssumeRoleWithWebIdentity`.
-
-**Indicator:**
-
-- [Step 8] `URL` in the OIDC provider does not match the token issuer, or `ClientIDList` does not include `sts.amazonaws.com`
-- [Step 2] Trust policy `Condition` `StringEquals` subject/audience values differ from what the provider token contains
-
-<!-- match: {"step": 8, "predicate": "absent", "target": "sts.amazonaws.com"} -->
-
-**Mitigation:**
-
-- **Risk:** Updating trust policy `Condition` values may block other federated callers relying on the old value.
-- **Command:**
+**Interventions:**
+- **remediation** (root): correct the OIDC provider thumbprint, or re-register the provider with the right URL/audience.
 
   ```bash
-  # Retrieve the actual EKS OIDC issuer to compare
+  # Update OIDC provider thumbprint if the certificate has rotated
+  aws iam update-open-id-connect-provider-thumbprint \
+    --open-id-connect-provider-arn arn:aws:iam::222222222222:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \
+    --thumbprint-list NEWTHUMBPRINT1234567890
+
+  # Re-register the provider if the URL is wrong
+  aws iam delete-open-id-connect-provider \
+    --open-id-connect-provider-arn arn:aws:iam::222222222222:oidc-provider/wrong.issuer.url
+
+  aws iam create-open-id-connect-provider \
+    --url https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \
+    --client-id-list sts.amazonaws.com \
+    --thumbprint-list THUMBPRINT1234567890
+  ```
+
+  **Verification:** Run `aws sts assume-role-with-web-identity --role-arn ... --web-identity-token file://token.jwt --role-session-name verify` and confirm credentials are returned. For EKS, verify the ServiceAccount annotation matches the updated role ARN and the pod can obtain credentials.
+- **mitigation** (root): read-only — retrieve the actual EKS OIDC issuer to compare against the registered provider before changing anything.
+
+  ```bash
   aws eks describe-cluster --name my-cluster \
     --query 'cluster.identity.oidc.issuer' --output text
   ```
 
-- **Duration:** Diagnostic only; use the output to correct the trust policy or OIDC provider registration.
-
-**Resolution:**
-
-```bash
-# Update OIDC provider thumbprint if the certificate has rotated
-aws iam update-open-id-connect-provider-thumbprint \
-  --open-id-connect-provider-arn arn:aws:iam::222222222222:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \
-  --thumbprint-list NEWTHUMBPRINT1234567890
-
-# Re-register the provider if the URL is wrong
-aws iam delete-open-id-connect-provider \
-  --open-id-connect-provider-arn arn:aws:iam::222222222222:oidc-provider/wrong.issuer.url
-
-aws iam create-open-id-connect-provider \
-  --url https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \
-  --client-id-list sts.amazonaws.com \
-  --thumbprint-list THUMBPRINT1234567890
-```
-
-- **Impact:** OIDC provider deletion/re-creation immediately breaks all roles that reference the old provider ARN; update trust policies before deleting.
-- **Rollback:** Re-create the original provider and revert trust policy `Condition` values.
-
-**Verification:** Run `aws sts assume-role-with-web-identity --role-arn ... --web-identity-token file://token.jwt --role-session-name verify` and confirm credentials are returned. For EKS, verify the ServiceAccount annotation matches the updated role ARN and the pod can obtain credentials.
-
----
+  **Risk:** None — read-only; later updates to trust policy `Condition` values may block other federated callers relying on the old value. **Duration:** Diagnostic only; use the output to correct the trust policy or OIDC provider registration. **Verification:** Confirm the returned issuer matches (or reveals the mismatch with) the `URL` from Step 8.
 
 ### Cause H: Role chaining session hard-capped at one hour
 
 **Statement:** An assumed-role session is attempting to assume another role (role chaining), but the `DurationSeconds` parameter exceeds the AWS-enforced one-hour limit for chained sessions.
 
-**Mechanism:** When a principal calls `AssumeRole` using temporary credentials (i.e., the caller's `Arn` contains `assumed-role`), AWS imposes a hard ceiling of 3600 seconds regardless of the target role's `MaxSessionDuration`. This differs from Cause C (caller has long-lived credentials requesting a session longer than `MaxSessionDuration`). The restriction exists to limit the blast radius of compromised chained-role credentials.
+**Chain:**
+- root: the caller is already operating with temporary credentials (its `Arn` contains `assumed-role`) and requests a chained session longer than 3600 s.
+- s1: AWS imposes a hard 3600 s ceiling on role chaining regardless of the target role's `MaxSessionDuration`, to limit the blast radius of compromised chained credentials.
+- D: the chained `AssumeRole` is rejected with `DurationSeconds exceeds the MaxSessionDuration` (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] Caller `Arn` contains `assumed-role` (i.e., already a temporary credential session)
+  <!-- match: {"step": 1, "predicate": "contains", "target": "assumed-role"} -->
+- s1: [Step 5] `errorMessage` contains `DurationSeconds exceeds the MaxSessionDuration` while Step 3 shows `MaxSessionDuration` >= the requested duration
 
-- [Step 1] Caller `Arn` contains `assumed-role` (i.e., already a temporary credential session)
-- [Step 5] `errorMessage` contains `DurationSeconds exceeds the MaxSessionDuration` and Step 3 shows `MaxSessionDuration` >= requested duration
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "assumed-role"} -->
-
-**Mitigation:**
-
-- **Risk:** None — reducing the requested `DurationSeconds` to <=3600 resolves the error without policy changes.
-- **Command:**
+**Interventions:**
+- **remediation** (root): request a chained session of at most 3600 s; the one-hour limit is non-configurable.
 
   ```bash
   aws sts assume-role \
@@ -498,31 +436,19 @@ aws iam create-open-id-connect-provider \
     --duration-seconds 3600
   ```
 
-- **Duration:** Permanent — role chaining one-hour limit is non-configurable.
+  **Verification:** Confirm `Credentials.Expiration` is approximately one hour from now and no error is returned.
 
-**Resolution:** **Same as Mitigation.**
-
-**Verification:** Confirm `Credentials.Expiration` is approximately one hour from now and no error is returned.
-
----
-
-### Cause Z: Unidentified role assumption failure
+### Cause Z: Unidentified
 
 **Statement:** The `AssumeRole` call fails but none of the preceding causes are confirmed by diagnostic output.
 
-**Mechanism:** Uncommon root causes include: trust policy date-range conditions (`DateGreaterThan`/`DateLessThan`) that have expired, MFA conditions (`aws:MultiFactorAuthPresent: true`) not satisfied by the caller, IP-restriction conditions (`aws:SourceIp`) that exclude the caller's egress IP, source-identity requirements, or a malformed trust policy document rejected at upload time. These require CloudTrail event inspection and manual policy-condition review.
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] None of Causes A-H match diagnostic output
-
-**Mitigation:**
-
-- **Risk:** Broadening the trust policy temporarily is the safest path to confirm whether a condition block is the culprit.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot (full CloudTrail event with the exact `errorMessage`) and escalate to the IAM SME.
 
   ```bash
-  # Pull the full CloudTrail event to see the exact errorMessage
   aws cloudtrail lookup-events \
     --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRole \
     --start-time "$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" \
@@ -530,11 +456,7 @@ aws iam create-open-id-connect-provider \
     --output text | python3 -m json.tool | grep -A2 '"errorMessage"'
   ```
 
-- **Duration:** Read-only; escalate based on the `errorMessage` content.
-
-**Resolution:** Out of runbook scope — resolve based on the specific condition identified in the CloudTrail `errorMessage`. Consult AWS IAM troubleshoot_roles documentation for condition-key-specific guidance.
-
-**Verification:** After targeted remediation, verify `aws sts assume-role` returns `Credentials` with no error.
+  **Risk:** Read-only snapshot capture; no resource change. Broadening the trust policy to test a condition block must be done only by the SME under change control. **Duration:** Read-only; escalate based on the `errorMessage` content. **Verification:** After targeted SME remediation, verify `aws sts assume-role` returns `Credentials` with no error.
 
 ## Prevention
 

@@ -6,11 +6,11 @@ service: general
 symptom_class: [auth_failure, service_unavailable]
 severity: critical
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
-tags: [tls, ssl, certificates, x509, expiry, https, openssl, certbot, cert-manager, acme, lets-encrypt]
+tags: [tls, ssl, certificates, x509, expiry, openssl, certbot, cert-manager, acme, lets-encrypt]
 difficulty: intermediate
 ---
 
@@ -47,7 +47,7 @@ echo "Exit code: $?"
 
 Exit code 0 = valid for at least 24 h. Exit code 1 = expired or expiring within 24 h.
 
-### Step 2: Inspect the full certificate chain for expired intermediates
+### Step 2: Inspect the full chain for expired intermediates
 
 ```bash
 openssl s_client -connect <host>:443 -servername <host> -showcerts </dev/null 2>/dev/null | \
@@ -62,7 +62,7 @@ rm -f cert-*
 
 Expected output: each intermediate shows `notAfter` in the future. An expired intermediate (e.g., `DST Root CA X3`) will show a past `notAfter` and is the chain root cause.
 
-### Step 3: Confirm the certificate covers the requested hostname
+### Step 3: Confirm the certificate covers the hostname
 
 ```bash
 openssl s_client -connect <host>:443 -servername <host> </dev/null 2>/dev/null | \
@@ -116,7 +116,7 @@ aws acm describe-certificate --certificate-arn <arn> \
 
 Expected output: `Status=ISSUED` and `RenewalStatus=SUCCESS`. If `RenewalStatus=FAILED`, DNS validation records were removed.
 
-### Step 6: Compare on-disk certificate against the live endpoint
+### Step 6: Compare on-disk certificate against live endpoint
 
 ```bash
 echo "=== On disk ==="
@@ -154,22 +154,36 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
 
 ## Causes
 
-### Cause A: Leaf certificate passed its notAfter date and was not renewed
+### Cause A: Leaf certificate passed notAfter and was not renewed
 
-**Statement:** The X.509 leaf certificate served by the endpoint has passed its `notAfter` validity date, causing all TLS clients to reject the connection.
+**Statement:** The X.509 leaf certificate served by the endpoint has passed its `notAfter` validity date and was never renewed, so all TLS clients reject the handshake.
 
-**Mechanism:** Every TLS client validates `notAfter` against the current time during the handshake. When `notAfter` is in the past the client terminates the connection immediately, before any application data is exchanged. No TLS session is established, so the service is completely unreachable over HTTPS.
+**Chain:**
+- root: the served leaf certificate's `notAfter` is in the past (renewal never ran)
+- s1: every TLS client compares `notAfter` against the current time during the handshake and finds it expired
+- s2: the client terminates the connection before any application data is exchanged; no TLS session is established
+- D: the service is completely unreachable over HTTPS (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] `notAfter` date is in the past
+  <!-- match: {"step": 1, "predicate": "contains", "target": "notAfter"} -->
+- s2: [Symptom] `certificate has expired` in client or server logs
 
-- [Step 1] `notAfter` date is in the past
-- [Symptom] `certificate has expired` in client or server logs
-<!-- match: {"step": 1, "predicate": "contains", "target": "notAfter"} -->
+**Interventions:**
+- **remediation** (root): enable the certbot timer and a deploy hook so renewals run automatically at the 30-day threshold.
 
-**Mitigation:**
+  ```bash
+  systemctl enable --now certbot.timer
+  cat > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh << 'HOOK'
+  #!/bin/bash
+  nginx -t && systemctl reload nginx
+  HOOK
+  chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+  certbot renew --dry-run
+  ```
 
-- **Risk:** Certbot reuses the existing ACME account and domain config; if deploy hooks are configured the web server reloads automatically. Rate-limited if multiple forced renewals were recently attempted.
-- **Command:**
+  **Verification:** re-run Step 1; `notAfter` is ~90 days in the future and `certbot renew --dry-run` succeeds without errors.
+- **mitigation** (root): force an immediate renewal to restore service now.
 
   ```bash
   certbot renew --force-renewal
@@ -178,44 +192,37 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
   systemctl reload nginx
   ```
 
-- **Duration:** 1–5 minutes. ACME validation typically completes in under 60 seconds.
-
-**Resolution:**
-
-```bash
-# Enable the certbot timer so renewals run automatically at 30-day threshold
-systemctl enable --now certbot.timer
-# Add a deploy hook to reload the web server after every future renewal
-cat > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh << 'HOOK'
-#!/bin/bash
-nginx -t && systemctl reload nginx
-HOOK
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
-certbot renew --dry-run
-```
-
-- **Impact:** Cluster-wide / host-wide. `systemctl enable certbot.timer` affects the system timer for all configured domains on this host.
-- **Rollback:** `systemctl disable --now certbot.timer` to revert; remove the deploy hook script to undo the hook.
-
-**Verification:** Run `openssl s_client -connect <host>:443 -servername <host> </dev/null 2>/dev/null | openssl x509 -noout -dates` and confirm `notAfter` is approximately 90 days in the future. `certbot renew --dry-run` should succeed without errors.
+  **Risk:** Certbot reuses the existing ACME account and domain config; rate-limited if multiple forced renewals were recently attempted. **Duration:** 1-5 minutes; ACME validation typically completes in under 60 seconds. **Verification:** re-run Step 1; `notAfter` is in the future.
 
 ---
 
-### Cause B: Renewed certificate exists on disk but web server was never reloaded
+### Cause B: Renewed certificate on disk but web server never reloaded
 
-**Statement:** The automated renewal succeeded and wrote a new certificate to disk, but the web server process was not sent a reload signal and continues serving the old expired certificate from memory.
+**Statement:** Automated renewal wrote a valid certificate to disk, but the web server was never sent a reload signal and keeps serving the old expired certificate from memory.
 
-**Mechanism:** Web servers (NGINX, HAProxy, Apache) cache the TLS certificate in memory at startup or reload time. When certbot writes a new certificate to `/etc/letsencrypt/live/`, the running process is unaware until it re-reads the file. Without a deploy hook that sends `SIGHUP` or calls `systemctl reload`, the expired certificate remains active indefinitely even though a valid replacement is on disk.
+**Chain:**
+- root: renewal wrote a new certificate to disk but no `SIGHUP`/`systemctl reload` was sent to the web server
+- s1: the running web server still holds the old certificate cached in memory from its last start/reload
+- s2: clients are served the cached expired certificate even though a valid replacement exists on disk
+- D: TLS clients reject the expired served certificate and the service is unreachable (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 6] serial numbers differ — on-disk cert has a future `notAfter`, live endpoint serves a past `notAfter`
+  <!-- match: {"step": 6, "predicate": "contains", "target": "Serial Number"} -->
 
-- [Step 6] serial numbers differ: on-disk cert has a future `notAfter`, live endpoint serves a past `notAfter`
-<!-- match: {"step": 6, "predicate": "contains", "target": "Serial Number"} -->
+**Interventions:**
+- **remediation** (root): add a deploy hook so future renewals automatically reload the web server.
 
-**Mitigation:**
+  ```bash
+  cat > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh << 'HOOK'
+  #!/bin/bash
+  nginx -t && systemctl reload nginx
+  HOOK
+  chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+  ```
 
-- **Risk:** Low. `nginx -t` validates config before reload. A graceful reload does not drop existing connections.
-- **Command:**
+  **Verification:** re-run Step 6; on-disk and live endpoint show the same serial and a future `notAfter`.
+- **mitigation** (s1): reload the running web server to pick up the on-disk certificate now.
 
   ```bash
   # NGINX
@@ -228,123 +235,106 @@ certbot renew --dry-run
   apachectl configtest && systemctl reload apache2
   ```
 
-- **Duration:** Under 30 seconds.
-
-**Resolution:**
-
-```bash
-# Add deploy hook so future renewals automatically reload the web server
-cat > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh << 'HOOK'
-#!/bin/bash
-nginx -t && systemctl reload nginx
-HOOK
-chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
-```
-
-- **Impact:** Per-host. Only affects deployments on this host that consume Let's Encrypt certs.
-- **Rollback:** Remove the deploy hook file; NGINX reload is non-destructive and self-contained.
-
-**Verification:** Recheck serial numbers with Step 6 commands. Both on-disk and live endpoint should show the same serial and a future `notAfter`.
+  **Risk:** Low. `nginx -t` validates config before reload; a graceful reload does not drop existing connections. **Duration:** Under 30 seconds. **Verification:** re-run Step 6; serials and `notAfter` match.
 
 ---
 
-### Cause C: cert-manager Certificate resource stuck — ACME challenge failing
+### Cause C: cert-manager Certificate stuck on a failing ACME challenge
 
-**Statement:** The cert-manager Certificate resource shows `Ready=False` because the ACME HTTP-01 or DNS-01 challenge is blocked by a firewall, Ingress misconfiguration, or DNS propagation failure.
+**Statement:** The cert-manager Certificate shows `Ready=False` because its ACME HTTP-01 or DNS-01 challenge is blocked by a firewall, Ingress misconfiguration, or DNS propagation failure.
 
-**Mechanism:** cert-manager issues an Order to the ACME CA, which creates a Challenge that must be validated externally. For HTTP-01, the CA makes an HTTP request to `http://<domain>/.well-known/acme-challenge/<token>`; if port 80 is blocked or the Ingress does not route `.well-known` traffic to the cert-manager solver pod, validation fails. For DNS-01, a TXT record must propagate to the authoritative nameservers before the CA queries it; if the DNS provider API credentials are wrong or the TTL is high, validation times out.
+**Chain:**
+- root: the ACME challenge is unreachable — port 80 blocked / Ingress not routing `.well-known` / DNS-01 TXT not propagated or wrong API credentials
+- s1: the ACME CA cannot validate the Order's Challenge, so issuance never completes
+- s2: the Certificate stays `Ready=False` and the existing certificate is left to expire unrenewed
+- D: the endpoint serves an expired certificate (or 502s) and clients reject it (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 5] `kubectl get certificates -A` shows `READY=False`
+  <!-- match: {"step": 5, "predicate": "contains", "target": "Ready=False"} -->
+- s2: [Step 5] `kubectl describe certificate` shows a challenge failure reason or `Waiting for DNS-01 challenge propagation`
+- root: [Step 7] port 80 connection refused or DNS TXT record absent
 
-- [Step 5] `kubectl get certificates -A` shows `READY=False`
-- [Step 5] `kubectl describe certificate` shows challenge failure reason or `Waiting for DNS-01 challenge propagation`
-- [Step 7] port 80 connection refused or DNS TXT record absent
-<!-- match: {"step": 5, "predicate": "contains", "target": "Ready=False"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Deleting stale CertificateRequest and Challenge resources causes cert-manager to re-attempt issuance.
-- **Command:**
+**Interventions:**
+- **remediation** (root): fix challenge connectivity — allow `.well-known/acme-challenge/` through the Ingress and confirm RBAC, or refresh the DNS-01 provider secret.
 
   ```bash
-  # Describe the failing challenge to get the error
+  # For HTTP-01 — ensure the Ingress allows /.well-known/acme-challenge/
+  kubectl describe clusterissuer <issuer-name>
+  kubectl auth can-i create ingress --as=system:serviceaccount:cert-manager:cert-manager -n <namespace>
+
+  # For DNS-01 — check the DNS provider secret is current
+  kubectl get secret <dns-provider-secret> -n cert-manager -o yaml
+  ```
+
+  **Verification:** re-run Step 5; `kubectl get certificates -A -o wide` shows `READY=True` and `kubectl get orders,challenges -A` returns no pending items.
+- **mitigation** (s1): force re-issuance by deleting the stale CertificateRequest after fixing the challenge.
+
+  ```bash
   kubectl get challenges -A
   kubectl describe challenge <challenge-name> -n <namespace>
 
-  # Force re-issuance by deleting the stale CertificateRequest
+  # cert-manager recreates the CertificateRequest automatically
   kubectl delete certificaterequest -n <namespace> --all
-  # cert-manager will create a new CertificateRequest automatically
   ```
 
-- **Duration:** 2–10 minutes for ACME validation to complete after challenge is fixed.
-
-**Resolution:**
-
-```bash
-# For HTTP-01 — ensure the Ingress allows /.well-known/acme-challenge/
-kubectl describe clusterissuer <issuer-name>
-# Confirm the cert-manager controller has access to create/update Ingress resources
-kubectl auth can-i create ingress --as=system:serviceaccount:cert-manager:cert-manager -n <namespace>
-
-# For DNS-01 — check the DNS provider secret is current
-kubectl get secret <dns-provider-secret> -n cert-manager -o yaml
-```
-
-- **Impact:** Namespace-scoped for HTTP-01 (Ingress annotation); cluster-wide for ClusterIssuer DNS credentials.
-- **Rollback:** Revert Ingress annotations or restore the previous DNS provider secret.
-
-**Verification:** `kubectl get certificates -A -o wide` shows `READY=True` for all Certificate resources. `kubectl get orders,challenges -A` returns no pending items.
+  **Risk:** Low. Deleting stale CertificateRequest/Challenge resources causes cert-manager to re-attempt issuance. **Duration:** 2-10 minutes for ACME validation after the challenge is fixed. **Verification:** re-run Step 5; the Certificate goes `READY=True`.
 
 ---
 
 ### Cause D: Expired intermediate certificate in the trust chain
 
-**Statement:** The leaf certificate is valid but the intermediate CA certificate in the chain served by the endpoint has passed its `notAfter` date, causing chain validation to fail on clients that perform full-chain verification.
+**Statement:** The leaf certificate is valid but an intermediate CA certificate in the served chain has passed its `notAfter` date, so chain validation fails on clients doing full-chain verification.
 
-**Mechanism:** TLS clients walk the certificate chain from leaf to a trusted root. If any intermediate in the chain is expired, path validation terminates with a `certificate has expired` or `PKIX path validation failed` error even though the leaf certificate itself remains valid. This is distinct from leaf-cert expiry: the endpoint continues serving TLS handshakes, but all clients reject the expired intermediate. A real-world example is the DST Root CA X3 cross-signed chain that expired October 2021, breaking older client stacks.
+**Chain:**
+- root: an intermediate CA certificate in the served chain has passed its `notAfter` (e.g. DST Root CA X3, expired Oct 2021)
+- s1: clients walk the chain leaf-to-root and hit the expired intermediate during path validation
+- s2: path validation terminates with `certificate has expired` / `PKIX path validation failed`, even though the leaf is still valid
+- D: clients performing full-chain verification reject the connection (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 1] `notAfter` on the leaf cert is in the future
+- root: [Step 2] one of the intermediate certs shows a past `notAfter`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "notAfter"} -->
 
-- [Step 1] `notAfter` on leaf cert is in the future
-- [Step 2] one of the intermediate certs shows a past `notAfter`
-<!-- match: {"step": 2, "predicate": "contains", "target": "notAfter"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Updating `fullchain.pem` and reloading NGINX is non-destructive if the new intermediate is correct.
-- **Command:**
+**Interventions:**
+- **remediation** (root): replace the expired intermediate with the CA's current one and reload; ensure certbot/cert-manager always bundle the full chain (default for both).
 
   ```bash
-  # Download the current intermediate from the CA
   curl -o intermediate.pem https://letsencrypt.org/certs/lets-encrypt-r3.pem
   cat /path/to/cert.pem intermediate.pem > /path/to/fullchain.pem
   nginx -t && systemctl reload nginx
   ```
 
-- **Duration:** Under 5 minutes.
-
-**Resolution:** **Same as Mitigation.** Ensure certbot or cert-manager is configured to always include the full chain (default behaviour for both). For cert-manager, `spec.privateKey.algorithm` does not affect chain bundling — the Certificate resource automatically fetches the chain from the ACME issuer.
-
-**Verification:** Re-run Step 2 — all intermediates in the chain should show future `notAfter` dates. Run `openssl s_client -connect <host>:443 -servername <host> -verify_return_error </dev/null 2>&1 | grep "Verify return code"` and confirm `0 (ok)`.
+  **Verification:** re-run Step 2; all intermediates show future `notAfter`. Run `openssl s_client -connect <host>:443 -servername <host> -verify_return_error </dev/null 2>&1 | grep "Verify return code"` and confirm `0 (ok)`.
 
 ---
 
-### Cause E: System clock skew causing valid certificates to appear expired
+### Cause E: System clock skew making valid certificates appear expired
 
-**Statement:** The server or client system clock is significantly ahead of real UTC time, causing in-date certificates to fail `notAfter` validation because the local clock places the current time past the certificate's expiry.
+**Statement:** The local system clock is significantly ahead of real UTC, so in-date certificates fail `notAfter` validation because the skewed clock places the current time past their expiry.
 
-**Mechanism:** TLS validity checks compare `notAfter` against the local system clock, not a network time source. If a VM or container has lost NTP synchronization — common after snapshot restore, live migration, or on embedded systems — the clock can drift hours or days ahead. A certificate valid until next year appears expired to a client running with a clock set two years in the future. Both client-side and server-side clock skew can manifest as certificate errors.
+**Chain:**
+- root: the host lost NTP synchronization (snapshot restore, live migration, embedded device) and its clock drifted ahead of real UTC
+- s1: TLS validity checks compare `notAfter` against the skewed local clock, not a network time source
+- s2: an in-date certificate is judged expired locally because the clock places "now" past its `notAfter`
+- D: client- or server-side validation rejects the handshake as expired (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 1] `notAfter` appears in the past from the affected host, but a remote check confirms the certificate is valid
+- root: [Step 4] `timedatectl status` shows `NTP synchronized: no` or a significant offset
+  <!-- match: {"step": 4, "predicate": "contains", "target": "NTP synchronized: no"} -->
 
-- [Step 1] `notAfter` date appears in the past when queried from the affected host, but a remote check confirms the certificate is valid
-- [Step 4] `timedatectl status` shows `NTP synchronized: no` or significant offset
-<!-- match: {"step": 4, "predicate": "contains", "target": "NTP synchronized: no"} -->
+**Interventions:**
+- **remediation** (root): permanently enable NTP and confirm chrony is synchronized.
 
-**Mitigation:**
+  ```bash
+  timedatectl set-ntp true
+  chronyc tracking
+  ```
 
-- **Risk:** Correcting time can briefly confuse time-dependent processes (cron jobs, scheduled tasks). Verify before and after.
-- **Command:**
+  **Verification:** re-run Step 4; `timedatectl status` shows `NTP synchronized: yes`. Re-run Step 1 from the affected host; `notAfter` is in the future.
+- **mitigation** (root): force an immediate one-time hard time sync to clear the skew now.
 
   ```bash
   timedatectl set-ntp true
@@ -354,142 +344,104 @@ kubectl get secret <dns-provider-secret> -n cert-manager -o yaml
   timedatectl status
   ```
 
-- **Duration:** Immediate; `chronyc makestep` forces a one-time hard sync within seconds.
-
-**Resolution:**
-
-```bash
-# Ensure NTP is permanently enabled and the correct NTP server is configured
-timedatectl set-ntp true
-# Verify chrony is running and synchronized
-chronyc tracking
-```
-
-- **Impact:** Host-wide. Time correction affects all processes on the host simultaneously.
-- **Rollback:** Not applicable — correct time is always the right state.
-
-**Verification:** `timedatectl status` shows `NTP synchronized: yes`. Re-run `openssl s_client -connect <host>:443 -servername <host> </dev/null 2>/dev/null | openssl x509 -noout -dates` from the affected host and confirm `notAfter` is in the future.
+  **Risk:** Correcting time can briefly confuse time-dependent processes (cron jobs, scheduled tasks); verify before and after. **Duration:** Immediate; `chronyc makestep` forces a one-time hard sync within seconds. **Verification:** re-run Step 4; offset is near zero and `NTP synchronized: yes`.
 
 ---
 
-### Cause F: AWS ACM auto-renewal failed because DNS validation record was removed
+### Cause F: AWS ACM auto-renewal failed because the DNS validation record was removed
 
-**Statement:** AWS Certificate Manager could not auto-renew a certificate because the CNAME DNS validation record required for renewal was deleted from the hosted zone.
+**Statement:** AWS Certificate Manager could not auto-renew a certificate because the CNAME DNS validation record it reuses for renewals was deleted from the hosted zone.
 
-**Mechanism:** ACM uses DNS validation to prove domain ownership before issuing or renewing certificates. During the initial issuance a `_<hash>.<domain>` CNAME record is created; ACM re-uses this same record for all future renewals. If the record is removed (e.g., during a DNS migration, zone recreation, or manual cleanup), ACM cannot validate the domain and the renewal fails silently until the certificate expires. ACM sends expiry notification emails at 45, 30, and 15 days before expiry, but the renewal failure itself does not generate a CloudWatch alarm by default.
+**Chain:**
+- root: the `_<hash>.<domain>` CNAME validation record ACM reuses for renewals was removed (DNS migration, zone recreation, manual cleanup)
+- s1: ACM cannot prove domain ownership, so auto-renewal fails silently with no default CloudWatch alarm
+- s2: the certificate is left unrenewed and reverts to `PENDING_VALIDATION` / `RenewalStatus=FAILED` until it expires
+- D: the ALB/NLB serves an expired certificate and clients reject it (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 5] `RenewalStatus=FAILED` in ACM describe output
+  <!-- match: {"step": 5, "predicate": "contains", "target": "FAILED"} -->
+- s2: [Step 5] ACM console or CLI shows `PENDING_VALIDATION` on a certificate that was previously `ISSUED`
 
-- [Step 5] `RenewalStatus=FAILED` in ACM describe output
-- [Step 5] ACM console or CLI shows `PENDING_VALIDATION` on a certificate that was previously `ISSUED`
-<!-- match: {"step": 5, "predicate": "contains", "target": "FAILED"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Re-adding the DNS CNAME record does not affect live traffic. ACM auto-renewal retries within hours once the record propagates.
-- **Command:**
+**Interventions:**
+- **remediation** (root): re-add the required CNAME validation record so ACM can validate and auto-renew.
 
   ```bash
-  # Get the required CNAME record details from ACM
   aws acm describe-certificate --certificate-arn <arn> \
     --query 'Certificate.DomainValidationOptions[*].ResourceRecord'
 
-  # Add the CNAME record to Route 53 (or your DNS provider)
   aws route53 change-resource-record-sets --hosted-zone-id <zone-id> \
     --change-batch '{"Changes":[{"Action":"UPSERT","ResourceRecordSet":{"Name":"<cname-name>","Type":"CNAME","TTL":300,"ResourceRecords":[{"Value":"<cname-value>"}]}}]}'
   ```
 
-- **Duration:** 5–30 minutes for DNS propagation and ACM re-validation.
+  **Verification:** re-run Step 5; `aws acm describe-certificate ... --query 'Certificate.[Status,RenewalSummary]'` shows `Status=ISSUED` and `RenewalStatus=SUCCESS`.
+- **mitigation** (s2): if the cert cannot be renewed in time, request a fresh one and swap the listener certificate.
 
-**Resolution:**
+  ```bash
+  aws acm request-certificate --domain-name <domain> \
+    --validation-method DNS --subject-alternative-names <san1> <san2>
 
-```bash
-# If the certificate cannot be renewed in time, request a new one
-aws acm request-certificate --domain-name <domain> \
-  --validation-method DNS --subject-alternative-names <san1> <san2>
+  # Once validated, swap the listener certificate
+  aws elbv2 modify-listener --listener-arn <listener-arn> \
+    --certificates CertificateArn=<new-cert-arn>
+  ```
 
-# Once validated, swap the listener certificate
-aws elbv2 modify-listener --listener-arn <listener-arn> \
-  --certificates CertificateArn=<new-cert-arn>
-```
-
-- **Impact:** ALB/NLB listener-wide. Updating the listener certificate takes effect within seconds with zero downtime.
-- **Rollback:** `aws elbv2 modify-listener --listener-arn <arn> --certificates CertificateArn=<old-arn>` to revert the listener.
-
-**Verification:** `aws acm describe-certificate --certificate-arn <arn> --query 'Certificate.[Status,RenewalSummary]'` shows `Status=ISSUED` and `RenewalStatus=SUCCESS`. `openssl s_client -connect <alb-dns>:443 -servername <domain> </dev/null 2>/dev/null | openssl x509 -noout -dates` confirms a future `notAfter`.
+  **Risk:** Low. Updating the listener certificate takes effect within seconds with zero downtime; roll back with `aws elbv2 modify-listener --listener-arn <arn> --certificates CertificateArn=<old-arn>`. **Duration:** 5-30 minutes for DNS propagation and ACM re-validation. **Verification:** `openssl s_client -connect <alb-dns>:443 -servername <domain> </dev/null 2>/dev/null | openssl x509 -noout -dates` confirms a future `notAfter`.
 
 ---
 
-### Cause G: Kubernetes TLS Secret not updated after cert-manager renewal
+### Cause G: Kubernetes TLS Secret updated but Ingress controller did not reload
 
-**Statement:** cert-manager renewed the Certificate but the Ingress controller continues to serve the old expired certificate because it caches TLS secrets from Kubernetes and did not detect the secret update.
+**Statement:** cert-manager renewed the Certificate and updated the TLS Secret, but the Ingress controller's broken Secret watch left it serving the old expired certificate from its in-memory cache.
 
-**Mechanism:** cert-manager writes renewed certificates to a Kubernetes TLS Secret. Ingress controllers (NGINX Ingress, Traefik, Contour) watch Secret resources and reload TLS configuration when a secret changes. If the controller's watch is broken — due to informer cache staleness, missing RBAC permissions to watch Secrets, or a bug in the controller version — it will not pick up the updated secret. The running controller continues to serve the expired certificate from its in-memory cache.
+**Chain:**
+- root: the Ingress controller's Secret watch is broken (stale informer cache, missing RBAC to watch Secrets, or a controller bug)
+- s1: cert-manager wrote the renewed certificate to the TLS Secret but the controller never detected the update
+- s2: the controller keeps serving the old expired certificate cached in memory despite a valid Secret
+- D: clients are served the expired certificate and reject the connection (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 5] `kubectl get certificates -A` shows `READY=True` with a recent `notAfter`
+- s2: [Step 6] the Secret contains a valid cert but the live endpoint serves an expired cert (differing serials)
+  <!-- match: {"step": 6, "predicate": "contains", "target": "Serial Number"} -->
 
-- [Step 5] `kubectl get certificates -A` shows `READY=True` with a recent `notAfter`
-- [Step 6] Secret contains a valid cert but the live endpoint serves an expired cert (differing serials)
-<!-- match: {"step": 6, "predicate": "contains", "target": "Serial Number"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Restarting the Ingress controller pod causes a brief (< 5 s) reload pause during which new connections may fail; existing connections are not dropped.
-- **Command:**
+**Interventions:**
+- **remediation** (root): force cert-manager to rewrite a fresh Secret so the controller's watch fires.
 
   ```bash
-  # Restart the Ingress controller to force a full secret re-read
-  kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx
+  kubectl delete secret <tls-secret-name> -n <namespace>
+  kubectl get certificate <cert-name> -n <namespace> -w
+  ```
 
-  # Verify the rollout completes
+  **Verification:** re-run Step 6; the Secret and live endpoint serials match with a future `notAfter`.
+- **mitigation** (s2): restart the Ingress controller to force a full Secret re-read now.
+
+  ```bash
+  kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx
   kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx
   ```
 
-- **Duration:** Under 2 minutes for the rollout to complete.
-
-**Resolution:**
-
-```bash
-# If the issue recurs, force cert-manager to write a fresh secret
-# by deleting the secret — cert-manager will recreate it immediately
-kubectl delete secret <tls-secret-name> -n <namespace>
-kubectl get certificate <cert-name> -n <namespace> -w
-```
-
-- **Impact:** Namespace-scoped to the Ingress controller pod set. Rollout restart affects all Ingress routes on that controller during the brief reload window.
-- **Rollback:** `kubectl rollout undo deployment/ingress-nginx-controller -n ingress-nginx` to revert the controller to the previous version if the restart introduced regressions.
-
-**Verification:** `kubectl get secret <tls-secret> -n <namespace> -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -serial -dates` and compare serial against `openssl s_client -connect <host>:443` output — both should match.
+  **Risk:** Low. The restart causes a brief (< 5 s) reload pause during which new connections may fail; existing connections are not dropped. Roll back with `kubectl rollout undo deployment/ingress-nginx-controller -n ingress-nginx`. **Duration:** Under 2 minutes for the rollout to complete. **Verification:** re-run Step 6; live endpoint serial matches the Secret.
 
 ---
 
-### Cause Z: Unidentified certificate expiry cause
+### Cause Z: Unidentified
 
-**Statement:** The certificate expiry symptom could not be attributed to any of the diagnosed causes after completing all diagnostic steps.
+**Statement:** The certificate expiry symptom could not be attributed to any diagnosed cause after completing all diagnostic steps.
 
-**Mechanism:** Certificate expiry incidents can have platform-specific root causes not covered by the preceding causes — for example, HSM/vault certificate rotation failures, mutual TLS client-cert expiry in a service mesh, private CA root rollover, or certificate pinning conflicts.
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] None of Causes A–G match; Step 1 confirms expiry but Steps 2–7 reveal no clear mechanism
-
-**Mitigation:**
-
-- **Risk:** Low. A temporary TLS bypass or traffic rerouting minimises impact while escalating.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full certificate-chain diagnostic snapshot and escalate to the platform or security SME.
 
   ```bash
-  # Collect full certificate chain details for escalation
   openssl s_client -connect <host>:443 -servername <host> -showcerts </dev/null 2>/dev/null > /tmp/cert-chain.txt
   openssl s_client -connect <host>:443 -servername <host> -verify_return_error </dev/null 2>&1 >> /tmp/cert-chain.txt
   cat /tmp/cert-chain.txt
   ```
 
-- **Duration:** Escalate immediately; do not leave TLS verification bypassed in production.
-
-**Resolution:** Out of runbook scope. Escalate to the platform or security team with the certificate chain dump and the output of all diagnostic steps.
-
-**Verification:** Confirm with the escalation team that a valid certificate is serving on the endpoint (`openssl s_client` verify return code `0 (ok)`).
+  **Risk:** Low; a temporary TLS bypass or traffic rerouting minimises impact while escalating — never leave TLS verification bypassed in production. **Duration:** Escalate immediately. **Verification:** confirm with the escalation team that a valid certificate is serving (`openssl s_client` verify return code `0 (ok)`).
 
 ## Prevention
 

@@ -7,9 +7,9 @@ symptom_class:
   - oom
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
-verified_by: kb-researcher
+version: "2.0.0"
+last_updated: "2026-06-25"
+verified_by: "kb-researcher"
 status: draft
 tags:
   - kubernetes
@@ -127,262 +127,265 @@ Expected output: a working-set time series. A monotonic upward slope across hour
 
 **Statement:** The container's `resources.limits.memory` is configured below the application's steady-state working-set size, so normal operation exceeds the limit and the kernel kills the container.
 
-**Mechanism:** The kubelet writes the configured limit into the container's `memory.max` (cgroup v2) or `memory.limit_in_bytes` (cgroup v1). When the cgroup's RSS plus anonymous memory exceeds the limit and the kernel detects memory pressure, the cgroup OOM killer sends SIGKILL to the process with the highest `oom_score`. The container exits with code 137 and the kubelet records `Reason: OOMKilled`. Because the working set is structural rather than transient, every restart re-enters the same allocation pattern and is killed again, producing CrashLoopBackOff.
+**Chain:**
+- root: `resources.limits.memory` is sized below the application's steady-state working set.
+- s1: the kubelet writes that undersized limit into the cgroup `memory.max` (v2) / `memory.limit_in_bytes` (v1).
+- s2: normal-load RSS plus anonymous memory exceeds the cgroup limit, triggering memory pressure.
+- s3: the cgroup OOM killer sends SIGKILL to the highest-`oom_score` process; container exits 137, kubelet records OOMKilled.
+- s4: the working set is structural, so every restart re-enters the same allocation pattern and is killed again (CrashLoopBackOff).
+- D: container is OOMKilled (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 3] `kubectl top` shows the killed container running at or above the configured `limits.memory` during normal load
+  <!-- match: {"step": 3, "predicate": "threshold", "target": "memory_pct", "op": ">", "value": 0.95} -->
+- root: [Step 6] application logs show no allocation-burst pattern preceding the kill — usage is flat at the ceiling
+- s4: [Symptom] restart counter climbs steadily without correlation to traffic spikes
 
-- [Step 3] `kubectl top` shows the killed container running at or above the configured `limits.memory` during normal load
-<!-- match: {"step": 3, "predicate": "threshold", "target": "memory_pct", "op": ">", "value": 0.95} -->
-- [Step 6] application logs show no allocation-burst pattern preceding the kill — usage is flat at the ceiling
-- [Symptom] restart counter climbs steadily without correlation to traffic spikes
+**Interventions:**
+- **remediation** (root): size the limit from observed peak over 7 days plus 25-30% headroom for non-heap allocations.
 
-**Mitigation:**
+  ```bash
+  # PromQL: max_over_time(container_memory_working_set_bytes{pod=~"<deployment>-.*",namespace="<namespace>",container="<container>"}[7d])
+  kubectl set resources deployment/<deployment-name> -n <namespace> \
+    --limits=memory=<peak_bytes_times_1.25> --requests=memory=<peak_bytes>
+  ```
 
-- **Risk:** Increasing the limit consumes more node capacity and can starve other pods on the same node. Over-allocating also masks future leaks.
-- **Command:**
+  **Verification:** After rollout, run `kubectl top pod -l app=<label> -n <namespace>` every 5 minutes for 30 minutes; working-set memory should stabilize at least 20% below the new limit and `kubectl get pod -l app=<label> -n <namespace>` should show `RESTARTS=0`.
+- **mitigation** (s1): bump the limit immediately to stop the kills while the right size is being confirmed.
 
   ```bash
   kubectl set resources deployment/<deployment-name> -n <namespace> \
     --limits=memory=<new-limit> --requests=memory=<new-request>
   ```
 
-- **Duration:** Safe to leave in place permanently once sized from observed peak usage; revisit if traffic patterns change.
-
-**Resolution:**
-
-```bash
-# Size from observed peak over 7 days plus 25-30% headroom for non-heap allocations
-# PromQL: max_over_time(container_memory_working_set_bytes{pod=~"<deployment>-.*",namespace="<namespace>",container="<container>"}[7d])
-kubectl set resources deployment/<deployment-name> -n <namespace> \
-  --limits=memory=<peak_bytes_times_1.25> --requests=memory=<peak_bytes>
-```
-
-**Verification:** After rollout, run `kubectl top pod -l app=<label> -n <namespace>` every 5 minutes for 30 minutes; working-set memory should stabilize at least 20% below the new limit and `kubectl get pod -l app=<label> -n <namespace>` should show `RESTARTS=0`.
+  **Risk:** Increasing the limit consumes more node capacity and can starve other pods on the same node. Over-allocating also masks future leaks. **Duration:** Safe to leave in place permanently once sized from observed peak usage; revisit if traffic patterns change. **Verification:** re-run Step 3; `usage / limit` for the killed container falls below 0.8 under normal load.
 
 ### Cause B: Application memory leak driving unbounded growth
 
 **Statement:** Application code retains references that prevent garbage collection (or fails to free native allocations), causing working-set memory to grow monotonically until it crosses the container limit.
 
-**Mechanism:** Unbounded caches, accumulating event listeners, stuck connection pools, or leaked native buffers cause the process's heap to grow with every request or background tick. The garbage collector eventually cannot reclaim space; resident memory rises past `limits.memory`; the cgroup OOM killer sends SIGKILL. The container restarts with a fresh heap and the cycle restarts on roughly the same time scale, producing predictable restart intervals.
+**Chain:**
+- root: application code retains references (unbounded caches, accumulating listeners, stuck pools, leaked native buffers) or fails to free native allocations.
+- s1: the heap grows with every request or background tick and the garbage collector cannot reclaim the retained space.
+- s2: resident memory rises monotonically until it crosses `limits.memory`.
+- s3: the cgroup OOM killer sends SIGKILL; container exits 137.
+- s4: the container restarts with a fresh heap and the cycle restarts on roughly the same time scale (predictable restart intervals).
+- D: container is OOMKilled (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 9] working-set memory shows a monotonic upward slope over hours or days, not correlated with traffic
+- s1: [Step 6] application logs show GC overhead warnings (`GC overhead limit exceeded`, `Mark-sweep ... allocation failed`) or `OutOfMemoryError` shortly before termination
+  <!-- match: {"step": 6, "predicate": "contains", "target": "OutOfMemoryError"} -->
+- s4: [Symptom] restart interval is roughly constant for a constant workload (each restart takes the same time to climb back to the limit)
 
-- [Step 9] working-set memory shows a monotonic upward slope over hours or days, not correlated with traffic
-- [Step 6] application logs show GC overhead warnings (`GC overhead limit exceeded`, `Mark-sweep ... allocation failed`) or `OutOfMemoryError` shortly before termination
-<!-- match: {"step": 6, "predicate": "contains", "target": "OutOfMemoryError"} -->
-- [Symptom] restart interval is roughly constant for a constant workload (each restart takes the same time to climb back to the limit)
+**Interventions:**
+- **remediation** (root): capture a heap dump/snapshot, find the retention path, fix it in code, and ship a new image.
 
-**Mitigation:**
+  ```bash
+  # Java: capture a heap dump on OOM and pull it off the pod for analysis
+  kubectl set env deployment/<deployment-name> -n <namespace> \
+    JAVA_TOOL_OPTIONS="-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof"
+  kubectl exec <pod-name> -n <namespace> -- jcmd 1 GC.heap_dump /tmp/live-heap.hprof
+  kubectl cp <namespace>/<pod-name>:/tmp/live-heap.hprof ./live-heap.hprof
+  # Analyse the dump with Eclipse MAT or VisualVM, find the dominator tree, fix the retention path in code, ship a new image.
+  ```
 
-- **Risk:** Scheduled restarts hide the underlying bug and can mask data loss if the application has in-memory state. Use only as a holding pattern while a fix is developed.
-- **Command:**
+  ```bash
+  # Node.js: generate a heap snapshot via the V8 inspector
+  kubectl exec <pod-name> -n <namespace> -- node --inspect=0.0.0.0:9229 -e "require('v8').writeHeapSnapshot('/tmp/heap.heapsnapshot')"
+  kubectl cp <namespace>/<pod-name>:/tmp/heap.heapsnapshot ./heap.heapsnapshot
+  # Load the snapshot in Chrome DevTools, look for retainers in the dominator view, fix and redeploy.
+  ```
+
+  **Verification:** After deploying the fixed image, run `kubectl top pod -l app=<label> -n <namespace> --containers` once per hour for 24 hours; working-set memory must plateau and remain below 75% of the limit instead of trending upward.
+- **mitigation** (s2): periodically restart the deployment to reset the heap before it crosses the limit.
 
   ```bash
   kubectl rollout restart deployment/<deployment-name> -n <namespace>
   ```
 
-- **Duration:** Hours, not days. Schedule a recurring restart via a CronJob only as a stopgap while leak investigation is in flight.
-
-**Resolution:**
-
-```bash
-# Java: capture a heap dump on OOM and pull it off the pod for analysis
-kubectl set env deployment/<deployment-name> -n <namespace> \
-  JAVA_TOOL_OPTIONS="-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof"
-kubectl exec <pod-name> -n <namespace> -- jcmd 1 GC.heap_dump /tmp/live-heap.hprof
-kubectl cp <namespace>/<pod-name>:/tmp/live-heap.hprof ./live-heap.hprof
-# Analyse the dump with Eclipse MAT or VisualVM, find the dominator tree, fix the retention path in code, ship a new image.
-```
-
-```bash
-# Node.js: generate a heap snapshot via the V8 inspector
-kubectl exec <pod-name> -n <namespace> -- node --inspect=0.0.0.0:9229 -e "require('v8').writeHeapSnapshot('/tmp/heap.heapsnapshot')"
-kubectl cp <namespace>/<pod-name>:/tmp/heap.heapsnapshot ./heap.heapsnapshot
-# Load the snapshot in Chrome DevTools, look for retainers in the dominator view, fix and redeploy.
-```
-
-**Verification:** After deploying the fixed image, run `kubectl top pod -l app=<label> -n <namespace> --containers` once per hour for 24 hours; working-set memory must plateau and remain below 75% of the limit instead of trending upward.
+  **Risk:** Scheduled restarts hide the underlying bug and can mask data loss if the application has in-memory state. Use only as a holding pattern while a fix is developed. **Duration:** Hours, not days. Schedule a recurring restart via a CronJob only as a stopgap while leak investigation is in flight. **Verification:** re-run Step 9 after a restart; working-set drops to baseline and climbs again, confirming the restart reset the leak.
 
 ### Cause C: Runtime heap sized larger than the container memory limit
 
 **Statement:** A JVM, V8, or other managed runtime is configured with a maximum heap (`-Xmx`, `--max-old-space-size`) that approaches or exceeds the container's memory limit, leaving no headroom for non-heap memory.
 
-**Mechanism:** Managed runtimes also consume off-heap memory: thread stacks, metaspace/code cache, JIT-compiled code, native libraries, direct byte buffers, V8 external memory (Buffers, native modules), and GC scratch space. Total RSS equals heap + off-heap. When `-Xmx` is set to the full container limit (or `MaxRAMPercentage` near 100), even a heap that stays within `-Xmx` causes total RSS to exceed `limits.memory`, triggering the cgroup OOM killer. The JVM/V8 itself does not log an `OutOfMemoryError` because, from its perspective, the heap was not full.
+**Chain:**
+- root: the managed runtime's max heap (`-Xmx` / `--max-old-space-size` / `MaxRAMPercentage` near 100) is set at or near the full container limit.
+- s1: total RSS = heap + off-heap (thread stacks, metaspace/code cache, JIT, native libs, direct/external buffers, GC scratch).
+- s2: even a heap within `-Xmx` drives total RSS past `limits.memory`.
+- s3: the cgroup OOM killer sends SIGKILL; the runtime logs no `OutOfMemoryError` because, from its view, the heap was not full.
+- D: container is OOMKilled (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s3: [Step 6] application logs show no `OutOfMemoryError` or GC overhead warning despite OOMKilled status
+- s2: [Step 3] `kubectl top` shows the container at the limit while heap-fill metrics (if exposed) are well below `-Xmx`
+- root: [Symptom] killed processes are JVM (`java`) or Node.js (`node`) and the runtime was launched with explicit `-Xmx <limit>` or `--max-old-space-size=<limit_in_mb>` equal to or near `limits.memory`
 
-- [Step 6] application logs show no `OutOfMemoryError` or GC overhead warning despite OOMKilled status
-- [Step 3] `kubectl top` shows the container at the limit while heap-fill metrics (if exposed) are well below `-Xmx`
-- [Symptom] killed processes are JVM (`java`) or Node.js (`node`) and the runtime was launched with explicit `-Xmx <limit>` or `--max-old-space-size=<limit_in_mb>` equal to or near `limits.memory`
+**Interventions:**
+- **remediation** (root): use container-aware heap flags so the heap leaves headroom for off-heap memory.
 
-**Mitigation:**
+  ```bash
+  # Java 11+ (UseContainerSupport is default on; do not pin -Xmx in container images)
+  kubectl set env deployment/<deployment-name> -n <namespace> \
+    JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof"
+  ```
 
-- **Risk:** Setting heap too low causes legitimate `OutOfMemoryError` from the runtime. Aim for ~75% heap allocation initially, then tune from observed GC pressure.
-- **Command:**
+  ```bash
+  # Node.js: leave 25% headroom for V8 internals and external buffers
+  # For a 1Gi limit set --max-old-space-size to ~768 MB
+  kubectl set env deployment/<deployment-name> -n <namespace> \
+    NODE_OPTIONS="--max-old-space-size=768"
+  ```
+
+  **Verification:** After rollout, run `kubectl exec <pod-name> -n <namespace> -- jcmd 1 VM.flags | grep -E 'MaxHeapSize|MaxRAM'` (Java) or `kubectl exec <pod-name> -n <namespace> -- node -e "console.log(require('v8').getHeapStatistics().heap_size_limit)"` (Node.js); the reported heap ceiling must be ≤ 80% of `limits.memory` in bytes.
+- **mitigation** (s1): apply container-aware percentage flags as a quick reconfiguration to cap heap below the limit.
 
   ```bash
   kubectl set env deployment/<deployment-name> -n <namespace> \
     JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0"
   ```
 
-- **Duration:** Permanent. Container-aware runtime flags auto-adjust if `limits.memory` is changed later.
-
-**Resolution:**
-
-```bash
-# Java 11+ (UseContainerSupport is default on; do not pin -Xmx in container images)
-kubectl set env deployment/<deployment-name> -n <namespace> \
-  JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof"
-```
-
-```bash
-# Node.js: leave 25% headroom for V8 internals and external buffers
-# For a 1Gi limit set --max-old-space-size to ~768 MB
-kubectl set env deployment/<deployment-name> -n <namespace> \
-  NODE_OPTIONS="--max-old-space-size=768"
-```
-
-**Verification:** After rollout, run `kubectl exec <pod-name> -n <namespace> -- jcmd 1 VM.flags | grep -E 'MaxHeapSize|MaxRAM'` (Java) or `kubectl exec <pod-name> -n <namespace> -- node -e "console.log(require('v8').getHeapStatistics().heap_size_limit)"` (Node.js); the reported heap ceiling must be ≤ 80% of `limits.memory` in bytes.
+  **Risk:** Setting heap too low causes legitimate `OutOfMemoryError` from the runtime. Aim for ~75% heap allocation initially, then tune from observed GC pressure. **Duration:** Permanent. Container-aware runtime flags auto-adjust if `limits.memory` is changed later. **Verification:** re-run Step 3; total RSS stays below `limits.memory` under load and no new OOMKilled occurs.
 
 ### Cause D: Memory-backed emptyDir or tmpfs volume consuming RAM against the limit
 
 **Statement:** A `medium: Memory` `emptyDir` volume (or other tmpfs mount inside the container) holds files in RAM, and that memory counts toward the container's cgroup limit even though the application is not aware of it.
 
-**Mechanism:** Kubernetes implements `emptyDir.medium: Memory` as a tmpfs mount inside the pod. Writes to the volume allocate page cache backed by RAM in the same cgroup as the container process. The cgroup memory controller accounts these pages against `memory.max`. When the application writes large files (logs, caches, scratch data) to the tmpfs volume, working-set memory rises even though the application heap is small. Once cgroup memory crosses the limit, the kernel kills the largest process in the cgroup — typically the application, not the file-cache holder.
+**Chain:**
+- root: a `medium: Memory` `emptyDir` (tmpfs mount) is present, with no `sizeLimit`.
+- s1: writes to the tmpfs allocate page cache backed by RAM in the same cgroup as the container process.
+- s2: the cgroup memory controller accounts those tmpfs pages against `memory.max`, so working-set rises even though the app heap is small.
+- s3: cgroup memory crosses the limit; the kernel kills the largest process in the cgroup — typically the application, not the file-cache holder.
+- D: container is OOMKilled (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] pod spec contains an `emptyDir` volume with `medium: Memory` and no `sizeLimit`
+  <!-- match: {"step": 8, "predicate": "contains", "target": "medium=Memory"} -->
+- s1: [Step 6] application logs show no allocation pressure (heap is healthy) yet the container was OOMKilled
+- s2: [Step 7] kernel `oom-kill` log identifies the application process with anon-rss far below the cgroup limit, indicating other accounted pages (page cache from tmpfs) consumed the budget
 
-- [Step 8] pod spec contains an `emptyDir` volume with `medium: Memory` and no `sizeLimit`
-<!-- match: {"step": 8, "predicate": "contains", "target": "medium=Memory"} -->
-- [Step 6] application logs show no allocation pressure (heap is healthy) yet the container was OOMKilled
-- [Step 7] kernel `oom-kill` log identifies the application process with anon-rss far below the cgroup limit, indicating other accounted pages (page cache from tmpfs) consumed the budget
+**Interventions:**
+- **remediation** (root): bound the tmpfs volume with `sizeLimit` or switch to disk-backed `emptyDir`.
 
-**Mitigation:**
+  ```yaml
+  # Edit the deployment spec: either bound the tmpfs volume or switch to disk-backed emptyDir
+  volumes:
+    - name: scratch
+      emptyDir:
+        medium: Memory
+        sizeLimit: 256Mi   # Hard ceiling enforced by tmpfs; writes beyond return ENOSPC
+  # OR remove medium: Memory entirely to use node-local disk:
+    - name: scratch
+      emptyDir: {}
+  ```
 
-- **Risk:** Adding `sizeLimit` causes writes to fail with `ENOSPC` instead of OOM; the application must handle write errors. Switching to disk-backed `emptyDir` adds I/O latency.
-- **Command:**
+  **Verification:** After applying the spec change, run `kubectl exec <pod-name> -n <namespace> -- df -h /<volume-mountpath>`; tmpfs should now show a bounded `Size` matching `sizeLimit`, and `kubectl top pod` working-set should stay below `limits.memory` even under sustained writes.
+- **mitigation** (s2): patch a `sizeLimit` onto the existing volume to cap tmpfs RAM consumption immediately.
 
   ```bash
   kubectl patch deployment <deployment-name> -n <namespace> --type='json' -p='[{"op":"add","path":"/spec/template/spec/volumes/0/emptyDir/sizeLimit","value":"256Mi"}]'
   ```
 
-- **Duration:** Permanent once the application has been verified to handle `ENOSPC` gracefully.
-
-**Resolution:**
-
-```yaml
-# Edit the deployment spec: either bound the tmpfs volume or switch to disk-backed emptyDir
-volumes:
-  - name: scratch
-    emptyDir:
-      medium: Memory
-      sizeLimit: 256Mi   # Hard ceiling enforced by tmpfs; writes beyond return ENOSPC
-# OR remove medium: Memory entirely to use node-local disk:
-  - name: scratch
-    emptyDir: {}
-```
-
-**Verification:** After applying the spec change, run `kubectl exec <pod-name> -n <namespace> -- df -h /<volume-mountpath>`; tmpfs should now show a bounded `Size` matching `sizeLimit`, and `kubectl top pod` working-set should stay below `limits.memory` even under sustained writes.
+  **Risk:** Adding `sizeLimit` causes writes to fail with `ENOSPC` instead of OOM; the application must handle write errors. Switching to disk-backed `emptyDir` adds I/O latency. **Duration:** Permanent once the application has been verified to handle `ENOSPC` gracefully. **Verification:** re-run Step 8; the volume now reports a non-empty `sizeLimit` and working-set stays under the container limit.
 
 ### Cause E: Sidecar or init container consuming memory not budgeted into the pod limit
 
 **Statement:** A sidecar container (Istio/Envoy proxy, logging agent, secrets injector) has no memory limit or a small one, and its memory growth — together with the application — pushes the pod over its aggregate memory ceiling.
 
-**Mechanism:** Pod-level QoS and node-level scheduling sum the memory limits of every container in the pod. When a sidecar lacks `resources.limits.memory`, it can grow to consume node memory; under node memory pressure the kubelet evicts the entire pod. When sidecars do have limits but the main container's limit was sized assuming the sidecar is "free," the sidecar's RSS plus the application's RSS exceed available node memory and the kernel kills whichever cgroup is over its individual limit — often the application, which has the larger working set.
+**Chain:**
+- root: a sidecar (`istio-proxy`, `fluent-bit`, `vault-agent`, etc.) has no `resources.limits.memory`, or the main container's limit was sized assuming the sidecar is "free."
+- s1: pod-level QoS and node scheduling sum every container's memory; the unbudgeted sidecar grows to consume node memory.
+- s2: the sidecar's RSS plus the application's RSS exceed available node memory (or a container crosses its own individual limit).
+- s3: the kernel kills whichever cgroup is over its limit — often the application, which has the larger working set; under node pressure the kubelet evicts the whole pod.
+- D: container is OOMKilled (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] one or more containers in the pod (typically `istio-proxy`, `fluent-bit`, `vault-agent`) have no `limits.memory` set
+  <!-- match: {"step": 4, "predicate": "absent", "target": "spec.containers[].resources.limits.memory"} -->
+- s3: [Step 2] `kubectl describe pod` shows multiple containers and the killed container is not the highest memory consumer
+- s1: [Step 3] sidecar working-set is non-trivial (>100Mi) relative to the application
 
-- [Step 4] one or more containers in the pod (typically `istio-proxy`, `fluent-bit`, `vault-agent`) have no `limits.memory` set
-<!-- match: {"step": 4, "predicate": "absent", "target": "spec.containers[].resources.limits.memory"} -->
-- [Step 2] `kubectl describe pod` shows multiple containers and the killed container is not the highest memory consumer
-- [Step 3] sidecar working-set is non-trivial (>100Mi) relative to the application
+**Interventions:**
+- **remediation** (root): make memory limits explicit on every container, including auto-injected sidecars, in the deployment and mesh-injection templates.
 
-**Mitigation:**
+  ```bash
+  # Make limits explicit on every container in the pod template, including auto-injected sidecars.
+  # For Istio, configure the mesh injection template to set proxy resources:
+  kubectl get configmap istio-sidecar-injector -n istio-system -o yaml
+  # Edit "proxy.resources" under values.global.proxy to set memory limits, then re-roll workloads.
+  kubectl rollout restart deployment/<deployment-name> -n <namespace>
+  ```
 
-- **Risk:** Setting a sidecar memory limit too low triggers OOMKilled in the sidecar itself, which can break service-mesh data-plane connectivity for the whole pod.
-- **Command:**
+  **Verification:** After rollout, run `kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.containers[*]}{.name}{"  "}{.resources.limits.memory}{"\n"}{end}'`; every container in the list must have a non-empty memory limit. `kubectl top pod <pod-name> --containers` should show each container below its own limit.
+- **mitigation** (s1): set an explicit memory limit on the offending sidecar to cap its growth.
 
   ```bash
   kubectl set resources deployment/<deployment-name> -n <namespace> \
     --containers='istio-proxy' --limits=memory=256Mi --requests=memory=128Mi
   ```
 
-- **Duration:** Permanent. Bake explicit sidecar limits into the deployment template and any mesh-injection templates.
-
-**Resolution:**
-
-```bash
-# Make limits explicit on every container in the pod template, including auto-injected sidecars.
-# For Istio, configure the mesh injection template to set proxy resources:
-kubectl get configmap istio-sidecar-injector -n istio-system -o yaml
-# Edit "proxy.resources" under values.global.proxy to set memory limits, then re-roll workloads.
-kubectl rollout restart deployment/<deployment-name> -n <namespace>
-```
-
-**Verification:** After rollout, run `kubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.containers[*]}{.name}{"  "}{.resources.limits.memory}{"\n"}{end}'`; every container in the list must have a non-empty memory limit. `kubectl top pod <pod-name> --containers` should show each container below its own limit.
+  **Risk:** Setting a sidecar memory limit too low triggers OOMKilled in the sidecar itself, which can break service-mesh data-plane connectivity for the whole pod. **Duration:** Permanent. Bake explicit sidecar limits into the deployment template and any mesh-injection templates. **Verification:** re-run Step 4; the sidecar now reports a non-empty `limits.memory` and `kubectl top pod --containers` shows it below its limit.
 
 ### Cause F: Node-level memory pressure triggering pod eviction
 
 **Statement:** The node hosting the pod has crossed the kubelet's `memory.available` eviction threshold, and the kubelet has evicted the pod to reclaim node memory even though the container itself was below its individual limit.
 
-**Mechanism:** The kubelet tracks `memory.available = node.capacity[memory] - node.stats.memory.workingSet` and compares it against `--eviction-hard=memory.available<...` (default 100Mi). When the threshold is crossed, the kubelet sets the `MemoryPressure` node condition to `True` and begins evicting pods, preferring `BestEffort` first, then `Burstable` pods that exceed their memory request, then `Guaranteed` pods. Hard eviction uses a 0-second grace period; the pod is killed without graceful shutdown. The pod status reflects `Reason: Evicted` rather than `Reason: OOMKilled` on the container, but the operator-visible symptom (container terminated, restart, possible CrashLoopBackOff for workloads scheduled back onto the same node) is the same.
+**Chain:**
+- root: the node's `memory.available` (= `node.capacity[memory] - node.stats.memory.workingSet`) crosses the kubelet `--eviction-hard=memory.available<...` threshold (default 100Mi).
+- s1: the kubelet sets the node `MemoryPressure` condition to `True` and begins evicting pods (BestEffort first, then Burstable over request, then Guaranteed).
+- s2: hard eviction uses a 0-second grace period; the pod is killed without graceful shutdown, status `Reason: Evicted`.
+- s3: workloads scheduled back onto the same node are evicted again, reproducing the operator-visible terminate/restart/CrashLoopBackOff symptom.
+- D: container is terminated/evicted (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 5] `MemoryPressure` node condition is `Status: True` at or near the time of termination
+  <!-- match: {"step": 5, "predicate": "contains", "target": "MemoryPressure       True"} -->
+- s2: [Step 2] pod-level `Reason: Evicted` with message `The node was low on resource: memory`
+- root: [Step 3] container's own working-set is well below its configured limit at the time of the kill
 
-- [Step 5] `MemoryPressure` node condition is `Status: True` at or near the time of termination
-<!-- match: {"step": 5, "predicate": "contains", "target": "MemoryPressure       True"} -->
-- [Step 2] pod-level `Reason: Evicted` with message `The node was low on resource: memory`
-- [Step 3] container's own working-set is well below its configured limit at the time of the kill
+**Interventions:**
+- **remediation** (root): reduce node overcommitment or add node capacity so `memory.available` stays above the eviction threshold.
 
-**Mitigation:**
+  ```bash
+  # Two durable paths:
+  # 1) Reduce node overcommitment by lowering replica count or raising pod memory requests so the scheduler stops packing the node.
+  kubectl scale deployment <deployment-name> -n <namespace> --replicas=<lower>
+  # 2) Add node capacity (cluster autoscaler, manual node pool resize, or larger instance types).
+  kubectl get nodes -o custom-columns=NAME:.metadata.name,ALLOCATABLE_MEM:.status.allocatable.memory,REQUESTS:.status.capacity.memory
+  ```
 
-- **Risk:** Cordoning the node forces re-scheduling and can cascade pressure to other nodes if cluster headroom is tight.
-- **Command:**
+  **Verification:** After remediation, run `kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"  MemoryPressure="}{.status.conditions[?(@.type=="MemoryPressure")].status}{"\n"}{end}'`; every node must report `MemoryPressure=False`. No new `Evicted` pods should appear within 1 hour: `kubectl get pods -A --field-selector=status.phase=Failed | grep -i evicted`.
+- **mitigation** (s1): cordon and drain the pressured node to move pods off it while capacity is fixed.
 
   ```bash
   kubectl cordon <node-name>
   kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data
   ```
 
-- **Duration:** Until the node has been replaced or its memory expanded; uncordon once the underlying capacity issue is resolved.
-
-**Resolution:**
-
-```bash
-# Two durable paths:
-# 1) Reduce node overcommitment by lowering replica count or raising pod memory requests so the scheduler stops packing the node.
-kubectl scale deployment <deployment-name> -n <namespace> --replicas=<lower>
-# 2) Add node capacity (cluster autoscaler, manual node pool resize, or larger instance types).
-kubectl get nodes -o custom-columns=NAME:.metadata.name,ALLOCATABLE_MEM:.status.allocatable.memory,REQUESTS:.status.capacity.memory
-```
-
-**Verification:** After remediation, run `kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"  MemoryPressure="}{.status.conditions[?(@.type=="MemoryPressure")].status}{"\n"}{end}'`; every node must report `MemoryPressure=False`. No new `Evicted` pods should appear within 1 hour: `kubectl get pods -A --field-selector=status.phase=Failed | grep -i evicted`.
+  **Risk:** Cordoning the node forces re-scheduling and can cascade pressure to other nodes if cluster headroom is tight. **Duration:** Until the node has been replaced or its memory expanded; uncordon once the underlying capacity issue is resolved. **Verification:** re-run Step 5 on the target node; `MemoryPressure` returns to `False` after pods drain.
 
 ### Cause Z: Unidentified
 
 **Statement:** Diagnostic steps did not converge on a specific cause; the OOMKill cannot be attributed to a known pattern from Causes A–F.
 
-**Mechanism:** The kernel killed the container's main process via SIGKILL after cgroup memory accounting exceeded `memory.max`, but the available evidence (limits, working-set trend, sidecar inventory, node pressure, application logs) does not isolate which path drove memory across the threshold. Further investigation needs richer signals — process-level RSS over time, off-heap allocation profiling, kernel `oom_score` ranking, or correlation with deployment/configuration changes.
+**Chain:**
+- root: the available evidence (limits, working-set trend, sidecar inventory, node pressure, application logs) does not isolate which path drove memory across the threshold.
+- s1: the kernel killed the container's main process via SIGKILL after cgroup memory accounting exceeded `memory.max`, but the driving path is unknown.
+- D: container is OOMKilled (points at Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Default] OOMKilled is confirmed (Step 1, Step 2) but Causes A–F indicators do not match the gathered evidence
 
-- [Default] OOMKilled is confirmed (Step 1, Step 2) but Causes A–F indicators do not match the gathered evidence
-
-**Mitigation:**
-
-- **Risk:** Restarting buys time but does not address the cause; if the OOM recurs within minutes, escalate immediately to avoid alert fatigue.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot and escalate to the application owner / platform on-call.
 
   ```bash
   kubectl rollout restart deployment/<deployment-name> -n <namespace>
   kubectl get events -n <namespace> --sort-by='.lastTimestamp' --field-selector reason=OOMKilling -o wide
   ```
 
-- **Duration:** Use only as a holding action while engaging the application owner with the gathered diagnostic artefacts.
-
-**Resolution:** Out of runbook scope. Capture the artefacts from Steps 1–9 (pod description, kernel `dmesg` excerpt, working-set time series, container logs from the previous instance) and escalate to the application owner or platform on-call with the failure-mode summary.
-
-**Verification:** Hand-off acknowledged by the receiving engineer; an incident ticket is opened with the captured artefacts attached and a follow-up owner assigned.
+  **Risk:** Restarting buys time but does not address the cause; if the OOM recurs within minutes, escalate immediately to avoid alert fatigue. **Duration:** Use only as a holding action while engaging the application owner with the gathered diagnostic artefacts. **Verification:** Capture the artefacts from Steps 1–9 (pod description, kernel `dmesg` excerpt, working-set time series, container logs from the previous instance) and hand off; the receiving engineer acknowledges and an incident ticket is opened with the artefacts attached and a follow-up owner assigned.
 
 ## Prevention
 

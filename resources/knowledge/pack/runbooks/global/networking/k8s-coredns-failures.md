@@ -6,8 +6,8 @@ service: kubernetes
 symptom_class: [connection_refused, timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [coredns, dns, ndots, conntrack, kube-dns, kube-system, networkpolicy]
@@ -136,57 +136,62 @@ Expected output: either no NetworkPolicies in the affected namespace, or egress 
 
 **Statement:** CoreDNS pods are absent, in `CrashLoopBackOff`, or evicted, leaving no DNS server available to handle pod queries.
 
-**Mechanism:** CoreDNS runs as a Deployment in `kube-system` and serves all cluster DNS traffic. When all replicas are down, every DNS query from every pod in the cluster times out after the kernel UDP retry cycle (typically 5–30 seconds per attempt). Applications that don't cache DNS experience repeated failures.
+**Chain:**
+- root: CoreDNS Deployment in `kube-system` has zero healthy replicas (pods absent, `CrashLoopBackOff`, or evicted).
+- s1: no DNS server is available to answer any pod's queries cluster-wide.
+- s2: every DNS query times out after the kernel UDP retry cycle (5–30 seconds per attempt).
+- D: pods get cluster-wide `connection refused`/`timeout` resolving services by name (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] pods show status other than `Running` with `READY 1/1`
+  <!-- match: {"step": 1, "predicate": "absent", "target": "Running"} -->
+- D: [Symptom] cluster-wide DNS failures affecting all namespaces simultaneously
 
-- [Step 1] pods show status other than `Running` with `READY 1/1`
-- [Symptom] cluster-wide DNS failures affecting all namespaces simultaneously
+**Interventions:**
+- **remediation** (root): restore healthy replicas by restarting and scaling the Deployment.
 
-<!-- match: {"step": 1, "predicate": "absent", "target": "Running"} -->
+  ```bash
+  kubectl rollout restart deployment/coredns -n kube-system
+  kubectl scale deployment/coredns -n kube-system --replicas=3
+  ```
 
-**Mitigation:**
-
-- **Risk:** Brief DNS gap (under 30 seconds) while replacement pods schedule and become ready
-- **Command:**
+  **Verification:** `kubectl get pods -n kube-system -l k8s-app=kube-dns` shows all pods `Running 1/1`; `kubectl exec -it dnsutils -- nslookup kubernetes.default` returns a valid IP.
+- **mitigation** (root): roll the Deployment to reschedule pods onto healthy nodes.
 
   ```bash
   kubectl rollout restart deployment/coredns -n kube-system
   ```
 
-- **Duration:** 30–60 seconds; revert if new pods also crash (indicates a deeper configuration issue)
-
-**Resolution:**
-
-```bash
-kubectl rollout restart deployment/coredns -n kube-system
-kubectl scale deployment/coredns -n kube-system --replicas=3
-```
-
-- **Impact:** Cluster-wide; all pods regain DNS after new replicas become `Ready`
-- **Rollback:** `kubectl scale deployment/coredns -n kube-system --replicas=2`
-
-**Verification:** `kubectl get pods -n kube-system -l k8s-app=kube-dns` shows all pods `Running 1/1`; `kubectl exec -it dnsutils -- nslookup kubernetes.default` returns a valid IP.
+  **Risk:** Brief DNS gap (under 30 seconds) while replacement pods schedule and become ready. **Duration:** 30–60 seconds; revert if new pods also crash (indicates a deeper configuration issue). **Verification:** new pods reach `Running 1/1`; `nslookup kubernetes.default` resolves.
 
 ---
 
 ### Cause B: Forwarding loop — CoreDNS resolves back to itself
 
-**Statement:** The CoreDNS `forward` plugin is configured to use `forward . /etc/resolv.conf`, and the node's `/etc/resolv.conf` points to a local stub resolver (e.g., `127.0.0.53` from systemd-resolved) that forwards queries back to the cluster DNS Service IP, creating an infinite loop.
+**Statement:** CoreDNS uses `forward . /etc/resolv.conf` on a node whose `/etc/resolv.conf` names a local stub resolver (e.g., `127.0.0.53` from systemd-resolved) that forwards back to the cluster DNS Service, creating an infinite loop.
 
-**Mechanism:** On nodes running systemd-resolved, `/etc/resolv.conf` typically names `127.0.0.53` as the nameserver. CoreDNS reads this file, forwards external queries to `127.0.0.53`, which then forwards them to the `kube-dns` ClusterIP, which routes back to CoreDNS — completing the loop. CoreDNS detects the loop via its `loop` plugin and terminates, triggering `CrashLoopBackOff`.
+**Chain:**
+- root: Corefile sets `forward . /etc/resolv.conf` while the node `/etc/resolv.conf` names a local stub resolver (`127.0.0.53`/`127.0.0.1`).
+- s1: CoreDNS forwards external queries to `127.0.0.53`, which forwards them to the `kube-dns` ClusterIP, routing straight back to CoreDNS.
+- s2: the `loop` plugin detects the cycle and terminates the process, triggering `CrashLoopBackOff`.
+- D: CoreDNS is repeatedly down, so pod DNS queries fail cluster-wide (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] Corefile contains `forward . /etc/resolv.conf` and node `/etc/resolv.conf` contains `127.0.0.53` or `127.0.0.1`
+- s2: [Step 2] log line `plugin/loop: Loop ... detected for zone "."` or `[FATAL] plugin/loop: Loop detected`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "Loop"} -->
 
-- [Step 2] log line `plugin/loop: Loop ... detected for zone "."` or `[FATAL] plugin/loop: Loop detected`
-- [Step 6] Corefile contains `forward . /etc/resolv.conf` and node `/etc/resolv.conf` contains `127.0.0.53` or `127.0.0.1`
+**Interventions:**
+- **remediation** (root): point the forwarder at explicit upstream resolvers and reload.
 
-<!-- match: {"step": 2, "predicate": "contains", "target": "Loop"} -->
+  ```bash
+  kubectl patch configmap coredns -n kube-system --type=merge \
+    -p '{"data":{"Corefile":".:53 {\n    errors\n    health {\n       lameduck 5s\n    }\n    ready\n    kubernetes cluster.local in-addr.arpa ip6.arpa {\n       pods insecure\n       fallthrough in-addr.arpa ip6.arpa\n       ttl 30\n    }\n    prometheus :9153\n    forward . 8.8.8.8 8.8.4.4\n    cache 30\n    loop\n    reload\n    loadbalance\n}\n"}}'
+  kubectl rollout restart deployment/coredns -n kube-system
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low; replaces a non-functional forwarder with explicit well-known resolvers
-- **Command:**
+  **Verification:** `kubectl logs -n kube-system -l k8s-app=kube-dns --tail=20` shows no `Loop detected` entries; CoreDNS pods stay `Running` without restarting.
+- **mitigation** (root): hand-edit the Corefile to replace the stub forwarder with public resolvers.
 
   ```bash
   kubectl edit configmap coredns -n kube-system
@@ -194,20 +199,7 @@ kubectl scale deployment/coredns -n kube-system --replicas=3
   # To:     forward . 8.8.8.8 8.8.4.4
   ```
 
-- **Duration:** Immediate after CoreDNS reloads (the `reload` plugin auto-reloads within 30 seconds)
-
-**Resolution:**
-
-```bash
-kubectl patch configmap coredns -n kube-system --type=merge \
-  -p '{"data":{"Corefile":".:53 {\n    errors\n    health {\n       lameduck 5s\n    }\n    ready\n    kubernetes cluster.local in-addr.arpa ip6.arpa {\n       pods insecure\n       fallthrough in-addr.arpa ip6.arpa\n       ttl 30\n    }\n    prometheus :9153\n    forward . 8.8.8.8 8.8.4.4\n    cache 30\n    loop\n    reload\n    loadbalance\n}\n"}}'
-kubectl rollout restart deployment/coredns -n kube-system
-```
-
-- **Impact:** All external DNS queries now go directly to Google DNS; internal cluster names unaffected
-- **Rollback:** Revert to `forward . /etc/resolv.conf` only on nodes not running systemd-resolved
-
-**Verification:** `kubectl logs -n kube-system -l k8s-app=kube-dns --tail=20` shows no `Loop detected` entries; CoreDNS pods stay `Running` without restarting.
+  **Risk:** Low; replaces a non-functional forwarder with explicit well-known resolvers. **Duration:** Immediate after CoreDNS reloads (the `reload` plugin auto-reloads within 30 seconds). **Verification:** no new `Loop detected` log lines; pods stop restarting.
 
 ---
 
@@ -215,87 +207,79 @@ kubectl rollout restart deployment/coredns -n kube-system
 
 **Statement:** The `system:coredns` ClusterRole lacks the required verbs (`list`, `watch`) on `services`, `endpoints`, or `endpointslices`, preventing CoreDNS from building its internal service-to-IP mapping.
 
-**Mechanism:** CoreDNS uses the Kubernetes plugin to watch the API server for Service and Endpoint changes and build an in-memory DNS table. Without `list` and `watch` on these resources, CoreDNS cannot populate the table and returns `SERVFAIL` for all cluster-internal names. External queries may still succeed if the upstream forwarder is reachable.
+**Chain:**
+- root: the `system:coredns` ClusterRole omits `list`/`watch` on `services`/`endpoints`/`endpointslices`.
+- s1: the CoreDNS kubernetes plugin cannot watch the API server and fails to populate its in-memory DNS table.
+- s2: CoreDNS returns `SERVFAIL` for all cluster-internal names (external names may still resolve via the upstream forwarder).
+- D: pods fail to resolve internal services by name (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] log line `plugin/kubernetes: failed to list *v1.Service` or `plugin/kubernetes: failed to list *v1.EndpointSlice`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "failed to list"} -->
+- s2: [Step 3] internal `nslookup kubernetes.default` returns `SERVFAIL`; external `nslookup google.com` succeeds
 
-- [Step 2] log line `plugin/kubernetes: failed to list *v1.Service` or `plugin/kubernetes: failed to list *v1.EndpointSlice`
-- [Step 3] internal `nslookup kubernetes.default` returns `SERVFAIL`; external `nslookup google.com` succeeds
+**Interventions:**
+- **remediation** (root): add the missing read-only verbs to the ClusterRole.
 
-<!-- match: {"step": 2, "predicate": "contains", "target": "failed to list"} -->
+  ```bash
+  kubectl edit clusterrole system:coredns
+  # Ensure the rules include:
+  #   - apiGroups: [""]
+  #     resources: ["endpoints", "services", "pods", "namespaces"]
+  #     verbs: ["list", "watch"]
+  #   - apiGroups: ["discovery.k8s.io"]
+  #     resources: ["endpointslices"]
+  #     verbs: ["list", "watch"]
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low; read-only permissions addition does not expand write access
-- **Command:**
+  **Verification:** `kubectl logs -n kube-system -l k8s-app=kube-dns --tail=20` shows no `failed to list` errors; `kubectl exec -it dnsutils -- nslookup kubernetes.default` resolves successfully.
+- **mitigation** (root): confirm the missing permissions by inspecting the current ClusterRole before applying the fix.
 
   ```bash
   kubectl describe clusterrole system:coredns
   ```
 
-- **Duration:** Inspect only; apply resolution immediately
-
-**Resolution:**
-
-```bash
-kubectl edit clusterrole system:coredns
-# Ensure the rules include:
-#   - apiGroups: [""]
-#     resources: ["endpoints", "services", "pods", "namespaces"]
-#     verbs: ["list", "watch"]
-#   - apiGroups: ["discovery.k8s.io"]
-#     resources: ["endpointslices"]
-#     verbs: ["list", "watch"]
-```
-
-- **Impact:** Cluster-wide; CoreDNS regains the ability to resolve internal names without restart
-- **Rollback:** Remove the added rules (no service disruption beyond re-breaking internal DNS)
-
-**Verification:** `kubectl logs -n kube-system -l k8s-app=kube-dns --tail=20` shows no `failed to list` errors; `kubectl exec -it dnsutils -- nslookup kubernetes.default` resolves successfully.
+  **Risk:** Low; read-only inspection does not change cluster state. **Duration:** Inspect only; apply the remediation immediately. **Verification:** the rules list confirms `list`/`watch` are absent on the affected resources.
 
 ---
 
 ### Cause D: ndots misconfiguration — short service names bypass cluster search path
 
-**Statement:** A pod's `dnsConfig` sets `ndots` below 5, causing short internal service names (e.g., `my-service`) to be sent as absolute queries rather than expanded through the cluster search path, producing `NXDOMAIN` for valid internal services.
+**Statement:** A pod's `dnsConfig` sets `ndots` below 5, causing short internal service names to be sent as absolute queries rather than expanded through the cluster search path, producing `NXDOMAIN` for valid internal services.
 
-**Mechanism:** The `ndots` option in `/etc/resolv.conf` controls how many dots a query must contain before it is sent as an absolute name. The Kubernetes default of `ndots:5` ensures that `my-service` (0 dots) is first tried with each search domain appended (`my-service.default.svc.cluster.local`). A lower value (e.g., `ndots:1`) causes `my-service` to be tried as an absolute name first and fail with `NXDOMAIN` before the search domains are tried.
+**Chain:**
+- root: a pod's `dnsConfig` sets `ndots` below the Kubernetes default of `5`.
+- s1: a short name like `my-service` (0 dots) is tried as an absolute query before the cluster search domains are appended.
+- s2: the absolute lookup fails with `NXDOMAIN` before `my-service.default.svc.cluster.local` is ever attempted.
+- D: only the affected pods fail to resolve valid internal services by short name (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `/etc/resolv.conf` shows `options ndots:` value less than `5`
+  <!-- match: {"step": 4, "predicate": "absent", "target": "ndots:5"} -->
+- s2: [Step 3] `nslookup my-service` fails but `nslookup my-service.default.svc.cluster.local` succeeds
+- D: [Symptom] only certain pods fail DNS resolution while others in the same cluster succeed
 
-- [Step 4] `/etc/resolv.conf` shows `options ndots:` value less than `5`
-- [Step 3] `nslookup my-service` fails but `nslookup my-service.default.svc.cluster.local` succeeds
-- [Symptom] only certain pods fail DNS resolution while others in the same cluster succeed
+**Interventions:**
+- **remediation** (root): restore `ndots:5` in the pod/deployment `dnsConfig`.
 
-<!-- match: {"step": 4, "predicate": "absent", "target": "ndots:5"} -->
+  ```yaml
+  # In pod/deployment spec:
+  spec:
+    dnsConfig:
+      options:
+        - name: ndots
+          value: "5"
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low; restoring the cluster default `ndots` value
-- **Command:**
+  **Verification:** `kubectl exec -it <pod> -- cat /etc/resolv.conf` shows `ndots:5`; `nslookup my-service` resolves without needing the FQDN.
+- **mitigation** (root): patch the running Deployment to set `ndots:5` and trigger a rolling restart.
 
   ```bash
   kubectl patch deployment <name> -n <namespace> --type=merge \
     -p '{"spec":{"template":{"spec":{"dnsConfig":{"options":[{"name":"ndots","value":"5"}]}}}}}'
   ```
 
-- **Duration:** Takes effect after pods are rescheduled (rolling restart)
-
-**Resolution:**
-
-```yaml
-# In pod/deployment spec:
-spec:
-  dnsConfig:
-    options:
-      - name: ndots
-        value: "5"
-```
-
-- **Impact:** Per-pod/deployment; use fully qualified names (trailing dot) if a lower `ndots` is required for external lookup performance
-- **Rollback:** Remove the `dnsConfig.options` override to revert to the cluster default
-
-**Verification:** `kubectl exec -it <pod> -- cat /etc/resolv.conf` shows `ndots:5`; `nslookup my-service` resolves without needing the FQDN.
+  **Risk:** Low; restoring the cluster default `ndots` value. **Duration:** Takes effect after pods are rescheduled (rolling restart). **Verification:** new pods show `ndots:5` and resolve short service names.
 
 ---
 
@@ -303,39 +287,43 @@ spec:
 
 **Statement:** The node's conntrack table is full, causing the kernel to silently drop incoming UDP DNS packets, producing intermittent 5–30 second DNS timeouts with no error logged at the CoreDNS layer.
 
-**Mechanism:** Every UDP DNS query creates a conntrack entry that persists for 30 seconds by default. Clusters with high DNS query rates or many short-lived connections can exhaust `nf_conntrack_max`. When the table is full, new UDP packets are dropped silently — CoreDNS never receives the query, and the pod's resolver retries after a 5-second timeout, producing characteristic latency spikes.
+**Chain:**
+- root: the node's `nf_conntrack` table reaches `nf_conntrack_max` (high DNS query rate or many short-lived connections, each entry persisting ~30s).
+- s1: the kernel silently drops new UDP packets, so DNS queries never reach CoreDNS and nothing is logged at the CoreDNS layer.
+- s2: the pod resolver retries after its 5-second UDP timeout, producing characteristic 5–30s latency spikes.
+- D: pods see intermittent DNS timeouts with no corresponding CoreDNS errors (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] `nf_conntrack_count` at or near `nf_conntrack_max`
+- s1: [Step 7] `dmesg` contains `nf_conntrack: table full, dropping packet`
+  <!-- match: {"step": 7, "predicate": "contains", "target": "nf_conntrack: table full"} -->
+- D: [Symptom] intermittent DNS timeouts with no corresponding errors in CoreDNS logs
 
-- [Step 7] `nf_conntrack_count` at or near `nf_conntrack_max`
-- [Step 7] `dmesg` contains `nf_conntrack: table full, dropping packet`
-- [Symptom] intermittent DNS timeouts with no corresponding errors in CoreDNS logs
+**Interventions:**
+- **remediation** (root): raise `nf_conntrack_max` persistently across reboots on all affected nodes.
 
-<!-- match: {"step": 7, "predicate": "contains", "target": "nf_conntrack: table full"} -->
+  ```bash
+  echo "net.netfilter.nf_conntrack_max=262144" | \
+    sudo tee /etc/sysctl.d/99-conntrack.conf
+  sudo sysctl --system
+  ```
 
-**Mitigation:**
+  **Verification:** `cat /proc/sys/net/netfilter/nf_conntrack_count` stays well below `nf_conntrack_max`; `dmesg | grep "nf_conntrack"` shows no new `table full` entries; DNS latency returns to sub-millisecond.
+- **defensive_fix** (s1): deploy NodeLocal DNSCache to eliminate conntrack entries for DNS entirely (long-term hardening of the drop path).
 
-- **Risk:** Increases kernel memory for connection tracking; safe to double the default value
-- **Command:**
+  ```bash
+  # Deploy NodeLocal DNSCache as a DaemonSet per the upstream manifest.
+  kubectl apply -f https://raw.githubusercontent.com/kubernetes/kubernetes/master/cluster/addons/dns/nodelocaldns/nodelocaldns.yaml
+  ```
+
+  **Verification:** the `node-local-dns` DaemonSet is `Ready` on every node; conntrack usage for UDP/53 drops; DNS latency stays sub-millisecond under load.
+- **mitigation** (root): raise `nf_conntrack_max` immediately at runtime.
 
   ```bash
   sudo sysctl -w net.netfilter.nf_conntrack_max=262144
   ```
 
-- **Duration:** Immediate; make persistent via sysctl configuration file
-
-**Resolution:**
-
-```bash
-echo "net.netfilter.nf_conntrack_max=262144" | \
-  sudo tee /etc/sysctl.d/99-conntrack.conf
-sudo sysctl --system
-```
-
-- **Impact:** Node-level; must be applied to all affected nodes; long-term fix is NodeLocal DNSCache which eliminates conntrack entries for DNS entirely
-- **Rollback:** `sudo sysctl -w net.netfilter.nf_conntrack_max=<original-value>`
-
-**Verification:** `cat /proc/sys/net/netfilter/nf_conntrack_count` stays well below `nf_conntrack_max`; `dmesg | grep "nf_conntrack"` shows no new `table full` entries; DNS latency returns to sub-millisecond.
+  **Risk:** Increases kernel memory for connection tracking; safe to double the default value. **Duration:** Immediate; make persistent via sysctl configuration file. **Verification:** `nf_conntrack_count` stays below the new max; no new `table full` in dmesg.
 
 ---
 
@@ -343,19 +331,18 @@ sudo sysctl --system
 
 **Statement:** A NetworkPolicy in the affected namespace restricts egress traffic and does not include an explicit allow rule for UDP and TCP port 53, blocking all DNS queries from pods in that namespace.
 
-**Mechanism:** A NetworkPolicy with `policyTypes: [Egress]` and no matching egress rule blocks all outbound traffic including DNS. CoreDNS runs in `kube-system` on UDP/TCP port 53. Pods that cannot reach the `kube-dns` ClusterIP on port 53 receive no DNS responses and experience connection timeouts when trying to reach services by name.
+**Chain:**
+- root: an egress NetworkPolicy (`policyTypes: [Egress]`) in the affected namespace has no allow rule for UDP/TCP port 53.
+- s1: pods in that namespace cannot reach the `kube-dns` ClusterIP on port 53, so no DNS responses arrive.
+- D: pods in the affected namespace time out resolving services by name (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] NetworkPolicy with `policyTypes: [Egress]` exists in the affected namespace and has no `port: 53` allowance
+  <!-- match: {"step": 8, "predicate": "contains", "target": "Egress"} -->
+- s1: [Step 3] DNS resolution fails from an affected pod but succeeds from a pod in a different namespace without NetworkPolicies
 
-- [Step 8] NetworkPolicy with `policyTypes: [Egress]` exists in the affected namespace and has no `port: 53` allowance
-- [Step 3] DNS resolution fails from an affected pod but succeeds from a pod in a different namespace without NetworkPolicies
-
-<!-- match: {"step": 8, "predicate": "contains", "target": "Egress"} -->
-
-**Mitigation:**
-
-- **Risk:** Low; adding a targeted port 53 egress rule does not open other traffic
-- **Command:**
+**Interventions:**
+- **remediation** (root): apply an egress NetworkPolicy that explicitly allows UDP/TCP port 53.
 
   ```bash
   kubectl apply -f - <<EOF
@@ -377,14 +364,30 @@ sudo sysctl --system
   EOF
   ```
 
-- **Duration:** Immediate after applying
+  **Verification:** `kubectl exec -it <pod-in-namespace> -- nslookup kubernetes.default` resolves successfully; no DNS timeouts in application logs.
+- **mitigation** (root): apply the same targeted port-53 egress allowance as an immediate unblock.
 
-**Resolution:** Same as Mitigation.
+  ```bash
+  kubectl apply -f - <<EOF
+  apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    name: allow-dns-egress
+    namespace: <affected-namespace>
+  spec:
+    podSelector: {}
+    policyTypes:
+      - Egress
+    egress:
+      - ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+  EOF
+  ```
 
-- **Impact:** Namespace-scoped; does not affect other namespaces or ingress traffic
-- **Rollback:** `kubectl delete networkpolicy allow-dns-egress -n <affected-namespace>`
-
-**Verification:** `kubectl exec -it <pod-in-namespace> -- nslookup kubernetes.default` resolves successfully; no DNS timeouts in application logs.
+  **Risk:** Low; adding a targeted port 53 egress rule does not open other traffic. **Duration:** Immediate after applying. **Verification:** pods in the namespace resolve names; remove with `kubectl delete networkpolicy allow-dns-egress -n <affected-namespace>` if it must be rolled back.
 
 ---
 
@@ -392,70 +395,57 @@ sudo sysctl --system
 
 **Statement:** The upstream resolver configured in the CoreDNS `forward` plugin is unreachable from the cluster nodes, causing all external hostname queries to return `SERVFAIL` while internal cluster-name resolution continues to work.
 
-**Mechanism:** CoreDNS forwards queries for names outside `cluster.local` to the upstream resolver(s) configured in the `forward` directive. If those resolvers are unreachable — due to firewall rules, incorrect IP configuration, or VPC routing gaps — CoreDNS returns `SERVFAIL` for all external names. Internal Kubernetes service resolution (handled by the `kubernetes` plugin) is unaffected.
+**Chain:**
+- root: the resolver(s) in the CoreDNS `forward` directive are unreachable from the nodes (firewall, wrong IP, or VPC routing gap).
+- s1: CoreDNS cannot reach an upstream for names outside `cluster.local` and returns `SERVFAIL` for all external names.
+- D: pods fail to resolve external hostnames while internal service names keep working (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] `forward` directive specifies IPs that are not reachable from the node network
+- s1: [Step 3] `nslookup google.com` returns `SERVFAIL` or times out; `nslookup kubernetes.default` succeeds
+  <!-- match: {"step": 3, "predicate": "contains", "target": "SERVFAIL"} -->
+- s1: [Step 2] log line `plugin/forward: no nameservers found` or upstream timeout errors
 
-- [Step 3] `nslookup google.com` returns `SERVFAIL` or times out; `nslookup kubernetes.default` succeeds
-- [Step 2] log line `plugin/forward: no nameservers found` or upstream timeout errors
-- [Step 6] `forward` directive specifies IPs that are not reachable from the node network
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "SERVFAIL"} -->
-
-**Mitigation:**
-
-- **Risk:** Low; switching to public resolvers restores external DNS immediately
-- **Command:**
+**Interventions:**
+- **remediation** (root): set the `forward` directive to reachable public resolvers and reload CoreDNS.
 
   ```bash
   kubectl edit configmap coredns -n kube-system
   # Set: forward . 8.8.8.8 8.8.4.4
+  kubectl rollout restart deployment/coredns -n kube-system
   ```
 
-- **Duration:** 30 seconds for CoreDNS `reload` plugin to pick up the change; or restart pods immediately
+  **Verification:** `kubectl exec -it dnsutils -- nslookup google.com` resolves successfully; no `forward` errors in CoreDNS logs.
+- **mitigation** (root): switch to public resolvers and restart pods to pick up the change immediately.
 
-**Resolution:**
+  ```bash
+  kubectl edit configmap coredns -n kube-system
+  # Set: forward . 8.8.8.8 8.8.4.4
+  kubectl rollout restart deployment/coredns -n kube-system
+  ```
 
-```bash
-kubectl rollout restart deployment/coredns -n kube-system
-```
-
-- **Impact:** All external DNS queries route via the new forwarder; verify with security team that public resolver egress is allowed
-- **Rollback:** Restore the original `forward` targets in the Corefile
-
-**Verification:** `kubectl exec -it dnsutils -- nslookup google.com` resolves successfully; no `forward` errors in CoreDNS logs.
+  **Risk:** Low; switching to public resolvers restores external DNS immediately — verify with the security team that public resolver egress is allowed. **Duration:** 30 seconds for the CoreDNS `reload` plugin to pick up the change, or restart pods immediately. **Verification:** external `nslookup google.com` resolves; restore original `forward` targets if rollback is needed.
 
 ---
 
-### Cause Z: Unidentified DNS resolution failure
+### Cause Z: Unidentified
 
-**Statement:** [Default] DNS resolution failures are present but no specific cause has been confirmed through the diagnostic steps above.
+**Statement:** DNS resolution failures are present but no specific cause above has been confirmed through the diagnostic steps.
 
-**Mechanism:** DNS failures in Kubernetes can arise from combinations of causes, cloud-provider-specific network overlays, CNI plugin bugs, or kernel-level packet filtering issues that are not covered by this runbook.
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] All other causes in this runbook have been ruled out
-- [Symptom] DNS failures are intermittent, environment-specific, or reproduce only under load
-
-**Mitigation:**
-
-- **Risk:** Low; the steps below are additive diagnostics and do not change cluster state
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot (CoreDNS logs with the `log` plugin enabled, affected-pod `/etc/resolv.conf`, `kubectl get events -n kube-system`, and node conntrack stats) and escalate to the cluster networking SME.
 
   ```bash
-  # Enable CoreDNS query logging for detailed per-query tracing
   kubectl edit configmap coredns -n kube-system
   # Add 'log' plugin to the Corefile block, then restart
   kubectl rollout restart deployment/coredns -n kube-system
   kubectl logs -n kube-system -l k8s-app=kube-dns --follow
   ```
 
-- **Duration:** Run query logging for up to 30 minutes; disable afterward to avoid log volume
-
-**Resolution:** Out of runbook scope — escalate to cluster networking team with: CoreDNS logs (with `log` plugin enabled), `/etc/resolv.conf` from affected pods, output of `kubectl get events -n kube-system`, and conntrack stats from affected nodes.
-
-**Verification:** DNS resolution consistently succeeds from all namespaces after escalation and fix; no recurring `SERVFAIL` in CoreDNS metrics.
+  **Risk:** Low; query logging is additive and does not change cluster state, but high log volume if left on. **Duration:** Run query logging for up to 30 minutes; disable afterward to avoid log volume. **Verification:** DNS resolution consistently succeeds from all namespaces after the SME applies a fix; no recurring `SERVFAIL` in CoreDNS metrics.
 
 ## Prevention
 

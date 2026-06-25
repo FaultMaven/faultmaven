@@ -6,8 +6,8 @@ service: mysql
 symptom_class: [latency, timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [innodb, deadlock, locking, transactions, isolation-level]
@@ -34,7 +34,7 @@ Tools needed: `mysql` CLI client, access to the application source or ORM query 
 
 ## Diagnostic Steps
 
-### Step 1:
+### Step 1: Capture the latest deadlock
 
 Capture the most recent deadlock in full detail.
 
@@ -44,7 +44,7 @@ mysql -e "SHOW ENGINE INNODB STATUS\G" | awk '/LATEST DETECTED DEADLOCK/,/^---/'
 
 Expected output: A block containing `TRANSACTION 1` and `TRANSACTION 2` sections listing the SQL statements, lock types (`lock_mode X`, `lock_mode X,GAP`, `lock_mode S,GAP`), index names, and the `WE ROLL BACK TRANSACTION` line identifying the victim.
 
-### Step 2:
+### Step 2: Log and count deadlock events
 
 Enable logging of all deadlock events and inspect frequency.
 
@@ -55,7 +55,7 @@ grep -i "deadlock" /var/log/mysql/error.log | grep -c "TRANSACTION"
 
 Expected output: An integer count of deadlock events in the error log. Zero means no historical data yet; any non-zero value with a timestamp within the last hour confirms active deadlock pressure. Disable this setting after debugging: `SET GLOBAL innodb_print_all_deadlocks = OFF;`
 
-### Step 3:
+### Step 3: Inspect the lock-wait graph
 
 Inspect the current lock-wait graph to identify blocking transactions.
 
@@ -77,7 +77,7 @@ JOIN information_schema.innodb_trx r ON r.trx_id = w.REQUESTING_ENGINE_TRANSACTI
 
 Expected output: Rows pairing each waiting transaction with its blocker, including the SQL text and wait duration in seconds. Empty result means no current lock waits.
 
-### Step 4:
+### Step 4: List granted InnoDB locks
 
 List all granted InnoDB locks to identify gap locks and excessive lock scope.
 
@@ -92,7 +92,7 @@ ORDER BY engine_transaction_id, object_name;
 
 Expected output: TABLE-level intent locks (IS, IX) plus RECORD-level row locks. Rows showing `lock_mode` values of `X,GAP` or `S,GAP` indicate gap locking (present only under `REPEATABLE READ`).
 
-### Step 5:
+### Step 5: Check the isolation level
 
 Check the transaction isolation level in effect.
 
@@ -102,7 +102,7 @@ mysql -e "SELECT @@GLOBAL.transaction_isolation, @@SESSION.transaction_isolation
 
 Expected output: Both values typically `REPEATABLE-READ`. If either shows `READ-COMMITTED`, gap locking is already disabled for that scope.
 
-### Step 6:
+### Step 6: Find long-running transactions
 
 Identify long-running transactions holding locks.
 
@@ -119,7 +119,7 @@ ORDER BY trx_started ASC;
 
 Expected output: Running transactions with their age, locked row counts, and current SQL. Rows with `trx_query = NULL` and high `duration_sec` indicate idle-in-transaction connections holding locks without executing statements.
 
-### Step 7:
+### Step 7: Examine the query execution plan
 
 Examine the execution plan of the queries from Step 1 to detect full-table-scan locking.
 
@@ -129,7 +129,7 @@ mysql -e "EXPLAIN <query_from_step1_deadlock_output>\G"
 
 Replace `<query_from_step1_deadlock_output>` with the actual SQL from the deadlock output. Expected output: The `type` column shows `ALL` (full table scan), `range`, `ref`, or `eq_ref`. The `rows` column shows the estimated row count examined and therefore locked.
 
-### Step 8:
+### Step 8: Sample deadlock counter growth
 
 Sample deadlock counter growth rate to quantify severity.
 
@@ -145,15 +145,28 @@ Expected output: Cumulative counters. Record these values and re-run after 5 min
 
 ### Cause A: Inconsistent Lock Acquisition Order
 
-**Statement:** Two or more transactions acquire locks on the same rows or tables in opposite order, creating a circular wait.
-**Mechanism:** Transaction A locks row 1 then attempts to lock row 2; Transaction B already holds a lock on row 2 and is waiting for row 1. InnoDB detects the cycle and rolls back the victim. This is the most common deadlock pattern and stems from uncoordinated lock ordering in application code.
-**Indicator:**
-- [Step 1] Deadlock output shows Transaction 1 holding a lock on table/index X and waiting on table/index Y, while Transaction 2 holds on Y and waits on X
-- [Step 1] The two SQL statements access the same set of tables in a different sequence
-<!-- match: {"step": 1, "predicate": "contains", "target": "HOLDS THE LOCK(S)"} -->
-**Mitigation:**
-- **Risk:** None — this is a code change only; no production data is affected until the new code is deployed
-- **Command:**
+**Statement:** Two or more transactions acquire locks on the same rows or tables in opposite order, creating a circular wait that InnoDB resolves by rolling back a victim.
+**Chain:**
+- root: Application code paths write to the same rows/tables in uncoordinated, opposite orders.
+- s1: Transaction A locks row 1 then waits for row 2 while Transaction B holds row 2 and waits for row 1.
+- s2: A circular lock-wait cycle forms that neither transaction can break.
+- D: InnoDB detects the cycle and rolls back the victim, surfacing error 1213 (Symptom Recognition).
+**Indicators:**
+- s1: [Step 1] Deadlock output shows Transaction 1 holding a lock on table/index X and waiting on table/index Y, while Transaction 2 holds on Y and waits on X.
+- root: [Step 1] The two SQL statements access the same set of tables in a different sequence.
+- s2: [Step 1] Deadlock output reports the circular hold/wait relationship.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "HOLDS THE LOCK(S)"} -->
+**Interventions:**
+- **remediation** (root): Ensure all code paths that write to multiple rows or tables do so in the same deterministic order (e.g., alphabetical by table, ascending by PK). Use stored procedures to enforce ordering when multiple code paths share the same data.
+
+  ```sql
+  -- Application-level change: ensure all code paths that write to multiple rows or tables
+  -- do so in the same deterministic order (e.g., alphabetical by table, ascending by PK).
+  -- Use stored procedures to enforce ordering when multiple code paths share the same data.
+  ```
+
+  **Verification:** Monitor `Innodb_deadlocks` counter for 1 hour after deployment. Counter should stop incrementing or grow significantly slower.
+- **mitigation** (root): Enforce a deterministic write order within each transaction (lower PK first, then higher PK) as a code change ahead of full rollout.
 
   ```sql
   -- Enforce alphabetical table order and ascending PK order within each table
@@ -163,112 +176,123 @@ Expected output: Cumulative counters. Record these values and re-run after 5 min
   COMMIT;
   ```
 
-- **Duration:** Permanent after application deployment; no server restart required
-**Resolution:**
-```sql
--- Application-level change: ensure all code paths that write to multiple rows or tables
--- do so in the same deterministic order (e.g., alphabetical by table, ascending by PK).
--- Use stored procedures to enforce ordering when multiple code paths share the same data.
-```
-
-**Verification:** Monitor `Innodb_deadlocks` counter for 1 hour after deployment. Counter should stop incrementing or grow significantly slower.
+  **Risk:** None — this is a code change only; no production data is affected until the new code is deployed. **Duration:** Permanent after application deployment; no server restart required. **Verification:** Monitor `Innodb_deadlocks` after deploy; the counter should stop incrementing for this access pattern.
 
 ### Cause B: Gap Locks Under REPEATABLE READ
 
-**Statement:** InnoDB's default REPEATABLE READ isolation level uses next-key locks (record + gap) that conflict with concurrent inserts into the same index range.
-**Mechanism:** A `SELECT ... FOR UPDATE` or `UPDATE` with a range predicate acquires next-key locks covering all index records and gaps in the scanned range. A concurrent `INSERT` into that gap acquires an insert-intention lock that conflicts with the held gap lock, producing a deadlock when two transactions each hold gap locks that the other's insert needs.
-**Indicator:**
-- [Step 4] `lock_mode` values of `X,GAP` or `S,GAP` appear in `performance_schema.data_locks`
-- [Step 5] `@@GLOBAL.transaction_isolation` is `REPEATABLE-READ`
-- [Step 1] Deadlock output contains `lock_mode X,GAP` or `lock_mode X locks gap before rec`
-<!-- match: {"step": 4, "predicate": "contains", "target": "GAP"} -->
-**Mitigation:**
-- **Risk:** Moderate — `READ COMMITTED` allows phantom reads (rows inserted by other transactions become visible within the same transaction) and non-repeatable reads. Test application correctness before enabling in production.
-- **Command:**
+**Statement:** InnoDB's default REPEATABLE READ isolation uses next-key locks (record + gap) that conflict with concurrent inserts into the same index range, producing deadlocks.
+**Chain:**
+- root: The instance runs under REPEATABLE READ, so range reads take next-key (record + gap) locks.
+- s1: A `SELECT ... FOR UPDATE` or ranged `UPDATE` holds gap locks across the scanned index range.
+- s2: A concurrent `INSERT` into that gap needs an insert-intention lock that conflicts with the held gap lock.
+- s3: Two transactions each hold gap locks the other's insert requires, forming a circular wait.
+- D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
+**Indicators:**
+- s1: [Step 4] `lock_mode` values of `X,GAP` or `S,GAP` appear in `performance_schema.data_locks`.
+  <!-- match: {"step": 4, "predicate": "contains", "target": "GAP"} -->
+- root: [Step 5] `@@GLOBAL.transaction_isolation` is `REPEATABLE-READ`.
+  <!-- match: {"step": 5, "predicate": "contains", "target": "REPEATABLE-READ"} -->
+- s2: [Step 1] Deadlock output contains `lock_mode X,GAP` or `lock_mode X locks gap before rec`.
+**Interventions:**
+- **remediation** (root): Persist `READ COMMITTED` in the server config so gap and next-key locks are not taken on range reads.
+
+  ```ini
+  # Add to /etc/mysql/my.cnf (or /etc/my.cnf) under [mysqld]:
+  [mysqld]
+  transaction-isolation = READ-COMMITTED
+  ```
+
+  **Verification:** Re-run Step 4 after switching to `READ COMMITTED`. `X,GAP` and `S,GAP` entries should be absent from `performance_schema.data_locks` for non-FK range queries. (Cluster-wide: affects all new connections; requires MySQL restart to apply from the config file. Rollback: remove the `my.cnf` line and restart.)
+- **mitigation** (root): Switch the runtime global isolation level to `READ COMMITTED` without a restart.
 
   ```bash
   mysql -e "SET GLOBAL transaction_isolation = 'READ-COMMITTED';"
   ```
 
-- **Duration:** Immediate for new connections; existing sessions retain their prior isolation level until they reconnect. Persist in `my.cnf` for durability across restarts.
-**Resolution:**
-```ini
-# Add to /etc/mysql/my.cnf (or /etc/my.cnf) under [mysqld]:
-[mysqld]
-transaction-isolation = READ-COMMITTED
-```
-
-**Impact:** Cluster-wide — affects all new connections on this MySQL instance. Requires MySQL restart to take effect from the config file.
-**Rollback:** `SET GLOBAL transaction_isolation = 'REPEATABLE-READ';` to revert at runtime; remove the `my.cnf` line and restart to revert persistently.
-**Verification:** Re-run Step 4 after switching to `READ COMMITTED`. `X,GAP` and `S,GAP` entries should be absent from `performance_schema.data_locks` for non-FK range queries.
+  **Risk:** Moderate — `READ COMMITTED` allows phantom reads and non-repeatable reads; test application correctness before enabling in production. **Duration:** Immediate for new connections; existing sessions retain their prior isolation level until they reconnect. Persist in `my.cnf` for durability across restarts. **Verification:** Re-run Step 4; `X,GAP`/`S,GAP` entries should disappear for non-FK range queries. Rollback: `SET GLOBAL transaction_isolation = 'REPEATABLE-READ';`.
 
 ### Cause C: Missing or Suboptimal Index Causes Excessive Row Locking
 
-**Statement:** A write query without a selective index performs a full or broad table scan, locking far more rows than the operation requires and increasing deadlock collision probability.
-**Mechanism:** InnoDB locks every row it examines during query execution, not just the rows it modifies. A full table scan (`type: ALL` in EXPLAIN) locks every row in the table with an X or next-key lock. This massively expands the lock footprint, making it probable that a concurrent transaction needs one of the locked rows, creating a circular wait.
-**Indicator:**
-- [Step 7] `EXPLAIN` shows `type: ALL` or `type: index` for the query from the deadlock output
-- [Step 7] `rows` estimate is a large fraction of the total table row count
-<!-- match: {"step": 7, "predicate": "contains", "target": "ALL"} -->
-**Mitigation:**
-- **Risk:** Low — MySQL 8.0 online DDL with `ALGORITHM=INPLACE, LOCK=NONE` allows concurrent reads and writes during index creation on most table types. Adding an index increases write overhead proportionally.
-- **Command:**
+**Statement:** A write query without a selective index performs a full or broad table scan, locking far more rows than the operation requires and raising deadlock collision probability.
+**Chain:**
+- root: A write query's `WHERE` clause has no selective index to satisfy it.
+- s1: InnoDB executes the query as a full or broad table scan (`type: ALL`).
+- s2: Every examined row is locked with an X or next-key lock, massively expanding the lock footprint.
+- s3: A concurrent transaction is now likely to need one of the over-locked rows, forming a circular wait.
+- D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
+**Indicators:**
+- s1: [Step 7] `EXPLAIN` shows `type: ALL` or `type: index` for the query from the deadlock output.
+  <!-- match: {"step": 7, "predicate": "contains", "target": "ALL"} -->
+- s2: [Step 7] `rows` estimate is a large fraction of the total table row count.
+**Interventions:**
+- **remediation** (root): Add a selective index on the filtered column so the query stops scanning (and locking) the whole table.
 
   ```bash
   mysql -e "ALTER TABLE <table> ADD INDEX idx_col (<column>) ALGORITHM=INPLACE, LOCK=NONE;"
   ```
 
-- **Duration:** Seconds to minutes depending on table size; concurrent DML is not blocked.
-**Resolution:**
-```bash
-mysql -e "ALTER TABLE <table> ADD INDEX idx_col (<column>) ALGORITHM=INPLACE, LOCK=NONE;"
-```
-
-**Verification:** Re-run `EXPLAIN <query>` from Step 7. `type` should change to `ref` or `eq_ref` and `rows` should drop to only the matching rows. Monitor `Innodb_deadlocks` over the next hour to confirm the reduction.
+  **Verification:** Re-run `EXPLAIN <query>` from Step 7. `type` should change to `ref` or `eq_ref` and `rows` should drop to only the matching rows. Monitor `Innodb_deadlocks` over the next hour to confirm the reduction. (Risk: Low — MySQL 8.0 online DDL with `ALGORITHM=INPLACE, LOCK=NONE` allows concurrent reads/writes; adding an index increases write overhead proportionally.)
 
 ### Cause D: Long-Running or Idle-in-Transaction Sessions Holding Locks
 
-**Statement:** A transaction that holds locks for an extended period — either running a slow query or sitting idle — blocks other transactions long enough to create deadlock cycles.
-**Mechanism:** Every second a transaction holds a row lock is another second during which a concurrent transaction that needs the same row must wait. When two such transactions each hold a lock the other needs, and neither times out, InnoDB detects the cycle. Idle-in-transaction connections (opened a transaction but the application is waiting on external I/O, user input, or is stuck) are a common source of long-held locks.
-**Indicator:**
-- [Step 6] Rows show `duration_sec` above 5 seconds with non-zero `trx_rows_locked`
-- [Step 6] Rows show `trx_query = NULL` (idle-in-transaction) with high `duration_sec`
-- [Step 3] `blocking_query` is NULL for the blocking thread (idle-in-transaction)
-<!-- match: {"step": 6, "predicate": "threshold", "target": "duration_sec", "op": ">", "value": 5} -->
-**Mitigation:**
-- **Risk:** Moderate — killing a transaction rolls it back. Confirm the session is safe to abort before issuing `KILL`. The client will receive a connection error and should reconnect.
-- **Command:**
+**Statement:** A transaction that holds locks for an extended period — running a slow query or sitting idle — blocks other transactions long enough to create deadlock cycles.
+**Chain:**
+- root: A transaction holds row locks for an extended period (slow query, or idle-in-transaction awaiting external I/O or user input).
+- s1: Concurrent transactions needing those rows wait for the long-held locks instead of completing.
+- s2: Two such transactions each hold a lock the other needs, and neither times out.
+- D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
+**Indicators:**
+- root: [Step 6] Rows show `duration_sec` above 5 seconds with non-zero `trx_rows_locked`.
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "duration_sec", "op": ">", "value": 5} -->
+- root: [Step 6] Rows show `trx_query = NULL` (idle-in-transaction) with high `duration_sec`.
+- s1: [Step 3] `blocking_query` is NULL for the blocking thread (idle-in-transaction).
+**Interventions:**
+- **remediation** (root): Set idle/transaction timeouts so the server automatically closes long-idle sessions before they accumulate held locks.
+
+  ```sql
+  -- Set a global idle-in-transaction timeout to automatically close idle sessions:
+  SET GLOBAL wait_timeout = 60;
+  SET GLOBAL interactive_timeout = 60;
+  -- For MySQL 8.0+, also set transaction-specific idle limit:
+  SET GLOBAL innodb_rollback_on_timeout = ON;
+  ```
+
+  **Verification:** Re-run Step 6 after applying the timeout. No rows should show `duration_sec` above the configured `wait_timeout`. Confirm `Innodb_deadlocks` stops incrementing over the next hour. (Instance-wide: `wait_timeout` affects all connections; reducing from the 8-hour default may close legitimate long-running sessions — test with the connection pooler first. Rollback: `SET GLOBAL wait_timeout = 28800; SET GLOBAL interactive_timeout = 28800;`)
+- **mitigation** (root): Kill the offending blocking thread to release its locks immediately.
 
   ```bash
   # Identify blocking_thread from Step 3, then:
   mysql -e "KILL <blocking_thread_id>;"
   ```
 
-- **Duration:** Immediate; the killed transaction is rolled back and its locks are released.
-**Resolution:**
-```sql
--- Set a global idle-in-transaction timeout to automatically close idle sessions:
-SET GLOBAL wait_timeout = 60;
-SET GLOBAL interactive_timeout = 60;
--- For MySQL 8.0+, also set transaction-specific idle limit:
-SET GLOBAL innodb_rollback_on_timeout = ON;
-```
-
-**Impact:** Instance-wide — `wait_timeout` affects all connections. Reducing from the default (8 hours) to 60 seconds may close legitimate long-running application sessions; test with application connection pooler behavior first.
-**Rollback:** `SET GLOBAL wait_timeout = 28800; SET GLOBAL interactive_timeout = 28800;`
-**Verification:** Re-run Step 6 after applying the timeout. No rows should show `duration_sec` above the configured `wait_timeout`. Confirm `Innodb_deadlocks` stops incrementing over the next hour.
+  **Risk:** Moderate — killing a transaction rolls it back. Confirm the session is safe to abort before issuing `KILL`. The client will receive a connection error and should reconnect. **Duration:** Immediate; the killed transaction is rolled back and its locks are released. **Verification:** Re-run Step 3; the blocking thread should no longer appear and waiting transactions should proceed.
 
 ### Cause E: Foreign Key Constraint Checks Acquiring Parent-Table Locks
 
-**Statement:** InnoDB acquires shared locks on parent-table rows during foreign key constraint validation, which can conflict with concurrent exclusive locks on those same parent rows.
-**Mechanism:** When a child row is inserted or updated, InnoDB reads the referenced parent row to verify the constraint and acquires a shared lock (S lock) on it. If another transaction simultaneously holds or is waiting for an exclusive lock (X lock) on that parent row, the shared-lock attempt blocks and can complete a circular wait with the other transaction's waiting lock, producing a deadlock.
-**Indicator:**
-- [Step 1] Deadlock output shows one transaction waiting on a shared lock (`lock_mode S`) on the parent table while another holds an exclusive lock on the same row
-- [Step 4] Parent table appears in granted locks with both `S` and `IX` mode entries from different transactions
-<!-- match: {"step": 1, "predicate": "contains", "target": "lock_mode S"} -->
-**Mitigation:**
-- **Risk:** Low — ordering inserts so parent rows precede child rows is an application-level change with no data risk.
-- **Command:**
+**Statement:** InnoDB takes shared locks on parent-table rows during foreign key validation, which can conflict with concurrent exclusive locks on those same parent rows.
+**Chain:**
+- root: A child-row insert/update triggers FK validation that reads the referenced parent row.
+- s1: InnoDB acquires a shared (S) lock on the parent row to verify the constraint.
+- s2: Another transaction holds or waits for an exclusive (X) lock on that same parent row, so the S-lock attempt blocks.
+- s3: The blocked S-lock completes a circular wait with the other transaction's waiting lock.
+- D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
+**Indicators:**
+- s1: [Step 1] Deadlock output shows one transaction waiting on a shared lock (`lock_mode S`) on the parent table while another holds an exclusive lock on the same row.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "lock_mode S"} -->
+- s2: [Step 4] Parent table appears in granted locks with both `S` and `IX` mode entries from different transactions.
+**Interventions:**
+- **remediation** (root): Insert parent rows before child rows in all application code paths so FK validation never contends with a concurrent X lock.
+
+  ```sql
+  -- Ensure all application code paths insert parent rows before child rows within
+  -- the same transaction. For bulk loads only (not normal application flow):
+  SET FOREIGN_KEY_CHECKS = 0;
+  -- <bulk insert child rows>
+  SET FOREIGN_KEY_CHECKS = 1;
+  ```
+
+  **Verification:** Monitor `Innodb_deadlocks` for 1 hour after deploying the ordering fix. Run Step 3 during peak load to confirm parent tables no longer appear as contested resources.
+- **mitigation** (root): Order inserts so the parent row precedes the child row within each transaction as an immediate code change.
 
   ```sql
   BEGIN;
@@ -277,29 +301,31 @@ SET GLOBAL innodb_rollback_on_timeout = ON;
   COMMIT;
   ```
 
-- **Duration:** Permanent after application code change; no server configuration needed.
-**Resolution:**
-```sql
--- Ensure all application code paths insert parent rows before child rows within
--- the same transaction. For bulk loads only (not normal application flow):
-SET FOREIGN_KEY_CHECKS = 0;
--- <bulk insert child rows>
-SET FOREIGN_KEY_CHECKS = 1;
-```
-
-**Verification:** Monitor `Innodb_deadlocks` for 1 hour after deploying the ordering fix. Run Step 3 during peak load to confirm parent tables no longer appear as contested resources.
+  **Risk:** Low — ordering inserts so parent rows precede child rows is an application-level change with no data risk. **Duration:** Permanent after application code change; no server configuration needed. **Verification:** Run Step 3 during peak load; parent tables should no longer appear as contested resources.
 
 ### Cause F: Bulk DML Operations Competing With Concurrent Transactions
 
-**Statement:** A single large INSERT, UPDATE, or DELETE affecting thousands of rows holds row locks across a wide range for the full transaction duration, colliding with concurrent transactions that need any of those rows.
-**Mechanism:** A bulk operation executed in a single transaction acquires and holds all its row locks until commit. The longer this takes (seconds to minutes for large tables), the larger the window in which a concurrent transaction can acquire a subset of the same locks in a different order, completing a circular wait. Row-level locking means every row examined in a full-table-scan bulk operation carries a lock.
-**Indicator:**
-- [Step 6] A transaction shows very high `trx_rows_modified` (thousands or more) and elevated `duration_sec`
-- [Step 1] Deadlock output involves a query with no `WHERE` clause or a very broad range predicate
-<!-- match: {"step": 6, "predicate": "threshold", "target": "trx_rows_modified", "op": ">", "value": 1000} -->
-**Mitigation:**
-- **Risk:** Low — batching writes into smaller transactions does not change the final data state; it only allows other transactions to interleave between batches.
-- **Command:**
+**Statement:** A single large INSERT, UPDATE, or DELETE holds row locks across a wide range for the full transaction, colliding with concurrent transactions that need any of those rows.
+**Chain:**
+- root: A bulk INSERT/UPDATE/DELETE affecting thousands of rows runs as a single transaction.
+- s1: It acquires and holds all its row locks until commit, across a wide range for seconds to minutes.
+- s2: During that window a concurrent transaction acquires a subset of the same locks in a different order.
+- s3: The two transactions form a circular wait over the overlapping locked rows.
+- D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
+**Indicators:**
+- s1: [Step 6] A transaction shows very high `trx_rows_modified` (thousands or more) and elevated `duration_sec`.
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "trx_rows_modified", "op": ">", "value": 1000} -->
+- root: [Step 1] Deadlock output involves a query with no `WHERE` clause or a very broad range predicate.
+**Interventions:**
+- **remediation** (root): Break bulk operations into 500–1000 row transactions with COMMIT between batches to release locks and allow interleaving.
+
+  ```sql
+  -- Same batch approach as the mitigation — break bulk operations into 500-1000 row
+  -- transactions with COMMIT between batches to release locks and allow interleaving.
+  ```
+
+  **Verification:** Run Step 6 during the next bulk operation. `trx_rows_modified` for any single transaction should stay below 1000. Confirm `Innodb_deadlocks` does not spike during bulk jobs.
+- **mitigation** (s1): Batch the bulk DML in chunks of 1000 rows with an explicit COMMIT between batches.
 
   ```sql
   -- Batch deletes in chunks of 1000 rows with explicit COMMIT between batches
@@ -311,24 +337,18 @@ SET FOREIGN_KEY_CHECKS = 1;
   END WHILE;
   ```
 
-- **Duration:** Permanent after application or script change; no server configuration needed.
-**Resolution:**
-```sql
--- Same batch approach as Mitigation — break bulk operations into 500-1000 row
--- transactions with COMMIT between batches to release locks and allow interleaving.
-```
-
-**Verification:** Run Step 6 during the next bulk operation. `trx_rows_modified` for any single transaction should stay below 1000. Confirm `Innodb_deadlocks` does not spike during bulk jobs.
+  **Risk:** Low — batching writes into smaller transactions does not change the final data state; it only allows other transactions to interleave between batches. **Duration:** Permanent after application or script change; no server configuration needed. **Verification:** Run Step 6 during the batched job; `trx_rows_modified` per transaction should stay below 1000.
 
 ### Cause Z: Unidentified Deadlock Pattern
 
 **Statement:** The deadlock cannot be attributed to a known lock ordering, isolation level, index, session lifetime, foreign key, or bulk operation pattern.
-**Mechanism:** InnoDB's deadlock detection relies on identifiable circular waits between known lock types. When the LATEST DETECTED DEADLOCK output does not match any of the documented patterns — possibly due to application-level connection pooling, unusual isolation level combinations, or undocumented InnoDB edge cases — manual escalation to a DBA or MySQL support is required.
-**Indicator:**
-- [Default] None of Causes A–F patterns match the deadlock output from Step 1
-**Mitigation:**
-- **Risk:** Low — enabling retry logic is always safe and is the primary recommended defense against any deadlock pattern.
-- **Command:**
+**Chain:**
+- root: The deadlock output matches none of the documented patterns (Causes A–F).
+- D: An unclassified circular wait surfaces as error 1213 (Symptom Recognition) and requires SME escalation.
+**Indicators:**
+- root: [Default] None of Causes A–F patterns match the deadlock output from Step 1.
+**Interventions:**
+- **mitigation** (D): Capture a full diagnostic snapshot and add application-level retry, then escalate to a DBA or MySQL support.
 
   ```python
   # Implement error-1213 retry with exponential backoff in the application:
@@ -348,9 +368,7 @@ SET FOREIGN_KEY_CHECKS = 1;
           raise
   ```
 
-- **Duration:** Immediate after application deployment; covers all deadlock patterns regardless of root cause.
-**Resolution:** Out of runbook scope — escalate with the full `SHOW ENGINE INNODB STATUS` output, the application query log, and `performance_schema.data_locks` snapshots during the deadlock window.
-**Verification:** Confirm application error logs no longer surface unhandled error 1213 exceptions. Monitor `Innodb_deadlocks` trend; the counter may still increment but application-level impact should cease once retries absorb the deadlocks.
+  **Risk:** Low — enabling retry logic is always safe and is the primary recommended defense against any deadlock pattern. **Duration:** Immediate after application deployment; covers all deadlock patterns regardless of root cause. **Verification:** Confirm application error logs no longer surface unhandled error 1213 exceptions; escalate with the full `SHOW ENGINE INNODB STATUS` output, the application query log, and `performance_schema.data_locks` snapshots from the deadlock window.
 
 ## Prevention
 

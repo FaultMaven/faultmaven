@@ -6,8 +6,8 @@ service: terraform
 symptom_class: [auth_failure, deployment_failure]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [terraform, plan, iac, infrastructure-as-code, provider, state-drift]
@@ -35,7 +35,7 @@ difficulty: intermediate
 
 ## Diagnostic Steps
 
-### Step 1
+### Step 1: Run plan with full output captured
 
 Run plan with full output captured. This produces the exact error message and any partial plan output that preceded the failure.
 
@@ -46,7 +46,7 @@ echo "Exit code: $?"
 
 Expected output: a changeset summary ending with `Plan: X to add, Y to change, Z to destroy` and exit code 0. A non-zero exit code with an `Error:` block identifies the failure category — use the error text to select the relevant cause below.
 
-### Step 2
+### Step 2: Enable debug logging
 
 Enable debug logging when the error from Step 1 is generic or truncated. Shows the full provider API interaction including raw HTTP request/response.
 
@@ -57,7 +57,7 @@ grep -iE "(error|failed|HTTP [45][0-9]{2})" plan-debug.txt | head -40
 
 Expected output: lines containing the specific API call that failed and the provider's raw error response, which is typically more specific than the user-facing error. HTTP 401/403 lines indicate authentication; HTTP 404 indicates a missing resource.
 
-### Step 3
+### Step 3: Verify provider credentials
 
 Verify provider credentials are valid and scoped to the correct account or project.
 
@@ -77,7 +77,7 @@ env | grep -E "^(AWS_|ARM_|GOOGLE_|TF_VAR_)" | sed 's/=.*/=<set>/' | sort
 
 Expected output: correct account/subscription/project identity for the environment being planned. If `aws sts get-caller-identity` returns an error or a different account than expected, credentials are the root cause.
 
-### Step 4
+### Step 4: Detect state drift
 
 Detect state drift by comparing recorded state against live cloud resources.
 
@@ -88,7 +88,7 @@ echo "Exit code: $?"
 
 Expected output when no drift: `No changes. Your infrastructure matches the configuration.` with exit code 0. Exit code 2 means drift was detected — the diff output shows which resources were modified or deleted outside Terraform.
 
-### Step 5
+### Step 5: Validate HCL syntax and schema
 
 Validate HCL syntax, type constraints, and schema conformance without contacting any provider API.
 
@@ -98,7 +98,7 @@ terraform validate
 
 Expected output: `Success! The configuration is valid.` If validation fails, the error names the file, line number, and the specific attribute or type problem.
 
-### Step 6
+### Step 6: Inspect the dependency graph for cycles
 
 Inspect the resource dependency graph for cycles.
 
@@ -108,7 +108,7 @@ terraform graph 2>&1 | grep -E "(Cycle|->)" | head -30
 
 Expected output when no cycle: dot-format graph lines showing directed edges with no loops. If the plan error from Step 1 contains `Cycle:`, the graph output will show the circular edges. Run this step only when Step 1 reported a cycle error.
 
-### Step 7
+### Step 7: Check installed provider versions
 
 Check installed provider versions against the lock file and configuration constraints.
 
@@ -119,7 +119,7 @@ grep -A5 "provider" .terraform.lock.hcl | head -40
 
 Expected output: each provider with its version constraint and the resolved version. When Step 1 reported `Unsupported argument` or `Unsupported block type`, compare the installed version against the provider changelog to confirm a breaking change.
 
-### Step 8
+### Step 8: Verify the remote backend is reachable
 
 Verify the remote backend is reachable and the state key exists.
 
@@ -145,20 +145,30 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
 
 **Statement:** The cloud provider credentials Terraform uses are expired, missing, or scoped to the wrong account, causing all provider API calls to fail with authentication errors.
 
-**Mechanism:** Terraform communicates with cloud APIs to plan resource changes; without valid credentials the provider plugin cannot authenticate any API call and returns a 401 or 403 immediately. In CI pipelines, temporary tokens (AWS STS session tokens, OAuth access tokens) expire between pipeline stages and are silently absent in the environment.
+**Chain:**
+- root: provider credentials are expired, missing, or scoped to the wrong account
+- s1: the provider plugin cannot authenticate any cloud API call and receives a 401/403
+- D: plan aborts with an authentication error before producing a changeset
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `aws sts get-caller-identity` exits non-zero or returns the wrong account ID
+  <!-- match: {"step": 3, "predicate": "exit_code", "target": 1} -->
+- s1: [Step 1] error message contains `no valid credential sources found`, `AuthFailure`, or `403 Forbidden`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "no valid credential sources found"} -->
 
-- [Step 1] Error message contains `no valid credential sources found` or `AuthFailure` or `403 Forbidden`
-- [Step 3] `aws sts get-caller-identity` exits non-zero or returns wrong account ID
+**Interventions:**
+- **remediation** (root): refresh the credentials so the provider authenticates against the expected account, then re-run plan.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "no valid credential sources found"} -->
-<!-- match: {"step": 3, "predicate": "exit_code", "target": 1} -->
+  ```bash
+  # Verify correct identity after refresh
+  aws sts get-caller-identity
 
-**Mitigation:**
+  # Re-run plan once credentials are confirmed valid
+  terraform plan -out=tfplan
+  ```
 
-- **Risk:** Refreshing SSO or re-assuming a role may change the IAM principal briefly; verify the refreshed identity matches the expected account before retrying plan.
-- **Command:**
+  **Verification:** `aws sts get-caller-identity` returns the expected account ID and ARN; `terraform plan` completes without authentication errors.
+- **mitigation** (root): re-establish a short-lived session (SSO login or role assumption) to unblock the current run.
 
   ```bash
   # AWS SSO
@@ -177,22 +187,7 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
   az account set --subscription <subscription-id>
   ```
 
-- **Duration:** Credential refresh lasts for the token TTL (AWS STS default 1 hour, SSO default 8 hours).
-
-**Resolution:**
-
-```bash
-# Verify correct identity after refresh
-aws sts get-caller-identity
-
-# Re-run plan once credentials are confirmed valid
-terraform plan -out=tfplan
-```
-
-- **Impact:** Single Terraform run; credential change does not affect other users or CI pipelines.
-- **Rollback:** No rollback needed; credential refresh is non-destructive.
-
-**Verification:** `aws sts get-caller-identity` returns the expected account ID and ARN; `terraform plan` completes without authentication errors.
+  **Risk:** refreshing SSO or re-assuming a role may change the IAM principal briefly; verify the refreshed identity matches the expected account before retrying plan. **Duration:** credential refresh lasts for the token TTL (AWS STS default 1 hour, SSO default 8 hours). **Verification:** `aws sts get-caller-identity` returns the expected account ID; plan no longer reports authentication errors.
 
 ---
 
@@ -200,42 +195,37 @@ terraform plan -out=tfplan
 
 **Statement:** A resource recorded in the Terraform state file was deleted or modified directly in the cloud provider, causing plan to fail when it attempts to refresh the now-absent resource.
 
-**Mechanism:** During `terraform plan`, Terraform refreshes every resource in state by querying the cloud API. When a resource no longer exists, the API returns a 404; Terraform surfaces this as a state error and cannot produce a plan. Manual deletions via the cloud console or CLI, expired auto-delete policies, or cloud-side resource replacement all cause this.
+**Chain:**
+- root: a state-tracked resource was deleted or modified directly in the cloud, outside Terraform
+- s1: during refresh the cloud API returns a 404 for that resource address
+- D: plan surfaces a state refresh error and cannot produce a changeset
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] exit code 2 and output shows resources marked `(deleted)` or `must be replaced`
+  <!-- match: {"step": 4, "predicate": "exit_code", "target": 2} -->
+- s1: [Step 1] error message contains `Error refreshing state` and a resource address
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Error refreshing state"} -->
 
-- [Step 1] Error message contains `Error refreshing state` and a resource address
-- [Step 4] Exit code 2 and output shows resources marked `(deleted)` or `must be replaced`
+**Interventions:**
+- **remediation** (root): reconcile state with reality — remove a permanently-deleted resource from state and config, or re-import a manually-recreated one.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "Error refreshing state"} -->
-<!-- match: {"step": 4, "predicate": "exit_code", "target": 2} -->
+  ```bash
+  # If the resource was deleted and should stay deleted, remove it from state AND config:
+  terraform state rm <resource-address>
+  # Then remove the corresponding resource block from the .tf file.
 
-**Mitigation:**
+  # If the resource should be re-imported (was recreated manually):
+  terraform import <resource-address> <cloud-resource-id>
+  ```
 
-- **Risk:** `apply -refresh-only` updates the state file without touching cloud resources; safe to run, but deleted resources will appear as "to be created" in subsequent plans if still in config.
-- **Command:**
+  **Verification:** `terraform plan -refresh-only` exits 0 with `No changes`; subsequent full `terraform plan` completes without refresh errors.
+- **mitigation** (s1): write the refreshed state without touching cloud resources to clear the blocking refresh error.
 
   ```bash
   terraform apply -refresh-only -auto-approve
   ```
 
-- **Duration:** 1–5 minutes depending on resource count; no cloud resources are modified.
-
-**Resolution:**
-
-```bash
-# If the resource was deleted and should stay deleted, remove it from state AND config:
-terraform state rm <resource-address>
-# Then remove the corresponding resource block from the .tf file.
-
-# If the resource should be re-imported (was recreated manually):
-terraform import <resource-address> <cloud-resource-id>
-```
-
-- **Impact:** State-only change; no cloud resources are created, modified, or destroyed.
-- **Rollback:** Restore the previous state file from backend versioning (S3 versioning, GCS object versioning) if the state rm was incorrect.
-
-**Verification:** `terraform plan -refresh-only` exits 0 with `No changes`; subsequent full `terraform plan` completes without refresh errors.
+  **Risk:** `apply -refresh-only` updates the state file without touching cloud resources; safe to run, but deleted resources will appear as "to be created" in subsequent plans if still in config. Restore the previous state file from backend versioning (S3/GCS object versioning) if the refresh was incorrect. **Duration:** 1–5 minutes depending on resource count; no cloud resources are modified. **Verification:** `terraform plan -refresh-only` no longer reports a refresh error for the affected resource.
 
 ---
 
@@ -243,41 +233,38 @@ terraform import <resource-address> <cloud-resource-id>
 
 **Statement:** Two or more resources reference each other in a way that creates a circular dependency, preventing Terraform from determining a valid execution order.
 
-**Mechanism:** Terraform builds a directed acyclic graph (DAG) before planning; a cycle causes graph traversal to fail immediately with no plan produced. Cycles most commonly arise from inline `ingress`/`egress` blocks in `aws_security_group` resources that reference each other, bidirectional module outputs, or explicit `depends_on` loops added incrementally.
+**Chain:**
+- root: two or more resources reference each other, forming a circular dependency in the config
+- s1: Terraform's DAG construction detects the cycle and graph traversal fails
+- D: plan aborts immediately with a `Cycle:` error and no changeset
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] graph output shows circular edges between the named resources
+  <!-- match: {"step": 6, "predicate": "contains", "target": "Cycle"} -->
+- s1: [Step 1] error message contains `Cycle:` followed by two or more resource addresses
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Cycle:"} -->
 
-- [Step 1] Error message contains `Cycle:` followed by two or more resource addresses
-- [Step 6] Graph output shows circular edges between the named resources
+**Interventions:**
+- **remediation** (root): break the cycle by replacing inline rules with standalone resources (or removing the looping `depends_on`), then validate and plan.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "Cycle:"} -->
+  ```bash
+  # Replace inline security group rules with standalone resources:
+  # aws_security_group_rule.a_to_b references sg_a and sg_b without creating a cycle
+  # because the rule resources depend on both groups but the groups do not depend on each other.
 
-**Mitigation:**
+  terraform validate   # confirms cycle is resolved
+  terraform plan -out=tfplan
+  ```
 
-- **Risk:** Low. Refactoring inline rules to standalone resources changes the Terraform resource addresses; existing infrastructure is not modified, but plan will show a destroy+create for the affected rules if they had inline config.
-- **Command:**
+  **Verification:** `terraform validate` returns `Success! The configuration is valid.` and `terraform plan` completes without a Cycle error.
+- **mitigation** (root): locate the cycle participants from the Step 1 error and inspect their cross-references to scope the fix.
 
   ```bash
   # Identify cycle participants from Step 1 error, then inspect their config:
   grep -n "resource\|ingress\|egress\|depends_on" <file>.tf | head -40
   ```
 
-- **Duration:** Immediate once the cycle is broken in config; requires `terraform init` only if module references changed.
-
-**Resolution:**
-
-```bash
-# Replace inline security group rules with standalone resources:
-# aws_security_group_rule.a_to_b references sg_a and sg_b without creating a cycle
-# because the rule resources depend on both groups but the groups do not depend on each other.
-
-terraform validate   # confirms cycle is resolved
-terraform plan -out=tfplan
-```
-
-- **Impact:** Config-level change only; no immediate cloud resource modification until apply.
-
-**Verification:** `terraform validate` returns `Success! The configuration is valid.` and `terraform plan` completes without a Cycle error.
+  **Risk:** low — inspection is read-only; refactoring inline rules to standalone resources changes Terraform resource addresses and will show a destroy+create for those rules at apply. **Duration:** immediate diagnostic; the structural fix lands once the cycle is broken in config (re-run `terraform init` only if module references changed). **Verification:** the offending cross-reference is identified in the named `.tf` files.
 
 ---
 
@@ -285,19 +272,30 @@ terraform plan -out=tfplan
 
 **Statement:** A provider upgrade renamed, removed, or type-changed an attribute that the configuration still references under the old name, causing schema validation to fail before any API call is made.
 
-**Mechanism:** Each provider version ships its own resource schema; Terraform validates the configuration against the installed provider schema before contacting cloud APIs. When an attribute is renamed or removed in a new provider version, every resource block using that attribute fails schema validation. The error appears at plan time even with valid credentials and healthy state.
+**Chain:**
+- root: a provider upgrade renamed, removed, or type-changed an attribute the config still uses under the old name
+- s1: Terraform validates the config against the new provider schema and the stale attribute fails validation
+- D: plan aborts with an `Unsupported argument`/`Unsupported block type` error before any API call
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] installed provider version is higher than the last version where the attribute existed per the changelog
+  <!-- match: {"step": 7, "predicate": "contains", "target": "hashicorp/aws"} -->
+- s1: [Step 1] error message contains `Unsupported argument` or `Unsupported block type` referencing an attribute name
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Unsupported argument"} -->
 
-- [Step 1] Error message contains `Unsupported argument` or `Unsupported block type` referencing an attribute name
-- [Step 7] Installed provider version is higher than the last version where the attribute existed per the changelog
+**Interventions:**
+- **remediation** (root): consult the provider changelog and update the config to the new attribute name/type, then validate and plan.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "Unsupported argument"} -->
+  ```bash
+  # Consult the provider changelog for the migration path, then update the config:
+  # Example: rename attribute "enable_dns" -> "enable_dns_support" per provider v5.0 changelog
+  # After updating all affected resource blocks:
+  terraform validate
+  terraform plan -out=tfplan
+  ```
 
-**Mitigation:**
-
-- **Risk:** Low. Pinning the provider version delays security patches but restores plan immediately without any infrastructure change.
-- **Command:**
+  **Verification:** `terraform validate` returns success and `terraform plan` shows no schema errors for the previously failing resource types.
+- **mitigation** (root): pin the provider back to the last working version to restore plan immediately.
 
   ```hcl
   terraform {
@@ -317,22 +315,7 @@ terraform plan -out=tfplan
   terraform providers   # confirm pinned version is installed
   ```
 
-- **Duration:** 1–2 minutes; no cloud resources are modified.
-
-**Resolution:**
-
-```bash
-# Consult the provider changelog for the migration path, then update the config:
-# Example: rename attribute "enable_dns" -> "enable_dns_support" per provider v5.0 changelog
-# After updating all affected resource blocks:
-terraform validate
-terraform plan -out=tfplan
-```
-
-- **Impact:** Config-level change; blast radius is every resource block using the renamed attribute.
-- **Rollback:** Re-pin to the previous version in `required_providers` and re-run `terraform init -upgrade`.
-
-**Verification:** `terraform validate` returns success and `terraform plan` shows no schema errors for the previously failing resource types.
+  **Risk:** low — pinning the provider version delays security patches but restores plan without any infrastructure change; roll back by re-pinning and re-running `terraform init -upgrade`. **Duration:** 1–2 minutes; no cloud resources are modified. **Verification:** `terraform providers` shows the pinned version installed and plan no longer reports the schema error.
 
 ---
 
@@ -340,20 +323,33 @@ terraform plan -out=tfplan
 
 **Statement:** Terraform cannot download provider plugins from the registry or cannot reach the remote state backend, blocking plan initialization.
 
-**Mechanism:** `terraform plan` requires the lock-file-pinned provider binaries to be present in `.terraform/providers/`; if the registry is unreachable and providers are not cached, init (which plan invokes implicitly) fails. Similarly, the remote state backend must be reachable to load the state file before planning begins. Network policies, VPN disconnects, or backend outages cause this class of failure.
+**Chain:**
+- root: the provider registry or the remote state backend is unreachable (network policy, VPN drop, or outage)
+- s1: implicit init cannot fetch uncached provider binaries, or the backend cannot load the state file
+- D: plan aborts during initialization before any changeset is computed
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] backend access command returns a network error or permission-denied
+  <!-- match: {"step": 8, "predicate": "exit_code", "target": 1} -->
+- s1: [Step 1] error message contains `Failed to query available provider packages`, `Backend initialization required`, or `Failed to get existing workspaces`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Failed to query available provider packages"} -->
 
-- [Step 1] Error message contains `Failed to query available provider packages` or `Backend initialization required` or `Failed to get existing workspaces`
-- [Step 8] Backend access command returns a network error or permission-denied
+**Interventions:**
+- **remediation** (root): restore the network path to the registry and backend, then re-run plan.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "Failed to query available provider packages"} -->
-<!-- match: {"step": 8, "predicate": "exit_code", "target": 1} -->
+  ```bash
+  # Verify network path to registry:
+  curl -s https://registry.terraform.io/v1/providers/hashicorp/aws/versions | jq '.versions[-1].version'
 
-**Mitigation:**
+  # Verify backend (e.g., S3):
+  aws s3 ls s3://<bucket>/<state-key> --region <region>
 
-- **Risk:** Low. Using a provider mirror or filesystem cache is non-destructive and does not affect cloud resources.
-- **Command:**
+  # Re-run plan once connectivity is restored:
+  terraform plan -out=tfplan
+  ```
+
+  **Verification:** `terraform init` completes without errors; `terraform plan` proceeds past the initialization phase.
+- **defensive_fix** (s1): source providers from a local filesystem mirror so init succeeds even when the registry is blocked.
 
   ```bash
   # Re-initialize (downloads providers if registry is reachable):
@@ -366,22 +362,7 @@ terraform plan -out=tfplan
   terraform init
   ```
 
-- **Duration:** 1–10 minutes depending on provider binary sizes.
-
-**Resolution:**
-
-```bash
-# Verify network path to registry:
-curl -s https://registry.terraform.io/v1/providers/hashicorp/aws/versions | jq '.versions[-1].version'
-
-# Verify backend (e.g., S3):
-aws s3 ls s3://<bucket>/<state-key> --region <region>
-
-# Re-run plan once connectivity is restored:
-terraform plan -out=tfplan
-```
-
-**Verification:** `terraform init` completes without errors; `terraform plan` proceeds past the initialization phase.
+  **Verification:** `terraform init` completes from the mirror without contacting the registry; plan proceeds past initialization.
 
 ---
 
@@ -389,43 +370,41 @@ terraform plan -out=tfplan
 
 **Statement:** The Terraform configuration contains a type mismatch, invalid expression, or unsatisfiable count/for_each argument that prevents the configuration from being evaluated.
 
-**Mechanism:** Terraform evaluates HCL expressions during the planning phase; errors such as `Invalid count argument` (a non-integer used where an integer is required), `Inconsistent conditional result types` (ternary branches returning incompatible types), or unknown values used in `count` or `for_each` cause evaluation to fail before any cloud API is contacted. These errors are surfaced by `terraform validate` and are configuration-only issues.
+**Chain:**
+- root: the config has a type mismatch, invalid expression, or unsatisfiable `count`/`for_each` argument
+- s1: HCL expression evaluation fails during the planning phase before any cloud API is contacted
+- D: plan aborts with an expression/type error and no changeset
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] `terraform validate` exits non-zero with a type or expression error
+  <!-- match: {"step": 5, "predicate": "exit_code", "target": 1} -->
+- s1: [Step 1] error message contains `Invalid count argument`, `Inconsistent conditional result types`, or `The "count" value depends on resource attributes that cannot be determined until apply`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Invalid count argument"} -->
 
-- [Step 1] Error message contains `Invalid count argument` or `Inconsistent conditional result types` or `The "count" value depends on resource attributes that cannot be determined until apply`
-- [Step 5] `terraform validate` exits non-zero with a type or expression error
+**Interventions:**
+- **remediation** (root): fix the type/expression error in the `.tf` file, then validate and plan.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "Invalid count argument"} -->
-<!-- match: {"step": 5, "predicate": "exit_code", "target": 1} -->
+  ```bash
+  # Fix the type error in the .tf file, then validate:
+  terraform validate
 
-**Mitigation:**
+  # Common fix: convert a string to integer with tonumber():
+  #   count = tonumber(var.instance_count)
+  # Common fix: wrap unknown-at-plan-time values in a known condition:
+  #   for_each = var.create_resource ? toset(["main"]) : toset([])
 
-- **Risk:** None. Configuration changes do not affect cloud resources until apply.
-- **Command:**
+  terraform plan -out=tfplan
+  ```
+
+  **Verification:** `terraform validate` returns `Success! The configuration is valid.` and plan completes without expression evaluation errors.
+- **mitigation** (s1): plan only the unaffected resources with `-target` to keep working while fixing the broken config.
 
   ```bash
   # Use -target to plan only the unaffected resources while fixing the broken config:
   terraform plan -target=<unaffected-resource-address>
   ```
 
-- **Duration:** Immediate; targeted plan bypasses the failing resource.
-
-**Resolution:**
-
-```bash
-# Fix the type error in the .tf file, then validate:
-terraform validate
-
-# Common fix: convert a string to integer with tonumber():
-#   count = tonumber(var.instance_count)
-# Common fix: wrap unknown-at-plan-time values in a known condition:
-#   for_each = var.create_resource ? toset(["main"]) : toset([])
-
-terraform plan -out=tfplan
-```
-
-**Verification:** `terraform validate` returns `Success! The configuration is valid.` and plan completes without expression evaluation errors.
+  **Risk:** none — configuration changes do not affect cloud resources until apply; `-target` plans a partial graph and must not be used for apply. **Duration:** immediate; targeted plan bypasses the failing resource until the fix lands. **Verification:** the targeted plan completes for the unaffected resource address.
 
 ---
 
@@ -433,19 +412,31 @@ terraform plan -out=tfplan
 
 **Statement:** A `data` block filter matches zero resources in the cloud provider, causing the plan to fail because downstream resources depend on the data source's output attributes.
 
-**Mechanism:** Data sources execute read API calls during plan to retrieve resource attributes; when a filter (AMI owner/name pattern, VPC tag, subnet CIDR) matches zero results, the provider returns an error rather than an empty list, because the configuration implies exactly one matching resource is expected. Downstream resources that reference the data source's `id` or other attributes cannot be planned.
+**Chain:**
+- root: a `data` block filter (AMI name/owner, VPC tag, subnet CIDR) matches zero resources in the cloud
+- s1: the provider returns an error (not an empty list) because the config implies exactly one match is expected
+- D: plan aborts because downstream resources cannot resolve the data source's `id`/attributes
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] error message references a `data.` address and contains `no matching` followed by a resource type (e.g., `no matching AMI found`, `no matching VPC found`)
+  <!-- match: {"step": 1, "predicate": "contains", "target": "no matching"} -->
 
-- [Step 1] Error message contains `no matching` followed by a resource type (e.g., `no matching AMI found`, `no matching VPC found`)
-- [Step 1] Error message references a `data.` address
+**Interventions:**
+- **remediation** (root): update the data source filter to match an existing resource, then validate and plan.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "no matching"} -->
+  ```bash
+  # Update the data source filter to match an existing resource, e.g.:
+  #   filter { name = "name", values = ["updated-ami-name-*"] }
+  #   owners = ["amazon"]
+  # Or replace with a hardcoded ID for immediate unblocking:
+  #   ami = "ami-0abcdef1234567890"
 
-**Mitigation:**
+  terraform validate
+  terraform plan -out=tfplan
+  ```
 
-- **Risk:** Low. Temporarily replacing the data source lookup with a hardcoded ID bypasses the filter failure but couples the config to a specific resource ID that may differ across environments.
-- **Command:**
+  **Verification:** the data source lookup step in the plan output shows a resolved ID (not `(known after apply)`); plan completes without data source errors.
+- **mitigation** (root): inspect what the filter currently matches to choose the correct values or a hardcoded ID.
 
   ```bash
   # Inspect what the filter currently matches:
@@ -458,39 +449,23 @@ terraform plan -out=tfplan
     --output table
   ```
 
-- **Duration:** Immediate diagnostic; fix duration depends on whether the resource must be recreated.
-
-**Resolution:**
-
-```bash
-# Update the data source filter to match an existing resource, e.g.:
-#   filter { name = "name", values = ["updated-ami-name-*"] }
-#   owners = ["amazon"]
-# Or replace with a hardcoded ID for immediate unblocking:
-#   ami = "ami-0abcdef1234567890"
-
-terraform validate
-terraform plan -out=tfplan
-```
-
-**Verification:** The data source lookup step in the plan output shows a resolved ID (not `(known after apply)`); plan completes without data source errors.
+  **Risk:** low — inspection is read-only; temporarily replacing the lookup with a hardcoded ID bypasses the filter failure but couples the config to a specific resource ID that may differ across environments. **Duration:** immediate diagnostic; fix duration depends on whether the resource must be recreated. **Verification:** the command lists at least one matching image, or the chosen hardcoded ID is confirmed valid for the target environment.
 
 ---
 
-### Cause Z: Unidentified Plan Failure
+### Cause Z: Unidentified
 
-**Statement:** The plan failure does not match any of the documented causes after completing all diagnostic steps.
+**Statement:** The plan failure does not match any documented cause after completing all diagnostic steps, indicating a transient API error, CLI bug, corrupted plugin cache, or environment-specific issue.
 
-**Mechanism:** Some plan failures are caused by transient provider API errors, Terraform CLI bugs, corrupted `.terraform` plugin cache, or environment-specific issues not covered by the standard diagnostic flow. These require escalation or provider-specific investigation.
+**Chain:**
+- root: the failure cause is outside the documented set (transient API error, CLI bug, corrupted `.terraform` cache, or environment-specific issue)
+- D: plan fails with no matching cause after Steps 1–8
 
-**Indicator:**
+**Indicators:**
+- root: [Default] no cause identified after completing Steps 1–8
 
-- [Default] No cause identified after completing Steps 1–8
-
-**Mitigation:**
-
-- **Risk:** Low. Clearing the plugin cache and reinitializing is non-destructive.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full TRACE diagnostic snapshot and escalate to the platform/infrastructure team.
 
   ```bash
   # Clear the plugin cache and reinitialize:
@@ -501,11 +476,9 @@ terraform plan -out=tfplan
   TF_LOG=TRACE terraform plan 2>&1 | tee plan-trace.txt
   ```
 
-- **Duration:** 5–15 minutes for provider re-download and trace capture.
+  Escalate to the platform/infrastructure team with `plan-trace.txt` and the full `plan-output.txt` from Step 1. File a GitHub issue on the relevant provider repository if the trace shows a provider panic or unexpected API response.
 
-**Resolution:** Out of runbook scope. Escalate to the platform/infrastructure team with `plan-trace.txt` and the full `plan-output.txt` from Step 1. File a GitHub issue on the relevant provider repository if the trace shows a provider panic or unexpected API response.
-
-**Verification:** Escalation ticket created with trace logs attached; platform team confirms root cause.
+  **Risk:** low — clearing the plugin cache and reinitializing is non-destructive; the SME owns root-cause analysis from here. **Duration:** 5–15 minutes for provider re-download and trace capture. **Verification:** escalation ticket created with trace logs attached; platform team confirms root cause.
 
 ## Prevention
 

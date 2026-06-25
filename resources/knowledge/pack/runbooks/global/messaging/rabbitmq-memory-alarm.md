@@ -6,8 +6,8 @@ service: rabbitmq
 symptom_class: [oom, throughput_degradation]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [rabbitmq, memory, flow-control, memory-alarm, lazy-queue, publisher-blocking, quorum-queues]
@@ -114,21 +114,21 @@ Expected output: `type` column shows `classic`, `quorum`, or `stream`. Classic q
 
 ### Cause A: Queue backlog growth from consumer capacity shortfall
 
-**Statement:** Publishers are producing messages faster than consumers can process them, causing messages to accumulate in queue memory until the watermark is exceeded.
+**Statement:** Publishers produce messages faster than consumers can process them, so the in-memory queue backlog grows until the memory watermark is exceeded.
 
-**Mechanism:** Each unacknowledged message is held in RAM by the queue process until delivered and acked by a consumer. When the publish rate consistently exceeds the deliver rate, the in-memory backlog grows linearly. Classic queues in default mode do not page messages to disk until the memory alarm fires, so even a modest throughput imbalance causes rapid RAM growth on high-volume queues.
+**Chain:**
+- root: publish rate consistently exceeds deliver rate (consumer capacity shortfall)
+- s1: each unacknowledged message is held in queue-process RAM until delivered and acked
+- s2: classic queues in default mode do not page to disk, so the in-memory backlog grows linearly
+- D: in-memory backlog crosses the high watermark, triggering the memory alarm and publisher flow control (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `publish_rate` is materially higher than `deliver_rate`
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "publish_rate", "op": ">", "value": "deliver_rate"} -->
+- s1: [Step 3] One or more queues show rapidly increasing `messages` count with non-zero `consumers`
 
-- [Step 4] `publish_rate` is materially higher than `deliver_rate`
-- [Step 3] One or more queues show rapidly increasing `messages` count with non-zero `consumers`
-
-<!-- match: {"step": 4, "predicate": "threshold", "target": "publish_rate", "op": ">", "value": "deliver_rate"} -->
-
-**Mitigation:**
-
-- **Risk:** Scaling consumers increases load on downstream systems; validate capacity before scaling.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): scale consumers and raise prefetch to drain the backlog.
 
   ```bash
   # Scale consumer replicas (Kubernetes)
@@ -138,43 +138,40 @@ Expected output: `type` column shows `classic`, `quorum`, or `stream`. Classic q
   # channel.basic_qos(prefetch_count=100)
   ```
 
-- **Duration:** Queue drains within minutes to hours depending on backlog depth and new consumer throughput.
+  **Risk:** Scaling consumers increases load on downstream systems; validate capacity before scaling. **Duration:** Queue drains within minutes to hours depending on backlog depth and new consumer throughput. **Verification:** After scaling, `deliver_rate` should approach or exceed `publish_rate` within one polling interval; `rabbitmq-diagnostics alarms` shows no active alarms within 1–5 minutes as the backlog drains.
+- **remediation** (root): enforce backpressure and disk-backed storage so future imbalance cannot exhaust RAM.
 
-**Resolution:**
+  ```bash
+  # Set a queue length limit with backpressure to prevent unbounded future growth
+  rabbitmqctl set_policy queue-limits "^my-queue$" \
+    '{"max-length":500000,"overflow":"reject-publish"}' \
+    --apply-to queues
 
-```bash
-# Set a queue length limit with backpressure to prevent unbounded future growth
-rabbitmqctl set_policy queue-limits "^my-queue$" \
-  '{"max-length":500000,"overflow":"reject-publish"}' \
-  --apply-to queues
+  # Migrate high-volume queues to quorum type for disk-backed storage
+  # (requires consumer downtime for classic->quorum migration)
+  rabbitmqctl set_policy quorum-migration "^my-queue$" \
+    '{"queue-type":"quorum"}' --apply-to queues
+  ```
 
-# Migrate high-volume queues to quorum type for disk-backed storage
-# (requires consumer downtime for classic->quorum migration)
-rabbitmqctl set_policy quorum-migration "^my-queue$" \
-  '{"queue-type":"quorum"}' --apply-to queues
-```
-
-**Verification:** After scaling consumers, `deliver_rate` should approach or exceed `publish_rate` within one polling interval. `rabbitmq-diagnostics alarms` should show no active alarms within 1-5 minutes as the backlog drains.
-
----
+  **Verification:** Re-run Step 6; target queues show the length limit / quorum type. Re-run Step 1; `mem_alarm=True` no longer recurs under the same throughput imbalance.
 
 ### Cause B: Classic queues holding all messages in RAM
 
-**Statement:** Classic queues operating in the default (non-lazy) mode buffer all messages in process memory rather than paging to disk, exhausting available RAM under any significant backlog.
+**Statement:** Classic queues in default (non-lazy) mode buffer all message bodies in process memory rather than paging to disk, exhausting RAM under any significant backlog.
 
-**Mechanism:** Default classic queues keep the full message body in Erlang binary memory until delivered. This is efficient for zero-backlog queues but catastrophic when consumer downtime or throughput mismatch causes messages to accumulate. The `queue_procs` and `binary` subsystems will dominate the memory breakdown. Quorum queues and lazy-mode classic queues write message bodies to disk on receipt, keeping only metadata in RAM.
+**Chain:**
+- root: queues are classic type with no `x-queue-mode: lazy` (default in-RAM mode)
+- s1: full message bodies are kept in Erlang binary memory until delivered
+- s2: under consumer downtime or throughput mismatch, `binary` and `queue_procs` subsystems dominate memory
+- D: in-RAM message buffering exhausts available memory and trips the watermark alarm (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] Queues show `type=classic` and no `x-queue-mode: lazy` in arguments
+  <!-- match: {"step": 6, "predicate": "absent", "target": "x-queue-mode"} -->
+- s2: [Step 2] `binary` or `queue_procs` is the largest memory subsystem
 
-- [Step 2] `binary` or `queue_procs` is the largest memory subsystem
-- [Step 6] Queues show `type=classic` and no `x-queue-mode: lazy` in arguments
-
-<!-- match: {"step": 6, "predicate": "absent", "target": "x-queue-mode"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Enabling lazy mode pages existing messages to disk immediately, causing a spike in disk I/O. First-message delivery latency increases slightly.
-- **Command:**
+**Interventions:**
+- **mitigation** (s1): enable lazy mode to page existing messages to disk immediately.
 
   ```bash
   # Apply lazy mode policy to matching queues (no restart required)
@@ -182,42 +179,39 @@ rabbitmqctl set_policy quorum-migration "^my-queue$" \
     '{"queue-mode":"lazy"}' --apply-to queues --priority 10
   ```
 
-- **Duration:** Memory reduction begins within seconds; full relief depends on queue depth (large queues may take minutes to page out).
+  **Risk:** Low. Lazy mode pages existing messages to disk immediately, causing a disk-I/O spike; first-message delivery latency increases slightly. **Duration:** Memory reduction begins within seconds; full relief depends on queue depth (large queues may take minutes to page out). **Verification:** Re-run Step 2; `binary` and `queue_procs` decline. Check every 30 seconds for 5 minutes to confirm the trend.
+- **remediation** (root): declare queues as quorum type so message bodies are disk-backed by default.
 
-**Resolution:**
+  ```bash
+  # For new deployments, declare queues as quorum type (preferred over lazy classic)
+  # In application code: x-queue-type=quorum queue argument
+  # Via policy for existing consumers:
+  rabbitmqctl set_policy quorum-all ".*" \
+    '{"queue-type":"quorum"}' --apply-to queues --priority 5
+  ```
 
-```bash
-# For new deployments, declare queues as quorum type (preferred over lazy classic)
-# In application code: x-queue-type=quorum queue argument
-# Via policy for existing consumers:
-rabbitmqctl set_policy quorum-all ".*" \
-  '{"queue-type":"quorum"}' --apply-to queues --priority 5
-```
+  Impact: Quorum migration is cluster-wide and requires consumers to reconnect; classic queues cannot be converted in-place (drain-and-redeclare required). Rollback: `rabbitmqctl clear_policy quorum-all`.
 
-- **Impact:** Quorum queue migration is cluster-wide and requires consumers to reconnect. Classic queues cannot be converted in-place; a drain-and-redeclare is required for in-flight messages.
-- **Rollback:** Delete the policy with `rabbitmqctl clear_policy quorum-all` to stop new queue declarations from using quorum type.
-
-**Verification:** After policy application, `rabbitmq-diagnostics memory_breakdown` should show `binary` and `queue_procs` declining. Run the check every 30 seconds for 5 minutes to confirm the trend.
-
----
+  **Verification:** Re-run Step 6; new queue declarations show `type=quorum`. Re-run Step 2; `binary` and `queue_procs` stay low under backlog.
 
 ### Cause C: Watermark set too low or misconfigured in containers
 
-**Statement:** The memory watermark is either set below the workload's natural operating point, or RabbitMQ detects the host's total RAM instead of the container limit, making the effective watermark dangerously wrong.
+**Statement:** The memory watermark is set below the workload's operating point, or RabbitMQ detects host RAM instead of the container limit, making the effective watermark dangerously wrong.
 
-**Mechanism:** The default watermark of 0.4 (40% of detected RAM) is conservative for dedicated broker nodes. In containers without cgroup v2 awareness, RabbitMQ detects host RAM — a node in a 2 GB container on a 64 GB host sets a watermark of 25.6 GB, meaning the OOM killer terminates the process long before the alarm fires. Conversely, if the operator manually set the watermark too low (e.g., 0.2) on a busy cluster, legitimate workloads trigger false alarms.
+**Chain:**
+- root: watermark fraction is mis-set, or container memory detection reports host RAM not the cgroup limit
+- s1: the effective memory ceiling diverges from real available memory for the broker
+- s2a: if the ceiling is too high (host-RAM detection), the OS OOM killer fires before the alarm ever does
+- s2b: if the ceiling is too low (e.g. 0.2 on a busy cluster), legitimate workloads trip false alarms
+- D: the watermark either fails to protect against OOM or fires prematurely, producing the observed alarm/blocking (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] Watermark fraction is below 0.35 or above 0.7
+  <!-- match: {"step": 5, "predicate": "threshold", "target": "vm_memory_high_watermark", "op": "<", "value": 0.35} -->
+- s2a: [Step 5] Detected `total_memory` is far larger than the container memory limit
 
-- [Step 5] Detected `total_memory` is far larger than the container memory limit
-- [Step 5] Watermark fraction is below 0.35 or above 0.7
-
-<!-- match: {"step": 5, "predicate": "threshold", "target": "vm_memory_high_watermark", "op": "<", "value": 0.35} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Raising the watermark at runtime allows more memory usage before blocking. Do not exceed 0.7 to retain OS headroom.
-- **Command:**
+**Interventions:**
+- **mitigation** (s1): raise the watermark at runtime to clear a false alarm immediately.
 
   ```bash
   # Raise watermark at runtime (takes effect immediately, no restart)
@@ -227,44 +221,40 @@ rabbitmqctl set_policy quorum-all ".*" \
   rabbitmqctl set_vm_memory_high_watermark absolute "1536MB"
   ```
 
-- **Duration:** Alarm clears immediately once the new watermark exceeds current usage.
+  **Risk:** Low. Raising the watermark allows more memory usage before blocking; do not exceed 0.7 to retain OS headroom. **Duration:** Alarm clears immediately once the new watermark exceeds current usage; the runtime change is non-persistent and resets on restart. **Verification:** Re-run Step 1; `mem_alarm` is cleared. Re-run Step 5; the watermark fraction reflects the new value.
+- **remediation** (root): correct container memory detection in config so the watermark is computed against the real limit.
 
-**Resolution:**
+  ```bash
+  # In rabbitmq.conf — set override for container environments:
+  # total_memory_available_override_value = 2147483648   # 2 GB in bytes
+  # vm_memory_high_watermark.relative = 0.6
 
-```bash
-# In rabbitmq.conf — set override for container environments:
-# total_memory_available_override_value = 2147483648   # 2 GB in bytes
-# vm_memory_high_watermark.relative = 0.6
+  # Apply via ConfigMap in Kubernetes (requires pod restart):
+  kubectl edit configmap rabbitmq-config -n rabbitmq
+  # Add: total_memory_available_override_value = <container_limit_bytes>
+  ```
 
-# Apply via ConfigMap in Kubernetes (requires pod restart):
-kubectl edit configmap rabbitmq-config -n rabbitmq
-# Add: total_memory_available_override_value = <container_limit_bytes>
-```
+  Impact: Requires a RabbitMQ restart when changed via config file. Rollback: `rabbitmqctl set_vm_memory_high_watermark 0.4`.
 
-- **Impact:** Requires a RabbitMQ restart when changed via config file. Runtime `set_vm_memory_high_watermark` is non-persistent and resets on restart.
-- **Rollback:** `rabbitmqctl set_vm_memory_high_watermark 0.4` to restore the default.
-
-**Verification:** After fix, `rabbitmq-diagnostics environment | grep total_memory` should show a value matching the container memory limit. `rabbitmq-diagnostics status` should show `vm_memory_high_watermark` as the expected fraction of the corrected total.
-
----
+  **Verification:** Re-run Step 5; `total_memory` matches the container memory limit and `vm_memory_high_watermark` is the expected fraction of the corrected total.
 
 ### Cause D: Classic mirrored queues multiplying memory across replicas
 
-**Statement:** Classic mirrored queues with `ha-mode: all` replicate every message in RAM on every mirror node, doubling or tripling cluster memory consumption compared to a single copy.
+**Statement:** Classic mirrored queues with `ha-mode: all` replicate every message in RAM on every mirror node, multiplying cluster memory consumption versus a single copy.
 
-**Mechanism:** In classic mirroring, the primary queue process forwards every message body to each mirror via Erlang inter-node messaging. Each mirror holds a full in-memory copy of the queue. A 10 GB queue on a 3-node cluster with `ha-mode: all` consumes 30 GB of aggregate RAM. This design was deprecated in RabbitMQ 3.10 in favor of quorum queues, which use Raft-based replication with disk-backed storage and do not duplicate message bodies in RAM across replicas.
+**Chain:**
+- root: classic mirroring policy (`ha-mode: all`/`exactly`) is applied to high-volume queues
+- s1: the primary forwards every message body to each mirror via Erlang inter-node messaging
+- s2: each mirror holds a full in-memory copy, so aggregate RAM scales with the mirror count (a 10 GB queue on 3 nodes uses 30 GB)
+- D: duplicated in-RAM message bodies inflate cluster memory until the watermark alarm fires (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] `rabbitmqctl list_policies` shows policies with `ha-mode: all` or `ha-mode: exactly`
+  <!-- match: {"step": 6, "predicate": "contains", "target": "ha-mode"} -->
+- s2: [Step 2] Memory breakdown is proportionally high across multiple nodes with similar `queue_procs` figures
 
-- [Step 6] `rabbitmqctl list_policies` shows policies with `ha-mode: all` or `ha-mode: exactly`
-- [Step 2] Memory breakdown is proportionally high across multiple nodes with similar `queue_procs` figures
-
-<!-- match: {"step": 6, "predicate": "contains", "target": "ha-mode"} -->
-
-**Mitigation:**
-
-- **Risk:** Medium. Removing mirroring reduces fault tolerance until quorum queues are in place.
-- **Command:**
+**Interventions:**
+- **mitigation** (root): remove the mirroring policy to reclaim mirror-node memory.
 
   ```bash
   # Remove mirroring policy temporarily to reduce memory pressure
@@ -274,47 +264,43 @@ kubectl edit configmap rabbitmq-config -n rabbitmq
   rabbitmqctl list_queues name policy slave_pids
   ```
 
-- **Duration:** Memory on mirror nodes is reclaimed within seconds of policy removal.
+  **Risk:** Medium. Removing mirroring reduces fault tolerance until quorum queues are in place. **Duration:** Memory on mirror nodes is reclaimed within seconds of policy removal. **Verification:** Re-run Step 2; `queue_procs` totals on the former mirror nodes drop sharply.
+- **remediation** (root): migrate to quorum queues, which use Raft replication with disk-backed storage and do not duplicate bodies in RAM.
 
-**Resolution:**
+  ```bash
+  # Migrate to quorum queues — declare new quorum queues and drain old classic ones
+  # Step 1: Create quorum replacement queue
+  # In application: declare queue with x-queue-type=quorum
 
-```bash
-# Migrate to quorum queues — declare new quorum queues and drain old classic ones
-# Step 1: Create quorum replacement queue
-# In application: declare queue with x-queue-type=quorum
+  # Step 2: Route new publishers to quorum queue
+  # Step 3: Wait for classic queue to drain, then delete it
+  rabbitmqctl delete_queue my-classic-queue
 
-# Step 2: Route new publishers to quorum queue
-# Step 3: Wait for classic queue to drain, then delete it
-rabbitmqctl delete_queue my-classic-queue
+  # Step 4: Remove the ha-mode policy
+  rabbitmqctl clear_policy ha-all
+  ```
 
-# Step 4: Remove the ha-mode policy
-rabbitmqctl clear_policy ha-all
-```
+  Impact: Cluster-wide; all consumers must reconnect and applications redeclare queues. Rollback: `rabbitmqctl set_policy ha-all ".*" '{"ha-mode":"all"}' --apply-to queues`.
 
-- **Impact:** Cluster-wide. All consumers must reconnect to the new queue. Requires application-side queue redeclaration.
-- **Rollback:** Re-apply the ha-mode policy: `rabbitmqctl set_policy ha-all ".*" '{"ha-mode":"all"}' --apply-to queues`
-
-**Verification:** After migration, `rabbitmqctl list_queues name type` should show `quorum` for migrated queues. `rabbitmq-diagnostics memory_breakdown` across all nodes should show significantly lower `queue_procs` totals.
-
----
+  **Verification:** Re-run Step 6; migrated queues show `type=quorum`. Re-run Step 2; `queue_procs` totals across all nodes are significantly lower.
 
 ### Cause E: Erlang binary memory accumulation and fragmentation
 
-**Statement:** Erlang runtime binary memory is not being reclaimed between GC cycles, causing the `binary` heap to grow beyond active message payloads due to fragmentation or long-lived process references.
+**Statement:** Erlang runtime binary memory is not reclaimed between GC cycles, so the `binary` heap grows beyond active payloads due to fragmentation or long-lived process references.
 
-**Mechanism:** RabbitMQ uses Erlang's reference-counted binary heap for message bodies. Long-lived connections with large prefetch counts hold references that prevent binary GC. The management plugin's per-second statistics collection retains process state snapshots. These references keep message binaries alive long after the AMQP ack, causing the `binary` subsystem in `memory_breakdown` to grow independently of queue depth. The default Erlang allocator (mseg) can also fragment memory so that freed binaries do not return to the OS.
+**Chain:**
+- root: long-lived connections with large prefetch and the management plugin's stats snapshots hold references to message binaries
+- s1: reference-counted binaries stay alive after the AMQP ack, so binary GC cannot free them
+- s2: the default allocator (mseg) fragments memory so freed binaries do not return to the OS, and the `binary` subsystem grows independently of queue depth
+- D: unreclaimed binary memory crosses the watermark even with low queue depth, firing the alarm (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] `binary` memory is the dominant subsystem and does not decrease after purging queues
+  <!-- match: {"step": 2, "predicate": "threshold", "target": "binary_pct_of_total", "op": ">", "value": 0.5} -->
+- s1: [Step 3] Queue message counts are low but overall memory remains high
 
-- [Step 2] `binary` memory is the dominant subsystem and does not decrease after purging queues
-- [Step 3] Queue message counts are low but overall memory remains high
-
-<!-- match: {"step": 2, "predicate": "threshold", "target": "binary_pct_of_total", "op": ">", "value": 0.5} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Forcing GC on all Erlang processes is safe but causes a brief CPU spike.
-- **Command:**
+**Interventions:**
+- **mitigation** (s1): force GC across all Erlang processes and trim management-plugin overhead.
 
   ```bash
   # Force GC on all Erlang processes (safe, brief CPU spike)
@@ -324,50 +310,41 @@ rabbitmqctl clear_policy ha-all
   rabbitmqctl eval 'application:set_env(rabbitmq_management, rates_mode, basic).'
   ```
 
-- **Duration:** Binary memory should decrease within 30-60 seconds after forced GC.
-
-**Resolution:**
-
-```bash
-# In rabbitmq.conf — set allocator to reduce fragmentation:
-# server_additional_erl_args = +MBas aobf +MBasbcs 512
-
-# Reduce management stats retention:
-# management.rates_mode = basic
-# management.sample_retention_policies.global.60 = 5
-```
-
-- **Impact:** Allocator change requires full RabbitMQ restart. `rates_mode = basic` reduces Management UI chart resolution.
-- **Rollback:** Remove `server_additional_erl_args` from config and restart.
-
-**Verification:** After GC and config changes, `rabbitmq-diagnostics memory_breakdown` should show `binary` below 30% of total. Monitor `rabbitmq_process_resident_memory_bytes` (Prometheus) over 30 minutes to confirm it is not climbing.
-
----
-
-### Cause Z: Unidentified memory cause
-
-**Statement:** Memory usage exceeds the watermark but no single subsystem, queue, or configuration problem accounts for the alarm after completing all diagnostic steps.
-
-**Mechanism:** [Default]
-
-**Indicator:**
-
-- [Default] None of Causes A–E match the observed memory breakdown pattern
-
-**Mitigation:**
-
-- **Risk:** Low. Temporarily raising the watermark buys time for deeper investigation without dropping messages.
-- **Command:**
+  **Risk:** Low. Forcing GC on all processes is safe but causes a brief CPU spike. **Duration:** Binary memory should decrease within 30–60 seconds after forced GC. **Verification:** Re-run Step 2; `binary` drops after the forced GC.
+- **defensive_fix** (s2): change the Erlang allocator and reduce stats retention so binary memory stops fragmenting.
 
   ```bash
-  rabbitmqctl set_vm_memory_high_watermark 0.6
+  # In rabbitmq.conf — set allocator to reduce fragmentation:
+  # server_additional_erl_args = +MBas aobf +MBasbcs 512
+
+  # Reduce management stats retention:
+  # management.rates_mode = basic
+  # management.sample_retention_policies.global.60 = 5
   ```
 
-- **Duration:** Immediate; re-evaluate within 30 minutes.
+  Impact: Allocator change requires a full RabbitMQ restart; `rates_mode = basic` reduces Management UI chart resolution. Rollback: remove `server_additional_erl_args` and restart.
 
-**Resolution:** Out of runbook scope. Collect a full memory snapshot and escalate: `rabbitmq-diagnostics memory_breakdown --formatter json > /tmp/rmq-mem-$(date +%s).json`. Engage RabbitMQ support or the community mailing list with the snapshot, RabbitMQ version, and Erlang version.
+  **Verification:** Re-run Step 2; `binary` stays below 30% of total. Monitor `rabbitmq_process_resident_memory_bytes` (Prometheus) over 30 minutes to confirm it is not climbing.
 
-**Verification:** `rabbitmq-diagnostics alarms` shows no active alarms after the watermark adjustment. Memory trend should be monitored continuously; if usage keeps climbing, the watermark raise is not a durable fix.
+### Cause Z: Unidentified
+
+**Statement:** Memory exceeds the watermark but no single subsystem, queue, or configuration problem accounts for the alarm after completing all diagnostic steps.
+
+**Indicators:**
+- [Default]
+
+**Interventions:**
+- **mitigation** (D): raise the watermark to buy time, then capture a full memory snapshot and escalate to the SME.
+
+  ```bash
+  # Temporarily relieve blocking
+  rabbitmqctl set_vm_memory_high_watermark 0.6
+
+  # Capture a full diagnostic snapshot for escalation
+  rabbitmq-diagnostics memory_breakdown --formatter json > /tmp/rmq-mem-$(date +%s).json
+  ```
+
+  Engage RabbitMQ support or the community mailing list with the snapshot, RabbitMQ version, and Erlang version. **Risk:** Low. Temporarily raising the watermark buys time without dropping messages. **Duration:** Immediate; re-evaluate within 30 minutes — if usage keeps climbing the watermark raise is not durable. **Verification:** Re-run Step 1; `rabbitmq-diagnostics alarms` shows no active alarms after the adjustment, and the memory trend is monitored continuously.
 
 ## Prevention
 

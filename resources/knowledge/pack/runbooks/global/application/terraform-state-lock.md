@@ -6,8 +6,8 @@ service: terraform
 symptom_class: [timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [terraform, state, lock, iac, infrastructure-as-code, dynamodb, s3-backend, terraform-cloud]
@@ -105,7 +105,7 @@ ps aux | grep '[t]erraform'
 lsof 2>/dev/null | grep terraform.tfstate
 ```
 
-Expected output: if `lsof` shows open file handles on the state file, a local zombie process is holding the lock. Note the PID for Cause D resolution.
+Expected output: if `lsof` shows open file handles on the state file, a local zombie process is holding the lock. Note the PID for resolution.
 
 ### Step 6: Check whether the DynamoDB lock table exists
 
@@ -126,87 +126,73 @@ Expected output: `"ACTIVE"` if the table exists and is ready. A `ResourceNotFoun
 
 **Statement:** A prior CI/CD pipeline run was terminated (runner timeout, spot instance preemption, manual cancellation) before Terraform could release the state lock, leaving an abandoned lock entry in the backend.
 
-**Mechanism:** Terraform acquires an exclusive lock before every write operation and releases it on exit. When the process is killed abruptly (SIGKILL or runner teardown), the release call never executes, and the lock record persists in the backend indefinitely. Subsequent runs hit `Error acquiring the state lock` until the orphaned entry is removed.
+**Chain:**
+- root: a CI/CD pipeline run holding the exclusive state lock is killed abruptly (SIGKILL or runner teardown)
+- s1: the lock-release call never executes, so the lock record persists in the backend indefinitely
+- D: subsequent runs hit `Error acquiring the state lock` until the orphaned entry is removed (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Symptom] `Who` field identifies a CI runner hostname, not a developer workstation
+- s1: [Step 2] no active Terraform process found on the lock owner host and no CI job is `in_progress`
+  <!-- match: {"step": 2, "predicate": "absent", "target": "terraform"} -->
+- s1: [Step 3] lock age exceeds 60 minutes
 
-- [Step 2] no active Terraform process found on the lock owner host and no CI job is `in_progress`
-- [Step 3] lock age exceeds 60 minutes
-- [Symptom] `Who` field identifies a CI runner hostname, not a developer workstation
-
-<!-- match: {"step": 2, "predicate": "absent", "target": "terraform"} -->
-
-**Mitigation:**
-
-- **Risk:** Force-unlocking while a legitimate operation is writing can corrupt state. Confirm Steps 2 and 3 before proceeding.
-- **Command:**
+**Interventions:**
+- **remediation** (root): force-unlock the orphaned lock record once Steps 2 and 3 confirm no active operation. The state metadata is the only thing modified; re-lock is automatic on the next operation, and a corrupted state can be restored with `terraform state push <backup.json>`.
 
   ```bash
   terraform force-unlock <lock-id-from-step-1>
   ```
 
-- **Duration:** Seconds to execute; lock is released immediately.
+  **Verification:** run `terraform plan` and confirm it completes without a lock error, then run `aws dynamodb scan --table-name terraform-locks --region <region> --select COUNT` and confirm the count is 0.
+- **mitigation** (s1): clear the stale lock entry immediately to unblock the pipeline.
 
-**Resolution:**
+  ```bash
+  terraform force-unlock <lock-id-from-step-1>
+  ```
 
-```bash
-terraform force-unlock <lock-id-from-step-1>
-```
-
-- **Impact:** Single workspace; no infrastructure changes, state metadata only.
-
-- **Rollback:** Re-lock is automatic on the next Terraform operation. To restore a corrupted state use `terraform state push <backup.json>`.
-
-**Verification:** Run `terraform plan` and confirm it completes without a lock error. Then run `aws dynamodb scan --table-name terraform-locks --region <region> --select COUNT` and confirm the count is 0.
+  **Risk:** force-unlocking while a legitimate operation is writing can corrupt state — confirm Steps 2 and 3 first. **Duration:** seconds to execute; lock is released immediately. **Verification:** re-run `terraform plan` and confirm no lock error.
 
 ---
 
 ### Cause B: Concurrent parallel Terraform runs against the same workspace
 
-**Statement:** Multiple CI/CD jobs or developers triggered Terraform operations against the same state simultaneously, causing lock contention rather than an orphaned lock.
+**Statement:** Multiple CI/CD jobs or developers triggered Terraform operations against the same state simultaneously, causing live lock contention rather than an orphaned lock.
 
-**Mechanism:** Terraform backends grant locks exclusively; a second `terraform apply` will block or immediately fail if the first run has not yet released the lock. In CI systems without concurrency controls, parallel pipeline triggers (e.g., two pushes in quick succession, matrix builds, or manual re-runs) produce simultaneous lock attempts. The second run either hangs until `-lock-timeout` expires or fails immediately.
+**Chain:**
+- root: two or more Terraform operations are triggered against the same state at once (parallel pipeline triggers, matrix builds, manual re-runs)
+- s1: the backend grants the lock exclusively, so the second operation blocks until `-lock-timeout` expires or fails immediately
+- D: the second run reports `Error acquiring the state lock` while the first run still holds it (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Symptom] error appears during a period of high commit/deployment activity
+- s1: [Step 2] an active Terraform process or an `in_progress` CI job is found for the lock owner
+  <!-- match: {"step": 2, "predicate": "contains", "target": "terraform"} -->
+- s1: [Step 3] lock age is recent (under 30 minutes)
 
-- [Step 2] an active Terraform process or an `in_progress` CI job is found for the lock owner
-- [Symptom] error appears during a period of high commit/deployment activity
-- [Step 3] lock age is recent (under 30 minutes)
+**Interventions:**
+- **remediation** (root): add concurrency controls to the CI/CD pipeline to serialize Terraform operations so parallel triggers can never collide. Roll back by removing the `concurrency` / `resource_group` key.
 
-<!-- match: {"step": 2, "predicate": "contains", "target": "terraform"} -->
+  ```yaml
+  # GitHub Actions
+  concurrency:
+    group: terraform-${{ github.ref }}
+    cancel-in-progress: false
+  ```
 
-**Mitigation:**
+  ```yaml
+  # GitLab CI
+  resource_group: terraform-production
+  ```
 
-- **Risk:** None — wait for the active operation to finish; do not force-unlock.
-- **Command:**
+  **Verification:** trigger two pipeline runs simultaneously and confirm the second queues behind the first rather than failing with a lock error.
+- **mitigation** (s1): wait out the active operation by extending the lock timeout instead of force-unlocking.
 
   ```bash
   terraform plan -lock-timeout=10m
   ```
 
-- **Duration:** Up to the specified timeout plus the plan/apply execution time; typically 1–30 minutes.
-
-**Resolution:**
-
-Add concurrency controls to the CI/CD pipeline to serialize Terraform operations:
-
-```yaml
-# GitHub Actions
-concurrency:
-  group: terraform-${{ github.ref }}
-  cancel-in-progress: false
-```
-
-```yaml
-# GitLab CI
-resource_group: terraform-production
-```
-
-- **Impact:** Pipeline-level change; affects all future runs in that repo.
-
-- **Rollback:** Remove the `concurrency` / `resource_group` key from the pipeline config.
-
-**Verification:** Trigger two pipeline runs simultaneously and confirm the second queues behind the first rather than failing with a lock error.
+  **Risk:** none — wait for the active operation to finish; do not force-unlock. **Duration:** up to the specified timeout plus plan/apply execution time; typically 1–30 minutes. **Verification:** confirm the command acquires the lock and completes once the first operation releases it.
 
 ---
 
@@ -214,19 +200,18 @@ resource_group: terraform-production
 
 **Statement:** The DynamoDB table configured as the Terraform state lock backend does not exist or has an incorrect key schema, causing every Terraform operation to fail before acquiring a lock.
 
-**Mechanism:** The S3 backend requires a DynamoDB table with a `LockID` hash key of type String. If the table was never created, was deleted, or was created with a different key name, Terraform cannot write or read lock entries and raises `ResourceNotFoundException` or `ConditionalCheckFailedException`. This blocks all Terraform operations against the workspace, not just concurrent ones.
+**Chain:**
+- root: the S3 backend's DynamoDB lock table is absent, was deleted, or was created with a key other than a `LockID` String hash key
+- s1: Terraform cannot read or write lock entries, raising `ResourceNotFoundException` or `ConditionalCheckFailedException`
+- D: every Terraform operation against the workspace fails before acquiring a lock (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] `ResourceNotFoundException` returned by `aws dynamodb describe-table`
+  <!-- match: {"step": 6, "predicate": "absent", "target": "ACTIVE"} -->
+- s1: [Symptom] error message contains `ResourceNotFoundException` or `Backend initialization required`
 
-- [Step 6] `ResourceNotFoundException` returned by `aws dynamodb describe-table`
-- [Symptom] error message contains `ResourceNotFoundException` or `Backend initialization required`
-
-<!-- match: {"step": 6, "predicate": "absent", "target": "ACTIVE"} -->
-
-**Mitigation:**
-
-- **Risk:** Low — creates a new table; does not modify existing state files.
-- **Command:**
+**Interventions:**
+- **remediation** (root): create the lock table with the correct `LockID` hash key, confirm the backend block's `dynamodb_table` matches exactly, then re-initialize.
 
   ```bash
   aws dynamodb create-table \
@@ -237,25 +222,33 @@ resource_group: terraform-production
     --region <region>
   ```
 
-- **Duration:** Table becomes `ACTIVE` within 10–30 seconds.
-
-**Resolution:** Same as Mitigation. Then verify the `dynamodb_table` field in the backend block matches the table name exactly:
-
-```hcl
-terraform {
-  backend "s3" {
-    bucket         = "my-terraform-state"
-    key            = "production/terraform.tfstate"
-    region         = "us-east-1"
-    dynamodb_table = "terraform-locks"
-    encrypt        = true
+  ```hcl
+  terraform {
+    backend "s3" {
+      bucket         = "my-terraform-state"
+      key            = "production/terraform.tfstate"
+      region         = "us-east-1"
+      dynamodb_table = "terraform-locks"
+      encrypt        = true
+    }
   }
-}
-```
+  ```
 
-Run `terraform init -reconfigure` after fixing the backend block.
+  Run `terraform init -reconfigure` after fixing the backend block.
 
-**Verification:** Run `aws dynamodb describe-table --table-name terraform-locks --region <region> --query "Table.TableStatus"` and confirm `"ACTIVE"`. Then run `terraform plan` and confirm it completes without a lock or initialization error.
+  **Verification:** run `aws dynamodb describe-table --table-name terraform-locks --region <region> --query "Table.TableStatus"` and confirm `"ACTIVE"`, then run `terraform plan` and confirm it completes without a lock or initialization error.
+- **mitigation** (root): create the table immediately to unblock operations while the backend block is being corrected.
+
+  ```bash
+  aws dynamodb create-table \
+    --table-name terraform-locks \
+    --attribute-definitions AttributeName=LockID,AttributeType=S \
+    --key-schema AttributeName=LockID,KeyType=HASH \
+    --billing-mode PAY_PER_REQUEST \
+    --region <region>
+  ```
+
+  **Risk:** low — creates a new table; does not modify existing state files. **Duration:** table becomes `ACTIVE` within 10–30 seconds. **Verification:** `aws dynamodb describe-table --table-name terraform-locks --region <region> --query "Table.TableStatus"` returns `"ACTIVE"`.
 
 ---
 
@@ -263,20 +256,19 @@ Run `terraform init -reconfigure` after fixing the backend block.
 
 **Statement:** A previously interrupted Terraform process on the local machine is still alive with open file descriptors on the state file, preventing the lock from being released even after the terminal session appears idle.
 
-**Mechanism:** When a Terraform process is suspended (Ctrl-Z), backgrounded, or left in a frozen shell, it retains the state lock without making progress. The process appears in `ps` output but is not associated with any active terminal. `lsof` shows open handles on the state file. `terraform force-unlock` will succeed at removing the backend lock record, but if the zombie process resumes, it may attempt to write with a stale lock, corrupting state.
+**Chain:**
+- root: a Terraform process is suspended (Ctrl-Z), backgrounded, or left in a frozen shell, retaining the state lock without making progress
+- s1: the process holds open file handles on the state file and keeps the backend lock record, while appearing detached from any active terminal
+- D: new operations fail with `Error acquiring the state lock` despite an apparently idle session (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] `Who` field contains the local machine hostname
+- s1: [Step 5] `lsof` shows open file handles on `terraform.tfstate`
+  <!-- match: {"step": 5, "predicate": "contains", "target": "terraform.tfstate"} -->
+- s1: [Step 2] `ps aux` finds a Terraform process on the local machine with no associated terminal
 
-- [Step 5] `lsof` shows open file handles on `terraform.tfstate`
-- [Step 2] `ps aux` finds a Terraform process on the local machine with no associated terminal
-- [Step 1] `Who` field contains the local machine hostname
-
-<!-- match: {"step": 5, "predicate": "contains", "target": "terraform.tfstate"} -->
-
-**Mitigation:**
-
-- **Risk:** Medium — killing a process mid-apply can leave partial state. Take a state backup first.
-- **Command:**
+**Interventions:**
+- **remediation** (root): back up the state, kill the zombie process, then force-unlock. Verify the backup matches expectations before re-running Terraform, because a resumed zombie could write with a stale lock and corrupt state.
 
   ```bash
   terraform state pull > state-backup-$(date +%Y%m%d%H%M%S).json
@@ -284,11 +276,16 @@ Run `terraform init -reconfigure` after fixing the backend block.
   terraform force-unlock <lock-id-from-step-1>
   ```
 
-- **Duration:** Under 1 minute.
+  **Verification:** run `terraform plan` to confirm no lock error, then run `terraform state list | wc -l` and compare the resource count against the backup to confirm no resources were lost.
+- **mitigation** (s1): take a state backup before killing the process to bound the blast radius of a mid-apply interruption.
 
-**Resolution:** Same as Mitigation. After killing the zombie, verify the backup matches expectations before re-running Terraform.
+  ```bash
+  terraform state pull > state-backup-$(date +%Y%m%d%H%M%S).json
+  kill <pid-from-step-5>
+  terraform force-unlock <lock-id-from-step-1>
+  ```
 
-**Verification:** Run `terraform plan` to confirm no lock error. Run `terraform state list | wc -l` and compare the resource count against the backup to confirm no resources were lost.
+  **Risk:** medium — killing a process mid-apply can leave partial state; take the state backup first. **Duration:** under 1 minute. **Verification:** `terraform plan` reports no lock error and `terraform state list` matches the backup.
 
 ---
 
@@ -296,63 +293,60 @@ Run `terraform init -reconfigure` after fixing the backend block.
 
 **Statement:** The Terraform apply completed successfully but a transient backend error prevented the state lock from being released, leaving an orphaned lock entry despite the infrastructure changes being applied.
 
-**Mechanism:** After writing the new state, Terraform makes a second call to delete the lock record from the backend. If this call fails due to a network blip, rate limit, or backend timeout, the lock persists even though the apply is fully recorded in the state file. The next `terraform plan` or `apply` hits `Error acquiring the state lock` but the state itself is intact and consistent.
+**Chain:**
+- root: after writing the new state, Terraform's second call to delete the lock record fails (network blip, rate limit, or backend timeout)
+- s1: the lock record persists even though the apply is fully recorded and the state is intact and consistent
+- D: the next `terraform plan` or `apply` hits `Error acquiring the state lock` (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Symptom] `Error: Error releasing the state lock` appears in the prior run's output immediately after `Apply complete!`
+- s1: [Step 4] lock entry exists in the backend but its `Operation` field shows `OperationTypeApply`
+  <!-- match: {"step": 4, "predicate": "contains", "target": "OperationTypeApply"} -->
+- s1: [Step 3] lock age matches the time of the last successful apply
 
-- [Symptom] `Error: Error releasing the state lock` appears in the prior run's output immediately after `Apply complete!`
-- [Step 4] lock entry exists in the backend but its `Operation` field shows `OperationTypeApply`
-- [Step 3] lock age matches the time of the last successful apply
-
-<!-- match: {"step": 4, "predicate": "contains", "target": "OperationTypeApply"} -->
-
-**Mitigation:**
-
-- **Risk:** Low — the state is already consistent; force-unlock simply removes a stale record.
-- **Command:**
+**Interventions:**
+- **remediation** (root): force-unlock the stale record, then confirm state integrity. The state is already consistent, so this only removes the leftover lock.
 
   ```bash
   terraform force-unlock <lock-id-from-step-1>
   ```
 
-- **Duration:** Seconds.
+  ```bash
+  terraform state list
+  terraform show -json | jq '.terraform_version, .format_version'
+  ```
 
-**Resolution:** Same as Mitigation. After unlocking, confirm state integrity:
+  **Verification:** run `terraform plan` and confirm it reports no changes (since the apply already completed) and no lock error, and confirm `aws dynamodb scan --table-name terraform-locks --region <region> --select COUNT` returns 0.
+- **mitigation** (root): remove the stale lock record immediately to unblock the next run.
 
-```bash
-terraform state list
-terraform show -json | jq '.terraform_version, .format_version'
-```
+  ```bash
+  terraform force-unlock <lock-id-from-step-1>
+  ```
 
-**Verification:** Run `terraform plan` and confirm it reports no changes (since the apply already completed) and no lock error. Confirm `aws dynamodb scan --table-name terraform-locks --region <region> --select COUNT` returns 0.
+  **Risk:** low — the state is already consistent; force-unlock simply removes a stale record. **Duration:** seconds. **Verification:** `terraform plan` completes without a lock error.
 
 ---
 
-### Cause Z: Unidentified lock failure
+### Cause Z: Unidentified
 
-**Statement:** The state lock failure does not match any of the recognized patterns above. [Default]
+**Statement:** The state lock failure does not match any of the recognized patterns above and originates from a backend-specific bug, IAM permission change mid-operation, network partition affecting only the lock table, or unsupported backend configuration.
 
-**Mechanism:** Terraform state lock failures can originate from backend-specific bugs, IAM permission changes mid-operation, network partitions affecting only the lock table, or unsupported backend configurations. These cases require manual investigation of the specific backend's access logs and Terraform debug output.
+**Chain:**
+- root: an unrecognized backend, permission, or network condition prevents normal lock acquisition or release
+- D: Terraform reports a state lock failure that matches none of Causes A–E (points at Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Default] none of Causes A–E indicators match the observed evidence
 
-- [Default] none of Causes A–E indicators match the observed evidence
-
-**Mitigation:**
-
-- **Risk:** Low — gathering debug information only, no state changes.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot and escalate to the SME. For Terraform Cloud/Enterprise, open a support ticket with the workspace ID and the lock timestamp.
 
   ```bash
   TF_LOG=DEBUG terraform plan 2>&1 | tee terraform-debug.log
   grep -i "lock\|error\|fatal" terraform-debug.log
   ```
 
-- **Duration:** 5–10 minutes for log collection.
-
-**Resolution:** Out of runbook scope. Escalate to the team with the debug log and the full `Lock Info` block. For Terraform Cloud/Enterprise, open a support ticket with the workspace ID and the lock timestamp.
-
-**Verification:** Resolution depends on the escalation outcome. Confirm with `terraform plan` once the underlying issue is addressed.
+  **Risk:** low — gathering debug information only, no state changes. **Duration:** 5–10 minutes for log collection. **Verification:** confirm the debug log and full `Lock Info` block are attached to the escalation; re-run `terraform plan` once the underlying issue is addressed.
 
 ## Prevention
 

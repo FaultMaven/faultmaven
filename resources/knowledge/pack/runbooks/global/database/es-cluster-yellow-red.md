@@ -6,8 +6,8 @@ service: elasticsearch
 symptom_class: [service_unavailable, disk_full]
 severity: critical
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [elasticsearch, cluster-health, shards, disk-watermark, allocation]
@@ -39,7 +39,7 @@ curl -s "http://localhost:9200/_cluster/health?pretty"
 
 Expected output: JSON with `status` (`green`/`yellow`/`red`), `number_of_nodes`, `active_primary_shards`, `active_shards`, `unassigned_shards`, `initializing_shards`, `relocating_shards`. Note the exact `status` value and `unassigned_shards` count.
 
-### Step 2: List all unassigned shards and their reason codes
+### Step 2: List unassigned shards and reason codes
 
 ```bash
 curl -s "http://localhost:9200/_cat/shards?v&h=index,shard,prirep,state,unassigned.reason&s=state"
@@ -47,7 +47,7 @@ curl -s "http://localhost:9200/_cat/shards?v&h=index,shard,prirep,state,unassign
 
 Expected output: Table of shards. Rows with `state=UNASSIGNED` name the problem shards. The `prirep` column shows `p` (primary) or `r` (replica). The `unassigned.reason` column contains reason codes: `NODE_LEFT`, `ALLOCATION_FAILED`, `INDEX_CREATED`, `REROUTE_CANCELLED`, `CLUSTER_RECOVERED`.
 
-### Step 3: Get detailed allocation explanation for one unassigned shard
+### Step 3: Explain allocation for an unassigned shard
 
 ```bash
 curl -s -X GET "http://localhost:9200/_cluster/allocation/explain?pretty" \
@@ -65,7 +65,7 @@ curl -s "http://localhost:9200/_cat/allocation?v&h=node,disk.used,disk.avail,dis
 
 Expected output: Table with one row per node. Note `disk.percent` values. Thresholds: `>= 85%` blocks new shard allocation (low watermark), `>= 90%` triggers relocation away from node (high watermark), `>= 95%` sets indices read-only (flood stage).
 
-### Step 5: Check cluster-level settings for watermarks and allocation enable state
+### Step 5: Check watermark and allocation-enable settings
 
 ```bash
 curl -s "http://localhost:9200/_cluster/settings?include_defaults=true&flat_settings=true&pretty" \
@@ -82,7 +82,7 @@ curl -s "http://localhost:9200/_cat/nodes?v&h=name,heap.percent,ram.percent,cpu,
 
 Expected output: One row per node with live resource metrics. Missing nodes indicate failure or network partition. `heap.percent >= 85` means GC pressure that can cause master to evict node from cluster. `node.role` shows `d` (data), `m` (master-eligible), `-` (coordinating only).
 
-### Step 7: Check for index-level read-only blocks
+### Step 7: Check for index read-only blocks
 
 ```bash
 curl -s "http://localhost:9200/_all/_settings?pretty" | grep -E "read_only|blocks"
@@ -101,180 +101,171 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 ## Causes
 
-### Cause A: Disk watermark exceeded — allocation blocked on high-disk nodes
+### Cause A: Disk watermark exceeded
 
 **Statement:** One or more data nodes have exceeded the low (85%) or flood-stage (95%) disk watermark, preventing Elasticsearch from assigning new shards to those nodes.
 
-**Mechanism:** Elasticsearch's `DiskThresholdDecider` denies shard placement on any node at or above the low watermark (default 85%). When a node reaches the flood stage (95%), all indices with shards on that node are set to `index.blocks.read_only_allow_delete: true`, blocking writes cluster-wide for those indices. The blocks persist after disk pressure is relieved and must be cleared manually.
+**Chain:**
+- root: a data node's disk usage rises to or above the low watermark (85%)
+- s1: `DiskThresholdDecider` denies shard placement on the over-watermark node
+- s2: at the flood stage (95%) affected indices are set `read_only_allow_delete: true`, blocking writes
+- s3: these read-only blocks persist even after disk pressure is relieved
+- D: shards stay unassigned / indices stay write-blocked → cluster yellow or red (Symptom)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `disk.percent` >= 85 on one or more nodes
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "disk.percent", "op": ">=", "value": 85} -->
+- s1: [Step 3] `node_allocation_decisions` references `DiskThresholdDecider` with verdict `NO`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "DiskThresholdDecider"} -->
+- s2: [Step 7] `"index.blocks.read_only_allow_delete": "true"` present on one or more indices
+  <!-- match: {"step": 7, "predicate": "contains", "target": "read_only_allow_delete"} -->
 
-- [Step 4] `disk.percent` >= 85 on one or more nodes
-- [Step 3] `node_allocation_decisions` contains `explanation` referencing `DiskThresholdDecider` with verdict `NO`
-- [Step 7] `"index.blocks.read_only_allow_delete": "true"` present on one or more indices
-
-<!-- match: {"step": 4, "predicate": "threshold", "target": "disk.percent", "op": ">=", "value": 85} -->
-<!-- match: {"step": 3, "predicate": "contains", "target": "DiskThresholdDecider"} -->
-<!-- match: {"step": 7, "predicate": "contains", "target": "read_only_allow_delete"} -->
-
-**Mitigation:**
-
-- **Risk:** Deleting indices causes permanent data loss. Verify retention policy and stakeholder sign-off before deletion.
-- **Command:**
+**Interventions:**
+- **remediation** (root): implement an ILM delete phase to auto-expire old indices and keep disk below the watermark.
 
   ```bash
-  # List largest indices to find candidates for deletion
+  curl -X PUT "http://localhost:9200/_ilm/policy/auto-delete-30d?pretty" \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "policy": {
+        "phases": {
+          "delete": {"min_age": "30d", "actions": {"delete": {}}}
+        }
+      }
+    }'
+  ```
+
+  **Verification:** re-run Step 4; all nodes below 85%. ILM applies only to indices with matching `index.lifecycle.name`; adding disk capacity is the safest long-term resolution. Cluster status returns `green` within 10 minutes of reallocation completing.
+- **mitigation** (root): free disk by deleting old time-based indices to drop usage below the watermark.
+
+  ```bash
   curl -s "http://localhost:9200/_cat/indices?v&h=index,store.size,docs.count,creation.date.string&s=store.size:desc" | head -20
-  # Delete old time-based indices (example pattern)
   curl -X DELETE "http://localhost:9200/logs-2026.01.*"
-  # After freeing space, clear flood-stage read-only blocks
+  ```
+
+  **Risk:** deleting indices causes permanent data loss; verify retention policy and stakeholder sign-off before deletion. **Duration:** minutes to free disk. **Verification:** re-run Step 4; over-watermark nodes drop below 85%.
+- **defensive_fix** (s3): clear flood-stage read-only blocks once disk drops below flood stage (blocks do not clear themselves).
+
+  ```bash
   curl -X PUT "http://localhost:9200/_all/_settings?pretty" \
     -H 'Content-Type: application/json' \
     -d '{"index.blocks.read_only_allow_delete": null}'
   ```
 
-- **Duration:** Minutes to free disk. Clear read-only blocks immediately after disk drops below flood stage.
+  **Verification:** re-run Step 7; no `read_only_allow_delete` results, or all null/false.
 
-**Resolution:**
-
-```bash
-# Durable fix: implement ILM delete phase to auto-expire old indices
-curl -X PUT "http://localhost:9200/_ilm/policy/auto-delete-30d?pretty" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "policy": {
-      "phases": {
-        "delete": {"min_age": "30d", "actions": {"delete": {}}}
-      }
-    }
-  }'
-```
-
-- **Impact:** ILM policy applies to indices with matching `index.lifecycle.name` setting — no immediate impact on existing indices without the setting. Adding disk capacity is the safest long-term resolution.
-- **Rollback:** `DELETE _ilm/policy/auto-delete-30d` removes the policy without affecting existing indices.
-
-**Verification:** `curl -s "http://localhost:9200/_cat/allocation?v&h=node,disk.percent"` — all nodes below 85%. `curl -s "http://localhost:9200/_all/_settings?pretty" | grep read_only` — no results or all null/false. Cluster status returns `green` within 10 minutes of shard reallocation completing.
-
-### Cause B: Node failure or departure — shards orphaned
+### Cause B: Node failure or departure
 
 **Statement:** A data node left the cluster unexpectedly, leaving its primary or replica shards with no host until Elasticsearch reallocates them to surviving nodes.
 
-**Mechanism:** When a node departs, Elasticsearch marks its shards `UNASSIGNED` with reason `NODE_LEFT`. Reallocation starts after `index.unassigned.node_left.delayed_timeout` (default 1 minute), which causes temporary yellow/red during that window. If the departed node held the only copy of a primary shard, the cluster enters red status until the node returns or an operator forces allocation with data loss.
+**Chain:**
+- root: a data node departs the cluster unexpectedly (crash, network partition, restart)
+- s1: its shards are marked `UNASSIGNED` with reason `NODE_LEFT`
+- s2: reallocation waits out `index.unassigned.node_left.delayed_timeout` (default 1m), so status is temporarily degraded
+- s3: if the node held the only copy of a primary, no surviving node has the data
+- D: unassigned shards persist → cluster yellow (replica lost) or red (primary lost) (Symptom)
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 2] `unassigned.reason` = `NODE_LEFT` on multiple shards
+  <!-- match: {"step": 2, "predicate": "contains", "target": "NODE_LEFT"} -->
+- root: [Step 1] `number_of_nodes` lower than expected
+  <!-- match: {"step": 1, "predicate": "contains", "target": "number_of_nodes"} -->
+- root: [Step 6] expected node name absent from output
 
-- [Step 1] `number_of_nodes` lower than expected
-- [Step 2] `unassigned.reason` = `NODE_LEFT` on multiple shards
-- [Step 6] Expected node name absent from output
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "NODE_LEFT"} -->
-<!-- match: {"step": 1, "predicate": "contains", "target": "number_of_nodes"} -->
-
-**Mitigation:**
-
-- **Risk:** If node is temporarily down (restart/patch), waiting avoids unnecessary shard recovery I/O. If permanently gone, replicas on surviving nodes serve reads but writes remain blocked for affected primaries.
-- **Command:**
+**Interventions:**
+- **remediation** (s3): if the node is permanently gone but replicas exist on surviving nodes, reroute a replica to promote it.
 
   ```bash
-  # Extend delay to avoid thrashing if node will return
+  curl -X POST "http://localhost:9200/_cluster/reroute?pretty" \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "commands": [{
+        "allocate_replica": {"index": "<INDEX>", "shard": 0, "node": "<SURVIVING_NODE>"}
+      }]
+    }'
+  ```
+
+  **Verification:** re-run Step 1; `unassigned_shards: 0` and `status: green`; re-run Step 6 to confirm node count restored or acknowledged as gone.
+- **mitigation** (s2): extend the delay if the node will return, then retry allocation after it expires.
+
+  ```bash
   curl -X PUT "http://localhost:9200/_all/_settings?pretty" \
     -H 'Content-Type: application/json' \
     -d '{"index.unassigned.node_left.delayed_timeout": "10m"}'
-  # Retry failed allocations after delay expires
   curl -X POST "http://localhost:9200/_cluster/reroute?retry_failed=true&pretty"
   ```
 
-- **Duration:** Wait up to the delayed_timeout window for the node to return; then reroute.
-
-**Resolution:**
-
-```bash
-# If node is permanently gone and replicas exist on surviving nodes, reroute replicas:
-curl -X POST "http://localhost:9200/_cluster/reroute?pretty" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "commands": [{
-      "allocate_replica": {"index": "<INDEX>", "shard": 0, "node": "<SURVIVING_NODE>"}
-    }]
-  }'
-# If node held only copy of primary and will not return (last resort, data loss):
-curl -X POST "http://localhost:9200/_cluster/reroute?pretty" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "commands": [{
-      "allocate_stale_primary": {
-        "index": "<INDEX>", "shard": 0, "node": "<NODE>", "accept_data_loss": true
-      }
-    }]
-  }'
-```
-
-- **Impact:** `allocate_stale_primary` with `accept_data_loss: true` is irreversible — any writes that occurred after the shard became unassigned are permanently lost.
-- **Rollback:** Not applicable for `allocate_stale_primary`; data is unrecoverable after execution.
-
-**Verification:** `curl -s "http://localhost:9200/_cluster/health?pretty" | grep -E "status|unassigned_shards"` — `unassigned_shards: 0` and `status: green`. `curl -s "http://localhost:9200/_cat/nodes?v"` — expected node count restored or acknowledged as gone.
-
-### Cause C: Insufficient nodes for configured replica count
-
-**Statement:** The cluster has fewer data nodes than the number of replicas configured, making it impossible to satisfy the replica placement constraint that no two copies of a shard share the same node.
-
-**Mechanism:** Elasticsearch's `SameShardAllocationDecider` enforces that no node can hold both a primary shard and its replica, nor two replicas of the same shard. A single-node cluster with `number_of_replicas: 1` produces permanent yellow status because the replica can never be placed. This is the default state for development environments.
-
-**Indicator:**
-
-- [Step 2] `unassigned.reason` = `INDEX_CREATED` on all replica shards (`prirep=r`) for all indices
-- [Step 3] `node_allocation_decisions` contains `explanation` referencing `SameShardAllocationDecider` with verdict `NO`
-- [Step 6] Node count equals 1 or fewer than `number_of_replicas + 1`
-
-<!-- match: {"step": 2, "predicate": "contains", "target": "INDEX_CREATED"} -->
-<!-- match: {"step": 3, "predicate": "contains", "target": "SameShardAllocationDecider"} -->
-
-**Mitigation:**
-
-- **Risk:** Setting `number_of_replicas: 0` eliminates fault tolerance — if the single node fails, data is lost.
-- **Command:**
+  **Risk:** if permanently gone, replicas serve reads but writes remain blocked for affected primaries. **Duration:** up to the delayed_timeout window for the node to return, then reroute. **Verification:** re-run Step 1; `unassigned_shards` decreasing toward 0.
+- **mitigation** (s3): last resort if the node held the only primary copy and will not return — force a stale primary, accepting data loss.
 
   ```bash
-  # Reduce replica count to 0 for all indices (development/single-node only)
+  curl -X POST "http://localhost:9200/_cluster/reroute?pretty" \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "commands": [{
+        "allocate_stale_primary": {
+          "index": "<INDEX>", "shard": 0, "node": "<NODE>", "accept_data_loss": true
+        }
+      }]
+    }'
+  ```
+
+  **Risk:** `allocate_stale_primary` with `accept_data_loss: true` is irreversible — any writes after the shard became unassigned are permanently lost; not recoverable after execution. **Duration:** immediate; use only when the node is confirmed permanently gone. **Verification:** re-run Step 1; `status: green` and `unassigned_shards: 0`.
+
+### Cause C: Insufficient nodes for replica count
+
+**Statement:** The cluster has fewer data nodes than the configured replica count, making it impossible to satisfy the constraint that no two copies of a shard share the same node.
+
+**Chain:**
+- root: the cluster has fewer data nodes than `number_of_replicas + 1`
+- s1: `SameShardAllocationDecider` forbids placing a replica on the node already holding its primary
+- s2: replica shards stay `UNASSIGNED` with reason `INDEX_CREATED` since no eligible node exists
+- D: unassignable replicas → permanent cluster yellow status (Symptom)
+
+**Indicators:**
+- s2: [Step 2] `unassigned.reason` = `INDEX_CREATED` on replica shards (`prirep=r`) for all indices
+  <!-- match: {"step": 2, "predicate": "contains", "target": "INDEX_CREATED"} -->
+- s1: [Step 3] `node_allocation_decisions` references `SameShardAllocationDecider` with verdict `NO`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "SameShardAllocationDecider"} -->
+- root: [Step 6] node count equals 1 or fewer than `number_of_replicas + 1`
+
+**Interventions:**
+- **remediation** (root): add a second data node, then restore replicas so the placement constraint can be satisfied.
+
+  ```bash
+  curl -X PUT "http://localhost:9200/_all/_settings?pretty" \
+    -H 'Content-Type: application/json' \
+    -d '{"index": {"number_of_replicas": 1}}'
+  ```
+
+  **Verification:** re-run Step 1; `unassigned_shards: 0` and `status: green`. Adding nodes requires provisioning; restoring replicas triggers shard recovery I/O across all indices.
+- **mitigation** (s2): reduce replica count to 0 (development/single-node only) so no replica needs placement.
+
+  ```bash
   curl -X PUT "http://localhost:9200/_all/_settings?pretty" \
     -H 'Content-Type: application/json' \
     -d '{"index": {"number_of_replicas": 0}}'
   ```
 
-- **Duration:** Immediate. Restore to 1 once additional nodes are added.
-
-**Resolution:**
-
-```bash
-# Add a second data node and restore replicas
-curl -X PUT "http://localhost:9200/_all/_settings?pretty" \
-  -H 'Content-Type: application/json' \
-  -d '{"index": {"number_of_replicas": 1}}'
-```
-
-- **Impact:** Adding nodes requires infrastructure provisioning; restoring replicas triggers shard recovery I/O across all indices.
-- **Rollback:** `PUT _all/_settings {"index": {"number_of_replicas": 0}}` returns to no-replica state.
-
-**Verification:** `curl -s "http://localhost:9200/_cluster/health?pretty" | grep -E "status|unassigned_shards"` — `unassigned_shards: 0` and `status: green`.
+  **Risk:** `number_of_replicas: 0` eliminates fault tolerance — if the single node fails, data is lost. **Duration:** immediate; restore to 1 once additional nodes are added. **Verification:** re-run Step 1; `status: green` and `unassigned_shards: 0`.
 
 ### Cause D: Shard allocation manually disabled
 
 **Statement:** `cluster.routing.allocation.enable` was set to `none` or `primaries` during maintenance and was never re-enabled, leaving new and unassigned shards stranded.
 
-**Mechanism:** Operators commonly disable shard allocation before rolling restarts to prevent unnecessary shard movement. If re-enable is skipped (crash, incomplete runbook), the cluster remains in a state where it cannot place any unassigned shards. The cause is not a hardware or capacity failure but a configuration state.
+**Chain:**
+- root: an operator set `cluster.routing.allocation.enable` to `none` or `primaries` (e.g. before a rolling restart) and never reverted it
+- s1: the cluster refuses to place any unassigned shard while allocation is disabled
+- D: unassigned shards remain stranded → cluster yellow or red (Symptom)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] `cluster.routing.allocation.enable` = `none` or `primaries`
+  <!-- match: {"step": 5, "predicate": "contains", "target": "allocation.enable"} -->
+- s1: [Step 3] `allocate_explanation` contains `allocation is disabled` with no disk/hardware reason
+  <!-- match: {"step": 3, "predicate": "contains", "target": "allocation is disabled"} -->
 
-- [Step 5] `cluster.routing.allocation.enable` = `none` or `primaries`
-- [Step 3] `allocate_explanation` contains `allocation is disabled` or `NO decisions` with no disk/hardware reason
-
-<!-- match: {"step": 5, "predicate": "contains", "target": "allocation.enable"} -->
-<!-- match: {"step": 3, "predicate": "contains", "target": "allocation is disabled"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. Re-enabling allocation restores normal cluster behavior. If allocation was disabled due to an active issue, re-enabling may cause unwanted shard movement before the root cause is resolved.
-- **Command:**
+**Interventions:**
+- **remediation** (root): re-enable allocation by clearing the override (returns to default `all`).
 
   ```bash
   curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
@@ -282,154 +273,152 @@ curl -X PUT "http://localhost:9200/_all/_settings?pretty" \
     -d '{"persistent": {"cluster.routing.allocation.enable": null}}'
   ```
 
-- **Duration:** Seconds for the setting change. Shard recovery proceeds asynchronously.
+  **Risk:** if allocation was disabled due to an active issue, re-enabling may cause unwanted shard movement before the root cause is resolved. **Verification:** re-run Step 5; no `allocation.enable` override value. Monitor `initializing_shards` via Step 1 until it returns to 0.
 
-**Resolution:** **Same as Mitigation.**
+### Cause E: Allocation filter excludes all nodes
 
-**Verification:** `curl -s "http://localhost:9200/_cluster/settings?flat_settings=true&pretty" | grep allocation.enable` — no override value (default `all`). Monitor `initializing_shards` counter via `_cluster/health` until it returns to 0.
+**Statement:** Index-level `index.routing.allocation.require`/`include` settings reference node attributes that no currently-available data node satisfies, causing all allocation decisions to return `NO`.
 
-### Cause E: Allocation filter rules exclude all available nodes
+**Chain:**
+- root: an index's routing filter requires a node attribute (e.g. `zone: us-east-1a`) that no available data node carries
+- s1: `FilterAllocationDecider` rejects every node when comparing the filter to node attributes
+- s2: the shard cannot be placed anywhere and stays unassigned; this silently persists until corrected
+- D: unassignable shards → cluster yellow or red (Symptom)
 
-**Statement:** Index-level `index.routing.allocation.require` or `index.routing.allocation.include` settings reference node attributes that no currently-available data node satisfies, causing all allocation decisions to return `NO`.
+**Indicators:**
+- s1: [Step 3] `node_allocation_decisions` references `FilterAllocationDecider` with verdict `NO` on every node
+  <!-- match: {"step": 3, "predicate": "contains", "target": "FilterAllocationDecider"} -->
+- root: [Step 3] `allocate_explanation` names a node attribute value absent from `_cat/nodes` output
 
-**Mechanism:** `FilterAllocationDecider` compares the index's routing filter settings against each node's attributes (e.g., `node.attr.zone`, `node.attr.rack`). If the index requires `zone: us-east-1a` but no data node carries that attribute label, every node is rejected. This silently persists until the filter is corrected or a matching node is added.
-
-**Indicator:**
-
-- [Step 3] `node_allocation_decisions` contains `explanation` referencing `FilterAllocationDecider` with verdict `NO` on every node
-- [Step 3] `allocate_explanation` names a specific node attribute value that is absent from `_cat/nodes` output
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "FilterAllocationDecider"} -->
-
-**Mitigation:**
-
-- **Risk:** Removing the filter may place shards on unintended nodes if the filter was enforcing a data-locality requirement (e.g., compliance zone pinning).
-- **Command:**
+**Interventions:**
+- **remediation** (root): correct the filter to match actual node attributes (or remove it entirely).
 
   ```bash
-  # Inspect the problematic filter on the index
   curl -s "http://localhost:9200/<INDEX_NAME>/_settings?pretty" | grep -E "routing\.allocation"
-  # Remove the filter
+  curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
+    -H 'Content-Type: application/json' \
+    -d '{"index.routing.allocation.require.zone": "<CORRECT_ZONE_VALUE>"}'
+  ```
+
+  **Risk:** correcting a zone filter may relocate shards across nodes, causing recovery I/O; per-index change with no cluster-wide blast radius. **Verification:** re-run Step 3; `can_allocate` changes from `NO` to `YES`; cluster returns `green` within minutes.
+- **mitigation** (s1): remove the filter to immediately unblock allocation if the constraint is not safety-critical.
+
+  ```bash
   curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
     -H 'Content-Type: application/json' \
     -d '{"index.routing.allocation.require._name": null}'
   ```
 
-- **Duration:** Immediate. Shards allocate on the next allocation cycle.
+  **Risk:** removing the filter may place shards on unintended nodes if it enforced data-locality (e.g. compliance zone pinning). **Duration:** immediate; restore the corrected filter as soon as a matching node exists. **Verification:** re-run Step 3; shards allocate on the next allocation cycle.
 
-**Resolution:**
+### Cause F: Allocation retry limit exhausted
 
-```bash
-# Correct the filter to match actual node attributes, or remove it entirely
-curl -X PUT "http://localhost:9200/<INDEX_NAME>/_settings?pretty" \
-  -H 'Content-Type: application/json' \
-  -d '{"index.routing.allocation.require.zone": "<CORRECT_ZONE_VALUE>"}'
-```
+**Statement:** Elasticsearch attempted to allocate a shard multiple times, exhausted its retry limit (default 5), and marked the shard permanently unallocatable until an operator resets the counter.
 
-- **Impact:** Per-index change with no cluster-wide blast radius. Correcting a zone filter may relocate shards across nodes, causing recovery I/O.
-- **Rollback:** `PUT <INDEX>/_settings {"index.routing.allocation.require.zone": "<ORIGINAL>"}` restores the original filter.
+**Chain:**
+- root: a transient failure (e.g. momentary node overload) makes the first allocation attempts fail
+- s1: after 5 failed attempts `MaxRetryAllocationDecider` marks the shard `max_retry` and stops automatic retries
+- s2: the retry counter is not reset automatically, so the shard stays unassigned even after the original cause clears
+- D: shard remains unassigned → cluster yellow or red (Symptom)
 
-**Verification:** `curl -s "http://localhost:9200/_cluster/allocation/explain?pretty" -d '{"index": "<INDEX>", "shard": 0, "primary": true}'` — `can_allocate` changes from `NO` to `YES`. `_cluster/health` returns `green` within minutes.
+**Indicators:**
+- s1: [Step 3] `allocate_explanation` contains `too many allocation attempts` or `MaxRetryAllocationDecider`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "MaxRetryAllocationDecider"} -->
+- root: [Step 2] `unassigned.reason` = `ALLOCATION_FAILED`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "ALLOCATION_FAILED"} -->
 
-### Cause F: MaxRetryAllocationDecider — allocation exhausted retry limit
+**Interventions:**
+- **remediation** (root): investigate the original allocation failure in the logs to prevent recurrence, then reset the retry counter.
 
-**Statement:** Elasticsearch has attempted to allocate a shard multiple times, exhausted its retry limit (default 5), and marked the shard as permanently unallocatable until an operator resets the counter.
+  ```bash
+  grep "ALLOCATION_FAILED" /var/log/elasticsearch/*.log
+  curl -X POST "http://localhost:9200/_cluster/reroute?retry_failed=true&pretty"
+  ```
 
-**Mechanism:** After 5 failed allocation attempts, `MaxRetryAllocationDecider` marks the shard with `max_retry` and stops automatic retries. The root failure that caused the initial attempts may have been transient (e.g., a momentary node overload), but the retry counter is not reset automatically. The shard remains unassigned even after the original cause is resolved.
-
-**Indicator:**
-
-- [Step 3] `allocate_explanation` contains `too many allocation attempts` or `MaxRetryAllocationDecider`
-- [Step 2] `unassigned.reason` = `ALLOCATION_FAILED`
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "MaxRetryAllocationDecider"} -->
-<!-- match: {"step": 2, "predicate": "contains", "target": "ALLOCATION_FAILED"} -->
-
-**Mitigation:**
-
-- **Risk:** Low. `retry_failed=true` resets the retry counter and triggers a fresh allocation attempt. If the underlying cause is unresolved, the cycle will repeat.
-- **Command:**
+  **Verification:** re-run Step 3; the explanation no longer references `MaxRetryAllocationDecider`; Step 1 shows `initializing_shards > 0` briefly then `unassigned_shards: 0`.
+- **mitigation** (s2): reset the retry counter to trigger a fresh allocation attempt without first finding the root cause.
 
   ```bash
   curl -X POST "http://localhost:9200/_cluster/reroute?retry_failed=true&pretty"
   ```
 
-- **Duration:** Seconds for the API call. Shard placement takes additional seconds to minutes.
+  **Risk:** if the underlying cause is unresolved, the failure cycle repeats and exhausts retries again. **Duration:** seconds for the call; shard placement takes seconds to minutes. **Verification:** re-run Step 1; `initializing_shards > 0` then `unassigned_shards: 0`.
 
-**Resolution:** **Same as Mitigation.** Investigate the original allocation failure in Elasticsearch logs to prevent recurrence (`grep "ALLOCATION_FAILED" /var/log/elasticsearch/*.log`).
-
-**Verification:** `_cluster/health` shows `initializing_shards > 0` briefly, then `unassigned_shards: 0`. `_cluster/allocation/explain` no longer references `MaxRetryAllocationDecider`.
-
-### Cause G: Cluster max-shards-per-node limit reached
+### Cause G: Max shards per node reached
 
 **Statement:** The cluster-wide `cluster.max_shards_per_node` ceiling (default 1000) has been reached on one or more data nodes, preventing any additional shard assignments.
 
-**Mechanism:** The `ShardsLimitAllocationDecider` enforces a hard ceiling of `cluster.max_shards_per_node * number_of_data_nodes` total open shards. Clusters with many small indices (e.g., daily log indices that accumulate over months) routinely hit this limit. The limit was introduced in 7.x to prevent uncontrolled shard proliferation from degrading cluster performance.
+**Chain:**
+- root: many small indices (e.g. daily log indices accumulating over months) push total open shards toward `max_shards_per_node * number_of_data_nodes`
+- s1: `ShardsLimitAllocationDecider` denies further shard assignments once the ceiling is hit
+- D: new and unassigned shards cannot be placed → cluster yellow or red (Symptom)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 8] `cluster.max_shards_per_node` at or near total shard count divided by node count
+- s1: [Step 3] `allocate_explanation` contains `too many shards` or `ShardsLimitAllocationDecider`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "too many shards"} -->
+  <!-- match: {"step": 3, "predicate": "contains", "target": "ShardsLimitAllocationDecider"} -->
 
-- [Step 8] `cluster.max_shards_per_node` is at or near the total shard count divided by node count
-- [Step 3] `allocate_explanation` contains `too many shards` or `ShardsLimitAllocationDecider`
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "too many shards"} -->
-<!-- match: {"step": 3, "predicate": "contains", "target": "ShardsLimitAllocationDecider"} -->
-
-**Mitigation:**
-
-- **Risk:** Raising the limit above 1000 per node can degrade cluster performance — each shard consumes heap, file descriptors, and threads. Raise only while consolidating indices.
-- **Command:**
+**Interventions:**
+- **remediation** (root): delete old, unneeded time-based indices to reduce total shard count, then reset the limit to default.
 
   ```bash
-  # Temporary: raise the limit while consolidating
+  curl -s "http://localhost:9200/_cat/indices?v&h=index,docs.count,store.size&s=index" | grep -E "^logs-202[0-4]"
+  curl -X DELETE "http://localhost:9200/logs-2024.*"
+  curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
+    -H 'Content-Type: application/json' \
+    -d '{"persistent": {"cluster.max_shards_per_node": null}}'
+  ```
+
+  **Risk:** deleting indices is permanent; ensure actual shard count is below 1000/node before resetting the limit to null. **Verification:** re-run Step 1; `unassigned_shards: 0`; total shards / data nodes < `cluster.max_shards_per_node`.
+- **mitigation** (s1): temporarily raise the ceiling while consolidating indices so shards can allocate now.
+
+  ```bash
   curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
     -H 'Content-Type: application/json' \
     -d '{"persistent": {"cluster.max_shards_per_node": 2000}}'
   ```
 
-- **Duration:** Immediate. Revert after shard count is reduced.
-
-**Resolution:**
-
-```bash
-# Delete old, unneeded time-based indices to reduce total shard count
-curl -s "http://localhost:9200/_cat/indices?v&h=index,docs.count,store.size&s=index" | grep -E "^logs-202[0-4]"
-curl -X DELETE "http://localhost:9200/logs-2024.*"
-# Reset limit to default once shard count is under control
-curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
-  -H 'Content-Type: application/json' \
-  -d '{"persistent": {"cluster.max_shards_per_node": null}}'
-```
-
-- **Impact:** Deleting indices is permanent. Resetting `max_shards_per_node` to null restores the default 1000 — ensure actual shard count is below this before resetting.
-- **Rollback:** `PUT _cluster/settings {"persistent": {"cluster.max_shards_per_node": 2000}}` restores the raised limit.
-
-**Verification:** `curl -s "http://localhost:9200/_cluster/health?pretty" | grep unassigned_shards` returns `0`. Total shards / data nodes < `cluster.max_shards_per_node`.
+  **Risk:** raising above 1000/node degrades performance — each shard consumes heap, file descriptors, and threads. **Duration:** immediate; revert after shard count is reduced. **Verification:** re-run Step 1; `unassigned_shards` drops toward 0 as shards allocate.
 
 ### Cause H: Corrupt or unrecoverable shard data
 
 **Statement:** A data node experienced an unclean shutdown or storage fault that corrupted a shard's segment files, causing every allocation attempt to fail with a shard corruption exception.
 
-**Mechanism:** Elasticsearch validates shard integrity when loading segments from disk. If checksums fail or segment files are missing, the shard is marked `ALLOCATION_FAILED` and the `MaxRetryAllocationDecider` quickly exhausts retries. If a healthy replica exists on another node, deleting the corrupt copy allows Elasticsearch to recover from the replica. If no healthy copy exists, data recovery requires `allocate_empty_primary` (data loss) or restoring from a snapshot.
+**Chain:**
+- root: an unclean shutdown or storage fault corrupts a shard's segment files (checksum failure or missing segments)
+- s1: Elasticsearch fails segment validation when loading the shard and marks it `ALLOCATION_FAILED`
+- s2: `MaxRetryAllocationDecider` quickly exhausts retries on the corrupt copy
+- s3: with no healthy replica, the only copies are corrupt
+- D: the shard cannot be allocated from any copy → cluster red (Symptom)
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 3] `allocate_explanation` contains `shard corruption` or `failed shard on allocating node`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "shard corruption"} -->
+  <!-- match: {"step": 3, "predicate": "contains", "target": "failed shard on allocating node"} -->
+- s3: [Step 2] `unassigned.reason` = `ALLOCATION_FAILED` on a primary shard with no corresponding healthy replica
 
-- [Step 3] `allocate_explanation` contains `shard corruption` or `failed to open shard on node` or `failed shard on allocating node`
-- [Step 2] `unassigned.reason` = `ALLOCATION_FAILED` on a primary shard with no corresponding healthy replica
-
-<!-- match: {"step": 3, "predicate": "contains", "target": "shard corruption"} -->
-<!-- match: {"step": 3, "predicate": "contains", "target": "failed shard on allocating node"} -->
-
-**Mitigation:**
-
-- **Risk:** If a healthy replica exists, deleting the corrupt copy is safe — it re-syncs from the replica. If no replica exists, `allocate_empty_primary` creates an empty shard (all data lost).
-- **Command:**
+**Interventions:**
+- **remediation** (root): restore the index from a snapshot when data loss from an empty primary is unacceptable.
 
   ```bash
-  # Check if a healthy replica exists before proceeding
+  curl -X POST "http://localhost:9200/_snapshot/<REPO>/<SNAPSHOT>/_restore?pretty" \
+    -H 'Content-Type: application/json' \
+    -d '{"indices": "<INDEX_NAME>", "ignore_unavailable": true}'
+  ```
+
+  **Risk:** snapshot restore replaces the index entirely; any writes after the snapshot are lost and the restore is one-way (re-index from source if available). **Verification:** re-run Step 2; all shards of the index in `STARTED` state; cluster returns `green`.
+- **defensive_fix** (s2): if a healthy replica exists, retry allocation so the shard re-syncs from the replica instead of staying stuck on the corrupt copy.
+
+  ```bash
   curl -s "http://localhost:9200/_cat/shards?v&h=index,shard,prirep,state,node" | grep "<INDEX_NAME>"
-  # Retry allocation first (may succeed if transient):
   curl -X POST "http://localhost:9200/_cluster/reroute?retry_failed=true&pretty"
-  # Last resort if no replica — allocate empty primary (ALL DATA IN THIS SHARD LOST):
+  ```
+
+  **Verification:** re-run Step 2; shard reaches `STARTED`; recovery from a healthy replica may take minutes to hours depending on shard size.
+- **mitigation** (s3): last resort when no replica exists — allocate an empty primary, losing all data in that shard.
+
+  ```bash
   curl -X POST "http://localhost:9200/_cluster/reroute?pretty" \
     -H 'Content-Type: application/json' \
     -d '{
@@ -442,53 +431,26 @@ curl -X PUT "http://localhost:9200/_cluster/settings?pretty" \
     }'
   ```
 
-- **Duration:** Shard recovery from a healthy replica may take minutes to hours depending on shard size. `allocate_empty_primary` is immediate.
-
-**Resolution:**
-
-```bash
-# Restore from snapshot if data loss from allocate_empty_primary is unacceptable
-curl -X POST "http://localhost:9200/_snapshot/<REPO>/<SNAPSHOT>/_restore?pretty" \
-  -H 'Content-Type: application/json' \
-  -d '{"indices": "<INDEX_NAME>", "ignore_unavailable": true}'
-```
-
-- **Impact:** Snapshot restore replaces the index entirely. Any writes made after the snapshot was taken are lost.
-- **Rollback:** Not applicable — snapshot restore is one-way. Re-index from source if available.
-
-**Verification:** `curl -s "http://localhost:9200/_cat/shards?v" | grep "<INDEX_NAME>"` — all shards in `STARTED` state. `_cluster/health` returns `green`.
+  **Risk:** `allocate_empty_primary` creates an empty shard — all data in that shard is permanently lost. **Duration:** immediate; use only after confirming no healthy replica or snapshot exists. **Verification:** re-run Step 2; the shard reaches `STARTED` (empty); cluster returns `green`.
 
 ### Cause Z: Unidentified allocation failure
 
-**Statement:** Shards remain unassigned and none of the identified deciders or configuration causes account for the allocation block. [Default]
+**Statement:** Shards remain unassigned and none of the identified deciders or configuration causes account for the allocation block.
 
-**Mechanism:** Allocation failures may arise from unusual combinations of allocation awareness settings, zone awareness constraints, cross-cluster replication blocks, security plugin permission errors, or internal Elasticsearch bugs not covered by the diagnostic steps above.
+**Indicators:**
+- [Default]
 
-**Indicator:**
-
-- [Default] All preceding Causes have been evaluated and do not match
-- [Step 3] `allocate_explanation` contains an unrecognized decider or explanation string
-
-**Mitigation:**
-
-- **Risk:** Low. Collecting diagnostics does not change cluster state.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot and escalate to the SME / Elastic Support.
 
   ```bash
-  # Capture full allocation explain output for all unassigned shards
   curl -s "http://localhost:9200/_cluster/allocation/explain?pretty" > /tmp/es-alloc-explain.json
-  # Capture cluster state
   curl -s "http://localhost:9200/_cluster/state?pretty" > /tmp/es-cluster-state.json
-  # Capture recent Elasticsearch log lines
   journalctl -u elasticsearch --since "1 hour ago" | grep -iE "error|warn|allocation|shard" \
     > /tmp/es-recent.log
   ```
 
-- **Duration:** Collect and escalate to Elastic Support or GitHub issues for open-source deployments.
-
-**Resolution:** Out of runbook scope. Provide `/tmp/es-alloc-explain.json`, `/tmp/es-cluster-state.json`, and `/tmp/es-recent.log` to Elastic Support along with the Elasticsearch version (`GET /`).
-
-**Verification:** Cluster health returns `green` and `unassigned_shards: 0` after resolution with Elastic Support guidance.
+  **Risk:** low — collecting diagnostics does not change cluster state. **Duration:** collect and escalate to Elastic Support (or GitHub issues for open-source deployments) with the Elasticsearch version (`GET /`). **Verification:** re-run Step 1; cluster returns `green` and `unassigned_shards: 0` after resolution with SME/Elastic Support guidance.
 
 ## Prevention
 

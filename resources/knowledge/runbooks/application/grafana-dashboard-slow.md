@@ -6,10 +6,10 @@ service: grafana
 symptom_class: [latency]
 severity: medium
 scope: "global"
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
-status: "draft"
+status: draft
 tags: [grafana, dashboard, observability, query-performance, prometheus, rendering]
 difficulty: intermediate
 ---
@@ -134,20 +134,37 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
 
 **Statement:** A PromQL or other data-source query returns hundreds of series or millions of data points, saturating network transfer and browser rendering capacity.
 
-**Mechanism:** Grafana streams the full query result from the data source to the browser; each data-point tuple is allocated in JavaScript heap. When result cardinality or point count exceeds browser rendering thresholds (roughly 50 000 points per panel), the main thread blocks during chart re-draw, causing the tab to freeze. The data source itself may also be slow because high-cardinality queries force a full scan of TSDB head blocks or index structures.
+**Chain:**
+- root: a high-cardinality query forces a full scan of TSDB head blocks or index structures and returns hundreds of series or millions of data points
+- s1: Grafana streams the full result to the browser, allocating each data-point tuple in the JavaScript heap
+- s2: result point count exceeds the browser rendering threshold (~50 000 points per panel), blocking the main thread during chart re-draw
+- D: the browser tab freezes and the panel renders slowly or times out (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 2] direct data-source timing for the panel query exceeds 2 seconds
+  <!-- match: {"step": 2, "predicate": "threshold", "target": "datasource_query_seconds", "op": ">", "value": 2} -->
+- s2: [Step 1] Query Inspector Stats tab shows `"Rows"` exceeding 10 000 or execution time exceeding 2 000 ms
+  <!-- match: {"step": 1, "predicate": "threshold", "target": "row_count", "op": ">", "value": 10000} -->
 
-- [Step 1] Query Inspector Stats tab shows `"Rows"` exceeding 10 000 or execution time exceeding 2 000 ms
-- [Step 2] Direct data-source timing exceeds 2 seconds
+**Interventions:**
+- **remediation** (root): create a Prometheus recording rule for the expensive aggregation so per-query CPU drops on every scrape. The recording rule is cluster-wide; a bad expr produces zero data until corrected (roll back by removing the rule block, reloading Prometheus, and restoring the original panel query).
 
-<!-- match: {"step": 1, "predicate": "threshold", "target": "executionTime_ms", "op": ">", "value": 2000} -->
-<!-- match: {"step": 1, "predicate": "threshold", "target": "row_count", "op": ">", "value": 10000} -->
+  ```bash
+  # Create a Prometheus recording rule for the expensive aggregation
+  cat >> /etc/prometheus/rules/dashboard-opt.yml <<'EOF'
+  groups:
+    - name: dashboard-opt
+      interval: 60s
+      rules:
+        - record: http_requests:rate5m_by_service
+          expr: sum by (service) (rate(http_requests_total{env="production"}[5m]))
+  EOF
+  curl -X POST http://prometheus:9090/-/reload
+  # Update dashboard panel query to reference recording-rule metric name
+  ```
 
-**Mitigation:**
-
-- **Risk:** Narrowing the query reduces historical visibility; ensure oncall engineers are aware of changed panel scope.
-- **Command:**
+  **Verification:** Query Inspector execution time drops below 1 000 ms and `"Rows"` count drops below 5 000; the browser tab no longer freezes during panel render.
+- **mitigation** (s2): narrow the query with a label selector and cap returned points to keep the result under the browser rendering threshold.
 
   ```bash
   # Add label selector to restrict cardinality — example for Prometheus
@@ -156,29 +173,7 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
   # Also set Max data points = 1000 in panel Query Options via UI
   ```
 
-- **Duration:** Immediate; revert by removing the label filter.
-
-**Resolution:**
-
-```bash
-# Create a Prometheus recording rule for the expensive aggregation
-cat >> /etc/prometheus/rules/dashboard-opt.yml <<'EOF'
-groups:
-  - name: dashboard-opt
-    interval: 60s
-    rules:
-      - record: http_requests:rate5m_by_service
-        expr: sum by (service) (rate(http_requests_total{env="production"}[5m]))
-EOF
-curl -X POST http://prometheus:9090/-/reload
-# Update dashboard panel query to reference recording-rule metric name
-```
-
-- **Impact:** Recording rules reduce per-query CPU on every scrape. Config is cluster-wide; a bad expr will produce zero data until corrected.
-
-- **Rollback:** Remove the rule block and reload Prometheus; update panel query back to original expression.
-
-**Verification:** Query Inspector execution time drops below 1 000 ms; `"Rows"` count drops below 5 000. Browser tab no longer freezes during panel render.
+  **Risk:** Narrowing the query reduces historical visibility; ensure oncall engineers are aware of changed panel scope. **Duration:** Immediate; revert by removing the label filter. **Verification:** Query Inspector `"Rows"` count drops and the panel renders without the tab freezing.
 
 ---
 
@@ -186,19 +181,28 @@ curl -X POST http://prometheus:9090/-/reload
 
 **Statement:** A multi-value template variable with `includeAll = true` expands to hundreds of values, multiplying the query count by the number of variable values on each dashboard load.
 
-**Mechanism:** Grafana evaluates template variables before firing panel queries. When "All" is selected on a variable that resolves to N values and a repeated row or panel uses that variable, Grafana fires N independent queries per panel. A dashboard with 10 panels and a variable resolving to 200 services generates 2 000 concurrent data-source requests, exhausting the query worker pool and stalling all other user requests.
+**Chain:**
+- root: a multi-value template variable with `includeAll = true` resolves to N (hundreds of) values when "All" is selected
+- s1: a repeated row or panel using that variable fires N independent queries per panel, generating thousands of concurrent data-source requests
+- s2: the burst exhausts the query worker pool, stalling all other user requests
+- D: the dashboard renders slowly or times out (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `multi_all_vars` array contains a variable whose resolved value count exceeds 50
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "multi_all_var_count", "op": ">", "value": 50} -->
+- s1: [Step 1] panel load time scales linearly with the number of selected variable values
 
-- [Step 4] `multi_all_vars` array contains variables where resolved value count exceeds 50
-- [Step 1] Panel load time scales linearly with the number of selected variable values
+**Interventions:**
+- **remediation** (root): replace the high-cardinality multi-select variable with a recording rule that pre-aggregates across the dimension, removing the need to select individual values. Users lose per-value drill-down; provide a linked detail dashboard for per-service investigation (roll back by re-importing the original dashboard JSON from `Dashboard Settings > Versions`).
 
-<!-- match: {"step": 4, "predicate": "threshold", "target": "multi_all_var_count", "op": ">", "value": 50} -->
+  ```bash
+  # Define a recording rule that pre-aggregates across the variable dimension,
+  # then point the panel at the pre-aggregated metric instead of the variable.
+  # See Cause A for recording-rule syntax and `curl -X POST .../-/reload`.
+  ```
 
-**Mitigation:**
-
-- **Risk:** Restricting the default selection requires users to manually choose the full set; communicate the change in a team channel.
-- **Command:**
+  **Verification:** Dashboard load time is constant regardless of how many variable values are logically available; Step 4 `multi_all_vars` shows resolved count under 20.
+- **mitigation** (root): disable `includeAll` and pin the default selection to a specific subset.
 
   ```bash
   # Via dashboard JSON: set includeAll=false and set current.value to a specific subset
@@ -209,15 +213,7 @@ curl -X POST http://prometheus:9090/-/reload
   # Then POST the patched dashboard JSON back via /api/dashboards/db
   ```
 
-- **Duration:** Immediate; revert by re-enabling `includeAll` in dashboard JSON.
-
-**Resolution:** Replace high-cardinality multi-select variable with a recording rule that pre-aggregates across the dimension, removing the need to select individual values.
-
-- **Impact:** All users of the dashboard lose the per-value drill-down; provide a linked detail dashboard for per-service investigation.
-
-- **Rollback:** Re-import the original dashboard JSON from version history (`Dashboard Settings > Versions`).
-
-**Verification:** Dashboard load time is constant regardless of how many variable values are logically available. Step 4 `multi_all_vars` shows resolved count under 20.
+  **Risk:** Restricting the default selection requires users to manually choose the full set; communicate the change in a team channel. **Duration:** Immediate; revert by re-enabling `includeAll` in dashboard JSON. **Verification:** Step 4 `multi_all_vars` shows resolved count under 20 and dashboard load time is constant.
 
 ---
 
@@ -225,19 +221,26 @@ curl -X POST http://prometheus:9090/-/reload
 
 **Statement:** A dashboard with 30 or more panels generates a burst of concurrent data-source requests that saturates both the Grafana query worker pool and the data source's connection limit.
 
-**Mechanism:** Grafana fires all visible panel queries in parallel on dashboard load. Each query occupies a connection slot on both the Grafana side (HTTP keep-alive pool) and the data source side. When the burst exceeds the data source's `max_connections` or Prometheus's `--query.max-concurrency`, queries queue and panels wait for a free slot, producing sequential-looking load times even though Grafana intended parallelism.
+**Chain:**
+- root: a dashboard with 30 or more panels fires all visible panel queries in parallel on load, each occupying a connection slot on the Grafana and data-source sides
+- s1: the burst exceeds the data source's `max_connections` or Prometheus's `--query.max-concurrency`, so queries queue waiting for a free slot
+- D: panels load sequentially despite intended parallelism and the dashboard renders slowly (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `panel_count` exceeds 25 or `total_queries` exceeds 30
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "panel_count", "op": ">", "value": 25} -->
+- s1: [Step 3] `grafana_datasource_request_duration_seconds` p99 is high while direct data-source queries are fast (Step 2)
 
-- [Step 4] `panel_count` exceeds 25 or `total_queries` exceeds 30
-- [Step 3] `grafana_datasource_request_duration_seconds` p99 is high while data-source direct queries are fast (Step 2)
+**Interventions:**
+- **remediation** (root): export the dashboard and split it into two or more focused dashboards of 10–15 panels each, then add Grafana dashboard links (`Dashboard Settings > Links`) for navigation. Users must navigate between dashboards for full coverage; consider a summary "overview" dashboard with links to detail views (roll back by re-importing the original dashboard JSON from version history).
 
-<!-- match: {"step": 4, "predicate": "threshold", "target": "panel_count", "op": ">", "value": 25} -->
+  ```bash
+  # Export the dashboard, split panels into focused dashboards of 10-15 panels,
+  # and re-import each via /api/dashboards/db; add cross-links under Settings > Links.
+  ```
 
-**Mitigation:**
-
-- **Risk:** Splitting dashboards breaks existing bookmarks; use Grafana dashboard links to preserve navigation.
-- **Command:**
+  **Verification:** Each resulting dashboard loads in under 3 seconds; Step 4 shows `panel_count` below 20 per dashboard.
+- **mitigation** (s1): collapse non-critical rows so Grafana only queries panels in expanded (visible) rows, cutting the concurrent burst.
 
   ```bash
   # Collapse secondary metric rows using Grafana row grouping
@@ -249,35 +252,26 @@ curl -X POST http://prometheus:9090/-/reload
     > /tmp/collapsed.json
   ```
 
-- **Duration:** Immediate; rows can be expanded on demand without triggering a full reload.
-
-**Resolution:** Export the dashboard and split into two or more focused dashboards of 10–15 panels each. Add Grafana dashboard links (`Dashboard Settings > Links`) to enable navigation between related views.
-
-- **Impact:** Users must navigate between dashboards for full coverage; consider a summary "overview" dashboard with links to detail views.
-
-- **Rollback:** Re-import the original dashboard JSON from the Grafana version history.
-
-**Verification:** Each resulting dashboard loads in under 3 seconds. Step 4 shows `panel_count` below 20 per dashboard.
+  **Risk:** Splitting/collapsing changes the at-a-glance view; use Grafana dashboard links to preserve navigation. **Duration:** Immediate; rows can be expanded on demand without triggering a full reload. **Verification:** Step 3 `grafana_datasource_request_duration_seconds` p99 drops and panels load without queueing.
 
 ---
 
 ### Cause D: Grafana Data-Proxy Timeout Too Short for Legitimate Queries
 
-**Statement:** The Grafana data-proxy `timeout` setting is shorter than the time required by the data source to evaluate a legitimate query, causing premature cancellation and "No data" or timeout errors in panels.
+**Statement:** The Grafana data-proxy `timeout` is shorter than the time a legitimately slow data-source query needs to complete, causing premature cancellation and "No data" or timeout errors in panels.
 
-**Mechanism:** Grafana's data-proxy layer wraps each outbound data-source HTTP request in a context with a configurable deadline (default 30 seconds). When a data-source query is inherently slow (e.g., a Loki log aggregation over 7 days or a complex SQL join), the context deadline fires before the query completes. Grafana returns an empty or error result to the panel while the data source continues processing the abandoned query, wasting resources.
+**Chain:**
+- root: the Grafana data-proxy `timeout` (default 30 s) is set shorter than the time an inherently slow data-source query (e.g. a 7-day Loki aggregation or a complex SQL join) needs to evaluate
+- s1: the data-proxy context deadline fires before the query completes, cancelling the outbound request while the data source keeps processing the abandoned query
+- D: the panel returns an empty or `context deadline exceeded` error and renders as "No data" or a timeout (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] Query Inspector shows a request error or `"context deadline exceeded"` in the response rather than a data result
+  <!-- match: {"step": 1, "predicate": "contains", "target": "context deadline exceeded"} -->
+- s1: [Symptom] Grafana logs contain `context deadline exceeded` or `request canceled` paired with the `/api/ds/query` path
 
-- [Step 1] Query Inspector shows a request error or `"context deadline exceeded"` in the response rather than a data result
-- [Symptom] Grafana logs contain `context deadline exceeded` or `request canceled` paired with `/api/ds/query` path
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "context deadline exceeded"} -->
-
-**Mitigation:**
-
-- **Risk:** Increasing timeout allows slow queries to consume Grafana worker threads longer; monitor concurrent-request depth.
-- **Command:**
+**Interventions:**
+- **remediation** (root): raise the data-proxy `timeout` past the legitimate query duration so the request is no longer cancelled, and simultaneously optimize the query via a recording rule (see Cause A) to bring response time back below the original 30-second limit.
 
   ```bash
   # /etc/grafana/grafana.ini
@@ -290,11 +284,17 @@ curl -X POST http://prometheus:9090/-/reload
   sudo systemctl restart grafana-server
   ```
 
-- **Duration:** Temporary — apply until the underlying slow query is optimized or a recording rule is in place.
+  **Verification:** Step 1 Query Inspector no longer returns `context deadline exceeded` and panels complete within the new timeout.
+- **mitigation** (s1): apply the same `timeout` bump as a stopgap until the underlying slow query is optimized or a recording rule is in place.
 
-**Resolution:** Same as Mitigation.
+  ```bash
+  # Temporarily widen the data-proxy deadline (revert once the query is optimized)
+  sudo sed -i 's/^;timeout = .*/timeout = 90/' /etc/grafana/grafana.ini \
+    || echo "timeout = 90" | sudo tee -a /etc/grafana/grafana.ini
+  sudo systemctl restart grafana-server
+  ```
 
-**Verification:** Step 1 Query Inspector no longer returns `context deadline exceeded`. Panels complete within the new timeout. Simultaneously optimize the query via recording rules (see Cause A) to reduce response time below the original 30-second limit.
+  **Risk:** Increasing the timeout lets slow queries consume Grafana worker threads longer; monitor concurrent-request depth. **Duration:** Temporary — apply until the underlying slow query is optimized or a recording rule is in place. **Verification:** Step 1 Query Inspector no longer returns `context deadline exceeded` and panels complete within the new timeout.
 
 ---
 
@@ -302,19 +302,29 @@ curl -X POST http://prometheus:9090/-/reload
 
 **Statement:** The Grafana server process is CPU- or memory-saturated, causing query response-processing and result-serialization to queue behind other concurrent requests.
 
-**Mechanism:** Grafana performs post-query processing in-process: JSON deserialization of data-source responses, transformation pipeline execution (join, filter, calculate), and server-side rendering for PNG exports. Under concurrent user load, a single undersized Grafana pod becomes the bottleneck even when data sources respond quickly. Memory pressure causes GC pauses that stall all in-flight request goroutines.
+**Chain:**
+- root: the Grafana server process is CPU- or memory-saturated (undersized pod under concurrent user load)
+- s1: in-process post-query work (JSON deserialization, transformation pipeline, server-side rendering) and GC pauses stall in-flight request goroutines
+- D: panel response-processing and serialization queue, so panels render slowly even when data sources respond quickly (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `kubectl top pod` shows CPU throttling (`cpu` at or above request limit) or memory near the resource limit
+  <!-- match: {"step": 3, "predicate": "threshold", "target": "cpu_pct", "op": ">", "value": 80} -->
+- s1: [Step 2] direct data-source queries are fast but Step 1 panel load times are slow
 
-- [Step 3] `kubectl top pod` shows CPU throttling (`cpu` at or above request limit) or memory near the resource limit
-- [Step 2] Direct data-source queries are fast but Step 1 panel load times are slow
+**Interventions:**
+- **remediation** (root): scale Grafana horizontally (multiple replicas behind a load balancer) after migrating the backend database from SQLite to PostgreSQL or MySQL, configuring `GF_DATABASE_TYPE`, `GF_DATABASE_HOST`, and `GF_DATABASE_NAME`. Horizontal scaling requires shared (database-backed) session storage; test login flows after migration (roll back by scaling to 1 replica and, if DB migration occurred, restoring from the pre-migration backup).
 
-<!-- match: {"step": 3, "predicate": "threshold", "target": "cpu_pct", "op": ">", "value": 80} -->
+  ```bash
+  # After migrating the backend DB to PostgreSQL/MySQL, scale replicas
+  kubectl scale deployment/grafana -n monitoring --replicas=3
+  # Confirm the backend is NOT sqlite before scaling (SQLite has no multi-writer):
+  kubectl exec -n monitoring deploy/grafana -- \
+    grep -A5 '\[database\]' /etc/grafana/grafana.ini | grep type
+  ```
 
-**Mitigation:**
-
-- **Risk:** Increasing replicas requires a shared PostgreSQL/MySQL database backend; SQLite does not support multiple writers.
-- **Command:**
+  **Verification:** Step 3 `kubectl top pod` shows CPU below 70 % during peak load; Step 1 panel query times drop proportionally with reduced server-side processing load.
+- **mitigation** (root): raise CPU/memory limits (and optionally replicas) to relieve saturation on the existing deployment.
 
   ```bash
   # Kubernetes: increase CPU/memory limits and optionally scale replicas
@@ -326,15 +336,7 @@ curl -X POST http://prometheus:9090/-/reload
     grep -A5 '\[database\]' /etc/grafana/grafana.ini | grep type
   ```
 
-- **Duration:** Immediate after pod restart; monitor for 15 minutes to confirm CPU drops below 70 %.
-
-**Resolution:** Scale Grafana horizontally (multiple replicas behind a load balancer) after migrating the backend database from SQLite to PostgreSQL or MySQL. Configure `GF_DATABASE_TYPE`, `GF_DATABASE_HOST`, and `GF_DATABASE_NAME` environment variables.
-
-- **Impact:** Horizontal scaling requires shared session storage; sessions are database-backed by default. Test login flows after migration.
-
-- **Rollback:** Scale deployment back to 1 replica; if DB migration occurred, restore from backup taken before migration.
-
-**Verification:** Step 3 `kubectl top pod` shows CPU below 70 % during peak load. Step 1 panel query times drop proportionally with reduced server-side processing load.
+  **Risk:** Increasing replicas requires a shared PostgreSQL/MySQL backend; SQLite does not support multiple writers. **Duration:** Immediate after pod restart; monitor for 15 minutes to confirm CPU drops below 70 %. **Verification:** Step 3 `kubectl top pod` shows CPU below 70 % during peak load.
 
 ---
 
@@ -342,19 +344,30 @@ curl -X POST http://prometheus:9090/-/reload
 
 **Statement:** Grafana's embedded SQLite database serialises writes and creates lock contention when multiple users access dashboards simultaneously.
 
-**Mechanism:** SQLite uses a file-level write lock. When multiple Grafana users trigger concurrent dashboard saves, annotation writes, or session refreshes, write operations queue behind the single active writer. On read-heavy workloads, WAL mode mitigates this, but heavy annotation or alert-state write bursts still cause the Grafana UI API to return slowly for all users, including panel data requests that share the same Gorilla mux thread pool.
+**Chain:**
+- root: Grafana uses the embedded SQLite backend, which holds a single file-level write lock
+- s1: concurrent dashboard saves, annotation writes, or session refreshes queue behind the single active writer
+- s2: the Grafana UI API (sharing the Gorilla mux thread pool with panel data requests) returns slowly for all users
+- D: panels and dashboards render slowly, correlated with concurrent user count (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] `grep type` in the `[database]` section returns `sqlite3`
+  <!-- match: {"step": 7, "predicate": "contains", "target": "sqlite3"} -->
+- s1: [Symptom] slowness correlates with the number of concurrent active Grafana users rather than with data-source query complexity
 
-- [Step 7] `grep type` in `[database]` section returns `sqlite3`
-- [Symptom] Slowness is correlated with number of concurrent active Grafana users rather than with data-source query complexity
+**Interventions:**
+- **remediation** (root): migrate the backend from SQLite to PostgreSQL (back up first; Grafana auto-runs schema migrations on first startup against the new DB). Requires Grafana downtime; all dashboard versions, users, and annotations migrate via Grafana's built-in tooling (roll back by restoring the SQLite dump and setting `GF_DATABASE_TYPE=sqlite3`).
 
-<!-- match: {"step": 7, "predicate": "contains", "target": "sqlite3"} -->
+  ```bash
+  # Migrate to PostgreSQL — backup first
+  sqlite3 /var/lib/grafana/grafana.db .dump > /tmp/grafana-backup-$(date +%F).sql
+  # Configure GF_DATABASE_TYPE=postgres, GF_DATABASE_HOST, GF_DATABASE_USER,
+  # GF_DATABASE_PASSWORD, GF_DATABASE_NAME in Grafana's environment
+  # Grafana auto-runs schema migrations on first startup against the new DB
+  ```
 
-**Mitigation:**
-
-- **Risk:** None for read-only WAL enablement; full migration risks data loss if backup is not taken first.
-- **Command:**
+  **Verification:** Step 7 `grep type` returns `postgres` or `mysql`; dashboard API response times remain stable as concurrent user count scales (`sqlite3 PRAGMA wal_checkpoint` is no longer applicable).
+- **mitigation** (s1): enable WAL journal mode for short-term read-concurrency relief while the PostgreSQL migration is prepared.
 
   ```bash
   # Enable WAL mode for short-term relief (read concurrency improvement)
@@ -363,43 +376,26 @@ curl -X POST http://prometheus:9090/-/reload
   sudo systemctl start grafana-server
   ```
 
-- **Duration:** WAL mode persists across restarts; provides relief until PostgreSQL migration is complete.
-
-**Resolution:**
-
-```bash
-# Migrate to PostgreSQL — backup first
-sqlite3 /var/lib/grafana/grafana.db .dump > /tmp/grafana-backup-$(date +%F).sql
-# Configure GF_DATABASE_TYPE=postgres, GF_DATABASE_HOST, GF_DATABASE_USER,
-# GF_DATABASE_PASSWORD, GF_DATABASE_NAME in Grafana's environment
-# Grafana auto-runs schema migrations on first startup against the new DB
-```
-
-- **Impact:** Requires Grafana downtime during migration. All dashboard versions, users, and annotations are migrated via Grafana's built-in migration tooling.
-
-- **Rollback:** Restore from SQLite dump and set `GF_DATABASE_TYPE=sqlite3`.
-
-**Verification:** Step 7 `grep type` returns `postgres` or `mysql`. Dashboard API response times remain stable as concurrent user count scales. `sqlite3 PRAGMA wal_checkpoint` is no longer applicable.
+  **Risk:** None for read-only WAL enablement; a full migration risks data loss if a backup is not taken first. **Duration:** WAL mode persists across restarts; provides relief until the PostgreSQL migration is complete. **Verification:** Dashboard API response times improve under concurrent reads while `grep type` still returns `sqlite3`.
 
 ---
 
-### Cause G: Grafana Query Worker Pool Exhausted by Concurrent Panel Requests
+### Cause G: Grafana Data-Proxy Connection Pool Limit Set Too Low
 
-**Statement:** The Grafana data-proxy connection pool limit is set too low, causing panel queries to queue rather than execute in parallel.
+**Statement:** The Grafana data-proxy connection pool limit (`max_conns_per_host`) is set too low, causing panel queries to queue rather than execute in parallel.
 
-**Mechanism:** Grafana's `[dataproxy]` section controls `max_conns_per_host` (connections to a single data source host) and `max_idle_conns` (idle connection pool size). If `max_conns_per_host` is set to a low value (e.g., 5) and a dashboard fires 30 panel queries concurrently, 25 queries wait for a free connection slot. The result is sequential panel loading that mimics slow queries but is actually queue latency.
+**Chain:**
+- root: `[dataproxy] max_conns_per_host` is set to a low non-zero value (e.g. 5)
+- s1: when a dashboard fires more panel queries than the limit (e.g. 30 against a limit of 5), the excess queries wait for a free connection slot
+- D: panels load sequentially as queue latency, mimicking slow queries (see Symptom Recognition)
 
-**Indicator:**
+**Indicators:**
+- root: [Step 6] `max_conns_per_host` is set to a non-zero value less than 20
+  <!-- match: {"step": 6, "predicate": "contains", "target": "max_conns_per_host"} -->
+- s1: [Step 4] `total_queries` exceeds the configured `max_conns_per_host` value
 
-- [Step 6] `max_conns_per_host` is set to a non-zero value less than 20
-- [Step 4] `total_queries` exceeds `max_conns_per_host` value
-
-<!-- match: {"step": 6, "predicate": "contains", "target": "max_conns_per_host"} -->
-
-**Mitigation:**
-
-- **Risk:** Increasing connection limit may overload the data source if it cannot handle additional concurrent connections; monitor data-source CPU after change.
-- **Command:**
+**Interventions:**
+- **defensive_fix** (root): raise `max_conns_per_host` (and the idle-pool settings) so the data-proxy can fan out panel queries in parallel.
 
   ```bash
   sudo tee -a /etc/grafana/grafana.ini <<'EOF'
@@ -411,11 +407,21 @@ sqlite3 /var/lib/grafana/grafana.db .dump > /tmp/grafana-backup-$(date +%F).sql
   sudo systemctl restart grafana-server
   ```
 
-- **Duration:** Immediate after restart.
+  **Verification:** Panels that previously loaded sequentially now load in parallel; the browser Network tab shows `/api/ds/query` requests overlapping rather than starting one after another, and Step 3 Grafana metrics show reduced p99 latency.
+- **mitigation** (s1): apply the same connection-limit bump as an immediate stopgap, monitoring data-source load after the change.
 
-**Resolution:** Same as Mitigation.
+  ```bash
+  # Quick relief: widen the data-proxy pool, then watch data-source CPU
+  sudo tee -a /etc/grafana/grafana.ini <<'EOF'
+  [dataproxy]
+  max_conns_per_host = 25
+  max_idle_conns = 25
+  idle_conn_timeout_seconds = 90
+  EOF
+  sudo systemctl restart grafana-server
+  ```
 
-**Verification:** Panels that previously loaded sequentially now load in parallel. Network tab in browser dev tools shows `/api/ds/query` requests overlapping rather than starting one after another. Step 3 Grafana metrics show reduced p99 latency.
+  **Risk:** Increasing the connection limit may overload the data source if it cannot handle additional concurrent connections; monitor data-source CPU after the change. **Duration:** Immediate after restart. **Verification:** Step 4 `total_queries` is now within the new `max_conns_per_host` and panels load in parallel.
 
 ---
 
@@ -423,16 +429,11 @@ sqlite3 /var/lib/grafana/grafana.db .dump > /tmp/grafana-backup-$(date +%F).sql
 
 **Statement:** Dashboard load latency cannot be attributed to a specific diagnosable cause from the steps above.
 
-**Mechanism:** [Default]
-
-**Indicator:**
-
+**Indicators:**
 - [Default] None of the above Causes match the observed diagnostic findings
 
-**Mitigation:**
-
-- **Risk:** Escalating without a clear cause may delay resolution; collect all diagnostic artifacts first.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot (Grafana server logs for the slow period, the slow-panel Query Inspector JSON export, and a browser HAR file) and escalate to the SME. Escalate to Grafana support (Enterprise) or open a GitHub issue with the collected HAR file, Grafana server logs, and Query Inspector JSON export.
 
   ```bash
   # Collect Grafana server logs covering the slow period
@@ -442,11 +443,7 @@ sqlite3 /var/lib/grafana/grafana.db .dump > /tmp/grafana-backup-$(date +%F).sql
   grep -E 'error|warn|timeout|deadline' /tmp/grafana-recent.log | tail -50
   ```
 
-- **Duration:** Diagnostic only; no configuration change applied.
-
-**Resolution:** Out of runbook scope. Escalate to Grafana support (Enterprise) or open a GitHub issue with collected HAR file, Grafana server logs, and Query Inspector JSON export.
-
-**Verification:** N/A — escalation initiated with full diagnostic artifacts attached.
+  **Risk:** Escalating without a clear cause may delay resolution; collect all diagnostic artifacts first. **Duration:** Diagnostic only; no configuration change applied. **Verification:** Escalation initiated with full diagnostic artifacts (HAR file, server logs, Query Inspector JSON) attached.
 
 ## Prevention
 

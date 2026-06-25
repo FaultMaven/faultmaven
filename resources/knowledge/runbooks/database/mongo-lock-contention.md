@@ -6,8 +6,8 @@ service: mongodb
 symptom_class: [latency, timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [mongodb, wiredtiger, lock-contention, slow-queries, profiling, current-op, tickets]
@@ -167,22 +167,35 @@ Expected output: Cache occupancy values. Rising `pages evicted by application th
 
 ### Cause A: Missing index causing full collection scan
 
-**Statement:** A frequently executed query lacks a supporting index, forcing a full collection scan that holds a WiredTiger ticket for the entire scan duration.
+**Statement:** A frequently executed query lacks a supporting index, forcing a full collection scan that holds a WiredTiger ticket for its entire duration.
 
-**Mechanism:** WiredTiger uses a ticket-based concurrency system (default 128 read, 128 write tickets). An unindexed query must scan every document in the collection; on large collections this takes seconds and consumes one ticket throughout. When many such queries run concurrently, tickets exhaust and new queries must queue.
+**Chain:**
+- root: A frequently executed query has no supporting index for its filter.
+- s1: The query falls back to a COLLSCAN, reading every document in the collection.
+- s2: The scan holds one WiredTiger read ticket for seconds on large collections.
+- s3: Concurrent unindexed queries exhaust the ticket pool; new operations queue.
+- D: p99 latency spikes and operations queue for lock/ticket access (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 3] `planSummary` contains `"COLLSCAN"` on the hot namespace
+  <!-- match: {"step": 3, "predicate": "contains", "target": "COLLSCAN"} -->
+- s1: [Step 6] `docsExamined` greatly exceeds `nreturned` in profiler output
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "docsExamined_nreturned_ratio", "op": ">", "value": 10} -->
 
-- [Step 3] `planSummary` contains `"COLLSCAN"` on the hot namespace
-- [Step 6] `docsExamined` greatly exceeds `nreturned` in profiler output
+**Interventions:**
+- **remediation** (root): create a compound index following the equality-sort-range (ESR) rule for the hot query pattern. No restart required; per-collection write overhead increases proportional to indexed-field count.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "COLLSCAN"} -->
-<!-- match: {"step": 6, "predicate": "threshold", "target": "docsExamined_nreturned_ratio", "op": ">", "value": 10} -->
+  ```javascript
+  mongosh --eval '
+    db.getSiblingDB("<DB>").<COLLECTION>.createIndex(
+      { "<EQ_FIELD>": 1, "<SORT_FIELD>": -1, "<RANGE_FIELD>": 1 },
+      { name: "idx_compound_esr" }
+    );
+  '
+  ```
 
-**Mitigation:**
-
-- **Risk:** Background index builds (MongoDB 4.2+) do not block reads or writes but consume additional disk space and temporarily increase write overhead.
-- **Command:**
+  **Verification:** Re-run `explain("executionStats")` on the slow query; confirm `planSummary` shows `IXSCAN` with `docsExamined` close to `nreturned`. Check profiler for `millis` reduction. Rollback: `dropIndex("idx_compound_esr")`.
+- **mitigation** (s1): build a single-field index online to relieve the immediate COLLSCAN while the ESR index is designed.
 
   ```javascript
   mongosh --eval '
@@ -193,43 +206,37 @@ Expected output: Cache occupancy values. Rising `pages evicted by application th
   '
   ```
 
-- **Duration:** Index build time depends on collection size; other operations continue normally.
-
-**Resolution:**
-
-```javascript
-mongosh --eval '
-  db.getSiblingDB("<DB>").<COLLECTION>.createIndex(
-    { "<EQ_FIELD>": 1, "<SORT_FIELD>": -1, "<RANGE_FIELD>": 1 },
-    { name: "idx_compound_esr" }
-  );
-'
-```
-
-- **Impact:** Per-collection write overhead increase proportional to number of indexed fields. No restart required.
-- **Rollback:** `db.getSiblingDB("<DB>").<COLLECTION>.dropIndex("idx_compound_esr")`
-
-**Verification:** Re-run `explain("executionStats")` on the slow query and confirm `planSummary` shows `IXSCAN` with `docsExamined` close to `nreturned`. Check profiler for `millis` reduction.
+  **Risk:** Background index builds (MongoDB 4.2+) do not block reads or writes but consume extra disk space and temporarily increase write overhead. **Duration:** Index build time depends on collection size; other operations continue normally. **Verification:** Re-run Step 6; confirm the query's `docsExamined`/`nreturned` ratio drops.
 
 ### Cause B: DDL operation holding exclusive collection lock
 
 **Statement:** A DDL operation (`dropIndex`, `dropCollection`, `renameCollection`, or `reIndex`) holds an exclusive collection-level lock, blocking all concurrent reads and writes to that namespace.
 
-**Mechanism:** Unlike DML operations which acquire only intent locks, collection-level DDL commands require an exclusive `W` lock on the collection for their duration. All read and write operations against that namespace must queue until the DDL completes. On large collections `reIndex` can hold this lock for minutes.
+**Chain:**
+- root: A DDL command (dropIndex/dropCollection/renameCollection/reIndex) is running.
+- s1: DDL acquires an exclusive W lock on the collection for its full duration.
+- s2: All reads and writes against that namespace queue behind the W lock.
+- s3: On large collections reIndex holds the lock for minutes, draining throughput.
+- D: p99 latency spikes and operations queue for lock access (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 2] Multiple operations with `waitingForLock: true` targeting the same `ns`
+- root: [Step 3] A `command` op with `command.dropIndexes` or `command.reIndex` and high `secs_running`
+  <!-- match: {"step": 3, "predicate": "contains", "target": "dropIndexes"} -->
+  <!-- match: {"step": 3, "predicate": "contains", "target": "reIndex"} -->
+- s1: [Step 5] `Collection` lock type shows high `timeAcquiringMicros`
 
-- [Step 2] Multiple operations with `waitingForLock: true` targeting the same `ns`
-- [Step 3] A `"command"` type operation with `op.command.dropIndexes` or `op.command.reIndex` present and `secs_running` high
-- [Step 5] `Collection` lock type shows high `timeAcquiringMicros`
+**Interventions:**
+- **remediation** (root): schedule DDL during low-traffic maintenance windows. For `reIndex`, prefer running it on a secondary taken out of replica-set rotation rather than the primary.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "dropIndexes"} -->
-<!-- match: {"step": 3, "predicate": "contains", "target": "reIndex"} -->
+  ```javascript
+  mongosh --eval '
+    db.getSiblingDB("<DB>").<COLLECTION>.dropIndex("<INDEX_NAME>");
+  '
+  ```
 
-**Mitigation:**
-
-- **Risk:** Killing a DDL operation leaves it partially complete (e.g., an index partially built). For `dropIndex` this may leave the index in an inconsistent state — verify afterward with `getIndexes()`.
-- **Command:**
+  **Verification:** Run Step 1 again; `currentQueue.total` should return to `0`. Confirm blocked operations resumed via application logs.
+- **mitigation** (root): kill the in-flight DDL operation to immediately drain the queue.
 
   ```javascript
   mongosh --eval '
@@ -239,38 +246,36 @@ mongosh --eval '
   '
   ```
 
-- **Duration:** Immediate; queue drains within seconds.
-
-**Resolution:**
-
-```javascript
-mongosh --eval '
-  db.getSiblingDB("<DB>").<COLLECTION>.dropIndex("<INDEX_NAME>");
-'
-```
-
-Schedule DDL operations during low-traffic maintenance windows. For `reIndex`, prefer `db.runCommand({ reIndex: "<COLLECTION>" })` on a secondary taken out of the replica set rotation.
-
-**Verification:** Run Step 1 again; `currentQueue.total` should return to `0`. Confirm blocked operations resumed via application logs.
+  **Risk:** Killing a DDL operation leaves it partially complete (e.g. an index partially built); for `dropIndex` this may leave the index inconsistent — verify afterward with `getIndexes()`. **Duration:** Immediate; queue drains within seconds. **Verification:** Re-run Step 1; `currentQueue.total` returns to `0`.
 
 ### Cause C: WiredTiger ticket pool exhausted
 
 **Statement:** The WiredTiger concurrent-transaction ticket pool is fully consumed by long-running operations, blocking new read or write operations regardless of document-level lock availability.
 
-**Mechanism:** WiredTiger limits simultaneous storage engine transactions to a configurable ticket count (default 128 read, 128 write). Each active read or write operation holds one ticket for its entire duration. When all tickets of one type are out, new operations of that type cannot enter the storage engine and must wait in a queue above the lock layer.
+**Chain:**
+- root: Long-running operations consume all WiredTiger tickets of one type.
+- s1: WiredTiger caps simultaneous transactions (default 128 read, 128 write).
+- s2: Each active operation holds one ticket for its entire duration.
+- s3: With zero tickets available, new ops of that type cannot enter the engine and queue above the lock layer.
+- D: p99 latency spikes and operations queue regardless of lock availability (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s3: [Step 4] `read.available: 0` or `write.available: 0`
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "read_available", "op": "=", "value": 0} -->
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "write_available", "op": "=", "value": 0} -->
+- s3: [Step 1] `currentQueue.readers` or `currentQueue.writers` non-zero while Step 4 shows zero available tickets
 
-- [Step 4] `read.available: 0` or `write.available: 0`
-- [Step 1] `currentQueue.readers` or `currentQueue.writers` non-zero while Step 4 shows zero available tickets
+**Interventions:**
+- **remediation** (root): raise the ticket ceiling persistently by adding it to `mongod.conf` on every member.
 
-<!-- match: {"step": 4, "predicate": "threshold", "target": "read_available", "op": "=", "value": 0} -->
-<!-- match: {"step": 4, "predicate": "threshold", "target": "write_available", "op": "=", "value": 0} -->
+  ```yaml
+  setParameter:
+    wiredTigerConcurrentReadTransactions: 256
+    wiredTigerConcurrentWriteTransactions: 256
+  ```
 
-**Mitigation:**
-
-- **Risk:** Increasing tickets raises CPU and I/O pressure. If the underlying bottleneck is I/O throughput, more tickets worsen latency by increasing I/O contention. Test the new value in staging first.
-- **Command:**
+  **Verification:** Re-run Step 4 and confirm `available` is greater than `0` under sustained load. Monitor `globalLock.currentQueue` via Step 1 for a sustained decrease. Rollback: reset both parameters to `128`.
+- **mitigation** (root): raise the ticket count at runtime via `setParameter` for immediate relief, no restart required.
 
   ```javascript
   mongosh --eval '
@@ -282,41 +287,40 @@ Schedule DDL operations during low-traffic maintenance windows. For `reIndex`, p
   '
   ```
 
-- **Duration:** Immediate; no restart required.
-
-**Resolution:**
-
-Add to `mongod.conf` for persistence across restarts:
-
-```yaml
-setParameter:
-  wiredTigerConcurrentReadTransactions: 256
-  wiredTigerConcurrentWriteTransactions: 256
-```
-
-- **Impact:** All `mongod` processes must have the setting added. Primary and secondaries must be updated. No rolling restart required for the runtime `setParameter`.
-- **Rollback:** `db.adminCommand({ setParameter: 1, wiredTigerConcurrentReadTransactions: 128, wiredTigerConcurrentWriteTransactions: 128 })`
-
-**Verification:** Re-run Step 4 and confirm `available` is greater than `0` under sustained load. Monitor `globalLock.currentQueue` via Step 1 for sustained decrease.
+  **Risk:** More tickets raise CPU and I/O pressure; if the real bottleneck is I/O throughput, more tickets worsen latency. Test the new value in staging first. **Duration:** Immediate; no restart required. **Verification:** Re-run Step 4; `available` stays above `0` under load.
 
 ### Cause D: Long-running aggregation pipeline consuming tickets
 
 **Statement:** An unbounded aggregation pipeline holds a WiredTiger ticket for minutes, starving concurrent operations of read capacity.
 
-**Mechanism:** Aggregation pipelines without early `$match` or `$limit` stages process every document in the source collection before applying transformations. On multi-GB collections this can take 30–120 seconds per execution. Each pipeline run holds one read ticket for its entire duration, and concurrent analytical queries stack up until all read tickets are consumed.
+**Chain:**
+- root: An aggregation pipeline runs without an early `$match` or `$limit` stage.
+- s1: The pipeline scans every document in the source collection before transforming.
+- s2: On multi-GB collections each run takes 30–120s, holding one read ticket throughout.
+- s3: Concurrent analytical queries stack up until read tickets are exhausted.
+- D: p99 latency spikes and read-side operations queue (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `op: "command"` with `command.aggregate` present and `secs_running` above 30
+  <!-- match: {"step": 3, "predicate": "contains", "target": "aggregate"} -->
+- s3: [Step 4] read tickets (`read.available`) trending toward `0` during batch/reporting windows
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "read_available", "op": "<", "value": 10} -->
 
-- [Step 3] `op: "command"` with `command.aggregate` present and `secs_running` above 30
-- [Step 4] Read tickets (`read.available`) trending toward `0` during batch/reporting windows
+**Interventions:**
+- **remediation** (root): add `$match` as the first stage, ensure a supporting index exists for that filter, and bound the pipeline with `$limit` and `maxTimeMS`.
 
-<!-- match: {"step": 3, "predicate": "contains", "target": "aggregate"} -->
-<!-- match: {"step": 4, "predicate": "threshold", "target": "read_available", "op": "<", "value": 10} -->
+  ```javascript
+  mongosh --eval '
+    db.getSiblingDB("<DB>").<COLLECTION>.aggregate([
+      { $match: { "<FILTER_FIELD>": { "$gte": "<VALUE>" } } },
+      { $limit: 10000 },
+      /* ... remaining stages ... */
+    ], { maxTimeMS: 30000, allowDiskUse: true });
+  '
+  ```
 
-**Mitigation:**
-
-- **Risk:** Killing an analytics pipeline query fails the consumer (reporting job, BI connector session). The caller receives a `MongoError: operation was interrupted` and must retry.
-- **Command:**
+  **Verification:** Re-run Step 3 after optimization; `secs_running` for aggregate commands should drop below `5`. Monitor read-ticket availability via Step 4 during peak reporting windows.
+- **mitigation** (root): kill the long-running aggregation to immediately release its read ticket.
 
   ```javascript
   mongosh --eval '
@@ -326,42 +330,37 @@ setParameter:
   '
   ```
 
-- **Duration:** Immediate; use `maxTimeMS` on analytical queries to prevent recurrence.
-
-**Resolution:**
-
-Add `$match` as the first stage and ensure a supporting index exists for that filter:
-
-```javascript
-mongosh --eval '
-  db.getSiblingDB("<DB>").<COLLECTION>.aggregate([
-    { $match: { "<FILTER_FIELD>": { "$gte": "<VALUE>" } } },
-    { $limit: 10000 },
-    /* ... remaining stages ... */
-  ], { maxTimeMS: 30000, allowDiskUse: true });
-'
-```
-
-**Verification:** Re-run Step 3 after query optimization; `secs_running` for aggregate commands should drop below `5`. Monitor read ticket availability via Step 4 during peak reporting windows.
+  **Risk:** Killing an analytics pipeline fails the consumer (reporting job, BI connector session); the caller receives `MongoError: operation was interrupted` and must retry. **Duration:** Immediate; use `maxTimeMS` on analytical queries to prevent recurrence. **Verification:** Re-run Step 4; read-ticket availability recovers.
 
 ### Cause E: Large bulk write monopolizing write tickets
 
 **Statement:** A bulk write operation submitting thousands of documents in a single batch holds write tickets for an extended period, blocking concurrent writes.
 
-**Mechanism:** `insertMany` and `bulkWrite` with `ordered: true` process documents serially within a single batch, holding write tickets for the batch duration. A 100,000-document ordered batch can take 10–30 seconds on a loaded server, consuming write tickets and causing concurrent write operations to queue.
+**Chain:**
+- root: A bulk write submits thousands of documents in one ordered batch.
+- s1: `insertMany`/`bulkWrite` with `ordered: true` processes documents serially.
+- s2: A 100,000-doc ordered batch holds write tickets for 10–30s on a loaded server.
+- s3: Concurrent write operations queue behind the long-running batch.
+- D: p99 latency spikes and writes queue during data-load windows (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s3: [Step 2] ops with `waitingForLock: true` and `op: "insert"`/`"update"` queued behind a long-running insert/bulkWrite
+- s2: [Step 4] write tickets trending to `0` during known data-load windows
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "write_available", "op": "<", "value": 10} -->
+- s2: [Step 3] a single `insert` or `command` operation with `secs_running` above `10`
 
-- [Step 2] Operations with `waitingForLock: true` and `op: "insert"` or `op: "update"` queued behind a long-running `"insert"` or `"bulkWrite"` command
-- [Step 4] Write tickets trending to `0` during known data-load windows
-- [Step 3] A single `insert` or `command` operation with `secs_running` above `10`
+**Interventions:**
+- **remediation** (root): batch bulk writes to 500–1000 documents with unordered mode and a small inter-batch pause (application-side change).
 
-<!-- match: {"step": 4, "predicate": "threshold", "target": "write_available", "op": "<", "value": 10} -->
+  ```javascript
+  // Application pseudocode — implement in your driver
+  // for each batch of 1000 documents:
+  //   db.collection.insertMany(batch, { ordered: false })
+  //   await sleep(10)  // 10ms pause to yield
+  ```
 
-**Mitigation:**
-
-- **Risk:** Killing an in-flight bulk write rolls back the partial batch at the document level; already-written documents are retained, unwritten documents are dropped. The application must handle deduplication on retry.
-- **Command:**
+  **Verification:** Monitor Step 4 write-ticket availability during the next data load; `write.available` should remain above `10` throughout. Check Step 1 queue depth remains near `0`.
+- **mitigation** (s2): kill the in-flight bulk write to immediately release write tickets.
 
   ```javascript
   mongosh --eval '
@@ -371,38 +370,35 @@ mongosh --eval '
   '
   ```
 
-- **Duration:** Immediate.
-
-**Resolution:**
-
-Batch bulk writes to 500–1000 documents with unordered mode and a small inter-batch pause (application-side change):
-
-```javascript
-// Application pseudocode — implement in your driver
-// for each batch of 1000 documents:
-//   db.collection.insertMany(batch, { ordered: false })
-//   await sleep(10)  // 10ms pause to yield
-```
-
-**Verification:** Monitor Step 4 write ticket availability during the next data load; `write.available` should remain above `10` throughout. Check Step 1 queue depth remains near `0`.
+  **Risk:** Killing an in-flight bulk write rolls back the partial batch at the document level; written documents are retained, unwritten ones dropped. The application must handle deduplication on retry. **Duration:** Immediate. **Verification:** Re-run Step 4; write-ticket availability recovers.
 
 ### Cause F: Multi-document transaction held open too long
 
 **Statement:** A multi-document transaction is held open beyond `transactionLifetimeLimitSeconds` (default 60 s) or blocked on a slow write, preventing lock release across all affected documents.
 
-**Mechanism:** Multi-document transactions (MongoDB 4.0+) hold intent locks on all touched collections for their entire duration. A transaction blocked on a network call or application-side processing delay retains those locks, preventing concurrent writers from modifying the same documents. Transactions that exceed `transactionLifetimeLimitSeconds` are forcibly aborted but the lock hold during the wait period degrades throughput.
+**Chain:**
+- root: A multi-document transaction stays open beyond its expected lifetime.
+- s1: The transaction holds intent locks on all touched collections for its duration.
+- s2: Blocked on a network call or app-side delay, it retains those locks.
+- s3: Concurrent writers to the same documents are blocked until lock release.
+- D: Transaction timeout/abort errors and write queuing (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 2] ops with `desc` containing `"TxnCoordinator"`, or `type: "op"` with `waitingForLock: true` and high `secs_running`
+  <!-- match: {"step": 2, "predicate": "contains", "target": "TxnCoordinator"} -->
+- D: [Symptom] application logs contain `"Transaction has been aborted"` or `"exceeded time limit"`
 
-- [Step 2] Operations with `desc` containing `"TxnCoordinator"` or `type: "op"` with `waitingForLock: true` and high `secs_running`
-- [Symptom] Application logs contain `"Transaction has been aborted"` or `"exceeded time limit"`
+**Interventions:**
+- **remediation** (root): reduce `transactionLifetimeLimitSeconds` to enforce faster failure detection and move non-transactional reads outside transaction boundaries. Persist in `mongod.conf` for durability.
 
-<!-- match: {"step": 2, "predicate": "contains", "target": "TxnCoordinator"} -->
+  ```javascript
+  mongosh --eval '
+    db.adminCommand({ setParameter: 1, transactionLifetimeLimitSeconds: 30 });
+  '
+  ```
 
-**Mitigation:**
-
-- **Risk:** Killing the transaction coordinator aborts the entire transaction; all writes within it are rolled back atomically. The application must retry.
-- **Command:**
+  **Verification:** Re-run Step 2 after the change; no `TxnCoordinator` op should show `secs_running` above the new limit. Monitor application retry rates. Rollback: reset `transactionLifetimeLimitSeconds` to `60`.
+- **mitigation** (s2): kill the stuck transaction coordinator to release its intent locks immediately.
 
   ```javascript
   mongosh --eval '
@@ -412,41 +408,37 @@ Batch bulk writes to 500–1000 documents with unordered mode and a small inter-
   '
   ```
 
-- **Duration:** Immediate; transaction rolled back.
-
-**Resolution:**
-
-Reduce `transactionLifetimeLimitSeconds` to enforce faster failure detection and move non-transactional reads outside transaction boundaries:
-
-```javascript
-mongosh --eval '
-  db.adminCommand({ setParameter: 1, transactionLifetimeLimitSeconds: 30 });
-'
-```
-
-- **Impact:** All in-flight transactions exceeding 30 s will be aborted on next checkpoint. Applied to the `mongod` instance at runtime; persist in `mongod.conf` for durability.
-- **Rollback:** `db.adminCommand({ setParameter: 1, transactionLifetimeLimitSeconds: 60 })`
-
-**Verification:** Re-run Step 2 after parameter change; no operations with `TxnCoordinator` in `desc` should show `secs_running` above the new limit. Monitor application retry rates.
+  **Risk:** Killing the transaction coordinator aborts the entire transaction; all writes within it roll back atomically. The application must retry. **Duration:** Immediate; transaction rolled back. **Verification:** Re-run Step 2; no long-running transaction ops remain.
 
 ### Cause G: WiredTiger cache pressure causing application-thread eviction
 
 **Statement:** The WiredTiger internal cache is undersized relative to the active working set, forcing application threads to evict dirty pages before they can complete their operations.
 
-**Mechanism:** WiredTiger maintains an in-memory cache (default: 50% of RAM minus 1 GB, minimum 256 MB). When dirty data in the cache exceeds the eviction trigger threshold (default 20% of cache), background eviction threads run. When dirty data exceeds the hard limit (default 80%), application threads are co-opted to perform eviction before proceeding, adding latency to every operation proportional to the eviction workload.
+**Chain:**
+- root: The WiredTiger cache is undersized relative to the active working set.
+- s1: Dirty data exceeds the eviction trigger (default 20% of cache), running background eviction.
+- s2: Dirty data exceeds the hard limit (default 80%), co-opting application threads to evict.
+- s3: Every operation pays eviction latency proportional to the eviction workload.
+- D: p99 latency spikes across all operations (Symptom).
 
-**Indicator:**
+**Indicators:**
+- s2: [Step 8] `pages evicted by application threads` is non-zero and increasing between polls
+  <!-- match: {"step": 8, "predicate": "threshold", "target": "app_evictions", "op": ">", "value": 0} -->
+- s1: [Step 8] `used_bytes / max_bytes` ratio above 0.95
+  <!-- match: {"step": 8, "predicate": "threshold", "target": "cache_utilization_ratio", "op": ">", "value": 0.95} -->
 
-- [Step 8] `pages evicted by application threads` is non-zero and increasing between polls
-- [Step 8] `used_bytes / max_bytes` ratio above 0.95
+**Interventions:**
+- **remediation** (root): set `storage.wiredTiger.engineConfig.cacheSizeGB` in `mongod.conf` to 50–60% of available RAM. Requires a `mongod` restart; perform as a rolling restart on replica-set members.
 
-<!-- match: {"step": 8, "predicate": "threshold", "target": "cache_utilization_ratio", "op": ">", "value": 0.95} -->
-<!-- match: {"step": 8, "predicate": "threshold", "target": "app_evictions", "op": ">", "value": 0} -->
+  ```yaml
+  storage:
+    wiredTiger:
+      engineConfig:
+        cacheSizeGB: 8
+  ```
 
-**Mitigation:**
-
-- **Risk:** Increasing cache size reduces memory available to the OS page cache, which WiredTiger relies on for data not in its own cache. On memory-constrained hosts this can cause OS-level memory pressure.
-- **Command:**
+  **Verification:** Re-run Step 8 after tuning; `pages evicted by application threads` should drop to `0` or near `0` under normal load. Monitor p99 latency for sustained improvement. Rollback: reduce `cacheSizeGB` and rolling-restart.
+- **mitigation** (root): raise the cache size at runtime for immediate relief, no restart required.
 
   ```javascript
   mongosh --eval '
@@ -457,38 +449,21 @@ mongosh --eval '
   '
   ```
 
-- **Duration:** Applied immediately at runtime; no restart required.
-
-**Resolution:**
-
-Set `storage.wiredTiger.engineConfig.cacheSizeGB` in `mongod.conf` to 50–60% of available RAM:
-
-```yaml
-storage:
-  wiredTiger:
-    engineConfig:
-      cacheSizeGB: 8
-```
-
-- **Impact:** Requires `mongod` restart to apply from config file. Perform as a rolling restart on replica set members.
-- **Rollback:** Reduce `cacheSizeGB` back to previous value and rolling-restart.
-
-**Verification:** Re-run Step 8 after tuning; `pages evicted by application threads` should drop to `0` or near `0` under normal load. Monitor p99 latency via application metrics for sustained improvement.
+  **Risk:** Increasing cache size reduces RAM for the OS page cache that WiredTiger relies on for out-of-cache data; on memory-constrained hosts this can cause OS-level memory pressure. **Duration:** Applied immediately at runtime; no restart required. **Verification:** Re-run Step 8; application-thread evictions trend toward `0`.
 
 ### Cause Z: Unidentified lock contention source
 
 **Statement:** Lock contention or ticket exhaustion is confirmed but none of the specific causes above match the diagnostic output.
 
-**Mechanism:** MongoDB lock contention can arise from combinations of factors not individually identifiable via the steps above, including schema anti-patterns (unbounded arrays, documents exceeding 1 MB), write-skew in concurrent transactions, shard-key hotspots in sharded clusters, or time-series bucket locking. Further investigation with FTDC diagnostic data or MongoDB Atlas Advisor is required.
+**Chain:**
+- root: Contention is confirmed but matches no specific cause above (schema anti-patterns, write-skew, shard-key hotspots, time-series bucket locking).
+- D: p99 latency spikes and operations queue for lock/ticket access (Symptom).
 
-**Indicator:**
+**Indicators:**
+- root: [Default] Steps 1–8 confirm contention but no cause above matches the specific symptom pattern
 
-- [Default] Steps 1–8 confirm contention but no cause above matches the specific symptom pattern
-
-**Mitigation:**
-
-- **Risk:** Low. Diagnostic-only actions.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full FTDC diagnostic snapshot and escalate to MongoDB support or Atlas Advisor with the FTDC archive plus `mongod.log` covering the incident window.
 
   ```javascript
   mongosh --eval '
@@ -496,11 +471,7 @@ storage:
   '
   ```
 
-- **Duration:** Collect 10–15 minutes of FTDC data for MongoDB support analysis.
-
-**Resolution:** Out of runbook scope — escalate to MongoDB support or Atlas Advisor with FTDC diagnostic archive and `mongod.log` covering the incident window.
-
-**Verification:** Confirmed by resolution of latency spike and drop of `globalLock.currentQueue.total` to `0` after support-recommended fix is applied.
+  **Risk:** Low. Diagnostic-only actions. **Duration:** Collect 10–15 minutes of FTDC data for MongoDB support analysis. **Verification:** Confirmed by resolution of the latency spike and drop of `globalLock.currentQueue.total` to `0` after the support-recommended fix is applied.
 
 ## Prevention
 

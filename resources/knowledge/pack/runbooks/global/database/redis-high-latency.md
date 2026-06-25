@@ -6,8 +6,8 @@ service: redis
 symptom_class: [latency]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [slowlog, latency-monitor, persistence, transparent-huge-pages, swap, big-keys, aof, rdb]
@@ -150,125 +150,131 @@ Expected output: max latency below 1,000 µs on bare metal, below 10,000 µs on 
 
 ## Causes
 
-### Cause A: Blocking O(N) command executed against large keyspace or collection
+### Cause A: Blocking O(N) command against large keyspace
 
-**Statement:** A command with O(N) complexity — `KEYS`, `SMEMBERS`, `HGETALL`, `SORT`, or `LRANGE 0 -1` — ran against a large dataset and blocked Redis's single-threaded event loop for the full duration.
+**Statement:** A command with O(N) complexity (`KEYS`, `SMEMBERS`, `HGETALL`, `SORT`, `LRANGE 0 -1`) ran against a large dataset and blocked Redis's single-threaded event loop for its full duration.
 
-**Mechanism:** Redis processes commands sequentially in a single thread. An O(N) command that scans thousands of keys or elements holds the event loop for tens to hundreds of milliseconds, queuing every other client's request behind it. The larger the dataset, the longer the block; `KEYS *` on a keyspace with 1 million entries can take 500 ms or more.
+**Chain:**
+- root: an O(N) command (`KEYS`, `SMEMBERS`, `HGETALL`, `SORT`, `LRANGE 0 -1`) executes against a keyspace or collection with thousands of entries.
+- s1: the single-threaded event loop is held for the full scan, queuing every other client request behind it.
+- D: clients backed by Redis see p95/p99 latency spikes and timeout errors (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 1] `SLOWLOG GET` shows `KEYS`, `SORT`, `SMEMBERS`, `HGETALL`, or `LRANGE 0 -1` with duration above 10,000 µs.
+  <!-- match: {"step": 1, "predicate": "contains", "target": "KEYS"} -->
+  <!-- match: {"step": 1, "predicate": "contains", "target": "SMEMBERS"} -->
+  <!-- match: {"step": 1, "predicate": "contains", "target": "HGETALL"} -->
+- s1: [Step 2] `LATENCY HISTORY command` shows spikes correlated with the timestamps of those SLOWLOG entries.
 
-- [Step 1] `SLOWLOG GET` shows `KEYS`, `SORT`, `SMEMBERS`, `HGETALL`, or `LRANGE 0 -1` with duration above 10,000 µs.
-- [Step 2] `LATENCY HISTORY command` shows spikes correlated with the timestamps of those SLOWLOG entries.
+**Interventions:**
+- **remediation** (root): replace O(N) commands with cursor-based or paginated equivalents in application code.
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "KEYS"} -->
-<!-- match: {"step": 1, "predicate": "contains", "target": "SMEMBERS"} -->
-<!-- match: {"step": 1, "predicate": "contains", "target": "HGETALL"} -->
+  ```bash
+  # Replace KEYS with cursor-based SCAN
+  redis-cli SCAN 0 MATCH "pattern:*" COUNT 100
 
-**Mitigation:**
+  # Replace SMEMBERS with SSCAN
+  redis-cli SSCAN myset 0 COUNT 100
 
-- **Risk:** ACL approach takes effect immediately for existing connections; `rename-command` requires a restart.
-- **Command:**
+  # Replace HGETALL with HSCAN
+  redis-cli HSCAN myhash 0 COUNT 100
+
+  # Replace LRANGE 0 -1 with paginated reads
+  redis-cli LRANGE mylist 0 99
+
+  # Use UNLINK instead of DEL for large keys (async, Redis 4.0+)
+  redis-cli UNLINK large_key
+  ```
+
+  **Verification:** After code change deploys, `SLOWLOG GET 25` returns no entries with O(N) command names above 1,000 µs; `LATENCY LATEST` shows `command` event max below 10 ms.
+- **mitigation** (root): block dangerous O(N) commands at the access-control layer to stop the bleeding before code ships.
 
   ```bash
   redis-cli ACL SETUSER app-user -@dangerous
   ```
 
-- **Duration:** Immediate for ACL; permanent after restart for `rename-command`.
-
-**Resolution:**
-
-```bash
-# Replace KEYS with cursor-based SCAN
-redis-cli SCAN 0 MATCH "pattern:*" COUNT 100
-
-# Replace SMEMBERS with SSCAN
-redis-cli SSCAN myset 0 COUNT 100
-
-# Replace HGETALL with HSCAN
-redis-cli HSCAN myhash 0 COUNT 100
-
-# Replace LRANGE 0 -1 with paginated reads
-redis-cli LRANGE mylist 0 99
-
-# Use UNLINK instead of DEL for large keys (async, Redis 4.0+)
-redis-cli UNLINK large_key
-```
-
-**Verification:** After code change deploys, `SLOWLOG GET 25` returns no entries with O(N) command names and duration above 1,000 µs. `LATENCY LATEST` shows `command` event max below 10 ms.
+  **Risk:** ACL takes effect immediately for existing connections; `rename-command` requires a restart. **Duration:** immediate for ACL; permanent after restart for `rename-command`. **Verification:** re-run Step 1; the blocked O(N) commands no longer appear in SLOWLOG.
 
 ---
 
 ### Cause B: Fork latency from RDB snapshot or AOF rewrite
 
-**Statement:** A `BGSAVE` or `BGREWRITEAOF` operation forked the Redis process, and the OS's copy-on-write page table duplication caused a latency spike lasting hundreds of milliseconds to several seconds.
+**Statement:** A `BGSAVE` or `BGREWRITEAOF` forked the Redis process, and OS copy-on-write page-table duplication caused a latency spike lasting hundreds of milliseconds to several seconds.
 
-**Mechanism:** Fork duplicates the Redis process's page table, which is proportional to dataset size (roughly 2–10 ms per GB on physical hardware, but 200–400 ms/GB on Xen-based VMs). While the child writes the snapshot, every write in the parent triggers a copy-on-write page fault, adding CPU and memory bus pressure. Transparent Huge Pages (THP) compound this: a 2 MB huge page must be fully copied when any byte within it changes, multiplying copy-on-write cost by 512× compared to 4 KB pages.
+**Chain:**
+- root: a `BGSAVE` or `BGREWRITEAOF` triggers `fork()`, duplicating a page table proportional to dataset size (2–10 ms/GB bare metal, 200–400 ms/GB on Xen VMs).
+- s1: while the child writes the snapshot, every parent write triggers a copy-on-write page fault, adding CPU and memory-bus pressure.
+- s2: Transparent Huge Pages amplify this — a 2 MB huge page is fully copied on any byte change, up to 512× the cost of 4 KB pages.
+- D: latency spikes lasting hundreds of ms to seconds appear on a schedule matching persistence triggers (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 5] `rdb_last_bgsave_time_sec` above 5 s or `aof_last_rewrite_time_sec` above 5 s.
+  <!-- match: {"step": 5, "predicate": "threshold", "target": "rdb_last_bgsave_time_sec", "op": ">", "value": 5} -->
+- s1: [Step 2] `LATENCY HISTORY fork` shows values above 200 ms.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "fork"} -->
+- D: [Symptom] latency spikes occur on a predictable schedule matching RDB `save` trigger thresholds.
 
-- [Step 2] `LATENCY HISTORY fork` shows values above 200 ms.
-- [Step 5] `rdb_last_bgsave_time_sec` above 5 s or `aof_last_rewrite_time_sec` above 5 s.
-- [Symptom] Latency spikes occur on a predictable schedule matching RDB `save` trigger thresholds.
+**Interventions:**
+- **remediation** (s2): disable Transparent Huge Pages and tune AOF/jemalloc to cut copy-on-write fork cost.
 
-<!-- match: {"step": 5, "predicate": "threshold", "target": "rdb_last_bgsave_time_sec", "op": ">", "value": 5} -->
-<!-- match: {"step": 2, "predicate": "contains", "target": "fork"} -->
+  ```bash
+  # Disable Transparent Huge Pages on the server (persist across reboots via rc.local or systemd)
+  echo never | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
 
-**Mitigation:**
+  # Tune AOF to avoid per-write fsync
+  redis-cli CONFIG SET appendfsync everysec
+  redis-cli CONFIG SET no-appendfsync-on-rewrite yes
 
-- **Risk:** Disabling persistence creates a data-loss window. Only use while actively investigating.
-- **Command:**
+  # Enable jemalloc background threads to accelerate fork (Redis 6+)
+  redis-cli CONFIG SET jemalloc-bg-thread yes
+
+  # Space out RDB saves to reduce fork frequency
+  redis-cli CONFIG SET save "3600 1 300 1000"
+  ```
+
+  **Verification:** After THP disabled and AOF tuned, `LATENCY HISTORY fork` shows no events above 200 ms across two full RDB/AOF cycles; `latest_fork_usec` drops 50%+ from baseline. Rollback: `echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled`.
+- **mitigation** (root): temporarily disable persistence to eliminate fork while investigating.
 
   ```bash
   redis-cli CONFIG SET save ""
   redis-cli CONFIG SET appendonly no
   ```
 
-- **Duration:** Until root cause is confirmed and persistence is re-enabled with tuned settings.
-
-**Resolution:**
-
-```bash
-# Disable Transparent Huge Pages on the server (persist across reboots via rc.local or systemd)
-echo never | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
-
-# Tune AOF to avoid per-write fsync
-redis-cli CONFIG SET appendfsync everysec
-redis-cli CONFIG SET no-appendfsync-on-rewrite yes
-
-# Enable jemalloc background threads to accelerate fork (Redis 6+)
-redis-cli CONFIG SET jemalloc-bg-thread yes
-
-# Space out RDB saves to reduce fork frequency
-redis-cli CONFIG SET save "3600 1 300 1000"
-```
-
-- **Impact:** THP change is system-wide and takes effect immediately without Redis restart. AOF config changes are in-memory; persist to `redis.conf` for durability after restart.
-- **Rollback:** `echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled`
-
-**Verification:** After THP disabled and AOF tuned, `LATENCY HISTORY fork` shows no events above 200 ms across at least two full RDB/AOF cycles. `INFO persistence` field `latest_fork_usec` drops by 50%+ compared to baseline.
+  **Risk:** disabling persistence creates a data-loss window; only use while actively investigating. **Duration:** until root cause is confirmed and persistence is re-enabled with tuned settings. **Verification:** re-run Step 2; no `fork` events appear in `LATENCY LATEST` while persistence is off.
 
 ---
 
 ### Cause C: Redis process swapping to disk
 
-**Statement:** The Redis process has been partially or fully swapped to disk, causing every memory access that hits a swapped page to incur milliseconds of disk I/O latency instead of nanoseconds of RAM access.
+**Statement:** The Redis process has been partially or fully swapped to disk, so every memory access hitting a swapped page incurs milliseconds of disk I/O instead of nanoseconds of RAM access.
 
-**Mechanism:** When the system runs low on physical RAM, the kernel swaps Redis pages to disk. Because Redis is single-threaded, a single swapped page during a command execution blocks the entire event loop while the page fault resolves via disk I/O. Even a few kilobytes of swap usage can produce 50–500 ms latency spikes. This is especially common when Redis `maxmemory` is not set, allowing the dataset to grow unconstrained until it exceeds available RAM.
+**Chain:**
+- root: physical RAM runs low (often because `maxmemory` is unset and the dataset grew unconstrained), so the kernel swaps Redis pages to disk.
+- s1: because Redis is single-threaded, one swapped page during command execution blocks the whole event loop until the page fault resolves via disk I/O.
+- D: even a few KB of swap produces 50–500 ms latency spikes visible to clients (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 3] `awk '/^Swap:/ {sum+=$2}' /proc/<pid>/smaps` returns a non-zero value.
+  <!-- match: {"step": 3, "predicate": "threshold", "target": "swap_kb", "op": ">", "value": 0} -->
+- s1: [Step 3] `vmstat 1` shows non-zero `si` (swap-in) or `so` (swap-out) columns.
+- s1: [Step 6] `mem_fragmentation_ratio` below 1.0.
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "mem_fragmentation_ratio", "op": "<", "value": 1.0} -->
 
-- [Step 3] `awk '/^Swap:/ {sum+=$2}' /proc/<pid>/smaps` returns non-zero value.
-- [Step 3] `vmstat 1` shows non-zero `si` (swap-in) or `so` (swap-out) columns.
-- [Step 6] `mem_fragmentation_ratio` below 1.0.
+**Interventions:**
+- **remediation** (root): set `maxmemory` with headroom and an eviction policy so the dataset never exceeds physical RAM.
 
-<!-- match: {"step": 3, "predicate": "threshold", "target": "swap_kb", "op": ">", "value": 0} -->
-<!-- match: {"step": 6, "predicate": "threshold", "target": "mem_fragmentation_ratio", "op": "<", "value": 1.0} -->
+  ```bash
+  # Set maxmemory to leave 20-30% of physical RAM for OS and fork operations
+  redis-cli CONFIG SET maxmemory 6gb
+  redis-cli CONFIG SET maxmemory-policy allkeys-lru
 
-**Mitigation:**
+  # Persist to redis.conf
+  echo "maxmemory 6gb" | sudo tee -a /etc/redis/redis.conf
+  echo "maxmemory-policy allkeys-lru" | sudo tee -a /etc/redis/redis.conf
+  ```
 
-- **Risk:** `swapoff -a` requires sufficient free RAM to absorb all swapped pages. If RAM is insufficient, the kernel will OOM-kill Redis.
-- **Command:**
+  **Verification:** `awk '/^Swap:/ {sum+=$2}' /proc/$(pgrep -f redis-server)/smaps` returns `0 kB`; `vmstat 1 5` shows `si`/`so` at `0`; `redis-cli --latency` average below 1 ms. Rollback: `redis-cli CONFIG SET maxmemory 0`.
+- **mitigation** (s1): reduce swappiness and (only with confirmed free RAM) swap pages back to memory.
 
   ```bash
   # Reduce system swappiness to discourage swap use
@@ -281,44 +287,27 @@ redis-cli CONFIG SET save "3600 1 300 1000"
   sudo swapoff -a
   ```
 
-- **Duration:** `sysctl` change is immediate but non-persistent. Swap-off may take 1–5 minutes as pages are moved back to RAM.
-
-**Resolution:**
-
-```bash
-# Set maxmemory to leave 20-30% of physical RAM for OS and fork operations
-redis-cli CONFIG SET maxmemory 6gb
-redis-cli CONFIG SET maxmemory-policy allkeys-lru
-
-# Persist to redis.conf
-echo "maxmemory 6gb" | sudo tee -a /etc/redis/redis.conf
-echo "maxmemory-policy allkeys-lru" | sudo tee -a /etc/redis/redis.conf
-```
-
-- **Impact:** Setting `maxmemory` triggers eviction of excess keys under `allkeys-lru`. Verify that evicted keys are cache-safe before applying in production.
-- **Rollback:** `redis-cli CONFIG SET maxmemory 0` removes the memory limit.
-
-**Verification:** `awk '/^Swap:/ {sum+=$2}' /proc/$(pgrep -f redis-server)/smaps` returns `0 kB`. `vmstat 1 5` shows `si` and `so` columns at `0`. `redis-cli --latency` average returns below 1 ms.
+  **Risk:** `swapoff -a` needs enough free RAM to absorb all swapped pages, else the kernel OOM-kills Redis. **Duration:** `sysctl` change is immediate but non-persistent; swap-off may take 1–5 minutes. **Verification:** re-run Step 3; smaps swap sum returns to `0 kB`.
 
 ---
 
 ### Cause D: High memory fragmentation
 
-**Statement:** Redis's memory allocator has fragmented physical memory significantly, so the RSS (resident set size) is much larger than the logical used_memory, degrading allocator performance and increasing memory pressure.
+**Statement:** Redis's allocator has fragmented physical memory so that RSS is much larger than logical used_memory, degrading allocator performance and increasing memory pressure.
 
-**Mechanism:** Under workloads with highly variable key sizes or frequent key deletions and re-insertions, jemalloc (Redis's default allocator) cannot reuse freed memory blocks efficiently. The fragmentation ratio (RSS ÷ used_memory) climbs above 1.5, meaning Redis consumes 50%+ more RAM than the actual data requires. This wastes RAM that could be used for data, increases the likelihood of swap pressure, and slows allocation paths as the allocator searches for suitable free blocks.
+**Chain:**
+- root: workloads with highly variable key sizes or frequent delete/re-insert prevent jemalloc from reusing freed blocks efficiently.
+- s1: the fragmentation ratio (RSS ÷ used_memory) climbs above 1.5, so Redis consumes 50%+ more RAM than the data requires.
+- s2: wasted RAM raises swap-pressure likelihood and slows allocation paths as the allocator searches for suitable free blocks.
+- D: allocation latency and swap risk surface as client-visible latency spikes (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 6] `mem_fragmentation_ratio` above 1.5.
+  <!-- match: {"step": 6, "predicate": "threshold", "target": "mem_fragmentation_ratio", "op": ">", "value": 1.5} -->
+- s1: [Step 6] `used_memory_rss_human` significantly larger than `used_memory_human`.
 
-- [Step 6] `mem_fragmentation_ratio` above 1.5.
-- [Step 6] `used_memory_rss_human` significantly larger than `used_memory_human`.
-
-<!-- match: {"step": 6, "predicate": "threshold", "target": "mem_fragmentation_ratio", "op": ">", "value": 1.5} -->
-
-**Mitigation:**
-
-- **Risk:** Active defragmentation consumes CPU cycles. Tune cycle percentages to avoid impacting foreground latency.
-- **Command:**
+**Interventions:**
+- **remediation** (root): enable active defragmentation so the allocator compacts freed blocks online.
 
   ```bash
   redis-cli CONFIG SET activedefrag yes
@@ -327,78 +316,90 @@ echo "maxmemory-policy allkeys-lru" | sudo tee -a /etc/redis/redis.conf
   redis-cli CONFIG SET active-defrag-cycle-max 25
   ```
 
-- **Duration:** Defragmentation runs continuously in the background; ratio improves over minutes to hours.
+  **Verification:** Over 30–60 minutes, `redis-cli INFO memory | grep mem_fragmentation_ratio` trends toward 1.0–1.3 and `used_memory_rss_human` converges toward `used_memory_human`.
+- **mitigation** (s1): run the same active-defrag settings as an immediate online interception while the durable config is persisted.
 
-**Resolution:** Same as Mitigation.
+  ```bash
+  redis-cli CONFIG SET activedefrag yes
+  redis-cli CONFIG SET active-defrag-cycle-max 25
+  ```
 
-**Verification:** Over 30–60 minutes, `redis-cli INFO memory | grep mem_fragmentation_ratio` trends downward toward 1.0–1.3. `used_memory_rss_human` converges closer to `used_memory_human`.
+  **Risk:** active defragmentation consumes CPU cycles; tune cycle percentages to avoid impacting foreground latency. **Duration:** runs continuously in the background; ratio improves over minutes to hours. **Verification:** re-run Step 6; `mem_fragmentation_ratio` trends downward.
 
 ---
 
 ### Cause E: Large key causing serialization and transfer overhead
 
-**Statement:** One or more Redis keys contain values too large (strings above 10 KB or collections above 1,000 elements) for efficient single-command serialization, network transfer, and client deserialization.
+**Statement:** One or more Redis keys hold values too large (strings above 10 KB or collections above 1,000 elements) for efficient single-command serialization, network transfer, and client deserialization.
 
-**Mechanism:** Reading or writing a large key requires Redis to serialize the entire value in memory, write it to the network output buffer, and wait for the client to acknowledge receipt. A 1 MB string value adds roughly 1 ms of serialization and ~1 ms of transfer latency per operation over a 1 Gbit/s link, and operations on large collections (`HGETALL`, `SMEMBERS`) block the event loop for the full enumeration time. Deletion of large keys (`DEL`) is also synchronous and blocks while freeing memory.
+**Chain:**
+- root: a key holds an oversized value — a string above 10 KB or a collection above 1,000 elements.
+- s1: reading/writing it forces Redis to serialize the whole value, fill the output buffer, and await client acknowledgement; large-collection ops (`HGETALL`, `SMEMBERS`) block the loop for the full enumeration, and `DEL` blocks while freeing memory.
+- D: each operation on the key adds ~1 ms serialization + ~1 ms transfer per MB, surfacing as client latency spikes (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 4] `redis-cli --bigkeys` reports a key above 10,240 bytes (strings) or above 1,000 elements (collections).
+  <!-- match: {"step": 4, "predicate": "threshold", "target": "memory_usage_bytes", "op": ">", "value": 10240} -->
+- root: [Step 4] `redis-cli MEMORY USAGE <key>` returns a value above 10,240.
+- s1: [Step 1] SLOWLOG shows `GET`, `HGETALL`, `SMEMBERS`, or `DEL` on the same key name with high duration.
 
-- [Step 4] `redis-cli --bigkeys` reports a key with size above 10,240 bytes (strings) or element count above 1,000 (collections).
-- [Step 4] `redis-cli MEMORY USAGE <key>` returns value above 10,240.
-- [Step 1] SLOWLOG shows `GET`, `HGETALL`, `SMEMBERS`, or `DEL` on the same key name with high duration.
+**Interventions:**
+- **remediation** (root): refactor oversized values via compression, bucketed sub-hashes, and paginated access.
 
-<!-- match: {"step": 4, "predicate": "threshold", "target": "memory_usage_bytes", "op": ">", "value": 10240} -->
+  ```bash
+  # Refactor string keys: compress values before storing
+  # Application-side: use msgpack/zstd compression
 
-**Mitigation:**
+  # Refactor large hashes into bucketed sub-hashes
+  # Instead of: HSET user:1:data field1 val ... field100000 val
+  # Use: HSET user:1:data:0 field1 val ... field999 val
+  #      HSET user:1:data:1 field1000 val ... field1999 val
 
-- **Risk:** Splitting keys requires application code changes; interim state may cause partial reads if not handled atomically.
-- **Command:**
+  # Refactor large sets/lists: use paginated access patterns
+  redis-cli SSCAN myset 0 COUNT 100
+  redis-cli LRANGE mylist 0 99
+  ```
+
+  **Verification:** `redis-cli --bigkeys` no longer reports keys above 10 KB or collections above 1,000 elements; `SLOWLOG GET 25` shows no GET/HGETALL/SMEMBERS above 10,000 µs.
+- **mitigation** (s1): delete the offending large key asynchronously to avoid a blocking `DEL`.
 
   ```bash
   # Delete a large key asynchronously (non-blocking, Redis 4.0+)
   redis-cli UNLINK <large_key_name>
   ```
 
-- **Duration:** `UNLINK` returns immediately; background deletion completes within seconds.
-
-**Resolution:**
-
-```bash
-# Refactor string keys: compress values before storing
-# Application-side: use msgpack/zstd compression
-
-# Refactor large hashes into bucketed sub-hashes
-# Instead of: HSET user:1:data field1 val ... field100000 val
-# Use: HSET user:1:data:0 field1 val ... field999 val
-#      HSET user:1:data:1 field1000 val ... field1999 val
-
-# Refactor large sets/lists: use paginated access patterns
-redis-cli SSCAN myset 0 COUNT 100
-redis-cli LRANGE mylist 0 99
-```
-
-**Verification:** `redis-cli --bigkeys` no longer reports keys above 10 KB or collections above 1,000 elements. `SLOWLOG GET 25` shows no GET/HGETALL/SMEMBERS operations with duration above 10,000 µs.
+  **Risk:** splitting keys requires application changes; interim state may cause partial reads if not handled atomically. **Duration:** `UNLINK` returns immediately; background deletion completes within seconds. **Verification:** re-run Step 4; the large key no longer appears in `--bigkeys`.
 
 ---
 
 ### Cause F: Mass key expiration blocking the event loop
 
-**Statement:** A large number of keys are configured with the same or near-identical TTL, causing the Redis expiration cycle to scan and delete many keys simultaneously, blocking the event loop.
+**Statement:** A large number of keys share the same or near-identical TTL, so the active expiration cycle scans and deletes many keys at once, blocking the event loop.
 
-**Mechanism:** Redis runs an active expiration cycle up to 10 times per second. Each cycle samples 20 keys and, if more than 25% have expired, immediately repeats the scan without yielding. When thousands of keys are created with the same TTL (e.g., all sessions set to expire at the top of the hour), the expiration cycle triggers continuous repeat loops at the expiry moment, driving CPU saturation and blocking command processing for hundreds of milliseconds.
+**Chain:**
+- root: thousands of keys are created with the same TTL (e.g. all sessions set to expire at the top of the hour).
+- s1: at the expiry moment the active expiration cycle (10×/sec, samples 20 keys, repeats without yielding when >25% expired) enters continuous repeat loops.
+- s2: those repeat loops saturate CPU and block command processing for hundreds of milliseconds.
+- D: brief latency spikes appear at the predictable TTL boundary (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- s1: [Step 2] `LATENCY LATEST` shows `expire-cycle` events above 100 ms.
+  <!-- match: {"step": 2, "predicate": "contains", "target": "expire-cycle"} -->
+- s1: [Step 2] `LATENCY HISTORY expire-cycle` shows spikes at predictable intervals (hourly, at session TTL boundaries).
+- D: [Symptom] latency spikes are brief (seconds) and correlate with traffic patterns or deployment times.
 
-- [Step 2] `LATENCY LATEST` shows `expire-cycle` events above 100 ms.
-- [Step 2] `LATENCY HISTORY expire-cycle` shows spikes at predictable intervals (hourly, at session TTL boundaries).
-- [Symptom] Latency spikes are brief (seconds) and correlate with traffic patterns or deployment times.
+**Interventions:**
+- **remediation** (root): add random TTL jitter in application code so expiries spread across the window.
 
-<!-- match: {"step": 2, "predicate": "contains", "target": "expire-cycle"} -->
+  ```bash
+  # Application-side: add random jitter when setting TTL
+  # Instead of: EXPIRE key 3600
+  # Use: EXPIRE key $((3600 + RANDOM % 600))  # +/- 10 minutes jitter
+  # In Python: redis.expire(key, 3600 + random.randint(0, 600))
+  ```
 
-**Mitigation:**
-
-- **Risk:** None. Adding jitter to existing keys' TTL requires a one-time scan of the keyspace.
-- **Command:**
+  **Verification:** `LATENCY HISTORY expire-cycle` shows no events above 100 ms; spikes at the previous expiry boundary no longer occur over two full TTL cycles.
+- **mitigation** (s1): on Redis 7.0+, lower expiration-cycle aggressiveness to interrupt the repeat loop until jitter ships.
 
   ```bash
   # No immediate mitigation available without application code changes.
@@ -406,39 +407,43 @@ redis-cli LRANGE mylist 0 99
   redis-cli CONFIG SET active-expire-enabled 0
   ```
 
-- **Duration:** Temporary; re-enable after deploying jitter in application.
-
-**Resolution:**
-
-```bash
-# Application-side: add random jitter when setting TTL
-# Instead of: EXPIRE key 3600
-# Use: EXPIRE key $((3600 + RANDOM % 600))  # +/- 10 minutes jitter
-# In Python: redis.expire(key, 3600 + random.randint(0, 600))
-```
-
-**Verification:** `LATENCY HISTORY expire-cycle` shows no events above 100 ms. Latency spikes correlated with the previous expiry boundary no longer occur over two full TTL cycles.
+  **Risk:** disabling active expiration grows memory until keys are lazily expired on access; only viable on Redis 7.0+. **Duration:** temporary; re-enable after deploying jitter in the application. **Verification:** re-run Step 2; `expire-cycle` events above 100 ms disappear.
 
 ---
 
 ### Cause G: Network round-trip or client connection overhead
 
-**Statement:** The dominant latency component is network round-trip time between the Redis client and server, or per-command connection overhead from non-pooled connections.
+**Statement:** The dominant latency component is network round-trip time between client and server, or per-command connection overhead from non-pooled connections.
 
-**Mechanism:** Each Redis command incurs at minimum one round-trip: client sends, server processes, server responds. At 1 Gbit/s within a data center, a TCP round-trip adds ~200 µs per command; across availability zones or regions, it adds 1–10 ms per command. Non-pooled connections add TCP handshake overhead (~200 µs–1 ms) on every command. Applications that issue many sequential commands without pipelining multiply this cost.
+**Chain:**
+- root: commands cross a slow path — across AZs/regions (1–10 ms RTT each) or over non-pooled connections that pay TCP handshake (~200 µs–1 ms) per command.
+- s1: applications issuing many sequential commands without pipelining multiply this per-command cost.
+- D: all commands are uniformly slow (not just specific types), surfacing as elevated client latency (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- root: [Step 7] `redis-cli --latency` average is significantly higher than `redis-cli --intrinsic-latency` on the server.
+  <!-- match: {"step": 7, "predicate": "threshold", "target": "avg_latency_ms", "op": ">", "value": 1} -->
+- root: [Step 7] `--intrinsic-latency` on the server shows below 1,000 µs, confirming Redis itself is healthy.
+- D: [Symptom] all commands are uniformly slow (not just specific command types), ruling out O(N) commands.
 
-- [Step 7] `redis-cli --latency` average is significantly higher than `redis-cli --intrinsic-latency` on the server.
-- [Step 7] `--intrinsic-latency` on the server shows below 1,000 µs, confirming Redis itself is healthy.
-- [Symptom] All commands are uniformly slow (not just specific command types), ruling out O(N) commands.
+**Interventions:**
+- **remediation** (root): co-locate via Unix domain socket and enable client-side connection pooling.
 
-<!-- match: {"step": 7, "predicate": "threshold", "target": "avg_latency_ms", "op": ">", "value": 1} -->
+  ```bash
+  # Configure Unix domain socket in redis.conf (requires restart)
+  # unixsocket /var/run/redis/redis.sock
+  # unixsocketperm 777
 
-**Mitigation:**
+  # Client-side: enable connection pooling
+  # Python (redis-py): ConnectionPool(max_connections=50)
+  # Java (Lettuce/Jedis): configure pool size matching thread count
 
-- **Risk:** Pipelining changes command error handling semantics; errors are returned per-command in the pipeline response.
-- **Command:**
+  # Enable pipelining for bulk operations:
+  # Send multiple commands in one network round-trip before reading responses
+  ```
+
+  **Verification:** `redis-cli --latency -h <host>` average drops within 2× of `--intrinsic-latency`; application p99 on Redis-backed endpoints returns to pre-incident levels.
+- **defensive_fix** (s1): batch sequential commands via pipelining so many commands share one round-trip.
 
   ```bash
   # Test pipeline throughput (sends 100k SET commands in batches)
@@ -448,41 +453,23 @@ redis-cli LRANGE mylist 0 99
   redis-cli -s /var/run/redis/redis.sock PING
   ```
 
-- **Duration:** Immediate once client is configured to use pooling and pipelining.
-
-**Resolution:**
-
-```bash
-# Configure Unix domain socket in redis.conf (requires restart)
-# unixsocket /var/run/redis/redis.sock
-# unixsocketperm 777
-
-# Client-side: enable connection pooling
-# Python (redis-py): ConnectionPool(max_connections=50)
-# Java (Lettuce/Jedis): configure pool size matching thread count
-
-# Enable pipelining for bulk operations:
-# Send multiple commands in one network round-trip before reading responses
-```
-
-**Verification:** `redis-cli --latency -h <host>` average drops to within 2× of `--intrinsic-latency` baseline. Application p99 latency on Redis-backed endpoints returns to pre-incident levels.
+  **Verification:** re-run Step 7; per-command latency drops toward intrinsic baseline as round-trips collapse into batches. (Note: pipelining changes error handling — errors return per-command in the pipeline response.)
 
 ---
 
-### Cause Z: Unidentified latency cause
+### Cause Z: Unidentified
 
 **Statement:** The latency source does not match any pattern identified by SLOWLOG, LATENCY DOCTOR, swap checks, bigkeys, persistence metrics, or network measurement.
 
-**Mechanism:** Redis latency can have platform-specific causes not covered by standard diagnostic commands, including kernel bugs, hypervisor scheduling jitter (especially on Xen-based VMs), NTP clock adjustments, CPU frequency scaling (C-states/P-states), and NUMA topology issues.
+**Chain:**
+- root: a platform-specific cause not covered by standard diagnostics — kernel bug, hypervisor scheduling jitter (Xen VMs), NTP clock adjustment, CPU frequency scaling (C-states/P-states), or NUMA topology.
+- D: latency spikes persist with no matching diagnostic signal (Symptom Recognition).
 
-**Indicator:**
+**Indicators:**
+- [Default] none of Causes A–G match findings from Steps 1–7.
 
-- [Default] None of the above causes match findings from Steps 1–7.
-
-**Mitigation:**
-
-- **Risk:** Software watchdog logs stack traces and slightly increases overhead.
-- **Command:**
+**Interventions:**
+- **mitigation** (D): capture a full diagnostic snapshot, enable the software watchdog, and escalate to the SME.
 
   ```bash
   # Enable the software watchdog to capture stack traces on delays >500ms
@@ -495,13 +482,7 @@ redis-cli LRANGE mylist 0 99
   cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
   ```
 
-- **Duration:** Run watchdog for 10–30 minutes to capture events, then disable with `CONFIG SET watchdog-period 0`.
-
-**Resolution:** Out of runbook scope. Escalate with: `LATENCY DOCTOR` output, `redis-cli --intrinsic-latency 100` results, `dmesg` from the latency window, Redis server logs (`/var/log/redis/redis-server.log`), and OS/hypervisor version details.
-
-**Verification:** Escalation path is engaged. If watchdog logs appear in Redis logs, they identify the exact blocking subsystem for the engineering team.
-
----
+  **Risk:** the software watchdog logs stack traces and slightly increases overhead. **Duration:** run watchdog 10–30 minutes to capture events, then disable with `CONFIG SET watchdog-period 0`. **Verification:** escalation engaged with `LATENCY DOCTOR` output, `--intrinsic-latency 100` results, `dmesg` from the latency window, Redis logs (`/var/log/redis/redis-server.log`), and OS/hypervisor versions; any watchdog log lines identify the exact blocking subsystem.
 
 ## Prevention
 

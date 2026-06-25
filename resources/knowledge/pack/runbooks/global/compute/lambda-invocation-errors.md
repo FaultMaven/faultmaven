@@ -6,8 +6,8 @@ service: aws-lambda
 symptom_class: [oom, auth_failure, connection_refused]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-05-12"
+version: "2.0.0"
+last_updated: "2026-06-25"
 verified_by: "kb-researcher"
 status: draft
 tags: [aws, lambda, serverless, runtime-error, oom, vpc, iam, handler, concurrency, throttling]
@@ -176,20 +176,36 @@ Expected output: Decoded log tail shows the last 4 KB of execution output includ
 
 ### Cause A: Out of memory — function exceeds configured memory limit
 
-**Statement:** The function exhausts its configured memory allocation and the Lambda runtime sends SIGKILL (signal 9), terminating the execution environment before the handler returns.
-**Mechanism:** Lambda enforces a hard memory ceiling on each execution environment. When RSS memory reaches the limit the runtime kills the process immediately without invoking any cleanup handlers, producing `Runtime.ExitError` with `signal: killed`. Because CPU allocation scales proportionally with memory, memory-constrained functions are also CPU-constrained, which can increase execution time and worsen the OOM rate under load.
-**Indicator:**
+**Statement:** The function exhausts its configured memory allocation, causing the Lambda runtime to send SIGKILL and terminate the execution environment before the handler returns.
+**Chain:**
+- root: function RSS memory reaches its configured hard ceiling during execution
+- s1: runtime kills the process immediately with SIGKILL (signal 9), skipping cleanup handlers
+- s2: invocation aborts and emits `Runtime.ExitError` with `signal: killed`
+- D: invocation returns a non-200/FunctionError result (Symptom Recognition)
+**Indicators:**
+- root: [Step 2] `maxMemMB` equals `limitMB` in the REPORT query output
+  <!-- match: {"step": 2, "predicate": "threshold", "target": "maxMemMB_pct_of_limitMB", "op": ">=", "value": 0.98} -->
+- s2: [Step 1] log contains `signal: killed` in the `Runtime.ExitError` line
+  <!-- match: {"step": 1, "predicate": "contains", "target": "signal: killed"} -->
+**Interventions:**
+- **remediation** (root): profile 24h peak usage and set memory to ~1.5× peak so RSS never reaches the ceiling.
 
-- [Step 2] `maxMemMB` equals `limitMB` in the REPORT query output
-- [Step 1] log contains `signal: killed` in `Runtime.ExitError` line
+  ```bash
+  # Profile peak usage over 24 hours, then set memory to 1.5x peak
+  QUERY_ID=$(aws logs start-query \
+    --log-group-name /aws/lambda/my-function \
+    --start-time $(date -d '24 hours ago' +%s) \
+    --end-time $(date +%s) \
+    --query-string 'filter @type="REPORT" | stats max(@maxMemoryUsed/1000000) as peakMB' \
+    --query 'queryId' --output text)
+  sleep 5
+  aws logs get-query-results --query-id "$QUERY_ID"
+  # Then set memory to ceil(peakMB * 1.5), rounded to nearest 64
+  aws lambda update-function-configuration --function-name my-function --memory-size <calculated-value>
+  ```
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "signal: killed"} -->
-<!-- match: {"step": 2, "predicate": "threshold", "target": "maxMemMB_pct_of_limitMB", "op": ">=", "value": 0.98} -->
-
-**Mitigation:**
-
-- **Risk:** Doubling memory doubles cost-per-invocation proportionally; also increases CPU, which may reduce duration and partly offset the cost increase.
-- **Command:**
+  **Verification:** Re-run Step 2 after 15 minutes of production traffic; `maxMemMB` should be ≤ 75% of new `limitMB`.
+- **mitigation** (root): immediately double the memory size to lift the ceiling above current peak.
 
   ```bash
   CURRENT=$(aws lambda get-function-configuration --function-name my-function \
@@ -198,44 +214,36 @@ Expected output: Decoded log tail shows the last 4 KB of execution output includ
   aws lambda update-function-configuration --function-name my-function --memory-size $NEW
   ```
 
-- **Duration:** Immediate; applies to the next cold start.
-
-**Resolution:**
-
-```bash
-# Profile peak usage over 24 hours, then set memory to 1.5× peak
-QUERY_ID=$(aws logs start-query \
-  --log-group-name /aws/lambda/my-function \
-  --start-time $(date -d '24 hours ago' +%s) \
-  --end-time $(date +%s) \
-  --query-string 'filter @type="REPORT" | stats max(@maxMemoryUsed/1000000) as peakMB' \
-  --query 'queryId' --output text)
-sleep 5
-aws logs get-query-results --query-id "$QUERY_ID"
-# Then set memory to ceil(peakMB * 1.5), rounded to nearest 64
-aws lambda update-function-configuration --function-name my-function --memory-size <calculated-value>
-```
-
-**Verification:** Re-run Step 2 after 15 minutes of production traffic. `maxMemMB` should be ≤ 75% of new `limitMB`.
+  **Risk:** Doubling memory doubles cost-per-invocation proportionally; it also increases CPU, which may reduce duration and partly offset the cost. **Duration:** Immediate; applies to the next cold start. **Verification:** Re-run Step 2; `maxMemMB` no longer equals `limitMB`.
 
 ---
 
 ### Cause B: Handler not found — module path or export name mismatch
 
-**Statement:** The Lambda runtime cannot locate the handler entry point because the `Handler` configuration field does not match the actual module file path or exported function name in the deployment package.
-**Mechanism:** On cold start, the runtime loads the module named before the dot separator in `Handler` (e.g., `handler` in `handler.lambda_handler`) and then resolves the attribute after the dot. If the ZIP does not contain that module at its root, or the module does not export that attribute, the runtime emits `Runtime.ImportModuleError` or `Runtime.HandlerNotFound` before the Invoke phase begins, causing every invocation to fail.
-**Indicator:**
+**Statement:** The `Handler` configuration field does not match the actual module file path or exported function name in the deployment package, so the runtime cannot locate the handler entry point.
+**Chain:**
+- root: `Handler` config (e.g. `handler.lambda_handler`) does not match a module/export present at the ZIP root
+- s1: on cold start the runtime fails to import the module or resolve the exported attribute
+- s2: runtime emits `Runtime.ImportModuleError` or `Runtime.HandlerNotFound` before the Invoke phase begins
+- D: every invocation fails (Symptom Recognition)
+**Indicators:**
+- s2: [Step 1] log contains `Runtime.ImportModuleError` or `Runtime.HandlerNotFound`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.ImportModuleError"} -->
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.HandlerNotFound"} -->
+- root: [Step 3] `Handler` value does not correspond to a file visible in Step 4's ZIP listing
+**Interventions:**
+- **remediation** (root): rebuild the package with the handler module at the ZIP root, redeploy, and set `Handler` to match.
 
-- [Step 1] log contains `Runtime.ImportModuleError` or `Runtime.HandlerNotFound`
-- [Step 3] `Handler` value does not correspond to a file visible in Step 4's ZIP listing
+  ```bash
+  # Verify and redeploy (Python example)
+  cd /path/to/project
+  zip -r function.zip handler.py requirements/ site-packages/
+  aws lambda update-function-code --function-name my-function --zip-file fileb://function.zip
+  aws lambda update-function-configuration --function-name my-function --handler handler.lambda_handler
+  ```
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.ImportModuleError"} -->
-<!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.HandlerNotFound"} -->
-
-**Mitigation:**
-
-- **Risk:** Low — only changes the handler configuration field; no code is modified.
-- **Command:**
+  **Verification:** Run Step 8; the response must not contain `FunctionError` and the log tail must not contain `ImportModuleError` or `HandlerNotFound`.
+- **mitigation** (root): if the package is correct but the field is wrong, correct only the `Handler` configuration field.
 
   ```bash
   # Python example: file handler.py at ZIP root, function named lambda_handler
@@ -251,38 +259,25 @@ aws lambda update-function-configuration --function-name my-function --memory-si
     --handler com.example.MyHandler::handleRequest
   ```
 
-- **Duration:** Immediate.
-
-**Resolution:** Rebuild the deployment package ensuring the handler module is at the ZIP root (not inside a subdirectory), redeploy, and correct the `Handler` field to match.
-
-```bash
-# Verify and redeploy (Python example)
-cd /path/to/project
-zip -r function.zip handler.py requirements/ site-packages/
-aws lambda update-function-code --function-name my-function --zip-file fileb://function.zip
-aws lambda update-function-configuration --function-name my-function --handler handler.lambda_handler
-```
-
-**Verification:** Run Step 8. The response must not contain `FunctionError` and the log tail must not contain `ImportModuleError` or `HandlerNotFound`.
+  **Risk:** Low — only changes the handler configuration field; no code is modified. **Duration:** Immediate. **Verification:** Run Step 8; log tail must not contain `ImportModuleError` or `HandlerNotFound`.
 
 ---
 
 ### Cause C: Missing bootstrap — invalid entrypoint for custom runtime
 
 **Statement:** A `provided.al2023` custom-runtime function fails to start because the `bootstrap` executable is absent from or not at the root of the deployment package ZIP.
-**Mechanism:** Lambda's custom runtime contract requires an executable file named `bootstrap` at `/var/task/bootstrap` (the ZIP root). If the file is missing, inside a subdirectory, or is a symlink rather than a real binary, the runtime emits `Runtime.InvalidEntrypoint` before any handler code can run, and every invocation fails immediately.
-**Indicator:**
-
-- [Step 1] log contains `Runtime.InvalidEntrypoint` or `Couldn't find valid bootstrap`
-- [Step 4] `bootstrap` is absent from the root of the ZIP listing or listed under a subdirectory path
-
-<!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.InvalidEntrypoint"} -->
-<!-- match: {"step": 1, "predicate": "contains", "target": "Couldn't find valid bootstrap"} -->
-
-**Mitigation:**
-
-- **Risk:** Low — redeploy only; no configuration changes.
-- **Command:**
+**Chain:**
+- root: `bootstrap` executable is missing, in a subdirectory, or a symlink rather than a real binary at the ZIP root
+- s1: Lambda's custom-runtime contract cannot find an executable at `/var/task/bootstrap`
+- s2: runtime emits `Runtime.InvalidEntrypoint` / `Couldn't find valid bootstrap` before any handler code runs
+- D: every invocation fails immediately (Symptom Recognition)
+**Indicators:**
+- s2: [Step 1] log contains `Runtime.InvalidEntrypoint` or `Couldn't find valid bootstrap`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.InvalidEntrypoint"} -->
+  <!-- match: {"step": 1, "predicate": "contains", "target": "Couldn't find valid bootstrap"} -->
+- root: [Step 4] `bootstrap` is absent from the root of the ZIP listing or listed under a subdirectory path
+**Interventions:**
+- **remediation** (root): rebuild with an executable `bootstrap` (mode 755) at the ZIP root and redeploy.
 
   ```bash
   # Verify bootstrap is executable and at ZIP root
@@ -295,30 +290,41 @@ aws lambda update-function-configuration --function-name my-function --handler h
   aws lambda update-function-code --function-name my-function --zip-file fileb://function.zip
   ```
 
-- **Duration:** Immediate after redeployment.
-
-**Resolution:** Same as Mitigation.
-
-**Verification:** Run Step 8. The log tail must not contain `InvalidEntrypoint` or `Couldn't find valid bootstrap`.
+  **Verification:** Run Step 8; the log tail must not contain `InvalidEntrypoint` or `Couldn't find valid bootstrap`.
 
 ---
 
-### Cause D: Missing IAM permission — execution role denied access to downstream AWS service
+### Cause D: Missing IAM permission — execution role denied downstream access
 
 **Statement:** The function's IAM execution role lacks a required permission for a downstream AWS service, causing the SDK call to fail with `AccessDeniedException`.
-**Mechanism:** Lambda executes function code under the identity of the execution role. When the function calls an AWS service (DynamoDB, S3, SQS, etc.) without the required IAM action on that resource, the service returns an `AccessDeniedException`. The function receives this as an exception from the SDK and typically propagates it as an unhandled error, incrementing the `Errors` metric. IAM policy changes propagate within 10–60 seconds; calls made immediately after an update may still fail.
-**Indicator:**
+**Chain:**
+- root: execution role policy omits the required IAM action on the downstream resource
+- s1: the function's SDK call to that service (DynamoDB, S3, SQS, etc.) is rejected with `AccessDeniedException`
+- s2: the SDK exception propagates as an unhandled error, incrementing the `Errors` metric
+- D: invocation returns a FunctionError result (Symptom Recognition)
+**Indicators:**
+- s1: [Step 1] log contains `AccessDeniedException` with the denied action name
+  <!-- match: {"step": 1, "predicate": "contains", "target": "AccessDeniedException"} -->
+- root: [Step 5] `EvalDecision` is `implicitDeny` or `explicitDeny` for that action
+  <!-- match: {"step": 5, "predicate": "contains", "target": "implicitDeny"} -->
+**Interventions:**
+- **remediation** (root): generate a least-privilege policy from CloudTrail activity via IAM Access Analyzer and replace the inline policy.
 
-- [Step 1] log contains `AccessDeniedException` with the denied action name
-- [Step 5] `EvalDecision` is `implicitDeny` or `explicitDeny` for that action
+  ```bash
+  aws accessanalyzer start-policy-generation \
+    --policy-generation-details '{
+      "principalArn": "arn:aws:iam::123456789012:role/my-function-role",
+      "cloudTrailDetails": {
+        "trailArn": "arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail",
+        "startTime": "2026-05-05T00:00:00Z",
+        "endTime": "2026-05-12T00:00:00Z",
+        "accessRole": "arn:aws:iam::123456789012:role/AccessAnalyzerRole"
+      }
+    }'
+  ```
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "AccessDeniedException"} -->
-<!-- match: {"step": 5, "predicate": "contains", "target": "implicitDeny"} -->
-
-**Mitigation:**
-
-- **Risk:** Medium — adding overly broad permissions widens the blast radius; scope to the specific resource ARN and action.
-- **Command:**
+  **Verification:** Run Step 5; `EvalDecision` must be `allowed`. Then run Step 8 — `AccessDeniedException` must not appear in the log tail.
+- **mitigation** (root): attach a narrowly scoped inline policy granting the specific action on the specific resource ARN.
 
   ```bash
   ROLE_NAME=$(aws lambda get-function-configuration --function-name my-function \
@@ -337,48 +343,34 @@ aws lambda update-function-configuration --function-name my-function --handler h
     }'
   ```
 
-- **Duration:** Allow 60 seconds for IAM propagation, then re-test.
-
-**Resolution:** Use IAM Access Analyzer to generate a least-privilege policy from CloudTrail activity, then replace the inline policy with the generated managed policy.
-
-```bash
-aws accessanalyzer start-policy-generation \
-  --policy-generation-details '{
-    "principalArn": "arn:aws:iam::123456789012:role/my-function-role",
-    "cloudTrailDetails": {
-      "trailArn": "arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail",
-      "startTime": "2026-05-05T00:00:00Z",
-      "endTime": "2026-05-12T00:00:00Z",
-      "accessRole": "arn:aws:iam::123456789012:role/AccessAnalyzerRole"
-    }
-  }'
-```
-
-- **Impact:** Policy change is role-wide; all functions sharing the execution role are affected.
-- **Rollback:** `aws iam delete-role-policy --role-name $ROLE_NAME --policy-name lambda-resource-access`
-
-**Verification:**
-
-Run Step 5 again. `EvalDecision` must be `allowed`. Then run Step 8 — `AccessDeniedException` must not appear in log tail.
+  **Risk:** Medium — overly broad permissions widen the blast radius (role-wide; all functions sharing the role are affected); scope to the specific resource ARN and action. Rollback: `aws iam delete-role-policy --role-name $ROLE_NAME --policy-name lambda-resource-access`. **Duration:** Allow 60 seconds for IAM propagation, then re-test. **Verification:** Re-run Step 5; `EvalDecision` is `allowed`.
 
 ---
 
 ### Cause E: VPC-connected function lacks NAT Gateway or VPC endpoint for AWS services
 
-**Statement:** A Lambda function attached to a VPC subnet with no NAT Gateway route and no VPC endpoint cannot reach public AWS service endpoints, causing all outbound SDK calls to time out.
-**Mechanism:** When a function is attached to a VPC, Lambda routes all outbound traffic through the VPC's Hyperplane ENI. Public subnets do not grant internet access to Lambda (Lambda instances do not receive public IPs). Without a NAT Gateway on the subnet's route table, packets destined for `dynamodb.us-east-1.amazonaws.com` (or any other public AWS endpoint) have no valid route, so the SDK connection times out producing `EndpointConnectionError` or `ConnectTimeoutError` after the SDK's default timeout.
-**Indicator:**
+**Statement:** A Lambda function attached to a VPC subnet that has no NAT Gateway route and no matching VPC endpoint cannot reach public AWS service endpoints, causing all outbound SDK calls to time out.
+**Chain:**
+- root: the function's VPC subnet route table has no `0.0.0.0/0` NAT Gateway route and no VPC endpoint for the target service
+- s1: outbound packets to public AWS endpoints (e.g. `dynamodb.us-east-1.amazonaws.com`) have no valid route via the Hyperplane ENI (Lambda gets no public IP)
+- s2: the SDK connection times out, emitting `EndpointConnectionError` / `ConnectTimeoutError`
+- D: the invocation fails on the timed-out downstream call (Symptom Recognition)
+**Indicators:**
+- s2: [Step 1] log contains `EndpointConnectionError`, `ConnectTimeoutError`, or `Could not connect to the endpoint URL`
+  <!-- match: {"step": 1, "predicate": "contains", "target": "EndpointConnectionError"} -->
+- root: [Step 6] subnet route table has no `0.0.0.0/0` route targeting a NAT Gateway
+  <!-- match: {"step": 6, "predicate": "absent", "target": "nat-"} -->
+**Interventions:**
+- **remediation** (root): add a NAT Gateway (public subnet) with a `0.0.0.0/0` route on the Lambda subnets, or remove the VPC config if no VPC resources are needed.
 
-- [Step 1] log contains `EndpointConnectionError` or `ConnectTimeoutError` or `Could not connect to the endpoint URL`
-- [Step 6] subnet route table has no `0.0.0.0/0` route targeting a NAT Gateway
+  ```bash
+  # If the function does not need VPC resources at all, detach VPC config
+  aws lambda update-function-configuration --function-name my-function \
+    --vpc-config SubnetIds=[],SecurityGroupIds=[]
+  ```
 
-<!-- match: {"step": 1, "predicate": "contains", "target": "EndpointConnectionError"} -->
-<!-- match: {"step": 6, "predicate": "absent", "target": "nat-"} -->
-
-**Mitigation:**
-
-- **Risk:** Low for free Gateway VPC endpoints (S3/DynamoDB); NAT Gateway incurs ~$0.045/hr per AZ plus data transfer charges.
-- **Command:**
+  **Verification:** Run Step 8; `EndpointConnectionError`/`ConnectTimeoutError` must not appear. Confirm via Step 6 the route table now has a `0.0.0.0/0` route or a service prefix-list entry.
+- **mitigation** (root): add free Gateway VPC endpoints for DynamoDB/S3 to give those services a valid route without a NAT Gateway.
 
   ```bash
   VPC_ID=$(aws lambda get-function-configuration --function-name my-function \
@@ -395,40 +387,35 @@ Run Step 5 again. `EvalDecision` must be `allowed`. Then run Step 8 — `AccessD
     --route-table-ids "$RTB_ID"
   ```
 
-- **Duration:** VPC endpoints become active within 1–2 minutes.
-
-**Resolution:** For services requiring internet access (third-party APIs, other AWS services without Gateway endpoints), add a NAT Gateway in a public subnet and add a route in the Lambda subnets' route table pointing `0.0.0.0/0` to the NAT Gateway. If the function does not need VPC resources at all, remove the VPC configuration:
-
-```bash
-aws lambda update-function-configuration --function-name my-function \
-  --vpc-config SubnetIds=[],SecurityGroupIds=[]
-```
-
-- **Impact:** VPC endpoint addition is VPC-wide for all resources using that route table. NAT Gateway addition requires a public subnet and Elastic IP.
-- **Rollback:** `aws ec2 delete-vpc-endpoints --vpc-endpoint-ids <endpoint-id>`
-
-**Verification:**
-
-Run Step 8. `EndpointConnectionError` or `ConnectTimeoutError` must not appear. Confirm via Step 6 that the route table now contains a `0.0.0.0/0` route or a service-specific prefix-list entry.
+  **Risk:** Low for free Gateway endpoints (S3/DynamoDB); the addition is VPC-wide for all resources using that route table. Rollback: `aws ec2 delete-vpc-endpoints --vpc-endpoint-ids <endpoint-id>`. **Duration:** VPC endpoints become active within 1–2 minutes. **Verification:** Run Step 8; the endpoint error must not appear for the covered service.
 
 ---
 
-### Cause F: Concurrency throttling — reserved concurrency set to zero or account limit reached
+### Cause F: Concurrency throttling — reserved concurrency zero or account limit reached
 
-**Statement:** Lambda rejects invocations with `TooManyRequestsException` because either the function's reserved concurrency is set to 0 (function disabled) or the account-level concurrent execution limit is exhausted.
-**Mechanism:** Lambda enforces two concurrency ceilings: a per-function reserved concurrency cap and an account-level unreserved concurrency pool (default 1000 per region). When reserved concurrency is 0, every invocation is throttled immediately. When account-level unreserved concurrency is exhausted by other functions, additional invocations to non-reserved functions are throttled. Throttled invocations return HTTP 429 and are retried by asynchronous callers (up to 2 times), which can cause DLQ backlog or event loss.
-**Indicator:**
+**Statement:** Lambda rejects invocations with `TooManyRequestsException` because the function's reserved concurrency is set to 0 or the account-level concurrent execution limit is exhausted.
+**Chain:**
+- root: function reserved concurrency is 0, or the account unreserved concurrency pool (default 1000/region) is exhausted by other functions
+- s1: Lambda throttles the invocation against the concurrency ceiling, returning HTTP 429 / `TooManyRequestsException`
+- s2: async callers retry up to 2× and may overflow to a DLQ backlog or lose events
+- D: invocation is rejected (Symptom Recognition)
+**Indicators:**
+- root: [Step 7] `ReservedConcurrentExecutions` is 0, or the CloudWatch `Throttles` metric sum is non-zero
+  <!-- match: {"step": 7, "predicate": "contains", "target": "TooManyRequestsException"} -->
+- s1: [Step 8] `StatusCode` is 429 / `TooManyRequestsException` in the invoke response
+  <!-- match: {"step": 8, "predicate": "contains", "target": "TooManyRequestsException"} -->
+**Interventions:**
+- **remediation** (root): if the account limit is the constraint, request a concurrency quota increase.
 
-- [Step 7] `ReservedConcurrentExecutions` is 0, or CloudWatch `Throttles` metric sum is non-zero
-- [Step 8] `StatusCode` is 429 in the invoke response
+  ```bash
+  aws service-quotas request-service-quota-increase \
+    --service-code lambda \
+    --quota-code L-B99A9384 \
+    --desired-value 3000
+  ```
 
-<!-- match: {"step": 7, "predicate": "contains", "target": "TooManyRequestsException"} -->
-<!-- match: {"step": 8, "predicate": "contains", "target": "TooManyRequestsException"} -->
-
-**Mitigation:**
-
-- **Risk:** Removing the reserved concurrency cap may allow the function to consume all account concurrency, starving other functions.
-- **Command:**
+  **Verification:** Run Step 7; `Throttles` sum drops to 0. Re-run Step 8 — `StatusCode` must be 200.
+- **mitigation** (root): raise the function's reserved concurrency from 0 to a safe value, or delete it to use the account pool.
 
   ```bash
   # If reserved concurrency is 0, raise it to a safe value
@@ -439,50 +426,31 @@ Run Step 8. `EndpointConnectionError` or `ConnectTimeoutError` must not appear. 
   aws lambda delete-function-concurrency --function-name my-function
   ```
 
-- **Duration:** Immediate.
-
-**Resolution:** Request a concurrency quota increase if the account limit is the constraint:
-
-```bash
-aws service-quotas request-service-quota-increase \
-  --service-code lambda \
-  --quota-code L-B99A9384 \
-  --desired-value 3000
-```
-
-- **Impact:** Concurrency changes are function-scoped for reserved concurrency; account-wide for quota increases.
-- **Rollback:** `aws lambda put-function-concurrency --function-name my-function --reserved-concurrent-executions <original-value>`
-
-**Verification:**
-
-Run Step 7. `Throttles` metric sum must drop to 0. Re-run Step 8 — `StatusCode` must be 200.
+  **Risk:** Removing the reserved cap may let the function consume all account concurrency, starving other functions. Rollback: `aws lambda put-function-concurrency --function-name my-function --reserved-concurrent-executions <original-value>`. **Duration:** Immediate. **Verification:** Re-run Step 7; `Throttles` sum is 0.
 
 ---
 
 ### Cause Z: Unidentified Lambda invocation failure
 
-**Statement:** The invocation error does not match any of the identified patterns and requires deeper investigation or escalation. [Default]
-**Mechanism:** Lambda invocation failures that do not produce one of the recognisable error strings (signal: killed, ImportModuleError, HandlerNotFound, InvalidEntrypoint, AccessDeniedException, EndpointConnectionError, TooManyRequestsException) may be caused by unhandled application exceptions, Init-phase timeouts (Sandbox.Timedout), KMS key issues, EFS/S3 mount failures, unexpected Node.js process exit (Runtime.NodejsExit), or transient AWS service disruptions.
-**Indicator:**
-
-- [Default] None of Causes A–F match the error strings observed in Steps 1 and 8
-
-**Mitigation:**
-
-- **Risk:** None — diagnostic only.
-- **Command:**
+**Statement:** The invocation error does not match any identified pattern and requires deeper investigation or escalation.
+**Chain:**
+- root: an unrecognised failure mode (unhandled application exception, Init-phase timeout `Sandbox.Timedout`, KMS key issue, EFS/S3 mount failure, `Runtime.NodejsExit`, or transient AWS disruption)
+- D: invocation fails without matching any known error string (Symptom Recognition)
+**Indicators:**
+- root: [Default] none of Causes A–F match the error strings observed in Steps 1 and 8
+**Interventions:**
+- **mitigation** (root): capture a full diagnostic snapshot (function state, X-Ray, Init-phase log scan) and escalate to AWS Support / the SME.
 
   ```bash
   # Check function state and last update status
   aws lambda get-function-configuration --function-name my-function \
     --query '{State:State,StateReason:StateReason,LastUpdateStatus:LastUpdateStatus,LastUpdateStatusReason:LastUpdateStatusReason}'
 
-  # Look for X-Ray traces for deeper error context
-  aws xray get-service-graph \
-    --start-time $(date -d '1 hour ago' -u +%s) \
-    --end-time $(date -u +%s)
+  # Enable X-Ray active tracing for deeper per-segment context
+  aws lambda update-function-configuration --function-name my-function \
+    --tracing-config Mode=Active
 
-  # Check for Init-phase timeouts (Sandbox.Timedout)
+  # Check for Init-phase timeouts (Sandbox.Timedout) and other rare faults
   QUERY_ID=$(aws logs start-query \
     --log-group-name /aws/lambda/my-function \
     --start-time $(date -d '1 hour ago' +%s) \
@@ -493,16 +461,7 @@ Run Step 7. `Throttles` metric sum must drop to 0. Re-run Step 8 — `StatusCode
   aws logs get-query-results --query-id "$QUERY_ID"
   ```
 
-- **Duration:** Diagnostic only; no change applied.
-
-**Resolution:** Out of runbook scope. Escalate to AWS Support with the function ARN, request IDs from failing invocations, and the full CloudWatch Logs output from Steps 1 and 8. Enable AWS X-Ray active tracing on the function to capture per-segment timing.
-
-```bash
-aws lambda update-function-configuration --function-name my-function \
-  --tracing-config Mode=Active
-```
-
-**Verification:** Resolution requires identifying the root cause through escalation. Confirm the error rate returns to zero via the CloudWatch `Errors` metric after the fix is applied.
+  **Risk:** None — diagnostic only; no production change beyond enabling tracing. **Duration:** Diagnostic only; escalate with the function ARN, failing request IDs, and the CloudWatch output from Steps 1 and 8. **Verification:** Confirm the `Errors` metric returns to zero after the SME-identified fix is applied.
 
 ## Prevention
 
