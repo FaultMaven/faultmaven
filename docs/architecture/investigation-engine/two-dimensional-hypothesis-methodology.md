@@ -34,14 +34,18 @@ PRs #487–#507. What is built versus still design-intent:
   stricter than the gate that lets a case resolve; else downgraded to a
   diagnostic with a recovery reason (engine veto, extends INV-23; mitigation
   exempt). *Quadrant-level precision (exempting `defensive_fix`) is deferred
-  until the solution emission carries an `InterventionQuadrant`.*
+  until the solution emission carries an `InterventionQuadrant`.* Also
+  **F3 signature-screening** (§4) — a *prompt-level* formation rule (the LLM
+  rejects a cause whose mechanism cannot produce D's observed signature; this is
+  a semantic judgment, deliberately not an engine token-match), sim-validated for
+  no over-screening.
 - **Design-intent, not yet built** — the LLM satisfies these *behaviorally*; no
   engine gate enforces them: chain-level belief propagation (§9.4 — the engine
   still uses the per-evidence `+0.15 / −0.20` counter from
   [framework §6](./evidence-driven-investigation-framework.md#6-hypothesis-model));
-  F3 signature-screening (§4); the F4 family-completeness sweep; and
-  invalidation-first search prioritization (§5). Each promotes to the
-  methodology-invariant registry (§0) as it is implemented.
+  the F4 family-completeness sweep; and invalidation-first search prioritization
+  (§5). Each promotes to the methodology-invariant registry (§0) as it is
+  implemented.
 
 The lifecycle/confidence *mechanics* (states, the `+0.15/−0.20` counter, decay)
 remain specified in framework §6; this document defines the reasoning the agent
