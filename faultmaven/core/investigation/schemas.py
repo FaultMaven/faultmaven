@@ -208,7 +208,7 @@ class KnowledgeResolution(BaseModel):
     user_confirmation: str
 
 
-# v3 KB-Resolution schemas (CauseChunk, IndicatorResult, CauseMatch,
+# v4 KB-resolution schemas (CauseRecord, RungResult, CauseMatch,
 # CauseMatchResult) live in `cause_schemas.py` as a leaf module — kept out of
 # this file so `agent.tools.kb_qa` can import them without transiting through
 # the `QueryIntent` re-export at line 41 above (which would violate the
