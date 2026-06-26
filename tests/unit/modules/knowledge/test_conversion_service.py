@@ -1442,3 +1442,36 @@ def test_runbook_validator_security_is_blocking():
     r3 = v.validate_content('password = "<changeme>"')
     assert not any("hardcoded" in e for e in r3.errors)
     assert any("placeholder" in w for w in r3.warnings)
+
+
+class TestConversionPromptIsV4:
+    """Guards: the conversion prompt + manual-create schema scaffold v4
+    causal-chain runbooks (Statement / Chain / Indicators / quadrant-tagged
+    Interventions), not the retired v3 flat shape (Mechanism / Mitigation /
+    Resolution). Regression guard for the v3->v4 template migration."""
+
+    def test_conversion_system_prompt_is_v4(self):
+        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+            CONVERSION_SYSTEM_PROMPT as p,
+        )
+
+        # v4 shape present
+        assert "v4" in p
+        assert "**Chain:**" in p
+        assert "**Indicators:**" in p
+        assert "**Interventions:**" in p
+        for quadrant in ("remediation", "defensive_fix", "mitigation", "loop_break"):
+            assert quadrant in p, f"missing quadrant {quadrant}"
+        # retired v3 sub-fields absent
+        assert "**Mechanism:**" not in p
+        assert "**Resolution:**" not in p
+        assert "v3" not in p
+
+    def test_manual_create_request_describes_v4(self):
+        from faultmaven.modules.knowledge.api.conversion_routes import (
+            RunbookCreateRequest,
+        )
+
+        desc = RunbookCreateRequest.model_fields["causes"].description or ""
+        assert "Interventions" in desc and "Chain" in desc
+        assert "Mechanism" not in desc and "Resolution" not in desc
