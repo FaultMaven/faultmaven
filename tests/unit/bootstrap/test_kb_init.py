@@ -38,6 +38,7 @@ def _write_pack(
     relpath: str = "global/example.md",
     chunk_texts: tuple = ("section one", "section two"),
     dim: int = 8,
+    causes: Optional[list] = None,
 ) -> Path:
     """Write a minimal but valid KB pack under ``tmp_path/pack`` and return it.
 
@@ -79,6 +80,8 @@ def _write_pack(
             }
         ],
     }
+    if causes is not None:
+        manifest["runbooks"][0]["causes"] = causes
     (pack_dir / "pack.json").write_text(json.dumps(manifest), encoding="utf-8")
     return pack_dir
 
@@ -590,82 +593,46 @@ async def test_ingest_runbook_without_causes_leaves_metadata_unset(
 
 def test_pack_load_carries_causes_from_fixture_pack(tmp_path):
     """KbPack.load lifts each runbook's per-Cause graph record from pack.json.
-    Deterministic in-test fixture (not the shipped pack) so it runs in any
-    environment, including a packaged install where resources/ is absent."""
-    import json
+    Deterministic in-test fixture (not the shipped pack) so it runs everywhere,
+    including a packaged install where resources/ is absent."""
+    from faultmaven.bootstrap.kb_pack import KbPack
 
-    import numpy as np
-
-    from faultmaven.bootstrap.kb_pack import EMBEDDING_MODEL, PACK_FORMAT, KbPack
-
-    pack_dir = tmp_path / "pack"
-    (pack_dir / "runbooks" / "global").mkdir(parents=True)
-    (pack_dir / "runbooks" / "global" / "x.md").write_text("# body", encoding="utf-8")
-    np.savez(pack_dir / "vectors.npz", vectors=np.zeros((1, 4), dtype="float32"))
     causes = [
         {"cause_letter": "A", "cause_statement": "root", "is_fallback_cause": False},
         {"cause_letter": "Z", "is_fallback_cause": True},
     ]
-    pack_json = {
-        "pack_format": PACK_FORMAT,
-        "model": EMBEDDING_MODEL,
-        "dim": 4,
-        "version": "test",
-        "runbooks": [
-            {
-                "item_id": "kb_abc",
-                "content_hash": "h",
-                "title": "X",
-                "scope": "global",
-                "relpath": "global/x.md",
-                "tags": [],
-                "chunks": [{"chunk_index": 0, "text": "body", "vector_row": 0}],
-                "causes": causes,
-            }
-        ],
-    }
-    (pack_dir / "pack.json").write_text(json.dumps(pack_json), encoding="utf-8")
-
-    pack = KbPack.load(pack_dir)
+    pack = KbPack.load(_write_pack(tmp_path, causes=causes))
     assert pack is not None
     (rb,) = pack.runbooks
     assert rb.causes == causes
 
 
 def test_pack_load_old_pack_without_causes_field(tmp_path):
-    """A pack.json predating the `causes` record loads with causes=[]."""
-    import json
+    """A pack.json predating the `causes` record (no `causes` key) loads as []."""
+    from faultmaven.bootstrap.kb_pack import KbPack
 
-    import numpy as np
-
-    from faultmaven.bootstrap.kb_pack import EMBEDDING_MODEL, PACK_FORMAT, KbPack
-
-    pack_dir = tmp_path / "pack"
-    (pack_dir / "runbooks" / "global").mkdir(parents=True)
-    (pack_dir / "runbooks" / "global" / "x.md").write_text("# body", encoding="utf-8")
-    np.savez(pack_dir / "vectors.npz", vectors=np.zeros((1, 4), dtype="float32"))
-    pack_json = {
-        "pack_format": PACK_FORMAT,
-        "model": EMBEDDING_MODEL,
-        "dim": 4,
-        "version": "test",
-        "runbooks": [
-            {
-                "item_id": "kb_old",
-                "content_hash": "h",
-                "title": "X",
-                "scope": "global",
-                "relpath": "global/x.md",
-                "tags": [],
-                "chunks": [{"chunk_index": 0, "text": "body", "vector_row": 0}],
-            }
-        ],
-    }
-    (pack_dir / "pack.json").write_text(json.dumps(pack_json), encoding="utf-8")
-
-    pack = KbPack.load(pack_dir)
+    pack = KbPack.load(_write_pack(tmp_path))  # no causes= → key omitted
     assert pack is not None
     assert pack.runbooks[0].causes == []
+
+
+def test_shipped_pack_carries_causes_if_vendored():
+    """Guard the PRODUCTION pack: the vendored runbooks actually ship a causes
+    record — catches a kb-toolkit rebuild that drops it (the fixture test only
+    proves the loader copies a field it is handed). Skips where the pack isn't
+    vendored (local dev); the CI lane that vendors it runs the assertion."""
+    from pathlib import Path
+
+    import faultmaven
+    from faultmaven.bootstrap.kb_pack import KbPack, baseline_pack_dir
+
+    root = Path(faultmaven.__file__).resolve().parent.parent
+    pack = KbPack.load(baseline_pack_dir(root))
+    if pack is None:
+        pytest.skip("KB pack not vendored in this tree")
+    with_causes = [rb for rb in pack.runbooks if rb.causes]
+    assert with_causes, "shipped pack carries no causes record"
+    assert "cause_letter" in with_causes[0].causes[0]
 
 
 def test_parse_json_dict_handles_dict_and_str_inputs():
