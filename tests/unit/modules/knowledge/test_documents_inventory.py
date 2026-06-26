@@ -31,6 +31,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     InMemoryKnowledgeItemRepository,
 )
 from faultmaven.utils.runbook_id import (
+    authored_item_id,
     is_builtin_item_id,
     item_id_from_runbook_id,
 )
@@ -86,6 +87,14 @@ class TestIsBuiltinItemId:
     def test_empty_or_uppercase_is_not_builtin(self):
         assert is_builtin_item_id("") is False
         assert is_builtin_item_id("kb_0123456789AB") is False  # hex is lowercase
+
+    def test_authored_mint_is_never_builtin(self):
+        # Regression (data loss): verify_draft / API-create previously minted
+        # kb_<12 hex>, which MATCHED the built-in pattern and was hard-deleted by
+        # the bootstrap orphan-prune on redeploy. authored_item_id() (the single
+        # mint point) must always produce a non-built-in id.
+        for _ in range(2000):
+            assert is_builtin_item_id(authored_item_id()) is False
 
 
 # ---------------------------------------------------------------------------

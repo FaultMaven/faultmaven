@@ -1398,3 +1398,22 @@ class TestConvertFromCaseDedup:
 
         assert call_count == 2, "Different cases must each run impl"
         assert results[0].conversion_id != results[1].conversion_id
+
+
+def test_runbook_validator_security_is_blocking():
+    """Security hazards must BLOCK conversion-time validation (errors), and
+    placeholder secret values must not. Regression for the warn-only gate."""
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        RunbookValidator,
+    )
+
+    v = RunbookValidator()
+    r = v.validate_content("```bash\nrm -rf /\n```")
+    assert not r.passed
+    assert any("rm -rf /" in e for e in r.errors)
+
+    r2 = v.validate_content('password = "real-leaked-secret"')
+    assert any("hardcoded" in e for e in r2.errors)
+
+    r3 = v.validate_content('password = "<changeme>"')  # placeholder
+    assert not any("hardcoded" in e for e in r3.errors)

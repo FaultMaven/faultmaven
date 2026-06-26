@@ -1505,9 +1505,11 @@ class ConversionService:
                     "without ingestion. Aborting with no status mutation."
                 )
 
-            import uuid as _uuid
+            from faultmaven.utils.runbook_id import authored_item_id
 
-            knowledge_item_id = f"kb_{_uuid.uuid4().hex[:12]}"
+            # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
+            # the bootstrap orphan-prune would delete this user runbook on redeploy.
+            knowledge_item_id = authored_item_id()
             try:
                 chunks_created = await self._knowledge_service.ingest_runbook(
                     document_id=knowledge_item_id,

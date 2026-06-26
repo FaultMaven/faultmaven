@@ -103,7 +103,7 @@ class RunbookValidator:
         self._validate_quality(content, warnings)
 
         # Security checks
-        self._validate_security(content, warnings)
+        self._validate_security(content, errors, warnings)
 
         return ValidationResult(
             passed=len(errors) == 0, errors=errors, warnings=warnings
@@ -273,15 +273,39 @@ class RunbookValidator:
         if len(links) == 0:
             warnings.append("No external references found")
 
-    def _validate_security(self, content: str, warnings: List[str]) -> None:
+    def _validate_security(
+        self, content: str, errors: List[str], warnings: List[str]
+    ) -> None:
+        # Security hazards BLOCK (errors): a draft must not promote a leaked
+        # credential or a destructive command into the KB. A secret match whose
+        # value is an obvious placeholder / shell-or-template var stays non-blocking.
+        placeholder_re = re.compile(
+            r"[<>${}]|(?i:your[-_]|change[-_]?me|example|placeholder|redacted|x{3,}|todo|\.\.\.)"
+        )
         secret_patterns = [
-            (r"password\s*=\s*['\"][^'\"]+['\"]", "Potential hardcoded password"),
-            (r"api[_-]?key\s*=\s*['\"][^'\"]+['\"]", "Potential hardcoded API key"),
-            (r"secret\s*=\s*['\"][^'\"]+['\"]", "Potential hardcoded secret"),
+            (r"password\s*=\s*['\"]([^'\"]+)['\"]", "Potential hardcoded password"),
+            (r"api[_-]?key\s*=\s*['\"]([^'\"]+)['\"]", "Potential hardcoded API key"),
+            (r"secret\s*=\s*['\"]([^'\"]+)['\"]", "Potential hardcoded secret"),
+            (r"token\s*=\s*['\"]([^'\"]+)['\"]", "Potential hardcoded token"),
         ]
         for pattern, message in secret_patterns:
-            if re.search(pattern, content, re.IGNORECASE):
-                warnings.append(f"Security: {message}")
+            for m in re.finditer(pattern, content, re.IGNORECASE):
+                if placeholder_re.search(m.group(1)):
+                    warnings.append(f"Security: {message} (placeholder — not blocking)")
+                else:
+                    errors.append(f"Security: {message} (hardcoded credential)")
+
+        dangerous = [
+            (
+                r"rm\s+-rf\s+(?:--no-preserve-root\s+)?/+(?:[\w.-]+/?)?(?:\s|\*|$)",
+                "Dangerous command: rm -rf / (root or a top-level system directory)",
+            ),
+            (r":\(\)\{.*:\|:.*\};:", "Dangerous: fork bomb"),
+            (r"dd\s+if=/dev/zero", "Potentially destructive: dd command"),
+        ]
+        for pattern, message in dangerous:
+            if re.search(pattern, content):
+                errors.append(f"Security: {message}")
 
 
 # =============================================================================
