@@ -7,6 +7,7 @@
   (only a confident single-Cause verdict), never anything else.
 """
 
+import logging
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -371,6 +372,13 @@ def _ks():
     return SimpleNamespace(get_runbook_causes=_resolver)
 
 
+# The engine method returns SILENTLY on a clean guard (no tools / no matcher
+# method / no knowledge_service / empty question) but logs this warning when it
+# *swallows* an exception. So "warning absent" distinguishes a real guard-return
+# from a vacuous pass where some unintended error was swallowed.
+_SKIP_WARNING = "Runbook cause matcher skipped"
+
+
 class TestEngineIntegration:
     @pytest.mark.asyncio
     async def test_single_match_instantiates_via_engine(self):
@@ -410,36 +418,52 @@ class TestEngineIntegration:
         assert case.causal_nodes == {}
 
     @pytest.mark.asyncio
-    async def test_no_investigation_tools_is_noop(self):
+    async def test_no_investigation_tools_is_noop(self, caplog):
         case = _case()
         eng = _engine(registry=None, knowledge_service=_ks())
-        await eng._apply_runbook_cause_matcher(case, None, {})  # must not raise
+        with caplog.at_level(logging.WARNING):
+            await eng._apply_runbook_cause_matcher(case, None, {})  # must not raise
+        assert _SKIP_WARNING not in caplog.text  # clean guard, not a swallowed error
         assert case.causal_nodes == {}
 
     @pytest.mark.asyncio
-    async def test_tool_without_matcher_method_is_noop(self):
+    async def test_tool_without_matcher_method_is_noop(self, caplog):
         case = _case()
         eng = _engine(registry=_registry(object()), knowledge_service=_ks())
-        await eng._apply_runbook_cause_matcher(case, None, {})  # must not raise
+        with caplog.at_level(logging.WARNING):
+            await eng._apply_runbook_cause_matcher(case, None, {})  # must not raise
+        assert _SKIP_WARNING not in caplog.text
         assert case.causal_nodes == {}
 
     @pytest.mark.asyncio
-    async def test_no_knowledge_service_is_noop(self):
+    async def test_no_knowledge_service_is_noop(self, caplog):
         case = _case()
         kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
         eng = _engine(registry=_registry(kb), knowledge_service=None)
-        await eng._apply_runbook_cause_matcher(case, None, {})
-        assert kb.calls == []  # guarded out before the tool call
+        with caplog.at_level(logging.WARNING):
+            await eng._apply_runbook_cause_matcher(case, None, {})
+        assert _SKIP_WARNING not in caplog.text  # guarded out, not swallowed
+        assert kb.calls == []  # never reached the tool
         assert case.causal_nodes == {}
 
     @pytest.mark.asyncio
-    async def test_matcher_exception_is_swallowed(self):
+    async def test_matcher_exception_is_swallowed(self, caplog):
         case = _case()
 
         class _BoomKB:
+            def __init__(self):
+                self.called = False
+
             async def aget_cause_matches(self, *a, **k):
+                self.called = True
                 raise RuntimeError("kb boom")
 
-        eng = _engine(registry=_registry(_BoomKB()), knowledge_service=_ks())
-        await eng._apply_runbook_cause_matcher(case, None, {})  # must not raise
+        boom = _BoomKB()
+        eng = _engine(registry=_registry(boom), knowledge_service=_ks())
+        with caplog.at_level(logging.WARNING):
+            await eng._apply_runbook_cause_matcher(case, None, {})  # must not raise
+        # The swallow path: reached the tool, raised, and logged the skip warning
+        # (distinguishes a real swallow from an unrelated early no-op).
+        assert boom.called is True
+        assert _SKIP_WARNING in caplog.text
         assert case.causal_nodes == {}
