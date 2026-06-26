@@ -510,3 +510,95 @@ class TestPruneOrphanBuiltins:
             )
         assert pruned == []
         del_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Runbook-cause matcher, increment 1: persist the per-Cause graph record
+# (see docs/architecture/investigation-engine/runbook-cause-matcher-implementation.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ingest_runbook_persists_causes_to_metadata(fk_on_ingest_service):
+    """The pack's per-Cause graph record round-trips through
+    knowledge_items.metadata['causes'], keyed by item_id — the foundation the
+    matcher reads back (increment 4)."""
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+        DatabaseKnowledgeItemRepository,
+    )
+
+    svc, factory = fk_on_ingest_service
+    causes = [
+        {
+            "cause_letter": "A",
+            "cause_statement": "idle txns exhaust the pool",
+            "chain_nodes": [{"ref": "root", "node_type": "root", "statement": "x"}],
+            "match_predicates": [
+                {"step": 2, "predicate": "contains", "target": "idle"}
+            ],
+            "is_fallback_cause": False,
+        },
+        {"cause_letter": "Z", "is_fallback_cause": True},
+    ]
+    await svc.ingest_runbook(
+        document_id="kb_causes",
+        title="Causes Runbook",
+        content="# body",
+        organization_id="org-1",
+        scope="global",
+        verified_by=None,
+        verification_level=VerificationLevel.COMMUNITY,
+        causes=causes,
+    )
+    async with factory() as session:
+        item = await DatabaseKnowledgeItemRepository(session).get_by_id("kb_causes")
+    assert item is not None
+    assert item.metadata is not None
+    assert item.metadata["causes"] == causes
+
+
+@pytest.mark.asyncio
+async def test_ingest_runbook_without_causes_leaves_metadata_unset(
+    fk_on_ingest_service,
+):
+    """No causes payload → metadata stays unset (upload path unchanged)."""
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+        DatabaseKnowledgeItemRepository,
+    )
+
+    svc, factory = fk_on_ingest_service
+    await svc.ingest_runbook(
+        document_id="kb_nocauses",
+        title="No Causes",
+        content="# body",
+        organization_id="org-1",
+        scope="global",
+        verified_by=None,
+        verification_level=VerificationLevel.COMMUNITY,
+    )
+    async with factory() as session:
+        item = await DatabaseKnowledgeItemRepository(session).get_by_id("kb_nocauses")
+    assert item is not None
+    assert not (item.metadata or {}).get("causes")
+
+
+def test_pack_load_carries_causes_from_shipped_pack():
+    """PackRunbook.load reads the per-Cause graph record from the shipped pack."""
+    from pathlib import Path
+
+    import faultmaven
+    from faultmaven.bootstrap.kb_pack import KbPack, baseline_pack_dir
+
+    root = Path(faultmaven.__file__).resolve().parent.parent
+    pack = KbPack.load(baseline_pack_dir(root))
+    if pack is None:
+        pytest.skip("no committed KB pack in this tree")
+    with_causes = [rb for rb in pack.runbooks if rb.causes]
+    assert with_causes, "no runbook carried a causes record after load"
+    assert "cause_letter" in with_causes[0].causes[0]

@@ -45,9 +45,9 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,10 @@ class PackRunbook:
     owner_id: Optional[str]
     team_id: Optional[str]
     chunks: List[PackChunk]
+    # v4 per-Cause graph records (cause_letter/statement, chain_nodes/edges,
+    # rung_indicators, match_predicates, interventions, is_fallback_cause) for the
+    # runbook-cause matcher. Empty for older packs that predate the v4 record.
+    causes: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def baseline_pack_dir(project_root: Path) -> Path:
@@ -190,6 +194,7 @@ class KbPack:
                         owner_id=rb.get("owner_id"),
                         team_id=rb.get("team_id"),
                         chunks=chunks,
+                        causes=list(rb.get("causes") or []),
                     )
                 )
 
