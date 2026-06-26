@@ -30,12 +30,25 @@ Graph structure is **instantiation data, not a retrieval key** — it lives in t
 KB pack, *not* ChromaDB. We persist it at ingest into the existing
 `knowledge_items.metadata` JSON column (no migration; the column already
 round-trips through ORM → repository → domain model). The matcher resolves a
-retrieved chunk's `item_id` → `knowledge_items.metadata["causes"]`.
+retrieved chunk's `item_id` → `knowledge_items.metadata.get("causes")`.
 
-Co-locating the record in the `knowledge_items` row means the two ingestion
-invariants cover it for free: a content-hash change deletes + recreates the row
-(causes refreshed atomically), and the orphan-prune deletes the row (causes gone
-with it). No separate cleanup path, no side table, no query surface we don't need.
+Co-locating the record in the `knowledge_items` row keeps it consistent with the
+orphan-prune (which deletes the whole row → causes gone with it) and with
+re-ingestion **on a runbook-body change** (delete + recreate refreshes causes
+atomically). No separate cleanup path, no side table, no query surface we don't
+need.
+
+Two contracts the consumer (increment 4) must honour:
+
+- **Read with `.get("causes")`, never `["causes"]`.** It is absent/None for
+  upload-path and pre-v4 runbooks; the database backend returns `{}` for a
+  no-causes row while the in-memory backend returns `None`.
+- **Causes refresh on a body change, not a causes-only edit.** The idempotency
+  skip keys on the markdown content hash (`kb_init.py`), which does not include
+  `causes`. A pack-builder change that revises a Cause's graph *without* changing
+  the runbook prose is skipped on re-ingest — refresh requires a body change or a
+  forced re-ingest. (Folding a pack/causes fingerprint into the skip check is a
+  reasonable follow-up; pre-production, nothing is deployed yet.)
 
 ## Increments (each its own reviewable, flag-gated PR)
 

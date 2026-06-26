@@ -588,17 +588,100 @@ async def test_ingest_runbook_without_causes_leaves_metadata_unset(
     assert not (item.metadata or {}).get("causes")
 
 
-def test_pack_load_carries_causes_from_shipped_pack():
-    """PackRunbook.load reads the per-Cause graph record from the shipped pack."""
-    from pathlib import Path
+def test_pack_load_carries_causes_from_fixture_pack(tmp_path):
+    """KbPack.load lifts each runbook's per-Cause graph record from pack.json.
+    Deterministic in-test fixture (not the shipped pack) so it runs in any
+    environment, including a packaged install where resources/ is absent."""
+    import json
 
-    import faultmaven
-    from faultmaven.bootstrap.kb_pack import KbPack, baseline_pack_dir
+    import numpy as np
 
-    root = Path(faultmaven.__file__).resolve().parent.parent
-    pack = KbPack.load(baseline_pack_dir(root))
-    if pack is None:
-        pytest.skip("no committed KB pack in this tree")
-    with_causes = [rb for rb in pack.runbooks if rb.causes]
-    assert with_causes, "no runbook carried a causes record after load"
-    assert "cause_letter" in with_causes[0].causes[0]
+    from faultmaven.bootstrap.kb_pack import EMBEDDING_MODEL, PACK_FORMAT, KbPack
+
+    pack_dir = tmp_path / "pack"
+    (pack_dir / "runbooks" / "global").mkdir(parents=True)
+    (pack_dir / "runbooks" / "global" / "x.md").write_text("# body", encoding="utf-8")
+    np.savez(pack_dir / "vectors.npz", vectors=np.zeros((1, 4), dtype="float32"))
+    causes = [
+        {"cause_letter": "A", "cause_statement": "root", "is_fallback_cause": False},
+        {"cause_letter": "Z", "is_fallback_cause": True},
+    ]
+    pack_json = {
+        "pack_format": PACK_FORMAT,
+        "model": EMBEDDING_MODEL,
+        "dim": 4,
+        "version": "test",
+        "runbooks": [
+            {
+                "item_id": "kb_abc",
+                "content_hash": "h",
+                "title": "X",
+                "scope": "global",
+                "relpath": "global/x.md",
+                "tags": [],
+                "chunks": [{"chunk_index": 0, "text": "body", "vector_row": 0}],
+                "causes": causes,
+            }
+        ],
+    }
+    (pack_dir / "pack.json").write_text(json.dumps(pack_json), encoding="utf-8")
+
+    pack = KbPack.load(pack_dir)
+    assert pack is not None
+    (rb,) = pack.runbooks
+    assert rb.causes == causes
+
+
+def test_pack_load_old_pack_without_causes_field(tmp_path):
+    """A pack.json predating the `causes` record loads with causes=[]."""
+    import json
+
+    import numpy as np
+
+    from faultmaven.bootstrap.kb_pack import EMBEDDING_MODEL, PACK_FORMAT, KbPack
+
+    pack_dir = tmp_path / "pack"
+    (pack_dir / "runbooks" / "global").mkdir(parents=True)
+    (pack_dir / "runbooks" / "global" / "x.md").write_text("# body", encoding="utf-8")
+    np.savez(pack_dir / "vectors.npz", vectors=np.zeros((1, 4), dtype="float32"))
+    pack_json = {
+        "pack_format": PACK_FORMAT,
+        "model": EMBEDDING_MODEL,
+        "dim": 4,
+        "version": "test",
+        "runbooks": [
+            {
+                "item_id": "kb_old",
+                "content_hash": "h",
+                "title": "X",
+                "scope": "global",
+                "relpath": "global/x.md",
+                "tags": [],
+                "chunks": [{"chunk_index": 0, "text": "body", "vector_row": 0}],
+            }
+        ],
+    }
+    (pack_dir / "pack.json").write_text(json.dumps(pack_json), encoding="utf-8")
+
+    pack = KbPack.load(pack_dir)
+    assert pack is not None
+    assert pack.runbooks[0].causes == []
+
+
+def test_parse_json_dict_handles_dict_and_str_inputs():
+    """The knowledge-item repo read must accept BOTH a JSON string (SQLite TEXT)
+    and an already-decoded dict (PostgreSQL JSONB) — otherwise metadata['causes']
+    is silently dropped on PG. Regression guard for the unguarded json.loads."""
+    from unittest.mock import MagicMock
+
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+        DatabaseKnowledgeItemRepository,
+    )
+
+    repo = DatabaseKnowledgeItemRepository(MagicMock())
+    payload = {"causes": [{"cause_letter": "A"}]}
+    assert repo._parse_json_dict('{"causes": [{"cause_letter": "A"}]}') == payload
+    assert repo._parse_json_dict(payload) == payload  # PG JSONB dict return
+    assert repo._parse_json_dict(None) is None
+    assert repo._parse_json_dict("") is None
+    assert repo._parse_json_dict("[1, 2]") is None  # non-dict JSON → None

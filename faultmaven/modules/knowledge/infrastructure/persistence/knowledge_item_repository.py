@@ -34,7 +34,7 @@ import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -862,10 +862,19 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         except (json.JSONDecodeError, TypeError):
             return []
 
-    def _parse_json_dict(self, value: Optional[str]) -> Optional[Dict]:
-        """Parse JSON string to dict."""
+    def _parse_json_dict(self, value: Any) -> Optional[Dict]:
+        """Parse a stored JSON value to a dict.
+
+        Robust to both representations of the ``JsonBlob`` column: a JSON
+        *string* (SQLite TEXT) and an already-decoded ``dict`` (PostgreSQL
+        JSONB may return the deserialized object). Mirrors the guarded read in
+        the case repository — without the ``isinstance(str)`` guard, a dict
+        return on PG hits ``json.loads(dict)`` → ``TypeError`` → silently lost.
+        """
         if not value:
             return None
+        if isinstance(value, dict):
+            return value
         try:
             result = json.loads(value)
             return result if isinstance(result, dict) else None

@@ -1319,9 +1319,12 @@ class KnowledgeService:
             created_at=now,
             updated_at=now,
             # v4 per-Cause graph records for the runbook-cause matcher, read back
-            # by item_id. Co-located in the row so re-ingest-on-change and the
-            # orphan-prune keep them consistent for free. Inert until the matcher
-            # (runbook-cause-matcher-implementation.md, increment 4) consumes it.
+            # by item_id via metadata.get("causes") (absent/None on the upload
+            # path and pre-v4 runbooks). Co-located in the row so the orphan-prune
+            # removes them with it and a content-body change refreshes them on
+            # re-ingest — NOTE a causes-only pack change (unchanged markdown) is
+            # skipped by the content-hash gate; see the idempotency note in
+            # runbook-cause-matcher-implementation.md. Inert until increment 4.
             metadata={"causes": causes} if causes else None,
         )
         async with self._db_session_factory() as session:
