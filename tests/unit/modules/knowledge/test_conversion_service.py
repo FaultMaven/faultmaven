@@ -1400,6 +1400,50 @@ class TestConvertFromCaseDedup:
         assert results[0].conversion_id != results[1].conversion_id
 
 
+def test_runbook_validator_security_is_blocking():
+    """Security hazards must BLOCK conversion-time validation (errors), and
+    placeholder secret values must not. Regression for the warn-only gate."""
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        RunbookValidator,
+    )
+
+    v = RunbookValidator()
+
+    # Destructive commands block — including variants the first cut missed.
+    for cmd in [
+        "rm -rf /",
+        "rm -fr /etc",
+        "rm --recursive --force /",
+        "rm -rf ~",
+        "rm -rf $HOME",
+        ": () { :|: & };:",
+        "dd if=/dev/zero of=/dev/sda",
+    ]:
+        r = v.validate_content(f"```bash\n{cmd}\n```")
+        assert not r.passed, cmd
+        assert any(
+            "Dangerous" in e or "destructive" in e for e in r.errors
+        ), f"{cmd} not blocked: {r.errors}"
+
+    # Scoped path + benign dd do NOT block (no false positive).
+    for cmd in ["rm -rf /var/lib/app/cache", "dd if=/dev/zero of=/dev/null bs=1M"]:
+        r = v.validate_content(f"```bash\n{cmd}\n```")
+        assert not any(
+            "Dangerous" in e or "destructive" in e for e in r.errors
+        ), f"{cmd} falsely blocked: {r.errors}"
+
+    # Real secrets block — including values that contain `$` or placeholder
+    # substrings (the false-negative the anchored placeholder match closes).
+    for val in ["real-leaked-secret", "P@$$w0rd", "Xxxabc123", "AKIAIOSFODNN7EXAMPLE"]:
+        r = v.validate_content(f'password = "{val}"')
+        assert any("hardcoded" in e for e in r.errors), f"{val} not blocked"
+
+    # Placeholder secrets do NOT block but ARE still surfaced as a warning.
+    r3 = v.validate_content('password = "<changeme>"')
+    assert not any("hardcoded" in e for e in r3.errors)
+    assert any("placeholder" in w for w in r3.warnings)
+
+
 class TestConversionPromptIsV4:
     """Guards: the conversion prompt + manual-create schema scaffold v4
     causal-chain runbooks (Statement / Chain / Indicators / quadrant-tagged

@@ -428,8 +428,11 @@ Format as Markdown with these sections:
                 self.logger.error(f"Failed to create knowledge item: {e}")
                 return None
         else:
-            # Mock ID for testing
-            knowledge_item_id = f"kb_{uuid.uuid4().hex[:12]}"
+            # Mock id (no knowledge_service) — still must not match the 12-hex
+            # built-in prune pattern, so route through the shared authored-id mint.
+            from faultmaven.utils.runbook_id import authored_item_id
+
+            knowledge_item_id = authored_item_id()
 
         # Mark suggestion as approved
         suggestion.approve(

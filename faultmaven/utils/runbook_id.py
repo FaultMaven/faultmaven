@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from uuid import uuid4
 
 # A bootstrap-published (platform built-in) runbook has a deterministic
 # ``kb_<12-hex>`` item_id (see ``item_id_from_runbook_id``). This is the
@@ -46,3 +47,17 @@ def is_builtin_item_id(item_id: str) -> bool:
     vs hard-delete (authored).
     """
     return bool(item_id and _BUILTIN_ITEM_ID_RE.match(item_id))
+
+
+def authored_item_id() -> str:
+    """item_id for a USER-authored runbook (verify_draft / API create).
+
+    ``kb_<16-hex>`` — 16 hex chars so it NEVER matches the 12-hex built-in
+    discriminator (``_BUILTIN_ITEM_ID_RE`` / ``is_builtin_item_id``). Authored
+    items must be hard-deletable on request and MUST NOT be swept by the
+    bootstrap orphan-prune, which deletes only ids matching the built-in
+    pattern. A 12-hex authored id would be silently prune-deleted on the next
+    redeploy with a changed pack — this helper is the single mint point that
+    keeps authored ids out of that pattern.
+    """
+    return f"kb_{uuid4().hex[:16]}"
