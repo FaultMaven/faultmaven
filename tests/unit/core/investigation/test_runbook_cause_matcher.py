@@ -325,6 +325,160 @@ class TestApply:
         assert len(roots) == 1
 
 
+class TestHypothesisAttachment:
+    @staticmethod
+    def _hm():
+        from faultmaven.core.investigation.hypothesis_manager import (
+            create_hypothesis_manager,
+        )
+
+        return create_hypothesis_manager()
+
+    @pytest.mark.asyncio
+    async def test_single_match_attaches_hypothesis_rooted_at_chain_root(self):
+        from faultmaven.modules.case.contracts import HypothesisState
+
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert len(roots) == 1
+        assert len(case.hypotheses) == 1
+        hyp = next(iter(case.hypotheses.values()))
+        assert hyp.root_node_id == roots[0].node_id
+        assert hyp.state == HypothesisState.ACTIVE
+        # path is root → D (the matched chain materialized).
+        assert hyp.path[0] == roots[0].node_id
+        assert len(hyp.path) >= 2  # root ... D
+
+    @pytest.mark.asyncio
+    async def test_attachment_is_idempotent_across_turns(self):
+        # The matcher runs every turn; node dedup → same root → no 2nd hypothesis.
+        case = _case()
+        hm = self._hm()
+
+        async def _run():
+            kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+            await apply_runbook_cause_matcher(
+                case,
+                kb_tool=kb,
+                resolve_causes=_noop_resolver,
+                evaluator=object(),
+                question="q",
+                user_id="u1",
+                hypothesis_manager=hm,
+            )
+
+        await _run()
+        await _run()  # second turn
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert len(roots) == 1  # node deduped
+        assert len(case.hypotheses) == 1  # hypothesis deduped (not re-spawned)
+
+    @pytest.mark.asyncio
+    async def test_belief_is_capped_below_cause_identified_gate(self):
+        # A runbook is a PRIOR, not a conclusion: even a belief of 1.0 must not
+        # push the hypothesis likelihood to/over the 0.6 cause-identified gate
+        # (else a runbook alone would satisfy working_conclusion → M5/resolution).
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            _MATCHER_MAX_PRIOR,
+        )
+
+        case = _case()
+        result = _result("kb_rb1", "single", record=_linear_cause("A"))
+        result.selected_cause.belief = 1.0
+        kb = _FakeKB([result])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        hyp = next(iter(case.hypotheses.values()))
+        assert hyp.likelihood == _MATCHER_MAX_PRIOR
+        assert hyp.likelihood < 0.6  # below the cause-identified gate
+
+    @pytest.mark.asyncio
+    async def test_rootless_chain_attaches_no_hypothesis(self):
+        # A chain with only intermediates (no ROOT) instantiates nodes but has
+        # no root to anchor a hypothesis.
+        case = _case()
+        cause = CauseRecord(
+            cause_letter="A",
+            cause_name="n",
+            chain_nodes=[
+                _node("s1", "intermediate", "an intermediate effect"),
+                _node("D", "problem", "the problem"),
+            ],
+            chain_edges=[_edge("s1", "D")],
+        )
+        kb = _FakeKB([_result("kb_rb1", "single", record=cause)])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        assert case.hypotheses == {}  # no ROOT → no hypothesis
+        assert any(  # but the intermediate node was instantiated
+            n.node_type == NodeType.INTERMEDIATE for n in case.causal_nodes.values()
+        )
+
+    @pytest.mark.asyncio
+    async def test_chain_not_reaching_D_attaches_no_hypothesis(self):
+        # A lone root with no edge to D: the root instantiates, but it has no
+        # path to D, so no (inconsistent, empty-path) hypothesis is attached.
+        case = _case()
+        cause = CauseRecord(
+            cause_letter="A",
+            cause_name="n",
+            chain_nodes=[_node("root", "root", "the root cause")],
+            chain_edges=[],  # not linked to D
+        )
+        kb = _FakeKB([_result("kb_rb1", "single", record=cause)])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        assert case.hypotheses == {}  # no root→D path → no hypothesis
+        assert any(n.node_type == NodeType.ROOT for n in case.causal_nodes.values())
+
+    @pytest.mark.asyncio
+    async def test_no_manager_instantiates_chain_without_hypothesis(self):
+        # Backward-compatible: without a manager, instantiate only (4a behavior).
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert any(n.node_type == NodeType.ROOT for n in case.causal_nodes.values())
+        assert case.hypotheses == {}
+
+
 class TestDuplicateRef:
     def test_duplicate_ref_skips_node_and_keeps_first_edge_target(self):
         # Two nodes share ref 'x'; the duplicate must be skipped (not overwrite
@@ -351,11 +505,15 @@ class TestDuplicateRef:
 
 
 def _engine(*, registry, knowledge_service):
+    from faultmaven.core.investigation.hypothesis_manager import (
+        create_hypothesis_manager,
+    )
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
     eng = MilestoneEngine.__new__(MilestoneEngine)
     eng.investigation_tools = registry
     eng.knowledge_service = knowledge_service
+    eng.hypothesis_manager = create_hypothesis_manager()
     return eng
 
 
@@ -390,6 +548,10 @@ class TestEngineIntegration:
 
         roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
         assert len(roots) == 1
+        # The chain is load-bearing: a hypothesis is attached to its root.
+        assert len(case.hypotheses) == 1
+        hyp = next(iter(case.hypotheses.values()))
+        assert hyp.root_node_id == roots[0].node_id
         # Question sourced from the verified symptom statement.
         assert kb.calls[0]["question"] == "Deploy to on-prem job fails"
         assert kb.calls[0]["user_id"] == "u"

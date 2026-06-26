@@ -1,19 +1,21 @@
-"""Runbook Cause matcher — per-turn instantiation (increment 4a).
+"""Runbook Cause matcher — per-turn instantiation (increments 4a, 4b-1).
 
 Bridges the structured matcher (``kb_qa.aget_cause_matches`` → ``CauseMatchResult``)
 to the case's causal graph: when a retrieved runbook's Cause matches with a single
 confident verdict, instantiate that Cause's causal chain as CANDIDATE nodes by
 REUSING ``causal_graph.ingest_emitted_chain`` (seed-D, exact-match dedup, ``cn_``
-id render-back, edges, never-``VALIDATED``). The matcher seeds a structural
-*prior*; everything downstream (``derive_node_states``, RCC synthesis, the M5
-solution gate) then treats these nodes exactly like LLM-emitted ones — which is
-what keeps the soundness guarantees automatic.
+id render-back, edges, never-``VALIDATED``), then attach a hypothesis to the
+chain's root (4b-1) so the chain is *load-bearing* — an unattached chain is
+invisible to ``cause_state`` / ``any_chain_root_validated`` / RCC synthesis. The
+matcher seeds a structural *prior*; everything downstream (``derive_node_states``,
+RCC synthesis, the M5 solution gate) then treats these nodes exactly like
+LLM-emitted ones — which is what keeps the soundness guarantees automatic.
 
-Flag-gated OFF until increment 5. The deterministic (step-output) and semantic
-(``case_evidence_qa``) resolvers that drive matching are supplied by the caller;
-in 4a they are not yet wired, so a flag-ON matcher abstains (verdict 'none')
-rather than acting — this module is the structural seam, validated here with
-fakes. Mapping interventions → ``Solution`` is increment 4b.
+Flag-gated OFF. The deterministic (step-output) and semantic (``case_evidence_qa``)
+resolvers that drive matching are NOT yet wired, so a flag-ON matcher abstains
+(verdict 'none') rather than acting — this module is the structural seam,
+validated here with fakes. Remaining 4b units: wire those resolvers so matching
+fires, and map interventions → ``Solution`` (through the M5 gate).
 """
 
 from __future__ import annotations
@@ -21,19 +23,35 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
+from faultmaven.core.investigation.causal_graph import (
+    chain_path_to_problem,
+    ingest_emitted_chain,
+)
 from faultmaven.core.investigation.cause_schemas import CauseMatchResult, CauseRecord
 from faultmaven.core.investigation.schemas import CausalEdgeToAdd, CausalNodeToAdd
-from faultmaven.modules.case.domain.models import NodeType
+from faultmaven.modules.case.domain.models import (
+    HypothesisCategory,
+    HypothesisGenerationMode,
+    HypothesisState,
+    NodeType,
+)
 
 if TYPE_CHECKING:
+    from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
     from faultmaven.core.investigation.indicator_evaluator import IndicatorEvaluator
-    from faultmaven.modules.case.domain.models import Case
+    from faultmaven.modules.case.domain.models import Case, Hypothesis
 
 logger = logging.getLogger(__name__)
 
 # Distinct runbooks the matcher evaluates per turn.
 _DEFAULT_MAX_RUNBOOKS = 3
+
+# A matched runbook seeds a PRIOR, not a conclusion. Cap its hypothesis
+# likelihood strictly below the 0.6 "cause identified" threshold
+# (``working_conclusion.likelihood >= 0.6`` → ``terminal_transitions._cause_identified``,
+# which gates the M5 solution gate and resolution readiness) so a runbook match
+# ALONE can never make FM conclude the cause. Real evidence lifts it past 0.6.
+_MATCHER_MAX_PRIOR = 0.5
 
 
 def chain_to_specs(
@@ -102,6 +120,87 @@ def instantiate_cause_chain(
     return ingest_emitted_chain(case, nodes, edges, [], current_turn)
 
 
+def _root_node_id(case: "Case", created: List[Optional[str]]) -> Optional[str]:
+    """The instantiated chain's ROOT node id. Found by node_type (not position),
+    so a skipped/deduped node can't misidentify the root. The v4 chain has
+    exactly one ROOT."""
+    for node_id in created:
+        node = case.causal_nodes.get(node_id) if node_id else None
+        if node is not None and node.node_type == NodeType.ROOT:
+            return node_id
+    return None
+
+
+def attach_matched_hypothesis(
+    case: "Case",
+    match: CauseMatchResult,
+    root_id: str,
+    hypothesis_manager: "HypothesisManager",
+) -> Optional["Hypothesis"]:
+    """Create a hypothesis rooted at the matched chain's root, so the chain is
+    *load-bearing* — an unattached chain is invisible to ``cause_state`` /
+    ``any_chain_root_validated`` / RCC synthesis (those read standing
+    hypotheses, not bare nodes).
+
+    Idempotent: the matcher runs every turn, but ``ingest_emitted_chain`` dedups
+    the nodes, so a re-match resolves to the SAME root id; if a hypothesis
+    already roots there, do nothing rather than spawn a duplicate.
+
+    The hypothesis is a *prior*: its likelihood is capped below the
+    "cause identified" gate (see ``_MATCHER_MAX_PRIOR``) and its root is a
+    CANDIDATE node — ``cause_state`` reaches IDENTIFIED only when that root
+    VALIDATES from real evidence (M4/M5). The runbook never concludes on its own.
+    """
+    if any(h.root_node_id == root_id for h in case.hypotheses.values()):
+        return None
+
+    # Only attach to a chain that actually materialized a root → D path. A
+    # disconnected chain (malformed runbook edges, or a lone root never linked
+    # to D) would otherwise yield a hypothesis with root_node_id set and an
+    # empty path — an inconsistent record (latent path[0] failures). Skip it;
+    # the bare nodes remain, inert.
+    path = chain_path_to_problem(root_id, case)
+    if not path:
+        logger.warning(
+            "Matched chain root %s has no path to D; skipping hypothesis", root_id
+        )
+        return None
+
+    record = match.selected_record
+    cause = match.selected_cause
+    statement = (
+        (record.cause_statement or record.cause_name or "").strip()
+        or (cause.cause_name if cause else "")
+        or "Runbook-matched cause"
+    )
+    # A runbook match is a PRIOR, never a conclusion. Cap the likelihood below
+    # the 0.6 "cause identified" threshold (working_conclusion → _cause_identified,
+    # which gates M5 + resolution) so a runbook ALONE can never make FM conclude
+    # the cause. Only real evidence — the LLM raising the likelihood, or the root
+    # VALIDATING — lifts it past the gate.
+    belief = float(cause.belief if cause else 0.0)
+    likelihood = min(max(0.0, belief), _MATCHER_MAX_PRIOR)
+    letter = cause.cause_letter if cause else "?"
+    hyp = hypothesis_manager.create_hypothesis(
+        statement=statement[:500],
+        category=HypothesisCategory.OTHER.value,
+        initial_likelihood=likelihood,
+        current_turn=case.current_turn,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        state=HypothesisState.ACTIVE,
+        rationale=(
+            f"Instantiated from runbook {match.runbook_id} (cause {letter}) "
+            "matching the case."
+        ),
+    )
+    # path before root_node_id so the lenient root==path[0] invariant holds at
+    # every intermediate state.
+    hyp.path = path
+    hyp.root_node_id = root_id
+    case.hypotheses[hyp.hypothesis_id] = hyp
+    return hyp
+
+
 async def apply_runbook_cause_matcher(
     case: "Case",
     *,
@@ -112,14 +211,17 @@ async def apply_runbook_cause_matcher(
     user_id: str,
     team_ids: Optional[List[str]] = None,
     max_runbooks: int = _DEFAULT_MAX_RUNBOOKS,
+    hypothesis_manager: Optional["HypothesisManager"] = None,
 ) -> Optional[CauseMatchResult]:
     """Match retrieved runbooks against the case and instantiate the winner.
 
     Runs the structured matcher, picks the first runbook with a confident
-    single-Cause verdict, and instantiates that Cause's chain as CANDIDATE
-    priors. Returns the chosen ``CauseMatchResult`` (or None if nothing matched
-    confidently). The matcher is conservative by construction: 'none'/'multiple'
-    verdicts instantiate nothing, leaving attribution to the LLM.
+    single-Cause verdict, instantiates that Cause's chain as CANDIDATE priors,
+    and (when ``hypothesis_manager`` is supplied) attaches a hypothesis to the
+    chain's root so it becomes load-bearing. Returns the chosen
+    ``CauseMatchResult`` (or None if nothing matched confidently). The matcher is
+    conservative by construction: 'none'/'multiple' verdicts instantiate nothing,
+    leaving attribution to the LLM.
 
     A *prior, not a gate*: the engine caller wraps this so it can never break a
     turn.
@@ -140,10 +242,16 @@ async def apply_runbook_cause_matcher(
         return None
 
     created = instantiate_cause_chain(case, chosen.selected_record, case.current_turn)
+    root_id = _root_node_id(case, created)
+    attached = None
+    if root_id is not None and hypothesis_manager is not None:
+        attached = attach_matched_hypothesis(case, chosen, root_id, hypothesis_manager)
     logger.info(
-        "Runbook cause matcher: instantiated %d node(s) from runbook %s (cause %s)",
+        "Runbook cause matcher: instantiated %d node(s) from runbook %s (cause %s); "
+        "hypothesis %s",
         len([c for c in created if c]),
         chosen.runbook_id,
         chosen.selected_cause.cause_letter if chosen.selected_cause else "?",
+        attached.hypothesis_id if attached else "none/existing",
     )
     return chosen

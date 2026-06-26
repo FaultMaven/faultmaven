@@ -5757,6 +5757,7 @@ class MilestoneEngine:
                 question=question,
                 user_id=case.user_id,
                 team_ids=[],
+                hypothesis_manager=self.hypothesis_manager,
             )
         except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
             logger.warning(
