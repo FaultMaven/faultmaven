@@ -271,6 +271,50 @@ Answer:"""
             collection_name=collection, query=question, k=k, where=filters
         )
 
+    async def answer_yes_no(
+        self,
+        question: str,
+        scope_id: Optional[str] = None,
+        k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Single-LLM-call boolean judgment over the evidence (KB-neutral).
+
+        Retrieves the top-``k`` chunks for ``question`` and asks the (cheap)
+        classifier model to answer strictly YES/NO based only on that evidence.
+        This is the runbook Cause matcher's T2 tier — "does the case evidence
+        satisfy this indicator?" — as ONE call (retrieve + judge), not the
+        prose-synthesis path plus a second classify.
+
+        Conservative by design: no evidence, an unparsed answer, or any error →
+        ``False``. The matcher treats ``False`` as 'not matched', never
+        'refuted', so a fail-open here only lowers belief — it never prunes a
+        Cause on missing/ambiguous evidence.
+        """
+        try:
+            collection = self._kb_config.get_collection_name(scope_id)
+            chunks = await self._dispatch_search(collection, question, k, filters)
+            if not chunks:
+                return False
+            context = self._build_context_from_chunks(chunks)
+            prompt = (
+                "Based ONLY on the evidence below, is the following condition "
+                "true? Answer with a single word: YES or NO. If the evidence "
+                "does not clearly establish it, answer NO.\n\n"
+                f"Condition: {question}\n\nEvidence:\n{context}\n\nAnswer:"
+            )
+            response = await self._llm_router.route(
+                model=self._settings.llm.get_classifier_model(),
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=5,
+                temperature=0.0,
+            )
+            answer = (getattr(response, "content", "") or "").strip().lower()
+            return answer.startswith("yes") or answer == "y"
+        except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
+            logger.warning("answer_yes_no failed for %r: %s", question[:80], exc)
+            return False
+
     def _build_context_from_chunks(self, chunks: list) -> str:
         """
         Build context string from chunks (KB-neutral).

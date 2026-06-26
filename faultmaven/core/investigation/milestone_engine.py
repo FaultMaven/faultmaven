@@ -5702,16 +5702,31 @@ class MilestoneEngine:
     async def _apply_runbook_cause_matcher(
         self, case: "Case", updates: Any, metadata: dict[str, Any]
     ) -> None:
-        """Flag-gated (increment 4a): match retrieved runbooks against the case
-        and instantiate the winning Cause's chain as CANDIDATE priors, before the
-        LLM's own chain emission. A *prior, not a gate* — every failure is
-        swallowed so it can never break the turn.
+        """Flag-gated: match retrieved runbooks against the case and instantiate
+        the winning Cause's chain as CANDIDATE priors (+ a capped hypothesis),
+        before the LLM's own chain emission. A *prior, not a gate* — every
+        failure is swallowed so it can never break the turn.
 
-        Inert until its resolvers are wired (increment 4b) and the flag is
-        enabled (increment 5): with no step-output / case_evidence_qa resolver,
-        the evaluator abstains (verdict 'none') and nothing is instantiated.
+        Matching fires on the T2 semantic tier (``case_evidence_qa`` over the
+        case's vectorized evidence); the T1 deterministic tier stays inert
+        because FaultMaven investigates uploaded evidence rather than executing a
+        runbook's numbered steps, so there is no per-step output to resolve.
         """
         try:
+            # Skip-guard (cost): the T2 match is LLM-heavy, so run it at most once
+            # per case — skip when the cause is already established, or a
+            # runbook-match hypothesis already exists for this case.
+            if (
+                case.progress
+                and getattr(case.progress, "cause_state", None) == CauseState.IDENTIFIED
+            ):
+                return
+            if any(
+                getattr(h, "from_runbook_match", False)
+                for h in case.hypotheses.values()
+            ):
+                return
+
             adapter = (
                 self.investigation_tools.get("kb_qa")
                 if self.investigation_tools
@@ -5732,15 +5747,26 @@ class MilestoneEngine:
                 apply_runbook_cause_matcher,
             )
 
-            # Resolvers that drive matching are wired in increment 4b:
-            #  - step_output_resolver: there is no per-runbook-step output
-            #    tracking yet, so T1 deterministic predicates stay 'untested'.
-            #  - case_evidence_qa: the T2 semantic fallback is not yet wired.
-            # With both absent the evaluator abstains; this exercises the seam
-            # without acting until 4b/5.
+            # T2 semantic resolver: a single-LLM-call yes/no over case evidence.
+            # T1 step-output stays None (FM has no runbook-step execution); with
+            # no case-evidence tool the evaluator simply abstains (verdict 'none').
+            ce_adapter = (
+                self.investigation_tools.get("case_evidence_search")
+                if self.investigation_tools
+                else None
+            )
+            ce_tool = getattr(ce_adapter, "wrapped", None)
+            case_evidence_qa = None
+            if ce_tool is not None and hasattr(ce_tool, "answer_yes_no"):
+
+                async def case_evidence_qa(indicator_question: str) -> bool:
+                    return await ce_tool.answer_yes_no(
+                        indicator_question, scope_id=case.case_id, k=5
+                    )
+
             evaluator = IndicatorEvaluator(
                 step_output_resolver=lambda _step: None,
-                case_evidence_qa=None,
+                case_evidence_qa=case_evidence_qa,
             )
             question = (
                 getattr(case.problem_verification, "symptom_statement", None)
@@ -5757,6 +5783,9 @@ class MilestoneEngine:
                 question=question,
                 user_id=case.user_id,
                 team_ids=[],
+                # Top-1 runbook for the firing path → at most one candidate chain
+                # per case (bounds both LLM cost and graph pollution).
+                max_runbooks=1,
                 hypothesis_manager=self.hypothesis_manager,
             )
         except Exception as exc:  # noqa: BLE001 — a prior must never break the turn

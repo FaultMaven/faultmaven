@@ -1,4 +1,4 @@
-"""Runbook Cause matcher — per-turn instantiation (increments 4a, 4b-1).
+"""Runbook Cause matcher — per-turn instantiation (increments 4a, 4b-1, 4b-2).
 
 Bridges the structured matcher (``kb_qa.aget_cause_matches`` → ``CauseMatchResult``)
 to the case's causal graph: when a retrieved runbook's Cause matches with a single
@@ -11,11 +11,13 @@ matcher seeds a structural *prior*; everything downstream (``derive_node_states`
 RCC synthesis, the M5 solution gate) then treats these nodes exactly like
 LLM-emitted ones — which is what keeps the soundness guarantees automatic.
 
-Flag-gated OFF. The deterministic (step-output) and semantic (``case_evidence_qa``)
-resolvers that drive matching are NOT yet wired, so a flag-ON matcher abstains
-(verdict 'none') rather than acting — this module is the structural seam,
-validated here with fakes. Remaining 4b units: wire those resolvers so matching
-fires, and map interventions → ``Solution`` (through the M5 gate).
+Matching fires on the **T2 semantic tier** (``case_evidence_qa`` over the case's
+vectorized evidence — wired in 4b-2). The T1 deterministic tier stays inert:
+FaultMaven investigates uploaded evidence rather than executing a runbook's
+numbered diagnostic steps, so there is no per-step output to resolve (the spec
+frames T1 as an opportunistic fast-path, T2 as the canonical robustness floor).
+Still flag-gated OFF until increment 5. Remaining: map interventions → ``Solution``
+(4b-3, through the M5 gate).
 """
 
 from __future__ import annotations
@@ -197,6 +199,7 @@ def attach_matched_hypothesis(
     # every intermediate state.
     hyp.path = path
     hyp.root_node_id = root_id
+    hyp.from_runbook_match = True  # provenance + the per-case skip-guard signal
     case.hypotheses[hyp.hypothesis_id] = hyp
     return hyp
 
