@@ -43,6 +43,12 @@ class IKnowledgeService(Protocol):
         """Get a specific document by ID."""
         ...
 
+    async def get_runbook_causes(self, item_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Get a runbook's v4 per-Cause graph records (``metadata['causes']``),
+        or None when the runbook has none (upload-path / pre-v4) or is unknown.
+        Used as the runbook Cause matcher's ``resolve_causes`` callable."""
+        ...
+
     async def get_semantic_snippet(
         self, document_id: str, query: str, max_lines: int = 5
     ) -> Optional[Dict[str, Any]]:

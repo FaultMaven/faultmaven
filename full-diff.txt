@@ -1,0 +1,752 @@
+diff --git a/docs/architecture/investigation-engine/runbook-cause-matcher-implementation.md b/docs/architecture/investigation-engine/runbook-cause-matcher-implementation.md
+index cf145585..722db8ac 100644
+--- a/docs/architecture/investigation-engine/runbook-cause-matcher-implementation.md
++++ b/docs/architecture/investigation-engine/runbook-cause-matcher-implementation.md
+@@ -2,7 +2,9 @@
+ 
+ **Document Type:** Implementation companion to
+ [runbook-cause-matching.md](./runbook-cause-matching.md) (the component spec).
+-**Status:** In progress — increment 1 landed; 2–5 pending, all flag-gated.
++**Status:** In progress — increments 1–3 + 4a landed; 4b/5 pending. The matcher
++is wired per-turn behind `enable_runbook_cause_matcher` (default off) but inert
++until 4b supplies its resolvers.
+ 
+ The spec describes the target behaviour; this document is the **how/when** —
+ the incremental, flag-gated path that takes the matcher from dormant to live
+@@ -55,9 +57,10 @@ Two contracts the consumer (increment 4) must honour:
+ | # | Increment | Scope | Status |
+ |---|---|---|---|
+ | **1** | **Persist causes at ingest** | `PackRunbook.causes` field + load mapping (`kb_pack.py`); `kb_init` passes `causes=`; `KnowledgeService.ingest_runbook(causes=...)` writes `metadata["causes"]`. Inert until consumed. | **Done** |
+-| **2** | **v4 schemas + rung evaluator** | `cause_schemas.py` → rung-level (`RungResult`, `CauseMatch{belief,path}`, `CauseMatchResult{live_causes}`); drop v3 `mechanism/mitigation/resolution/verification`. `indicator_evaluator.py` → per-rung iteration + k-of-n belief + refutation pruning (spec §4). Keep the four predicate evaluators (`absent/contains/exit_code/threshold`) — already v4-correct. | Pending |
++| **2** | **v4 schemas + rung evaluator** | `cause_schemas.py` → rung-level (`RungResult`, `CauseMatch{belief,path}`, `CauseMatchResult{live_causes}`); drop v3 `mechanism/mitigation/resolution/verification`. `indicator_evaluator.py` → per-rung iteration + k-of-n belief + refutation pruning (spec §4). Keep the four predicate evaluators (`absent/contains/exit_code/threshold`) — already v4-correct. | **Done** |
+ | **3** | **Retrieve → resolve → match** | `kb_qa.aget_cause_matches` retrieves chunks, ranks distinct runbooks by `parent_document_id`, resolves each via an injected `resolve_causes(item_id)` → `metadata["causes"]`, builds `CauseRecord`s (per-entry tolerant), runs the evaluator → `List[CauseMatchResult]`. | **Done** |
+-| **4** | **Lazy instantiation + per-turn wiring (flag OFF)** | Reuse `causal_graph.ingest_emitted_chain` (seed D, exact-match dedup, never-`VALIDATED`, `cn_` id render-back, edges). Hook in `_apply_investigation_updates` just before `_apply_chain_emission` so matcher nodes share the same dedup/derive/recompute pass. Map interventions → `Solution` (quadrant → `immediate_action`/`longterm_fix`, `node_id`, `quadrant`); root `Statement` → `RootCauseConclusion` only on validation; M5 gate applies. | Pending |
++| **4a** | **Lazy instantiation + per-turn wiring (flag OFF)** | Reuse `causal_graph.ingest_emitted_chain` (seed D, exact-match dedup, never-`VALIDATED`, `cn_` id render-back, edges). Hook in `_apply_investigation_updates` just before `_apply_chain_emission` so matcher nodes share the same dedup/derive/recompute pass. Flag `enable_runbook_cause_matcher` (FeatureSettings, default False). New `core/investigation/runbook_cause_matcher.py` (`chain_to_specs` / `instantiate_cause_chain` / `apply_runbook_cause_matcher`); `KnowledgeService.get_runbook_causes` (direct repo read — `get_document` drops `causes`); `CauseMatchResult.selected_record` threads the chosen chain; `KBToolAdapter.wrapped` exposes the tool. | **Done** |
++| **4b** | **Functional resolvers + interventions → Solution** | Wire the matcher's inputs (step-output resolver, `case_evidence_qa`) so matching actually fires — in 4a both are absent, so a flag-ON matcher abstains (verdict 'none', nothing instantiated). Map interventions → `Solution` (quadrant → `immediate_action`/`longterm_fix`, `node_id`, `quadrant`). Root `Statement` → `RootCauseConclusion` needs nothing new: it is already engine-synthesized (`synthesize_rcc_from_validated_root`, only on a VALIDATED root), and the M5 gate already governs Solutions — no bypass. | Pending |
+ | **5** | **Enable + validate** | Flip `enable_runbook_cause_matcher` on in test/sim; validate against the sim harness + unit suite (no duplicate-root fragmentation, no premature `VALIDATED`, `cause_state` correct). | Pending |
+ 
+ ## Reuse (deliberately not reinvented)
+diff --git a/faultmaven/config/settings.py b/faultmaven/config/settings.py
+index a5280e91..99e512f9 100644
+--- a/faultmaven/config/settings.py
++++ b/faultmaven/config/settings.py
+@@ -1449,6 +1449,12 @@ class FeatureSettings(BaseSettings):
+     enable_multi_agent: bool = Field(default=False)
+     enable_workflow_optimization: bool = Field(default=False)
+ 
++    # Runbook Cause matcher: when a retrieved runbook's causal chain matches the
++    # current case, instantiate it into the case's causal graph as a CANDIDATE
++    # prior (per-turn, before LLM chain emission). Off until validated (the
++    # matcher's deterministic + semantic resolvers are wired in a later increment).
++    enable_runbook_cause_matcher: bool = Field(default=False)
++
+     model_config = {"env_prefix": "", "extra": "ignore"}
+ 
+ 
+diff --git a/faultmaven/core/investigation/cause_schemas.py b/faultmaven/core/investigation/cause_schemas.py
+index 6dd86ab8..e1b619ca 100644
+--- a/faultmaven/core/investigation/cause_schemas.py
++++ b/faultmaven/core/investigation/cause_schemas.py
+@@ -102,3 +102,11 @@ class CauseMatchResult(BaseModel):
+             "'multiple' → None (LLM disambiguates)."
+         ),
+     )
++    selected_record: Optional[CauseRecord] = Field(
++        default=None,
++        description=(
++            "The full input ``CauseRecord`` for ``selected_cause`` — its causal "
++            "chain, carried so the engine can instantiate it without re-resolving. "
++            "Populated only when verdict='single' (None for 'none'/'multiple')."
++        ),
++    )
+diff --git a/faultmaven/core/investigation/milestone_engine.py b/faultmaven/core/investigation/milestone_engine.py
+index 72e82011..86e669e6 100644
+--- a/faultmaven/core/investigation/milestone_engine.py
++++ b/faultmaven/core/investigation/milestone_engine.py
+@@ -5699,6 +5699,70 @@ class MilestoneEngine:
+             current = metadata.get("system_feedback", "") or ""
+             metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
+ 
++    async def _apply_runbook_cause_matcher(
++        self, case: "Case", updates: Any, metadata: dict[str, Any]
++    ) -> None:
++        """Flag-gated (increment 4a): match retrieved runbooks against the case
++        and instantiate the winning Cause's chain as CANDIDATE priors, before the
++        LLM's own chain emission. A *prior, not a gate* — every failure is
++        swallowed so it can never break the turn.
++
++        Inert until its resolvers are wired (increment 4b) and the flag is
++        enabled (increment 5): with no step-output / case_evidence_qa resolver,
++        the evaluator abstains (verdict 'none') and nothing is instantiated.
++        """
++        try:
++            adapter = (
++                self.investigation_tools.get("kb_qa")
++                if self.investigation_tools
++                else None
++            )
++            kb_tool = getattr(adapter, "wrapped", None)
++            if kb_tool is None or not hasattr(kb_tool, "aget_cause_matches"):
++                return
++            if self.knowledge_service is None or not hasattr(
++                self.knowledge_service, "get_runbook_causes"
++            ):
++                return
++
++            from faultmaven.core.investigation.indicator_evaluator import (
++                IndicatorEvaluator,
++            )
++            from faultmaven.core.investigation.runbook_cause_matcher import (
++                apply_runbook_cause_matcher,
++            )
++
++            # Resolvers that drive matching are wired in increment 4b:
++            #  - step_output_resolver: there is no per-runbook-step output
++            #    tracking yet, so T1 deterministic predicates stay 'untested'.
++            #  - case_evidence_qa: the T2 semantic fallback is not yet wired.
++            # With both absent the evaluator abstains; this exercises the seam
++            # without acting until 4b/5.
++            evaluator = IndicatorEvaluator(
++                step_output_resolver=lambda _step: None,
++                case_evidence_qa=None,
++            )
++            question = (
++                getattr(case.problem_verification, "symptom_statement", None)
++                or case.description
++                or ""
++            )
++            if not question:
++                return
++            await apply_runbook_cause_matcher(
++                case,
++                kb_tool=kb_tool,
++                resolve_causes=self.knowledge_service.get_runbook_causes,
++                evaluator=evaluator,
++                question=question,
++                user_id=case.user_id,
++                team_ids=[],
++            )
++        except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
++            logger.warning(
++                "Runbook cause matcher skipped for case %s: %s", case.case_id, exc
++            )
++
+     def _apply_chain_emission(
+         self,
+         case: "Case",
+@@ -6480,6 +6544,15 @@ class MilestoneEngine:
+                 f"(total: {len(case.investigation_journal)})"
+             )
+ 
++        # Runbook Cause matcher (flag-gated, increment 4a): when a retrieved
++        # runbook's Cause matches this case, instantiate its chain as CANDIDATE
++        # priors BEFORE the LLM's emission, so both share the dedup/derive/
++        # recompute pass below. Off by default; inert until its resolvers land.
++        from faultmaven.config.settings import get_settings
++
++        if get_settings().features.enable_runbook_cause_matcher:
++            await self._apply_runbook_cause_matcher(case, updates, metadata)
++
+         # Populate the causal graph from the LLM's emitted chain (lazy backward
+         # expansion), then resolve any chain the LLM left unlinked. The graph is
+         # always populated from the emitted chain; cause_state/M6 derive from the
+diff --git a/faultmaven/core/investigation/runbook_cause_matcher.py b/faultmaven/core/investigation/runbook_cause_matcher.py
+new file mode 100644
+index 00000000..02e4e529
+--- /dev/null
++++ b/faultmaven/core/investigation/runbook_cause_matcher.py
+@@ -0,0 +1,137 @@
++"""Runbook Cause matcher — per-turn instantiation (increment 4a).
++
++Bridges the structured matcher (``kb_qa.aget_cause_matches`` → ``CauseMatchResult``)
++to the case's causal graph: when a retrieved runbook's Cause matches with a single
++confident verdict, instantiate that Cause's causal chain as CANDIDATE nodes by
++REUSING ``causal_graph.ingest_emitted_chain`` (seed-D, exact-match dedup, ``cn_``
++id render-back, edges, never-``VALIDATED``). The matcher seeds a structural
++*prior*; everything downstream (``derive_node_states``, RCC synthesis, the M5
++solution gate) then treats these nodes exactly like LLM-emitted ones — which is
++what keeps the soundness guarantees automatic.
++
++Flag-gated OFF until increment 5. The deterministic (step-output) and semantic
++(``case_evidence_qa``) resolvers that drive matching are supplied by the caller;
++in 4a they are not yet wired, so a flag-ON matcher abstains (verdict 'none')
++rather than acting — this module is the structural seam, validated here with
++fakes. Mapping interventions → ``Solution`` is increment 4b.
++"""
++
++from __future__ import annotations
++
++import logging
++from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
++
++from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
++from faultmaven.core.investigation.cause_schemas import CauseMatchResult, CauseRecord
++from faultmaven.core.investigation.schemas import CausalEdgeToAdd, CausalNodeToAdd
++from faultmaven.modules.case.domain.models import NodeType
++
++if TYPE_CHECKING:
++    from faultmaven.core.investigation.indicator_evaluator import IndicatorEvaluator
++    from faultmaven.modules.case.domain.models import Case
++
++logger = logging.getLogger(__name__)
++
++# Distinct runbooks the matcher evaluates per turn.
++_DEFAULT_MAX_RUNBOOKS = 3
++
++
++def chain_to_specs(
++    cause: CauseRecord,
++) -> Tuple[List[CausalNodeToAdd], List[CausalEdgeToAdd]]:
++    """Convert a Cause's chain into ``ingest_emitted_chain`` spec shapes.
++
++    - The PROBLEM node (D) is engine-seeded, so it is dropped from the node
++      specs; any ref to it maps to the literal ``'D'`` token ingest understands.
++    - Every other chain node becomes a ``CausalNodeToAdd``; its ref maps to
++      ``'new_index_N'`` (its position in the node-spec list).
++    - Edge endpoints map through that table; an edge with an unresolvable
++      endpoint is dropped (ingest would skip it anyway).
++    """
++    nodes: List[CausalNodeToAdd] = []
++    ref_token: Dict[str, str] = {}
++    for node in cause.chain_nodes:
++        ref = str(node.get("ref", "")).strip()
++        ntype_raw = str(node.get("node_type", "")).strip().lower()
++        # D is engine-seeded; never emit it, just record its ref → 'D'.
++        if ntype_raw == NodeType.PROBLEM.value or ref == "D":
++            if ref:
++                ref_token[ref] = "D"
++            continue
++        statement = str(node.get("statement", "")).strip()
++        if not statement:
++            continue
++        try:
++            node_type = NodeType(ntype_raw)
++        except ValueError:
++            node_type = NodeType.INTERMEDIATE
++        ref_token[ref] = f"new_index_{len(nodes)}"
++        nodes.append(CausalNodeToAdd(statement=statement, node_type=node_type))
++
++    edges: List[CausalEdgeToAdd] = []
++    for edge in cause.chain_edges:
++        cause_tok = ref_token.get(str(edge.get("cause_ref", "")).strip())
++        effect_tok = ref_token.get(str(edge.get("effect_ref", "")).strip())
++        if cause_tok and effect_tok:
++            edges.append(CausalEdgeToAdd(cause=cause_tok, effect=effect_tok))
++    return nodes, edges
++
++
++def instantiate_cause_chain(
++    case: "Case", cause: CauseRecord, current_turn: int
++) -> List[Optional[str]]:
++    """Instantiate ``cause``'s chain into ``case`` via ``ingest_emitted_chain``.
++
++    Returns the created node ids (empty when the chain has no instantiable node,
++    e.g. a degenerate Cause carrying only the problem node)."""
++    nodes, edges = chain_to_specs(cause)
++    if not nodes:
++        return []
++    return ingest_emitted_chain(case, nodes, edges, [], current_turn)
++
++
++async def apply_runbook_cause_matcher(
++    case: "Case",
++    *,
++    kb_tool,
++    resolve_causes,
++    evaluator: "IndicatorEvaluator",
++    question: str,
++    user_id: str,
++    team_ids: Optional[List[str]] = None,
++    max_runbooks: int = _DEFAULT_MAX_RUNBOOKS,
++) -> Optional[CauseMatchResult]:
++    """Match retrieved runbooks against the case and instantiate the winner.
++
++    Runs the structured matcher, picks the first runbook with a confident
++    single-Cause verdict, and instantiates that Cause's chain as CANDIDATE
++    priors. Returns the chosen ``CauseMatchResult`` (or None if nothing matched
++    confidently). The matcher is conservative by construction: 'none'/'multiple'
++    verdicts instantiate nothing, leaving attribution to the LLM.
++
++    A *prior, not a gate*: the engine caller wraps this so it can never break a
++    turn.
++    """
++    matches = await kb_tool.aget_cause_matches(
++        question,
++        user_id,
++        resolve_causes=resolve_causes,
++        evaluator=evaluator,
++        team_ids=team_ids,
++        max_runbooks=max_runbooks,
++    )
++    chosen = next(
++        (m for m in matches if m.verdict == "single" and m.selected_record is not None),
++        None,
++    )
++    if chosen is None:
++        return None
++
++    created = instantiate_cause_chain(case, chosen.selected_record, case.current_turn)
++    logger.info(
++        "Runbook cause matcher: instantiated %d node(s) from runbook %s (cause %s)",
++        len([c for c in created if c]),
++        chosen.runbook_id,
++        chosen.selected_cause.cause_letter if chosen.selected_cause else "?",
++    )
++    return chosen
+diff --git a/faultmaven/modules/agent/tools/kb_qa.py b/faultmaven/modules/agent/tools/kb_qa.py
+index bdd12d7d..fca775d3 100644
+--- a/faultmaven/modules/agent/tools/kb_qa.py
++++ b/faultmaven/modules/agent/tools/kb_qa.py
+@@ -176,7 +176,21 @@ global documentation, your personal runbooks, and your team's shared procedures.
+                 cause_records = self._build_cause_records(item_id, causes_raw)
+                 if not cause_records:
+                     continue
+-                results.append(await evaluator.evaluate(item_id, cause_records))
++                match = await evaluator.evaluate(item_id, cause_records)
++                # Thread the selected Cause's full record (its causal chain) onto
++                # the result so the engine can instantiate it without re-resolving.
++                # Only a verdict='single' has a non-fallback selected Cause.
++                selected = match.selected_cause
++                if selected is not None and not selected.is_fallback:
++                    match.selected_record = next(
++                        (
++                            r
++                            for r in cause_records
++                            if r.cause_letter == selected.cause_letter
++                        ),
++                        None,
++                    )
++                results.append(match)
+             except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
+                 logger.warning("Cause matching failed for runbook %s: %s", item_id, exc)
+                 continue
+diff --git a/faultmaven/modules/agent/tools/kb_tool_adapter.py b/faultmaven/modules/agent/tools/kb_tool_adapter.py
+index a8de0ecd..92722fd4 100644
+--- a/faultmaven/modules/agent/tools/kb_tool_adapter.py
++++ b/faultmaven/modules/agent/tools/kb_tool_adapter.py
+@@ -30,6 +30,16 @@ class KBToolAdapter(AgentTool):
+     def __init__(self, wrapped_tool: Any):
+         self._wrapped = wrapped_tool
+ 
++    @property
++    def wrapped(self) -> Any:
++        """The underlying ``AnswerFromKB`` tool.
++
++        Exposed so the investigation engine can reach the structured
++        ``aget_cause_matches`` entry point (the runbook Cause matcher), which is
++        not part of the prose ``AgentTool`` interface this adapter presents.
++        """
++        return self._wrapped
++
+     @property
+     def name(self) -> str:
+         return "kb_qa"
+diff --git a/faultmaven/modules/knowledge/domain/services/knowledge_service.py b/faultmaven/modules/knowledge/domain/services/knowledge_service.py
+index f9f3d1ff..edca2f66 100644
+--- a/faultmaven/modules/knowledge/domain/services/knowledge_service.py
++++ b/faultmaven/modules/knowledge/domain/services/knowledge_service.py
+@@ -1763,6 +1763,36 @@ class KnowledgeService:
+             logger.error(f"Failed to get document {document_id}: {e}")
+             return None
+ 
++    async def get_runbook_causes(self, item_id: str) -> Optional[List[Dict[str, Any]]]:
++        """Return a runbook's v4 per-Cause graph records, or None.
++
++        Reads ``knowledge_items.metadata["causes"]`` directly from the
++        repository — ``get_document`` cherry-picks a few metadata keys and drops
++        ``causes``, so it can't be used here. None for upload-path / pre-v4
++        runbooks (no causes record) and for unknown ids. This is the
++        ``resolve_causes`` callable the runbook Cause matcher injects.
++        """
++        try:
++            if not item_id or not self._db_session_factory:
++                return None
++
++            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
++                DatabaseKnowledgeItemRepository,
++            )
++
++            async with self._db_session_factory() as session:
++                repo = DatabaseKnowledgeItemRepository(session)
++                item = await repo.get_by_id(item_id)
++
++            if item is None:
++                return None
++            causes = (item.metadata or {}).get("causes")
++            return causes if isinstance(causes, list) else None
++
++        except Exception as e:
++            logger.error(f"Failed to get runbook causes for {item_id}: {e}")
++            return None
++
+     async def get_semantic_snippet(
+         self,
+         document_id: str,
+diff --git a/tests/unit/core/investigation/test_runbook_cause_matcher.py b/tests/unit/core/investigation/test_runbook_cause_matcher.py
+new file mode 100644
+index 00000000..73e1fd33
+--- /dev/null
++++ b/tests/unit/core/investigation/test_runbook_cause_matcher.py
+@@ -0,0 +1,324 @@
++"""Unit tests for the runbook Cause matcher instantiation (increment 4a).
++
++- ``chain_to_specs`` converts a ``CauseRecord`` chain into
++  ``ingest_emitted_chain`` spec shapes (drops the engine-seeded D, maps refs).
++- ``instantiate_cause_chain`` seeds the chain into a case as CANDIDATE nodes.
++- ``apply_runbook_cause_matcher`` runs the matcher and instantiates the winner
++  (only a confident single-Cause verdict), never anything else.
++"""
++
++from types import SimpleNamespace
++from uuid import uuid4
++
++import pytest
++
++from faultmaven.core.investigation.cause_schemas import (
++    CauseMatch,
++    CauseMatchResult,
++    CauseRecord,
++)
++from faultmaven.core.investigation.runbook_cause_matcher import (
++    apply_runbook_cause_matcher,
++    chain_to_specs,
++    instantiate_cause_chain,
++)
++from faultmaven.modules.case.contracts import (
++    Case,
++    CaseSeverity,
++    CaseState,
++    InquiryData,
++    NodeState,
++    NodeType,
++    ProblemVerification,
++)
++
++pytestmark = pytest.mark.unit
++
++
++# ---------------------------------------------------------------------------
++# Builders
++# ---------------------------------------------------------------------------
++
++
++def _case() -> Case:
++    case = Case(
++        case_id=f"case_{uuid4().hex[:12]}",
++        user_id="u",
++        organization_id="o",
++        title="t",
++        description="Deploy fails",
++        state=CaseState.INVESTIGATING,
++        inquiry=InquiryData(
++            proposed_problem_statement="Deploy fails",
++            problem_statement_confirmed=True,
++            decided_to_investigate=True,
++        ),
++        problem_verification=ProblemVerification(
++            symptom_statement="Deploy to on-prem job fails",
++            severity=CaseSeverity.HIGH,
++        ),
++    )
++    case.current_turn = 4
++    return case
++
++
++def _node(ref, node_type, statement):
++    return {"ref": ref, "node_type": node_type, "statement": statement}
++
++
++def _edge(cause_ref, effect_ref):
++    return {"cause_ref": cause_ref, "effect_ref": effect_ref}
++
++
++def _linear_cause(letter: str = "A") -> CauseRecord:
++    # root -> s1 -> D
++    return CauseRecord(
++        cause_letter=letter,
++        cause_name="name",
++        cause_statement="stmt",
++        chain_nodes=[
++            _node("root", "root", "the root cause"),
++            _node("s1", "intermediate", "an intermediate effect"),
++            _node("D", "problem", "the problem"),
++        ],
++        chain_edges=[_edge("root", "s1"), _edge("s1", "D")],
++    )
++
++
++# ---------------------------------------------------------------------------
++# chain_to_specs
++# ---------------------------------------------------------------------------
++
++
++class TestChainToSpecs:
++    def test_linear_chain_drops_problem_and_maps_refs(self):
++        nodes, edges = chain_to_specs(_linear_cause())
++        assert [n.node_type for n in nodes] == [NodeType.ROOT, NodeType.INTERMEDIATE]
++        assert [n.statement for n in nodes] == [
++            "the root cause",
++            "an intermediate effect",
++        ]
++        # root=new_index_0, s1=new_index_1, D='D'
++        assert (edges[0].cause, edges[0].effect) == ("new_index_0", "new_index_1")
++        assert (edges[1].cause, edges[1].effect) == ("new_index_1", "D")
++
++    def test_unknown_node_type_defaults_to_intermediate(self):
++        cause = CauseRecord(
++            cause_letter="A",
++            chain_nodes=[_node("x", "weird", "some state")],
++            chain_edges=[],
++        )
++        nodes, _ = chain_to_specs(cause)
++        assert nodes[0].node_type == NodeType.INTERMEDIATE
++
++    def test_empty_statement_node_skipped(self):
++        cause = CauseRecord(
++            cause_letter="A",
++            chain_nodes=[
++                _node("root", "root", "   "),
++                _node("s1", "intermediate", "ok"),
++            ],
++            chain_edges=[],
++        )
++        nodes, _ = chain_to_specs(cause)
++        assert [n.statement for n in nodes] == ["ok"]
++
++    def test_degenerate_cause_only_problem_yields_no_nodes(self):
++        cause = CauseRecord(
++            cause_letter="A",
++            chain_nodes=[_node("D", "problem", "the problem")],
++            chain_edges=[],
++        )
++        nodes, edges = chain_to_specs(cause)
++        assert nodes == [] and edges == []
++
++    def test_edge_with_unresolvable_endpoint_is_dropped(self):
++        cause = CauseRecord(
++            cause_letter="A",
++            chain_nodes=[_node("root", "root", "r")],
++            chain_edges=[_edge("root", "ghost")],  # 'ghost' never defined
++        )
++        _, edges = chain_to_specs(cause)
++        assert edges == []
++
++
++# ---------------------------------------------------------------------------
++# instantiate_cause_chain
++# ---------------------------------------------------------------------------
++
++
++class TestInstantiate:
++    def test_seeds_chain_as_candidate_nodes(self):
++        case = _case()
++        created = instantiate_cause_chain(case, _linear_cause(), case.current_turn)
++
++        assert len([c for c in created if c]) == 2  # root + s1 (D is seeded)
++        statements = {n.statement for n in case.causal_nodes.values()}
++        assert "the root cause" in statements
++        assert "an intermediate effect" in statements
++        # A ROOT and a PROBLEM (D) both present; matcher nodes are CANDIDATE.
++        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
++        assert len(roots) == 1
++        assert roots[0].node_state == NodeState.CANDIDATE
++        problems = [
++            n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
++        ]
++        assert len(problems) == 1  # exactly one D
++        assert len(case.causal_edges) == 2
++
++    def test_degenerate_cause_instantiates_nothing(self):
++        case = _case()
++        cause = CauseRecord(
++            cause_letter="A",
++            chain_nodes=[_node("D", "problem", "the problem")],
++            chain_edges=[],
++        )
++        created = instantiate_cause_chain(case, cause, case.current_turn)
++        assert created == []
++        assert case.causal_nodes == {}  # D not even seeded
++
++
++# ---------------------------------------------------------------------------
++# apply_runbook_cause_matcher
++# ---------------------------------------------------------------------------
++
++
++class _FakeKB:
++    """Stand-in for AnswerFromKB.aget_cause_matches."""
++
++    def __init__(self, results):
++        self._results = results
++        self.calls = []
++
++    async def aget_cause_matches(
++        self,
++        question,
++        user_id,
++        *,
++        resolve_causes,
++        evaluator,
++        team_ids=None,
++        max_runbooks=3,
++    ):
++        self.calls.append(
++            {
++                "question": question,
++                "user_id": user_id,
++                "team_ids": team_ids,
++                "max_runbooks": max_runbooks,
++            }
++        )
++        return self._results
++
++
++def _result(runbook_id, verdict, *, record=None, letter="A"):
++    selected = (
++        CauseMatch(cause_letter=letter, cause_name="n", belief=1.0, is_fallback=False)
++        if verdict == "single"
++        else None
++    )
++    return CauseMatchResult(
++        runbook_id=runbook_id,
++        verdict=verdict,
++        selected_cause=selected,
++        selected_record=record,
++    )
++
++
++async def _noop_resolver(item_id):
++    return None
++
++
++class TestApply:
++    @pytest.mark.asyncio
++    async def test_single_verdict_instantiates_and_returns_choice(self):
++        case = _case()
++        record = _linear_cause("A")
++        kb = _FakeKB([_result("kb_rb1", "single", record=record)])
++
++        chosen = await apply_runbook_cause_matcher(
++            case,
++            kb_tool=kb,
++            resolve_causes=_noop_resolver,
++            evaluator=object(),  # fake ignores it
++            question="why does deploy fail?",
++            user_id="u1",
++            team_ids=["t1"],
++        )
++
++        assert chosen is not None and chosen.runbook_id == "kb_rb1"
++        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
++        assert len(roots) == 1  # the matched chain was instantiated
++        # Inputs threaded through to the matcher.
++        assert kb.calls[0]["user_id"] == "u1"
++        assert kb.calls[0]["team_ids"] == ["t1"]
++
++    @pytest.mark.asyncio
++    async def test_none_verdict_instantiates_nothing(self):
++        case = _case()
++        kb = _FakeKB([_result("kb_rb1", "none")])
++        chosen = await apply_runbook_cause_matcher(
++            case,
++            kb_tool=kb,
++            resolve_causes=_noop_resolver,
++            evaluator=object(),
++            question="q",
++            user_id="u1",
++        )
++        assert chosen is None
++        assert case.causal_nodes == {}
++
++    @pytest.mark.asyncio
++    async def test_multiple_verdict_instantiates_nothing(self):
++        case = _case()
++        kb = _FakeKB([_result("kb_rb1", "multiple")])
++        chosen = await apply_runbook_cause_matcher(
++            case,
++            kb_tool=kb,
++            resolve_causes=_noop_resolver,
++            evaluator=object(),
++            question="q",
++            user_id="u1",
++        )
++        assert chosen is None
++        assert case.causal_nodes == {}
++
++    @pytest.mark.asyncio
++    async def test_single_without_record_is_skipped(self):
++        # Defensive: a 'single' verdict that somehow lacks selected_record must
++        # not be chosen (nothing to instantiate).
++        case = _case()
++        kb = _FakeKB([_result("kb_rb1", "single", record=None)])
++        chosen = await apply_runbook_cause_matcher(
++            case,
++            kb_tool=kb,
++            resolve_causes=_noop_resolver,
++            evaluator=object(),
++            question="q",
++            user_id="u1",
++        )
++        assert chosen is None
++        assert case.causal_nodes == {}
++
++    @pytest.mark.asyncio
++    async def test_picks_first_single_among_results(self):
++        case = _case()
++        kb = _FakeKB(
++            [
++                _result("kb_none", "none"),
++                _result("kb_win", "single", record=_linear_cause("B"), letter="B"),
++                _result("kb_other", "single", record=_linear_cause("C"), letter="C"),
++            ]
++        )
++        chosen = await apply_runbook_cause_matcher(
++            case,
++            kb_tool=kb,
++            resolve_causes=_noop_resolver,
++            evaluator=object(),
++            question="q",
++            user_id="u1",
++        )
++        assert chosen.runbook_id == "kb_win"
++        # Only the first winner's chain instantiated (one root).
++        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
++        assert len(roots) == 1
+diff --git a/tests/unit/modules/agent/tools/test_kb_qa_cause_matching.py b/tests/unit/modules/agent/tools/test_kb_qa_cause_matching.py
+index a8a8980b..d7b72dc5 100644
+--- a/tests/unit/modules/agent/tools/test_kb_qa_cause_matching.py
++++ b/tests/unit/modules/agent/tools/test_kb_qa_cause_matching.py
+@@ -102,6 +102,33 @@ class TestEndToEnd:
+         assert results[0].runbook_id == "kb_rb1"
+         assert results[0].verdict == "single"
+         assert results[0].selected_cause.cause_name == "real"
++        # The selected Cause's full record (its chain) is threaded onto the
++        # result so the engine can instantiate it without re-resolving.
++        assert results[0].selected_record is not None
++        assert results[0].selected_record.cause_letter == "A"
++
++    @pytest.mark.asyncio
++    async def test_none_verdict_has_no_selected_record(self):
++        # A non-matching real cause + fallback → verdict 'none', nothing to act on.
++        tool = _make_tool([_chunk("kb_rb1", 0)])
++        nonmatch = _cause_dict(
++            "A",
++            "real",
++            {"root": ["[Step 1] cond"]},
++            [{"step": 1, "predicate": "contains", "target": "absent-token"}],
++        )
++
++        async def resolve(item_id):
++            return [nonmatch, _fallback_cause()]
++
++        results = await tool.aget_cause_matches(
++            "q",
++            user_id="u1",
++            resolve_causes=resolve,
++            evaluator=_evaluator((1, "value present")),
++        )
++        assert results[0].verdict == "none"
++        assert results[0].selected_record is None
+ 
+     @pytest.mark.asyncio
+     async def test_ranks_distinct_runbooks_and_caps(self):

@@ -322,3 +322,124 @@ class TestApply:
         # Only the first winner's chain instantiated (one root).
         roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
         assert len(roots) == 1
+
+
+class TestDuplicateRef:
+    def test_duplicate_ref_skips_node_and_keeps_first_edge_target(self):
+        # Two nodes share ref 'x'; the duplicate must be skipped (not overwrite
+        # 'x' → new_index), so an edge to 'x' still targets the first node.
+        cause = CauseRecord(
+            cause_letter="A",
+            chain_nodes=[
+                _node("x", "root", "first x"),
+                _node("x", "intermediate", "second x (dup)"),
+                _node("D", "problem", "the problem"),
+            ],
+            chain_edges=[_edge("x", "D")],
+        )
+        nodes, edges = chain_to_specs(cause)
+        assert [n.statement for n in nodes] == ["first x"]  # dup dropped
+        assert (edges[0].cause, edges[0].effect) == ("new_index_0", "D")
+
+
+# ---------------------------------------------------------------------------
+# Engine integration: MilestoneEngine._apply_runbook_cause_matcher
+# (constructed via __new__ to bypass the heavy engine __init__ — the method
+# only touches self.investigation_tools and self.knowledge_service).
+# ---------------------------------------------------------------------------
+
+
+def _engine(*, registry, knowledge_service):
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.investigation_tools = registry
+    eng.knowledge_service = knowledge_service
+    return eng
+
+
+def _registry(wrapped):
+    """A fake AgentToolRegistry: .get('kb_qa') → adapter exposing .wrapped."""
+    adapter = SimpleNamespace(wrapped=wrapped)
+    return SimpleNamespace(get=lambda name: adapter if name == "kb_qa" else None)
+
+
+def _ks():
+    async def _resolver(item_id):
+        return None
+
+    return SimpleNamespace(get_runbook_causes=_resolver)
+
+
+class TestEngineIntegration:
+    @pytest.mark.asyncio
+    async def test_single_match_instantiates_via_engine(self):
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        eng = _engine(registry=_registry(kb), knowledge_service=_ks())
+
+        await eng._apply_runbook_cause_matcher(case, None, {})
+
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert len(roots) == 1
+        # Question sourced from the verified symptom statement.
+        assert kb.calls[0]["question"] == "Deploy to on-prem job fails"
+        assert kb.calls[0]["user_id"] == "u"
+
+    @pytest.mark.asyncio
+    async def test_question_falls_back_to_description(self):
+        case = _case()
+        object.__setattr__(case, "problem_verification", None)
+        object.__setattr__(case, "description", "fallback question")
+        kb = _FakeKB([_result("kb_rb1", "none")])
+        eng = _engine(registry=_registry(kb), knowledge_service=_ks())
+
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        assert kb.calls[0]["question"] == "fallback question"
+
+    @pytest.mark.asyncio
+    async def test_empty_question_skips_matcher(self):
+        case = _case()
+        object.__setattr__(case, "problem_verification", None)
+        object.__setattr__(case, "description", "")
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        eng = _engine(registry=_registry(kb), knowledge_service=_ks())
+
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        assert kb.calls == []  # never reached the tool
+        assert case.causal_nodes == {}
+
+    @pytest.mark.asyncio
+    async def test_no_investigation_tools_is_noop(self):
+        case = _case()
+        eng = _engine(registry=None, knowledge_service=_ks())
+        await eng._apply_runbook_cause_matcher(case, None, {})  # must not raise
+        assert case.causal_nodes == {}
+
+    @pytest.mark.asyncio
+    async def test_tool_without_matcher_method_is_noop(self):
+        case = _case()
+        eng = _engine(registry=_registry(object()), knowledge_service=_ks())
+        await eng._apply_runbook_cause_matcher(case, None, {})  # must not raise
+        assert case.causal_nodes == {}
+
+    @pytest.mark.asyncio
+    async def test_no_knowledge_service_is_noop(self):
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        eng = _engine(registry=_registry(kb), knowledge_service=None)
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        assert kb.calls == []  # guarded out before the tool call
+        assert case.causal_nodes == {}
+
+    @pytest.mark.asyncio
+    async def test_matcher_exception_is_swallowed(self):
+        case = _case()
+
+        class _BoomKB:
+            async def aget_cause_matches(self, *a, **k):
+                raise RuntimeError("kb boom")
+
+        eng = _engine(registry=_registry(_BoomKB()), knowledge_service=_ks())
+        await eng._apply_runbook_cause_matcher(case, None, {})  # must not raise
+        assert case.causal_nodes == {}

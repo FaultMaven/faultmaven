@@ -340,6 +340,33 @@ class TestInventoryServiceDB:
         svc, _ = inventory_service
         assert await svc.get_document("nope") is None
 
+    async def test_get_runbook_causes_returns_list(self, inventory_service):
+        svc, _ = inventory_service
+        causes = [{"cause_letter": "A", "cause_name": "x", "rung_indicators": {}}]
+        await svc._seed_item(_mk_item(BUILTIN_ID, metadata={"causes": causes}))
+        assert await svc.get_runbook_causes(BUILTIN_ID) == causes
+
+    async def test_get_runbook_causes_absent_returns_none(self, inventory_service):
+        # A v4 runbook may carry other metadata but no causes (upload-path).
+        svc, _ = inventory_service
+        await svc._seed_item(_mk_item(BUILTIN_ID, metadata={"domain": "k8s"}))
+        assert await svc.get_runbook_causes(BUILTIN_ID) is None
+
+    async def test_get_runbook_causes_non_list_returns_none(self, inventory_service):
+        # Corrupt/unexpected shape must degrade to None, not be handed onward.
+        svc, _ = inventory_service
+        await svc._seed_item(_mk_item(BUILTIN_ID, metadata={"causes": {"not": "list"}}))
+        assert await svc.get_runbook_causes(BUILTIN_ID) is None
+
+    async def test_get_runbook_causes_no_metadata_returns_none(self, inventory_service):
+        svc, _ = inventory_service
+        await svc._seed_item(_mk_item(BUILTIN_ID, metadata=None))
+        assert await svc.get_runbook_causes(BUILTIN_ID) is None
+
+    async def test_get_runbook_causes_unknown_id_returns_none(self, inventory_service):
+        svc, _ = inventory_service
+        assert await svc.get_runbook_causes("nope") is None
+
     async def test_delete_builtin_unpublishes_and_drops_vectors(
         self, inventory_service
     ):

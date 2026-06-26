@@ -61,11 +61,23 @@ def chain_to_specs(
         statement = str(node.get("statement", "")).strip()
         if not statement:
             continue
+        # A duplicate ref would overwrite the earlier node's token and misdirect
+        # any edge pointing at it — skip the duplicate rather than mis-wire.
+        if ref and ref in ref_token:
+            logger.warning(
+                "Duplicate chain ref %r in cause %s; skipping duplicate node",
+                ref,
+                cause.cause_letter,
+            )
+            continue
         try:
             node_type = NodeType(ntype_raw)
         except ValueError:
             node_type = NodeType.INTERMEDIATE
-        ref_token[ref] = f"new_index_{len(nodes)}"
+        # An unreferenced (empty-ref) node is still a valid node; just keep it out
+        # of the ref table (no edge can target it).
+        if ref:
+            ref_token[ref] = f"new_index_{len(nodes)}"
         nodes.append(CausalNodeToAdd(statement=statement, node_type=node_type))
 
     edges: List[CausalEdgeToAdd] = []
