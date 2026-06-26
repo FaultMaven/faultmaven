@@ -1399,8 +1399,11 @@ class KnowledgeService:
             import uuid as _uuid
 
             from faultmaven.utils.frontmatter import extract_frontmatter_metadata
+            from faultmaven.utils.runbook_id import authored_item_id
 
-            document_id = f"kb_{_uuid.uuid4().hex[:12]}"
+            # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
+            # the bootstrap orphan-prune would delete this user runbook on redeploy.
+            document_id = authored_item_id()
             created_at = datetime.now(timezone.utc)
 
             # Extract metadata from frontmatter

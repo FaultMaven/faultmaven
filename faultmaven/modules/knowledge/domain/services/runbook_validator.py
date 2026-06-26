@@ -18,6 +18,119 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 )
 
 # =============================================================================
+# Security hazard detection (same shape as kb-toolkit's validator). Hazards
+# BLOCK (errors). A secret value that is WHOLLY a placeholder / template-or-shell
+# var stays non-blocking (warning). NOTE: duplicated cross-repo; Phase 1 extracts
+# a shared module.
+# =============================================================================
+
+# Anchored: the WHOLE value must BE a placeholder form, so a real secret that
+# merely contains '$' or 'example' (e.g. ``P@$$w0rd``, ``...EXAMPLE``) still blocks.
+_PLACEHOLDER_VALUE_RE = re.compile(
+    r"""^\s*(?:
+        <[^>]*>              # <repl_password>
+      | \$\{[^}]*\}          # ${VAR}
+      | \{\{[^}]*\}\}        # {{ password }}
+      | \$[A-Za-z_]\w*[})]?  # $HOME, $TOKEN (opt. trailing } / ) from shell/awk)
+      | \$\d+[})]?           # $3, $3} (positional, opt. shell/awk closer)
+      | your[-_][\w-]*       # your-key
+      | change[-_]?me
+      | example[\w-]*
+      | placeholder[\w-]*
+      | redacted
+      | x{3,}
+      | todo
+      | \.\.\.
+      | \*+
+    )\s*$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_SECRET_PATTERNS = [
+    (
+        re.compile(r"password\s*=\s*['\"]([^'\"]+)['\"]", re.IGNORECASE),
+        "Potential hardcoded password",
+    ),
+    (
+        re.compile(r"api[_-]?key\s*=\s*['\"]([^'\"]+)['\"]", re.IGNORECASE),
+        "Potential hardcoded API key",
+    ),
+    (
+        re.compile(r"secret\s*=\s*['\"]([^'\"]+)['\"]", re.IGNORECASE),
+        "Potential hardcoded secret",
+    ),
+    (
+        re.compile(r"token\s*=\s*['\"]([^'\"]+)['\"]", re.IGNORECASE),
+        "Potential hardcoded token",
+    ),
+]
+
+_RM_SEGMENT_RE = re.compile(r"(?im)\brm\b([^\n|;&]*)")
+_FORK_BOMB_RE = re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&?\s*\}\s*;\s*:")
+_DD_DEVICE_RE = re.compile(
+    r"\bdd\b[^\n|;&]*\bof=/dev/(?:sd|nvme|hd|vd|xvd|mapper|disk|loop|md)\w*",
+    re.IGNORECASE,
+)
+
+
+def _value_is_placeholder(value: str) -> bool:
+    return bool(_PLACEHOLDER_VALUE_RE.match(value))
+
+
+def _rm_target_is_catastrophic(target: str) -> bool:
+    """True for the filesystem root, a whole top-level dir, home, or a var — NOT a
+    scoped deeper path like /var/lib/app/* (legitimate cleanup)."""
+    target = target.strip()
+    if target in ("~", "/", "/*", "//"):
+        return True
+    if re.fullmatch(r"\$\{?\w+\}?", target):  # $HOME, ${HOME}
+        return True
+    return bool(re.fullmatch(r"/+([\w.-]+)?/?\*?", target))  # /, /etc, /etc/, /etc/*
+
+
+def find_security_hazards(content: str) -> tuple[list[str], list[str]]:
+    """Return (blocking_errors, non_blocking_warnings) for security hazards.
+
+    Hardcoded credentials and destructive commands are errors; a secret whose
+    value is wholly a placeholder/template-var is a warning. One message per
+    pattern (deduped), so N identical matches don't produce N messages.
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    for rx, message in _SECRET_PATTERNS:
+        values = [m.group(1) for m in rx.finditer(content)]
+        if not values:
+            continue
+        if any(not _value_is_placeholder(v) for v in values):
+            errors.append(f"Security: {message} (hardcoded credential)")
+        else:
+            warnings.append(f"Security: {message} (placeholder — not blocking)")
+
+    for seg in _RM_SEGMENT_RE.finditer(content):
+        args = seg.group(1)
+        flags = " " + " ".join(re.findall(r"(?<!\S)-{1,2}[A-Za-z][A-Za-z-]*", args))
+        recursive = re.search(r"-[A-Za-z]*r|--recursive", flags, re.IGNORECASE)
+        force = re.search(r"-[A-Za-z]*f|--force", flags, re.IGNORECASE)
+        if not (recursive and force):
+            continue
+        positionals = [t for t in args.split() if not t.startswith("-")]
+        if positionals and _rm_target_is_catastrophic(positionals[0]):
+            errors.append(
+                "Security: Dangerous command: recursive force-remove of a "
+                "root/top-level/home path (rm -rf)"
+            )
+            break
+
+    if _FORK_BOMB_RE.search(content):
+        errors.append("Security: Dangerous: fork bomb")
+    if _DD_DEVICE_RE.search(content):
+        errors.append("Security: Potentially destructive: dd writing to a block device")
+
+    return errors, warnings
+
+
+# =============================================================================
 # Validation Constants (aligned with KB Toolkit config defaults)
 # =============================================================================
 
@@ -277,35 +390,12 @@ class RunbookValidator:
         self, content: str, errors: List[str], warnings: List[str]
     ) -> None:
         # Security hazards BLOCK (errors): a draft must not promote a leaked
-        # credential or a destructive command into the KB. A secret match whose
-        # value is an obvious placeholder / shell-or-template var stays non-blocking.
-        placeholder_re = re.compile(
-            r"[<>${}]|(?i:your[-_]|change[-_]?me|example|placeholder|redacted|x{3,}|todo|\.\.\.)"
-        )
-        secret_patterns = [
-            (r"password\s*=\s*['\"]([^'\"]+)['\"]", "Potential hardcoded password"),
-            (r"api[_-]?key\s*=\s*['\"]([^'\"]+)['\"]", "Potential hardcoded API key"),
-            (r"secret\s*=\s*['\"]([^'\"]+)['\"]", "Potential hardcoded secret"),
-            (r"token\s*=\s*['\"]([^'\"]+)['\"]", "Potential hardcoded token"),
-        ]
-        for pattern, message in secret_patterns:
-            for m in re.finditer(pattern, content, re.IGNORECASE):
-                if placeholder_re.search(m.group(1)):
-                    warnings.append(f"Security: {message} (placeholder — not blocking)")
-                else:
-                    errors.append(f"Security: {message} (hardcoded credential)")
-
-        dangerous = [
-            (
-                r"rm\s+-rf\s+(?:--no-preserve-root\s+)?/+(?:[\w.-]+/?)?(?:\s|\*|$)",
-                "Dangerous command: rm -rf / (root or a top-level system directory)",
-            ),
-            (r":\(\)\{.*:\|:.*\};:", "Dangerous: fork bomb"),
-            (r"dd\s+if=/dev/zero", "Potentially destructive: dd command"),
-        ]
-        for pattern, message in dangerous:
-            if re.search(pattern, content):
-                errors.append(f"Security: {message}")
+        # credential or a destructive command into the KB. See module-level
+        # find_security_hazards for the placeholder-aware secret + destructive
+        # command detection.
+        sec_errors, sec_warnings = find_security_hazards(content)
+        errors.extend(sec_errors)
+        warnings.extend(sec_warnings)
 
 
 # =============================================================================

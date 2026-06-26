@@ -89,12 +89,38 @@ class TestIsBuiltinItemId:
         assert is_builtin_item_id("kb_0123456789AB") is False  # hex is lowercase
 
     def test_authored_mint_is_never_builtin(self):
-        # Regression (data loss): verify_draft / API-create previously minted
-        # kb_<12 hex>, which MATCHED the built-in pattern and was hard-deleted by
-        # the bootstrap orphan-prune on redeploy. authored_item_id() (the single
-        # mint point) must always produce a non-built-in id.
-        for _ in range(2000):
-            assert is_builtin_item_id(authored_item_id()) is False
+        # Regression (data loss): authored ids must never match the 12-hex
+        # built-in pattern, or the bootstrap orphan-prune deletes them on redeploy.
+        # The property is structural (16 hex != 12 hex), so assert the shape.
+        ident = authored_item_id()
+        assert ident.startswith("kb_")
+        assert len(ident) == len("kb_") + 16  # 16 hex, never the 12-hex built-in form
+        assert is_builtin_item_id(ident) is False
+        # a few draws to guard against any randomness-dependent edge
+        assert all(not is_builtin_item_id(authored_item_id()) for _ in range(20))
+
+    def test_no_authored_path_mints_12_hex_kb_id(self):
+        # Regression: EVERY authored-runbook mint must route through
+        # authored_item_id(); a raw `kb_<...hex[:12]>` collides with the built-in
+        # prune pattern and gets the runbook deleted on redeploy. Scan the service
+        # sources so a new colliding mint site fails CI.
+        import pathlib
+        import re as _re
+
+        import faultmaven
+
+        svc = pathlib.Path(faultmaven.__file__).parent / (
+            "modules/knowledge/domain/services"
+        )
+        offenders = [
+            f"{f.name}:{i}"
+            for f in svc.glob("*.py")
+            for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1)
+            if _re.search(r"kb_\{[^}]*hex\[:12\]", line)
+        ]
+        assert (
+            not offenders
+        ), f"authored kb_<12-hex> mints collide with prune: {offenders}"
 
 
 # ---------------------------------------------------------------------------
