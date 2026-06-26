@@ -5699,6 +5699,70 @@ class MilestoneEngine:
             current = metadata.get("system_feedback", "") or ""
             metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
 
+    async def _apply_runbook_cause_matcher(
+        self, case: "Case", updates: Any, metadata: dict[str, Any]
+    ) -> None:
+        """Flag-gated (increment 4a): match retrieved runbooks against the case
+        and instantiate the winning Cause's chain as CANDIDATE priors, before the
+        LLM's own chain emission. A *prior, not a gate* — every failure is
+        swallowed so it can never break the turn.
+
+        Inert until its resolvers are wired (increment 4b) and the flag is
+        enabled (increment 5): with no step-output / case_evidence_qa resolver,
+        the evaluator abstains (verdict 'none') and nothing is instantiated.
+        """
+        try:
+            adapter = (
+                self.investigation_tools.get("kb_qa")
+                if self.investigation_tools
+                else None
+            )
+            kb_tool = getattr(adapter, "wrapped", None)
+            if kb_tool is None or not hasattr(kb_tool, "aget_cause_matches"):
+                return
+            if self.knowledge_service is None or not hasattr(
+                self.knowledge_service, "get_runbook_causes"
+            ):
+                return
+
+            from faultmaven.core.investigation.indicator_evaluator import (
+                IndicatorEvaluator,
+            )
+            from faultmaven.core.investigation.runbook_cause_matcher import (
+                apply_runbook_cause_matcher,
+            )
+
+            # Resolvers that drive matching are wired in increment 4b:
+            #  - step_output_resolver: there is no per-runbook-step output
+            #    tracking yet, so T1 deterministic predicates stay 'untested'.
+            #  - case_evidence_qa: the T2 semantic fallback is not yet wired.
+            # With both absent the evaluator abstains; this exercises the seam
+            # without acting until 4b/5.
+            evaluator = IndicatorEvaluator(
+                step_output_resolver=lambda _step: None,
+                case_evidence_qa=None,
+            )
+            question = (
+                getattr(case.problem_verification, "symptom_statement", None)
+                or case.description
+                or ""
+            )
+            if not question:
+                return
+            await apply_runbook_cause_matcher(
+                case,
+                kb_tool=kb_tool,
+                resolve_causes=self.knowledge_service.get_runbook_causes,
+                evaluator=evaluator,
+                question=question,
+                user_id=case.user_id,
+                team_ids=[],
+            )
+        except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
+            logger.warning(
+                "Runbook cause matcher skipped for case %s: %s", case.case_id, exc
+            )
+
     def _apply_chain_emission(
         self,
         case: "Case",
@@ -6479,6 +6543,15 @@ class MilestoneEngine:
                 f"Case {case.case_id}: added {len(updates.journal_entries)} journal entries "
                 f"(total: {len(case.investigation_journal)})"
             )
+
+        # Runbook Cause matcher (flag-gated, increment 4a): when a retrieved
+        # runbook's Cause matches this case, instantiate its chain as CANDIDATE
+        # priors BEFORE the LLM's emission, so both share the dedup/derive/
+        # recompute pass below. Off by default; inert until its resolvers land.
+        from faultmaven.config.settings import get_settings
+
+        if get_settings().features.enable_runbook_cause_matcher:
+            await self._apply_runbook_cause_matcher(case, updates, metadata)
 
         # Populate the causal graph from the LLM's emitted chain (lazy backward
         # expansion), then resolve any chain the LLM left unlinked. The graph is

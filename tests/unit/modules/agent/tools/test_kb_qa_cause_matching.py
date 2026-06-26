@@ -102,6 +102,33 @@ class TestEndToEnd:
         assert results[0].runbook_id == "kb_rb1"
         assert results[0].verdict == "single"
         assert results[0].selected_cause.cause_name == "real"
+        # The selected Cause's full record (its chain) is threaded onto the
+        # result so the engine can instantiate it without re-resolving.
+        assert results[0].selected_record is not None
+        assert results[0].selected_record.cause_letter == "A"
+
+    @pytest.mark.asyncio
+    async def test_none_verdict_has_no_selected_record(self):
+        # A non-matching real cause + fallback → verdict 'none', nothing to act on.
+        tool = _make_tool([_chunk("kb_rb1", 0)])
+        nonmatch = _cause_dict(
+            "A",
+            "real",
+            {"root": ["[Step 1] cond"]},
+            [{"step": 1, "predicate": "contains", "target": "absent-token"}],
+        )
+
+        async def resolve(item_id):
+            return [nonmatch, _fallback_cause()]
+
+        results = await tool.aget_cause_matches(
+            "q",
+            user_id="u1",
+            resolve_causes=resolve,
+            evaluator=_evaluator((1, "value present")),
+        )
+        assert results[0].verdict == "none"
+        assert results[0].selected_record is None
 
     @pytest.mark.asyncio
     async def test_ranks_distinct_runbooks_and_caps(self):
