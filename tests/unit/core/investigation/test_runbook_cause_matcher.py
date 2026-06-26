@@ -384,10 +384,17 @@ class TestHypothesisAttachment:
         assert len(case.hypotheses) == 1  # hypothesis deduped (not re-spawned)
 
     @pytest.mark.asyncio
-    async def test_belief_seeds_hypothesis_likelihood(self):
+    async def test_belief_is_capped_below_cause_identified_gate(self):
+        # A runbook is a PRIOR, not a conclusion: even a belief of 1.0 must not
+        # push the hypothesis likelihood to/over the 0.6 cause-identified gate
+        # (else a runbook alone would satisfy working_conclusion → M5/resolution).
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            _MATCHER_MAX_PRIOR,
+        )
+
         case = _case()
         result = _result("kb_rb1", "single", record=_linear_cause("A"))
-        result.selected_cause.belief = 0.75
+        result.selected_cause.belief = 1.0
         kb = _FakeKB([result])
         await apply_runbook_cause_matcher(
             case,
@@ -399,7 +406,61 @@ class TestHypothesisAttachment:
             hypothesis_manager=self._hm(),
         )
         hyp = next(iter(case.hypotheses.values()))
-        assert hyp.likelihood == 0.75
+        assert hyp.likelihood == _MATCHER_MAX_PRIOR
+        assert hyp.likelihood < 0.6  # below the cause-identified gate
+
+    @pytest.mark.asyncio
+    async def test_rootless_chain_attaches_no_hypothesis(self):
+        # A chain with only intermediates (no ROOT) instantiates nodes but has
+        # no root to anchor a hypothesis.
+        case = _case()
+        cause = CauseRecord(
+            cause_letter="A",
+            cause_name="n",
+            chain_nodes=[
+                _node("s1", "intermediate", "an intermediate effect"),
+                _node("D", "problem", "the problem"),
+            ],
+            chain_edges=[_edge("s1", "D")],
+        )
+        kb = _FakeKB([_result("kb_rb1", "single", record=cause)])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        assert case.hypotheses == {}  # no ROOT → no hypothesis
+        assert any(  # but the intermediate node was instantiated
+            n.node_type == NodeType.INTERMEDIATE for n in case.causal_nodes.values()
+        )
+
+    @pytest.mark.asyncio
+    async def test_chain_not_reaching_D_attaches_no_hypothesis(self):
+        # A lone root with no edge to D: the root instantiates, but it has no
+        # path to D, so no (inconsistent, empty-path) hypothesis is attached.
+        case = _case()
+        cause = CauseRecord(
+            cause_letter="A",
+            cause_name="n",
+            chain_nodes=[_node("root", "root", "the root cause")],
+            chain_edges=[],  # not linked to D
+        )
+        kb = _FakeKB([_result("kb_rb1", "single", record=cause)])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        assert case.hypotheses == {}  # no root→D path → no hypothesis
+        assert any(n.node_type == NodeType.ROOT for n in case.causal_nodes.values())
 
     @pytest.mark.asyncio
     async def test_no_manager_instantiates_chain_without_hypothesis(self):

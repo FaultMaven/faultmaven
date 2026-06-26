@@ -46,6 +46,13 @@ logger = logging.getLogger(__name__)
 # Distinct runbooks the matcher evaluates per turn.
 _DEFAULT_MAX_RUNBOOKS = 3
 
+# A matched runbook seeds a PRIOR, not a conclusion. Cap its hypothesis
+# likelihood strictly below the 0.6 "cause identified" threshold
+# (``working_conclusion.likelihood >= 0.6`` → ``terminal_transitions._cause_identified``,
+# which gates the M5 solution gate and resolution readiness) so a runbook match
+# ALONE can never make FM conclude the cause. Real evidence lifts it past 0.6.
+_MATCHER_MAX_PRIOR = 0.5
+
 
 def chain_to_specs(
     cause: CauseRecord,
@@ -139,11 +146,24 @@ def attach_matched_hypothesis(
     the nodes, so a re-match resolves to the SAME root id; if a hypothesis
     already roots there, do nothing rather than spawn a duplicate.
 
-    The hypothesis is a *prior*: its likelihood seeds ranking only, and its root
-    is a CANDIDATE node — ``cause_state`` reaches IDENTIFIED only when that root
+    The hypothesis is a *prior*: its likelihood is capped below the
+    "cause identified" gate (see ``_MATCHER_MAX_PRIOR``) and its root is a
+    CANDIDATE node — ``cause_state`` reaches IDENTIFIED only when that root
     VALIDATES from real evidence (M4/M5). The runbook never concludes on its own.
     """
     if any(h.root_node_id == root_id for h in case.hypotheses.values()):
+        return None
+
+    # Only attach to a chain that actually materialized a root → D path. A
+    # disconnected chain (malformed runbook edges, or a lone root never linked
+    # to D) would otherwise yield a hypothesis with root_node_id set and an
+    # empty path — an inconsistent record (latent path[0] failures). Skip it;
+    # the bare nodes remain, inert.
+    path = chain_path_to_problem(root_id, case)
+    if not path:
+        logger.warning(
+            "Matched chain root %s has no path to D; skipping hypothesis", root_id
+        )
         return None
 
     record = match.selected_record
@@ -153,8 +173,13 @@ def attach_matched_hypothesis(
         or (cause.cause_name if cause else "")
         or "Runbook-matched cause"
     )
-    # belief seeds the prior likelihood (clamped); evidence adjusts it later.
-    likelihood = max(0.0, min(1.0, float(cause.belief if cause else 0.5)))
+    # A runbook match is a PRIOR, never a conclusion. Cap the likelihood below
+    # the 0.6 "cause identified" threshold (working_conclusion → _cause_identified,
+    # which gates M5 + resolution) so a runbook ALONE can never make FM conclude
+    # the cause. Only real evidence — the LLM raising the likelihood, or the root
+    # VALIDATING — lifts it past the gate.
+    belief = float(cause.belief if cause else 0.0)
+    likelihood = min(max(0.0, belief), _MATCHER_MAX_PRIOR)
     letter = cause.cause_letter if cause else "?"
     hyp = hypothesis_manager.create_hypothesis(
         statement=statement[:500],
@@ -168,8 +193,10 @@ def attach_matched_hypothesis(
             "matching the case."
         ),
     )
+    # path before root_node_id so the lenient root==path[0] invariant holds at
+    # every intermediate state.
+    hyp.path = path
     hyp.root_node_id = root_id
-    hyp.path = chain_path_to_problem(root_id, case)
     case.hypotheses[hyp.hypothesis_id] = hyp
     return hyp
 
