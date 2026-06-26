@@ -325,6 +325,99 @@ class TestApply:
         assert len(roots) == 1
 
 
+class TestHypothesisAttachment:
+    @staticmethod
+    def _hm():
+        from faultmaven.core.investigation.hypothesis_manager import (
+            create_hypothesis_manager,
+        )
+
+        return create_hypothesis_manager()
+
+    @pytest.mark.asyncio
+    async def test_single_match_attaches_hypothesis_rooted_at_chain_root(self):
+        from faultmaven.modules.case.contracts import HypothesisState
+
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert len(roots) == 1
+        assert len(case.hypotheses) == 1
+        hyp = next(iter(case.hypotheses.values()))
+        assert hyp.root_node_id == roots[0].node_id
+        assert hyp.state == HypothesisState.ACTIVE
+        # path is root → D (the matched chain materialized).
+        assert hyp.path[0] == roots[0].node_id
+        assert len(hyp.path) >= 2  # root ... D
+
+    @pytest.mark.asyncio
+    async def test_attachment_is_idempotent_across_turns(self):
+        # The matcher runs every turn; node dedup → same root → no 2nd hypothesis.
+        case = _case()
+        hm = self._hm()
+
+        async def _run():
+            kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+            await apply_runbook_cause_matcher(
+                case,
+                kb_tool=kb,
+                resolve_causes=_noop_resolver,
+                evaluator=object(),
+                question="q",
+                user_id="u1",
+                hypothesis_manager=hm,
+            )
+
+        await _run()
+        await _run()  # second turn
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert len(roots) == 1  # node deduped
+        assert len(case.hypotheses) == 1  # hypothesis deduped (not re-spawned)
+
+    @pytest.mark.asyncio
+    async def test_belief_seeds_hypothesis_likelihood(self):
+        case = _case()
+        result = _result("kb_rb1", "single", record=_linear_cause("A"))
+        result.selected_cause.belief = 0.75
+        kb = _FakeKB([result])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        hyp = next(iter(case.hypotheses.values()))
+        assert hyp.likelihood == 0.75
+
+    @pytest.mark.asyncio
+    async def test_no_manager_instantiates_chain_without_hypothesis(self):
+        # Backward-compatible: without a manager, instantiate only (4a behavior).
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert any(n.node_type == NodeType.ROOT for n in case.causal_nodes.values())
+        assert case.hypotheses == {}
+
+
 class TestDuplicateRef:
     def test_duplicate_ref_skips_node_and_keeps_first_edge_target(self):
         # Two nodes share ref 'x'; the duplicate must be skipped (not overwrite
@@ -351,11 +444,15 @@ class TestDuplicateRef:
 
 
 def _engine(*, registry, knowledge_service):
+    from faultmaven.core.investigation.hypothesis_manager import (
+        create_hypothesis_manager,
+    )
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
     eng = MilestoneEngine.__new__(MilestoneEngine)
     eng.investigation_tools = registry
     eng.knowledge_service = knowledge_service
+    eng.hypothesis_manager = create_hypothesis_manager()
     return eng
 
 
@@ -390,6 +487,10 @@ class TestEngineIntegration:
 
         roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
         assert len(roots) == 1
+        # The chain is load-bearing: a hypothesis is attached to its root.
+        assert len(case.hypotheses) == 1
+        hyp = next(iter(case.hypotheses.values()))
+        assert hyp.root_node_id == roots[0].node_id
         # Question sourced from the verified symptom statement.
         assert kb.calls[0]["question"] == "Deploy to on-prem job fails"
         assert kb.calls[0]["user_id"] == "u"
