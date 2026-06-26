@@ -51,6 +51,14 @@ logger = logging.getLogger(__name__)
 # repository is request-scoped (a fresh DB session per turn).
 CausesResolver = Callable[[str], Awaitable[Optional[List[Dict[str, Any]]]]]
 
+# Distinct runbooks evaluated per query, by default.
+_DEFAULT_MAX_RUNBOOKS = 3
+# A runbook is chunked into many pieces, so one highly-relevant runbook can fill
+# the top of the result list. Over-fetch this many chunks per desired runbook so
+# ranking can still surface `max_runbooks` *distinct* runbooks (the v3 path
+# over-fetched k*3 for the same reason).
+_RETRIEVAL_FANOUT = 8
+
 
 class AnswerFromKB(DocumentQATool):
     """
@@ -120,8 +128,8 @@ global documentation, your personal runbooks, and your team's shared procedures.
         resolve_causes: CausesResolver,
         evaluator: "IndicatorEvaluator",
         team_ids: Optional[List[str]] = None,
-        k: int = 8,
-        max_runbooks: int = 3,
+        max_runbooks: int = _DEFAULT_MAX_RUNBOOKS,
+        k: Optional[int] = None,
     ) -> List[CauseMatchResult]:
         """Retrieve the top runbooks for ``question`` and match their Causes.
 
@@ -133,8 +141,8 @@ global documentation, your personal runbooks, and your team's shared procedures.
         skipped — there is no chain to match.
 
         The matcher is a *prior, not a gate*: any failure (retrieval error, a
-        single malformed Cause) degrades to fewer results, never an exception
-        that could break the turn.
+        bad resolver return, a malformed Cause, an evaluation error) degrades to
+        fewer results — it must never raise an exception that breaks the turn.
 
         Args:
             question: Search query (typically the case's current focus).
@@ -143,48 +151,46 @@ global documentation, your personal runbooks, and your team's shared procedures.
             evaluator: A configured ``IndicatorEvaluator`` (carries the case's
                 step-output resolver + optional ``case_evidence_qa`` fallback).
             team_ids: For team-scope filtering.
-            k: Number of chunks to retrieve (spans multiple runbooks).
             max_runbooks: Cap on distinct runbooks evaluated.
+            k: Chunks to retrieve for ranking. Defaults to
+                ``max_runbooks * _RETRIEVAL_FANOUT`` so one multi-chunk runbook
+                can't starve the others; override only to tune retrieval.
 
         Returns:
             List of ``CauseMatchResult`` (possibly empty), best runbook first.
         """
+        retrieval_k = k if k is not None else max_runbooks * _RETRIEVAL_FANOUT
         filters = self._build_scope_filter(user_id, team_ids or [])
-        chunks = await self._retrieve_chunks(question, k=k, filters=filters)
+        chunks = await self._retrieve_chunks(question, k=retrieval_k, filters=filters)
         item_ids = self._rank_runbook_ids(chunks, max_runbooks)
 
         results: List[CauseMatchResult] = []
         for item_id in item_ids:
+            # One guard for the whole per-runbook body: a bad resolver return
+            # (non-iterable), a malformed Cause, or an evaluation error must skip
+            # this runbook, never propagate out and break the turn.
             try:
                 causes_raw = await resolve_causes(item_id)
-            except Exception as exc:  # noqa: BLE001 — a prior must not break the turn
-                logger.warning("resolve_causes failed for %s: %s", item_id, exc)
+                if not causes_raw:
+                    continue  # upload-path / pre-v4 runbook — no chain to match
+                cause_records = self._build_cause_records(item_id, causes_raw)
+                if not cause_records:
+                    continue
+                results.append(await evaluator.evaluate(item_id, cause_records))
+            except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
+                logger.warning("Cause matching failed for runbook %s: %s", item_id, exc)
                 continue
-            if not causes_raw:
-                continue  # upload-path / pre-v4 runbook — no chain to match
-            cause_records = self._build_cause_records(item_id, causes_raw)
-            if not cause_records:
-                continue
-            results.append(await evaluator.evaluate(item_id, cause_records))
         return results
 
     async def _retrieve_chunks(
         self, question: str, k: int, filters: Optional[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Raw vector-store retrieval (chunk dicts), mirroring the search-mode
-        dispatch in ``DocumentQATool.answer_question``. Returns ``[]`` on any
-        retrieval error so the matcher degrades rather than raising."""
+        """Raw chunk retrieval via the shared ``_dispatch_search`` helper.
+        Returns ``[]`` on any retrieval error so the matcher degrades rather
+        than raising (a prior must never break the turn)."""
         collection = self._kb_config.get_collection_name(None)
         try:
-            if self._kb_config.search_mode == "hybrid" and hasattr(
-                self._vector_store, "hybrid_search"
-            ):
-                return await self._vector_store.hybrid_search(
-                    collection_name=collection, query=question, k=k, where=filters
-                )
-            return await self._vector_store.search(
-                collection_name=collection, query=question, k=k, where=filters
-            )
+            return await self._dispatch_search(collection, question, k, filters)
         except Exception as exc:  # noqa: BLE001
             logger.warning("KB retrieval failed for cause matching: %s", exc)
             return []

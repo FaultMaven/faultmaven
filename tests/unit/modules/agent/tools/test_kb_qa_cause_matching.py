@@ -271,3 +271,127 @@ class TestDegradation:
             evaluator=_evaluator((1, "value x present")),
         )
         assert results == []
+
+    @pytest.mark.asyncio
+    async def test_non_iterable_resolver_return_skips_not_raises(self):
+        # A misbehaving resolver returning a non-iterable must not break the
+        # turn — the guard covers _build_cause_records, not just resolve.
+        tool = _make_tool([_chunk("kb_bad", 0, 0.9), _chunk("kb_ok", 0, 0.8)])
+
+        async def resolve(item_id):
+            return 42 if item_id == "kb_bad" else [_matching_cause(), _fallback_cause()]
+
+        results = await tool.aget_cause_matches(
+            "q",
+            user_id="u1",
+            resolve_causes=resolve,
+            evaluator=_evaluator((1, "value x present")),
+        )
+        assert [r.runbook_id for r in results] == ["kb_ok"]
+
+    @pytest.mark.asyncio
+    async def test_evaluator_error_skips_not_raises(self):
+        tool = _make_tool([_chunk("kb_a", 0, 0.9), _chunk("kb_b", 0, 0.8)])
+
+        class _BoomThenOk:
+            def __init__(self, inner):
+                self._inner = inner
+
+            async def evaluate(self, runbook_id, causes):
+                if runbook_id == "kb_a":
+                    raise RuntimeError("evaluator blew up")
+                return await self._inner.evaluate(runbook_id, causes)
+
+        async def resolve(item_id):
+            return [_matching_cause(), _fallback_cause()]
+
+        evaluator = _BoomThenOk(_evaluator((1, "value x present")))
+        results = await tool.aget_cause_matches(
+            "q",
+            user_id="u1",
+            resolve_causes=resolve,
+            evaluator=evaluator,
+        )
+        assert [r.runbook_id for r in results] == ["kb_b"]
+
+
+# ---------------------------------------------------------------------------
+# Retrieval sizing + search-mode dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestRetrieval:
+    @pytest.mark.asyncio
+    async def test_retrieval_pool_oversized_to_surface_distinct_runbooks(self):
+        # k defaults to max_runbooks * fanout so one multi-chunk runbook can't
+        # starve the others — the store must be asked for the larger pool.
+        tool = _make_tool([_chunk("kb_a", 0)])
+
+        async def resolve(item_id):
+            return [_matching_cause(), _fallback_cause()]
+
+        await tool.aget_cause_matches(
+            "q",
+            user_id="u1",
+            resolve_causes=resolve,
+            evaluator=_evaluator((1, "value x present")),
+            max_runbooks=3,
+        )
+        # hybrid is the unified KB's mode → assert the k passed to the store.
+        _, kwargs = tool._vector_store.hybrid_search.call_args
+        assert kwargs["k"] == 3 * 8  # _DEFAULT_MAX_RUNBOOKS * _RETRIEVAL_FANOUT
+
+    @pytest.mark.asyncio
+    async def test_single_dominant_runbook_yields_one_result(self):
+        # All retrieved chunks belong to one runbook → only that one surfaces,
+        # even with max_runbooks=3 (no phantom runbooks invented).
+        chunks = [_chunk("kb_a", i, score=0.9 - i * 0.01) for i in range(8)]
+        tool = _make_tool(chunks)
+
+        async def resolve(item_id):
+            return [_matching_cause(), _fallback_cause()]
+
+        results = await tool.aget_cause_matches(
+            "q",
+            user_id="u1",
+            resolve_causes=resolve,
+            evaluator=_evaluator((1, "value x present")),
+            max_runbooks=3,
+        )
+        assert [r.runbook_id for r in results] == ["kb_a"]
+
+    @pytest.mark.asyncio
+    async def test_uses_hybrid_search_by_default(self):
+        tool = _make_tool([_chunk("kb_a", 0)])
+
+        async def resolve(item_id):
+            return [_matching_cause(), _fallback_cause()]
+
+        await tool.aget_cause_matches(
+            "q",
+            user_id="u1",
+            resolve_causes=resolve,
+            evaluator=_evaluator((1, "value x present")),
+        )
+        tool._vector_store.hybrid_search.assert_awaited_once()
+        tool._vector_store.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_vector_search_when_no_hybrid(self):
+        # A store without hybrid_search must use plain vector search.
+        vector_store = MagicMock(spec=["search"])
+        vector_store.search = AsyncMock(return_value=[_chunk("kb_a", 0)])
+        llm_router = MagicMock()
+        tool = AnswerFromKB(vector_store=vector_store, llm_router=llm_router)
+
+        async def resolve(item_id):
+            return [_matching_cause(), _fallback_cause()]
+
+        results = await tool.aget_cause_matches(
+            "q",
+            user_id="u1",
+            resolve_causes=resolve,
+            evaluator=_evaluator((1, "value x present")),
+        )
+        vector_store.search.assert_awaited_once()
+        assert [r.runbook_id for r in results] == ["kb_a"]
