@@ -26,6 +26,7 @@ at lower confidence, and the always-available T2 tier means predicates never gat
 from __future__ import annotations
 
 import logging
+import math
 import re
 from typing import Awaitable, Callable, Dict, List, Literal, Optional
 
@@ -158,7 +159,10 @@ class IndicatorEvaluator:
     async def _evaluate_rung(
         self, ref: str, indicator_text: str, cause: CauseRecord
     ) -> RungResult:
-        # `[Default]` is the fallback sentinel — it has no rung and never matches.
+        # `[Default]` is the "no real indicator" sentinel. The fallback Cause is
+        # already short-circuited in `_evaluate_cause` (by is_fallback_cause), so
+        # this only fires defensively if the token leaks onto a non-fallback
+        # Cause — never send it to T2 QA as a (meaningless) question.
         if "[Default]" in indicator_text:
             return RungResult(
                 rung_ref=ref,
@@ -268,11 +272,15 @@ class IndicatorEvaluator:
             if not isinstance(target, int):
                 return "untested"
             found = re.findall(
-                r"(?:exit[_ ]?code|rc)[:=\s]+(\d+)", output, re.IGNORECASE
+                r"(?:exit[_ ]?code|rc)[:=\s]+(-?\d+)", output, re.IGNORECASE
             )
             if not found:
                 return "untested"  # step ran but reported no exit code
-            return "matched" if str(target) in found else "refuted"
+            # Decide on the LAST reported code — the final command's status. An
+            # earlier OR-over-all-codes form matched a benign cleanup `exit 0`
+            # while the real command failed (and missed when both appeared).
+            # Compare as int so leading-zero forms ('007') still equal target 7.
+            return "matched" if int(found[-1]) == target else "refuted"
 
         if name == "threshold":
             target = predicate.get("target", "")
@@ -299,7 +307,7 @@ def _apply_op(actual: float, op: str, value: float) -> bool:
     if op == "<=":
         return actual <= value
     if op == "==":
-        return actual == value
+        return math.isclose(actual, value, rel_tol=1e-9, abs_tol=1e-9)
     if op == "!=":
-        return actual != value
+        return not math.isclose(actual, value, rel_tol=1e-9, abs_tol=1e-9)
     raise ValueError(f"unknown threshold op '{op}'")

@@ -120,6 +120,42 @@ class TestPredicates:
         assert result.causes[0].rung_results[0].matched
 
     @pytest.mark.asyncio
+    async def test_exit_code_decides_on_last_reported_code(self):
+        # A benign cleanup `exit 0` precedes the real command's failure 137.
+        # The OR-over-all-codes form would have matched target=0; we must
+        # decide on the last (final) code instead.
+        cause0 = _cause(
+            "A",
+            "x",
+            {"root": ["[Step 1] cleanup ok?"]},
+            [{"step": 1, "predicate": "exit_code", "target": 0}],
+        )
+        cause137 = _cause(
+            "B",
+            "y",
+            {"root": ["[Step 1] process killed?"]},
+            [{"step": 1, "predicate": "exit_code", "target": 137}],
+        )
+        out = "cleanup exit_code=0\nprocess exit_code=137"
+        e = IndicatorEvaluator(_step_outputs((1, out)))
+        r0 = await e.evaluate("rb-test", [cause0])
+        r137 = await e.evaluate("rb-test", [cause137])
+        assert r0.causes[0].rung_results[0].refuted  # last code is 137, not 0
+        assert r137.causes[0].rung_results[0].matched
+
+    @pytest.mark.asyncio
+    async def test_exit_code_ignores_leading_zeros(self):
+        cause = _cause(
+            "A",
+            "x",
+            {"root": ["[Step 1] code"]},
+            [{"step": 1, "predicate": "exit_code", "target": 7}],
+        )
+        e = IndicatorEvaluator(_step_outputs((1, "exit_code=007")))
+        result = await e.evaluate("rb-test", [cause])
+        assert result.causes[0].rung_results[0].matched
+
+    @pytest.mark.asyncio
     async def test_exit_code_no_code_is_untested(self):
         cause = _cause(
             "A",
@@ -195,6 +231,27 @@ class TestPredicates:
         rr = result.causes[0].rung_results[0]
         assert not rr.matched and not rr.refuted
         assert rr.method == "untested"
+
+    @pytest.mark.asyncio
+    async def test_threshold_equality_tolerates_float_representation(self):
+        # op '==' must not refute on the IEEE-754 representation of 0.3.
+        cause = _cause(
+            "A",
+            "x",
+            {"root": ["[Step 1] ratio"]},
+            [
+                {
+                    "step": 1,
+                    "predicate": "threshold",
+                    "target": "ratio",
+                    "op": "==",
+                    "value": 0.3,
+                }
+            ],
+        )
+        e = IndicatorEvaluator(_step_outputs((1, "ratio = 0.30000000000000004")))
+        result = await e.evaluate("rb-test", [cause])
+        assert result.causes[0].rung_results[0].matched
 
     @pytest.mark.asyncio
     async def test_step_not_run_is_untested(self):
