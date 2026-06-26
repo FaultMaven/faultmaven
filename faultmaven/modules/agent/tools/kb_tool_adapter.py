@@ -31,6 +31,16 @@ class KBToolAdapter(AgentTool):
         self._wrapped = wrapped_tool
 
     @property
+    def wrapped(self) -> Any:
+        """The underlying ``AnswerFromKB`` tool.
+
+        Exposed so the investigation engine can reach the structured
+        ``aget_cause_matches`` entry point (the runbook Cause matcher), which is
+        not part of the prose ``AgentTool`` interface this adapter presents.
+        """
+        return self._wrapped
+
+    @property
     def name(self) -> str:
         return "kb_qa"
 

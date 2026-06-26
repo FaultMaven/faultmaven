@@ -102,3 +102,11 @@ class CauseMatchResult(BaseModel):
             "'multiple' → None (LLM disambiguates)."
         ),
     )
+    selected_record: Optional[CauseRecord] = Field(
+        default=None,
+        description=(
+            "The full input ``CauseRecord`` for ``selected_cause`` — its causal "
+            "chain, carried so the engine can instantiate it without re-resolving. "
+            "Populated only when verdict='single' (None for 'none'/'multiple')."
+        ),
+    )

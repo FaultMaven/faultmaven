@@ -1763,6 +1763,36 @@ class KnowledgeService:
             logger.error(f"Failed to get document {document_id}: {e}")
             return None
 
+    async def get_runbook_causes(self, item_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Return a runbook's v4 per-Cause graph records, or None.
+
+        Reads ``knowledge_items.metadata["causes"]`` directly from the
+        repository — ``get_document`` cherry-picks a few metadata keys and drops
+        ``causes``, so it can't be used here. None for upload-path / pre-v4
+        runbooks (no causes record) and for unknown ids. This is the
+        ``resolve_causes`` callable the runbook Cause matcher injects.
+        """
+        try:
+            if not item_id or not self._db_session_factory:
+                return None
+
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
+            )
+
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                item = await repo.get_by_id(item_id)
+
+            if item is None:
+                return None
+            causes = (item.metadata or {}).get("causes")
+            return causes if isinstance(causes, list) else None
+
+        except Exception as e:
+            logger.error(f"Failed to get runbook causes for {item_id}: {e}")
+            return None
+
     async def get_semantic_snippet(
         self,
         document_id: str,

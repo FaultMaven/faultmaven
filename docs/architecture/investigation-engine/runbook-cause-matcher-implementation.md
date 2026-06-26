@@ -2,7 +2,9 @@
 
 **Document Type:** Implementation companion to
 [runbook-cause-matching.md](./runbook-cause-matching.md) (the component spec).
-**Status:** In progress — increment 1 landed; 2–5 pending, all flag-gated.
+**Status:** In progress — increments 1–3 + 4a landed; 4b/5 pending. The matcher
+is wired per-turn behind `enable_runbook_cause_matcher` (default off) but inert
+until 4b supplies its resolvers.
 
 The spec describes the target behaviour; this document is the **how/when** —
 the incremental, flag-gated path that takes the matcher from dormant to live
@@ -55,9 +57,10 @@ Two contracts the consumer (increment 4) must honour:
 | # | Increment | Scope | Status |
 |---|---|---|---|
 | **1** | **Persist causes at ingest** | `PackRunbook.causes` field + load mapping (`kb_pack.py`); `kb_init` passes `causes=`; `KnowledgeService.ingest_runbook(causes=...)` writes `metadata["causes"]`. Inert until consumed. | **Done** |
-| **2** | **v4 schemas + rung evaluator** | `cause_schemas.py` → rung-level (`RungResult`, `CauseMatch{belief,path}`, `CauseMatchResult{live_causes}`); drop v3 `mechanism/mitigation/resolution/verification`. `indicator_evaluator.py` → per-rung iteration + k-of-n belief + refutation pruning (spec §4). Keep the four predicate evaluators (`absent/contains/exit_code/threshold`) — already v4-correct. | Pending |
+| **2** | **v4 schemas + rung evaluator** | `cause_schemas.py` → rung-level (`RungResult`, `CauseMatch{belief,path}`, `CauseMatchResult{live_causes}`); drop v3 `mechanism/mitigation/resolution/verification`. `indicator_evaluator.py` → per-rung iteration + k-of-n belief + refutation pruning (spec §4). Keep the four predicate evaluators (`absent/contains/exit_code/threshold`) — already v4-correct. | **Done** |
 | **3** | **Retrieve → resolve → match** | `kb_qa.aget_cause_matches` retrieves chunks, ranks distinct runbooks by `parent_document_id`, resolves each via an injected `resolve_causes(item_id)` → `metadata["causes"]`, builds `CauseRecord`s (per-entry tolerant), runs the evaluator → `List[CauseMatchResult]`. | **Done** |
-| **4** | **Lazy instantiation + per-turn wiring (flag OFF)** | Reuse `causal_graph.ingest_emitted_chain` (seed D, exact-match dedup, never-`VALIDATED`, `cn_` id render-back, edges). Hook in `_apply_investigation_updates` just before `_apply_chain_emission` so matcher nodes share the same dedup/derive/recompute pass. Map interventions → `Solution` (quadrant → `immediate_action`/`longterm_fix`, `node_id`, `quadrant`); root `Statement` → `RootCauseConclusion` only on validation; M5 gate applies. | Pending |
+| **4a** | **Lazy instantiation + per-turn wiring (flag OFF)** | Reuse `causal_graph.ingest_emitted_chain` (seed D, exact-match dedup, never-`VALIDATED`, `cn_` id render-back, edges). Hook in `_apply_investigation_updates` just before `_apply_chain_emission` so matcher nodes share the same dedup/derive/recompute pass. Flag `enable_runbook_cause_matcher` (FeatureSettings, default False). New `core/investigation/runbook_cause_matcher.py` (`chain_to_specs` / `instantiate_cause_chain` / `apply_runbook_cause_matcher`); `KnowledgeService.get_runbook_causes` (direct repo read — `get_document` drops `causes`); `CauseMatchResult.selected_record` threads the chosen chain; `KBToolAdapter.wrapped` exposes the tool. | **Done** |
+| **4b** | **Functional resolvers + interventions → Solution** | Wire the matcher's inputs (step-output resolver, `case_evidence_qa`) so matching actually fires — in 4a both are absent, so a flag-ON matcher abstains (verdict 'none', nothing instantiated). Map interventions → `Solution` (quadrant → `immediate_action`/`longterm_fix`, `node_id`, `quadrant`). Root `Statement` → `RootCauseConclusion` needs nothing new: it is already engine-synthesized (`synthesize_rcc_from_validated_root`, only on a VALIDATED root), and the M5 gate already governs Solutions — no bypass. | Pending |
 | **5** | **Enable + validate** | Flip `enable_runbook_cause_matcher` on in test/sim; validate against the sim harness + unit suite (no duplicate-root fragmentation, no premature `VALIDATED`, `cause_state` correct). | Pending |
 
 ## Reuse (deliberately not reinvented)

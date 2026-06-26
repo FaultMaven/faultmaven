@@ -1449,6 +1449,12 @@ class FeatureSettings(BaseSettings):
     enable_multi_agent: bool = Field(default=False)
     enable_workflow_optimization: bool = Field(default=False)
 
+    # Runbook Cause matcher: when a retrieved runbook's causal chain matches the
+    # current case, instantiate it into the case's causal graph as a CANDIDATE
+    # prior (per-turn, before LLM chain emission). Off until validated (the
+    # matcher's deterministic + semantic resolvers are wired in a later increment).
+    enable_runbook_cause_matcher: bool = Field(default=False)
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

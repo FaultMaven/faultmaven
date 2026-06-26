@@ -176,7 +176,21 @@ global documentation, your personal runbooks, and your team's shared procedures.
                 cause_records = self._build_cause_records(item_id, causes_raw)
                 if not cause_records:
                     continue
-                results.append(await evaluator.evaluate(item_id, cause_records))
+                match = await evaluator.evaluate(item_id, cause_records)
+                # Thread the selected Cause's full record (its causal chain) onto
+                # the result so the engine can instantiate it without re-resolving.
+                # Only a verdict='single' has a non-fallback selected Cause.
+                selected = match.selected_cause
+                if selected is not None and not selected.is_fallback:
+                    match.selected_record = next(
+                        (
+                            r
+                            for r in cause_records
+                            if r.cause_letter == selected.cause_letter
+                        ),
+                        None,
+                    )
+                results.append(match)
             except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
                 logger.warning("Cause matching failed for runbook %s: %s", item_id, exc)
                 continue
