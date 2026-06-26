@@ -216,6 +216,9 @@ async def _ingest_pack_runbook(
         verified_by=None,
         verification_level=VerificationLevel.COMMUNITY,
         prechunked=prechunked,
+        # v4 per-Cause graph records → knowledge_items.metadata["causes"], for the
+        # runbook-cause matcher to read back by item_id (inert until that lands).
+        causes=runbook.causes,
     )
 
     if chunks_created <= 0:

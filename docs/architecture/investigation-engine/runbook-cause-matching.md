@@ -241,21 +241,24 @@ for instantiation. A degenerate (no-`Chain`) Cause carries the `root → D` pair
 
 ## 7. Implementation Status
 
-The flat-Cause Phase-1 pieces are shipped; the rung-level matcher + lazy
-instantiation (§2, §4, §5) and the pack-side graph record (§6) are the v4 target.
-**No consumer is live**: a v4 runbook behaves exactly like a v3 runbook until the
-per-turn matcher lands — v4 authoring is forward-investment (encode the graph now,
-the matcher catches up).
+The flat-Cause Phase-1 pieces are shipped and the pack now ships + persists the
+per-Cause graph record; the rung-level matcher + lazy instantiation (§2, §4, §5)
+remain the v4 target. **No consumer is live yet**: a v4 runbook behaves exactly
+like a v3 runbook until the per-turn matcher lands — v4 authoring is
+forward-investment (encode the graph now, the matcher catches up). The
+incremental, flag-gated activation path is in
+[runbook-cause-matcher-implementation.md](./runbook-cause-matcher-implementation.md).
 
 | Component | Location | Status |
 |---|---|---|
 | Predicate evaluators (`absent`/`contains`/`exit_code`/`threshold`) | `faultmaven/core/investigation/indicator_evaluator.py` | Shipped (flat) |
 | `CauseChunk` / match schemas | `faultmaven/core/investigation/cause_schemas.py` | Shipped (flat); rung-level (§5) pending |
 | v4 chunker: strip hints + per-Cause metadata | `kb_toolkit/core/chunker.py` | **Implemented** |
-| Pack-side per-Cause graph record (§6) | `kb_toolkit/core/pack_builder.py` | **Pending** (carry chunk metadata into `pack.json`) |
-| Layered matcher (T1/T2/T3, §2.1) + lazy instantiation/dedup (§2.2) | `faultmaven/core/investigation/` | **Pending** |
-| Chain-level k-of-n verdict (§4) | matcher | **Pending** |
-| Per-turn integration into milestone engine | `faultmaven/core/investigation/milestone_engine.py` | **Pending** |
+| Pack-side per-Cause graph record (§6) | `kb_toolkit/core/pack_builder.py` | **Implemented** (in `pack.json` `causes`) |
+| Persist pack `causes` at ingest → `knowledge_items.metadata` | `faultmaven/bootstrap/kb_init.py`, `…/knowledge_service.py` | **Implemented** (impl-doc increment 1) |
+| Layered matcher (T1/T2/T3, §2.1) + lazy instantiation/dedup (§2.2) | `faultmaven/core/investigation/` | **Pending** (increments 2–4) |
+| Chain-level k-of-n verdict (§4) | matcher | **Pending** (increment 2) |
+| Per-turn integration into milestone engine | `faultmaven/core/investigation/milestone_engine.py` | **Pending** (increment 4, flag-gated) |
 
 See [investigation-lifecycle-logic.md §1.4](./investigation-lifecycle-logic.md#14-automatic-milestone-tracking-and-stage-transitions)
 for where Cause matching fires within the per-turn flow.

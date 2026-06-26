@@ -34,7 +34,7 @@ import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -811,8 +811,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     def _to_domain(self, model: KnowledgeItemModel) -> KnowledgeItem:
         """Convert SQLAlchemy model to domain model."""
         # tags is handled by the TagsArray TypeDecorator — already a list
-        # (or None) on read. embedding_vector and metadata are plain Text
-        # columns, still JSON-encoded.
+        # (or None) on read. embedding_vector/metadata are JsonBlob (Text on
+        # SQLite, JSONB on PostgreSQL); the parse helpers handle BOTH a
+        # JSON-string and an already-decoded value, returning a fresh copy.
         tags = list(model.tags) if model.tags else []
         embedding_vector = self._parse_json_list(model.embedding_vector)
         metadata = self._parse_json_dict(model.knowledge_metadata)
@@ -862,8 +863,22 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         except (json.JSONDecodeError, TypeError):
             return []
 
-    def _parse_json_dict(self, value: Optional[str]) -> Optional[Dict]:
-        """Parse JSON string to dict."""
+    def _parse_json_dict(self, value: Any) -> Optional[Dict]:
+        """Parse a stored JSON value to a dict.
+
+        Robust to both representations of the ``JsonBlob`` column: a JSON
+        *string* (SQLite TEXT) and an already-decoded ``dict`` (PostgreSQL JSONB
+        returns the deserialized object — without a dict branch, ``json.loads``
+        on it raises ``TypeError`` and the value is silently lost).
+
+        Returns a FRESH copy in both branches: ``json.loads`` is naturally fresh,
+        and the dict branch ``deepcopy``s so a caller mutating the result cannot
+        alias/dirty the session-bound ORM attribute (PG-only aliasing bug). The
+        dict check precedes the falsy check so an empty ``{}`` round-trips to
+        ``{}`` (matching the string path), not ``None``.
+        """
+        if isinstance(value, dict):
+            return deepcopy(value)
         if not value:
             return None
         try:

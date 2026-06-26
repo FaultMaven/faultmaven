@@ -1220,6 +1220,7 @@ class KnowledgeService:
         verified_by: Optional[str] = None,
         verification_level: "Optional[VerificationLevel]" = None,
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
+        causes: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
@@ -1317,6 +1318,14 @@ class KnowledgeService:
             verified_at=now if verified_by else None,
             created_at=now,
             updated_at=now,
+            # v4 per-Cause graph records for the runbook-cause matcher, read back
+            # by item_id via metadata.get("causes") (absent/None on the upload
+            # path and pre-v4 runbooks). Co-located in the row so the orphan-prune
+            # removes them with it and a content-body change refreshes them on
+            # re-ingest — NOTE a causes-only pack change (unchanged markdown) is
+            # skipped by the content-hash gate; see the idempotency note in
+            # runbook-cause-matcher-implementation.md. Inert until increment 4.
+            metadata={"causes": causes} if causes else None,
         )
         async with self._db_session_factory() as session:
             repo = DatabaseKnowledgeItemRepository(session)
