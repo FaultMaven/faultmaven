@@ -115,24 +115,8 @@ class DocumentQATool:
         logger.debug(f"Querying collection: {collection}, k={k}")
 
         # Step 2: Retrieve chunks from vector store (same for all KBs)
-        # Search mode from KB config: "hybrid" (full pipeline), "fast" (skip reranking), "vector" (pure cosine)
         try:
-            search_mode = self._kb_config.search_mode
-
-            if search_mode == "hybrid" and hasattr(self._vector_store, "hybrid_search"):
-                logger.debug("Using hybrid search (vector + keyword + reranking)")
-                chunks = await self._vector_store.hybrid_search(
-                    collection_name=collection, query=question, k=k, where=filters
-                )
-            elif search_mode == "fast":
-                logger.debug("Using fast search (vector only, no reranking)")
-                chunks = await self._vector_store.search(
-                    collection_name=collection, query=question, k=k, where=filters
-                )
-            else:
-                chunks = await self._vector_store.search(
-                    collection_name=collection, query=question, k=k, where=filters
-                )
+            chunks = await self._dispatch_search(collection, question, k, filters)
         except Exception as e:
             logger.error(f"Vector store search failed: {e}")
             return {
@@ -260,6 +244,32 @@ Answer:"""
                 "chunk_count": len(chunks),
                 "confidence": 0.0,
             }
+
+    async def _dispatch_search(
+        self,
+        collection: str,
+        question: str,
+        k: int,
+        filters: Optional[Dict[str, Any]],
+    ) -> list:
+        """Retrieve chunks per the KB config's search mode.
+
+        ``hybrid`` (when the store supports it) → vector + keyword + reranking;
+        otherwise pure vector search. Shared by the prose Q&A path
+        (``answer_question``) and the structured cause matcher
+        (``AnswerFromKB._retrieve_chunks``) so the dispatch lives in one place
+        and the two paths can't drift. Raises on store error — callers decide
+        how to degrade.
+        """
+        if self._kb_config.search_mode == "hybrid" and hasattr(
+            self._vector_store, "hybrid_search"
+        ):
+            return await self._vector_store.hybrid_search(
+                collection_name=collection, query=question, k=k, where=filters
+            )
+        return await self._vector_store.search(
+            collection_name=collection, query=question, k=k, where=filters
+        )
 
     def _build_context_from_chunks(self, chunks: list) -> str:
         """
