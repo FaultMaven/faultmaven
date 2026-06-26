@@ -112,8 +112,8 @@ Respond with JSON matching this schema:
   }
 }"""
 
-CONVERSION_SYSTEM_PROMPT = """You are a technical writer converting source material into a FaultMaven v3
-runbook. You MUST produce output that exactly matches the template below.
+CONVERSION_SYSTEM_PROMPT = """You are a technical writer converting source material into a FaultMaven v4
+causal-chain runbook. You MUST produce output that exactly matches the template below.
 Every section and sub-field is required. Do not add sections. Do not rename sections.
 Do not include commentary, explanations, or meta-text -- only the runbook.
 
@@ -161,34 +161,37 @@ State the software version range, required access level, and tools needed
 ## Causes
 
 ### Cause A: {{name}}
-**Statement:** Single declarative sentence stating the root cause (≤300 chars).
-**Mechanism:** How the cause produces the observed symptom — the causal chain (≤800 chars).
-**Indicator:**
-- [Step 1] {{finding from Step 1 that confirms this cause}}
-**Mitigation:**
-- **Risk:** {{what could go wrong}}
-- **Command:**
+**Statement:** Single declarative sentence stating the single root cause (≤300 chars).
+**Chain:**
+- root: the root cause (the chain's top node; mirrors Statement)
+- s1: intermediate state — the direct effect of the node above
+- D: the failure (points at Symptom Recognition; do not re-author it)
+**Indicators:**
+- root: [Step 1] {{observable from Step 1 that confirms the root rung}}
+- s1: [Step 2] {{observable that confirms intermediate state s1}}
+**Interventions:**
+- **remediation** (root): {{the durable fix at the root}}
+
   ```{{language}}
-  {{mitigation command}}
+  {{durable fix command}}
   ```
-- **Duration:** {{how long this mitigation is safe}}
-**Resolution:**
-```{{language}}
-{{permanent fix command}}
-```
-**Verification:** Re-run Step N; {{what confirms the fix worked}}.
+
+  **Verification:** Re-run Step N; {{what confirms the fix worked}}.
+- **mitigation** (s1): {{a temporary interception — include only if one genuinely exists}}
+
+  ```{{language}}
+  {{quick fix command}}
+  ```
+
+  **Risk:** {{what could go wrong}}. **Duration:** {{how long safe}}. **Verification:** {{cause-specific check}}.
 
 ### Cause Z: Unidentified
 **Statement:** None of the documented causes match the observed evidence.
-**Mechanism:** The runbook's known failure patterns do not cover this case.
-**Indicator:**
+**Indicators:**
 - [Default]
-**Mitigation:**
-- **Risk:** Generic approach; collect more evidence before applying.
-- **Command:** Capture full diagnostic output and consult an SME.
-- **Duration:** Diagnostic only.
-**Resolution:** Out of runbook scope. Escalate.
-**Verification:** N/A.
+**Interventions:**
+- **mitigation** (D): Capture full diagnostic output and consult an SME.
+  **Risk:** Diagnostic only. **Duration:** Until SME review. **Verification:** N/A.
 
 ## Prevention
 - {{configuration change to prevent recurrence}}
@@ -201,13 +204,14 @@ State the software version range, required access level, and tools needed
 
 RULES:
 1. Every section and sub-field MUST contain content. No empty fields.
-2. ## Diagnostic Steps MUST contain fenced code blocks with numbered ### Step N headers.
+2. ## Diagnostic Steps MUST contain fenced code blocks under numbered `### Step N: <title>` headers (number, colon, then a short inline title).
 3. ## Causes MUST have at least one real ### Cause A subsection AND the fallback ### Cause Z: Unidentified.
-4. Each ### Cause (except Z) needs all 6 sub-fields: Statement, Mechanism, Indicator, Mitigation, Resolution, Verification.
-5. Statement ≤300 characters. Mechanism ≤800 characters. Hard limits.
-6. Each Indicator entry must reference at least one [Step N] where N matches an existing Diagnostic Step number.
-7. If source material lacks enough information for a field, write "[INSUFFICIENT SOURCE DATA -- manual completion required]".
-8. Use the taxonomy values provided. Do not change domain, service, or symptom_class."""
+4. Each ### Cause declares exactly ONE root — never two roots, never an AND-gate. Each ### Cause (except Z) needs **Statement**, **Indicators**, and **Interventions**; **Chain** is optional (omit it for a simple one-step cause). For two co-necessary conditions: when one enables the other, express them as sequential Chain rungs; when neither causes the other, fold the second into the root Statement.
+5. Statement ≤300 characters; each Chain rung ≤300 characters. Hard limits.
+6. Each Indicator entry carries a rung ref (`root`, `s1`, …, or `D`) and at least one `[Step N]` (N matches an existing Diagnostic Step) or `[Symptom]`; the Cause Z fallback uses `- [Default]`.
+7. Each Intervention is tagged with exactly one quadrant — `remediation` / `defensive_fix` / `mitigation` / `loop_break` — names the rung it targets in `(parens)`, and carries a **Verification:**; every `mitigation` also carries **Risk** and **Duration**.
+8. If source material lacks enough information for a field, write "[INSUFFICIENT SOURCE DATA -- manual completion required]".
+9. Use the taxonomy values provided. Do not change domain, service, or symptom_class."""
 
 
 # =============================================================================
@@ -1580,12 +1584,13 @@ class ConversionService:
         organization_id: str = None,
         team_id: str = None,
     ) -> ConversionDraft:
-        """Create a v3 runbook from user-provided template fields (no LLM).
+        """Create a v4 causal-chain runbook from user-provided template fields (no LLM).
 
         causes should be pre-formatted markdown containing one or more
-        ### Cause N: <name> subsections each with the six required sub-fields
-        (Statement, Mechanism, Indicator, Mitigation, Resolution, Verification),
-        plus a ### Cause Z: Unidentified fallback with [Default] indicator.
+        ### Cause N: <name> subsections (one ROOT each), with Statement, an optional
+        Chain (root->D rungs), per-rung Indicators ([Step N]-anchored), and
+        quadrant-tagged Interventions (remediation/defensive_fix/mitigation/
+        loop_break), plus a ### Cause Z: Unidentified fallback with [Default] indicator.
         """
         import re as _re
 
