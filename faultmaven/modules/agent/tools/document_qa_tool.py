@@ -304,7 +304,20 @@ Answer:"""
         """
         try:
             collection = self._kb_config.get_collection_name(scope_id)
-            chunks = await self._dispatch_search(collection, question, k, filters)
+            try:
+                chunks = await self._dispatch_search(collection, question, k, filters)
+            except Exception as exc:  # noqa: BLE001
+                # A store error (ChromaDB down / collection unreadable) is treated
+                # as "no vectors", not a hard abstention — so the raw-evidence
+                # fallback below still gets to fire. Without this, the very case
+                # the fallback exists for (no usable vector index) skips it.
+                logger.warning(
+                    "answer_yes_no: vector search failed for scope %s (%s) — "
+                    "treating as no vectors",
+                    scope_id,
+                    exc,
+                )
+                chunks = []
             if chunks:
                 context = self._build_context_from_chunks(chunks)
             elif fallback_context and fallback_context.strip():

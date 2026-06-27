@@ -900,9 +900,19 @@ class TestBuildCaseEvidenceFallbackText:
             case.evidence.append(_ev(f"finding number {i} " + "x" * 200))
         text = build_case_evidence_fallback_text(case, max_chars=1000)
         assert text is not None
-        assert len(text) <= 1000 + 400  # bounded (last whole row may overshoot once)
+        assert len(text) <= 1000  # hard cap honored
         # It stopped early — not all 50 rows are present.
         assert text.count("finding number") < 50
+
+    def test_oversized_first_row_is_truncated_not_dropped(self):
+        # extract has no max_length; a single huge first row must NOT blow the
+        # budget (and must not be dropped, leaving an empty result).
+        case = _case()
+        case.evidence.append(_ev("big finding", extract="y" * 50000))
+        text = build_case_evidence_fallback_text(case, max_chars=2000)
+        assert text is not None
+        assert len(text) == 2000  # capped exactly, first row truncated in place
+        assert text.startswith("[causal_evidence] big finding")
 
     def test_skips_blank_summaries_returns_none(self):
         # Evidence guarantees non-blank summary, but guard defensively: an object

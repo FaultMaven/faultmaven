@@ -96,16 +96,18 @@ def build_case_evidence_fallback_text(
     text block the tool can judge against when the vector collection is empty.
 
     Returns ``None`` when the case has no evidence (the tool then abstains, i.e.
-    keeps the conservative pre-fallback behavior). Output is truncated to
-    ``max_chars`` (whole rows; a partial final row is dropped) so the classifier
-    prompt stays bounded on evidence-heavy cases.
+    keeps the conservative pre-fallback behavior). The output is hard-capped at
+    ``max_chars``: whole rows are kept on a boundary, and a single oversized row
+    (``Evidence.extract`` has no length limit, unlike ``summary``) is itself
+    truncated so the classifier prompt stays bounded even on the first row.
     """
     evidence = getattr(case, "evidence", None) or []
     if not evidence:
         return None
 
     parts: List[str] = []
-    used = 0
+    used = 0  # running length of the joined output ("\n\n" between rows)
+    joiner = 2  # len("\n\n")
     for ev in evidence:
         summary = (getattr(ev, "summary", "") or "").strip()
         if not summary:
@@ -114,11 +116,18 @@ def build_case_evidence_fallback_text(
         extract = (getattr(ev, "extract", "") or "").strip()
         header = f"[{category}] {summary}" if category else summary
         block = f"{header}\n{extract}" if extract else header
-        # Stop at the budget on a whole-row boundary (never emit a partial row).
-        if used + len(block) > max_chars and parts:
+        sep = joiner if parts else 0  # no joiner before the first row
+        remaining = max_chars - used - sep
+        if remaining <= 0:
+            break
+        if len(block) > remaining:
+            # Oversized row (typically a large extract): truncate it to the
+            # budget rather than dropping it, so even an unbounded first-row
+            # extract can't blow the classifier prompt. Then stop.
+            parts.append(block[:remaining])
             break
         parts.append(block)
-        used += len(block) + 2  # +2 for the joiner
+        used += sep + len(block)
     if not parts:
         return None
     return "\n\n".join(parts)

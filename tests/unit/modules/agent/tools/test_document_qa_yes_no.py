@@ -136,3 +136,28 @@ class TestAnswerYesNoRawEvidenceFallback:
         sent = router.route.await_args.kwargs["messages"][0]["content"]
         assert "RAW FALLBACK SHOULD NOT APPEAR" not in sent
         assert "chunk 0" in sent  # the vector chunk context was used
+
+    @pytest.mark.asyncio
+    async def test_store_error_still_uses_fallback(self):
+        # A vector-search failure (ChromaDB down / collection unreadable) must be
+        # treated as 'no vectors' so the fallback still fires — otherwise the very
+        # case the fallback exists for would skip it.
+        tool, router = _tool(_chunks(), llm_content="YES")
+        tool._vector_store.hybrid_search = AsyncMock(side_effect=RuntimeError("down"))
+        tool._vector_store.search = AsyncMock(side_effect=RuntimeError("down"))
+        result = await tool.answer_yes_no(
+            "is X present?",
+            scope_id="case_1",
+            fallback_context="[CAUSAL_EVIDENCE] X is present",
+        )
+        assert result is True
+        sent = router.route.await_args.kwargs["messages"][0]["content"]
+        assert "X is present" in sent
+
+    @pytest.mark.asyncio
+    async def test_store_error_no_fallback_returns_false(self):
+        # Store error + no fallback → still conservative False (never refutes).
+        tool, _ = _tool(_chunks(), llm_content="YES")
+        tool._vector_store.hybrid_search = AsyncMock(side_effect=RuntimeError("down"))
+        tool._vector_store.search = AsyncMock(side_effect=RuntimeError("down"))
+        assert await tool.answer_yes_no("q", scope_id="case_1") is False
