@@ -454,3 +454,26 @@ class TestResponseFormatConsistency:
             response = await handler(mock_request, exc)
             body = response.body.decode()
             assert '"detail"' in body
+
+
+class TestQuotaExhaustedHttpException:
+    """The shared billing→402 mapper used by every LLM-calling endpoint."""
+
+    def test_maps_to_402_with_error_code_and_no_retry_after(self):
+        from faultmaven.api.exception_handlers import quota_exhausted_http_exception
+        from faultmaven.exceptions import QUOTA_EXHAUSTED
+
+        exc = quota_exhausted_http_exception("corr-123")
+        assert exc.status_code == 402
+        assert exc.headers["x-error-code"] == QUOTA_EXHAUSTED
+        assert exc.headers["x-correlation-id"] == "corr-123"
+        # Retrying cannot add credits — no Retry-After.
+        assert "Retry-After" not in exc.headers
+        assert "credit" in exc.detail.lower()
+
+    def test_correlation_id_optional(self):
+        from faultmaven.api.exception_handlers import quota_exhausted_http_exception
+
+        exc = quota_exhausted_http_exception()
+        assert exc.status_code == 402
+        assert "x-correlation-id" not in exc.headers

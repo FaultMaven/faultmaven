@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
     LLMException,
-    is_billing_quota_error,
+    is_billing_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,17 +154,10 @@ class LLMErrorHandler:
     def is_billing_error(self, error: Exception) -> bool:
         """Detect a permanent billing/quota-exhaustion failure.
 
-        Prefers the typed ``error_code`` set on ``LLMException`` /
-        ``CircuitBreakerError`` (walking ``__cause__`` for wrapped errors),
-        falling back to the shared marker-based body detection for plain
-        exceptions whose typed metadata was lost in wrapping.
+        Thin wrapper over the shared ``exceptions.is_billing_error`` so the
+        engine handler and other layers classify identically.
         """
-        cursor: Optional[BaseException] = error
-        while cursor is not None:
-            if getattr(cursor, "error_code", None) == QUOTA_EXHAUSTED:
-                return True
-            cursor = cursor.__cause__
-        return is_billing_quota_error(str(error))
+        return is_billing_error(error)
 
     def is_auth_error(self, error: Exception) -> bool:
         """Check if error is authentication-related."""
