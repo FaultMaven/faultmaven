@@ -11,6 +11,7 @@ Design: Design C (Stateless Sub-Agent + Proactive Phase Handlers)
 """
 
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import get_settings
@@ -361,11 +362,21 @@ Answer:"""
         response = await self._llm_router.route(
             model=classifier_model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=5,
+            # 64, not 5: a "thinking" classifier (e.g. gemini-3.x) bills hidden
+            # reasoning against max_tokens, and a 5-token cap is consumed before
+            # the YES/NO is emitted → truncated/placeholder output that never
+            # starts with "yes" → a false NO. 64 leaves headroom for the trivial
+            # answer; conservative parsing still maps any non-affirmative to False.
+            max_tokens=64,
             temperature=0.0,
         )
-        answer = (getattr(response, "content", "") or "").strip().lower()
-        return answer.startswith("yes") or answer == "y"
+        # Parse the FIRST alphabetic token, not the raw prefix: with the larger
+        # max_tokens a verbose/thinking model may wrap the verdict in markup or a
+        # short preamble ("**YES**", "Answer: yes"). Conservative — anything that
+        # isn't a clear leading yes/y is False (never a refutation).
+        answer = (getattr(response, "content", "") or "").lower()
+        first = re.search(r"[a-z]+", answer)
+        return first is not None and first.group() in ("yes", "y")
 
     def _build_context_from_chunks(self, chunks: list) -> str:
         """

@@ -79,17 +79,32 @@ no `Chain`, it is a degenerate `root → D` chain (tolerant — never an error).
 
 ### 2.1 Layered evaluation (robustness → efficiency)
 
-Each rung's indicator is evaluated in this order; the robust tier is always
-available, the fast tier is an optimization:
+The deterministic tier is per-rung; the semantic tier is per-cause (see the #545
+note below). The robust (semantic) tier is always available; the fast tier is an
+optimization:
 
 | Tier | Mechanism | Cost | Role |
 |---|---|---|---|
 | **T1 — deterministic** | `match_predicates` (the `<!-- match -->` hints) evaluated against step output (`absent`/`contains`/`exit_code`/`threshold`, §3) | $0, no LLM | Efficiency — used only when a clean predicate exists *and* its referenced step has run |
-| **T2 — semantic** | `case_evidence_qa` with the rung's indicator prose: *"Does the evidence satisfy: \<indicator\>?"* | ~1 LLM call | **Robustness floor** — always available; catches variation predicates miss |
+| **T2 — semantic (per cause)** | ONE `case_evidence_qa` per Cause: *"Is the case explained by this cause?"*, judged from the Cause's symptom-level description (name + statement + non-problem chain prose) | ~1 LLM call per Cause | **Robustness floor** — always available; matches symptom-level evidence the per-rung operator indicators can't |
 | **T3 — structural prior** | vector similarity of the retrieved Cause chunk to the case ranks it a candidate even before any rung is tested | retrieval only | A relevant runbook is never invisible just because its rungs aren't tested yet |
 
 `case_evidence_qa` is not a degradation — it is the canonical "judgment given case
-evidence" tool, and rung resolution is exactly that question.
+evidence" tool.
+
+> **T2 is per-cause, not per-rung (#545; supersedes the original per-rung design).**
+> T2 originally judged each rung indicator ("Does the evidence satisfy:
+> `[Step 3] kubectl describe job shows BackoffLimitExceeded`?"). Live diagnosis
+> showed this never fires: the rung indicators are written at **tool/API-output
+> level**, while case evidence is **symptom-level**, so the classifier honestly
+> answers NO to every indicator → belief 0 for every cause → verdict `none`.
+> **Rejected alternatives:** stripping the `[Step N]` prefix (the residual still
+> names API fields the evidence lacks) and matching the raw chain-node statements
+> (also implementation-specific) — both still returned NO. The semantic tier is
+> now **one holistic judgment per cause** over the Cause's symptom-level
+> description (`indicator_evaluator._build_cause_condition`), which fires the
+> matching cause and discriminates the rest (clean `single`). The deterministic
+> T1 tier (per-rung predicates + refutation) is unchanged.
 
 ### 2.2 Instantiation into the case graph (lazy + dedup)
 
@@ -187,12 +202,17 @@ class RungResult(BaseModel):
     matched: bool
     refuted: bool                  # contradicted by evidence (prunes the chain)
     method: Literal["deterministic", "case_evidence_qa", "untested"]
+    # Post-#545: per-rung results carry only the deterministic T1 outcome
+    # ("deterministic" / "untested"); the "case_evidence_qa" value is retained
+    # for back-compat but no longer emitted (T2 is per-cause, not per-rung).
 
 class CauseMatch(BaseModel):
     cause_name: str
     path: list[str]                # rung refs root→D
     rung_results: list[RungResult]
-    belief: float                  # scaled k-of-n confidence (0..1), 0 if refuted
+    belief: float                  # 0 if refuted or no rungs; else 1.0 if the
+                                   # per-cause holistic T2 supports the cause,
+                                   # otherwise the T1 matched-rung fraction (#545)
     is_fallback: bool              # Indicators include [Default]
 
 class CauseMatchResult(BaseModel):
