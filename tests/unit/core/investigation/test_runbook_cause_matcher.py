@@ -20,6 +20,7 @@ from faultmaven.core.investigation.cause_schemas import (
 )
 from faultmaven.core.investigation.runbook_cause_matcher import (
     apply_runbook_cause_matcher,
+    build_case_evidence_fallback_text,
     chain_to_specs,
     instantiate_cause_chain,
 )
@@ -27,6 +28,9 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseState,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
     InquiryData,
     NodeState,
     NodeType,
@@ -595,8 +599,14 @@ class _FakeCaseEvidence:
         self._answer = answer
         self.calls = []
 
-    async def answer_yes_no(self, question, scope_id=None, k=5):
-        self.calls.append({"question": question, "scope_id": scope_id})
+    async def answer_yes_no(self, question, scope_id=None, k=5, fallback_context=None):
+        self.calls.append(
+            {
+                "question": question,
+                "scope_id": scope_id,
+                "fallback_context": fallback_context,
+            }
+        )
         return self._answer
 
 
@@ -731,6 +741,40 @@ class TestEngineFiringAndGuards:
         assert ce.calls[0]["question"] == "does the evidence show X?"
 
     @pytest.mark.asyncio
+    async def test_t2_closure_passes_raw_evidence_fallback(self):
+        # #543: the closure must hand the tool a fallback built from case.evidence
+        # so T2 can judge even when the vector collection is empty.
+        case = _case()
+        case.evidence.append(
+            _ev(
+                "PreSync job fails on SSL",
+                extract="FATAL: SSL connection is required",
+                category=EvidenceCategory.CAUSAL_EVIDENCE,
+            )
+        )
+        kb = _FakeKB([_result("kb_rb1", "none")])
+        ce = _FakeCaseEvidence(answer=True)
+        eng = _engine(registry=_registry(kb, ce_wrapped=ce), knowledge_service=_ks())
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        evaluator = kb.calls[0]["evaluator"]
+        await evaluator._case_evidence_qa("is SSL required?")
+        fb = ce.calls[0]["fallback_context"]
+        assert fb is not None
+        assert "PreSync job fails on SSL" in fb
+        assert "FATAL: SSL connection is required" in fb
+
+    @pytest.mark.asyncio
+    async def test_t2_closure_fallback_none_when_no_evidence(self):
+        # No evidence → fallback is None (tool keeps its abstain-on-empty behavior).
+        case = _case()  # no evidence
+        kb = _FakeKB([_result("kb_rb1", "none")])
+        ce = _FakeCaseEvidence(answer=False)
+        eng = _engine(registry=_registry(kb, ce_wrapped=ce), knowledge_service=_ks())
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        await kb.calls[0]["evaluator"]._case_evidence_qa("q")
+        assert ce.calls[0]["fallback_context"] is None
+
+    @pytest.mark.asyncio
     async def test_no_case_evidence_tool_leaves_resolver_none(self):
         case = _case()
         kb = _FakeKB([_result("kb_rb1", "none")])
@@ -806,3 +850,67 @@ class TestEngineFiringAndGuards:
             rationale="The deploy preceded the errors.",
         )
         assert is_runbook_match_hypothesis(hyp) is False
+
+
+# ---------------------------------------------------------------------------
+# T2 raw-evidence fallback (#543) — build_case_evidence_fallback_text
+# ---------------------------------------------------------------------------
+
+
+def _ev(summary, *, extract=None, category=EvidenceCategory.CAUSAL_EVIDENCE):
+    return Evidence(
+        summary=summary,
+        extract=extract,
+        primary_purpose="diagnosis",
+        category=category,
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_by="llm",
+        collected_at_turn=2,
+    )
+
+
+class TestBuildCaseEvidenceFallbackText:
+    def test_none_when_no_evidence(self):
+        case = _case()  # no evidence
+        assert build_case_evidence_fallback_text(case) is None
+
+    def test_renders_category_summary_and_extract(self):
+        case = _case()
+        case.evidence.append(
+            _ev(
+                "migration job fails on PreSync",
+                extract="FATAL: SSL connection is required",
+                category=EvidenceCategory.CAUSAL_EVIDENCE,
+            )
+        )
+        case.evidence.append(
+            _ev("sync stuck 47m", category=EvidenceCategory.SYMPTOM_EVIDENCE)
+        )
+        text = build_case_evidence_fallback_text(case)
+        assert text is not None
+        # category tag + summary present
+        assert "[causal_evidence] migration job fails on PreSync" in text
+        assert "[symptom_evidence] sync stuck 47m" in text
+        # verbatim extract carried through
+        assert "FATAL: SSL connection is required" in text
+
+    def test_truncates_on_whole_row_boundary(self):
+        case = _case()
+        for i in range(50):
+            case.evidence.append(_ev(f"finding number {i} " + "x" * 200))
+        text = build_case_evidence_fallback_text(case, max_chars=1000)
+        assert text is not None
+        assert len(text) <= 1000 + 400  # bounded (last whole row may overshoot once)
+        # It stopped early — not all 50 rows are present.
+        assert text.count("finding number") < 50
+
+    def test_skips_blank_summaries_returns_none(self):
+        # Evidence guarantees non-blank summary, but guard defensively: an object
+        # whose summary is whitespace contributes nothing.
+        from types import SimpleNamespace
+
+        case = _case()
+        case.evidence.append(
+            SimpleNamespace(summary="   ", extract=None, category=None)
+        )
+        assert build_case_evidence_fallback_text(case) is None

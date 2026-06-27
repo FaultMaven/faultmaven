@@ -76,6 +76,54 @@ def is_runbook_match_hypothesis(hyp: "Hypothesis") -> bool:
     )
 
 
+# Budget for the raw-evidence fallback text (chars). Case evidence is curated and
+# bounded (summary ≤500 + optional extract per row), so this comfortably holds
+# a typical case's evidence while capping the classifier prompt on large cases.
+_FALLBACK_EVIDENCE_MAX_CHARS = 8000
+
+
+def build_case_evidence_fallback_text(
+    case: "Case", max_chars: int = _FALLBACK_EVIDENCE_MAX_CHARS
+) -> Optional[str]:
+    """Assemble the T2 raw-evidence fallback from ``case.evidence``.
+
+    The matcher's T2 tier judges each rung indicator against the case's
+    *vectorized* evidence. But case evidence is vectorized only in DA mode and
+    above a size gate, so small/conversational evidence is frequently absent from
+    the index — leaving T2 nothing to retrieve and the matcher unable to fire
+    (issue #543). This renders the already-recorded ``Evidence`` rows (the LLM's
+    claim-anchored ``summary`` + optional verbatim ``extract``) into a compact
+    text block the tool can judge against when the vector collection is empty.
+
+    Returns ``None`` when the case has no evidence (the tool then abstains, i.e.
+    keeps the conservative pre-fallback behavior). Output is truncated to
+    ``max_chars`` (whole rows; a partial final row is dropped) so the classifier
+    prompt stays bounded on evidence-heavy cases.
+    """
+    evidence = getattr(case, "evidence", None) or []
+    if not evidence:
+        return None
+
+    parts: List[str] = []
+    used = 0
+    for ev in evidence:
+        summary = (getattr(ev, "summary", "") or "").strip()
+        if not summary:
+            continue
+        category = getattr(getattr(ev, "category", None), "value", "") or ""
+        extract = (getattr(ev, "extract", "") or "").strip()
+        header = f"[{category}] {summary}" if category else summary
+        block = f"{header}\n{extract}" if extract else header
+        # Stop at the budget on a whole-row boundary (never emit a partial row).
+        if used + len(block) > max_chars and parts:
+            break
+        parts.append(block)
+        used += len(block) + 2  # +2 for the joiner
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
 def chain_to_specs(
     cause: CauseRecord,
 ) -> Tuple[List[CausalNodeToAdd], List[CausalEdgeToAdd]]:

@@ -5748,6 +5748,7 @@ class MilestoneEngine:
             )
             from faultmaven.core.investigation.runbook_cause_matcher import (
                 apply_runbook_cause_matcher,
+                build_case_evidence_fallback_text,
             )
 
             # T2 semantic resolver: a single-LLM-call yes/no over case evidence.
@@ -5761,10 +5762,20 @@ class MilestoneEngine:
             ce_tool = getattr(ce_adapter, "wrapped", None)
             case_evidence_qa = None
             if ce_tool is not None and hasattr(ce_tool, "answer_yes_no"):
+                # Raw-evidence fallback (#543): case evidence is vectorized only in
+                # DA mode + above a size gate, so the T2 vector lookup is often
+                # empty and the matcher could never fire. Hand the tool the case's
+                # already-recorded Evidence rows to judge against when the vector
+                # collection is empty. Conservative: None when the case has no
+                # evidence, so the tool keeps its abstain-on-nothing behavior.
+                evidence_fallback = build_case_evidence_fallback_text(case)
 
                 async def case_evidence_qa(indicator_question: str) -> bool:
                     return await ce_tool.answer_yes_no(
-                        indicator_question, scope_id=case.case_id, k=5
+                        indicator_question,
+                        scope_id=case.case_id,
+                        k=5,
+                        fallback_context=evidence_fallback,
                     )
 
             evaluator = IndicatorEvaluator(

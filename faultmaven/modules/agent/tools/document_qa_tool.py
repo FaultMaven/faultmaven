@@ -277,6 +277,7 @@ Answer:"""
         scope_id: Optional[str] = None,
         k: int = 5,
         filters: Optional[Dict[str, Any]] = None,
+        fallback_context: Optional[str] = None,
     ) -> bool:
         """Single-LLM-call boolean judgment over the evidence (KB-neutral).
 
@@ -286,43 +287,72 @@ Answer:"""
         satisfy this indicator?" — as ONE call (retrieve + judge), not the
         prose-synthesis path plus a second classify.
 
-        Conservative by design: no evidence, an unparsed answer, or any error →
-        ``False``. The matcher treats ``False`` as 'not matched', never
-        'refuted', so a fail-open here only lowers belief — it never prunes a
-        Cause on missing/ambiguous evidence.
+        ``fallback_context``: raw evidence text to judge against **when the
+        vector collection yields no chunks** (e.g. case evidence not yet
+        vectorized — vectorization is DA-mode + size-gated, so small/conversational
+        evidence is often absent from the index). Without it, an empty collection
+        means the matcher's T2 tier can never fire; with it, the same YES/NO
+        judgment runs over the caller-supplied raw evidence instead. The caller
+        (the engine) owns assembling it (it holds ``case.evidence``).
+
+        Conservative by design: no evidence (and no fallback), an unparsed
+        answer, or any error → ``False``. The matcher treats ``False`` as 'not
+        matched', never 'refuted', so a fail-open here only lowers belief — it
+        never prunes a Cause on missing/ambiguous evidence. The fallback path
+        keeps that invariant: it can only turn an abstention into a possible
+        match, never into a refutation.
         """
         try:
             collection = self._kb_config.get_collection_name(scope_id)
             chunks = await self._dispatch_search(collection, question, k, filters)
-            if not chunks:
-                return False
-            classifier_model = self._settings.llm.get_classifier_model()
-            if not classifier_model:
-                # Misconfiguration: no classifier model resolved. Surface it once
-                # rather than silently abstaining (every call would return False).
-                logger.warning(
-                    "answer_yes_no: no classifier model configured; "
-                    "returning False (evidence judgment unavailable)"
+            if chunks:
+                context = self._build_context_from_chunks(chunks)
+            elif fallback_context and fallback_context.strip():
+                # Vector index empty → judge against the caller's raw evidence.
+                logger.info(
+                    "answer_yes_no: no vectors for scope %s — judging indicator "
+                    "against raw evidence fallback (%d chars)",
+                    scope_id,
+                    len(fallback_context),
                 )
+                context = fallback_context
+            else:
                 return False
-            context = self._build_context_from_chunks(chunks)
-            prompt = (
-                "Based ONLY on the evidence below, is the following condition "
-                "true? Answer with a single word: YES or NO. If the evidence "
-                "does not clearly establish it, answer NO.\n\n"
-                f"Condition: {question}\n\nEvidence:\n{context}\n\nAnswer:"
-            )
-            response = await self._llm_router.route(
-                model=classifier_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=5,
-                temperature=0.0,
-            )
-            answer = (getattr(response, "content", "") or "").strip().lower()
-            return answer.startswith("yes") or answer == "y"
+            return await self._judge_yes_no(question, context)
         except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
             logger.warning("answer_yes_no failed for %r: %s", question[:80], exc)
             return False
+
+    async def _judge_yes_no(self, question: str, evidence_context: str) -> bool:
+        """Ask the classifier model a strict YES/NO over ``evidence_context``.
+
+        Shared by the vector-chunk path and the raw-evidence fallback so the two
+        can't drift. Returns False on a missing classifier model or an unparsed
+        answer (conservative — never refutes).
+        """
+        classifier_model = self._settings.llm.get_classifier_model()
+        if not classifier_model:
+            # Misconfiguration: no classifier model resolved. Surface it once
+            # rather than silently abstaining (every call would return False).
+            logger.warning(
+                "answer_yes_no: no classifier model configured; "
+                "returning False (evidence judgment unavailable)"
+            )
+            return False
+        prompt = (
+            "Based ONLY on the evidence below, is the following condition "
+            "true? Answer with a single word: YES or NO. If the evidence "
+            "does not clearly establish it, answer NO.\n\n"
+            f"Condition: {question}\n\nEvidence:\n{evidence_context}\n\nAnswer:"
+        )
+        response = await self._llm_router.route(
+            model=classifier_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=5,
+            temperature=0.0,
+        )
+        answer = (getattr(response, "content", "") or "").strip().lower()
+        return answer.startswith("yes") or answer == "y"
 
     def _build_context_from_chunks(self, chunks: list) -> str:
         """
