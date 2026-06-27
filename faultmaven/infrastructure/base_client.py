@@ -20,9 +20,20 @@ T = TypeVar("T")
 
 
 class CircuitBreakerError(Exception):
-    """Exception raised when circuit breaker is open."""
+    """Exception raised when circuit breaker is open.
 
-    pass
+    Carries the classification of the failure that most recently tripped the
+    breaker (``error_code`` / ``cause_message``) so upstream layers can still
+    distinguish a permanent condition (e.g. billing/quota exhaustion) from a
+    transient provider outage — even though this particular request never
+    reached the provider. Without this, the open-breaker message would erase the
+    original signal and a billing failure would surface as a generic 500.
+    """
+
+    def __init__(self, message, error_code=None, cause_message=None):
+        super().__init__(message)
+        self.error_code = error_code
+        self.cause_message = cause_message
 
 
 class CircuitBreaker:
@@ -54,6 +65,10 @@ class CircuitBreaker:
         self.failure_count = 0
         self.last_failure_time = None
         self.state = "closed"  # closed, open, half-open
+        # Classification of the most recent failure, surfaced on the
+        # CircuitBreakerError raised while the breaker is open.
+        self.last_failure_error_code = None
+        self.last_failure_message = None
 
     def can_execute(self) -> bool:
         """Check if circuit allows execution."""
@@ -82,6 +97,10 @@ class CircuitBreaker:
         if isinstance(exception, self.expected_exception):
             self.failure_count += 1
             self.last_failure_time = datetime.now(timezone.utc)
+            # Remember how the last failure was classified so the open-breaker
+            # error can carry it forward (e.g. QUOTA_EXHAUSTED billing).
+            self.last_failure_error_code = getattr(exception, "error_code", None)
+            self.last_failure_message = str(exception)
 
             if self.failure_count >= self.failure_threshold:
                 self.state = "open"
@@ -235,7 +254,9 @@ class BaseExternalClient(ABC):
                 },
             )
             raise CircuitBreakerError(
-                f"Circuit breaker is open for {self.service_name}"
+                f"Circuit breaker is open for {self.service_name}",
+                error_code=self.circuit_breaker.last_failure_error_code,
+                cause_message=self.circuit_breaker.last_failure_message,
             )
 
         # Log external call boundary - inbound (DEBUG level to reduce verbosity)
@@ -555,7 +576,9 @@ class BaseExternalClient(ABC):
                 },
             )
             raise CircuitBreakerError(
-                f"Circuit breaker is open for {self.service_name}"
+                f"Circuit breaker is open for {self.service_name}",
+                error_code=self.circuit_breaker.last_failure_error_code,
+                cause_message=self.circuit_breaker.last_failure_message,
             )
 
         # Log external call boundary - inbound

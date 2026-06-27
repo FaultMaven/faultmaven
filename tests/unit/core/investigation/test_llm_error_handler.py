@@ -285,3 +285,85 @@ class TestErrorTracking:
         assert summary["error_counts"]["ValueError"] == 2
         assert summary["error_counts"]["TypeError"] == 1
         assert summary["total_errors"] == 3
+
+
+class TestBillingErrorHandling:
+    """Billing/quota exhaustion is a permanent, operator-actionable failure.
+    It must escalate (not retry) with the QUOTA_EXHAUSTED code, so the API and
+    UI can tell the user to add credits instead of looping on 'try again'.
+    Regression for case_b639fac38fe0."""
+
+    def test_is_billing_error_detects_typed_code(self, handler):
+        from faultmaven.exceptions import LLMException
+
+        err = LLMException("insufficient_quota", status_code=429)
+        assert handler.is_billing_error(err) is True
+
+    def test_is_billing_error_walks_cause_chain(self, handler):
+        """A typed billing error wrapped as the __cause__ of a generic
+        exception (e.g. MilestoneEngineError) is still detected."""
+        from faultmaven.exceptions import LLMException
+
+        billing = LLMException("check your plan and billing details", status_code=429)
+        try:
+            raise RuntimeError("Turn processing failed") from billing
+        except RuntimeError as wrapped:
+            assert handler.is_billing_error(wrapped) is True
+
+    def test_plain_rate_limit_is_not_billing(self, handler):
+        from faultmaven.exceptions import LLMException
+
+        err = LLMException("rate limit reached, retry soon", status_code=429)
+        assert handler.is_billing_error(err) is False
+
+    @pytest.mark.asyncio
+    async def test_handle_billing_escalates_with_quota_code(self, handler):
+        from faultmaven.exceptions import QUOTA_EXHAUSTED, LLMException
+
+        err = LLMException(
+            "You exceeded your current quota, please check your plan and billing details",
+            status_code=429,
+        )
+        result = await handler.handle_error(err)
+
+        assert result.action == ErrorAction.ESCALATE
+        assert result.error_code == QUOTA_EXHAUSTED
+        # Message is operator-actionable (mentions credits/billing), not "try again".
+        assert "credit" in result.message.lower() or "billing" in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_handle_open_breaker_billing_escalates(self, handler):
+        """An open-breaker error carrying QUOTA_EXHAUSTED is classified as
+        billing, not as an opaque unknown/retryable error."""
+        from faultmaven.exceptions import QUOTA_EXHAUSTED
+        from faultmaven.infrastructure.base_client import CircuitBreakerError
+
+        err = CircuitBreakerError(
+            "Circuit breaker is open for LLM_Providers",
+            error_code=QUOTA_EXHAUSTED,
+            cause_message="insufficient_quota",
+        )
+        result = await handler.handle_error(err)
+
+        assert result.action == ErrorAction.ESCALATE
+        assert result.error_code == QUOTA_EXHAUSTED
+
+    @pytest.mark.asyncio
+    async def test_billing_not_retried_by_with_retry(self, fast_handler):
+        """with_retry must return immediately on billing (no wasted attempts)."""
+        from faultmaven.exceptions import QUOTA_EXHAUSTED, LLMException
+
+        attempts = 0
+
+        async def op():
+            nonlocal attempts
+            attempts += 1
+            raise LLMException("insufficient_quota", status_code=429)
+
+        result, error = await fast_handler.with_retry(operation=op)
+
+        assert result is None
+        assert error is not None
+        assert error.action == ErrorAction.ESCALATE
+        assert error.error_code == QUOTA_EXHAUSTED
+        assert attempts == 1

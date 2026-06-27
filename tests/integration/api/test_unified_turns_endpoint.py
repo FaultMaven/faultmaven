@@ -475,3 +475,76 @@ class TestSubmitTurnRejectsMalformedIntent:
             # 'free_speech' is a suggestion action_type, not an IntentType
             await self._submit("free_speech", "{}")
         assert exc.value.status_code == 422
+
+
+class TestSubmitTurnBillingExhaustion:
+    """A billing/quota-exhaustion failure during turn processing must surface as
+    402 Payment Required with x-error-code: QUOTA_EXHAUSTED and NO Retry-After —
+    so the user is told to add credits instead of being shown a generic 500 that
+    invites a futile retry. Regression for case_b639fac38fe0."""
+
+    @staticmethod
+    async def _submit_with_process_error(service_error):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from faultmaven.modules.case.api.routes import submit_turn
+
+        case_service = MagicMock()
+        case_service.get_case = AsyncMock(return_value=_make_mock_case())
+        investigation_service = MagicMock()
+        investigation_service.process_turn = AsyncMock(side_effect=service_error)
+        current_user = MagicMock()
+        current_user.user_id = "test-user-123"
+
+        request = MagicMock()
+        request.headers.get = MagicMock(return_value=None)  # no idempotency-key
+
+        return await submit_turn(
+            case_id="case_abc123def456",
+            fastapi_request=request,
+            query="why is the pod crashing?",
+            files=[],
+            pasted_content=None,
+            intent_type=None,
+            intent_data=None,
+            input_type=None,
+            source_url=None,
+            case_service=case_service,
+            investigation_service=investigation_service,
+            current_user=current_user,
+        )
+
+    async def test_billing_quota_exhaustion_maps_to_402(self):
+        from fastapi import HTTPException
+
+        from faultmaven.exceptions import QUOTA_EXHAUSTED, ServiceException
+
+        billing_error = ServiceException(
+            "Turn processing failed: Structured output generation failed: "
+            "FaultMaven's AI provider is out of quota or credits",
+            details={"error_code": QUOTA_EXHAUSTED},
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await self._submit_with_process_error(billing_error)
+
+        assert exc.value.status_code == 402
+        assert exc.value.headers["x-error-code"] == QUOTA_EXHAUSTED
+        # No Retry-After: retrying won't help until an operator adds credits.
+        assert "Retry-After" not in exc.value.headers
+        assert "credit" in exc.value.detail.lower()
+
+    async def test_generic_service_error_still_maps_to_500(self):
+        """A non-billing ServiceException keeps the existing generic mapping —
+        the billing branch must not swallow ordinary failures."""
+        from fastapi import HTTPException
+
+        from faultmaven.exceptions import ServiceException
+
+        with pytest.raises(HTTPException) as exc:
+            await self._submit_with_process_error(
+                ServiceException("Turn processing failed: database is on fire")
+            )
+
+        assert exc.value.status_code == 500
+        assert exc.value.headers["x-error-code"] == "SERVICE_ERROR"

@@ -59,6 +59,7 @@ from faultmaven.api.v1.dependencies import (
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.exceptions import (
+    QUOTA_EXHAUSTED,
     AuthorizationError,
     FaultMavenException,
     NotFoundError,
@@ -2454,7 +2455,25 @@ async def submit_turn(
             extra={"correlation_id": correlation_id},
         )
         error_msg = str(e)
-        if "over capacity" in error_msg.lower() or "503" in error_msg:
+        err_code = (getattr(e, "details", None) or {}).get("error_code")
+        # Billing / quota exhaustion is permanent and operator-actionable — the
+        # provider is out of credits. Surface 402 Payment Required with a clear
+        # message so the user can act (top up credits / fix billing) instead of
+        # being told to retry. Prefer the typed error_code; fall back to the
+        # message in case the typed signal was lost in wrapping.
+        if (
+            err_code == QUOTA_EXHAUSTED
+            or "out of quota or credits" in error_msg.lower()
+        ):
+            detail = (
+                "FaultMaven's AI provider is out of quota or credits. An "
+                "administrator needs to add credits or update the provider's "
+                "billing plan before the investigation can continue."
+            )
+            status_code = 402
+            error_code = QUOTA_EXHAUSTED
+            retry_after = None
+        elif "over capacity" in error_msg.lower() or "503" in error_msg:
             detail = "AI service temporarily unavailable due to high demand. Please try again."
             status_code = 503
             error_code = "LLM_OVER_CAPACITY"
@@ -2475,14 +2494,18 @@ async def submit_turn(
             error_code = "SERVICE_ERROR"
             retry_after = "10"
 
+        headers = {
+            "x-correlation-id": correlation_id,
+            "x-error-code": error_code,
+        }
+        # No Retry-After for billing: retrying won't help until an operator acts.
+        if retry_after is not None:
+            headers["Retry-After"] = retry_after
+
         raise HTTPException(
             status_code=status_code,
             detail=detail,
-            headers={
-                "x-correlation-id": correlation_id,
-                "x-error-code": error_code,
-                "Retry-After": retry_after,
-            },
+            headers=headers,
         )
     except Exception as e:
         logger.error(
