@@ -45,6 +45,17 @@ QUOTA_EXHAUSTED_DETAIL = (
 )
 
 
+def is_quota_exhausted_service_error(exc: BaseException) -> bool:
+    """True if ``exc`` carries the ``QUOTA_EXHAUSTED`` error_code in its details.
+
+    The signal a ServiceException carries when an LLM-calling service hits
+    billing/quota exhaustion. Shared by every route's ``except ServiceException``
+    block so billing is detected identically (→ 402) instead of each handler
+    re-implementing the lookup.
+    """
+    return (getattr(exc, "details", None) or {}).get("error_code") == QUOTA_EXHAUSTED
+
+
 def quota_exhausted_http_exception(
     correlation_id: Optional[str] = None,
 ) -> HTTPException:

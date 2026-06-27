@@ -148,9 +148,11 @@ def is_billing_error(error: BaseException) -> bool:
     failures.
     """
     cursor: Optional[BaseException] = error
-    while cursor is not None:
+    seen: set = set()  # guard against cyclic __cause__ chains
+    while cursor is not None and id(cursor) not in seen:
         if getattr(cursor, "error_code", None) == QUOTA_EXHAUSTED:
             return True
+        seen.add(id(cursor))
         cursor = cursor.__cause__
     return is_billing_quota_error(str(error))
 

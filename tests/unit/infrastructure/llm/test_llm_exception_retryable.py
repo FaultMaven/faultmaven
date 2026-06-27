@@ -126,3 +126,14 @@ class TestBillingQuotaClassification:
             is_billing_error(LLMException("rate limit reached", status_code=429))
             is False
         )
+
+    def test_is_billing_error_handles_cyclic_cause_chain(self):
+        """A cyclic __cause__ chain must not hang the cycle-guarded walk."""
+        from faultmaven.exceptions import is_billing_error
+
+        a = RuntimeError("a")
+        b = RuntimeError("b")
+        a.__cause__ = b
+        b.__cause__ = a  # cycle
+        # Terminates (no infinite loop) and finds no billing signal.
+        assert is_billing_error(a) is False

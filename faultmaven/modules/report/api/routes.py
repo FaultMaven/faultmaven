@@ -32,9 +32,11 @@ from faultmaven.api.v1.dependencies import (
     get_report_recommendation_service,
     get_tenant_provider,
 )
-from faultmaven.api.exception_handlers import quota_exhausted_http_exception
+from faultmaven.api.exception_handlers import (
+    is_quota_exhausted_service_error,
+    quota_exhausted_http_exception,
+)
 from faultmaven.exceptions import (
-    QUOTA_EXHAUSTED,
     NotFoundError,
     ServiceException,
     ValidationException,
@@ -340,7 +342,7 @@ async def generate_report(
     except ServiceException as e:
         # Billing/quota exhaustion → 402 (operator must add credits), same
         # contract as the /turns endpoint. Otherwise a generic 500.
-        if (getattr(e, "details", None) or {}).get("error_code") == QUOTA_EXHAUSTED:
+        if is_quota_exhausted_service_error(e):
             raise quota_exhausted_http_exception()
         raise HTTPException(status_code=500, detail=str(e))
 

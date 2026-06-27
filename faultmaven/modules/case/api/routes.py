@@ -58,9 +58,11 @@ from faultmaven.api.v1.dependencies import (
     get_session_service,
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
-from faultmaven.api.exception_handlers import quota_exhausted_http_exception
+from faultmaven.api.exception_handlers import (
+    is_quota_exhausted_service_error,
+    quota_exhausted_http_exception,
+)
 from faultmaven.exceptions import (
-    QUOTA_EXHAUSTED,
     AuthorizationError,
     FaultMavenException,
     NotFoundError,
@@ -2456,14 +2458,10 @@ async def submit_turn(
             extra={"correlation_id": correlation_id},
         )
         error_msg = str(e)
-        err_code = (getattr(e, "details", None) or {}).get("error_code")
         # Billing / quota exhaustion → 402 via the shared mapper (one contract
-        # across all LLM-calling endpoints). Prefer the typed error_code; fall
-        # back to the message marker in case it was lost in wrapping.
-        if (
-            err_code == QUOTA_EXHAUSTED
-            or "out of quota or credits" in error_msg.lower()
-        ):
+        # across all LLM-calling endpoints). error_code is threaded through the
+        # engine/service wrap, so the typed check alone is reliable.
+        if is_quota_exhausted_service_error(e):
             raise quota_exhausted_http_exception(correlation_id)
 
         if "over capacity" in error_msg.lower() or "503" in error_msg:

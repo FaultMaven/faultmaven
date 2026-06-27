@@ -477,3 +477,19 @@ class TestQuotaExhaustedHttpException:
         exc = quota_exhausted_http_exception()
         assert exc.status_code == 402
         assert "x-correlation-id" not in exc.headers
+
+    def test_is_quota_exhausted_service_error_predicate(self):
+        from faultmaven.api.exception_handlers import (
+            is_quota_exhausted_service_error,
+        )
+        from faultmaven.exceptions import QUOTA_EXHAUSTED, ServiceException
+
+        assert (
+            is_quota_exhausted_service_error(
+                ServiceException("x", details={"error_code": QUOTA_EXHAUSTED})
+            )
+            is True
+        )
+        # Non-billing ServiceException and exceptions without details → False.
+        assert is_quota_exhausted_service_error(ServiceException("x")) is False
+        assert is_quota_exhausted_service_error(ValueError("y")) is False
