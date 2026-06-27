@@ -6,7 +6,7 @@ Covers:
 - k-of-n belief and the surface threshold
 - Multi-Cause verdict resolution (single / none / multiple)
 - Fallback Cause selection on verdict="none" and [Default] never matching
-- case_evidence_qa fallback wiring (with and without it injected; never refutes)
+- Holistic per-cause T2 (#545): one judgment per cause, never refutes
 """
 
 from typing import Dict, List, Optional
@@ -394,56 +394,83 @@ class TestVerdict:
 
 
 # ---------------------------------------------------------------------------
-# case_evidence_qa fallback (T2 — never refutes)
+# Holistic per-cause T2 (#545) — one judgment per cause, never refutes
 # ---------------------------------------------------------------------------
 
 
-class TestFallback:
+class TestHolisticT2:
     @pytest.mark.asyncio
-    async def test_no_predicate_falls_back_to_case_evidence_qa(self):
-        # Indicator references [Symptom] (no step), so no predicate matches.
-        cause = _cause("A", "x", {"root": ["[Symptom] log line FATAL"]})
+    async def test_holistic_match_makes_cause_live(self):
+        # No determinable predicate; the holistic per-cause judgment says the
+        # evidence supports the cause → belief 1.0 → live → single verdict.
+        cause = _cause("A", "Disk full", {"root": ["[Step 1] df shows 100%"]})
+        cause_z = _cause("Z", "fallback", {"D": ["[Default]"]}, is_fallback=True)
 
         calls = []
 
-        async def fake_case_qa(question: str) -> bool:
-            calls.append(question)
+        async def yes_qa(condition: str) -> bool:
+            calls.append(condition)
             return True
 
-        e = IndicatorEvaluator(
-            step_output_resolver=lambda _: None,
-            case_evidence_qa=fake_case_qa,
-        )
-        result = await e.evaluate("rb-test", [cause])
-        rr = result.causes[0].rung_results[0]
-        assert rr.matched
-        assert not rr.refuted
-        assert rr.method == "case_evidence_qa"
+        e = IndicatorEvaluator(lambda _: None, case_evidence_qa=yes_qa)
+        result = await e.evaluate("rb", [cause, cause_z])
+        assert result.causes[0].belief == 1.0
+        assert result.verdict == "single"
+        # ONE holistic call per non-fallback cause, built from the cause
+        # description — NOT the per-rung operator indicator.
         assert len(calls) == 1
-        assert "FATAL" in calls[0]
+        assert "Disk full" in calls[0]
+        assert "df shows 100%" not in calls[0]  # the operator step is not the question
 
     @pytest.mark.asyncio
-    async def test_case_evidence_qa_no_never_refutes(self):
-        # A "no" from T2 lowers belief but must NOT refute (soundness).
+    async def test_holistic_no_is_not_a_refutation(self):
+        # Holistic "no" → not matched, belief 0 (no T1 signal), but NEVER refuted.
         cause = _cause("A", "x", {"root": ["[Symptom] log line FATAL"]})
 
-        async def fake_case_qa(question: str) -> bool:
+        async def no_qa(_condition: str) -> bool:
             return False
 
-        e = IndicatorEvaluator(
-            step_output_resolver=lambda _: None,
-            case_evidence_qa=fake_case_qa,
-        )
-        result = await e.evaluate("rb-test", [cause])
-        rr = result.causes[0].rung_results[0]
-        assert not rr.matched
-        assert not rr.refuted
+        e = IndicatorEvaluator(lambda _: None, case_evidence_qa=no_qa)
+        result = await e.evaluate("rb", [cause])
         assert result.causes[0].belief == 0.0
+        assert not any(rr.refuted for rr in result.causes[0].rung_results)
 
     @pytest.mark.asyncio
-    async def test_unknown_predicate_falls_back_to_case_evidence_qa(self):
-        # `regex` is not in the controlled vocabulary; the evaluator should
-        # fall through to case_evidence_qa rather than crash.
+    async def test_holistic_discriminates_to_single(self):
+        # Two real causes; holistic supports only the matching one → single.
+        a = _cause("A", "Right cause", {"root": ["[Symptom] x"]})
+        b = _cause("B", "Wrong cause", {"root": ["[Symptom] y"]})
+        z = _cause("Z", "fallback", {"D": ["[Default]"]}, is_fallback=True)
+
+        async def qa(condition: str) -> bool:
+            return "Right cause" in condition
+
+        e = IndicatorEvaluator(lambda _: None, case_evidence_qa=qa)
+        result = await e.evaluate("rb", [a, b, z])
+        assert result.verdict == "single"
+        assert result.selected_cause.cause_name == "Right cause"
+
+    @pytest.mark.asyncio
+    async def test_deterministic_refutation_overrides_holistic(self):
+        # A deterministic T1 refutation prunes the chain even when holistic = yes.
+        cause = _cause(
+            "A",
+            "x",
+            {"root": ["[Step 1] cond"]},
+            [{"step": 1, "predicate": "contains", "target": "missing"}],
+        )
+
+        async def yes_qa(_condition: str) -> bool:
+            return True
+
+        e = IndicatorEvaluator(_step_outputs((1, "present")), case_evidence_qa=yes_qa)
+        result = await e.evaluate("rb", [cause])
+        assert result.causes[0].belief == 0.0  # refuted dominates
+
+    @pytest.mark.asyncio
+    async def test_unknown_predicate_is_untested_no_crash(self):
+        # `regex` is not in the controlled vocabulary → untested (T1), no crash;
+        # the holistic tier then carries the semantics.
         cause = _cause(
             "A",
             "x",
@@ -451,24 +478,48 @@ class TestFallback:
             [{"step": 1, "predicate": "regex", "target": "x.*"}],
         )
 
-        async def fake_case_qa(question: str) -> bool:
+        async def no_qa(_condition: str) -> bool:
             return False
 
-        e = IndicatorEvaluator(
-            step_output_resolver=lambda _: "anything",
-            case_evidence_qa=fake_case_qa,
-        )
-        result = await e.evaluate("rb-test", [cause])
-        assert result.causes[0].rung_results[0].method == "case_evidence_qa"
+        e = IndicatorEvaluator(lambda _: "anything", case_evidence_qa=no_qa)
+        result = await e.evaluate("rb", [cause])
+        assert result.causes[0].rung_results[0].method == "untested"
+        assert result.causes[0].belief == 0.0
 
     @pytest.mark.asyncio
-    async def test_no_fallback_injection_is_untested(self):
+    async def test_no_qa_injection_rests_on_t1(self):
+        # Without a QA resolver the cause rests on T1 alone (untested → belief 0).
         cause = _cause("A", "x", {"root": ["[Symptom] something"]})
-        e = IndicatorEvaluator(
-            step_output_resolver=lambda _: None,
-            case_evidence_qa=None,
-        )
-        result = await e.evaluate("rb-test", [cause])
+        e = IndicatorEvaluator(lambda _: None, case_evidence_qa=None)
+        result = await e.evaluate("rb", [cause])
         rr = result.causes[0].rung_results[0]
         assert not rr.matched and not rr.refuted
-        assert rr.method == "untested"
+        assert result.causes[0].belief == 0.0
+
+
+class TestBuildCauseCondition:
+    def test_uses_name_and_statement(self):
+        c = CauseRecord(
+            cause_letter="A",
+            cause_name="Disk full",
+            cause_statement="the data volume is at 100%",
+            chain_nodes=[],
+            rung_indicators={},
+        )
+        cond = IndicatorEvaluator._build_cause_condition(c)
+        assert "Disk full" in cond and "100%" in cond
+
+    def test_falls_back_to_chain_excluding_problem_node(self):
+        c = CauseRecord(
+            cause_letter="A",
+            cause_name="N",
+            cause_statement="",
+            chain_nodes=[
+                {"ref": "root", "node_type": "root", "statement": "root happens"},
+                {"ref": "D", "node_type": "problem", "statement": "the problem"},
+            ],
+            rung_indicators={},
+        )
+        cond = IndicatorEvaluator._build_cause_condition(c)
+        assert "root happens" in cond
+        assert "the problem" not in cond  # the shared problem node is excluded

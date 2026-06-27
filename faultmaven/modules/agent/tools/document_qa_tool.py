@@ -361,7 +361,12 @@ Answer:"""
         response = await self._llm_router.route(
             model=classifier_model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=5,
+            # 64, not 5: a "thinking" classifier (e.g. gemini-3.x) bills hidden
+            # reasoning against max_tokens, and a 5-token cap is consumed before
+            # the YES/NO is emitted → truncated/placeholder output that never
+            # starts with "yes" → a false NO. 64 leaves headroom for the trivial
+            # answer; conservative parsing still maps any non-affirmative to False.
+            max_tokens=64,
             temperature=0.0,
         )
         answer = (getattr(response, "content", "") or "").strip().lower()
