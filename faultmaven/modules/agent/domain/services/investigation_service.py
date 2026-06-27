@@ -820,7 +820,13 @@ class InvestigationService:
             raise
         except Exception as e:
             logger.error(f"Failed to process turn for case {case_id}: {e}")
-            raise ServiceException(f"Turn processing failed: {str(e)}") from e
+            # Preserve a typed error_code (e.g. QUOTA_EXHAUSTED billing) through
+            # the wrap so the route handler can map it to a precise HTTP status
+            # instead of a generic 500.
+            raise ServiceException(
+                f"Turn processing failed: {str(e)}",
+                details={"error_code": getattr(e, "error_code", None)},
+            ) from e
 
     @trace("investigation_service_get_progress")
     async def get_progress(self, case_id: str, user_id: str) -> Dict[str, Any]:

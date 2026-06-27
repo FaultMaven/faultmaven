@@ -90,11 +90,61 @@ class KnowledgeBaseException(FaultMavenException):
     pass
 
 
+# Stable error_code identifying a permanent, operator-actionable billing /
+# quota-exhaustion failure. Flows through every layer (provider → circuit
+# breaker → error handler → engine → API → UI) so the user can be told to top
+# up credits instead of being shown a generic "try again" 500.
+QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
+
+
+# Billing/quota-exhaustion markers found in provider error bodies. These signal
+# a PERMANENT account-level condition — out of credits, billing not enabled, or a
+# hard spend/quota cap — that NO amount of retrying or waiting will clear; only an
+# operator action (add credits / enable billing) resolves it. This is distinct
+# from transient 429 rate-limiting, which IS retryable once the window resets.
+# Matched case-insensitively against the full LLMException message (every
+# provider includes the upstream response body in the message it raises).
+_BILLING_ERROR_MARKERS: tuple = (
+    "insufficient_quota",
+    "exceeded your current quota",
+    "check your plan and billing",
+    "billing details",
+    "billing account",
+    "billing is not active",
+    "billing has not been enabled",
+    "payment required",
+    "quota_exceeded",
+    "out of credits",
+    "insufficient credits",
+    "insufficient_funds",
+)
+
+
+def is_billing_quota_error(message: str, status_code: Optional[int] = None) -> bool:
+    """Detect a permanent billing/quota-exhaustion error from a provider.
+
+    Returns True for account-level billing failures (out of credits, billing
+    disabled, hard quota cap) that an operator must resolve — NOT for transient
+    rate-limiting. HTTP 402 Payment Required is always treated as billing. For
+    other statuses (notably 429, which providers reuse for both transient rate
+    limits AND quota exhaustion), classification keys on explicit billing markers
+    in the body so a plain rate-limit stays retryable.
+    """
+    if status_code == 402:
+        return True
+    text = (message or "").lower()
+    return any(marker in text for marker in _BILLING_ERROR_MARKERS)
+
+
 class LLMException(FaultMavenException):
     """Raised when LLM operations fail.
 
     Attributes:
         status_code: HTTP status code from the provider API (if applicable).
+        error_code: Stable classification of the failure when one applies (e.g.
+            ``QUOTA_EXHAUSTED`` for billing/quota exhaustion). Auto-detected from
+            the message/status when not passed explicitly. ``None`` for ordinary
+            transient/config errors.
         retryable: Whether the error is worth retrying. Derived from
             status_code when provided, otherwise defaults to False (fail fast).
             - 429 → retryable (rate limited; transient, succeeds once the
@@ -106,7 +156,9 @@ class LLMException(FaultMavenException):
             Note: 429 is the one 4xx that is retryable. Providers should pass
             ``status_code`` alone and let this derivation classify it — passing
             an explicit ``retryable=status==429`` is an anti-pattern because it
-            silently forces 5xx to non-retryable.
+            silently forces 5xx to non-retryable. A billing/quota error is the
+            exception: it is ALWAYS non-retryable regardless of status code,
+            because waiting cannot add credits.
     """
 
     def __init__(
@@ -114,10 +166,22 @@ class LLMException(FaultMavenException):
         message: str,
         status_code: Optional[int] = None,
         retryable: Optional[bool] = None,
+        error_code: Optional[str] = None,
         **kwargs,
     ):
         self.status_code = status_code
-        if retryable is not None:
+
+        # Auto-classify permanent billing/quota exhaustion from the provider
+        # body. Every provider folds the upstream error text into the message,
+        # so this single chokepoint classifies all of them.
+        if error_code is None and is_billing_quota_error(message, status_code):
+            error_code = QUOTA_EXHAUSTED
+        self.error_code = error_code
+
+        if error_code == QUOTA_EXHAUSTED:
+            # Permanent account-level failure — retrying/waiting cannot help.
+            self.retryable = False
+        elif retryable is not None:
             self.retryable = retryable
         elif status_code is not None:
             self.retryable = status_code >= 500 or status_code == 429

@@ -3335,7 +3335,10 @@ class MilestoneEngine:
                     extra={"case_id": case.case_id, "turn": case.current_turn},
                 )
 
-            raise MilestoneEngineError(f"Turn processing failed: {e}") from e
+            raise MilestoneEngineError(
+                f"Turn processing failed: {e}",
+                error_code=getattr(e, "error_code", None),
+            ) from e
 
     # =========================================================================
     # Prompt Generation
@@ -5222,7 +5225,8 @@ class MilestoneEngine:
             error_msg = error_result.message
             logger.error(f"Structured generation failed after retries: {error_msg}")
             raise MilestoneEngineError(
-                f"Structured output generation failed: {error_msg}"
+                f"Structured output generation failed: {error_msg}",
+                error_code=error_result.error_code,
             )
         else:
             raise MilestoneEngineError(
@@ -7862,6 +7866,13 @@ class MilestoneEngine:
 
 
 class MilestoneEngineError(Exception):
-    """Base exception for milestone engine errors."""
+    """Base exception for milestone engine errors.
 
-    pass
+    Carries an optional ``error_code`` (e.g. ``QUOTA_EXHAUSTED``) so the API
+    layer can map the failure to a precise HTTP status and user-facing message
+    instead of a generic 500.
+    """
+
+    def __init__(self, message: str, error_code: Optional[str] = None):
+        super().__init__(message)
+        self.error_code = error_code

@@ -21,8 +21,11 @@ from faultmaven.core.investigation.llm_error_handler import (
     LLMErrorHandler,
     RetryConfig,
 )
-from faultmaven.exceptions import LLMException
-from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.exceptions import QUOTA_EXHAUSTED, LLMException
+from faultmaven.infrastructure.base_client import (
+    BaseExternalClient,
+    CircuitBreakerError,
+)
 
 
 class _RouterLike(BaseExternalClient):
@@ -142,3 +145,122 @@ async def test_400_fails_fast_no_retry(fast_handler, router):
     assert error.action == ErrorAction.FAIL
     # Exactly one provider call — no retry burned on a client error.
     assert attempts == 1
+
+
+class _BreakerRouterLike(BaseExternalClient):
+    """Router stand-in WITH the circuit breaker enabled, matching the real
+    LLMRouter (threshold=3). Used to reproduce the case_b639fac38fe0 failure:
+    a billing 429 trips the breaker, and later turns fast-fail with an open
+    breaker that must still carry the QUOTA_EXHAUSTED classification."""
+
+    def __init__(self, threshold=3):
+        super().__init__(
+            client_name="llm_router_test",
+            service_name="LLM_Providers",
+            enable_circuit_breaker=True,
+            circuit_breaker_threshold=threshold,
+            circuit_breaker_timeout=30,
+        )
+
+
+@pytest.mark.asyncio
+async def test_billing_error_fails_fast_with_quota_code(fast_handler, router):
+    """A provider billing/quota body (429 'check your plan and billing') must
+    fail fast as QUOTA_EXHAUSTED — no retries burned waiting for credits that
+    won't appear, and an operator-actionable error_code surfaced."""
+    attempts = 0
+
+    async def provider_call():
+        nonlocal attempts
+        attempts += 1
+        raise LLMException(
+            "Gemini API request failed: 429 - You exceeded your current quota, "
+            "please check your plan and billing details",
+            status_code=429,
+        )
+
+    async def llm_operation():
+        return await router.call_external(
+            operation_name="route_llm_request",
+            call_func=provider_call,
+            retries=0,
+        )
+
+    result, error = await fast_handler.with_retry(operation=llm_operation)
+
+    assert result is None
+    assert error is not None
+    assert error.action == ErrorAction.ESCALATE
+    assert error.error_code == QUOTA_EXHAUSTED
+    # Billing is non-retryable: exactly one provider call, not 1 + max_retries.
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_billing_open_breaker_preserves_quota_code(fast_handler):
+    """The full case_b639fac38fe0 chain: repeated billing failures trip the
+    circuit breaker, and the subsequent open-breaker turn — which never reaches
+    the provider — must STILL classify as QUOTA_EXHAUSTED rather than collapsing
+    into an opaque CircuitBreakerError that maps to a generic 500."""
+    breaker_router = _BreakerRouterLike(threshold=3)
+
+    async def provider_call():
+        raise LLMException(
+            "OpenAI API error 429: insufficient_quota - You have exceeded your "
+            "current quota",
+            status_code=429,
+        )
+
+    async def llm_operation():
+        return await breaker_router.call_external(
+            operation_name="route_llm_request",
+            call_func=provider_call,
+            retries=0,
+        )
+
+    # Drive enough failing turns to open the breaker (threshold=3).
+    for _ in range(3):
+        await fast_handler.with_retry(operation=llm_operation)
+
+    # Next turn: breaker is open, provider is never called, but the billing
+    # signal must survive on the raised CircuitBreakerError...
+    with pytest.raises(CircuitBreakerError) as exc_info:
+        await breaker_router.call_external(
+            operation_name="route_llm_request",
+            call_func=provider_call,
+            retries=0,
+        )
+    assert exc_info.value.error_code == QUOTA_EXHAUSTED
+
+    # ...and the error handler must classify that open-breaker error as billing,
+    # exactly as it would the original provider error.
+    result, error = await fast_handler.with_retry(operation=llm_operation)
+    assert result is None
+    assert error is not None
+    assert error.action == ErrorAction.ESCALATE
+    assert error.error_code == QUOTA_EXHAUSTED
+
+
+def test_billing_signal_latches_past_trailing_transient():
+    """A permanent billing classification must survive a later *transient*
+    failure in the same streak. If the most recent failure before the breaker
+    opens carries no error_code, the breaker must still report QUOTA_EXHAUSTED —
+    otherwise the open-breaker error maps to a generic 500 instead of 402."""
+    from faultmaven.infrastructure.base_client import CircuitBreaker
+
+    cb = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
+    billing = LLMException("insufficient_quota", status_code=429)
+    transient = LLMException("502 bad gateway", status_code=502)
+
+    cb.record_failure(billing)  # classified QUOTA_EXHAUSTED
+    cb.record_failure(billing)
+    cb.record_failure(transient)  # error_code=None — must NOT erase the latch
+
+    assert cb.state == "open"
+    assert cb.last_failure_error_code == QUOTA_EXHAUSTED
+
+    # A success clears the latch so a fresh streak starts unclassified.
+    cb.record_success()
+    assert cb.last_failure_error_code is None
+    cb.record_failure(transient)
+    assert cb.last_failure_error_code is None
