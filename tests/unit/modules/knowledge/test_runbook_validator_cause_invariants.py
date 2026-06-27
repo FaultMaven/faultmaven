@@ -56,10 +56,28 @@ class TestCheckCauseStatementInvariants:
         assert any("near-duplicate" in w for w in warns)
 
     def test_empty_statement_is_not_flagged_here(self):
-        # Empty is a separate required-field concern (kb-toolkit blocks it); the
+        # Empty is a separate required-field concern (the caller blocks it); the
         # invariant function skips it rather than double-reporting.
         errs, warns = check_cause_statement_invariants([("A", "  "), ("B", "real")])
         assert errs == [] and warns == []
+
+    def test_lowercase_step_marker_blocks(self):
+        # Case-insensitive: a lowercased [step N] leak must not escape the block.
+        errs, _ = check_cause_statement_invariants([("A", "[step 3] kubectl get x")])
+        assert any("operator-step marker" in e for e in errs)
+
+    def test_all_punctuation_statements_not_flagged_as_duplicate(self):
+        # Both normalize to "" — must NOT collide as a false exact-dup.
+        errs, warns = check_cause_statement_invariants([("A", "..."), ("B", "???")])
+        assert errs == [] and warns == []
+
+    def test_n_identical_statements_single_grouped_error(self):
+        errs, _ = check_cause_statement_invariants(
+            [("A", "disk full"), ("B", "disk full"), ("C", "disk full")]
+        )
+        dup = [e for e in errs if "identical Statements" in e]
+        assert len(dup) == 1
+        assert all(x in dup[0] for x in ("A", "B", "C"))
 
 
 class TestBackendCauseStatementParsing:
@@ -103,3 +121,41 @@ class TestBackendCauseStatementParsing:
         )
         errors, warnings = self._check(content)
         assert errors == [] and warnings == []
+
+    def test_empty_statement_blocks_cleanly_not_as_step_marker(self):
+        # Regression: an empty Statement followed by Indicators with [Step N] must
+        # report the EMPTY statement, not mis-capture Indicators as the Statement
+        # and falsely cry "operator-step marker".
+        content = (
+            "## Causes\n\n"
+            "### Cause A: x\n"
+            "**Statement:**\n"
+            "**Indicators:**\n- [Step 1] foo\n"
+        )
+        errors, _ = self._check(content)
+        assert any("is empty" in e for e in errors)
+        assert not any("operator-step marker" in e for e in errors)
+
+    def test_fallback_detected_via_indicators_not_prose(self):
+        # A real cause that merely MENTIONS [Default] in its Statement prose is
+        # still checked (fallback is detected only via the Indicators field).
+        content = (
+            "## Causes\n\n"
+            "### Cause A: x\n"
+            "**Statement:** Traffic uses the [Default] route. [Step 2] leak here\n"
+            "**Indicators:**\n- [Step 2] y\n"
+        )
+        errors, _ = self._check(content)
+        assert any("operator-step marker" in e for e in errors)
+
+    def test_inline_bold_in_statement_not_truncated(self):
+        # An inline **bold** word must not terminate the Statement capture (only a
+        # **Field:** label does), so a [Step N] after it is still seen.
+        content = (
+            "## Causes\n\n"
+            "### Cause A: x\n"
+            "**Statement:** The **primary** replica diverged [Step 3] leak\n"
+            "**Indicators:**\n- [Step 3] y\n"
+        )
+        errors, _ = self._check(content)
+        assert any("operator-step marker" in e for e in errors)

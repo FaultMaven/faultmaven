@@ -100,16 +100,20 @@ def _rm_target_is_catastrophic(target: str) -> bool:
 # and warn on the rest. True "is this symptom-level prose" judgment is the
 # build-time generator's job (a separate LLM rule), not this lexical gate.
 #
-# Mirrored verbatim in kb-toolkit (kb_toolkit/core/validator.py) — the repos
-# can't import each other. Keep the two copies identical.
+# The block below (constants + helpers + check_cause_statement_invariants) is
+# mirrored BYTE-IDENTICAL in the other repo (faultmaven runbook_validator.py
+# <-> kb_toolkit/core/validator.py) — the repos can't import each other. The
+# identical behavioral test cases in each repo's suite are the drift backstop;
+# keep both the code and those cases in sync.
 
-_STEP_MARKER_RE = re.compile(r"\[Step\s*\d+\]")
+_STEP_MARKER_RE = re.compile(r"\[step\s*\d+\]", re.IGNORECASE)
 _SIBLING_NEAR_DUP_JACCARD = 0.6
 
 
 def _norm_statement(s: str) -> str:
     # Same word sequence, ignoring case / punctuation / whitespace — so two
-    # Statements that differ only by a trailing period count as identical.
+    # Statements that differ only by a trailing period count as identical, and an
+    # all-punctuation Statement normalizes to "" (skipped, never a false dup).
     return " ".join(re.findall(r"[a-z0-9]+", s.lower()))
 
 
@@ -130,10 +134,10 @@ def check_cause_statement_invariants(
     Returns ``(errors, warnings)``:
       (i)  BLOCK a Statement carrying an operator-step marker (``[Step N]``) — an
            Indicator leaking into the symptom-level match surface.
-      (ii) BLOCK exact-duplicate sibling Statements; WARN on near-duplicates
-           (lexical Jaccard >= 0.6) — sibling causes must be mutually
-           discriminative (MECE) or holistic matching returns 'multiple' and the
-           matcher abstains.
+      (ii) BLOCK exact-duplicate sibling Statements (one error per duplicate set);
+           WARN on near-duplicates (lexical Jaccard >= 0.6) — sibling causes must
+           be mutually discriminative (MECE) or holistic matching returns
+           'multiple' and the matcher abstains.
     """
     errors: List[str] = []
     warnings: List[str] = []
@@ -144,20 +148,30 @@ def check_cause_statement_invariants(
                 f"([Step N]). The Statement is the symptom-level match surface — "
                 f"describe the observable condition; keep step references in Indicators."
             )
+    # Exact duplicates: group by normalized form, one error per duplicate set (not
+    # C(n,2) messages). Statements with no alphanumeric content normalize to "" and
+    # are skipped so they can't collide as spurious duplicates.
+    norms = [(letter, _norm_statement(stmt)) for letter, stmt in statements]
+    groups: Dict[str, List[str]] = {}
+    for letter, norm in norms:
+        if norm:
+            groups.setdefault(norm, []).append(letter)
+    for letters in groups.values():
+        if len(letters) > 1:
+            errors.append(
+                f"Causes {', '.join(letters)} have identical Statements; sibling "
+                f"causes must be mutually discriminative (MECE) or the matcher abstains."
+            )
+    # Near-duplicates (high lexical overlap but not identical): pairwise warn.
     for i in range(len(statements)):
         li, si = statements[i]
-        if not (si or "").strip():
+        if not norms[i][1]:
             continue
         for j in range(i + 1, len(statements)):
             lj, sj = statements[j]
-            if not (sj or "").strip():
+            if not norms[j][1] or norms[i][1] == norms[j][1]:
                 continue
-            if _norm_statement(si) == _norm_statement(sj):
-                errors.append(
-                    f"Causes {li} and {lj} have identical Statements; sibling causes "
-                    f"must be mutually discriminative (MECE) or the matcher abstains."
-                )
-            elif _statement_jaccard(si, sj) >= _SIBLING_NEAR_DUP_JACCARD:
+            if _statement_jaccard(si, sj) >= _SIBLING_NEAR_DUP_JACCARD:
                 warnings.append(
                     f"Causes {li} and {lj} have near-duplicate Statements (lexical "
                     f"overlap >= {_SIBLING_NEAR_DUP_JACCARD:.0%}); make them "
@@ -455,23 +469,43 @@ class RunbookValidator:
 
         Coarse markdown parse (this validator is document-level): split on
         ``### Cause X:`` headings, pull each block's ``**Statement:**``, drop the
-        fallback Cause (``[Default]`` in its block, or letter Z), and run the
-        shared ``check_cause_statement_invariants``.
+        fallback Cause (``[Default]`` in its *Indicators* field, or letter Z — the
+        same scoping kb-toolkit's parser uses), block an empty non-fallback
+        Statement (now the load-bearing match surface), and run the shared
+        ``check_cause_statement_invariants`` on the rest.
         """
         heading_re = re.compile(r"^#{3,}\s+Cause\s+([A-Za-z0-9]+)\s*:", re.MULTILINE)
-        statement_re = re.compile(
-            r"\*\*Statement:\*\*\s*(.+?)(?=\n\s*\*\*\w|\n#{1,}\s|\Z)", re.DOTALL
-        )
+
+        # A sub-field's value runs up to the NEXT bold field label (``**Word:**``
+        # — the colon is required, so an inline ``**bold**`` doesn't terminate it),
+        # the next markdown heading (``##``+, NOT a single ``#`` comment/tag line),
+        # or end. ``[ \t]*`` (not ``\s*``) so an empty field captures "" rather than
+        # swallowing the field that follows it.
+        def _field(name: str, body: str) -> str:
+            m = re.search(
+                rf"\*\*{name}:\*\*[ \t]*(.*?)(?=\n\s*\*\*[\w ]+:\*\*|\n#{{2,}}\s|\Z)",
+                body,
+                re.DOTALL,
+            )
+            return m.group(1).strip() if m else ""
+
         heads = list(heading_re.finditer(content))
         statements: List[tuple] = []
         for i, h in enumerate(heads):
             letter = h.group(1)
             end = heads[i + 1].start() if i + 1 < len(heads) else len(content)
             body = content[h.end() : end]
-            if "[Default]" in body or letter.upper() == "Z":
+            if "[Default]" in _field("Indicators", body) or letter.upper() == "Z":
                 continue  # fallback Cause — not a match surface
-            m = statement_re.search(body)
-            statements.append((letter, m.group(1).strip() if m else ""))
+            stmt = _field("Statement", body)
+            if not stmt:
+                errors.append(
+                    f"Cause {letter}: **Statement:** is empty — the Statement is the "
+                    f"symptom-level match surface and must describe the observable "
+                    f"condition."
+                )
+                continue
+            statements.append((letter, stmt))
         errs, warns = check_cause_statement_invariants(statements)
         errors.extend(errs)
         warnings.extend(warns)
