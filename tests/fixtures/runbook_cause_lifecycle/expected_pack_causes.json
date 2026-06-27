@@ -1,0 +1,93 @@
+[
+  {
+    "cause_letter": "A",
+    "cause_name": "Pool size set below the service's concurrent demand",
+    "cause_statement": "The configured connection-pool size is smaller than the\nservice's steady-state concurrent in-flight query count, so under normal\nload every connection is checked out and new requests block until they time\nout.",
+    "chain_edges": [
+      {
+        "cause_ref": "root",
+        "effect_ref": "s1"
+      },
+      {
+        "cause_ref": "s1",
+        "effect_ref": "s2"
+      },
+      {
+        "cause_ref": "s2",
+        "effect_ref": "D"
+      }
+    ],
+    "chain_nodes": [
+      {
+        "node_type": "root",
+        "ref": "root",
+        "statement": "the pool `max_size` is configured below the service's concurrent in-flight query count."
+      },
+      {
+        "node_type": "intermediate",
+        "ref": "s1",
+        "statement": "under normal load all connections are checked out and the pool's wait queue fills."
+      },
+      {
+        "node_type": "intermediate",
+        "ref": "s2",
+        "statement": "new requests block waiting for a connection and exceed the acquire timeout."
+      },
+      {
+        "node_type": "problem",
+        "ref": "D",
+        "statement": "requests fail with pool-timeout 503s (points at Symptom Recognition)."
+      }
+    ],
+    "interventions": [
+      {
+        "quadrant": "remediation",
+        "ref": "root",
+        "text": "- **remediation** (root): size the pool from observed peak concurrency plus headroom and roll it out.\n\n  ```bash\n  # Set the pool to observed peak in-flight + 25% headroom.\n  kubectl set env deployment/<deployment> DB_POOL_MAX_SIZE=<peak_times_1.25>\n  ```\n\n  **Verification:** After rollout, checked-out connections stay below the new ceiling under peak load and the 503 rate returns to baseline."
+      },
+      {
+        "quadrant": "mitigation",
+        "ref": "s1",
+        "text": "- **mitigation** (s1): raise the pool size immediately to stop the timeouts while the right size is confirmed.\n\n  ```bash\n  kubectl set env deployment/<deployment> DB_POOL_MAX_SIZE=<larger>\n  ```\n\n  **Risk:** A larger pool consumes more database server connections and can push the database past `max_connections`. **Duration:** Safe until the database connection budget is reached. **Verification:** re-run Step 2; checked-out connections fall below the ceiling."
+      }
+    ],
+    "is_fallback_cause": false,
+    "match_predicates": [
+      {
+        "op": ">",
+        "predicate": "threshold",
+        "step": 2,
+        "target": "pool_checked_out_pct",
+        "value": 0.95
+      }
+    ],
+    "rung_indicators": {
+      "root": [
+        "[Step 3] the pool size was lowered (or demand grew) without a corresponding pool increase"
+      ],
+      "s1": [
+        "[Step 2] checked-out connections sit at the pool ceiling during normal load"
+      ],
+      "s2": [
+        "[Symptom] timeouts correlate with traffic level, not with any single slow query"
+      ]
+    }
+  },
+  {
+    "cause_letter": "Z",
+    "cause_name": "Unidentified",
+    "cause_statement": "None of the documented causes match the observed evidence;\nescalate for hands-on investigation.",
+    "chain_edges": [],
+    "chain_nodes": [],
+    "interventions": [
+      {
+        "quadrant": "mitigation",
+        "ref": "D",
+        "text": "- **mitigation** (D): escalate to the owning team with the collected evidence. **Risk:** none. **Duration:** until triaged. **Verification:** n/a"
+      }
+    ],
+    "is_fallback_cause": true,
+    "match_predicates": [],
+    "rung_indicators": {}
+  }
+]
