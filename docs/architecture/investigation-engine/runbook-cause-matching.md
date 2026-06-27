@@ -165,15 +165,12 @@ per-runbook. Avoid `regex` — it composes poorly and tempts fragile hints.
 A Cause does **not** require all rungs to match to be surfaced — that would be the
 rigidity trap the governing principle warns against.
 
-- **Belief is per-cause, not per-rung k-of-n** (updated by #549 — see §2.1). The
-  semantic tier is one holistic judgment per Cause ("is the case explained by this
-  cause?"). Belief = `0` if any rung is deterministically refuted *or* the Cause
-  has no indicator rungs; else `1.0` when the holistic judgment supports the
-  Cause; else the deterministic T1 matched-rung fraction. (The original design
-  scaled belief monotonically over matched rungs; per-rung indicators turned out
-  to be operator-step-phrased and unmatched by symptom-level evidence — see the
-  §2.1 superseded note. The deterministic T1 fraction is the residual of that
-  model, ~0 in evidence-only FaultMaven.)
+- **Belief is per-cause, not per-rung k-of-n** (#545 — see the §2.1 superseded
+  note for why per-rung matching was replaced). The semantic tier is one holistic
+  judgment per Cause ("is the case explained by this cause?"). Belief = `0` if any
+  rung is deterministically refuted *or* the Cause has no indicator rungs; else
+  `1.0` when the holistic judgment supports the Cause; else the deterministic T1
+  matched-rung fraction (the residual T1 signal, ~0 in evidence-only FaultMaven).
 - **Refutation prunes.** A rung whose indicator is *contradicted* (REFUTES
   evidence) drops the chain hard. (M7 AND-member pruning applies only to
   engine-formed AND-sets at runtime; runbooks author none.)

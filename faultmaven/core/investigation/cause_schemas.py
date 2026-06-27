@@ -109,7 +109,7 @@ RungMethod = Literal["deterministic", "case_evidence_qa", "untested"]
 class RungResult(BaseModel):
     """Outcome of the deterministic (T1) evaluation of one rung indicator.
 
-    Post-#549 the semantic tier is one holistic judgment per CAUSE (not per rung),
+    Post-#545 the semantic tier is one holistic judgment per CAUSE (not per rung),
     so a rung's ``method`` is only ever ``"deterministic"`` or ``"untested"``;
     ``"case_evidence_qa"`` is retained in ``RungMethod`` for back-compat but no
     longer emitted. See ``indicator_evaluator`` and runbook-cause-matching.md §2.1.
@@ -137,7 +137,7 @@ class CauseMatch(BaseModel):
         description=(
             "0 if any rung refuted or the Cause has no indicator rungs; else 1.0 "
             "when the per-cause holistic T2 supports the Cause, otherwise the "
-            "deterministic T1 matched-rung fraction (#549)"
+            "deterministic T1 matched-rung fraction (#545)"
         ),
     )
     is_fallback: bool = False
