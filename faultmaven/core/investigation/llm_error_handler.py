@@ -17,7 +17,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
-from faultmaven.exceptions import LLMException
+from faultmaven.exceptions import (
+    QUOTA_EXHAUSTED,
+    LLMException,
+    is_billing_quota_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +151,21 @@ class LLMErrorHandler:
         error_str = str(error).lower()
         return any(pattern in error_str for pattern in self.config.retryable_patterns)
 
+    def is_billing_error(self, error: Exception) -> bool:
+        """Detect a permanent billing/quota-exhaustion failure.
+
+        Prefers the typed ``error_code`` set on ``LLMException`` /
+        ``CircuitBreakerError`` (walking ``__cause__`` for wrapped errors),
+        falling back to the shared marker-based body detection for plain
+        exceptions whose typed metadata was lost in wrapping.
+        """
+        cursor: Optional[BaseException] = error
+        while cursor is not None:
+            if getattr(cursor, "error_code", None) == QUOTA_EXHAUSTED:
+                return True
+            cursor = cursor.__cause__
+        return is_billing_quota_error(str(error))
+
     def is_auth_error(self, error: Exception) -> bool:
         """Check if error is authentication-related."""
         error_str = str(error).lower()
@@ -212,6 +231,25 @@ class LLMErrorHandler:
         # Track error for pattern detection
         error_type = type(error).__name__
         self._error_counts[error_type] = self._error_counts.get(error_type, 0) + 1
+
+        # Permanent billing / quota exhaustion (non-retryable). The provider
+        # account is out of credits or quota; retrying or waiting cannot help —
+        # an operator must add credits / enable billing. Surface a clear,
+        # operator-actionable message and a stable error_code so the API and UI
+        # can tell the user to top up rather than uselessly retry. Checked first
+        # because it must not be mistaken for a transient 429/5xx.
+        if self.is_billing_error(error):
+            logger.error(f"LLM provider billing/quota exhausted: {error}")
+            return ErrorResult(
+                action=ErrorAction.ESCALATE,
+                message=(
+                    "FaultMaven's AI provider is out of quota or credits, so the "
+                    "investigation can't continue right now. An administrator "
+                    "needs to add credits or update the provider's billing plan. "
+                    "Once that's done, resend your message to continue."
+                ),
+                error_code=QUOTA_EXHAUSTED,
+            )
 
         # Check for auth errors (non-retryable)
         if self.is_auth_error(error):
