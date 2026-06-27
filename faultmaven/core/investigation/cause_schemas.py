@@ -1,11 +1,15 @@
-"""v4 KB-resolution schemas — the input Cause record + rung-level match results.
+"""v4 KB-resolution schemas — the input Cause record + match results.
 
-A retrieved runbook Cause is a CAUSAL CHAIN: one ROOT and a ``root → … → D``
-ladder with per-rung indicators and quadrant-tagged interventions. The matcher
-(``indicator_evaluator.IndicatorEvaluator``) evaluates each rung's indicators
-against current case state and returns rung-level results with a k-of-n belief.
-See docs/architecture/investigation-engine/runbook-cause-matching.md §3–§5 and
-the implementation plan in runbook-cause-matcher-implementation.md.
+``CauseRecord`` (below) is the **canonical v4 cause shape (SSOT)** — see its
+docstring. A retrieved runbook Cause is a CAUSAL CHAIN: one ROOT and a
+``root → … → D`` ladder. Its **symptom-level ``cause_statement`` is the
+load-bearing match surface**: the matcher (``indicator_evaluator``) judges
+holistically *per cause* whether the case is explained by it (#545), then seeds
+the chain topology into the case graph as a capped CANDIDATE prior. Per-rung
+indicators / ``match_predicates`` are optional annotations, inert for matching in
+evidence-only FaultMaven. Authoring contract:
+docs/architecture/knowledge-and-ai/runbook-content-architecture.md (§ "Match
+surface"); matching mechanism: runbook-cause-matching.md.
 
 Leaf module (imports nothing from ``agent.*``) so ``agent.tools.kb_qa`` can
 import these types without violating the Agent module layer contract
@@ -34,31 +38,52 @@ def is_problem_node(node: Dict[str, Any]) -> bool:
 
 
 class CauseRecord(BaseModel):
-    """A v4 per-Cause graph record — the matcher's INPUT.
+    """The **canonical v4 cause shape (SSOT)** — the matcher's INPUT.
 
     Mirrors the KB pack's per-Cause record (``knowledge_items.metadata['causes']``
     entry, i.e. ``pack.json`` ``runbooks[].causes[]``). Tolerant: optional fields
-    default empty so a degenerate (no-``Chain``) Cause still loads. The graph
-    fields (``chain_nodes``/``chain_edges``/``interventions``) are carried for the
-    lazy instantiation step (increment 4); the matcher itself reads only
-    ``rung_indicators`` + ``match_predicates``.
+    default empty so a degenerate (no-``Chain``) Cause still loads.
+
+    Field roles under the ratified match-surface decision (runbook-content-
+    architecture.md § "Match surface"):
+      - ``cause_statement`` — the **load-bearing match surface** (symptom-level;
+        the matcher judges the case holistically against it). ``cause_name`` is
+        its subject. Authored to be symptom-level and discriminative from sibling
+        Causes (MECE).
+      - ``chain_nodes`` / ``chain_edges`` — chain **topology**, instantiated into
+        the case graph as a capped CANDIDATE prior (never VALIDATED w/o evidence).
+      - ``rung_indicators`` / ``match_predicates`` — **optional annotations,
+        INERT for matching** in evidence-only FM (operator/tool-output level).
+        Human diagnostic notes / opportunistic fast-path only.
+
+    SSOT note (for the #2 cause-matcher campaign, Phase 1): this is the canonical
+    cause shape; the following parallel definitions are FORKS that should be
+    consolidated onto it (mirror, don't redefine):
+      1. ``kb_toolkit/config/config.py`` — v4 grammar / required-subfield consts
+      2. ``kb_toolkit/core/validator.py`` — validation constants
+      3. backend ``modules/knowledge/.../runbook_validator.py`` — v2/v4 consts
+      4. the document→runbook conversion prompt
+    Until consolidated, a change here must be mirrored in all four or they drift.
     """
 
     cause_letter: str
-    cause_name: str = ""
-    cause_statement: str = ""
+    cause_name: str = Field(default="", description="Cause subject (match-surface)")
+    cause_statement: str = Field(
+        default="",
+        description="Symptom-level root-cause sentence — the LOAD-BEARING match surface",
+    )
     chain_nodes: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="[{ref, node_type, statement}] in root→D order",
+        description="Topology: [{ref, node_type, statement}] in root→D order (instantiation)",
     )
     chain_edges: List[Dict[str, Any]] = Field(default_factory=list)
     rung_indicators: Dict[str, List[str]] = Field(
         default_factory=dict,
-        description="rung ref → [indicator prose] (token-anchored)",
+        description="Optional, inert for matching: rung ref → [indicator prose]",
     )
     match_predicates: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Deterministic predicates parsed from <!-- match --> hints",
+        description="Optional, inert for matching: predicates from <!-- match --> hints",
     )
     interventions: List[Dict[str, Any]] = Field(default_factory=list)
     is_fallback_cause: bool = False
