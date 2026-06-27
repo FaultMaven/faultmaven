@@ -17,6 +17,22 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
+def is_problem_node(node: Dict[str, Any]) -> bool:
+    """True if a chain-node dict is the engine-seeded PROBLEM (D) node.
+
+    A node is the problem either by ``node_type`` (case-insensitively
+    ``"problem"``) or by the literal ``ref == "D"`` — packs may identify it
+    either way. Shared by the matcher's chain instantiation
+    (``chain_to_specs``) and the evaluator's holistic-condition builder
+    (``_build_cause_condition``) so the two can't drift on which node is the
+    shared problem — a drift would leak the symptom-under-investigation into the
+    cause condition and make every cause match.
+    """
+    ntype = str(node.get("node_type", "")).strip().lower()
+    ref = str(node.get("ref", "")).strip()
+    return ntype == "problem" or ref == "D"
+
+
 class CauseRecord(BaseModel):
     """A v4 per-Cause graph record — the matcher's INPUT.
 

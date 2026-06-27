@@ -40,6 +40,7 @@ The runbook is a *prior, not a gate*.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
@@ -50,6 +51,7 @@ from faultmaven.core.investigation.cause_schemas import (
     CauseMatchResult,
     CauseRecord,
     RungResult,
+    is_problem_node,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,7 +106,12 @@ class IndicatorEvaluator:
         Returns a ``CauseMatchResult`` whose ``verdict`` / ``selected_cause``
         drive the engine's branching per runbook-cause-matching.md §4.
         """
-        cause_matches = [await self._evaluate_cause(c) for c in causes]
+        # Each cause's holistic T2 is one independent classifier call — evaluate
+        # them concurrently so a multi-cause runbook costs one round-trip of wall
+        # time, not N. gather preserves input order.
+        cause_matches = list(
+            await asyncio.gather(*(self._evaluate_cause(c) for c in causes))
+        )
 
         # Live = a real (non-fallback) Cause above the surface threshold. A
         # refuted Cause has belief 0, so the threshold already excludes it.
@@ -160,16 +167,19 @@ class IndicatorEvaluator:
 
         refuted = any(st["refuted"] for st in rung_state.values())
         total = len(cause.rung_indicators)  # rungs that carry indicators
-        t1_matched = sum(1 for st in rung_state.values() if st["matched"])
-        t1_frac = (t1_matched / total) if total else 0.0
 
-        if refuted:
-            # A deterministic contradiction prunes the chain hard (§4).
+        if refuted or total == 0:
+            # A deterministic contradiction prunes the chain hard (§4); and a
+            # cause with NO indicator rungs has no structural anchor — it must
+            # not go live on a holistic judgment alone (would let a degenerate /
+            # indicator-less Cause attribute on a single fuzzy YES).
             belief = 0.0
         else:
             # T2 semantic tier is now ONE holistic per-cause judgment (#545), not
             # per-rung. A holistic "supported" dominates; otherwise the cause
             # rests on whatever the deterministic T1 tier matched.
+            t1_matched = sum(1 for st in rung_state.values() if st["matched"])
+            t1_frac = t1_matched / total
             holistic = await self._holistic_cause_match(cause)
             belief = 1.0 if holistic else t1_frac
 
@@ -241,6 +251,10 @@ class IndicatorEvaluator:
         if self._case_evidence_qa is None:
             return False
         condition = self._build_cause_condition(cause)
+        if condition is None:
+            # No symptom-level description to judge on — abstain rather than ask
+            # the classifier a contentless question (which it might answer YES to).
+            return False
         try:
             return bool(await self._case_evidence_qa(condition))
         except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
@@ -252,16 +266,26 @@ class IndicatorEvaluator:
             return False
 
     @staticmethod
-    def _build_cause_condition(cause: CauseRecord) -> str:
-        """Render a cause as a symptom-level condition for the holistic T2 call."""
+    def _build_cause_condition(cause: CauseRecord) -> Optional[str]:
+        """Render a cause as a symptom-level condition for the holistic T2 call.
+
+        Returns ``None`` when the cause carries no usable description (no
+        statement, no non-problem chain prose, no name) — there is nothing
+        meaningful to judge. The PROBLEM (D) node is excluded via the shared
+        ``is_problem_node`` so the symptom-under-investigation never leaks into
+        the condition (which would make every cause trivially match).
+        """
         chain = " → ".join(
             (n.get("statement") or "").strip()
             for n in cause.chain_nodes
-            if n.get("node_type") != "problem" and (n.get("statement") or "").strip()
+            if not is_problem_node(n) and (n.get("statement") or "").strip()
         )
-        mechanism = (cause.cause_statement or "").strip() or chain or cause.cause_name
-        name = cause.cause_name or cause.cause_letter
-        return f"The case is explained by the cause '{name}'" + (
+        mechanism = (cause.cause_statement or "").strip() or chain
+        name = (cause.cause_name or "").strip()
+        if not mechanism and not name:
+            return None
+        subject = name or cause.cause_letter
+        return f"The case is explained by the cause '{subject}'" + (
             f" — {mechanism}" if mechanism else ""
         )
 

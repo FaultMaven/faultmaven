@@ -11,6 +11,7 @@ Design: Design C (Stateless Sub-Agent + Proactive Phase Handlers)
 """
 
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import get_settings
@@ -369,8 +370,13 @@ Answer:"""
             max_tokens=64,
             temperature=0.0,
         )
-        answer = (getattr(response, "content", "") or "").strip().lower()
-        return answer.startswith("yes") or answer == "y"
+        # Parse the FIRST alphabetic token, not the raw prefix: with the larger
+        # max_tokens a verbose/thinking model may wrap the verdict in markup or a
+        # short preamble ("**YES**", "Answer: yes"). Conservative — anything that
+        # isn't a clear leading yes/y is False (never a refutation).
+        answer = (getattr(response, "content", "") or "").lower()
+        first = re.search(r"[a-z]+", answer)
+        return first is not None and first.group() in ("yes", "y")
 
     def _build_context_from_chunks(self, chunks: list) -> str:
         """

@@ -496,6 +496,25 @@ class TestHolisticT2:
         assert not rr.matched and not rr.refuted
         assert result.causes[0].belief == 0.0
 
+    @pytest.mark.asyncio
+    async def test_indicatorless_cause_never_goes_live_on_holistic(self):
+        # A non-fallback cause with NO indicator rungs has no structural anchor;
+        # a holistic YES must NOT lift it to belief 1.0 (would attribute on a
+        # single fuzzy judgment with zero indicators). belief stays 0; the
+        # classifier isn't even consulted.
+        cause = _cause("A", "x", {})  # empty rung_indicators
+
+        called = []
+
+        async def yes_qa(condition: str) -> bool:
+            called.append(condition)
+            return True
+
+        e = IndicatorEvaluator(lambda _: None, case_evidence_qa=yes_qa)
+        result = await e.evaluate("rb", [cause])
+        assert result.causes[0].belief == 0.0
+        assert called == []  # holistic skipped — no wasted LLM call
+
 
 class TestBuildCauseCondition:
     def test_uses_name_and_statement(self):
@@ -523,3 +542,33 @@ class TestBuildCauseCondition:
         cond = IndicatorEvaluator._build_cause_condition(c)
         assert "root happens" in cond
         assert "the problem" not in cond  # the shared problem node is excluded
+
+    def test_excludes_problem_node_identified_by_ref_d_only(self):
+        # A pack may mark the problem node by ref='D' without node_type. The
+        # symptom-under-investigation must still be excluded (else it leaks into
+        # the condition and the classifier matches every cause).
+        c = CauseRecord(
+            cause_letter="A",
+            cause_name="N",
+            cause_statement="",
+            chain_nodes=[
+                {"ref": "root", "node_type": "root", "statement": "root happens"},
+                {"ref": "D", "statement": "the deploy is broken"},  # no node_type
+            ],
+            rung_indicators={},
+        )
+        cond = IndicatorEvaluator._build_cause_condition(c)
+        assert "root happens" in cond
+        assert "the deploy is broken" not in cond
+
+    def test_none_when_no_usable_content(self):
+        # No name, no statement, no non-problem chain prose → None (don't ask the
+        # classifier a contentless question).
+        c = CauseRecord(
+            cause_letter="A",
+            cause_name="",
+            cause_statement="",
+            chain_nodes=[{"ref": "D", "node_type": "problem", "statement": "p"}],
+            rung_indicators={},
+        )
+        assert IndicatorEvaluator._build_cause_condition(c) is None
