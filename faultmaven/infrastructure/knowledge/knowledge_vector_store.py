@@ -843,3 +843,78 @@ class KnowledgeVectorStore(BaseExternalClient):
             retries=1,
             retry_delay=1.0,
         )
+
+    async def delete_documents_by_parent_id(
+        self,
+        parent_document_id: str,
+        collection_name: str = KB_COLLECTION,
+    ) -> int:
+        """Delete all chunks of a parent document from a KB collection.
+
+        The KB write path (``add_documents``) tags every chunk with
+        ``metadata.parent_document_id``; this is its inverse — the delete half of
+        the document lifecycle. Without it the re-ingest/prune paths in
+        ``bootstrap.kb_init`` could only drop the SQL row, leaving the vectors
+        orphaned in ChromaDB (the index drift the reconcile pass cleans up).
+
+        Returns the number of chunks deleted (0 if the parent has no chunks).
+        """
+
+        async def _delete_wrapper() -> int:
+            collection = self._get_or_create_collection(collection_name)
+            results = collection.get(
+                where={"parent_document_id": parent_document_id},
+                include=[],
+            )
+            chunk_ids = results.get("ids", [])
+            if not chunk_ids:
+                return 0
+            collection.delete(ids=chunk_ids)
+            self.logger.info(
+                f"Deleted {len(chunk_ids)} chunks for parent "
+                f"{parent_document_id} from KB collection '{collection_name}'"
+            )
+            return len(chunk_ids)
+
+        return await self.call_external(
+            operation_name="delete_documents_by_parent_id",
+            call_func=_delete_wrapper,
+            timeout=10.0,
+            retries=2,
+            retry_delay=1.0,
+        )
+
+    async def list_parent_document_ids(
+        self,
+        collection_name: str = KB_COLLECTION,
+    ) -> Set[str]:
+        """Return the distinct ``parent_document_id``s present in a collection.
+
+        Lets the bootstrap reconcile pass compare the vector index against the
+        ``knowledge_items`` rows (the source of truth) to find drift in either
+        direction — vectors with no row (orphans to delete) and rows with no
+        vectors (orphans to warn about). Chunks missing the metadata key are
+        skipped (they can't be reconciled by parent).
+        """
+
+        async def _list_wrapper() -> Set[str]:
+            try:
+                collection = self.client.get_collection(name=collection_name)
+            except Exception:
+                # Collection absent → nothing indexed yet.
+                return set()
+            results = collection.get(include=["metadatas"])
+            parents: Set[str] = set()
+            for md in results.get("metadatas", []) or []:
+                parent = (md or {}).get("parent_document_id")
+                if parent:
+                    parents.add(parent)
+            return parents
+
+        return await self.call_external(
+            operation_name="list_parent_document_ids",
+            call_func=_list_wrapper,
+            timeout=10.0,
+            retries=1,
+            retry_delay=1.0,
+        )

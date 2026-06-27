@@ -515,6 +515,118 @@ class TestPruneOrphanBuiltins:
         del_mock.assert_not_called()
 
 
+class TestReconcileVectors:
+    """SQL <-> ChromaDB reconcile pass.
+
+    The row-keyed prune can only ever delete a row plus its own vectors, so it is
+    structurally blind to vectors whose row is already gone. Those orphans
+    accumulated (210 vectors vs 91 rows in the 2026-06 KB drift) and silently
+    killed runbook-cause matches when a ghost vector landed as the top KB hit.
+    This pass compares both sides and cleans the index.
+    """
+
+    @staticmethod
+    def _service(*, chroma_parents, delete_calls):
+        async def _list():
+            return set(chroma_parents)
+
+        async def _delete(parent_id, collection_name=None):
+            delete_calls.append(parent_id)
+            return 3  # pretend 3 chunks per parent
+
+        vector_store = MagicMock()
+        vector_store.list_parent_document_ids = AsyncMock(side_effect=_list)
+        vector_store.delete_documents_by_parent_id = AsyncMock(side_effect=_delete)
+        svc = MagicMock()
+        svc._vector_store = vector_store
+        return svc
+
+    @staticmethod
+    def _factory(db_ids):
+        class _Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def execute(self, _stmt):
+                return MagicMock(all=lambda: [(i,) for i in db_ids])
+
+        return lambda: _Session()
+
+    @pytest.mark.asyncio
+    async def test_deletes_orphaned_vectors(self):
+        """A vector parent with no DB row is deleted; consistent ones are kept."""
+        delete_calls: list[str] = []
+        svc = self._service(
+            chroma_parents={"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"},
+            delete_calls=delete_calls,
+        )
+        # DB has only a and b → c is an orphaned vector.
+        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+            svc, self._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
+        )
+        assert cleaned == ["kb_cccccccccccc"]
+        assert delete_calls == ["kb_cccccccccccc"]
+        assert orphaned_rows == []
+
+    @pytest.mark.asyncio
+    async def test_warns_orphaned_rows_without_deleting(self):
+        """A DB row with no vectors is reported, never deleted (can't re-embed here)."""
+        delete_calls: list[str] = []
+        svc = self._service(
+            chroma_parents={"kb_aaaaaaaaaaaa"}, delete_calls=delete_calls
+        )
+        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+            svc, self._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
+        )
+        assert cleaned == []
+        assert delete_calls == []
+        assert orphaned_rows == ["kb_bbbbbbbbbbbb"]
+
+    @pytest.mark.asyncio
+    async def test_consistent_index_is_noop(self):
+        delete_calls: list[str] = []
+        svc = self._service(
+            chroma_parents={"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"},
+            delete_calls=delete_calls,
+        )
+        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+            svc, self._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
+        )
+        assert cleaned == []
+        assert orphaned_rows == []
+        assert delete_calls == []
+
+    @pytest.mark.asyncio
+    async def test_empty_db_refuses_to_delete_vectors(self):
+        """Zero rows + non-empty index = transient row-write failure, NOT a wipe
+        signal. Refuse to delete (mirrors the prune's empty-keepset guard)."""
+        delete_calls: list[str] = []
+        svc = self._service(
+            chroma_parents={"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"},
+            delete_calls=delete_calls,
+        )
+        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+            svc, self._factory(set())
+        )
+        assert cleaned == []
+        assert delete_calls == []  # the safety guard held
+        assert orphaned_rows == []
+
+    @pytest.mark.asyncio
+    async def test_skips_when_store_cannot_enumerate(self):
+        """A vector store without the enumerate method degrades to a clean no-op."""
+        svc = MagicMock()
+        svc._vector_store = object()  # no list_parent_document_ids
+        cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+            svc, self._factory({"kb_aaaaaaaaaaaa"})
+        )
+        assert cleaned == []
+        assert orphaned_rows == []
+
+
 # ---------------------------------------------------------------------------
 # Runbook-cause matcher, increment 1: persist the per-Cause graph record
 # (see docs/architecture/investigation-engine/runbook-cause-matcher-implementation.md)

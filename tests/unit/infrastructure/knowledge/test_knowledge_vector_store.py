@@ -424,3 +424,86 @@ class TestScopePriority:
     def test_personal_highest_priority(self):
         assert SCOPE_PRIORITY["personal"] < SCOPE_PRIORITY["team"]
         assert SCOPE_PRIORITY["team"] < SCOPE_PRIORITY["global"]
+
+
+class _FakeCollection:
+    """Minimal ChromaDB collection: in-memory chunks keyed by id with a
+    parent_document_id in metadata. Supports the get(where=)/get(include=)/delete
+    surface the new lifecycle methods rely on."""
+
+    def __init__(self, chunks):
+        # chunks: list of (chunk_id, parent_document_id)
+        self._ids = {cid: parent for cid, parent in chunks}
+
+    def get(self, where=None, include=None):
+        if where and "parent_document_id" in where:
+            target = where["parent_document_id"]
+            ids = [cid for cid, p in self._ids.items() if p == target]
+            return {"ids": ids}
+        # full scan → metadatas
+        metadatas = [{"parent_document_id": p} for p in self._ids.values()]
+        return {"ids": list(self._ids), "metadatas": metadatas}
+
+    def delete(self, ids=None):
+        for cid in ids or []:
+            self._ids.pop(cid, None)
+
+
+class _FakeClient:
+    def __init__(self, collection):
+        self._collection = collection
+
+    def get_or_create_collection(self, name, metadata=None):
+        return self._collection
+
+    def get_collection(self, name):
+        return self._collection
+
+
+class TestDeleteDocumentsByParentId:
+    """The KB-side delete half of the document lifecycle (was missing entirely —
+    its absence let the row-side prune leave vectors orphaned)."""
+
+    @pytest.mark.asyncio
+    async def test_deletes_only_the_named_parent(self):
+        coll = _FakeCollection(
+            [
+                ("kb_a_chunk_0", "kb_a"),
+                ("kb_a_chunk_1", "kb_a"),
+                ("kb_b_chunk_0", "kb_b"),
+            ]
+        )
+        store = KnowledgeVectorStore(_FakeClient(coll))
+        deleted = await store.delete_documents_by_parent_id("kb_a")
+        assert deleted == 2
+        # kb_b's chunk survives; kb_a's are gone.
+        assert coll._ids == {"kb_b_chunk_0": "kb_b"}
+
+    @pytest.mark.asyncio
+    async def test_absent_parent_is_zero(self):
+        coll = _FakeCollection([("kb_b_chunk_0", "kb_b")])
+        store = KnowledgeVectorStore(_FakeClient(coll))
+        assert await store.delete_documents_by_parent_id("kb_missing") == 0
+
+
+class TestListParentDocumentIds:
+    @pytest.mark.asyncio
+    async def test_returns_distinct_parents(self):
+        coll = _FakeCollection(
+            [
+                ("kb_a_chunk_0", "kb_a"),
+                ("kb_a_chunk_1", "kb_a"),
+                ("kb_b_chunk_0", "kb_b"),
+            ]
+        )
+        store = KnowledgeVectorStore(_FakeClient(coll))
+        assert await store.list_parent_document_ids() == {"kb_a", "kb_b"}
+
+    @pytest.mark.asyncio
+    async def test_missing_collection_is_empty_set(self):
+        class _NoCollectionClient:
+            def get_collection(self, name):
+                raise ValueError("collection not found")
+
+        store = KnowledgeVectorStore(_NoCollectionClient())
+        assert await store.list_parent_document_ids() == set()
