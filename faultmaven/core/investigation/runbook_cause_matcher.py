@@ -160,6 +160,9 @@ def _stash_interventions(
     node = case.causal_nodes.get(root_id)
     if node is None:
         return
+    # Symmetric with the reader's ``node.metadata or {}`` — never assume the dict.
+    if not node.metadata:
+        node.metadata = {}
     node.metadata[RUNBOOK_INTERVENTIONS_META_KEY] = interventions
 
 

@@ -12,7 +12,9 @@ import pytest
 
 from faultmaven.core.investigation.prompts.context_builder import (
     _RUNBOOK_INTERVENTIONS_META_KEY,
+    KB_MAX_SOLUTION_CHARS,
     _build_documented_fixes_block,
+    build_investigation_context,
 )
 from faultmaven.core.investigation.runbook_cause_matcher import (
     RUNBOOK_INTERVENTIONS_META_KEY,
@@ -123,3 +125,45 @@ class TestDocumentedFixesBlock:
         # Only the one well-formed, non-empty intervention renders.
         assert block.count("  - ") == 1
         assert "Fix the hook script." in block
+
+    def test_long_intervention_text_is_truncated(self):
+        case = _case(CauseState.IDENTIFIED)
+        node = _root(
+            [{"quadrant": "remediation", "ref": "root", "text": "x" * 5000}],
+            validated=True,
+        )
+        case.causal_nodes[node.node_id] = node
+        block = _build_documented_fixes_block(case)
+        assert "[truncated]" in block
+        assert len(block) < 5000  # the 5000-char text was capped
+
+    def test_caps_number_of_interventions(self):
+        case = _case(CauseState.IDENTIFIED)
+        many = [
+            {"quadrant": "mitigation", "ref": "root", "text": f"fix {i}"}
+            for i in range(20)
+        ]
+        node = _root(many, validated=True)
+        case.causal_nodes[node.node_id] = node
+        block = _build_documented_fixes_block(case)
+        assert block.count("  - ") == 8  # _MAX_FIXES_RENDERED
+
+
+class TestEndToEnd:
+    """The block must actually reach the assembled prompt (the kb_results slot),
+    not just the private helper."""
+
+    def test_block_appears_in_assembled_prompt_when_identified(self):
+        case = _case(CauseState.IDENTIFIED)
+        node = _root(_IV, validated=True)
+        case.causal_nodes[node.node_id] = node
+        ctx = build_investigation_context(case, user_message="what next?")
+        assert "<documented_fixes>" in ctx["kb_results"]
+        assert "Fix the hook script." in ctx["kb_results"]
+
+    def test_block_absent_from_assembled_prompt_when_not_identified(self):
+        case = _case(CauseState.CANDIDATES)
+        node = _root(_IV, validated=True)
+        case.causal_nodes[node.node_id] = node
+        ctx = build_investigation_context(case, user_message="what next?")
+        assert "<documented_fixes>" not in ctx["kb_results"]

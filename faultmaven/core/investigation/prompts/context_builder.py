@@ -2470,6 +2470,9 @@ def _build_causal_graph_block(case: Case) -> str:
 # core.investigation module); the two are pinned together by
 # test_documented_fixes_block.
 _RUNBOOK_INTERVENTIONS_META_KEY = "runbook_interventions"
+# Bound the block so a verbose runbook can't dominate the kb_results budget slot
+# (mirrors KB_MAX_SOLUTION_CHARS for the <knowledge_context> block).
+_MAX_FIXES_RENDERED = 8
 
 
 def _build_documented_fixes_block(case: Case) -> str:
@@ -2481,6 +2484,12 @@ def _build_documented_fixes_block(case: Case) -> str:
     Framed as suggestions: the matcher never creates Solutions — the LLM proposes
     the fix and the M5 gate governs it. Self-gating — renders nothing unless the
     (flag-gated) matcher stashed interventions on a now-validated root.
+
+    Note: self-gating is on the *data*, not a live flag re-check — interventions
+    stashed (and persisted) while ``enable_runbook_cause_matcher`` was on still
+    render after it is turned off. That is intended: a completed match is part of
+    the case's established state; disabling the flag stops *new* matches, not the
+    consequences of one already made. (Confirm at inc5 enablement.)
     """
     progress = case.progress
     if not progress or getattr(progress, "cause_state", None) != CauseState.IDENTIFIED:
@@ -2498,9 +2507,15 @@ def _build_documented_fixes_block(case: Case) -> str:
             text = str(iv.get("text", "")).strip()
             if not text:
                 continue
+            if len(text) > KB_MAX_SOLUTION_CHARS:
+                text = text[:KB_MAX_SOLUTION_CHARS] + "... [truncated]"
             quadrant = str(iv.get("quadrant", "")).strip()
             tag = f"[{quadrant}] " if quadrant else ""
             lines.append(f"  - {tag}{text}")
+            if len(lines) >= _MAX_FIXES_RENDERED:
+                break
+        if len(lines) >= _MAX_FIXES_RENDERED:
+            break
     if not lines:
         return ""
     return (
