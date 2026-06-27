@@ -158,13 +158,12 @@ two roots. "No AND-sets" forbids *competing roots*, not conjunction itself;
 express the conjunction by its kind:
 
 - **Causally sequential** (one condition enables the other) → make them `Chain`
-  rungs (`root → s1 → D`). Each condition is then its own node, validated on its
-  own indicator, so no single node asserts an unverified conjunction. Prefer this
-  whenever an ordering exists. (The chain is a *prior, not a gate*: the engine
-  advances it on *k-of-n* matched rungs — see
-  [runbook-cause-matching.md §4](../investigation-engine/runbook-cause-matching.md#4-chain-level-verdict-graceful-degradation)
-  — so soundness comes from the per-rung indicators, not from requiring every
-  rung.)
+  rungs (`root → s1 → D`), so the chain topology carries the conjunction. Prefer
+  this whenever an ordering exists. (The chain is a *prior, not a gate* — it is
+  instantiated into the case graph as a CANDIDATE, never VALIDATED without case
+  evidence; soundness comes from that cap + the M5 / cause-state gates, **not**
+  from the runbook's structure or from per-rung matching. See "Match surface"
+  below.)
 - **Genuinely parallel** (neither condition causes the other, both simply
   required) → fold the co-necessary condition into the single root `Statement`
   and give each fix its own quadrant-tagged intervention. **When you fold, the
@@ -177,6 +176,47 @@ The engine's `and_group` AND-machinery exists for conjunctions the *engine* form
 at runtime; runbooks do not pre-author them. This keeps each Cause one
 validate/refute/demote unit and maps cleanly to the engine's single-root
 `Hypothesis`.
+
+### Match surface — the cause `Statement` is load-bearing
+
+A Cause has two distinct jobs; do not conflate them (validated end-to-end by the
+runbook-cause matcher campaign, #545):
+
+1. **Matching** — deciding *whether this cause explains the case*. The matcher
+   makes **one holistic judgment per Cause** ("is the case explained by this
+   cause?") over the Cause's **symptom-level description** — its name +
+   `Statement` + non-problem chain prose. This is the **load-bearing match
+   surface.** Matching is a semantic judgment, not token-matching — the same
+   reason the engine's signature screen (F3) and cause identity are LLM
+   judgments, not engine string-matches.
+2. **Instantiation** — once matched, the chain **topology** (nodes/edges) is
+   seeded into the case causal graph as a **CANDIDATE prior** (capped below the
+   cause-identified gate, never VALIDATED without case evidence). Topology stays
+   richly structured; that is its value.
+
+**Per-rung `Indicators` and `<!-- match -->` predicates are optional annotations,
+not a matching tier.** They are authored at operator/tool-output level
+(`kubectl describe …`, `operationState.phase is Failed`), but FaultMaven matches
+against **symptom-level** case evidence (log lines, errors, exit codes) and does
+not execute runbook steps — so per-rung indicator matching and the deterministic
+predicate tier are **inert for matching in evidence-only FM**. Keep them as
+human-readable diagnostic steps / an opportunistic fast-path; do not rely on them
+to make a Cause match. (Spec: [runbook-cause-matching.md](../investigation-engine/runbook-cause-matching.md) — per-cause holistic T2 is canonical; per-rung is superseded.)
+
+Two authoring invariants follow directly, and the validator/generator enforce them:
+
+- **The `Statement` must be symptom-level.** It describes *what the evidence
+  would show* (the observable failure and its mechanism), not what an operator
+  would run or an internal API field. Because the `Statement` is now the sole
+  match surface, a tool-output-phrased or vague `Statement` makes the Cause
+  silently under-fire. The validator checks the `Statement` itself, not merely
+  that `Indicators` exist.
+- **Sibling cause `Statement`s must be mutually discriminative (MECE, with
+  teeth).** Holistic matching judges each Cause independently, so if two sibling
+  `Statement`s overlap, the matcher answers YES to both → verdict `multiple` →
+  it abstains and instantiates nothing. MECE on the OR-roots is therefore
+  load-bearing, not just conceptual hygiene: each sibling `Statement` must be
+  distinguishable from the others from case evidence alone.
 
 **`Chain` is optional.** Omit it and the Cause is a degenerate `root → D` chain —
 ingestion stays tolerant (no runbook breaks for lacking a decomposed ladder).
@@ -286,9 +326,9 @@ This section explains WHY each template section is structured the way it is. Thi
 | **Applicability** | Confirms whether the runbook applies to the user's environment. Scope context — system version, required tools, access requirements. | Concrete versions and tool names. The agent surfaces applicability when proposing the runbook to the user; vague scope ("works on Postgres") leads to misapplication. |
 | **Diagnostic Steps** | The agent proposes these commands to the user during DIAGNOSIS. Each step's finding feeds per-rung Indicator evaluation in the active Cause. | **Procedure only — no interpretation.** Command, expected output shape, nothing else. The interpretation of what each finding *means* lives in each Cause's `Indicators`, not here. Splitting them prevents the same interpretation from appearing in two chunks (Diagnostic Step chunk AND Cause chunk), which would dilute retrieval signal. |
 | **Causes → `### Cause N`** | Each Cause subsection is one chunk and one **causal chain** terminating in a single ROOT. Retrieval surfaces a complete cause→fix unit. The root `Statement` seeds `RootCauseConclusion.root_cause`; `Interventions` seed `Solution` (`immediate_action`/`longterm_fix` by quadrant). | Per-Cause inlining of `Statement` / `Chain` / `Indicators` / `Interventions` keeps the chunk self-contained. One ROOT per Cause maps to the engine's single-root `Hypothesis`; no AND-sets are authored. |
-| **Causes → `Statement`** | Direct copy → `RootCauseConclusion.root_cause`. | Single declarative sentence stating the **single root** cause (fold any *parallel* co-necessary condition in here — but its `Indicators` must then confirm each folded condition; sequential co-necessity becomes `Chain` rungs instead). Not a fix, not a symptom. ≤300 characters. |
+| **Causes → `Statement`** | Direct copy → `RootCauseConclusion.root_cause`. **The load-bearing match surface** (holistic per-cause matching judges the case against it). | Single **symptom-level** declarative sentence — what the *evidence would show* (observable failure + mechanism), not a tool command or internal field. Must be discriminative from sibling Causes (MECE). Fold any *parallel* co-necessary condition in here; sequential co-necessity becomes `Chain` rungs instead. Not a fix, not a bare symptom. ≤300 characters. |
 | **Causes → `Chain`** *(optional)* | Decomposes the causal ladder into rung nodes the engine instantiates as `CausalNode`s. Absence → degenerate `root → D` chain. | Linear `root → s1 → … → D`; each rung a short ref (`root`, `s1`, …, reserved `D`). No AND-gate — *sequential* co-necessity becomes rungs here; *parallel* co-necessity folds into the root `Statement`. Each rung ≤300 chars. |
-| **Causes → `Indicators`** | The engine evaluates each rung's indicator against case evidence to attribute / refute the chain. | Bullet list addressed by rung ref. Each entry carries a `[Step N]` finding, `[Symptom]` pattern, or `[Default]` (fallback only) — at least one token. Optional `<!-- match: ... -->` HTML comment supplies a machine-readable predicate; see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary). |
+| **Causes → `Indicators`** *(optional annotation — NOT the match surface)* | Human-readable per-rung diagnostic notes + an opportunistic deterministic fast-path. **Inert for matching in evidence-only FM** (they are operator/tool-output level; matching is holistic over the symptom-level `Statement`). | Bullet list addressed by rung ref; each entry carries a `[Step N]` finding, `[Symptom]` pattern, or `[Default]` (fallback only). Optional `<!-- match: ... -->` predicate; see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary). Do not rely on these to make a Cause match — the `Statement` does that. |
 | **Causes → `Interventions`** | Each intervention seeds a `Solution` tagged with an `InterventionQuadrant` and the node it targets. | Per-node, quadrant-tagged: `remediation` (permanent @ root), `defensive_fix` (permanent @ intermediate), `mitigation` (temporary @ intermediate — carries **Risk** + **Duration**), `loop_break`. One root may carry two interventions (e.g. a `defensive_fix` and a `remediation`). Every intervention carries a `Verification` (feeds the `solution_verified` prompt). |
 | **`### Cause Z: Unidentified`** | Fallback when no other Cause's Indicators match. Engine selects this Cause when indicator evaluation returns zero matches. | Mandatory in every runbook. Indicators is `[Default]`. Its single intervention is a `mitigation`/`loop_break` describing a safe diagnostic/escalation path. |
 | **Prevention** | Used in post-resolution recommendations and report generation. **Rarely retrieved during active investigation** — Prevention chunks don't match symptom queries. They become relevant after the problem is resolved, when the agent generates recommendations. | Configuration changes, monitoring alerts, capacity thresholds — concrete actions. |
@@ -418,7 +458,8 @@ The first three sources are sufficient for common infrastructure failure modes. 
 | Copy-pasted vendor docs | Low signal density. Chunks contain boilerplate that dilutes the embedding. | Summarize the relevant parts, add your operational context |
 | Missing per-intervention verification | An intervention without a `**Verification:**` gives the engine no fix-specific check; `solution_verified` falls back to generic prompts and the agent cannot confirm the right fix worked. | Every intervention under `**Interventions:**` carries its own `**Verification:**` |
 | Two roots / AND-sets in one Cause | A Cause with two roots (or an authored AND-gate) reads as duplicate nodes and does not map to the engine's single-root `Hypothesis`. | One Cause = one ROOT. Sequence co-necessary conditions as `Chain` rungs where an ordering exists; otherwise fold the *parallel* condition into the root `Statement` (its `Indicators` confirming each folded condition) and give each fix its own quadrant-tagged intervention (a `defensive_fix` *and* a `remediation` if needed). |
-| Overlapping Indicators | Two Causes within one runbook whose Indicator sets cannot be distinguished from case evidence force the engine into the multi-match branch every time. | Author Indicators as mutually exclusive sets; lean on Diagnostic Steps whose findings differ between Causes |
+| Overlapping cause `Statement`s | Two sibling Causes whose symptom-level `Statement`s are not distinguishable from case evidence → holistic matching answers YES to both → verdict `multiple` → the matcher abstains and instantiates nothing. | Author sibling `Statement`s as mutually discriminative (MECE with teeth); make the observable difference explicit in each `Statement`. |
+| Tool-output-phrased `Statement` | A `Statement` written at operator/API level (`operationState.phase is Failed`) won't match symptom-level case evidence, so the Cause silently under-fires (the `Statement` is the sole match surface). | Phrase the `Statement` at symptom level — what the evidence shows (errors, log lines, exit codes) and the mechanism. |
 | Indicator without step or symptom reference | An `**Indicators:**` entry that lacks `[Step N]` / `[Symptom]` / `[Default]` cannot be matched deterministically and offers no anchor for `case_evidence_qa` either. | Every Indicators entry carries a rung ref and at least one reference token |
 
 ---
