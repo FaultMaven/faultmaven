@@ -16,8 +16,13 @@ vectorized evidence — wired in 4b-2). The T1 deterministic tier stays inert:
 FaultMaven investigates uploaded evidence rather than executing a runbook's
 numbered diagnostic steps, so there is no per-step output to resolve (the spec
 frames T1 as an opportunistic fast-path, T2 as the canonical robustness floor).
-Still flag-gated OFF until increment 5. Remaining: map interventions → ``Solution``
-(4b-3, through the M5 gate).
+
+The matched Cause's documented fixes (``interventions``) are stashed on the chain
+ROOT node's metadata (4b-3); the prompt context surfaces them as a
+``<documented_fixes>`` block ONLY once that cause is established
+(``cause_state == IDENTIFIED``), so the LLM proposes them and they flow through
+the M5 gate normally. The matcher never creates ``Solution`` objects directly —
+that would bypass M5. Still flag-gated OFF until increment 5.
 """
 
 from __future__ import annotations
@@ -135,6 +140,30 @@ def instantiate_cause_chain(
     if not nodes:
         return []
     return ingest_emitted_chain(case, nodes, edges, [], current_turn)
+
+
+# Node-metadata key under which the matched runbook's documented fixes are
+# stashed on the chain ROOT node, for the prompt context to surface once the
+# cause is established (see context_builder._build_documented_fixes_block).
+RUNBOOK_INTERVENTIONS_META_KEY = "runbook_interventions"
+
+
+def _stash_interventions(
+    case: "Case", root_id: str, record: Optional[CauseRecord]
+) -> None:
+    """Stash the matched Cause's interventions (documented fixes) on its ROOT
+    node's metadata. No-op when there are none. ``node.metadata`` persists (a
+    JSON column), so the fixes survive reload until the cause is established."""
+    interventions = list(record.interventions) if record else []
+    if not interventions:
+        return
+    node = case.causal_nodes.get(root_id)
+    if node is None:
+        return
+    # Symmetric with the reader's ``node.metadata or {}`` — never assume the dict.
+    if not node.metadata:
+        node.metadata = {}
+    node.metadata[RUNBOOK_INTERVENTIONS_META_KEY] = interventions
 
 
 def _root_node_id(case: "Case", created: List[Optional[str]]) -> Optional[str]:
@@ -263,8 +292,17 @@ async def apply_runbook_cause_matcher(
     created = instantiate_cause_chain(case, chosen.selected_record, case.current_turn)
     root_id = _root_node_id(case, created)
     attached = None
-    if root_id is not None and hypothesis_manager is not None:
-        attached = attach_matched_hypothesis(case, chosen, root_id, hypothesis_manager)
+    if root_id is not None:
+        # Stash the runbook's documented fixes on the root node so the prompt
+        # context can surface them ONCE this cause is established (4b-3). Stored
+        # here (not re-resolved later) because context building is sync; the
+        # node.metadata JSON column round-trips. The matcher never creates
+        # Solutions — the LLM proposes the fix and the M5 gate governs it.
+        _stash_interventions(case, root_id, chosen.selected_record)
+        if hypothesis_manager is not None:
+            attached = attach_matched_hypothesis(
+                case, chosen, root_id, hypothesis_manager
+            )
     logger.info(
         "Runbook cause matcher: instantiated %d node(s) from runbook %s (cause %s); "
         "hypothesis %s",

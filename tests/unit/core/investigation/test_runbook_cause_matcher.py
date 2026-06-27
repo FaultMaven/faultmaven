@@ -480,6 +480,60 @@ class TestHypothesisAttachment:
         assert case.hypotheses == {}
 
 
+class TestInterventionStash:
+    @staticmethod
+    def _hm():
+        from faultmaven.core.investigation.hypothesis_manager import (
+            create_hypothesis_manager,
+        )
+
+        return create_hypothesis_manager()
+
+    @pytest.mark.asyncio
+    async def test_interventions_stashed_on_root_node(self):
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            RUNBOOK_INTERVENTIONS_META_KEY,
+        )
+
+        case = _case()
+        rec = _linear_cause("A")
+        rec.interventions = [
+            {"quadrant": "remediation", "ref": "root", "text": "Fix it."}
+        ]
+        kb = _FakeKB([_result("kb_rb1", "single", record=rec)])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert roots[0].metadata[RUNBOOK_INTERVENTIONS_META_KEY] == rec.interventions
+
+    @pytest.mark.asyncio
+    async def test_no_interventions_leaves_no_metadata_key(self):
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            RUNBOOK_INTERVENTIONS_META_KEY,
+        )
+
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_noop_resolver,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            hypothesis_manager=self._hm(),
+        )
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert RUNBOOK_INTERVENTIONS_META_KEY not in roots[0].metadata
+
+
 class TestDuplicateRef:
     def test_duplicate_ref_skips_node_and_keeps_first_edge_target(self):
         # Two nodes share ref 'x'; the duplicate must be skipped (not overwrite

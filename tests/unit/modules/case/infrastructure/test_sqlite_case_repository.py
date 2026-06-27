@@ -2096,6 +2096,36 @@ class TestCausalGraphRoundTrip:
         assert fs.quadrant == InterventionQuadrant.REMEDIATION
 
     @pytest.mark.asyncio
+    async def test_runbook_interventions_node_metadata_survives_round_trip(
+        self, repository
+    ):
+        """The matcher stashes a runbook's documented fixes on the ROOT node's
+        metadata (4b-3); they must survive save→reload so the documented-fixes
+        context block can surface them once the cause is established.
+        """
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            RUNBOOK_INTERVENTIONS_META_KEY,
+        )
+
+        case = _make_case()
+        interventions = [
+            {"quadrant": "remediation", "ref": "root", "text": "Fix the root."}
+        ]
+        root = CausalNode(
+            statement="the matched root cause",
+            node_type=NodeType.ROOT,
+            generated_at_turn=1,
+            metadata={RUNBOOK_INTERVENTIONS_META_KEY: interventions},
+        )
+        case.causal_nodes = {root.node_id: root}
+
+        await repository.save(case)
+        fetched = await repository.get(case.case_id)
+
+        got = fetched.causal_nodes[root.node_id]
+        assert got.metadata[RUNBOOK_INTERVENTIONS_META_KEY] == interventions
+
+    @pytest.mark.asyncio
     async def test_pruned_node_does_not_resurrect(self, repository):
         """A node removed in memory (e.g. a bridge stub GC'd by a hypothesis
         re-root) must be DELETED from the DB on save, not survive the additive
