@@ -24,6 +24,10 @@ from typing import List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
+from faultmaven.api.exception_handlers import (
+    is_quota_exhausted_service_error,
+    quota_exhausted_http_exception,
+)
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import (
     get_case_repository,
@@ -32,7 +36,11 @@ from faultmaven.api.v1.dependencies import (
     get_report_recommendation_service,
     get_tenant_provider,
 )
-from faultmaven.exceptions import NotFoundError, ServiceException, ValidationException
+from faultmaven.exceptions import (
+    NotFoundError,
+    ServiceException,
+    ValidationException,
+)
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.interfaces_case import ICaseService
 
@@ -332,6 +340,10 @@ async def generate_report(
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ServiceException as e:
+        # Billing/quota exhaustion → 402 (operator must add credits), same
+        # contract as the /turns endpoint. Otherwise a generic 500.
+        if is_quota_exhausted_service_error(e):
+            raise quota_exhausted_http_exception()
         raise HTTPException(status_code=500, detail=str(e))
 
 
