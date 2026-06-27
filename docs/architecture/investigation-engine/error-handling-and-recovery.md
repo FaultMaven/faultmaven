@@ -43,7 +43,9 @@ This document defines error handling and recovery strategies for the FaultMaven 
 - Temporary service unavailability (HTTP 5xx)
 - Redis connection failures
 
-**Strategy**: Automatic retry with exponential backoff. `LLMException` with `status_code >= 500` or explicit `retryable=True` triggers retries.
+**Strategy**: Automatic retry with exponential backoff. `LLMException` with `status_code >= 500`, `status_code == 429`, or explicit `retryable=True` triggers retries.
+
+> **Not all 429s are transient.** Providers reuse HTTP 429 for both rate-limiting (transient) and **billing/quota exhaustion** (permanent). A 429 whose body indicates exhausted credits/quota is classified as billing, not rate-limiting — see [§1.6](#16-billing--quota-exhaustion-operator-action-required).
 
 ### 1.2 Non-Retryable Client Errors (Fail Fast)
 
@@ -80,6 +82,14 @@ This document defines error handling and recovery strategies for the FaultMaven 
 
 **Strategy**: Progress transparency surfaces milestone dependencies when stalled; agent state repair handles internal failures (see [Progress Transparency](./progress-transparency.md))
 
+### 1.6 Billing / Quota Exhaustion (Operator Action Required)
+
+- LLM provider out of credits / hard spend cap reached
+- Billing not enabled for the account or tier
+- Provider quota exhausted (e.g. OpenAI `insufficient_quota`, HTTP 402)
+
+**Strategy**: Fail fast, **never retry**, surface an operator-actionable message. This is a *permanent* condition distinct from transient rate-limiting — waiting cannot add credits, so retrying only burns time and trips the circuit breaker. The error is classified with a stable `error_code` of `QUOTA_EXHAUSTED` that propagates through every layer (provider → circuit breaker → error handler → engine → API → UI), so the user is told to add credits rather than "try again". At the API boundary it maps to **HTTP 402 Payment Required** (`x-error-code: QUOTA_EXHAUSTED`, no `Retry-After`).
+
 ---
 
 ## 2. LLM Error Handling
@@ -92,23 +102,33 @@ LLM errors carry retryability information via `LLMException`:
 from faultmaven.exceptions import LLMException
 
 class LLMException(FaultMavenException):
-    def __init__(self, message, status_code=None, retryable=None):
+    def __init__(self, message, status_code=None, retryable=None, error_code=None):
         self.status_code = status_code
-        # Retryability: explicit > status_code-based > default False
-        if retryable is not None:
+        # Auto-classify permanent billing/quota exhaustion from the provider
+        # body (single chokepoint — every provider folds the upstream body into
+        # the message). See is_billing_quota_error().
+        if error_code is None and is_billing_quota_error(message, status_code):
+            error_code = QUOTA_EXHAUSTED
+        self.error_code = error_code
+        # Retryability: billing (permanent) > explicit > status_code > default.
+        if error_code == QUOTA_EXHAUSTED:
+            self.retryable = False  # waiting cannot add credits
+        elif retryable is not None:
             self.retryable = retryable
         elif status_code is not None:
-            self.retryable = status_code >= 500  # 5xx retryable, 4xx not
+            self.retryable = status_code >= 500 or status_code == 429
         else:
             self.retryable = False  # Fail-fast default
 ```
 
 The `BaseExternalClient.call_external()` method checks `retryable` before retrying:
 
-- `retryable=True` (5xx, explicit): retry with exponential backoff
-- `retryable=False` (4xx, default): fail immediately, no retries
+- `retryable=True` (5xx, 429, explicit): retry with exponential backoff
+- `retryable=False` (other 4xx, billing, default): fail immediately, no retries
 
-The provider registry re-raises the last provider's error directly (preserving retryability) rather than wrapping in a generic exception.
+The provider registry re-raises the last provider's error directly (preserving retryability and `error_code`) rather than wrapping in a generic exception.
+
+**Circuit breaker carries the classification.** When repeated failures open the breaker, `CircuitBreakerError` carries the `error_code` of the failure that tripped it (latched across the failing streak so a trailing transient error does not erase a permanent billing signal). This keeps a billing condition distinguishable as `QUOTA_EXHAUSTED` even on turns where the request never reaches the provider — without it, an open breaker would mask billing as a generic 500.
 
 ### 2.2 Error Handler Implementation
 
@@ -137,7 +157,14 @@ class LLMErrorHandler:
             ErrorResult with recovery action and message
         """
 
-        if isinstance(error, RateLimitError):
+        # Billing/quota exhaustion is checked first — it is permanent and must
+        # not be mistaken for a transient 429/5xx. is_billing_error() inspects
+        # the typed error_code (walking __cause__ for wrapped errors) and falls
+        # back to body markers.
+        if self.is_billing_error(error):
+            return self._handle_billing(error)
+
+        elif isinstance(error, RateLimitError):
             return await self._handle_rate_limit(error, retry_count)
 
         elif isinstance(error, TimeoutError):
@@ -198,6 +225,21 @@ class LLMErrorHandler:
             action=ErrorAction.RETRY,
             message="Request timed out. Retrying...",
             retry_count=retry_count + 1
+        )
+
+    def _handle_billing(self, error: Exception) -> ErrorResult:
+        """Handle billing/quota exhaustion (permanent, operator-actionable)."""
+
+        logger.error(f"LLM provider billing/quota exhausted: {error}")
+
+        return ErrorResult(
+            action=ErrorAction.ESCALATE,
+            message=(
+                "FaultMaven's AI provider is out of quota or credits. An "
+                "administrator needs to add credits or update the provider's "
+                "billing plan before the investigation can continue."
+            ),
+            error_code="QUOTA_EXHAUSTED"  # → HTTP 402 at the API boundary
         )
 
     def _handle_auth_error(self, error: AuthenticationError) -> ErrorResult:

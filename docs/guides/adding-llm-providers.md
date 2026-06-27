@@ -873,11 +873,13 @@ if response.status != 200:
     error_text = await response.text()
     raise LLMException(
         f"Provider API error {response.status}: {error_text}",
-        status_code=response.status,  # Determines retryability (4xx=non-retryable, 5xx=retryable)
+        status_code=response.status,  # Determines retryability (4xx=non-retryable, 5xx/429=retryable)
     )
 ```
 
-The `status_code` drives retry behavior in the router: 4xx errors fail fast (non-retryable), 5xx errors are retried with backoff. Default retryability is `False` (fail-fast) — opt in to retries with `retryable=True` for specific transient errors.
+The `status_code` drives retry behavior in the router: 4xx errors fail fast (non-retryable), 5xx and 429 errors are retried with backoff. Default retryability is `False` (fail-fast) — opt in to retries with `retryable=True` for specific transient errors.
+
+**Include the full provider error body in the message.** `LLMException.__init__` auto-detects **billing/quota exhaustion** (out of credits, billing disabled, hard quota cap — e.g. `insufficient_quota`, HTTP 402) from the message and classifies it as `error_code=QUOTA_EXHAUSTED` (always non-retryable, mapped to HTTP 402 at the API). Because this single chokepoint inspects the message you pass, new providers get correct billing handling for free — you do **not** need to special-case it, as long as you fold the upstream `error_text` into the message above. If a provider exposes an unambiguous structured billing code, you may pass `error_code=QUOTA_EXHAUSTED` explicitly.
 
 ## Examples of Compatible APIs
 
