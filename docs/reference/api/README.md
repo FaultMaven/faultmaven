@@ -54,6 +54,7 @@ All endpoints return structured error responses with appropriate HTTP status cod
 - `200`: Success
 - `400`: Bad Request - Invalid input data
 - `401`: Unauthorized - Authentication required (future)
+- `402`: Payment Required - AI provider out of quota/credits (`x-error-code: QUOTA_EXHAUSTED`); an operator must add credits or update billing. Not retryable (no `Retry-After`).
 - `404`: Not Found - Resource not found
 - `422`: Validation Error - Request data validation failed
 - `429`: Too Many Requests - Rate limit exceeded
