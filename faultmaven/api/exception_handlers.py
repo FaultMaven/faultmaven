@@ -18,9 +18,7 @@ Specification: docs/architecture/specifications/exception-contract.md
 """
 
 import logging
-from typing import Callable, Type
-
-from typing import Optional
+from typing import Callable, Optional, Type
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse

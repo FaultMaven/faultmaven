@@ -24,6 +24,10 @@ from typing import List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
+from faultmaven.api.exception_handlers import (
+    is_quota_exhausted_service_error,
+    quota_exhausted_http_exception,
+)
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import (
     get_case_repository,
@@ -31,10 +35,6 @@ from faultmaven.api.v1.dependencies import (
     get_report_generation_service,
     get_report_recommendation_service,
     get_tenant_provider,
-)
-from faultmaven.api.exception_handlers import (
-    is_quota_exhausted_service_error,
-    quota_exhausted_http_exception,
 )
 from faultmaven.exceptions import (
     NotFoundError,

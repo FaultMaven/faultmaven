@@ -42,6 +42,10 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from faultmaven.api.exception_handlers import (
+    is_quota_exhausted_service_error,
+    quota_exhausted_http_exception,
+)
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id,
     get_current_user_optional,
@@ -58,10 +62,6 @@ from faultmaven.api.v1.dependencies import (
     get_session_service,
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
-from faultmaven.api.exception_handlers import (
-    is_quota_exhausted_service_error,
-    quota_exhausted_http_exception,
-)
 from faultmaven.exceptions import (
     AuthorizationError,
     FaultMavenException,
