@@ -81,3 +81,83 @@ class TestAnswerYesNo:
         )
         assert await tool.answer_yes_no("q", scope_id="case_1") is False
         router.route.assert_not_awaited()
+
+
+class TestAnswerYesNoRawEvidenceFallback:
+    """#543: when the vector collection is empty, judge against caller-supplied
+    raw evidence instead of abstaining — so the matcher's T2 tier can fire even
+    when case evidence was never vectorized."""
+
+    @pytest.mark.asyncio
+    async def test_empty_collection_judges_fallback_context(self):
+        # No vectors, but a raw-evidence fallback is supplied → the classifier
+        # runs over it. LLM says YES → matched.
+        tool, router = _tool([], llm_content="YES")
+        result = await tool.answer_yes_no(
+            "is SSL required?",
+            scope_id="case_1",
+            fallback_context="[CAUSAL_EVIDENCE] migration fails: SSL connection required",
+        )
+        assert result is True
+        router.route.assert_awaited_once()
+        # The fallback text reached the prompt (not the empty chunk context).
+        sent = router.route.await_args.kwargs["messages"][0]["content"]
+        assert "SSL connection required" in sent
+
+    @pytest.mark.asyncio
+    async def test_empty_collection_fallback_can_still_be_no(self):
+        # Fallback present but the evidence doesn't support the condition → NO.
+        # (Never a refutation — the matcher treats NO as 'not matched'.)
+        tool, _ = _tool([], llm_content="NO")
+        assert (
+            await tool.answer_yes_no(
+                "is X present?", scope_id="case_1", fallback_context="unrelated text"
+            )
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_collection_blank_fallback_returns_false_no_llm(self):
+        # A blank/whitespace fallback is treated as no fallback → abstain, no call.
+        tool, router = _tool([], llm_content="YES")
+        assert (
+            await tool.answer_yes_no("q", scope_id="case_1", fallback_context="   ")
+            is False
+        )
+        router.route.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_vectors_present_ignore_fallback(self):
+        # When chunks exist, the vector path wins — the fallback is not consulted.
+        tool, router = _tool(_chunks(), llm_content="YES")
+        await tool.answer_yes_no(
+            "q", scope_id="case_1", fallback_context="RAW FALLBACK SHOULD NOT APPEAR"
+        )
+        sent = router.route.await_args.kwargs["messages"][0]["content"]
+        assert "RAW FALLBACK SHOULD NOT APPEAR" not in sent
+        assert "chunk 0" in sent  # the vector chunk context was used
+
+    @pytest.mark.asyncio
+    async def test_store_error_still_uses_fallback(self):
+        # A vector-search failure (ChromaDB down / collection unreadable) must be
+        # treated as 'no vectors' so the fallback still fires — otherwise the very
+        # case the fallback exists for would skip it.
+        tool, router = _tool(_chunks(), llm_content="YES")
+        tool._vector_store.hybrid_search = AsyncMock(side_effect=RuntimeError("down"))
+        tool._vector_store.search = AsyncMock(side_effect=RuntimeError("down"))
+        result = await tool.answer_yes_no(
+            "is X present?",
+            scope_id="case_1",
+            fallback_context="[CAUSAL_EVIDENCE] X is present",
+        )
+        assert result is True
+        sent = router.route.await_args.kwargs["messages"][0]["content"]
+        assert "X is present" in sent
+
+    @pytest.mark.asyncio
+    async def test_store_error_no_fallback_returns_false(self):
+        # Store error + no fallback → still conservative False (never refutes).
+        tool, _ = _tool(_chunks(), llm_content="YES")
+        tool._vector_store.hybrid_search = AsyncMock(side_effect=RuntimeError("down"))
+        tool._vector_store.search = AsyncMock(side_effect=RuntimeError("down"))
+        assert await tool.answer_yes_no("q", scope_id="case_1") is False

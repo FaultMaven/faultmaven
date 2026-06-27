@@ -76,6 +76,63 @@ def is_runbook_match_hypothesis(hyp: "Hypothesis") -> bool:
     )
 
 
+# Budget for the raw-evidence fallback text (chars). Case evidence is curated and
+# bounded (summary ≤500 + optional extract per row), so this comfortably holds
+# a typical case's evidence while capping the classifier prompt on large cases.
+_FALLBACK_EVIDENCE_MAX_CHARS = 8000
+
+
+def build_case_evidence_fallback_text(
+    case: "Case", max_chars: int = _FALLBACK_EVIDENCE_MAX_CHARS
+) -> Optional[str]:
+    """Assemble the T2 raw-evidence fallback from ``case.evidence``.
+
+    The matcher's T2 tier judges each rung indicator against the case's
+    *vectorized* evidence. But case evidence is vectorized only in DA mode and
+    above a size gate, so small/conversational evidence is frequently absent from
+    the index — leaving T2 nothing to retrieve and the matcher unable to fire
+    (issue #543). This renders the already-recorded ``Evidence`` rows (the LLM's
+    claim-anchored ``summary`` + optional verbatim ``extract``) into a compact
+    text block the tool can judge against when the vector collection is empty.
+
+    Returns ``None`` when the case has no evidence (the tool then abstains, i.e.
+    keeps the conservative pre-fallback behavior). The output is hard-capped at
+    ``max_chars``: whole rows are kept on a boundary, and a single oversized row
+    (``Evidence.extract`` has no length limit, unlike ``summary``) is itself
+    truncated so the classifier prompt stays bounded even on the first row.
+    """
+    evidence = getattr(case, "evidence", None) or []
+    if not evidence:
+        return None
+
+    parts: List[str] = []
+    used = 0  # running length of the joined output ("\n\n" between rows)
+    joiner = 2  # len("\n\n")
+    for ev in evidence:
+        summary = (getattr(ev, "summary", "") or "").strip()
+        if not summary:
+            continue
+        category = getattr(getattr(ev, "category", None), "value", "") or ""
+        extract = (getattr(ev, "extract", "") or "").strip()
+        header = f"[{category}] {summary}" if category else summary
+        block = f"{header}\n{extract}" if extract else header
+        sep = joiner if parts else 0  # no joiner before the first row
+        remaining = max_chars - used - sep
+        if remaining <= 0:
+            break
+        if len(block) > remaining:
+            # Oversized row (typically a large extract): truncate it to the
+            # budget rather than dropping it, so even an unbounded first-row
+            # extract can't blow the classifier prompt. Then stop.
+            parts.append(block[:remaining])
+            break
+        parts.append(block)
+        used += sep + len(block)
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
 def chain_to_specs(
     cause: CauseRecord,
 ) -> Tuple[List[CausalNodeToAdd], List[CausalEdgeToAdd]]:

@@ -78,6 +78,35 @@ Two contracts the consumer (increment 4) must honour:
   (default `False`, `validation_alias="ENABLE_RUNBOOK_CAUSE_MATCHER"`), read via
   `get_settings().features...`.
 
+## T2 evidence resolution & raw-evidence fallback (#543)
+
+The matcher fires on the **T2 semantic tier**: for each rung indicator it asks
+`case_evidence_search.answer_yes_no` — a single classifier call, "does the case
+evidence satisfy this indicator?" T2 normally retrieves the case's **vectorized**
+evidence (the `case_<id>` ChromaDB collection).
+
+But case evidence is vectorized only in **DA mode** and above a **size gate**, so
+small or conversational evidence is frequently absent from the index. With an
+empty collection T2 returned `False` for every indicator → the evaluator abstained
+(verdict `none`) → **the matcher could never fire in the normal flow** (validated
+empirically: clean KB, RC identified, matcher fired 0×).
+
+**Fallback:** when the vector collection yields no chunks, T2 judges the indicator
+against the case's already-recorded `Evidence` rows instead of giving up. The
+engine assembles the fallback text from `case.evidence` — the LLM's claim-anchored
+`summary` (always present) plus optional verbatim `extract`, per row, truncated to
+a char budget on whole-row boundaries (`build_case_evidence_fallback_text`) — and
+passes it as `answer_yes_no(..., fallback_context=...)`. Vectors are still
+preferred when present (semantic retrieval over the full evidence); the fallback
+only covers the empty-index case.
+
+This keeps T2's **never-refute** invariant: the fallback can only turn an
+abstention into a *possible match*, never into a refutation. A case with no
+evidence yields `None` (the tool keeps abstaining). Deeper fixes to the
+vectorization pipeline itself (eager-vectorize on Evidence creation; relax the
+size gate) remain open in #543; this fallback decouples the matcher from that
+pipeline so it can fire today.
+
 ## Soundness guarantees (held by construction)
 
 - **Never `VALIDATED` at instantiation** — nodes default `CANDIDATE`; validation
@@ -85,6 +114,9 @@ Two contracts the consumer (increment 4) must honour:
 - **Prior, not a gate** — k-of-n verdict (not strict-all); a partially-matching
   chain still surfaces; the T2 semantic fallback (`case_evidence_qa`) is always
   available, so predicates never gate.
+- **T2 never refutes** — the raw-evidence fallback (above) judges YES/NO like the
+  vector path; a `NO` (or no evidence at all) is 'not matched', never 'refuted',
+  so it can only lower belief, never prune a Cause.
 - **No duplicate roots** — exact-match dedup + `cn_` render-back (the engine's
   hardest prior bug, already solved in `ingest_emitted_chain`).
 - **Off by default** — every increment is inert or flag-gated until increment 5.
