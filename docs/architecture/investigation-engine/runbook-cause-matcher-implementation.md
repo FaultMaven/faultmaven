@@ -78,12 +78,39 @@ Two contracts the consumer (increment 4) must honour:
   (default `False`, `validation_alias="ENABLE_RUNBOOK_CAUSE_MATCHER"`), read via
   `get_settings().features...`.
 
+## T2 matching: holistic per-cause, not per-rung indicators (#545)
+
+T2 originally judged **each rung indicator** ("does the evidence satisfy
+`[Step 3] kubectl describe job shows BackoffLimitExceeded`?"). Live diagnosis
+(real classifier × the ArgoCD runbook × a real case's evidence) showed this never
+fires: the rung indicators are written at **tool/API-output level**
+(`operationState.phase is Failed`, `kubectl describe job shows …`), but case
+evidence is **symptom-level** (SSL errors, exit codes, log lines), so the
+classifier honestly answers NO to every indicator → belief 0 for every cause →
+verdict `none`. Stripping the `[Step N]` prefix did **not** help (the residual
+still names API fields the evidence lacks); neither did matching the raw chain-node
+statements (also implementation-specific).
+
+**Fix:** T2 is now **one holistic judgment per cause** — "is the case explained by
+this cause?", built from the cause's **symptom-level description** (name +
+`cause_statement` + non-problem chain prose, `_build_cause_condition`), not the
+per-rung operator indicators. Validated: on evidence that matches a documented
+cause (sync-wave ordering) it fires that cause and **discriminates** the other six
+(clean `single`); on evidence whose true cause isn't documented (an SSL-specific
+PreSync failure) it soundly returns `none`. The deterministic **T1** tier (per-rung
+predicates + refutation) is unchanged. Belief: `0` if any rung is refuted; else
+`1.0` if the holistic judgment supports the cause, otherwise the T1 matched-rung
+fraction. Bonus: ~7 classifier calls per runbook instead of ~100 per-rung.
+
+The classifier call uses `max_tokens=64` (was 5): a thinking model
+(gemini-3.x) bills hidden reasoning against the cap, and 5 tokens truncate the
+YES/NO into placeholder output that parses as a false NO.
+
 ## T2 evidence resolution & raw-evidence fallback (#543)
 
-The matcher fires on the **T2 semantic tier**: for each rung indicator it asks
-`case_evidence_search.answer_yes_no` — a single classifier call, "does the case
-evidence satisfy this indicator?" T2 normally retrieves the case's **vectorized**
-evidence (the `case_<id>` ChromaDB collection).
+T2 (the holistic per-cause call above) asks `case_evidence_search.answer_yes_no`,
+which normally retrieves the case's **vectorized** evidence (the `case_<id>`
+ChromaDB collection).
 
 But case evidence is vectorized only in **DA mode** and above a **size gate**, so
 small or conversational evidence is frequently absent from the index. With an

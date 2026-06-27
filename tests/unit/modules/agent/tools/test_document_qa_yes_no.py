@@ -51,10 +51,20 @@ class TestAnswerYesNo:
         assert await tool.answer_yes_no("q", scope_id="case_1") is True
 
     @pytest.mark.asyncio
+    async def test_yes_with_markup_or_leading_whitespace(self):
+        # With the larger max_tokens a model may wrap the verdict; the first
+        # alpha token is what counts.
+        for content in ("**YES**", "  yes", "\nYES\n", "Y"):
+            tool, _ = _tool(_chunks(), llm_content=content)
+            assert await tool.answer_yes_no("q", scope_id="case_1") is True, content
+
+    @pytest.mark.asyncio
     async def test_ambiguous_answer_is_false(self):
-        # Conservative: anything not clearly affirmative → False.
-        tool, _ = _tool(_chunks(), llm_content="I am not sure")
-        assert await tool.answer_yes_no("q", scope_id="case_1") is False
+        # Conservative: anything whose first token isn't yes/y → False (a "no"
+        # after a preamble stays False — never a wrong-way match).
+        for content in ("I am not sure", "No", "The condition is yes", "Based on it"):
+            tool, _ = _tool(_chunks(), llm_content=content)
+            assert await tool.answer_yes_no("q", scope_id="case_1") is False, content
 
     @pytest.mark.asyncio
     async def test_no_evidence_returns_false_without_llm_call(self):

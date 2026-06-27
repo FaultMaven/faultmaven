@@ -34,7 +34,11 @@ from faultmaven.core.investigation.causal_graph import (
     chain_path_to_problem,
     ingest_emitted_chain,
 )
-from faultmaven.core.investigation.cause_schemas import CauseMatchResult, CauseRecord
+from faultmaven.core.investigation.cause_schemas import (
+    CauseMatchResult,
+    CauseRecord,
+    is_problem_node,
+)
 from faultmaven.core.investigation.schemas import CausalEdgeToAdd, CausalNodeToAdd
 from faultmaven.modules.case.domain.models import (
     HypothesisCategory,
@@ -151,7 +155,7 @@ def chain_to_specs(
         ref = str(node.get("ref", "")).strip()
         ntype_raw = str(node.get("node_type", "")).strip().lower()
         # D is engine-seeded; never emit it, just record its ref → 'D'.
-        if ntype_raw == NodeType.PROBLEM.value or ref == "D":
+        if is_problem_node(node):
             if ref:
                 ref_token[ref] = "D"
             continue

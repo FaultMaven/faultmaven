@@ -4,27 +4,43 @@ Evaluates each retrieved Cause's per-rung indicators against current case state
 and returns rung-level results with a k-of-n belief, per
 docs/architecture/investigation-engine/runbook-cause-matching.md §2–§5.
 
-Layered evaluation, per rung indicator:
+Two tiers:
 
-- **T1 deterministic**: a ``match_predicate`` (``absent`` / ``contains`` /
-  ``exit_code`` / ``threshold``) whose ``step`` matches a ``[Step N]`` token in
-  the indicator. When the referenced step has run and the predicate is
-  *determinable*: holds → **matched**, contradicted → **refuted** (a
+- **T1 deterministic** (per rung): a ``match_predicate`` (``absent`` /
+  ``contains`` / ``exit_code`` / ``threshold``) whose ``step`` matches a
+  ``[Step N]`` token in the indicator. When the referenced step has run and the
+  predicate is *determinable*: holds → **matched**, contradicted → **refuted** (a
   deterministic contradiction prunes the chain). When the step has not run, or
-  the value can't be parsed from the output: **untested**.
-- **T2 semantic**: ``case_evidence_qa`` on the indicator prose. A "no" lowers
-  belief (not matched) but never *refutes* — it is softer than a deterministic
-  predicate. When unavailable: untested (fail-open, never a false refutation).
+  the value can't be parsed: **untested**. In FaultMaven this tier is largely
+  inert — FM investigates uploaded evidence rather than executing a runbook's
+  numbered steps, so there is no per-step output to resolve — but it still
+  *refutes* when a step output happens to contradict a predicate.
 
-Verdict (spec §4): a Cause is "live" when its belief is above the surface
+- **T2 semantic** (per CAUSE, holistic — #545): one ``case_evidence_qa`` call
+  asking whether the case evidence *supports this whole cause*, judged from the
+  cause's symptom-level description (name + statement + chain prose), NOT the
+  per-rung ``[Step N]`` operator indicators. Diagnosis showed the operator-step
+  indicators (``operationState.phase is Failed``, ``kubectl describe job shows
+  …``) are written at tool/API-output level, which case evidence (symptom-level
+  logs) rarely satisfies literally, so per-rung T2 returned NO for everything and
+  the matcher never fired. A holistic per-cause judgment matches the right cause
+  and discriminates the wrong ones (clean ``single`` verdict). A "no" lowers
+  belief but never *refutes*; when ``case_evidence_qa`` is unavailable the cause
+  rests on T1 alone.
+
+Belief: ``0`` if any rung is deterministically refuted; else
+``1.0`` when the holistic T2 supports the cause, otherwise the deterministic
+T1 matched-rung fraction (so a step-output match still counts when T2 is absent).
+
+Verdict (spec §4): a Cause is "live" when its belief is at/above the surface
 threshold (refuted Causes have belief 0, so they're excluded). 0 live → fallback;
 1 live → single attribution; ≥2 live → surface the set for LLM disambiguation.
-The runbook is a *prior, not a gate* — a partially-matching chain still surfaces
-at lower confidence, and the always-available T2 tier means predicates never gate.
+The runbook is a *prior, not a gate*.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
@@ -35,6 +51,7 @@ from faultmaven.core.investigation.cause_schemas import (
     CauseMatchResult,
     CauseRecord,
     RungResult,
+    is_problem_node,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,9 +85,11 @@ class IndicatorEvaluator:
             step_output_resolver: Returns the text output recorded for Diagnostic
                 Step ``N`` in the current case, or ``None`` if no output is
                 available yet (the step has not run). Drives T1 predicates.
-            case_evidence_qa: Async T2 fallback — takes an indicator question,
-                returns True/False. When ``None``, prose indicators are
-                ``untested`` (fail-open: they don't match and don't refute).
+            case_evidence_qa: Async T2 semantic resolver — takes a condition
+                string, returns True/False against the case evidence. Called
+                ONCE per cause with the holistic cause condition (#545). When
+                ``None``, the cause rests on the deterministic T1 tier alone
+                (fail-open: no semantic match, and never a refutation).
         """
         self._resolve_step = step_output_resolver
         self._case_evidence_qa = case_evidence_qa
@@ -87,7 +106,12 @@ class IndicatorEvaluator:
         Returns a ``CauseMatchResult`` whose ``verdict`` / ``selected_cause``
         drive the engine's branching per runbook-cause-matching.md §4.
         """
-        cause_matches = [await self._evaluate_cause(c) for c in causes]
+        # Each cause's holistic T2 is one independent classifier call — evaluate
+        # them concurrently so a multi-cause runbook costs one round-trip of wall
+        # time, not N. gather preserves input order.
+        cause_matches = list(
+            await asyncio.gather(*(self._evaluate_cause(c) for c in causes))
+        )
 
         # Live = a real (non-fallback) Cause above the surface threshold. A
         # refuted Cause has belief 0, so the threshold already excludes it.
@@ -131,11 +155,11 @@ class IndicatorEvaluator:
             )
 
         rung_results: List[RungResult] = []
-        # ref → aggregated (matched, refuted) over that rung's indicators.
+        # ref → aggregated (matched, refuted) over that rung's T1 indicators.
         rung_state: Dict[str, Dict[str, bool]] = {}
         for ref, indicators in cause.rung_indicators.items():
             for indicator_text in indicators:
-                rr = await self._evaluate_rung(ref, indicator_text, cause)
+                rr = self._evaluate_rung_t1(ref, indicator_text, cause)
                 rung_results.append(rr)
                 st = rung_state.setdefault(ref, {"matched": False, "refuted": False})
                 st["matched"] = st["matched"] or rr.matched
@@ -143,9 +167,21 @@ class IndicatorEvaluator:
 
         refuted = any(st["refuted"] for st in rung_state.values())
         total = len(cause.rung_indicators)  # rungs that carry indicators
-        matched = sum(1 for st in rung_state.values() if st["matched"])
-        # Refutation prunes the chain hard (§4); otherwise monotone k-of-n.
-        belief = 0.0 if (refuted or total == 0) else matched / total
+
+        if refuted or total == 0:
+            # A deterministic contradiction prunes the chain hard (§4); and a
+            # cause with NO indicator rungs has no structural anchor — it must
+            # not go live on a holistic judgment alone (would let a degenerate /
+            # indicator-less Cause attribute on a single fuzzy YES).
+            belief = 0.0
+        else:
+            # T2 semantic tier is now ONE holistic per-cause judgment (#545), not
+            # per-rung. A holistic "supported" dominates; otherwise the cause
+            # rests on whatever the deterministic T1 tier matched.
+            t1_matched = sum(1 for st in rung_state.values() if st["matched"])
+            t1_frac = t1_matched / total
+            holistic = await self._holistic_cause_match(cause)
+            belief = 1.0 if holistic else t1_frac
 
         return CauseMatch(
             cause_letter=cause.cause_letter,
@@ -156,13 +192,18 @@ class IndicatorEvaluator:
             is_fallback=False,
         )
 
-    async def _evaluate_rung(
+    def _evaluate_rung_t1(
         self, ref: str, indicator_text: str, cause: CauseRecord
     ) -> RungResult:
-        # `[Default]` is the "no real indicator" sentinel. The fallback Cause is
-        # already short-circuited in `_evaluate_cause` (by is_fallback_cause), so
-        # this only fires defensively if the token leaks onto a non-fallback
-        # Cause — never send it to T2 QA as a (meaningless) question.
+        """Deterministic (T1) evaluation of one rung indicator.
+
+        Returns ``matched`` / ``refuted`` only when a ``[Step N]`` predicate is
+        determinable against recorded step output; otherwise ``untested``. The
+        semantic (T2) tier is handled once per cause in ``_holistic_cause_match``,
+        not here — see the module docstring (#545).
+        """
+        # `[Default]` is the "no real indicator" sentinel (fallback Cause only;
+        # short-circuited upstream — defensive here).
         if "[Default]" in indicator_text:
             return RungResult(
                 rung_ref=ref,
@@ -172,7 +213,6 @@ class IndicatorEvaluator:
                 method="untested",
             )
 
-        # T1 — deterministic predicate.
         predicate = self._find_matching_predicate(indicator_text, cause)
         if predicate is not None:
             try:
@@ -184,39 +224,69 @@ class IndicatorEvaluator:
                     refuted=verdict == "refuted",
                     method="deterministic" if verdict != "untested" else "untested",
                 )
-            except Exception as exc:  # noqa: BLE001 — log + fall through to T2
+            except Exception as exc:  # noqa: BLE001 — log + treat as untested
                 logger.warning(
-                    "Predicate evaluation failed for %r: %s; falling back to "
-                    "case_evidence_qa",
+                    "Predicate evaluation failed for %r: %s; treating as untested",
                     predicate,
                     exc,
                 )
 
-        # T2 — semantic fallback (never refutes; an unavailable QA is untested).
-        if self._case_evidence_qa is None:
-            return RungResult(
-                rung_ref=ref,
-                indicator_text=indicator_text,
-                matched=False,
-                refuted=False,
-                method="untested",
-            )
-        question = f"Does the case evidence satisfy: {indicator_text}?"
-        try:
-            matched = bool(await self._case_evidence_qa(question))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "case_evidence_qa fallback failed for indicator %r: %s",
-                indicator_text,
-                exc,
-            )
-            matched = False
+        # No determinable predicate → untested (the holistic T2 carries semantics).
         return RungResult(
             rung_ref=ref,
             indicator_text=indicator_text,
-            matched=matched,
+            matched=False,
             refuted=False,
-            method="case_evidence_qa",
+            method="untested",
+        )
+
+    async def _holistic_cause_match(self, cause: CauseRecord) -> bool:
+        """One holistic T2 judgment: does the case evidence support this cause?
+
+        Judged from the cause's SYMPTOM-level description (name + statement +
+        chain prose), not the per-rung operator indicators (which are
+        tool-output-phrased and don't match symptom-level evidence — #545). Never
+        refutes; ``False`` (or no QA injected / an error) just means 'not matched'.
+        """
+        if self._case_evidence_qa is None:
+            return False
+        condition = self._build_cause_condition(cause)
+        if condition is None:
+            # No symptom-level description to judge on — abstain rather than ask
+            # the classifier a contentless question (which it might answer YES to).
+            return False
+        try:
+            return bool(await self._case_evidence_qa(condition))
+        except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
+            logger.warning(
+                "holistic case_evidence_qa failed for cause %r: %s",
+                cause.cause_letter,
+                exc,
+            )
+            return False
+
+    @staticmethod
+    def _build_cause_condition(cause: CauseRecord) -> Optional[str]:
+        """Render a cause as a symptom-level condition for the holistic T2 call.
+
+        Returns ``None`` when the cause carries no usable description (no
+        statement, no non-problem chain prose, no name) — there is nothing
+        meaningful to judge. The PROBLEM (D) node is excluded via the shared
+        ``is_problem_node`` so the symptom-under-investigation never leaks into
+        the condition (which would make every cause trivially match).
+        """
+        chain = " → ".join(
+            (n.get("statement") or "").strip()
+            for n in cause.chain_nodes
+            if not is_problem_node(n) and (n.get("statement") or "").strip()
+        )
+        mechanism = (cause.cause_statement or "").strip() or chain
+        name = (cause.cause_name or "").strip()
+        if not mechanism and not name:
+            return None
+        subject = name or cause.cause_letter
+        return f"The case is explained by the cause '{subject}'" + (
+            f" — {mechanism}" if mechanism else ""
         )
 
     # ------------------------------------------------------------------
