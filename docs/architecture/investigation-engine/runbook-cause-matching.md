@@ -165,16 +165,22 @@ per-runbook. Avoid `regex` — it composes poorly and tempts fragile hints.
 A Cause does **not** require all rungs to match to be surfaced — that would be the
 rigidity trap the governing principle warns against.
 
-- **Confidence is monotone in matched rungs**, not all-or-nothing. *k of n* rungs
-  matched → the chain is a live candidate with belief scaled by depth and rung
-  importance (high-value rungs are mid-ladder, uncertain, and divergent between
-  Causes).
+- **Belief is per-cause, not per-rung k-of-n** (updated by #549 — see §2.1). The
+  semantic tier is one holistic judgment per Cause ("is the case explained by this
+  cause?"). Belief = `0` if any rung is deterministically refuted *or* the Cause
+  has no indicator rungs; else `1.0` when the holistic judgment supports the
+  Cause; else the deterministic T1 matched-rung fraction. (The original design
+  scaled belief monotonically over matched rungs; per-rung indicators turned out
+  to be operator-step-phrased and unmatched by symptom-level evidence — see the
+  §2.1 superseded note. The deterministic T1 fraction is the residual of that
+  model, ~0 in evidence-only FaultMaven.)
 - **Refutation prunes.** A rung whose indicator is *contradicted* (REFUTES
   evidence) drops the chain hard. (M7 AND-member pruning applies only to
   engine-formed AND-sets at runtime; runbooks author none.)
-- **Strict-all** ("every rung deterministically true") is retained only as the
-  threshold for **deterministic single attribution** — the efficiency case.
-  Everything looser still matches, at lower confidence.
+- **Prior, not a gate.** A Cause goes live at belief ≥ the surface threshold; the
+  capped CANDIDATE prior (≤ 0.5) it instantiates can never conclude alone, so a
+  lenient match cannot produce an incorrect conclusion — soundness rests on the
+  cap + M5 + never-VALIDATED-without-evidence, not on match precision.
 
 After evaluating all Causes in a retrieved runbook:
 
