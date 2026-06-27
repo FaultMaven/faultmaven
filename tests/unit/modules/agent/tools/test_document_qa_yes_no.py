@@ -66,3 +66,18 @@ class TestAnswerYesNo:
     async def test_llm_error_returns_false(self):
         tool, _ = _tool(_chunks(), llm_raises=True)
         assert await tool.answer_yes_no("q", scope_id="case_1") is False
+
+    @pytest.mark.asyncio
+    async def test_no_classifier_model_returns_false_without_llm_call(
+        self, monkeypatch
+    ):
+        # Misconfiguration: no classifier model → return False (logged), don't
+        # call the router with an empty model.
+        tool, router = _tool(_chunks(), llm_content="YES")
+        monkeypatch.setattr(
+            type(tool._settings.llm),
+            "get_classifier_model",
+            lambda self: "",
+        )
+        assert await tool.answer_yes_no("q", scope_id="case_1") is False
+        router.route.assert_not_awaited()

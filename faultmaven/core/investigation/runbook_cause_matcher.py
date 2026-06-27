@@ -55,6 +55,21 @@ _DEFAULT_MAX_RUNBOOKS = 3
 # ALONE can never make FM conclude the cause. Real evidence lifts it past 0.6.
 _MATCHER_MAX_PRIOR = 0.5
 
+# Prefix on a matcher hypothesis's ``rationale``. It doubles as the per-case
+# skip-guard signal (``is_runbook_match_hypothesis``): the matcher runs every
+# turn, so it must recognize its own prior cheaply — and ``rationale`` PERSISTS
+# (a ``hypotheses`` column) where a fresh model field would not, so the guard
+# survives the case being reloaded between turns.
+RUNBOOK_MATCH_RATIONALE_PREFIX = "Instantiated from runbook"
+
+
+def is_runbook_match_hypothesis(hyp: "Hypothesis") -> bool:
+    """True if ``hyp`` was seeded by the runbook Cause matcher (its rationale
+    carries the matcher's marker prefix). The per-case skip-guard signal."""
+    return str(getattr(hyp, "rationale", "") or "").startswith(
+        RUNBOOK_MATCH_RATIONALE_PREFIX
+    )
+
 
 def chain_to_specs(
     cause: CauseRecord,
@@ -190,16 +205,17 @@ def attach_matched_hypothesis(
         current_turn=case.current_turn,
         generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
         state=HypothesisState.ACTIVE,
+        # The prefix is the persisted skip-guard signal (see
+        # is_runbook_match_hypothesis) — keep it leading.
         rationale=(
-            f"Instantiated from runbook {match.runbook_id} (cause {letter}) "
-            "matching the case."
+            f"{RUNBOOK_MATCH_RATIONALE_PREFIX} {match.runbook_id} "
+            f"(cause {letter}) matching the case."
         ),
     )
     # path before root_node_id so the lenient root==path[0] invariant holds at
     # every intermediate state.
     hyp.path = path
     hyp.root_node_id = root_id
-    hyp.from_runbook_match = True  # provenance + the per-case skip-guard signal
     case.hypotheses[hyp.hypothesis_id] = hyp
     return hyp
 

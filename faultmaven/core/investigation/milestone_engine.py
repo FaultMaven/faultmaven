@@ -5713,18 +5713,21 @@ class MilestoneEngine:
         runbook's numbered steps, so there is no per-step output to resolve.
         """
         try:
+            from faultmaven.core.investigation.runbook_cause_matcher import (
+                is_runbook_match_hypothesis,
+            )
+
             # Skip-guard (cost): the T2 match is LLM-heavy, so run it at most once
             # per case — skip when the cause is already established, or a
-            # runbook-match hypothesis already exists for this case.
+            # runbook-match hypothesis already exists for this case. The latter
+            # keys on the hypothesis rationale, which persists across turns, so
+            # the guard survives the case being reloaded between turns.
             if (
                 case.progress
                 and getattr(case.progress, "cause_state", None) == CauseState.IDENTIFIED
             ):
                 return
-            if any(
-                getattr(h, "from_runbook_match", False)
-                for h in case.hypotheses.values()
-            ):
+            if any(is_runbook_match_hypothesis(h) for h in case.hypotheses.values()):
                 return
 
             adapter = (

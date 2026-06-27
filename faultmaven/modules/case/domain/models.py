@@ -2873,16 +2873,6 @@ class Hypothesis(BaseModel):
         description="How hypothesis was generated"
     )
 
-    from_runbook_match: bool = Field(
-        default=False,
-        description=(
-            "Provenance: seeded by the runbook Cause matcher (a runbook whose "
-            "causal chain matched the case), not by the LLM. Used as the "
-            "matcher's per-case skip-guard so the expensive match runs at most "
-            "once per case."
-        ),
-    )
-
     retirement_reason: Optional[str] = Field(
         default=None, description="Reason if hypothesis was retired"
     )

@@ -296,6 +296,15 @@ Answer:"""
             chunks = await self._dispatch_search(collection, question, k, filters)
             if not chunks:
                 return False
+            classifier_model = self._settings.llm.get_classifier_model()
+            if not classifier_model:
+                # Misconfiguration: no classifier model resolved. Surface it once
+                # rather than silently abstaining (every call would return False).
+                logger.warning(
+                    "answer_yes_no: no classifier model configured; "
+                    "returning False (evidence judgment unavailable)"
+                )
+                return False
             context = self._build_context_from_chunks(chunks)
             prompt = (
                 "Based ONLY on the evidence below, is the following condition "
@@ -304,7 +313,7 @@ Answer:"""
                 f"Condition: {question}\n\nEvidence:\n{context}\n\nAnswer:"
             )
             response = await self._llm_router.route(
-                model=self._settings.llm.get_classifier_model(),
+                model=classifier_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=5,
                 temperature=0.0,
