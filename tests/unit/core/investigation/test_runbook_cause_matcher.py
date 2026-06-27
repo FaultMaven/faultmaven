@@ -207,6 +207,7 @@ class _FakeKB:
                 "user_id": user_id,
                 "team_ids": team_ids,
                 "max_runbooks": max_runbooks,
+                "evaluator": evaluator,
             }
         )
         return self._results
@@ -517,10 +518,32 @@ def _engine(*, registry, knowledge_service):
     return eng
 
 
-def _registry(wrapped):
-    """A fake AgentToolRegistry: .get('kb_qa') → adapter exposing .wrapped."""
-    adapter = SimpleNamespace(wrapped=wrapped)
-    return SimpleNamespace(get=lambda name: adapter if name == "kb_qa" else None)
+def _registry(wrapped, *, ce_wrapped=None):
+    """A fake AgentToolRegistry: .get('kb_qa') → adapter exposing .wrapped, and
+    optionally .get('case_evidence_search') → adapter exposing the T2 tool."""
+    kb_adapter = SimpleNamespace(wrapped=wrapped)
+    ce_adapter = SimpleNamespace(wrapped=ce_wrapped) if ce_wrapped else None
+
+    def _get(name):
+        if name == "kb_qa":
+            return kb_adapter
+        if name == "case_evidence_search":
+            return ce_adapter
+        return None
+
+    return SimpleNamespace(get=_get)
+
+
+class _FakeCaseEvidence:
+    """Stand-in for AnswerFromCaseEvidence with the answer_yes_no primitive."""
+
+    def __init__(self, answer=True):
+        self._answer = answer
+        self.calls = []
+
+    async def answer_yes_no(self, question, scope_id=None, k=5):
+        self.calls.append({"question": question, "scope_id": scope_id})
+        return self._answer
 
 
 def _ks():
@@ -629,3 +652,103 @@ class TestEngineIntegration:
         assert boom.called is True
         assert _SKIP_WARNING in caplog.text
         assert case.causal_nodes == {}
+
+
+class TestEngineFiringAndGuards:
+    """4b-2: T2 case_evidence_qa wiring, the per-case skip-guard, and top-1."""
+
+    @pytest.mark.asyncio
+    async def test_case_evidence_qa_is_wired_and_calls_tool_correctly(self):
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "none")])  # verdict doesn't matter here
+        ce = _FakeCaseEvidence(answer=True)
+        eng = _engine(registry=_registry(kb, ce_wrapped=ce), knowledge_service=_ks())
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        # The evaluator handed to the matcher carries a live T2 resolver, and the
+        # firing path is bounded to one runbook.
+        evaluator = kb.calls[0]["evaluator"]
+        assert evaluator._case_evidence_qa is not None
+        assert kb.calls[0]["max_runbooks"] == 1
+        # Exercise the closure end-to-end: it must call the case-evidence tool
+        # scoped to THIS case (not user_id) with the indicator question.
+        result = await evaluator._case_evidence_qa("does the evidence show X?")
+        assert result is True
+        assert ce.calls[0]["scope_id"] == case.case_id
+        assert ce.calls[0]["question"] == "does the evidence show X?"
+
+    @pytest.mark.asyncio
+    async def test_no_case_evidence_tool_leaves_resolver_none(self):
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "none")])
+        eng = _engine(registry=_registry(kb), knowledge_service=_ks())  # no ce tool
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        assert kb.calls[0]["evaluator"]._case_evidence_qa is None
+
+    @pytest.mark.asyncio
+    async def test_skips_when_cause_state_identified(self):
+        from faultmaven.modules.case.contracts import CauseState
+
+        case = _case()
+        case.progress.cause_state = CauseState.IDENTIFIED
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        ce = _FakeCaseEvidence()
+        eng = _engine(registry=_registry(kb, ce_wrapped=ce), knowledge_service=_ks())
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        assert kb.calls == []  # expensive match never ran
+        assert case.causal_nodes == {}
+
+    @pytest.mark.asyncio
+    async def test_skips_when_runbook_match_hypothesis_exists(self):
+        # The per-case skip-guard: once a runbook-match hypothesis exists, don't
+        # re-run the LLM-heavy match.
+        case = _case()
+        kb1 = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        ce = _FakeCaseEvidence()
+        eng = _engine(registry=_registry(kb1, ce_wrapped=ce), knowledge_service=_ks())
+        await eng._apply_runbook_cause_matcher(case, None, {})  # first turn: matches
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            is_runbook_match_hypothesis,
+        )
+
+        assert any(is_runbook_match_hypothesis(h) for h in case.hypotheses.values())
+
+        kb2 = _FakeKB([_result("kb_rb2", "single", record=_linear_cause("B"))])
+        eng2 = _engine(registry=_registry(kb2, ce_wrapped=ce), knowledge_service=_ks())
+        await eng2._apply_runbook_cause_matcher(case, None, {})  # second turn
+        assert kb2.calls == []  # guarded out — match did not re-run
+
+    @pytest.mark.asyncio
+    async def test_skip_guard_signal_persists_via_rationale(self):
+        # The guard keys on rationale (a persisted hypotheses column), so it
+        # survives a case reload between turns — unlike a fresh model field.
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            RUNBOOK_MATCH_RATIONALE_PREFIX,
+            is_runbook_match_hypothesis,
+        )
+
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "single", record=_linear_cause("A"))])
+        ce = _FakeCaseEvidence()
+        eng = _engine(registry=_registry(kb, ce_wrapped=ce), knowledge_service=_ks())
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        hyp = next(iter(case.hypotheses.values()))
+        # The marker is the *leading* rationale text (what persists + is matched).
+        assert hyp.rationale.startswith(RUNBOOK_MATCH_RATIONALE_PREFIX)
+        assert is_runbook_match_hypothesis(hyp) is True
+
+    def test_llm_authored_hypothesis_is_not_a_match(self):
+        from faultmaven.core.investigation.hypothesis_manager import (
+            create_hypothesis_manager,
+        )
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            is_runbook_match_hypothesis,
+        )
+
+        hyp = create_hypothesis_manager().create_hypothesis(
+            statement="some LLM cause",
+            category="code",
+            initial_likelihood=0.5,
+            current_turn=1,
+            rationale="The deploy preceded the errors.",
+        )
+        assert is_runbook_match_hypothesis(hyp) is False

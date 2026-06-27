@@ -452,6 +452,33 @@ class TestRelatedDataRoundTrip:
         assert got.likelihood == pytest.approx(0.6)
 
     @pytest.mark.asyncio
+    async def test_runbook_match_guard_signal_survives_db_round_trip(self, repository):
+        """The matcher's per-case skip-guard keys on the hypothesis rationale
+        (is_runbook_match_hypothesis). The original bug was that the prior signal
+        did NOT survive save→reload; this proves rationale (hence the guard) does.
+        """
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            RUNBOOK_MATCH_RATIONALE_PREFIX,
+            is_runbook_match_hypothesis,
+        )
+
+        case = _make_case()
+        matched = _make_hypothesis(statement="runbook-matched cause")
+        matched.rationale = (
+            f"{RUNBOOK_MATCH_RATIONALE_PREFIX} kb_abc123 (cause A) matching the case."
+        )
+        llm = _make_hypothesis(statement="llm cause")
+        llm.rationale = "The deploy preceded the errors."
+        case.hypotheses[matched.hypothesis_id] = matched
+        case.hypotheses[llm.hypothesis_id] = llm
+
+        await repository.save(case)
+        reloaded = await repository.get(case.case_id)
+
+        assert is_runbook_match_hypothesis(reloaded.hypotheses[matched.hypothesis_id])
+        assert not is_runbook_match_hypothesis(reloaded.hypotheses[llm.hypothesis_id])
+
+    @pytest.mark.asyncio
     async def test_hypothesis_upsert_is_purely_additive(self, repository):
         """save(case) must NOT delete hypotheses absent from the in-memory
         case.hypotheses dict. Removal is intentionally explicit and not

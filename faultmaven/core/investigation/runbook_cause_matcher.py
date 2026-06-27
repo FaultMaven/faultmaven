@@ -1,4 +1,4 @@
-"""Runbook Cause matcher — per-turn instantiation (increments 4a, 4b-1).
+"""Runbook Cause matcher — per-turn instantiation (increments 4a, 4b-1, 4b-2).
 
 Bridges the structured matcher (``kb_qa.aget_cause_matches`` → ``CauseMatchResult``)
 to the case's causal graph: when a retrieved runbook's Cause matches with a single
@@ -11,11 +11,13 @@ matcher seeds a structural *prior*; everything downstream (``derive_node_states`
 RCC synthesis, the M5 solution gate) then treats these nodes exactly like
 LLM-emitted ones — which is what keeps the soundness guarantees automatic.
 
-Flag-gated OFF. The deterministic (step-output) and semantic (``case_evidence_qa``)
-resolvers that drive matching are NOT yet wired, so a flag-ON matcher abstains
-(verdict 'none') rather than acting — this module is the structural seam,
-validated here with fakes. Remaining 4b units: wire those resolvers so matching
-fires, and map interventions → ``Solution`` (through the M5 gate).
+Matching fires on the **T2 semantic tier** (``case_evidence_qa`` over the case's
+vectorized evidence — wired in 4b-2). The T1 deterministic tier stays inert:
+FaultMaven investigates uploaded evidence rather than executing a runbook's
+numbered diagnostic steps, so there is no per-step output to resolve (the spec
+frames T1 as an opportunistic fast-path, T2 as the canonical robustness floor).
+Still flag-gated OFF until increment 5. Remaining: map interventions → ``Solution``
+(4b-3, through the M5 gate).
 """
 
 from __future__ import annotations
@@ -52,6 +54,21 @@ _DEFAULT_MAX_RUNBOOKS = 3
 # which gates the M5 solution gate and resolution readiness) so a runbook match
 # ALONE can never make FM conclude the cause. Real evidence lifts it past 0.6.
 _MATCHER_MAX_PRIOR = 0.5
+
+# Prefix on a matcher hypothesis's ``rationale``. It doubles as the per-case
+# skip-guard signal (``is_runbook_match_hypothesis``): the matcher runs every
+# turn, so it must recognize its own prior cheaply — and ``rationale`` PERSISTS
+# (a ``hypotheses`` column) where a fresh model field would not, so the guard
+# survives the case being reloaded between turns.
+RUNBOOK_MATCH_RATIONALE_PREFIX = "Instantiated from runbook"
+
+
+def is_runbook_match_hypothesis(hyp: "Hypothesis") -> bool:
+    """True if ``hyp`` was seeded by the runbook Cause matcher (its rationale
+    carries the matcher's marker prefix). The per-case skip-guard signal."""
+    return str(getattr(hyp, "rationale", "") or "").startswith(
+        RUNBOOK_MATCH_RATIONALE_PREFIX
+    )
 
 
 def chain_to_specs(
@@ -188,9 +205,11 @@ def attach_matched_hypothesis(
         current_turn=case.current_turn,
         generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
         state=HypothesisState.ACTIVE,
+        # The prefix is the persisted skip-guard signal (see
+        # is_runbook_match_hypothesis) — keep it leading.
         rationale=(
-            f"Instantiated from runbook {match.runbook_id} (cause {letter}) "
-            "matching the case."
+            f"{RUNBOOK_MATCH_RATIONALE_PREFIX} {match.runbook_id} "
+            f"(cause {letter}) matching the case."
         ),
     )
     # path before root_node_id so the lenient root==path[0] invariant holds at

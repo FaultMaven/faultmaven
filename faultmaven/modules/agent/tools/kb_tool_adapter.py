@@ -107,6 +107,15 @@ class CaseEvidenceQAAdapter(AgentTool):
         self._wrapped = wrapped_tool
 
     @property
+    def wrapped(self) -> Any:
+        """The underlying ``AnswerFromCaseEvidence`` tool.
+
+        Exposed so the investigation engine can reach ``answer_yes_no`` (the
+        runbook Cause matcher's T2 evidence judgment), which is not part of the
+        prose ``AgentTool`` interface this adapter presents."""
+        return self._wrapped
+
+    @property
     def name(self) -> str:
         return "case_evidence_search"
 
