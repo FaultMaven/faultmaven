@@ -88,6 +88,84 @@ def _rm_target_is_catastrophic(target: str) -> bool:
     return bool(re.fullmatch(r"/+([\w.-]+)?/?\*?", target))  # /, /etc, /etc/, /etc/*
 
 
+# --- Cause-Statement invariants (the symptom-level match surface; #545) -------
+#
+# Post-#545 the cause Statement (not the per-rung Indicators) is the load-bearing
+# match surface, matched holistically per cause. Two authoring invariants follow.
+# Bias is hard toward WARN: a mis-authored Statement only degrades the matcher to
+# abstention (verdict 'multiple') or a capped-0.5 CANDIDATE prior that can't
+# conclude without real evidence (M5 + never-VALIDATED) — it cannot cause an
+# incorrect conclusion. So a false BLOCK is the only real harm; we block ONLY
+# unambiguous mechanical tells (verified never to fire on the 91 shipped runbooks)
+# and warn on the rest. True "is this symptom-level prose" judgment is the
+# build-time generator's job (a separate LLM rule), not this lexical gate.
+#
+# Mirrored verbatim in kb-toolkit (kb_toolkit/core/validator.py) — the repos
+# can't import each other. Keep the two copies identical.
+
+_STEP_MARKER_RE = re.compile(r"\[Step\s*\d+\]")
+_SIBLING_NEAR_DUP_JACCARD = 0.6
+
+
+def _norm_statement(s: str) -> str:
+    # Same word sequence, ignoring case / punctuation / whitespace — so two
+    # Statements that differ only by a trailing period count as identical.
+    return " ".join(re.findall(r"[a-z0-9]+", s.lower()))
+
+
+def _statement_jaccard(a: str, b: str) -> float:
+    ta = set(re.findall(r"[a-z0-9]+", a.lower()))
+    tb = set(re.findall(r"[a-z0-9]+", b.lower()))
+    return len(ta & tb) / len(ta | tb) if (ta | tb) else 0.0
+
+
+def check_cause_statement_invariants(
+    statements: List[tuple],
+) -> tuple[List[str], List[str]]:
+    """Invariants on NON-FALLBACK cause Statements (the match surface).
+
+    Args:
+        statements: list of ``(cause_letter, statement)`` for non-fallback causes.
+
+    Returns ``(errors, warnings)``:
+      (i)  BLOCK a Statement carrying an operator-step marker (``[Step N]``) — an
+           Indicator leaking into the symptom-level match surface.
+      (ii) BLOCK exact-duplicate sibling Statements; WARN on near-duplicates
+           (lexical Jaccard >= 0.6) — sibling causes must be mutually
+           discriminative (MECE) or holistic matching returns 'multiple' and the
+           matcher abstains.
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+    for letter, stmt in statements:
+        if _STEP_MARKER_RE.search(stmt or ""):
+            errors.append(
+                f"Cause {letter}: Statement contains an operator-step marker "
+                f"([Step N]). The Statement is the symptom-level match surface — "
+                f"describe the observable condition; keep step references in Indicators."
+            )
+    for i in range(len(statements)):
+        li, si = statements[i]
+        if not (si or "").strip():
+            continue
+        for j in range(i + 1, len(statements)):
+            lj, sj = statements[j]
+            if not (sj or "").strip():
+                continue
+            if _norm_statement(si) == _norm_statement(sj):
+                errors.append(
+                    f"Causes {li} and {lj} have identical Statements; sibling causes "
+                    f"must be mutually discriminative (MECE) or the matcher abstains."
+                )
+            elif _statement_jaccard(si, sj) >= _SIBLING_NEAR_DUP_JACCARD:
+                warnings.append(
+                    f"Causes {li} and {lj} have near-duplicate Statements (lexical "
+                    f"overlap >= {_SIBLING_NEAR_DUP_JACCARD:.0%}); make them "
+                    f"discriminative or holistic matching may return 'multiple'."
+                )
+    return errors, warnings
+
+
 def find_security_hazards(content: str) -> tuple[list[str], list[str]]:
     """Return (blocking_errors, non_blocking_warnings) for security hazards.
 
@@ -211,6 +289,9 @@ class RunbookValidator:
 
         # Gate 2: Structural linting
         self._validate_structure(content, errors, warnings)
+
+        # Gate 2b: per-Cause Statement invariants (the match surface; #545)
+        self._validate_cause_statements(content, errors, warnings)
 
         # Content quality checks
         self._validate_quality(content, warnings)
@@ -366,6 +447,34 @@ class RunbookValidator:
                     "Found v3 Cause sub-field(s) (Mechanism/Mitigation/Resolution) — "
                     "v4 uses Statement / Chain / Indicators / quadrant-tagged Interventions"
                 )
+
+    def _validate_cause_statements(
+        self, content: str, errors: List[str], warnings: List[str]
+    ) -> None:
+        """Parse per-Cause Statements and apply the match-surface invariants (#545).
+
+        Coarse markdown parse (this validator is document-level): split on
+        ``### Cause X:`` headings, pull each block's ``**Statement:**``, drop the
+        fallback Cause (``[Default]`` in its block, or letter Z), and run the
+        shared ``check_cause_statement_invariants``.
+        """
+        heading_re = re.compile(r"^#{3,}\s+Cause\s+([A-Za-z0-9]+)\s*:", re.MULTILINE)
+        statement_re = re.compile(
+            r"\*\*Statement:\*\*\s*(.+?)(?=\n\s*\*\*\w|\n#{1,}\s|\Z)", re.DOTALL
+        )
+        heads = list(heading_re.finditer(content))
+        statements: List[tuple] = []
+        for i, h in enumerate(heads):
+            letter = h.group(1)
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(content)
+            body = content[h.end() : end]
+            if "[Default]" in body or letter.upper() == "Z":
+                continue  # fallback Cause — not a match surface
+            m = statement_re.search(body)
+            statements.append((letter, m.group(1).strip() if m else ""))
+        errs, warns = check_cause_statement_invariants(statements)
+        errors.extend(errs)
+        warnings.extend(warns)
 
     def _validate_quality(self, content: str, warnings: List[str]) -> None:
         content_body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, flags=re.DOTALL)
