@@ -13,7 +13,6 @@ import pytest
 
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
-    LLMBillingError,
     LLMException,
     is_billing_quota_error,
 )
@@ -101,12 +100,6 @@ class TestBillingQuotaClassification:
         e = LLMException("insufficient_quota", status_code=429, retryable=True)
         assert e.error_code == QUOTA_EXHAUSTED
         assert e.retryable is False
-
-    def test_llm_billing_error_subclass(self):
-        e = LLMBillingError(status_code=429)
-        assert e.error_code == QUOTA_EXHAUSTED
-        assert e.retryable is False
-        assert isinstance(e, LLMException)
 
     def test_is_billing_quota_error_helper(self):
         assert is_billing_quota_error("insufficient_quota") is True

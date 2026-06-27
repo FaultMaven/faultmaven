@@ -341,7 +341,6 @@ class TestBillingErrorHandling:
         err = CircuitBreakerError(
             "Circuit breaker is open for LLM_Providers",
             error_code=QUOTA_EXHAUSTED,
-            cause_message="insufficient_quota",
         )
         result = await handler.handle_error(err)
 

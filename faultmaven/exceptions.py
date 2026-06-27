@@ -190,31 +190,6 @@ class LLMException(FaultMavenException):
         super().__init__(message, **kwargs)
 
 
-class LLMBillingError(LLMException):
-    """Raised when an LLM provider rejects a call for billing/quota reasons.
-
-    A permanent, operator-actionable condition (out of credits, billing not
-    enabled, hard quota/spend cap). Non-retryable and carries error_code
-    ``QUOTA_EXHAUSTED`` so the API and UI can tell the user to add credits
-    rather than uselessly retry. Providers don't need to raise this directly —
-    ``LLMException`` auto-classifies billing bodies — but it's available for
-    call sites that detect billing explicitly.
-    """
-
-    def __init__(
-        self,
-        message: str = "LLM provider quota or credits exhausted",
-        status_code: Optional[int] = None,
-        **kwargs,
-    ):
-        super().__init__(
-            message,
-            status_code=status_code,
-            error_code=QUOTA_EXHAUSTED,
-            **kwargs,
-        )
-
-
 class ModelLoadingException(LLMException):
     """Raised when an LLM model is still loading (e.g., HuggingFace 503).
 

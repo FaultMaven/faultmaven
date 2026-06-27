@@ -239,3 +239,28 @@ async def test_billing_open_breaker_preserves_quota_code(fast_handler):
     assert error is not None
     assert error.action == ErrorAction.ESCALATE
     assert error.error_code == QUOTA_EXHAUSTED
+
+
+def test_billing_signal_latches_past_trailing_transient():
+    """A permanent billing classification must survive a later *transient*
+    failure in the same streak. If the most recent failure before the breaker
+    opens carries no error_code, the breaker must still report QUOTA_EXHAUSTED —
+    otherwise the open-breaker error maps to a generic 500 instead of 402."""
+    from faultmaven.infrastructure.base_client import CircuitBreaker
+
+    cb = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
+    billing = LLMException("insufficient_quota", status_code=429)
+    transient = LLMException("502 bad gateway", status_code=502)
+
+    cb.record_failure(billing)  # classified QUOTA_EXHAUSTED
+    cb.record_failure(billing)
+    cb.record_failure(transient)  # error_code=None — must NOT erase the latch
+
+    assert cb.state == "open"
+    assert cb.last_failure_error_code == QUOTA_EXHAUSTED
+
+    # A success clears the latch so a fresh streak starts unclassified.
+    cb.record_success()
+    assert cb.last_failure_error_code is None
+    cb.record_failure(transient)
+    assert cb.last_failure_error_code is None
