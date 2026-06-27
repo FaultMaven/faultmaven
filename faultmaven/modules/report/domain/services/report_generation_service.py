@@ -15,7 +15,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import (
+    QUOTA_EXHAUSTED,
+    ServiceException,
+    ValidationException,
+    is_billing_error,
+)
 from faultmaven.infrastructure.concurrency import (
     LockAcquisitionError,
     ReportLockManager,
@@ -169,6 +174,16 @@ class ReportGenerationService:
                 )
 
             except Exception as e:
+                # Billing/quota exhaustion is permanent and affects every report
+                # type — don't swallow-and-continue (the next type would hit the
+                # same out-of-credits provider). Abort and propagate so the route
+                # maps it to 402 instead of a misleading "no reports generated".
+                if is_billing_error(e):
+                    raise ServiceException(
+                        "Report generation failed: AI provider is out of "
+                        "quota or credits",
+                        details={"error_code": QUOTA_EXHAUSTED},
+                    ) from e
                 logger.error(
                     f"Failed to generate {report_type.value} report: {e}",
                     extra={"case_id": case.case_id},

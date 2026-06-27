@@ -106,3 +106,34 @@ class TestBillingQuotaClassification:
         assert is_billing_quota_error("anything", status_code=402) is True
         assert is_billing_quota_error("rate limit reached", status_code=429) is False
         assert is_billing_quota_error("") is False
+
+    def test_is_billing_error_typed_wrapped_and_negative(self):
+        """Module-level is_billing_error: typed code, __cause__ walk, and a
+        plain transient that must not match."""
+        from faultmaven.exceptions import is_billing_error
+
+        billing = LLMException("insufficient_quota", status_code=429)
+        assert is_billing_error(billing) is True
+
+        # Wrapped as the cause of a generic exception (engine/service wrap).
+        try:
+            raise RuntimeError("Turn processing failed") from billing
+        except RuntimeError as wrapped:
+            assert is_billing_error(wrapped) is True
+
+        # Plain transient rate-limit is NOT billing.
+        assert (
+            is_billing_error(LLMException("rate limit reached", status_code=429))
+            is False
+        )
+
+    def test_is_billing_error_handles_cyclic_cause_chain(self):
+        """A cyclic __cause__ chain must not hang the cycle-guarded walk."""
+        from faultmaven.exceptions import is_billing_error
+
+        a = RuntimeError("a")
+        b = RuntimeError("b")
+        a.__cause__ = b
+        b.__cause__ = a  # cycle
+        # Terminates (no infinite loop) and finds no billing signal.
+        assert is_billing_error(a) is False

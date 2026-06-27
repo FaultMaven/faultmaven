@@ -136,6 +136,27 @@ def is_billing_quota_error(message: str, status_code: Optional[int] = None) -> b
     return any(marker in text for marker in _BILLING_ERROR_MARKERS)
 
 
+def is_billing_error(error: BaseException) -> bool:
+    """Detect a permanent billing/quota-exhaustion failure on an exception.
+
+    Prefers the typed ``error_code`` set on ``LLMException`` /
+    ``CircuitBreakerError`` (walking ``__cause__`` so a billing error wrapped as
+    the cause of a generic exception is still detected), falling back to
+    marker-based body detection for plain exceptions whose typed metadata was
+    lost in wrapping. Shared by the investigation error handler and any other
+    layer (e.g. report generation) that must distinguish billing from transient
+    failures.
+    """
+    cursor: Optional[BaseException] = error
+    seen: set = set()  # guard against cyclic __cause__ chains
+    while cursor is not None and id(cursor) not in seen:
+        if getattr(cursor, "error_code", None) == QUOTA_EXHAUSTED:
+            return True
+        seen.add(id(cursor))
+        cursor = cursor.__cause__
+    return is_billing_quota_error(str(error))
+
+
 class LLMException(FaultMavenException):
     """Raised when LLM operations fail.
 

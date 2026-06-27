@@ -18,12 +18,13 @@ Specification: docs/architecture/specifications/exception-contract.md
 """
 
 import logging
-from typing import Callable, Type
+from typing import Callable, Optional, Type
 
-from fastapi import Request, status
+from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from faultmaven.exceptions import (
+    QUOTA_EXHAUSTED,
     AuthorizationError,
     ConflictError,
     NotFoundError,
@@ -32,6 +33,47 @@ from faultmaven.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+# User-facing message for billing/quota exhaustion. Single source of truth so
+# every endpoint that surfaces QUOTA_EXHAUSTED says the same thing.
+QUOTA_EXHAUSTED_DETAIL = (
+    "FaultMaven's AI provider is out of quota or credits. An administrator "
+    "needs to add credits or update the provider's billing plan before this "
+    "can continue."
+)
+
+
+def is_quota_exhausted_service_error(exc: BaseException) -> bool:
+    """True if ``exc`` carries the ``QUOTA_EXHAUSTED`` error_code in its details.
+
+    The signal a ServiceException carries when an LLM-calling service hits
+    billing/quota exhaustion. Shared by every route's ``except ServiceException``
+    block so billing is detected identically (→ 402) instead of each handler
+    re-implementing the lookup.
+    """
+    return (getattr(exc, "details", None) or {}).get("error_code") == QUOTA_EXHAUSTED
+
+
+def quota_exhausted_http_exception(
+    correlation_id: Optional[str] = None,
+) -> HTTPException:
+    """Build the canonical HTTP 402 response for billing/quota exhaustion.
+
+    A permanent, operator-actionable condition — the provider is out of credits.
+    Maps to **402 Payment Required** with ``x-error-code: QUOTA_EXHAUSTED`` and
+    **no** ``Retry-After`` (retrying can't help until an operator adds credits).
+    Use from any route's ``except`` block when ``exceptions.is_billing_error``
+    (or a ServiceException carrying ``error_code == QUOTA_EXHAUSTED``) matches,
+    so every LLM-calling endpoint surfaces billing identically.
+    """
+    headers = {"x-error-code": QUOTA_EXHAUSTED}
+    if correlation_id is not None:
+        headers["x-correlation-id"] = correlation_id
+    return HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail=QUOTA_EXHAUSTED_DETAIL,
+        headers=headers,
+    )
 
 
 async def not_found_exception_handler(
