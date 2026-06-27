@@ -28,7 +28,9 @@ import math
 import re
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
+
+from chromadb.errors import NotFoundError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 
@@ -884,6 +886,48 @@ class KnowledgeVectorStore(BaseExternalClient):
             retry_delay=1.0,
         )
 
+    async def delete_documents_by_parents(
+        self,
+        parent_document_ids: Iterable[str],
+        collection_name: str = KB_COLLECTION,
+    ) -> int:
+        """Delete all chunks of MANY parents in one ChromaDB round-trip.
+
+        The reconcile pass can find a large batch of orphaned parents at once
+        (119 in the 2026-06 drift); a per-parent loop would issue one delete call
+        each. ChromaDB ``where`` supports ``$in``, so the whole batch resolves to a
+        single get (for the chunk-id set + count) plus a single delete.
+
+        Returns the number of chunks deleted (0 if the batch matches nothing).
+        """
+        ids = list(parent_document_ids)
+        if not ids:
+            return 0
+
+        async def _delete_wrapper() -> int:
+            collection = self._get_or_create_collection(collection_name)
+            results = collection.get(
+                where={"parent_document_id": {"$in": ids}},
+                include=[],
+            )
+            chunk_ids = results.get("ids", [])
+            if not chunk_ids:
+                return 0
+            collection.delete(ids=chunk_ids)
+            self.logger.info(
+                f"Deleted {len(chunk_ids)} chunks across {len(ids)} parent(s) "
+                f"from KB collection '{collection_name}'"
+            )
+            return len(chunk_ids)
+
+        return await self.call_external(
+            operation_name="delete_documents_by_parents",
+            call_func=_delete_wrapper,
+            timeout=15.0,
+            retries=2,
+            retry_delay=1.0,
+        )
+
     async def list_parent_document_ids(
         self,
         collection_name: str = KB_COLLECTION,
@@ -893,22 +937,30 @@ class KnowledgeVectorStore(BaseExternalClient):
         Lets the bootstrap reconcile pass compare the vector index against the
         ``knowledge_items`` rows (the source of truth) to find drift in either
         direction — vectors with no row (orphans to delete) and rows with no
-        vectors (orphans to warn about). Chunks missing the metadata key are
-        skipped (they can't be reconciled by parent).
+        vectors (orphans to warn about).
+
+        Derives the parent from each chunk **id** (``{item_id}_chunk_{N}``) rather
+        than pulling every chunk's full metadata payload — ``include=[]`` returns
+        only ids, so the per-boot cost scales with id count, not metadata size, and
+        a chunk missing the ``parent_document_id`` metadata key is still resolved
+        (item_ids never contain ``_chunk_``). This matches the retrieval path's
+        ``AnswerFromKB._item_id_for_chunk`` fallback.
         """
 
         async def _list_wrapper() -> Set[str]:
             try:
                 collection = self.client.get_collection(name=collection_name)
-            except Exception:
-                # Collection absent → nothing indexed yet.
+            except NotFoundError:
+                # Collection absent → nothing indexed yet. Any OTHER error
+                # (transport, corruption) propagates to call_external rather than
+                # being silently flattened to an empty index.
                 return set()
-            results = collection.get(include=["metadatas"])
+            results = collection.get(include=[])
             parents: Set[str] = set()
-            for md in results.get("metadatas", []) or []:
-                parent = (md or {}).get("parent_document_id")
-                if parent:
-                    parents.add(parent)
+            for chunk_id in results.get("ids", []) or []:
+                if not isinstance(chunk_id, str):
+                    continue
+                parents.add(chunk_id.rsplit("_chunk_", 1)[0])
             return parents
 
         return await self.call_external(

@@ -1108,11 +1108,12 @@ class KnowledgeService:
             return 0
 
         try:
-            # Remove old chunks for this document (safe for re-ingestion)
-            if hasattr(self._vector_store, "delete_documents_by_parent_id"):
-                await self._vector_store.delete_documents_by_parent_id(
-                    document.document_id
-                )
+            # Remove old chunks for this document (safe for re-ingestion). The
+            # vector store implements delete_documents_by_parent_id (IVectorStore
+            # contract) — calling it directly, with no hasattr guard, so a store
+            # that silently lacks it raises here instead of leaving stale vectors
+            # behind on every re-ingest (the KB drift this campaign fixed).
+            await self._vector_store.delete_documents_by_parent_id(document.document_id)
 
             if prechunked is not None:
                 # Pack fast path: write the pack's chunk texts + vectors as-is.

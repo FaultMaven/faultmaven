@@ -428,21 +428,27 @@ class TestScopePriority:
 
 class _FakeCollection:
     """Minimal ChromaDB collection: in-memory chunks keyed by id with a
-    parent_document_id in metadata. Supports the get(where=)/get(include=)/delete
-    surface the new lifecycle methods rely on."""
+    parent_document_id in metadata. Supports the get(where=) equality + ``$in``,
+    get(include=[]) id-only scan, and delete(ids=) surface the lifecycle methods
+    rely on. Metadata is optional per chunk (some chunks may lack it — id-derived
+    enumeration must still find them)."""
 
     def __init__(self, chunks):
-        # chunks: list of (chunk_id, parent_document_id)
+        # chunks: list of (chunk_id, parent_document_id) — parent only used by
+        # the metadata-based where filter; enumeration derives it from the id.
         self._ids = {cid: parent for cid, parent in chunks}
 
     def get(self, where=None, include=None):
         if where and "parent_document_id" in where:
-            target = where["parent_document_id"]
-            ids = [cid for cid, p in self._ids.items() if p == target]
+            cond = where["parent_document_id"]
+            if isinstance(cond, dict) and "$in" in cond:
+                targets = set(cond["$in"])
+                ids = [cid for cid, p in self._ids.items() if p in targets]
+            else:
+                ids = [cid for cid, p in self._ids.items() if p == cond]
             return {"ids": ids}
-        # full scan → metadatas
-        metadatas = [{"parent_document_id": p} for p in self._ids.values()]
-        return {"ids": list(self._ids), "metadatas": metadatas}
+        # full scan — include=[] returns ids only (the path list_* uses).
+        return {"ids": list(self._ids)}
 
     def delete(self, ids=None):
         for cid in ids or []:
@@ -486,6 +492,32 @@ class TestDeleteDocumentsByParentId:
         assert await store.delete_documents_by_parent_id("kb_missing") == 0
 
 
+class TestDeleteDocumentsByParents:
+    """Batch delete — one round-trip for many orphaned parents (reconcile path)."""
+
+    @pytest.mark.asyncio
+    async def test_deletes_all_named_parents_in_one_call(self):
+        coll = _FakeCollection(
+            [
+                ("kb_a_chunk_0", "kb_a"),
+                ("kb_b_chunk_0", "kb_b"),
+                ("kb_b_chunk_1", "kb_b"),
+                ("kb_keep_chunk_0", "kb_keep"),
+            ]
+        )
+        store = KnowledgeVectorStore(_FakeClient(coll))
+        deleted = await store.delete_documents_by_parents(["kb_a", "kb_b"])
+        assert deleted == 3
+        assert coll._ids == {"kb_keep_chunk_0": "kb_keep"}
+
+    @pytest.mark.asyncio
+    async def test_empty_batch_is_zero_and_no_io(self):
+        coll = _FakeCollection([("kb_a_chunk_0", "kb_a")])
+        store = KnowledgeVectorStore(_FakeClient(coll))
+        assert await store.delete_documents_by_parents([]) == 0
+        assert coll._ids == {"kb_a_chunk_0": "kb_a"}  # untouched
+
+
 class TestListParentDocumentIds:
     @pytest.mark.asyncio
     async def test_returns_distinct_parents(self):
@@ -500,10 +532,33 @@ class TestListParentDocumentIds:
         assert await store.list_parent_document_ids() == {"kb_a", "kb_b"}
 
     @pytest.mark.asyncio
+    async def test_derives_parent_from_id_without_metadata(self):
+        # Enumeration is id-based ({item_id}_chunk_N), so a chunk whose metadata
+        # lacks parent_document_id (parent passed as None here) is still found —
+        # matching the retrieval path's fallback and keeping reconcile complete.
+        coll = _FakeCollection([("kb_x_chunk_0", None), ("kb_x_chunk_1", None)])
+        store = KnowledgeVectorStore(_FakeClient(coll))
+        assert await store.list_parent_document_ids() == {"kb_x"}
+
+    @pytest.mark.asyncio
     async def test_missing_collection_is_empty_set(self):
+        from chromadb.errors import NotFoundError
+
         class _NoCollectionClient:
             def get_collection(self, name):
-                raise ValueError("collection not found")
+                raise NotFoundError("collection not found")
 
         store = KnowledgeVectorStore(_NoCollectionClient())
         assert await store.list_parent_document_ids() == set()
+
+    @pytest.mark.asyncio
+    async def test_non_notfound_error_propagates(self):
+        # A transient/transport error must NOT be flattened to "empty index"
+        # (that would make reconcile warn every row as vector-less).
+        class _BrokenClient:
+            def get_collection(self, name):
+                raise RuntimeError("chroma transport boom")
+
+        store = KnowledgeVectorStore(_BrokenClient())
+        with pytest.raises(RuntimeError):
+            await store.list_parent_document_ids()

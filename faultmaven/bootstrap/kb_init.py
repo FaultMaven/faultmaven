@@ -311,9 +311,9 @@ async def _reconcile_vectors(
     older drift) and are invisible to every DB-side check. This pass closes the
     loop by comparing both sides:
 
-      * **orphaned vectors** — a ``parent_document_id`` present in ChromaDB with no
-        ``knowledge_items`` row. Deleted: the row is the source of truth for a
-        published runbook, so a vector with no row can never be
+      * **orphaned vectors** — a built-in ``parent_document_id`` present in
+        ChromaDB with no ``knowledge_items`` row. Deleted: the row is the source
+        of truth for a shipped runbook, so a vector with no row can never be
         retrieved-then-resolved — and a single such ghost landing as the top KB
         hit silently kills a runbook-cause match.
       * **orphaned rows** — a row with no vectors. Can't be repaired here (no
@@ -321,16 +321,37 @@ async def _reconcile_vectors(
 
     Returns ``(deleted_parent_ids, orphaned_row_ids)``.
 
+    **Scope — only deletes built-in ``kb_<12 hex>`` vectors.** The bootstrap DB
+    session is RLS-scoped (``app.current_org_id`` is set per-transaction; see
+    ``database.py``), so ``db_ids`` is a SINGLE org's rows, while the shared
+    ``faultmaven_kb`` collection holds every org's vectors. Diffing the full
+    collection against a per-org row set would mark every OTHER tenant's runbooks
+    as orphans and delete them — cross-tenant KB data loss. Restricting deletion
+    to the built-in id class (the same discriminator the orphan-prune uses) bounds
+    the blast radius to platform-shipped runbooks, which is exactly the drift this
+    pass exists to clean; authored/personal/team vectors (uuid or ``kb_<16 hex>``)
+    are never touched. The pattern can't match them.
+
     Safety: if the DB yields ZERO knowledge_items (a pathological all-rows-missing
     state, e.g. ingest fully failed this boot) we do NOT delete any vectors — that
-    would wipe the pack's valid vectors on a transient row-write failure. We warn
-    and leave the index intact for the next boot to repair.
+    would wipe the pack's valid vectors on a transient row-write failure. We leave
+    the index intact for the next boot to repair.
     """
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 
     vector_store = getattr(knowledge_service, "_vector_store", None)
-    if vector_store is None or not hasattr(vector_store, "list_parent_document_ids"):
-        logger.debug("Reconcile skipped: vector store cannot enumerate parents.")
+    if vector_store is None:
+        logger.debug("Reconcile skipped: no vector store wired.")
+        return [], []
+    if not hasattr(vector_store, "list_parent_document_ids"):
+        # A store that can't enumerate (e.g. the generic ChromaDBVectorStore
+        # fallback when the KB client failed to init) silently leaves drift in
+        # place — surface that loudly, it is a degraded configuration, not a no-op.
+        logger.warning(
+            "Reconcile skipped: wired vector store %s cannot enumerate parents — "
+            "KB SQL<->vector drift will NOT be cleaned this boot.",
+            type(vector_store).__name__,
+        )
         return [], []
 
     try:
@@ -343,13 +364,8 @@ async def _reconcile_vectors(
         rows = await session.execute(select(KnowledgeItemModel.item_id))
         db_ids = {r[0] for r in rows.all()}
 
-    orphaned_rows = sorted(db_ids - chroma_parents)
-    for item_id in orphaned_rows:
-        logger.warning(
-            f"KB consistency: knowledge_item {item_id} has no vectors — it cannot "
-            f"be retrieved. Re-ingest required (no embedding model at startup)."
-        )
-
+    # Empty source of truth = anomaly, not a wipe signal. Guard FIRST, before any
+    # delete or per-row warning (with no rows there is nothing meaningful to say).
     if not db_ids:
         if chroma_parents:
             logger.warning(
@@ -358,23 +374,33 @@ async def _reconcile_vectors(
                 "row-write failure, not a 'remove everything' signal).",
                 len(chroma_parents),
             )
+        return [], []
+
+    orphaned_rows = sorted(db_ids - chroma_parents)
+    for item_id in orphaned_rows:
+        logger.warning(
+            f"KB consistency: knowledge_item {item_id} has no vectors — it cannot "
+            f"be retrieved. Re-ingest required (no embedding model at startup)."
+        )
+
+    # Delete only BUILT-IN orphans (see scope note) — never authored/other-tenant
+    # vectors. One batched delete instead of a round-trip per parent.
+    orphaned_vectors = sorted(
+        p for p in (chroma_parents - db_ids) if _BUILTIN_ITEM_ID_RE.match(p)
+    )
+    if not orphaned_vectors:
         return [], orphaned_rows
 
-    orphaned_vectors = sorted(chroma_parents - db_ids)
-    cleaned: list[str] = []
-    for parent_id in orphaned_vectors:
-        try:
-            deleted = await vector_store.delete_documents_by_parent_id(parent_id)
-            cleaned.append(parent_id)
-            logger.info(
-                f"Reconcile: deleted {deleted} orphaned vector chunk(s) for "
-                f"{parent_id} (no knowledge_items row)."
-            )
-        except Exception as exc:
-            logger.warning(
-                f"Reconcile: failed to delete orphaned vectors for {parent_id}: {exc}"
-            )
-    return cleaned, orphaned_rows
+    try:
+        deleted = await vector_store.delete_documents_by_parents(orphaned_vectors)
+        logger.info(
+            f"Reconcile: deleted {deleted} orphaned vector chunk(s) across "
+            f"{len(orphaned_vectors)} built-in parent(s) with no knowledge_items row."
+        )
+        return orphaned_vectors, orphaned_rows
+    except Exception as exc:
+        logger.warning(f"Reconcile: batched orphan delete failed: {exc}")
+        return [], orphaned_rows
 
 
 async def _delete_existing(
