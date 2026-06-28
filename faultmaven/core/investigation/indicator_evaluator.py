@@ -273,11 +273,15 @@ class IndicatorEvaluator:
     def _build_cause_condition(cause: CauseRecord) -> Optional[str]:
         """Render a cause as a symptom-level condition for the holistic T2 call.
 
-        Returns ``None`` when the cause carries no usable description (no
-        statement, no non-problem chain prose, no name) — there is nothing
-        meaningful to judge. The PROBLEM (D) node is excluded via the shared
-        ``is_problem_node`` so the symptom-under-investigation never leaks into
-        the condition (which would make every cause trivially match).
+        Returns ``None`` when the cause carries no usable **mechanism** — no
+        ``cause_statement`` and no non-problem chain prose. Per decision (b) the
+        symptom-level Statement (or, failing that, the chain prose) is the
+        load-bearing match surface; the ``cause_name`` is only its *subject*, so a
+        name on its own is NOT enough to judge on — matching on a bare title
+        ("The case is explained by 'Disk saturation'") would let a Statement-less
+        cause attribute on its heading alone. The PROBLEM (D) node is excluded via
+        the shared ``is_problem_node`` so the symptom-under-investigation never
+        leaks into the condition (which would make every cause trivially match).
         """
         chain = " → ".join(
             (n.get("statement") or "").strip()
@@ -285,13 +289,10 @@ class IndicatorEvaluator:
             if not is_problem_node(n) and (n.get("statement") or "").strip()
         )
         mechanism = (cause.cause_statement or "").strip() or chain
-        name = (cause.cause_name or "").strip()
-        if not mechanism and not name:
+        if not mechanism:
             return None
-        subject = name or cause.cause_letter
-        return f"The case is explained by the cause '{subject}'" + (
-            f" — {mechanism}" if mechanism else ""
-        )
+        subject = (cause.cause_name or "").strip() or cause.cause_letter
+        return f"The case is explained by the cause '{subject}' — {mechanism}"
 
     # ------------------------------------------------------------------
     # Predicate matching + evaluators

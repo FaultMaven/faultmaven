@@ -589,11 +589,25 @@ class TestBuildCauseCondition:
         assert "the deploy is broken" not in cond
 
     def test_none_when_no_usable_content(self):
-        # No name, no statement, no non-problem chain prose → None (don't ask the
+        # No statement, no non-problem chain prose → None (don't ask the
         # classifier a contentless question).
         c = CauseRecord(
             cause_letter="A",
             cause_name="",
+            cause_statement="",
+            chain_nodes=[{"ref": "D", "node_type": "problem", "statement": "p"}],
+            rung_indicators={},
+        )
+        assert IndicatorEvaluator._build_cause_condition(c) is None
+
+    def test_none_when_only_name_no_mechanism(self):
+        # Decision (b): the Statement (or chain prose) is the load-bearing match
+        # surface; the name is only its subject. A cause with a name but NO
+        # statement and no non-problem chain prose must NOT match on its title
+        # alone — abstain (None) rather than ask "is the case explained by 'X'?".
+        c = CauseRecord(
+            cause_letter="A",
+            cause_name="Disk saturation",
             cause_statement="",
             chain_nodes=[{"ref": "D", "node_type": "problem", "statement": "p"}],
             rung_indicators={},
