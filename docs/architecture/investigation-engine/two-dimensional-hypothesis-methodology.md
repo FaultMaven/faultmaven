@@ -39,13 +39,30 @@ PRs #487–#507. What is built versus still design-intent:
   rejects a cause whose mechanism cannot produce D's observed signature; this is
   a semantic judgment, deliberately not an engine token-match), sim-validated for
   no over-screening.
-- **Design-intent, not yet built** — the LLM satisfies these *behaviorally*; no
-  engine gate enforces them: chain-level belief propagation (§9.4 — the engine
+- **Design-intent, not yet built** — the LLM satisfies this *behaviorally*; no
+  engine gate enforces it: chain-level belief propagation (§9.4 — the engine
   still uses the per-evidence `+0.15 / −0.20` counter from
-  [framework §6](./evidence-driven-investigation-framework.md#6-hypothesis-model));
-  the F4 family-completeness sweep; and invalidation-first search prioritization
-  (§5). Each promotes to the methodology-invariant registry (§0) as it is
-  implemented.
+  [framework §6](./evidence-driven-investigation-framework.md#6-hypothesis-model)).
+  It promotes to the methodology-invariant registry (§0) when implemented.
+- **Invalidation-first search (§6) — conceptual principle, deliberately not
+  enforced.** The LLM already reasons this way; a prompt-enforcement attempt was
+  tried post-F3 and removed (regressed node emission, no demonstrated benefit). It
+  is a search-*efficiency* lever, not a soundness mechanism, so it is not a
+  pending obligation — see the §6 "Status" / "Rejected alternative" notes and the
+  bar for any reintroduction.
+- **F4 family-completeness (§4) — measured, not warranted as an engine/prompt
+  rule.** The premise is that the agent *tunnels at formation* on the family a
+  symptom screams (concluding cause B because family A was never enumerated). A
+  measure-first study (two cross-family misdirection scenarios — a multi-downstream
+  resource-exhaustion case and a single-downstream expired-mTLS-cert case — in
+  `fm-sre-simulator`) found the recommended STRICT model **does not tunnel**: it
+  swept to the correct cross-family cause every run, even when the symptom points
+  squarely at the obvious wrong family. Authentic symptom signatures encode their
+  family (which is what F3 already leverages), so the "points squarely at the wrong
+  family with no tell" premise is hard to construct without implausibility. F4 thus
+  stays a formation *guideline*, not an enforced rule. The scenarios are retained
+  as permanent tunnel-vision regression evals. Reintroduce only if a real case
+  exhibits formation tunnel vision on a STRICT model.
 
 The lifecycle/confidence *mechanics* (states, the `+0.15/−0.20` counter, decay)
 remain specified in framework §6; this document defines the reasoning the agent
@@ -196,7 +213,12 @@ How candidate roots are *born*. This is where free-association is prevented.
   dependency-readiness • data/state • code/logic • permission/identity •
   environment/version* — then instantiate **only** the families consistent with
   the signature (F3). This guards against blind spots without flooding the map
-  with signature-incompatible noise.
+  with signature-incompatible noise. **F4 is a formation *guideline* the LLM
+  follows, not an engine-enforced rule** — measurement on the recommended STRICT
+  model found it does not tunnel at formation, so F4 is not wired as a gate (see
+  the F4 entry under [Status](#status)). Where rules below treat F4's
+  exhaustiveness certification as a precondition (§7.1.1, §8.2), read it as an
+  LLM-judgment precondition, not an engine guarantee.
 
 ---
 
@@ -235,6 +257,36 @@ The dominant strategy is **elimination**. A confirmed state only *narrows* the
 space; a falsified node *prunes an entire sub-forest* in one cheap, definitive
 move. The agent therefore prefers the test most likely to *eliminate the most
 chains per unit cost*.
+
+> **Status — conceptual principle, not enforced.** The rules below describe how a
+> competent diagnostician (the LLM) *reasons*; the engine and prompt do **not**
+> enforce them. This is deliberate. Invalidation-first is a *search-efficiency*
+> lever (it shortens the path on a genuine multi-cause differential); it does not
+> hold either soundness guarantee — NO INCORRECT CONCLUSION is held by the
+> empirical-only validation layer (§7.1, M4/M5/M6) and NO COLLAPSE by the
+> anchoring/stagnation-decay machinery, both *independent* of search order. So the
+> cost of under-eliminating is extra turns, not a wrong answer.
+>
+> **Rejected alternative — prompt enforcement (tried post-F3, removed).** A
+> prompt rule telling the LLM to pick the most-eliminating test was added to the
+> chain-emission block and removed: an A/B sim showed it *regressed node
+> emission* (the "where chains diverge" framing pushed the model to restate
+> distinguishing causes as duplicate nodes, re-triggering the node-identity loop
+> §9.2 had closed — 3/3 runs vs 0/2 baseline) with **no demonstrated benefit**
+> (every scenario was single-cause-determined, so it could never exercise the
+> differential the rule targets). Lesson: a *search* rule does not belong in the
+> *emission* instructions, and prompt-first fits *formation* rules (F3), not
+> test-selection.
+>
+> **Bar for reintroduction.** Bring invalidation-first back as an engine/prompt
+> mechanism only after a sim or eval *first demonstrates the failure it targets* —
+> an agent that, on a genuinely ambiguous multi-cause case, anchors on a
+> confirmatory path and wastes turns (or hits a budget) instead of running the
+> discriminating test. With that evidence in hand, prefer a shape that keeps the
+> *fact* in the engine and the *judgment* in the LLM (e.g. the engine renders the
+> divergence point — a node on one chain but not another — into context and the
+> LLM picks the feasible test), or an offline eval signal; not a prompt rule in
+> the emission path.
 
 - **R1 — Expected information per cost.** Choose each test to maximize
   `(chains eliminated if the test fails × P(it fails)) ÷ test cost`. This single
@@ -319,7 +371,12 @@ Four guards keep this from becoming a fallacy:
    differential is complete. It is permitted **only when the OR-set is certified
    collectively exhaustive** — the family-completeness sweep (F4) has run and
    found no further signature-consistent family, and the roots are genuinely MECE
-   (S2). A non-exhaustive elimination simply concludes the wrong survivor.
+   (S2). A non-exhaustive elimination simply concludes the wrong survivor. **F4
+   is an LLM-judgment guideline, not an engine-enforced sweep** (see
+   [Status](#status)), so this exhaustiveness is asserted by the agent, not
+   guaranteed by the engine; the deductive-exclusion cap (#3) and the mandatory
+   counterfactual before resolution (§7.1) are the engine-side backstops that
+   keep a missed family from silently resolving the wrong cause.
 2. **The eliminations must be empirical.** Deduce only from refutations that
    themselves meet §7.1 — never from assumed or inferred eliminations.
 3. **Strict exclusion — refutation must be absolute, not partial.** Proof by
