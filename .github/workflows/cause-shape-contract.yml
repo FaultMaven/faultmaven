@@ -1,0 +1,60 @@
+name: Cause-shape cross-repo contract
+
+# Enforces the cross-repo cause-shape contract that the per-repo tests cannot:
+# the cause-shape golden (expected_pack_causes.json) is vendored byte-identically
+# in BOTH this repo and faultmaven-kb-toolkit, joined only by an
+# EXPECTED_GOLDEN_SHA256 constant kept equal in each repo's test. Each repo's own
+# CI checks its copy against its own constant; nothing in a single repo compares
+# the two copies. This job does — so a value-level divergence between the two
+# vendored goldens (or between the two constants) fails CI instead of silently
+# rotting. See docs/architecture/knowledge-and-ai/kb-pack-architecture.md.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  golden-in-sync:
+    name: Golden in sync across repos
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout faultmaven
+        uses: actions/checkout@v4
+        with:
+          path: faultmaven
+
+      - name: Checkout faultmaven-kb-toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: FaultMaven/faultmaven-kb-toolkit
+          path: kb-toolkit
+
+      - name: Goldens are byte-identical, constants match each other and the bytes
+        run: |
+          set -euo pipefail
+          A=faultmaven/tests/fixtures/runbook_cause_lifecycle/expected_pack_causes.json
+          B=kb-toolkit/tests/fixtures/runbook_cause_lifecycle/expected_pack_causes.json
+          FA_TEST=faultmaven/tests/integration/modules/knowledge/test_runbook_cause_lifecycle_e2e.py
+          KB_TEST=kb-toolkit/tests/unit/test_pack_causes_contract.py
+
+          if ! diff -q "$A" "$B" >/dev/null; then
+            echo "::error::The two repos' expected_pack_causes.json goldens differ. Regenerate via kb-toolkit regen_golden.py and copy the result into BOTH repos."
+            diff "$A" "$B" || true
+            exit 1
+          fi
+
+          FA=$(grep -oE '[0-9a-f]{64}' "$FA_TEST" | head -1)
+          KB=$(grep -oE '[0-9a-f]{64}' "$KB_TEST" | head -1)
+          ACTUAL=$(sha256sum "$A" | cut -d' ' -f1)
+          echo "faultmaven EXPECTED_GOLDEN_SHA256 = $FA"
+          echo "kb-toolkit EXPECTED_GOLDEN_SHA256 = $KB"
+          echo "actual golden sha256             = $ACTUAL"
+
+          if [ "$FA" != "$KB" ] || [ "$FA" != "$ACTUAL" ]; then
+            echo "::error::EXPECTED_GOLDEN_SHA256 mismatch (the two repos' constants must be equal and match the golden bytes). Update both repos' constants to: $ACTUAL"
+            exit 1
+          fi
+          echo "Cause-shape golden is in sync across both repos."

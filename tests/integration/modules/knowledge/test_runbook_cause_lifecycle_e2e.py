@@ -201,25 +201,25 @@ def _case() -> Case:
     return case
 
 
-def _kb_chunk() -> dict:
+def _kb_chunk(item_id: str = RUNBOOK_ITEM_ID) -> dict:
     """One retrieved chunk whose parent_document_id is the ingested runbook, so
     the matcher's real resolver reads the row we persisted."""
     return {
-        "id": f"{RUNBOOK_ITEM_ID}_chunk_0",
+        "id": f"{item_id}_chunk_0",
         "content": "connection pool exhaustion runbook body",
-        "metadata": {"title": "Pool exhaustion", "parent_document_id": RUNBOOK_ITEM_ID},
+        "metadata": {"title": "Pool exhaustion", "parent_document_id": item_id},
         "score": 0.93,
     }
 
 
-def _real_kb_tool() -> AnswerFromKB:
+def _real_kb_tool(item_id: str = RUNBOOK_ITEM_ID) -> AnswerFromKB:
     vector_store = MagicMock()
-    vector_store.hybrid_search = AsyncMock(return_value=[_kb_chunk()])
-    vector_store.search = AsyncMock(return_value=[_kb_chunk()])
+    vector_store.hybrid_search = AsyncMock(return_value=[_kb_chunk(item_id)])
+    vector_store.search = AsyncMock(return_value=[_kb_chunk(item_id)])
     return AnswerFromKB(vector_store=vector_store, llm_router=MagicMock())
 
 
-def _engine(knowledge_service, *, ce_answer=True):
+def _engine(knowledge_service, *, ce_answer=True, kb_item_id: str = RUNBOOK_ITEM_ID):
     from faultmaven.core.investigation.hypothesis_manager import (
         create_hypothesis_manager,
     )
@@ -228,7 +228,7 @@ def _engine(knowledge_service, *, ce_answer=True):
     ce_tool = SimpleNamespace(answer_yes_no=AsyncMock(return_value=ce_answer))
     registry = SimpleNamespace(
         get=lambda name: {
-            "kb_qa": SimpleNamespace(wrapped=_real_kb_tool()),
+            "kb_qa": SimpleNamespace(wrapped=_real_kb_tool(kb_item_id)),
             "case_evidence_search": SimpleNamespace(wrapped=ce_tool),
         }.get(name)
     )
@@ -359,9 +359,11 @@ class TestApplyFromPersistedCauses:
         assert "size the pool from observed peak" in ctx["kb_results"]
 
     @pytest.mark.asyncio
-    async def test_no_match_when_evidence_does_not_support(self, ingested):
-        """T2 says no for the cause -> belief 0 -> verdict none -> nothing
-        instantiated. A runbook is a prior, not forced onto the case."""
+    async def test_no_match_falls_through_to_fallback_and_abstains(self, ingested):
+        """T2 says no for the only non-fallback cause -> verdict 'none' -> the
+        runbook's `[Default]` fallback Cause is selected (selected_record None) ->
+        nothing instantiated. Exercises the fallback path (the golden has Cause A
+        + the Z fallback). A runbook is a prior, not forced onto the case."""
         service, _ = ingested
         eng, ce_tool = _engine(service, ce_answer=False)
         case = _case()
@@ -370,5 +372,52 @@ class TestApplyFromPersistedCauses:
         # said no, not that it silently crashed (the matcher swallows all
         # exceptions, so an empty graph alone can't distinguish the two).
         assert ce_tool.answer_yes_no.await_count >= 1
+        assert case.causal_nodes == {}
+        assert case.hypotheses == {}
+
+    @pytest.mark.asyncio
+    async def test_multiple_live_causes_abstains(self, ingested):
+        """Two non-fallback Causes both match T2 -> verdict 'multiple' -> the
+        matcher abstains (instantiates nothing), leaving disambiguation to the
+        LLM. A runbook is a prior, never forced onto the case when it is
+        ambiguous. Drives the full path off a second persisted runbook whose
+        causes record carries two competing roots."""
+
+        def _root_to_d(name: str) -> dict:
+            return {
+                "cause_letter": name[0],
+                "cause_name": name,
+                "cause_statement": f"{name} explains the 503s.",
+                "chain_nodes": [
+                    {"ref": "root", "node_type": "root", "statement": name},
+                    {"ref": "D", "node_type": "problem", "statement": "503s"},
+                ],
+                "chain_edges": [{"cause_ref": "root", "effect_ref": "D"}],
+                # At least one indicator rung — the evaluator gives an
+                # indicator-less cause belief 0 (no structural anchor), so a
+                # multiple-verdict fixture must carry one per cause.
+                "rung_indicators": {"root": ["[Symptom] the 503s appear"]},
+                "match_predicates": [],
+                "interventions": [],
+                "is_fallback_cause": False,
+            }
+
+        service, _ = ingested
+        second_id = "kb_2c0000000002"
+        await service.ingest_runbook(
+            document_id=second_id,
+            title="Two competing causes",
+            content="# Two competing causes\n\nbody.",
+            organization_id=DEFAULT_ORG_ID,
+            scope="global",
+            causes=[_root_to_d("A-pool-too-small"), _root_to_d("B-socket-leak")],
+            verification_level=VerificationLevel.COMMUNITY,
+        )
+        eng, ce_tool = _engine(service, ce_answer=True, kb_item_id=second_id)
+        case = _case()
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        # Both causes were judged (T2 ran per cause) and both matched -> two live
+        # causes -> verdict 'multiple' -> abstain (nothing instantiated).
+        assert ce_tool.answer_yes_no.await_count >= 2
         assert case.causal_nodes == {}
         assert case.hypotheses == {}

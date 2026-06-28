@@ -161,9 +161,22 @@ express the conjunction by its kind:
   rungs (`root → s1 → D`), so the chain topology carries the conjunction. Prefer
   this whenever an ordering exists. (The chain is a *prior, not a gate* — it is
   instantiated into the case graph as a CANDIDATE, never VALIDATED without case
-  evidence; soundness comes from that cap + the M5 / cause-state gates, **not**
-  from the runbook's structure or from per-rung matching. See "Match surface"
-  below.)
+  evidence. The **durable** guarantee is that a matcher-seeded node only becomes
+  VALIDATED — and so drives `cause_state` to IDENTIFIED — through real case
+  evidence, never from the runbook itself, and `cause_state` is engine-derived +
+  counterfactual-backstopped (a failed fix demotes the cause). The capped prior
+  (≤ 0.5) is the matcher's *initial* belief, just enough to keep the firing turn
+  from jumping the cause-identified gate — **not** a permanent ceiling (the engine
+  clamps belief to `[0, 1]` only; the contract is LLM-grounded + counterfactual,
+  not a static cap). Soundness therefore rests on CANDIDATE-never-VALIDATED-
+  without-evidence + the cause-state / M5 gates + the failed-fix backstop, **not**
+  on the runbook's structure or per-rung matching. See "Match surface" below.
+  *Cross-cause convergence* — a `Chain` rung's `converges:` directive that points
+  at **another Cause's** node — is an authoring annotation only: the matcher
+  instantiates one Cause's chain at a time, so a cross-cause `converges:` ref does
+  not resolve and is dropped at instantiation. Express genuine shared downstream
+  states within a single Cause's chain; do not rely on cross-cause convergence
+  being reconstructed in the case graph.)
 - **Genuinely parallel** (neither condition causes the other, both simply
   required) → fold the co-necessary condition into the single root `Statement`
   and give each fix its own quadrant-tagged intervention. **The `Statement` must
@@ -473,12 +486,11 @@ all enforce/produce the v4 schema (`Statement` / optional `Chain` / `Indicators`
 / quadrant-tagged `Interventions`, one ROOT per Cause). The chunker strips
 `<!-- match -->` comments and lifts per-Cause metadata + parsed predicates.
 
-**Content migration is in progress.** The **32 new backlog runbooks** are authored
-in v4. The **59 pre-existing built-in runbooks are still v3** and must be
-regenerated to v4 (the clean break means v3 runbooks fail v4 validation — they are
-not deployed alongside v4 content). The FaultMaven API's `runbook_validator.py`
-(document-to-runbook conversion) still enforces v3/v2 headers — its v4 update is a
-remaining gap.
+**Content migration is complete.** All **91 built-in runbooks** (the 59
+pre-existing + the 32 backlog) are authored in v4, and the vendored KB pack ships
+all 91 with their per-Cause `causes` record. The FaultMaven API's
+`runbook_validator.py` is on the v4 causal-chain schema and enforces the
+cause-`Statement` match-surface invariants (#545/#557).
 
 | Feature | Status | Location |
 | --- | --- | --- |
@@ -487,9 +499,9 @@ remaining gap.
 | Indicator token validation (`[Step N]`, `[Symptom]`, `[Default]`) | **Implemented (toolkit)** | `_validate_indicator_field()` with step-number cross-reference |
 | Intervention quadrant validation | **Implemented (toolkit)** | `_validate_interventions()` against `valid_quadrants` |
 | Match-hint stripping + per-Cause metadata at chunk time | **Implemented (toolkit)** | `kb_toolkit/core/chunker.py` — `_post_process_chunk()` lifts `cause_*` + parsed `match_predicates`, `is_fallback_cause` |
-| Per-Cause metadata carried into KB pack | **Pending** | `kb_toolkit/core/pack_builder.py` — `build_pack` keeps chunk text only; carry chunk metadata into `pack.json` (graph record for the matcher — see [runbook-cause-matching.md](../investigation-engine/runbook-cause-matching.md)) |
-| FaultMaven API `runbook_validator.py` v4 update | **Pending** | `modules/knowledge/domain/services/runbook_validator.py` — still pre-v4 |
-| Regenerate the 59 built-in runbooks to v4 | **Pending** | toolkit batch generation (same path as the 32) |
+| Per-Cause metadata carried into KB pack | **Implemented** | `kb_toolkit/core/pack_builder.py` — `_extract_causes` writes the per-Cause graph record into `pack.json` `runbooks[].causes`; see [kb-pack-architecture.md](./kb-pack-architecture.md) and [runbook-cause-matching.md](../investigation-engine/runbook-cause-matching.md) |
+| FaultMaven API `runbook_validator.py` v4 update | **Implemented** | `modules/knowledge/domain/services/runbook_validator.py` — v4 causal-chain schema + cause-`Statement` match-surface invariants (#545/#557) |
+| Regenerate the 59 built-in runbooks to v4 | **Implemented** | all 91 built-ins (59 + 32) are v4; the vendored pack ships 91/91 with `causes` |
 | Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags` propagated per chunk |
 | Domain/service hard pre-filter; verification-weighted + staleness-aware retrieval | Implemented | four-signal reranker; `UnifiedKBConfig` |
 | Semantic density check (LLM-driven) | **Not implemented** | Planned for Gate 3 |
