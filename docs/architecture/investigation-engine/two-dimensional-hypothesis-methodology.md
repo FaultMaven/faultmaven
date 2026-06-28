@@ -213,7 +213,12 @@ How candidate roots are *born*. This is where free-association is prevented.
   dependency-readiness • data/state • code/logic • permission/identity •
   environment/version* — then instantiate **only** the families consistent with
   the signature (F3). This guards against blind spots without flooding the map
-  with signature-incompatible noise.
+  with signature-incompatible noise. **F4 is a formation *guideline* the LLM
+  follows, not an engine-enforced rule** — measurement on the recommended STRICT
+  model found it does not tunnel at formation, so F4 is not wired as a gate (see
+  the F4 entry under [Status](#status)). Where rules below treat F4's
+  exhaustiveness certification as a precondition (§7.1.1, §8.2), read it as an
+  LLM-judgment precondition, not an engine guarantee.
 
 ---
 
@@ -366,7 +371,12 @@ Four guards keep this from becoming a fallacy:
    differential is complete. It is permitted **only when the OR-set is certified
    collectively exhaustive** — the family-completeness sweep (F4) has run and
    found no further signature-consistent family, and the roots are genuinely MECE
-   (S2). A non-exhaustive elimination simply concludes the wrong survivor.
+   (S2). A non-exhaustive elimination simply concludes the wrong survivor. **F4
+   is an LLM-judgment guideline, not an engine-enforced sweep** (see
+   [Status](#status)), so this exhaustiveness is asserted by the agent, not
+   guaranteed by the engine; the deductive-exclusion cap (#3) and the mandatory
+   counterfactual before resolution (§7.1) are the engine-side backstops that
+   keep a missed family from silently resolving the wrong cause.
 2. **The eliminations must be empirical.** Deduce only from refutations that
    themselves meet §7.1 — never from assumed or inferred eliminations.
 3. **Strict exclusion — refutation must be absolute, not partial.** Proof by
