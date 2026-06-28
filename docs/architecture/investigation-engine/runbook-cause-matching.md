@@ -170,10 +170,17 @@ rigidity trap the governing principle warns against.
 
 - **Belief is per-cause, not per-rung k-of-n** (#545 — see the §2.1 superseded
   note for why per-rung matching was replaced). The semantic tier is one holistic
-  judgment per Cause ("is the case explained by this cause?"). Belief = `0` if any
-  rung is deterministically refuted *or* the Cause has no indicator rungs; else
-  `1.0` when the holistic judgment supports the Cause; else the deterministic T1
-  matched-rung fraction (the residual T1 signal, ~0 in evidence-only FaultMaven).
+  judgment per Cause over its **symptom-level Statement** — the sole load-bearing
+  match surface (see runbook-content-architecture.md § "Match surface"). Belief =
+  `0` if any rung is deterministically refuted; else `1.0` when the holistic
+  judgment supports the Cause; else the deterministic T1 matched-rung fraction (the
+  residual T1 signal, ~0 in evidence-only FaultMaven). The Statement match is **not
+  gated on the Cause carrying indicator rungs** — per-rung indicators are optional
+  annotations, inert for matching, so a Cause with a real Statement but no
+  `Indicators` is still eligible. (Earlier #545 drafts zeroed belief when a Cause
+  had no indicator rungs; that contradicted the ratified match-surface decision and
+  has been removed — a content-less Cause still can't match because the holistic
+  condition builder yields nothing to judge, falling to the residual ~0 T1 signal.)
 - **Refutation prunes.** A rung whose indicator is *contradicted* (REFUTES
   evidence) drops the chain hard. (M7 AND-member pruning applies only to
   engine-formed AND-sets at runtime; runbooks author none.)
@@ -216,9 +223,10 @@ class CauseMatch(BaseModel):
     cause_name: str
     path: list[str]                # rung refs root→D
     rung_results: list[RungResult]
-    belief: float                  # 0 if refuted or no rungs; else 1.0 if the
-                                   # per-cause holistic T2 supports the cause,
-                                   # otherwise the T1 matched-rung fraction (#545)
+    belief: float                  # 0 if any rung refuted; else 1.0 if the
+                                   # per-cause holistic T2 (over the Statement)
+                                   # supports the cause, otherwise the T1
+                                   # matched-rung fraction — 0 when no rungs (#545)
     is_fallback: bool              # Indicators include [Default]
 
 class CauseMatchResult(BaseModel):
