@@ -68,7 +68,11 @@ A pack is a directory (transported as `kb-pack-<version>.tar.gz`):
       "title": "...", "scope": "global",
       "relpath": "global/networking/k8s-coredns-failures.md",
       "tags": [...], "source_url": null, "owner_id": null, "team_id": null,
-      "chunks": [ {"chunk_index": 0, "vector_row": 0, "text": "..."}, ... ]
+      "chunks": [ {"chunk_index": 0, "vector_row": 0, "text": "..."}, ... ],
+      "causes": [ {"cause_letter": "A", "cause_name": "...", "cause_statement": "...",
+                   "chain_nodes": [...], "chain_edges": [...], "rung_indicators": {...},
+                   "match_predicates": [...], "interventions": [...],
+                   "is_fallback_cause": false}, ... ]
     }
   ]
 }
@@ -86,7 +90,43 @@ so chunks match the app exactly — but nothing breaks if they diverge.)
 
 Per-chunk **metadata** is intentionally *not* in the pack — the app derives it
 from the runbook frontmatter at ingest (cheap, app-owned), keeping the pack
-contract minimal: runbook content + chunk text + vectors.
+contract: runbook content + chunk text + vectors + the per-Cause `causes` record
+(below).
+
+### Per-Cause `causes` record (the v4 cause-shape contract)
+
+Each runbook entry also ships a **`causes`** array — one record per `### Cause`
+in the runbook's `## Causes` section, produced by the toolkit's
+`pack_builder._extract_causes`. This is the structured input the **runbook cause
+matcher** consumes: per cause, a `cause_letter`/`cause_name`/`cause_statement`,
+the `chain_nodes`/`chain_edges` topology, and optional `rung_indicators`,
+`match_predicates`, and `interventions`. At ingest the app persists it verbatim to
+`knowledge_items.metadata['causes']` (no re-derivation); the matcher resolves it
+back by `item_id` and loads each entry into `CauseRecord`
+(`faultmaven/core/investigation/cause_schemas.py`) — the app-side **reference
+shape**. See [runbook-content-architecture.md](./runbook-content-architecture.md)
+(authoring + the symptom-level `Statement` match surface) and
+[runbook-cause-matching.md](../investigation-engine/runbook-cause-matching.md)
+(matching mechanism).
+
+**The cause shape is a cross-repo contract.** The toolkit producer
+(`_extract_causes`) and the app consumer (`CauseRecord`) live in different repos
+and share no importable module, so the field set is a **manual mirror** kept
+honest by tests, not a shared package. The full path is guarded end-to-end:
+
+- **kb-toolkit** `tests/unit/test_pack_causes_contract.py` — runs the real
+  `build_pack` over a fixture runbook and asserts each emitted Cause has exactly
+  `CauseRecord`'s field set (the producer↔consumer drift check).
+- **faultmaven** `tests/integration/.../test_runbook_cause_lifecycle_e2e.py` —
+  the AUTHORING → PACK → INGEST → RETRIEVE → APPLY end-to-end: ingests a real
+  pack `causes` record, resolves it back, loads it into `CauseRecord` losslessly,
+  and instantiates it through the live matcher.
+- The two halves are joined by a **byte-identical golden fixture**
+  (`expected_pack_causes.json`, vendored in both repos), pinned by an
+  `EXPECTED_GOLDEN_SHA256` constant kept equal in both repos' tests — so a
+  value-level divergence between the copies fails CI rather than silently rotting.
+  (This is the integration test whose earlier absence let an unconsumed v4 cause
+  record sit in every pack undetected.)
 
 ### Identity & idempotency keys
 
