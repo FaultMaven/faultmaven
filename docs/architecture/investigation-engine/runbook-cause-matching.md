@@ -7,9 +7,7 @@ evaluator, retrieval, lazy instantiation, per-turn wiring) is built and wired bu
 the `enable_runbook_cause_matcher` flag defaults **off**, so on the default path a
 v4 runbook still behaves like a v3 runbook until the flag is flipped (gated on the
 evidence-vectorization fix in issue #543 + a demonstrated live firing). See
-[§7](#7-implementation-status). NOTE: §4 below still describes the verdict as
-rung-driven k-of-n; the shipped matcher uses **holistic per-cause** matching (§4
-reconciliation pending).
+[§7](#7-implementation-status).
 
 ## Purpose
 
@@ -294,7 +292,7 @@ activation path and that decision are tracked in
 | Pack-side per-Cause graph record (§6) | `kb_toolkit/core/pack_builder.py` | **Implemented** (in `pack.json` `causes`) |
 | Persist pack `causes` at ingest → `knowledge_items.metadata` | `faultmaven/bootstrap/kb_init.py`, `…/knowledge_service.py` | **Implemented** (increment 1) |
 | Matcher tiers + lazy instantiation/dedup (§2.1–§2.2) | `faultmaven/core/investigation/runbook_cause_matcher.py` | **Implemented, flag-gated** (T2 semantic is the live tier; T1 step-output is inert in evidence-only FM — see impl-doc) |
-| Chain verdict (§4) | matcher | **Implemented, flag-gated** (now **holistic per-cause**, not the rung-driven k-of-n §4 still describes — §4 reconciliation pending) |
+| Chain verdict (§4) | matcher | **Implemented, flag-gated** (**holistic per-cause**, per §4) |
 | Per-turn integration into milestone engine | `faultmaven/core/investigation/milestone_engine.py` | **Implemented, flag-gated** (`_apply_runbook_cause_matcher`) |
 
 See [investigation-lifecycle-logic.md §1.4](./investigation-lifecycle-logic.md#14-automatic-milestone-tracking-and-stage-transitions)
