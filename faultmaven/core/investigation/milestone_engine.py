@@ -5726,6 +5726,16 @@ class MilestoneEngine:
             # runbook-match hypothesis already exists for this case. The latter
             # keys on the hypothesis rationale, which persists across turns, so
             # the guard survives the case being reloaded between turns.
+            #
+            # Intentionally one-shot, even after a failed fix. The matcher seeds a
+            # structural PRIOR once; thereafter the case is driven by evidence. A
+            # failed fix DEMOTES the matched cause via the engine's counterfactual
+            # backstop (M6/R6) — it does NOT re-trigger the matcher, because
+            # re-expanding the search space after a refutation is the LLM's job
+            # (it proposes the next hypothesis), not a re-seed of the same runbook
+            # prior. Re-firing would re-instantiate the just-demoted chain and
+            # fight the demotion, so the guard has no cause_state filter on the
+            # hypothesis-exists branch by design.
             if (
                 case.progress
                 and getattr(case.progress, "cause_state", None) == CauseState.IDENTIFIED

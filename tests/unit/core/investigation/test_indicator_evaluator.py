@@ -497,12 +497,39 @@ class TestHolisticT2:
         assert result.causes[0].belief == 0.0
 
     @pytest.mark.asyncio
-    async def test_indicatorless_cause_never_goes_live_on_holistic(self):
-        # A non-fallback cause with NO indicator rungs has no structural anchor;
-        # a holistic YES must NOT lift it to belief 1.0 (would attribute on a
-        # single fuzzy judgment with zero indicators). belief stays 0; the
-        # classifier isn't even consulted.
-        cause = _cause("A", "x", {})  # empty rung_indicators
+    async def test_indicatorless_cause_with_statement_goes_live_on_holistic(self):
+        # Decision (b): the symptom-level Statement is the sole load-bearing match
+        # surface; per-rung indicators are optional/inert. So a cause with a usable
+        # Statement but NO indicator rungs IS eligible — a holistic YES lifts it to
+        # belief 1.0 and consults the classifier. (Earlier #545 drafts zeroed such
+        # causes; that contradicted the ratified match surface and was removed.)
+        cause = _cause("A", "x", {})  # empty rung_indicators, but cause_statement="s"
+
+        called = []
+
+        async def yes_qa(condition: str) -> bool:
+            called.append(condition)
+            return True
+
+        e = IndicatorEvaluator(lambda _: None, case_evidence_qa=yes_qa)
+        result = await e.evaluate("rb", [cause])
+        assert result.causes[0].belief == 1.0
+        assert len(called) == 1  # holistic IS consulted over the Statement
+
+    @pytest.mark.asyncio
+    async def test_contentless_cause_cannot_match_even_with_holistic_yes(self):
+        # The empty-Statement protection: a cause with NO name, NO statement, and
+        # no non-problem chain prose has nothing to judge — `_build_cause_condition`
+        # returns None, the classifier is NOT consulted, and belief stays 0 even if
+        # the QA would have said YES. This is what keeps a degenerate cause from
+        # matching on a contentless question.
+        cause = CauseRecord(
+            cause_letter="A",
+            cause_name="",
+            cause_statement="",
+            chain_nodes=[{"ref": "D", "node_type": "problem", "statement": ""}],
+            rung_indicators={},
+        )
 
         called = []
 
@@ -513,7 +540,7 @@ class TestHolisticT2:
         e = IndicatorEvaluator(lambda _: None, case_evidence_qa=yes_qa)
         result = await e.evaluate("rb", [cause])
         assert result.causes[0].belief == 0.0
-        assert called == []  # holistic skipped — no wasted LLM call
+        assert called == []  # contentless → classifier never asked
 
 
 class TestBuildCauseCondition:
@@ -562,11 +589,25 @@ class TestBuildCauseCondition:
         assert "the deploy is broken" not in cond
 
     def test_none_when_no_usable_content(self):
-        # No name, no statement, no non-problem chain prose → None (don't ask the
+        # No statement, no non-problem chain prose → None (don't ask the
         # classifier a contentless question).
         c = CauseRecord(
             cause_letter="A",
             cause_name="",
+            cause_statement="",
+            chain_nodes=[{"ref": "D", "node_type": "problem", "statement": "p"}],
+            rung_indicators={},
+        )
+        assert IndicatorEvaluator._build_cause_condition(c) is None
+
+    def test_none_when_only_name_no_mechanism(self):
+        # Decision (b): the Statement (or chain prose) is the load-bearing match
+        # surface; the name is only its subject. A cause with a name but NO
+        # statement and no non-problem chain prose must NOT match on its title
+        # alone — abstain (None) rather than ask "is the case explained by 'X'?".
+        c = CauseRecord(
+            cause_letter="A",
+            cause_name="Disk saturation",
             cause_statement="",
             chain_nodes=[{"ref": "D", "node_type": "problem", "statement": "p"}],
             rung_indicators={},

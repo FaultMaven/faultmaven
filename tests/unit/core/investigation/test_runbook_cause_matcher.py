@@ -146,6 +146,57 @@ class TestChainToSpecs:
         _, edges = chain_to_specs(cause)
         assert edges == []
 
+    def test_dropped_edge_is_logged_not_silent(self, caplog):
+        # M1: a dropped edge (the common case is an unsupported cross-cause
+        # `converges:` edge) must not vanish silently — it is logged so a
+        # malformed/cross-cause chain stays diagnosable.
+        cause = CauseRecord(
+            cause_letter="A",
+            chain_nodes=[_node("root", "root", "r")],
+            chain_edges=[_edge("root", "other_cause_node")],
+        )
+        with caplog.at_level(logging.WARNING):
+            _, edges = chain_to_specs(cause)
+        assert edges == []
+        assert any("Dropping chain edge" in r.message for r in caplog.records)
+
+    def test_non_string_statement_node_skipped_not_coerced(self, caplog):
+        # L3: a non-string statement (malformed pack nesting a dict) must be
+        # skipped, never `str()`-coerced into a node whose text is a Python repr.
+        cause = CauseRecord(
+            cause_letter="A",
+            chain_nodes=[
+                {"ref": "root", "node_type": "root", "statement": {"nested": "x"}},
+                _node("s1", "intermediate", "real state"),
+            ],
+            chain_edges=[],
+        )
+        with caplog.at_level(logging.WARNING):
+            nodes, _ = chain_to_specs(cause)
+        assert [n.statement for n in nodes] == ["real state"]
+        assert not any("nested" in n.statement for n in nodes)
+        assert any(
+            "Non-string chain-node statement" in r.message for r in caplog.records
+        )
+
+    def test_multiple_roots_warns_but_instantiates(self, caplog):
+        # L3: a linear chain has exactly one ROOT; multiple ROOTs signal a
+        # malformed pack — log it, but still instantiate as authored (root
+        # semantics belong to the engine, not this converter).
+        cause = CauseRecord(
+            cause_letter="A",
+            chain_nodes=[
+                _node("r1", "root", "first root"),
+                _node("r2", "root", "second root"),
+                _node("D", "problem", "the problem"),
+            ],
+            chain_edges=[],
+        )
+        with caplog.at_level(logging.WARNING):
+            nodes, _ = chain_to_specs(cause)
+        assert len(nodes) == 2  # both roots instantiated
+        assert any("ROOT nodes" in r.message for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # instantiate_cause_chain
@@ -554,6 +605,23 @@ class TestDuplicateRef:
         nodes, edges = chain_to_specs(cause)
         assert [n.statement for n in nodes] == ["first x"]  # dup dropped
         assert (edges[0].cause, edges[0].effect) == ("new_index_0", "D")
+
+
+class TestSoundnessInvariant:
+    def test_matcher_cap_strictly_below_cause_identified_gate(self):
+        # L1: the matcher's instantiated prior MUST sit strictly below the
+        # cause-identified likelihood gate, so a runbook match ALONE can never
+        # trip resolution ("no incorrect conclusion"). Both constants now share a
+        # single source of truth (terminal_transitions.CAUSE_IDENTIFIED_LIKELIHOOD)
+        # — this pins their relationship so a drift fails the build.
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            _MATCHER_MAX_PRIOR,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            CAUSE_IDENTIFIED_LIKELIHOOD,
+        )
+
+        assert _MATCHER_MAX_PRIOR < CAUSE_IDENTIFIED_LIKELIHOOD
 
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,9 @@ from faultmaven.core.investigation.cause_schemas import (
     is_problem_node,
 )
 from faultmaven.core.investigation.schemas import CausalEdgeToAdd, CausalNodeToAdd
+from faultmaven.core.investigation.terminal_transitions import (
+    CAUSE_IDENTIFIED_LIKELIHOOD,
+)
 from faultmaven.modules.case.domain.models import (
     HypothesisCategory,
     HypothesisGenerationMode,
@@ -65,11 +68,22 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_RUNBOOKS = 3
 
 # A matched runbook seeds a PRIOR, not a conclusion. Cap its hypothesis
-# likelihood strictly below the 0.6 "cause identified" threshold
-# (``working_conclusion.likelihood >= 0.6`` → ``terminal_transitions._cause_identified``,
-# which gates the M5 solution gate and resolution readiness) so a runbook match
-# ALONE can never make FM conclude the cause. Real evidence lifts it past 0.6.
+# likelihood strictly below the ``CAUSE_IDENTIFIED_LIKELIHOOD`` "cause identified"
+# threshold (``working_conclusion.likelihood >= CAUSE_IDENTIFIED_LIKELIHOOD`` →
+# ``terminal_transitions._cause_identified``, which gates the M5 solution gate and
+# resolution readiness) so a runbook match ALONE can never make FM conclude the
+# cause. Real evidence lifts it past the gate.
 _MATCHER_MAX_PRIOR = 0.5
+
+# Soundness invariant (the matcher's core "no incorrect conclusion" guarantee):
+# the instantiated prior MUST sit strictly below the cause-identified gate, else a
+# runbook match alone could trip resolution. Enforced at import so a careless edit
+# to either constant fails fast rather than silently breaking soundness.
+if _MATCHER_MAX_PRIOR >= CAUSE_IDENTIFIED_LIKELIHOOD:  # pragma: no cover
+    raise AssertionError(
+        f"_MATCHER_MAX_PRIOR ({_MATCHER_MAX_PRIOR}) must be < "
+        f"CAUSE_IDENTIFIED_LIKELIHOOD ({CAUSE_IDENTIFIED_LIKELIHOOD})"
+    )
 
 # Prefix on a matcher hypothesis's ``rationale``. It doubles as the per-case
 # skip-guard signal (``is_runbook_match_hypothesis``): the matcher runs every
@@ -155,9 +169,15 @@ def chain_to_specs(
       ``'new_index_N'`` (its position in the node-spec list).
     - Edge endpoints map through that table; an edge with an unresolvable
       endpoint is dropped (ingest would skip it anyway).
+    - A node whose ``statement`` is not a string (a malformed pack might nest a
+      dict/list there) is skipped, not ``str()``-coerced into a garbage node.
+    - A linear chain has exactly one ROOT; multiple ROOTs signal a malformed pack
+      and are logged (the chain is still instantiated as authored — the engine's
+      node-state derivation, not this converter, owns root semantics).
     """
     nodes: List[CausalNodeToAdd] = []
     ref_token: Dict[str, str] = {}
+    root_refs: List[str] = []
     for node in cause.chain_nodes:
         ref = str(node.get("ref", "")).strip()
         ntype_raw = str(node.get("node_type", "")).strip().lower()
@@ -166,7 +186,17 @@ def chain_to_specs(
             if ref:
                 ref_token[ref] = "D"
             continue
-        statement = str(node.get("statement", "")).strip()
+        raw_statement = node.get("statement", "")
+        if not isinstance(raw_statement, str):
+            # A non-string statement (e.g. a nested dict) is malformed; coercing
+            # it would mint a node whose text is a Python repr. Skip it.
+            logger.warning(
+                "Non-string chain-node statement (%s) in cause %s; skipping node",
+                type(raw_statement).__name__,
+                cause.cause_letter,
+            )
+            continue
+        statement = raw_statement.strip()
         if not statement:
             continue
         # A duplicate ref would overwrite the earlier node's token and misdirect
@@ -182,18 +212,44 @@ def chain_to_specs(
             node_type = NodeType(ntype_raw)
         except ValueError:
             node_type = NodeType.INTERMEDIATE
+        if node_type == NodeType.ROOT:
+            root_refs.append(ref or f"<unref:{len(nodes)}>")
         # An unreferenced (empty-ref) node is still a valid node; just keep it out
         # of the ref table (no edge can target it).
         if ref:
             ref_token[ref] = f"new_index_{len(nodes)}"
         nodes.append(CausalNodeToAdd(statement=statement, node_type=node_type))
 
+    if len(root_refs) > 1:
+        logger.warning(
+            "Cause %s chain has %d ROOT nodes (%s); expected one — instantiating "
+            "as authored",
+            cause.cause_letter,
+            len(root_refs),
+            ", ".join(root_refs),
+        )
+
     edges: List[CausalEdgeToAdd] = []
     for edge in cause.chain_edges:
-        cause_tok = ref_token.get(str(edge.get("cause_ref", "")).strip())
-        effect_tok = ref_token.get(str(edge.get("effect_ref", "")).strip())
+        cause_ref = str(edge.get("cause_ref", "")).strip()
+        effect_ref = str(edge.get("effect_ref", "")).strip()
+        cause_tok = ref_token.get(cause_ref)
+        effect_tok = ref_token.get(effect_ref)
         if cause_tok and effect_tok:
             edges.append(CausalEdgeToAdd(cause=cause_tok, effect=effect_tok))
+        else:
+            # An edge with an endpoint outside this cause's node table is dropped.
+            # The common case is a cross-cause ``converges:`` edge — convergence
+            # across causes is documented UNSUPPORTED (runbook-content-architecture
+            # .md § "Convergence"), so this is expected, but it must not vanish
+            # silently: log it so a malformed/cross-cause chain is diagnosable.
+            logger.warning(
+                "Dropping chain edge %s→%s in cause %s (endpoint not in this "
+                "cause's nodes; cross-cause convergence is unsupported)",
+                cause_ref or "?",
+                effect_ref or "?",
+                cause.cause_letter,
+            )
     return nodes, edges
 
 

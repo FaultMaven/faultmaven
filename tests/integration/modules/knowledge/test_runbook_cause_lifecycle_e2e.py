@@ -393,9 +393,10 @@ class TestApplyFromPersistedCauses:
                     {"ref": "D", "node_type": "problem", "statement": "503s"},
                 ],
                 "chain_edges": [{"cause_ref": "root", "effect_ref": "D"}],
-                # At least one indicator rung — the evaluator gives an
-                # indicator-less cause belief 0 (no structural anchor), so a
-                # multiple-verdict fixture must carry one per cause.
+                # Indicators are optional/inert for matching (decision (b)): these
+                # causes match holistically on their symptom-level Statement. The
+                # rung is kept only as realistic authored content; it is not what
+                # makes the cause live.
                 "rung_indicators": {"root": ["[Symptom] the 503s appear"]},
                 "match_predicates": [],
                 "interventions": [],

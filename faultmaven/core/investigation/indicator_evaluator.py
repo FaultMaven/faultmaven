@@ -168,18 +168,22 @@ class IndicatorEvaluator:
         refuted = any(st["refuted"] for st in rung_state.values())
         total = len(cause.rung_indicators)  # rungs that carry indicators
 
-        if refuted or total == 0:
-            # A deterministic contradiction prunes the chain hard (§4); and a
-            # cause with NO indicator rungs has no structural anchor — it must
-            # not go live on a holistic judgment alone (would let a degenerate /
-            # indicator-less Cause attribute on a single fuzzy YES).
+        if refuted:
+            # A deterministic contradiction prunes the chain hard (§4).
             belief = 0.0
         else:
-            # T2 semantic tier is now ONE holistic per-cause judgment (#545), not
-            # per-rung. A holistic "supported" dominates; otherwise the cause
-            # rests on whatever the deterministic T1 tier matched.
+            # T2 semantic tier is ONE holistic per-cause judgment (#545) over the
+            # cause's symptom-level STATEMENT — the sole load-bearing match surface
+            # (runbook-content-architecture.md § "Match surface"). Per-rung
+            # indicators are optional/inert for matching, so the Statement match is
+            # NOT gated on the cause having indicator rungs: a Cause with a real
+            # Statement but no Indicators is still eligible (the earlier
+            # ``total == 0 → 0`` gate contradicted that ratified decision). A
+            # content-less Cause (no usable Statement) still can't match —
+            # ``_build_cause_condition`` returns None → ``_holistic_cause_match``
+            # is False → it falls to the (here 0) deterministic T1 fraction.
             t1_matched = sum(1 for st in rung_state.values() if st["matched"])
-            t1_frac = t1_matched / total
+            t1_frac = (t1_matched / total) if total else 0.0
             holistic = await self._holistic_cause_match(cause)
             belief = 1.0 if holistic else t1_frac
 
@@ -269,11 +273,15 @@ class IndicatorEvaluator:
     def _build_cause_condition(cause: CauseRecord) -> Optional[str]:
         """Render a cause as a symptom-level condition for the holistic T2 call.
 
-        Returns ``None`` when the cause carries no usable description (no
-        statement, no non-problem chain prose, no name) — there is nothing
-        meaningful to judge. The PROBLEM (D) node is excluded via the shared
-        ``is_problem_node`` so the symptom-under-investigation never leaks into
-        the condition (which would make every cause trivially match).
+        Returns ``None`` when the cause carries no usable **mechanism** — no
+        ``cause_statement`` and no non-problem chain prose. Per decision (b) the
+        symptom-level Statement (or, failing that, the chain prose) is the
+        load-bearing match surface; the ``cause_name`` is only its *subject*, so a
+        name on its own is NOT enough to judge on — matching on a bare title
+        ("The case is explained by 'Disk saturation'") would let a Statement-less
+        cause attribute on its heading alone. The PROBLEM (D) node is excluded via
+        the shared ``is_problem_node`` so the symptom-under-investigation never
+        leaks into the condition (which would make every cause trivially match).
         """
         chain = " → ".join(
             (n.get("statement") or "").strip()
@@ -281,13 +289,10 @@ class IndicatorEvaluator:
             if not is_problem_node(n) and (n.get("statement") or "").strip()
         )
         mechanism = (cause.cause_statement or "").strip() or chain
-        name = (cause.cause_name or "").strip()
-        if not mechanism and not name:
+        if not mechanism:
             return None
-        subject = name or cause.cause_letter
-        return f"The case is explained by the cause '{subject}'" + (
-            f" — {mechanism}" if mechanism else ""
-        )
+        subject = (cause.cause_name or "").strip() or cause.cause_letter
+        return f"The case is explained by the cause '{subject}' — {mechanism}"
 
     # ------------------------------------------------------------------
     # Predicate matching + evaluators
