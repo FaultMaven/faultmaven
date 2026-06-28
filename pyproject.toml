@@ -32,7 +32,7 @@ dependencies = [
     # Core FastAPI and server
     "fastapi>=0.115.8",
     "uvicorn>=0.28.0",
-    "python-multipart>=0.0.9",
+    "python-multipart>=0.0.30",  # >=0.0.30: multipart DoS (unbounded header / quadratic parse) fixes
     "sse-starlette>=2.0.0",
 
     # LLM Framework (REQUIRED - core functionality)
@@ -54,8 +54,8 @@ dependencies = [
     "aiofiles>=23.2.1",
     "anyio>=4.3.0",
     "requests>=2.31.0",
-    "PyJWT>=2.8.0",
-    "cryptography>=41.0.0",  # Required for RS256 JWT key generation
+    "PyJWT>=2.13.0",  # >=2.13.0: GHSA key-confusion (HS256 forgery) fix
+    "cryptography>=48.0.1",  # RS256 JWT keys; >=48.0.1 bundles patched OpenSSL
     "bcrypt>=4.0.0",
     "email-validator>=2.0.0",
     "python-dotenv>=1.0.1",
