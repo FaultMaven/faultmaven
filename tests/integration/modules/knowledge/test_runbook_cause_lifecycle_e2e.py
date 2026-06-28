@@ -413,11 +413,37 @@ class TestApplyFromPersistedCauses:
             causes=[_root_to_d("A-pool-too-small"), _root_to_d("B-socket-leak")],
             verification_level=VerificationLevel.COMMUNITY,
         )
+        # First prove the verdict really is 'multiple' (both causes live) via the
+        # real retrieve+match — otherwise the empty-graph assertion below is
+        # vacuous (the matcher swallows all exceptions, so an empty graph could
+        # also mean a crash or a 'none'/'single'-then-instantiation-failure).
+        from faultmaven.core.investigation.indicator_evaluator import (
+            IndicatorEvaluator,
+        )
+
+        ce = SimpleNamespace(answer_yes_no=AsyncMock(return_value=True))
+
+        async def _ce_qa(q: str) -> bool:
+            return await ce.answer_yes_no(q)
+
+        evaluator = IndicatorEvaluator(
+            step_output_resolver=lambda _step: None, case_evidence_qa=_ce_qa
+        )
+        results = await _real_kb_tool(second_id).aget_cause_matches(
+            "503s under load",
+            "u1",
+            resolve_causes=service.get_runbook_causes,
+            evaluator=evaluator,
+            team_ids=[],
+            max_runbooks=1,
+        )
+        assert results and results[0].verdict == "multiple"
+        assert len(results[0].live_causes) == 2  # both causes genuinely live
+
+        # Now the engine path must ABSTAIN on that 'multiple' verdict.
         eng, ce_tool = _engine(service, ce_answer=True, kb_item_id=second_id)
         case = _case()
         await eng._apply_runbook_cause_matcher(case, None, {})
-        # Both causes were judged (T2 ran per cause) and both matched -> two live
-        # causes -> verdict 'multiple' -> abstain (nothing instantiated).
-        assert ce_tool.answer_yes_no.await_count >= 2
+        assert ce_tool.answer_yes_no.await_count >= 2  # both causes judged
         assert case.causal_nodes == {}
         assert case.hypotheses == {}
