@@ -43,9 +43,14 @@ PRs #487–#507. What is built versus still design-intent:
   engine gate enforces them: chain-level belief propagation (§9.4 — the engine
   still uses the per-evidence `+0.15 / −0.20` counter from
   [framework §6](./evidence-driven-investigation-framework.md#6-hypothesis-model));
-  the F4 family-completeness sweep; and invalidation-first search prioritization
-  (§5). Each promotes to the methodology-invariant registry (§0) as it is
-  implemented.
+  and the F4 family-completeness sweep. Each promotes to the
+  methodology-invariant registry (§0) as it is implemented.
+- **Invalidation-first search (§6) — conceptual principle, deliberately not
+  enforced.** The LLM already reasons this way; a prompt-enforcement attempt was
+  tried post-F3 and removed (regressed node emission, no demonstrated benefit). It
+  is a search-*efficiency* lever, not a soundness mechanism, so it is not a
+  pending obligation — see the §6 "Status" / "Rejected alternative" notes and the
+  bar for any reintroduction.
 
 The lifecycle/confidence *mechanics* (states, the `+0.15/−0.20` counter, decay)
 remain specified in framework §6; this document defines the reasoning the agent
@@ -235,6 +240,36 @@ The dominant strategy is **elimination**. A confirmed state only *narrows* the
 space; a falsified node *prunes an entire sub-forest* in one cheap, definitive
 move. The agent therefore prefers the test most likely to *eliminate the most
 chains per unit cost*.
+
+> **Status — conceptual principle, not enforced.** The rules below describe how a
+> competent diagnostician (the LLM) *reasons*; the engine and prompt do **not**
+> enforce them. This is deliberate. Invalidation-first is a *search-efficiency*
+> lever (it shortens the path on a genuine multi-cause differential); it does not
+> hold either soundness guarantee — NO INCORRECT CONCLUSION is held by the
+> empirical-only validation layer (§7.1, M4/M5/M6) and NO COLLAPSE by the
+> anchoring/stagnation-decay machinery, both *independent* of search order. So the
+> cost of under-eliminating is extra turns, not a wrong answer.
+>
+> **Rejected alternative — prompt enforcement (tried post-F3, removed).** A
+> prompt rule telling the LLM to pick the most-eliminating test was added to the
+> chain-emission block and removed: an A/B sim showed it *regressed node
+> emission* (the "where chains diverge" framing pushed the model to restate
+> distinguishing causes as duplicate nodes, re-triggering the node-identity loop
+> §9.2 had closed — 3/3 runs vs 0/2 baseline) with **no demonstrated benefit**
+> (every scenario was single-cause-determined, so it could never exercise the
+> differential the rule targets). Lesson: a *search* rule does not belong in the
+> *emission* instructions, and prompt-first fits *formation* rules (F3), not
+> test-selection.
+>
+> **Bar for reintroduction.** Bring invalidation-first back as an engine/prompt
+> mechanism only after a sim or eval *first demonstrates the failure it targets* —
+> an agent that, on a genuinely ambiguous multi-cause case, anchors on a
+> confirmatory path and wastes turns (or hits a budget) instead of running the
+> discriminating test. With that evidence in hand, prefer a shape that keeps the
+> *fact* in the engine and the *judgment* in the LLM (e.g. the engine renders the
+> divergence point — a node on one chain but not another — into context and the
+> LLM picks the feasible test), or an offline eval signal; not a prompt rule in
+> the emission path.
 
 - **R1 — Expected information per cost.** Choose each test to maximize
   `(chains eliminated if the test fails × P(it fails)) ÷ test cost`. This single
