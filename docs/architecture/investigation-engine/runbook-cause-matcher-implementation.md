@@ -61,7 +61,7 @@ Two contracts the consumer (increment 4) must honour:
 | # | Increment | Scope | Status |
 |---|---|---|---|
 | **1** | **Persist causes at ingest** | `PackRunbook.causes` field + load mapping (`kb_pack.py`); `kb_init` passes `causes=`; `KnowledgeService.ingest_runbook(causes=...)` writes `metadata["causes"]`. Inert until consumed. | **Done** |
-| **2** | **v4 schemas + rung evaluator** | `cause_schemas.py` → rung-level (`RungResult`, `CauseMatch{belief,path}`, `CauseMatchResult{live_causes}`); drop v3 `mechanism/mitigation/resolution/verification`. `indicator_evaluator.py` → per-rung iteration + k-of-n belief + refutation pruning (spec §4). Keep the four predicate evaluators (`absent/contains/exit_code/threshold`) — already v4-correct. | **Done** |
+| **2** | **v4 schemas + rung evaluator** | `cause_schemas.py` → rung-level (`RungResult`, `CauseMatch{belief,path}`, `CauseMatchResult{live_causes}`); drop v3 `mechanism/mitigation/resolution/verification`. `indicator_evaluator.py` → per-rung iteration + k-of-n belief (later superseded by the holistic per-cause T2, §"T2 matching") + refutation pruning (spec §4). Keep the four predicate evaluators (`absent/contains/exit_code/threshold`) — already v4-correct. | **Done** |
 | **3** | **Retrieve → resolve → match** | `kb_qa.aget_cause_matches` retrieves chunks, ranks distinct runbooks by `parent_document_id`, resolves each via an injected `resolve_causes(item_id)` → `metadata["causes"]`, builds `CauseRecord`s (per-entry tolerant), runs the evaluator → `List[CauseMatchResult]`. | **Done** |
 | **4a** | **Lazy instantiation + per-turn wiring (flag OFF)** | Reuse `causal_graph.ingest_emitted_chain` (seed D, exact-match dedup, never-`VALIDATED`, `cn_` id render-back, edges). Hook in `_apply_investigation_updates` just before `_apply_chain_emission` so matcher nodes share the same dedup/derive/recompute pass. Flag `enable_runbook_cause_matcher` (FeatureSettings, default False). New `core/investigation/runbook_cause_matcher.py` (`chain_to_specs` / `instantiate_cause_chain` / `apply_runbook_cause_matcher`); `KnowledgeService.get_runbook_causes` (direct repo read — `get_document` drops `causes`); `CauseMatchResult.selected_record` threads the chosen chain; `KBToolAdapter.wrapped` exposes the tool. | **Done** |
 | **4b-1** | **Hypothesis attachment (load-bearing chain)** | A matcher-instantiated chain with no hypothesis is structurally inert — invisible to `cause_state` / `any_chain_root_validated` / RCC synthesis (these read standing hypotheses, not bare nodes). `attach_matched_hypothesis` creates an ACTIVE hypothesis (`HypothesisCategory.OTHER`, `OPPORTUNISTIC`, belief→likelihood prior) rooted at the matched chain's ROOT and sets `path` via `chain_path_to_problem`. Idempotent: dedup by `root_node_id` (the matcher runs every turn; nodes dedup, so the hypothesis must too). Root stays CANDIDATE → no premature IDENTIFIED. `apply_runbook_cause_matcher` takes `hypothesis_manager`; the engine passes `self.hypothesis_manager`. | **Done** |
@@ -96,9 +96,12 @@ still names API fields the evidence lacks); neither did matching the raw chain-n
 statements (also implementation-specific).
 
 **Fix:** T2 is now **one holistic judgment per cause** — "is the case explained by
-this cause?", built from the cause's **symptom-level description** (name +
-`cause_statement` + non-problem chain prose, `_build_cause_condition`), not the
-per-rung operator indicators. Validated: on evidence that matches a documented
+this cause?", built from the cause's **symptom-level description**
+(`_build_cause_condition`), not the per-rung operator indicators. The
+load-bearing surface is the `cause_statement` (or, failing that, the non-problem
+chain prose); the `cause_name` is only its subject, so a Cause with no statement
+and no chain prose yields no condition and abstains rather than matching on its
+title alone (#563). Validated: on evidence that matches a documented
 cause (sync-wave ordering) it fires that cause and **discriminates** the other six
 (clean `single`); on evidence whose true cause isn't documented (an SSL-specific
 PreSync failure) it soundly returns `none`. The deterministic **T1** tier (per-rung
@@ -142,9 +145,10 @@ pipeline so it can fire today.
 
 - **Never `VALIDATED` at instantiation** — nodes default `CANDIDATE`; validation
   only via `derive_node_states` from real evidence (M4). Schema-enforced.
-- **Prior, not a gate** — k-of-n verdict (not strict-all); a partially-matching
-  chain still surfaces; the T2 semantic fallback (`case_evidence_qa`) is always
-  available, so predicates never gate.
+- **Prior, not a gate** — the holistic per-cause belief (not strict-all-rungs,
+  §"T2 matching") surfaces a cause on a symptom-level match without requiring
+  every rung; the T2 semantic judgment (`case_evidence_qa`) is always available,
+  so the deterministic predicates never gate.
 - **T2 never refutes** — the raw-evidence fallback (above) judges YES/NO like the
   vector path; a `NO` (or no evidence at all) is 'not matched', never 'refuted',
   so it can only lower belief, never prune a Cause.
