@@ -16,6 +16,13 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     QualityScore,
     ValidationResult,
 )
+from faultmaven.modules.knowledge.domain.services.cause_grammar import (
+    FALLBACK_CAUSE_LETTER,
+    FALLBACK_INDICATOR_TOKEN,
+    LEGACY_V3_CAUSE_SUBFIELDS,
+    QUADRANT_ALTERNATION,
+    REQUIRED_CAUSE_SUBFIELDS,
+)
 
 # =============================================================================
 # Security hazard detection (same shape as kb-toolkit's validator). Hazards
@@ -434,31 +441,34 @@ class RunbookValidator:
                     "## Causes section must contain at least one ### Cause subsection"
                 )
             # Fallback cause (Cause Z with [Default] indicator) is a quality warning
-            if not re.search(r"\[Default\]", content):
+            if FALLBACK_INDICATOR_TOKEN not in content:
                 warnings.append(
-                    "No fallback Cause with [Default] indicator found — "
-                    "add a '### Cause Z: Unidentified' with [Default] indicator"
+                    f"No fallback Cause with {FALLBACK_INDICATOR_TOKEN} indicator "
+                    f"found — add a '### Cause {FALLBACK_CAUSE_LETTER}: Unidentified' "
+                    f"with {FALLBACK_INDICATOR_TOKEN} indicator"
                 )
             # v4: each ### Cause carries Statement / Indicators / Interventions
             # (Chain optional); interventions are quadrant-tagged. Coarse,
             # document-level checks (drafts get human review before activation).
-            for sub in ("Statement", "Indicators", "Interventions"):
+            _required = " / ".join(REQUIRED_CAUSE_SUBFIELDS)
+            for sub in REQUIRED_CAUSE_SUBFIELDS:
                 if not re.search(rf"\*\*{sub}:\*\*", content):
                     warnings.append(
                         f"No `**{sub}:**` sub-field found anywhere in the runbook "
-                        "(v4 Causes use Statement / Indicators / Interventions)"
+                        f"(v4 Causes use {_required})"
                     )
             if re.search(r"\*\*Interventions:\*\*", content) and not re.search(
-                r"\*\*(remediation|defensive_fix|mitigation|loop_break)\*\*", content
+                rf"\*\*({QUADRANT_ALTERNATION})\*\*", content
             ):
                 warnings.append(
                     "Interventions present but no quadrant tag "
-                    "(remediation / defensive_fix / mitigation / loop_break)"
+                    f"({QUADRANT_ALTERNATION.replace('|', ' / ')})"
                 )
             # v4 has no AND-sets in authored runbooks; flag legacy v3 sub-fields.
-            if re.search(r"\*\*(Mechanism|Mitigation|Resolution):\*\*", content):
+            _legacy = "|".join(LEGACY_V3_CAUSE_SUBFIELDS)
+            if re.search(rf"\*\*({_legacy}):\*\*", content):
                 warnings.append(
-                    "Found v3 Cause sub-field(s) (Mechanism/Mitigation/Resolution) — "
+                    f"Found v3 Cause sub-field(s) ({_legacy.replace('|', '/')}) — "
                     "v4 uses Statement / Chain / Indicators / quadrant-tagged Interventions"
                 )
 
@@ -495,7 +505,10 @@ class RunbookValidator:
             letter = h.group(1)
             end = heads[i + 1].start() if i + 1 < len(heads) else len(content)
             body = content[h.end() : end]
-            if "[Default]" in _field("Indicators", body) or letter.upper() == "Z":
+            if (
+                FALLBACK_INDICATOR_TOKEN in _field("Indicators", body)
+                or letter.upper() == FALLBACK_CAUSE_LETTER
+            ):
                 continue  # fallback Cause — not a match surface
             stmt = _field("Statement", body)
             if not stmt:
@@ -679,7 +692,7 @@ class QualityScorer:
 
         has_fix = re.search(
             r"(?im)^\s*\*\*Interventions:\*\*"
-            r"|^\s*-\s*\*\*(remediation|defensive_fix|mitigation|loop_break)\*\*",
+            rf"|^\s*-\s*\*\*({QUADRANT_ALTERNATION})\*\*",
             content,
         )
         if has_fix:
