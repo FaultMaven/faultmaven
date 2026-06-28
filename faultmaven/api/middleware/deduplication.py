@@ -83,9 +83,10 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         start_time = time.time()
 
         try:
-            # Initialize if needed
+            # Initialize if needed (resolves the Redis client from app.state,
+            # which is populated by the lifespan composition root)
             if not self._initialized:
-                await self._initialize()
+                await self._initialize(request)
 
             # Skip deduplication if disabled or no Redis available
             if not self.settings.deduplication_enabled or self._disabled:
@@ -165,20 +166,29 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                     },
                 )
 
-    async def _initialize(self) -> None:
-        """Ensure Redis client is available."""
+    async def _initialize(self, request: Request) -> None:
+        """Resolve the Redis client lazily on the first request.
+
+        Starlette middleware is constructed at import time, before the lifespan
+        startup that creates the Redis client — so the client cannot be captured
+        in ``__init__``. ``resolve_redis_client`` performs the shared lazy
+        resolution (injected → app.state → central factory) and always returns a
+        working client (real Redis or FakeRedis).
+        """
+        from ...infrastructure.redis_client import resolve_redis_client
+
+        self._redis = resolve_redis_client(
+            request, injected=self._redis, redis_url=self.redis_url
+        )
+
         if self._redis is not None:
-            # Client was injected via constructor — ready to go
             self._initialized = True
-            self.logger.info(
-                "Request deduplication middleware initialized (injected client)"
-            )
+            self.logger.info("Request deduplication middleware initialized")
             return
 
-        # No client injected — should not happen in normal startup.
-        # Disable dedup entirely so dispatch short-circuits.
+        # Genuinely no client available — degrade gracefully (fail-open dispatch).
         self.logger.warning(
-            "Deduplication middleware has no Redis client — " "deduplication disabled"
+            "Deduplication middleware has no Redis client — deduplication disabled"
         )
         self._disabled = True
         self._initialized = True
@@ -299,7 +309,11 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
         result = await self._redis.eval(lua_script, 1, key, ttl, current_time_str)
 
-        is_duplicate, cached_data = result
+        # Redis truncates trailing nils in Lua array replies, so the
+        # not-duplicate branch ({0, nil}) comes back as a 1-element array ([0]).
+        # Unpack defensively instead of assuming a fixed length.
+        is_duplicate = bool(result[0]) if result else False
+        cached_data = result[1] if len(result) > 1 else None
 
         if is_duplicate:
             self.logger.debug(f"Duplicate request detected: {key}")
