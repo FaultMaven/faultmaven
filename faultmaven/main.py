@@ -433,6 +433,13 @@ async def lifespan(app: FastAPI):
             container.get_oauth_service()
         )  # OAuth service (optional)
 
+        # Shared Redis client (real Redis in cloud, FakeRedis in standalone).
+        # Single source of truth for Redis-dependent middleware (deduplication,
+        # idempotency), which resolve it lazily from app.state on first request —
+        # after this composition root has run. The container guarantees a working
+        # client (never None), so this is always populated.
+        app.state.redis_client = container.get_redis_client()
+
         # Other services (may fail gracefully)
         try:
             app.state.session_service = container.get_session_service()
@@ -995,17 +1002,11 @@ def setup_middleware():
     try:
         if not settings.server.skip_service_checks:
             from .api.middleware.idempotency import IdempotencyMiddleware
-            from .container import container
 
-            # Get Redis client from container for idempotency
-            redis_client = None
-            try:
-                redis_client = container.get_redis_client()
-            except Exception as e:
-                logger.warning(f"Redis not available for idempotency: {e}")
-
-            # Create middleware instance with dependencies
-            app.add_middleware(IdempotencyMiddleware, redis_client=redis_client)
+            # No client injected here: this runs at import time, before the
+            # lifespan creates Redis. The middleware resolves the client lazily
+            # from app.state (wired by the composition root) on the first request.
+            app.add_middleware(IdempotencyMiddleware)
             if logging_enabled:
                 logger.info("✅ Idempotency middleware added")
         else:
