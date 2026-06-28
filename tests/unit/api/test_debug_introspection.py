@@ -13,14 +13,19 @@ import pytest
 
 from faultmaven.api.debug_introspection import build_causal_graph_debug_payload
 from faultmaven.core.investigation.runbook_cause_matcher import (
+    RUNBOOK_INTERVENTIONS_META_KEY,
     RUNBOOK_MATCH_RATIONALE_PREFIX,
     is_runbook_match_hypothesis,
 )
 from faultmaven.modules.case.domain.models import (
+    CausalEdge,
+    CausalNode,
+    CauseState,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
+    NodeType,
 )
 
 pytestmark = pytest.mark.unit
@@ -116,3 +121,68 @@ class TestPayloadShape:
         assert payload["causal_edges"] == []
         assert payload["problem_node_id"] is None
         assert payload["root_cause_conclusion"] is None
+
+    def test_exposes_exact_keyset(self):
+        # Pin the full key set so a future edit dropping a field is caught.
+        payload = build_causal_graph_debug_payload(_case({}))
+        assert set(payload) == {
+            "case_id",
+            "current_turn",
+            "cause_state",
+            "problem_node_id",
+            "causal_nodes",
+            "causal_edges",
+            "hypotheses",
+            "root_cause_conclusion",
+        }
+
+
+class TestRealGraphSerialization:
+    """Exercise the real CausalNode/CausalEdge/cause_state paths the probe reads —
+    not just empty collections. In particular the matcher's NODE-level firing
+    signal: it stashes the matched runbook's interventions on the chain ROOT
+    node's ``metadata[RUNBOOK_INTERVENTIONS_META_KEY]``, which the node dump must
+    round-trip (the only firing signal visible until the hypothesis ``rationale``
+    field ships)."""
+
+    def test_real_nodes_edges_and_cause_state_serialize(self):
+        d = CausalNode(
+            statement="PVC stays Pending — no volume provisioned",
+            node_type=NodeType.PROBLEM,
+            generated_at_turn=1,
+        )
+        root = CausalNode(
+            statement="Referenced StorageClass is missing",
+            node_type=NodeType.ROOT,
+            generated_at_turn=1,
+            metadata={
+                RUNBOOK_INTERVENTIONS_META_KEY: [
+                    {"quadrant": "remediation", "text": "create the StorageClass"}
+                ]
+            },
+        )
+        edge = CausalEdge(
+            cause_node_id=root.node_id,
+            effect_node_id=d.node_id,
+            created_at_turn=1,
+        )
+        case = _case({})
+        case.causal_nodes = {d.node_id: d, root.node_id: root}
+        case.causal_edges = [edge]
+        case.progress = SimpleNamespace(cause_state=CauseState.CANDIDATES)
+
+        payload = build_causal_graph_debug_payload(case)
+
+        # Problem-node finder picks the PROBLEM (D) node.
+        assert payload["problem_node_id"] == d.node_id
+        # Enums serialize to their string values (model_dump mode="json").
+        assert payload["causal_nodes"][d.node_id]["node_type"] == "problem"
+        assert payload["cause_state"] == "candidates"
+        # Edge round-trips with the right endpoints.
+        assert len(payload["causal_edges"]) == 1
+        assert payload["causal_edges"][0]["cause_node_id"] == root.node_id
+        assert payload["causal_edges"][0]["effect_node_id"] == d.node_id
+        # NODE-level matcher firing signal survives the dump.
+        root_meta = payload["causal_nodes"][root.node_id]["metadata"]
+        assert RUNBOOK_INTERVENTIONS_META_KEY in root_meta
+        assert root_meta[RUNBOOK_INTERVENTIONS_META_KEY][0]["quadrant"] == "remediation"
