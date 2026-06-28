@@ -39,18 +39,30 @@ PRs #487–#507. What is built versus still design-intent:
   rejects a cause whose mechanism cannot produce D's observed signature; this is
   a semantic judgment, deliberately not an engine token-match), sim-validated for
   no over-screening.
-- **Design-intent, not yet built** — the LLM satisfies these *behaviorally*; no
-  engine gate enforces them: chain-level belief propagation (§9.4 — the engine
+- **Design-intent, not yet built** — the LLM satisfies this *behaviorally*; no
+  engine gate enforces it: chain-level belief propagation (§9.4 — the engine
   still uses the per-evidence `+0.15 / −0.20` counter from
-  [framework §6](./evidence-driven-investigation-framework.md#6-hypothesis-model));
-  and the F4 family-completeness sweep. Each promotes to the
-  methodology-invariant registry (§0) as it is implemented.
+  [framework §6](./evidence-driven-investigation-framework.md#6-hypothesis-model)).
+  It promotes to the methodology-invariant registry (§0) when implemented.
 - **Invalidation-first search (§6) — conceptual principle, deliberately not
   enforced.** The LLM already reasons this way; a prompt-enforcement attempt was
   tried post-F3 and removed (regressed node emission, no demonstrated benefit). It
   is a search-*efficiency* lever, not a soundness mechanism, so it is not a
   pending obligation — see the §6 "Status" / "Rejected alternative" notes and the
   bar for any reintroduction.
+- **F4 family-completeness (§4) — measured, not warranted as an engine/prompt
+  rule.** The premise is that the agent *tunnels at formation* on the family a
+  symptom screams (concluding cause B because family A was never enumerated). A
+  measure-first study (two cross-family misdirection scenarios — a multi-downstream
+  resource-exhaustion case and a single-downstream expired-mTLS-cert case — in
+  `fm-sre-simulator`) found the recommended STRICT model **does not tunnel**: it
+  swept to the correct cross-family cause every run, even when the symptom points
+  squarely at the obvious wrong family. Authentic symptom signatures encode their
+  family (which is what F3 already leverages), so the "points squarely at the wrong
+  family with no tell" premise is hard to construct without implausibility. F4 thus
+  stays a formation *guideline*, not an enforced rule. The scenarios are retained
+  as permanent tunnel-vision regression evals. Reintroduce only if a real case
+  exhibits formation tunnel vision on a STRICT model.
 
 The lifecycle/confidence *mechanics* (states, the `+0.15/−0.20` counter, decay)
 remain specified in framework §6; this document defines the reasoning the agent
