@@ -36,6 +36,23 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         self.redis_client = redis_client
         self.ttl_seconds = 3600  # 1 hour TTL for idempotency keys
         self.key_prefix = "idempotency:"
+        self._resolved = redis_client is not None
+
+    def _ensure_redis(self, request: Request) -> None:
+        """Resolve the Redis client lazily on first use.
+
+        Starlette middleware is constructed at import time, before the lifespan
+        startup that creates the Redis client — so a client passed in __init__ is
+        None at that point. ``resolve_redis_client`` performs the shared lazy
+        resolution (injected → app.state → central factory) and always returns a
+        working client.
+        """
+        if self._resolved:
+            return
+        from ...infrastructure.redis_client import resolve_redis_client
+
+        self.redis_client = resolve_redis_client(request, injected=self.redis_client)
+        self._resolved = True
 
     async def dispatch(self, request: Request, call_next):
         """Process request with idempotency checking."""
@@ -62,6 +79,13 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             )
 
         try:
+            # Resolve the Redis client lazily (after startup has populated
+            # app.state). Kept inside the try so any failure during resolution
+            # degrades gracefully (process the request) rather than 500-ing.
+            self._ensure_redis(request)
+            if self.redis_client is None:
+                return await call_next(request)
+
             # Create cache key
             cache_key = self._create_cache_key(idempotency_key, request)
 

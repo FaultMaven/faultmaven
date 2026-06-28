@@ -234,11 +234,11 @@ class ProtectionSystem:
 
             # 2. Request Deduplication (executed second)
             if self.basic_config.deduplication_enabled:
-                redis_client = getattr(self.app.state, "redis_client", None)
+                # Client is resolved lazily from app.state on the first request
+                # (see DeduplicationMiddleware._initialize); not injected here.
                 self.app.add_middleware(
                     DeduplicationMiddleware,
                     settings=self.basic_config,
-                    redis_client=redis_client,
                 )
                 basic_result["middleware_added"].append("deduplication")
                 basic_result["components"].append("request_deduplication")
@@ -516,11 +516,12 @@ def setup_protection_middleware(
         # Add middleware in reverse order (FastAPI adds them as a stack)
         # Last added = first executed
         if settings.deduplication_enabled:
-            redis_client = getattr(app.state, "redis_client", None)
+            # No client injected: middleware is constructed at import time, before
+            # startup creates Redis. It resolves the client lazily from app.state
+            # (wired by the composition root) on the first request.
             app.add_middleware(
                 DeduplicationMiddleware,
                 settings=settings,
-                redis_client=redis_client,
             )
             setup_info["middleware_added"].append("deduplication")
 
@@ -658,10 +659,12 @@ async def setup_protection_middleware_async(
 
         # 2. Request Deduplication (executed second)
         if settings.deduplication_enabled:
+            # No client injected here: middleware is constructed at import time,
+            # before startup creates Redis. It resolves the client lazily from
+            # app.state (wired by the composition root) on the first request.
             app.add_middleware(
                 DeduplicationMiddleware,
                 settings=settings,
-                redis_client=getattr(app.state, "redis_client", None),
             )
             setup_info["middleware_added"].append("deduplication")
             logger.info("Added request deduplication middleware")

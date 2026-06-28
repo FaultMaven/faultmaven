@@ -202,6 +202,30 @@ def create_redis_client(**kwargs):
     return RedisClientFactory.create_client(**kwargs)
 
 
+def resolve_redis_client(request, injected=None, redis_url: Optional[str] = None):
+    """Resolve a working Redis client for request-path middleware.
+
+    Starlette middleware is constructed at import time, before the lifespan
+    startup creates Redis — so the client cannot be captured in ``__init__``.
+    This resolves it lazily on the first request, in priority order:
+
+    1. ``injected`` — an explicitly provided client (used by tests).
+    2. ``app.state.redis_client`` — the single source of truth wired by the
+       lifespan composition root (real Redis in cloud, FakeRedis in standalone).
+    3. The central factory as a last resort, which always returns a working
+       client (FakeRedis fallback).
+
+    Always returns a usable client (never None), so callers do not need to
+    re-implement the fallback ladder.
+    """
+    if injected is not None:
+        return injected
+    client = getattr(request.app.state, "redis_client", None)
+    if client is None:
+        client = create_redis_client(redis_url=redis_url)
+    return client
+
+
 async def get_async_redis_client(
     redis_url: Optional[str] = None,
     host: Optional[str] = None,
