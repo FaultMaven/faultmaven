@@ -16,8 +16,12 @@ several places that MUST agree:
 
 The two repos cannot import one another, so (1) is a **manual mirror** of the
 kb-toolkit config defaults (3). A change here MUST be mirrored there and
-vice-versa; a frozen-literal drift-guard pins each side, and the cross-repo
-pack-record golden (``EXPECTED_GOLDEN_SHA256``) catches any field-level fallout.
+vice-versa. Two guards keep them honest: each repo's frozen-literal drift-guard
+test trips if that side's literal is edited without updating its own test; and
+the kb-toolkit ``golden-cross-repo`` CI job
+(``scripts/check_vocab_cross_repo.py``) mechanically asserts the two repos'
+vocabularies are equal (the field-level pack-record golden,
+``EXPECTED_GOLDEN_SHA256``, does NOT cover the authoring vocabulary).
 
 LAYER NOTE: these are the AUTHORING markdown sub-fields — a *different layer*
 from the parsed 9-field ``CauseRecord`` (``core.investigation.cause_schemas``).

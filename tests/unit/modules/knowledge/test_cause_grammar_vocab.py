@@ -86,6 +86,11 @@ class TestConversionPromptCoversVocabulary:
             assert f"**{sub}:**" in self.PROMPT, f"prompt omits **{sub}:**"
 
     def test_prompt_lists_every_quadrant(self):
+        # Enumeration guarantee: every quadrant the validator accepts must be named
+        # in the authoring instructions. A bare substring is the right check here —
+        # the prompt legitimately names some quadrants only in the rule-7 prose
+        # enumeration (`remediation / defensive_fix / mitigation / loop_break`) and
+        # others as bold example bullets (`- **remediation** (root): …`).
         for q in INTERVENTION_QUADRANTS:
             assert q in self.PROMPT, f"prompt omits quadrant {q!r}"
 
