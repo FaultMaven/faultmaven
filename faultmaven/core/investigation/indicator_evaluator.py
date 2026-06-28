@@ -168,18 +168,22 @@ class IndicatorEvaluator:
         refuted = any(st["refuted"] for st in rung_state.values())
         total = len(cause.rung_indicators)  # rungs that carry indicators
 
-        if refuted or total == 0:
-            # A deterministic contradiction prunes the chain hard (§4); and a
-            # cause with NO indicator rungs has no structural anchor — it must
-            # not go live on a holistic judgment alone (would let a degenerate /
-            # indicator-less Cause attribute on a single fuzzy YES).
+        if refuted:
+            # A deterministic contradiction prunes the chain hard (§4).
             belief = 0.0
         else:
-            # T2 semantic tier is now ONE holistic per-cause judgment (#545), not
-            # per-rung. A holistic "supported" dominates; otherwise the cause
-            # rests on whatever the deterministic T1 tier matched.
+            # T2 semantic tier is ONE holistic per-cause judgment (#545) over the
+            # cause's symptom-level STATEMENT — the sole load-bearing match surface
+            # (runbook-content-architecture.md § "Match surface"). Per-rung
+            # indicators are optional/inert for matching, so the Statement match is
+            # NOT gated on the cause having indicator rungs: a Cause with a real
+            # Statement but no Indicators is still eligible (the earlier
+            # ``total == 0 → 0`` gate contradicted that ratified decision). A
+            # content-less Cause (no usable Statement) still can't match —
+            # ``_build_cause_condition`` returns None → ``_holistic_cause_match``
+            # is False → it falls to the (here 0) deterministic T1 fraction.
             t1_matched = sum(1 for st in rung_state.values() if st["matched"])
-            t1_frac = t1_matched / total
+            t1_frac = (t1_matched / total) if total else 0.0
             holistic = await self._holistic_cause_match(cause)
             belief = 1.0 if holistic else t1_frac
 

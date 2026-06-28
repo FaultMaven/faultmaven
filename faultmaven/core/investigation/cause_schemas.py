@@ -135,9 +135,10 @@ class CauseMatch(BaseModel):
     belief: float = Field(
         default=0.0,
         description=(
-            "0 if any rung refuted or the Cause has no indicator rungs; else 1.0 "
-            "when the per-cause holistic T2 supports the Cause, otherwise the "
-            "deterministic T1 matched-rung fraction (#545)"
+            "0 if any rung is deterministically refuted; else 1.0 when the "
+            "per-cause holistic T2 judgment over the symptom-level Statement "
+            "supports the Cause, otherwise the deterministic T1 matched-rung "
+            "fraction (0 when the Cause carries no indicator rungs) (#545)"
         ),
     )
     is_fallback: bool = False

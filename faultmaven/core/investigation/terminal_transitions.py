@@ -35,6 +35,14 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
 )
 
+# Likelihood at or above which a ``working_conclusion`` counts as a known cause
+# (the proxy fallback in ``_cause_identified`` below). This is the single source
+# of truth for that threshold: the runbook-cause matcher caps its instantiated
+# prior strictly BELOW this value (``runbook_cause_matcher._MATCHER_MAX_PRIOR``)
+# so a runbook match ALONE can never trip the gate — only real case evidence can
+# lift belief past it. The ``cap < gate`` invariant is pinned by a test.
+CAUSE_IDENTIFIED_LIKELIHOOD = 0.6
+
 
 def _cause_identified(case: "Case") -> bool:
     """Whether the root cause is known, per the authoritative signal.
@@ -67,7 +75,8 @@ def _cause_identified(case: "Case") -> bool:
     return bool(
         case.working_conclusion
         and getattr(case.working_conclusion, "statement", None)
-        and getattr(case.working_conclusion, "likelihood", 0) >= 0.6
+        and getattr(case.working_conclusion, "likelihood", 0)
+        >= CAUSE_IDENTIFIED_LIKELIHOOD
     )
 
 
