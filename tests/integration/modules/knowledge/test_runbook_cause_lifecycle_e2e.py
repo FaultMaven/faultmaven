@@ -31,6 +31,7 @@ real.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -81,6 +82,20 @@ GOLDEN_CAUSES = (
     / "fixtures"
     / "runbook_cause_lifecycle"
     / "expected_pack_causes.json"
+)
+
+# SHA-256 of the vendored golden. This file is a byte-identical copy of the
+# kb-toolkit golden (real ``build_pack`` output) — the shared artifact that joins
+# the two halves of the cross-repo cause-shape contract (see PROVENANCE.md).
+# Nothing can compare the two repos' copies in one CI run, so this hash is the
+# cross-repo pin: it MUST equal ``EXPECTED_GOLDEN_SHA256`` in the kb-toolkit
+# ``test_pack_causes_contract.py``. Any edit to either copy fails its own repo's
+# test until the hash is regenerated, forcing a conscious re-sync of both copies
+# (the field-set checks below pin keys, not values — only this catches value
+# drift between the two vendored copies). Regenerate via kb-toolkit
+# ``regen_golden.py``, copy here, update this constant AND the kb-toolkit one.
+EXPECTED_GOLDEN_SHA256 = (
+    "7f1a083dd95830079ac095d63526c52f818cbdf86086923033886a03cfe1b1be"
 )
 
 
@@ -135,6 +150,9 @@ async def seeded_service(session_factory):
         vector_store=MagicMock(),
         db_session_factory=session_factory,
     )
+    # Load-bearing: ingest_runbook DELETES the just-written SQL row (incl.
+    # metadata['causes']) and raises if the vector write returns <= 0 or raises.
+    # A positive int is required for the row to survive — keep this an int >= 1.
     service._index_document_in_vector_store = AsyncMock(return_value=2)
     return service
 
@@ -226,6 +244,19 @@ def _engine(knowledge_service, *, ce_answer=True):
 # --------------------------------------------------------------------------- #
 
 
+def test_golden_matches_cross_repo_hash():
+    """The vendored golden must be byte-identical to the kb-toolkit copy. The
+    field-set checks elsewhere pin keys, not values; this hash is the only guard
+    against value drift between the two hand-copied golden files (it must equal
+    the kb-toolkit ``EXPECTED_GOLDEN_SHA256``)."""
+    actual = hashlib.sha256(GOLDEN_CAUSES.read_bytes()).hexdigest()
+    assert actual == EXPECTED_GOLDEN_SHA256, (
+        "Golden changed without re-sync. Regenerate via kb-toolkit "
+        "regen_golden.py, copy the file here, and update EXPECTED_GOLDEN_SHA256 "
+        "in BOTH repos' tests to this value: " + actual
+    )
+
+
 class TestIngestResolveRoundTrip:
     @pytest.mark.asyncio
     async def test_causes_survive_ingest_and_resolve_losslessly(self, ingested):
@@ -290,9 +321,14 @@ class TestApplyFromPersistedCauses:
         assert len(roots) == 1
         root = roots[0]
         assert root.node_state == NodeState.CANDIDATE
-        assert any(n.node_type == NodeType.PROBLEM for n in case.causal_nodes.values())
-        # The full authored ladder made it across (root + s1 + s2 + D).
-        assert len(case.causal_nodes) == 4
+        # The full authored ladder made it across: root + 2 intermediate rungs
+        # (s1, s2) + the engine-seeded D/PROBLEM node (chain_to_specs drops the
+        # authored D and the engine re-seeds it). Assert by node type rather than
+        # a magic count so the intent — and which node is missing — is explicit.
+        types = [n.node_type for n in case.causal_nodes.values()]
+        assert types.count(NodeType.ROOT) == 1
+        assert types.count(NodeType.PROBLEM) == 1
+        assert types.count(NodeType.INTERMEDIATE) == 2
 
         # 2. T2 actually drove the match (the case-evidence tool was consulted).
         assert ce_tool.answer_yes_no.await_count >= 1
@@ -327,8 +363,12 @@ class TestApplyFromPersistedCauses:
         """T2 says no for the cause -> belief 0 -> verdict none -> nothing
         instantiated. A runbook is a prior, not forced onto the case."""
         service, _ = ingested
-        eng, _ = _engine(service, ce_answer=False)
+        eng, ce_tool = _engine(service, ce_answer=False)
         case = _case()
         await eng._apply_runbook_cause_matcher(case, None, {})
+        # T2 was actually consulted and abstained — proves the matcher RAN and
+        # said no, not that it silently crashed (the matcher swallows all
+        # exceptions, so an empty graph alone can't distinguish the two).
+        assert ce_tool.answer_yes_no.await_count >= 1
         assert case.causal_nodes == {}
         assert case.hypotheses == {}
