@@ -9,7 +9,14 @@ chain's root (4b-1) so the chain is *load-bearing* — an unattached chain is
 invisible to ``cause_state`` / ``any_chain_root_validated`` / RCC synthesis. The
 matcher seeds a structural *prior*; everything downstream (``derive_node_states``,
 RCC synthesis, the M5 solution gate) then treats these nodes exactly like
-LLM-emitted ones — which is what keeps the soundness guarantees automatic.
+LLM-emitted ones — so they inherit the same soundness treatment with no
+matcher-specific bypass. That treatment is the engine's standing contract, NOT a
+static guarantee from the matcher: a seeded node stays CANDIDATE and only
+VALIDATES (driving ``cause_state`` to IDENTIFIED) on real case evidence; the
+capped prior (≤ 0.5) is the matcher's initial belief, not a durable ceiling (the
+engine clamps belief to ``[0, 1]`` only), and a failed fix demotes the cause
+(counterfactual backstop). So a false match degrades to a capped, evidence-gated
+candidate — noise/cost, not a wrong conclusion — never a soundness break.
 
 Matching fires on the **T2 semantic tier** (``case_evidence_qa`` over the case's
 vectorized evidence — wired in 4b-2). The T1 deterministic tier stays inert:

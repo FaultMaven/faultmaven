@@ -2,11 +2,14 @@
 
 **Document Type:** Component Specification
 **Version:** 2.0
-**Status:** Target-state for the v4 causal-chain template. The flat-Cause Phase-1
-evaluator (predicates, schemas, KB-tool integration) is shipped; the rung-level
-matcher + lazy instantiation described here is the design the per-turn wiring
-implements. No consumer is live yet — a v4 runbook behaves like a v3 runbook until
-this matcher lands (see [§7](#7-implementation-status)).
+**Status:** Implemented behind a flag. The matcher (predicates, rung/holistic
+evaluator, retrieval, lazy instantiation, per-turn wiring) is built and wired but
+the `enable_runbook_cause_matcher` flag defaults **off**, so on the default path a
+v4 runbook still behaves like a v3 runbook until the flag is flipped (gated on the
+evidence-vectorization fix in issue #543 + a demonstrated live firing). See
+[§7](#7-implementation-status). NOTE: §4 below still describes the verdict as
+rung-driven k-of-n; the shipped matcher uses **holistic per-cause** matching (§4
+reconciliation pending).
 
 ## Purpose
 
@@ -264,24 +267,27 @@ for instantiation. A degenerate (no-`Chain`) Cause carries the `root → D` pair
 
 ## 7. Implementation Status
 
-The flat-Cause Phase-1 pieces are shipped and the pack now ships + persists the
-per-Cause graph record; the rung-level matcher + lazy instantiation (§2, §4, §5)
-remain the v4 target. **No consumer is live yet**: a v4 runbook behaves exactly
-like a v3 runbook until the per-turn matcher lands — v4 authoring is
-forward-investment (encode the graph now, the matcher catches up). The
-incremental, flag-gated activation path is in
+The full matcher is **built and wired, behind a flag** (increments 1–5,
+PRs #534–#541). The consumer is **not yet live by default**: the
+`enable_runbook_cause_matcher` flag defaults **off** (`settings.py`
+`FeatureSettings`), so a v4 runbook behaves like a v3 runbook on the default path
+until the flag is flipped. The remaining gate to default-on is operational, not
+code: the matcher's T2 tier needs case evidence it can retrieve, which the normal
+flow does not always vectorize (issue #543) — so a clean live full-flow firing
+must be demonstrated before the default-on decision. The incremental, flag-gated
+activation path and that decision are tracked in
 [runbook-cause-matcher-implementation.md](./runbook-cause-matcher-implementation.md).
 
 | Component | Location | Status |
 |---|---|---|
-| Predicate evaluators (`absent`/`contains`/`exit_code`/`threshold`) | `faultmaven/core/investigation/indicator_evaluator.py` | Shipped (flat) |
-| `CauseChunk` / match schemas | `faultmaven/core/investigation/cause_schemas.py` | Shipped (flat); rung-level (§5) pending |
+| Predicate evaluators (`absent`/`contains`/`exit_code`/`threshold`) | `faultmaven/core/investigation/indicator_evaluator.py` | Shipped |
+| `CauseRecord` / match-result schemas | `faultmaven/core/investigation/cause_schemas.py` | **Implemented** (rung-level §5) |
 | v4 chunker: strip hints + per-Cause metadata | `kb_toolkit/core/chunker.py` | **Implemented** |
 | Pack-side per-Cause graph record (§6) | `kb_toolkit/core/pack_builder.py` | **Implemented** (in `pack.json` `causes`) |
-| Persist pack `causes` at ingest → `knowledge_items.metadata` | `faultmaven/bootstrap/kb_init.py`, `…/knowledge_service.py` | **Implemented** (impl-doc increment 1) |
-| Layered matcher (T1/T2/T3, §2.1) + lazy instantiation/dedup (§2.2) | `faultmaven/core/investigation/` | **Pending** (increments 2–4) |
-| Chain-level k-of-n verdict (§4) | matcher | **Pending** (increment 2) |
-| Per-turn integration into milestone engine | `faultmaven/core/investigation/milestone_engine.py` | **Pending** (increment 4, flag-gated) |
+| Persist pack `causes` at ingest → `knowledge_items.metadata` | `faultmaven/bootstrap/kb_init.py`, `…/knowledge_service.py` | **Implemented** (increment 1) |
+| Matcher tiers + lazy instantiation/dedup (§2.1–§2.2) | `faultmaven/core/investigation/runbook_cause_matcher.py` | **Implemented, flag-gated** (T2 semantic is the live tier; T1 step-output is inert in evidence-only FM — see impl-doc) |
+| Chain verdict (§4) | matcher | **Implemented, flag-gated** (now **holistic per-cause**, not the rung-driven k-of-n §4 still describes — §4 reconciliation pending) |
+| Per-turn integration into milestone engine | `faultmaven/core/investigation/milestone_engine.py` | **Implemented, flag-gated** (`_apply_runbook_cause_matcher`) |
 
 See [investigation-lifecycle-logic.md §1.4](./investigation-lifecycle-logic.md#14-automatic-milestone-tracking-and-stage-transitions)
 for where Cause matching fires within the per-turn flow.

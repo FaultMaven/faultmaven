@@ -2,9 +2,12 @@
 
 **Document Type:** Implementation companion to
 [runbook-cause-matching.md](./runbook-cause-matching.md) (the component spec).
-**Status:** In progress — increments 1–3 + 4a landed; 4b/5 pending. The matcher
-is wired per-turn behind `enable_runbook_cause_matcher` (default off) but inert
-until 4b supplies its resolvers.
+**Status:** Built behind a flag — increments 1–5 landed (PRs #534–#541). The
+matcher is wired per-turn behind `enable_runbook_cause_matcher` (default off),
+with the T2 semantic tier supplying the resolvers. Remaining before default-on is
+operational, not code: the T2 tier needs case evidence it can retrieve, which the
+normal flow does not always vectorize (issue #543), so a clean live full-flow
+firing must be demonstrated before the flag is flipped.
 
 The spec describes the target behaviour; this document is the **how/when** —
 the incremental, flag-gated path that takes the matcher from dormant to live
@@ -12,9 +15,10 @@ without risking the investigation engine.
 
 ## Why this exists
 
-The spec's §7 status table says it plainly: *"No consumer is live — a v4 runbook
-behaves exactly like a v3 runbook until the per-turn matcher lands."* The pieces
-exist but are unwired:
+Originally the consumer was not live — a v4 runbook behaved exactly like a v3
+runbook because the per-Cause record the pack shipped was unread. That gap is now
+closed (the matcher consumes it, flag-gated). This document records the pieces and
+the incremental path that wired them:
 
 - The KB pack ships a rich per-Cause graph record (`chain_nodes`, `chain_edges`,
   `rung_indicators`, `match_predicates`, quadrant `interventions`) — but ingestion
