@@ -200,6 +200,10 @@ class TestEnabledMatcherEndToEnd:
 class TestFlagDefault:
     def test_flag_defaults_off(self):
         # Enabling is a deliberate, sim-validated decision — never on by default.
-        from faultmaven.config.settings import get_settings
+        # Assert the DECLARED field default, not get_settings()/instantiation: both
+        # fold in the deployment's .env (which enables the matcher for this
+        # campaign), so they test the environment, not the default.
+        from faultmaven.config.settings import FeatureSettings
 
-        assert get_settings().features.enable_runbook_cause_matcher is False
+        field = FeatureSettings.model_fields["enable_runbook_cause_matcher"]
+        assert field.default is False
