@@ -302,7 +302,7 @@ class TestDegradation:
     @pytest.mark.asyncio
     async def test_non_iterable_resolver_return_skips_not_raises(self):
         # A misbehaving resolver returning a non-iterable must not break the
-        # turn — the guard covers _build_cause_records, not just resolve.
+        # turn — the guard covers build_cause_records, not just resolve.
         tool = _make_tool([_chunk("kb_bad", 0, 0.9), _chunk("kb_ok", 0, 0.8)])
 
         async def resolve(item_id):
