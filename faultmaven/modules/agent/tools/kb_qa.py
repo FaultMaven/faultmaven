@@ -35,6 +35,9 @@ from faultmaven.core.investigation.cause_schemas import (
     CauseMatchResult,
     build_cause_records,
 )
+from faultmaven.core.investigation.lifecycle_metrics import (
+    runbook_cause_match_skipped_total,
+)
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
@@ -195,6 +198,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
                     )
                 results.append(match)
             except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
+                runbook_cause_match_skipped_total.inc()
                 logger.warning("Cause matching failed for runbook %s: %s", item_id, exc)
                 continue
         return results
