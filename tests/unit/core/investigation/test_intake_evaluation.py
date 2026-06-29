@@ -152,6 +152,25 @@ def test_refutes_on_unpromoted_cause_is_skipped():
     assert recorded == []
 
 
+def test_supports_with_no_instantiable_root_is_skipped():
+    """A degenerate / [Default] cause has no instantiable root, so resolve_root
+    returns None even on a SUPPORTS (matcher's instantiate_cause_chain yields no
+    root node). The verdict must be skipped — there is nothing to attach to —
+    not error. (Pins the guarantee the matcher flagged: None-on-SUPPORTS.)"""
+    node = _root()
+    case = _case(node)
+    recorded = run_intake_evaluation(
+        case,
+        [_evidence()],
+        [_ac()],
+        case.current_turn,
+        resolve_root=lambda c, r, *, may_instantiate: None,  # no instantiable root
+        evaluate=lambda **_: [_verdict(stance=EvidenceStance.SUPPORTS)],
+    )
+    assert node.evidence_links == []
+    assert recorded == []
+
+
 def test_refutes_on_already_instantiated_cause_links():
     node = _root()
     case = _case(node)
