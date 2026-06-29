@@ -2359,6 +2359,7 @@ class SQLiteCaseRepository(CaseRepository):
                         if case.turn_history
                         else []
                     ),
+                    "differential_runbook_ids": list(case.differential_runbook_ids),
                 }
             ),
         }
@@ -3302,6 +3303,7 @@ class SQLiteCaseRepository(CaseRepository):
             "current_turn": int(row.current_turn or 0),
             "turns_without_progress": int(row.turns_without_progress or 0),
             "message_count": metadata.get("message_count", 0),
+            "differential_runbook_ids": metadata.get("differential_runbook_ids", []),
             "turn_history": (
                 [TurnProgress(**t) for t in metadata.get("turn_history", [])]
                 if metadata.get("turn_history")

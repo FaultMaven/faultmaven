@@ -293,42 +293,30 @@ def _stash_interventions(
     node.metadata[RUNBOOK_INTERVENTIONS_META_KEY] = interventions
 
 
-# Structured key recording which runbook seeded a ROOT node. The differential's
-# source of truth — read by ``differential_runbook_ids``, NOT parsed from the
-# hypothesis rationale string. ``node.metadata`` persists (JSON column).
-RUNBOOK_ID_META_KEY = "runbook_id"
+def _record_differential_runbook(case: "Case", runbook_id: str) -> None:
+    """Record a matched runbook on the case's differential (append + dedup).
 
-
-def _stamp_runbook_id(case: "Case", root_id: str, runbook_id: str) -> None:
-    """Record (structured) which runbook seeded this ROOT, for differential
-    re-resolution. Unconditional — unlike interventions, the differential needs
-    the id even when the matched cause documents no fixes."""
-    node = case.causal_nodes.get(root_id)
-    if node is None or not runbook_id:
+    Stored at the CASE level (``case.differential_runbook_ids``), NOT on a causal
+    node — so it survives node pruning / hypothesis re-rooting. A node-metadata
+    stamp would be lost when ``prune_abandoned_nodes`` GC's a re-rooted seed node,
+    silently making the per-turn intake loop inert for the rest of the case.
+    """
+    if not runbook_id or runbook_id in case.differential_runbook_ids:
         return
-    if not node.metadata:
-        node.metadata = {}
-    node.metadata[RUNBOOK_ID_META_KEY] = runbook_id
+    case.differential_runbook_ids.append(runbook_id)
 
 
 def differential_runbook_ids(case: "Case") -> List[str]:
     """The matched candidate runbook id(s) backing the case's differential.
 
-    Read from the structured ``runbook_id`` key the matcher stamps on each seeded
-    ROOT node's metadata — NOT parsed from any rationale string. The per-turn
-    intake hook re-resolves these into the candidate differential
-    (``resolve_causes(id)`` → ``cause_schemas.build_cause_records`` →
+    Read from the durable case-level field the matcher records — NOT a causal-node
+    stamp (which a re-root + prune would lose) and NOT parsed from any rationale
+    string. The per-turn intake hook re-resolves these into the candidate
+    differential (``resolve_causes(id)`` → ``cause_schemas.build_cause_records`` →
     ``assemble_active_causes``). One id today (``max_runbooks`` defaults low), but
-    a list by contract. De-duplicated, insertion-ordered.
+    a list by contract. Returns a defensive copy.
     """
-    ids: List[str] = []
-    seen: set = set()
-    for node in case.causal_nodes.values():
-        rid = (getattr(node, "metadata", None) or {}).get(RUNBOOK_ID_META_KEY)
-        if isinstance(rid, str) and rid and rid not in seen:
-            seen.add(rid)
-            ids.append(rid)
-    return ids
+    return list(case.differential_runbook_ids)
 
 
 def _root_node_id(case: "Case", created: List[Optional[str]]) -> Optional[str]:
@@ -563,6 +551,12 @@ async def apply_runbook_cause_matcher(
     if chosen is None:
         return None
 
+    # Record the matched runbook (durable, case-level) BEFORE instantiation so the
+    # per-turn intake hook can re-resolve the differential from
+    # differential_runbook_ids(case) — independent of whether a chain node was
+    # instantiated and of any later node pruning / re-rooting.
+    _record_differential_runbook(case, chosen.runbook_id)
+
     created = instantiate_cause_chain(case, chosen.selected_record, case.current_turn)
     root_id = _root_node_id(case, created)
     attached = None
@@ -573,9 +567,6 @@ async def apply_runbook_cause_matcher(
         # node.metadata JSON column round-trips. The matcher never creates
         # Solutions — the LLM proposes the fix and the M5 gate governs it.
         _stash_interventions(case, root_id, chosen.selected_record)
-        # Record the matched runbook (structured) so the per-turn intake hook can
-        # re-resolve the differential from differential_runbook_ids(case).
-        _stamp_runbook_id(case, root_id, chosen.runbook_id)
         if hypothesis_manager is not None:
             attached = attach_matched_hypothesis(
                 case, chosen, root_id, hypothesis_manager

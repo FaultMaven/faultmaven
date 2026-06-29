@@ -350,6 +350,19 @@ class TestRelatedDataRoundTrip:
         assert summaries == {"evidence one", "evidence two"}
 
     @pytest.mark.asyncio
+    async def test_round_trips_differential_runbook_ids(self, repository):
+        # The durable case-level home for the matcher's differential — a
+        # node-metadata stamp would be lost on re-root/prune, so it must survive
+        # save→load at the case level instead.
+        case = _make_case()
+        case.differential_runbook_ids = ["kb_rb1", "kb_rb2"]
+
+        await repository.save(case)
+
+        retrieved = await repository.get(case.case_id)
+        assert retrieved.differential_runbook_ids == ["kb_rb1", "kb_rb2"]
+
+    @pytest.mark.asyncio
     async def test_evidence_upsert_is_purely_additive(self, repository):
         """save(case) must NOT delete evidence rows that are absent from the
         in-memory case.evidence list.

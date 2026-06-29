@@ -4081,6 +4081,18 @@ class Case(BaseModel):
         ),
     )
 
+    differential_runbook_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Matched runbook id(s) backing the case's candidate differential. "
+            "Stamped by the runbook Cause matcher; the per-turn intake hook "
+            "re-resolves these into ActiveCauses to evaluate evidence against. "
+            "Held at the case level (not on a causal node) so it survives node "
+            "pruning / hypothesis re-rooting. Read via "
+            "``runbook_cause_matcher.differential_runbook_ids``."
+        ),
+    )
+
     # ============================================================
     # Investigation Progress (SECONDARY - Internal Detail)
     # ============================================================
