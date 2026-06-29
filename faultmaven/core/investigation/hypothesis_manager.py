@@ -58,8 +58,8 @@ logger = logging.getLogger(__name__)
 # ``runbook_cause_matcher._MATCHER_MAX_PRIOR`` (the same invariant for the
 # external-source prior) and is pinned to the single SSOT via the boot assert
 # below, so the cap can never silently drift above the gate if the gate moves
-# (Agent-2 SSOT requirement). NOTE: ``create_validated_hypothesis`` is the
-# separate, evidence-gated path for opening a hypothesis above this prior.
+# (Agent-2 SSOT requirement). A hypothesis only crosses the gate by EARNING it
+# (evidence-driven likelihood climb or chain validation), never on creation.
 NEW_HYPOTHESIS_MAX_PRIOR = 0.5
 if NEW_HYPOTHESIS_MAX_PRIOR >= CAUSE_IDENTIFIED_LIKELIHOOD:  # pragma: no cover
     raise AssertionError(
@@ -195,42 +195,6 @@ class HypothesisManager:
         logger.info(
             f"Created hypothesis {hypothesis.hypothesis_id}: "
             f"{statement[:50]}... (category={category}, likelihood={capped_likelihood}, turn={current_turn})"
-        )
-
-        return hypothesis
-
-    def create_validated_hypothesis(
-        self,
-        statement: str,
-        category: str,
-        likelihood: float,
-        supporting_evidence_ids: list[str],
-        current_turn: int,
-    ) -> Hypothesis:
-        """Create hypothesis already in VALIDATED state (Single-Shot Validation)."""
-        if likelihood < 0.7:
-            raise ValueError("Validated hypothesis requires likelihood >= 0.7")
-        if len(supporting_evidence_ids) < 2:
-            raise ValueError(
-                "Validated hypothesis requires at least 2 supporting evidence items"
-            )
-
-        hypothesis = self.create_hypothesis(
-            statement=statement,
-            category=category,
-            initial_likelihood=likelihood,
-            current_turn=current_turn,
-            state=HypothesisState.VALIDATED,
-            generation_mode=HypothesisGenerationMode.SYSTEMATIC,
-        )
-
-        # Manually link evidence
-        for ev_id in supporting_evidence_ids:
-            self.link_evidence(hypothesis, ev_id, True, current_turn)
-
-        logger.info(
-            f"Created VALIDATED hypothesis {hypothesis.hypothesis_id}: "
-            f"{statement[:50]}... (likelihood={likelihood:.2f})"
         )
 
         return hypothesis
