@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 
+from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
 from faultmaven.core.investigation.cause_schemas import (
     CauseMatch,
     CauseMatchResult,
@@ -992,3 +993,66 @@ class TestBuildCaseEvidenceFallbackText:
             SimpleNamespace(summary="   ", extract=None, category=None)
         )
         assert build_case_evidence_fallback_text(case) is None
+
+
+class TestCrossAuthorRootIdentity:
+    """The matcher (``instantiate_cause_chain``) and the LLM
+    (``ingest_emitted_chain``) both mint causal nodes, and both route through the
+    chain's single exact-match identity (``_normalize_statement`` over
+    ``(node_type, statement)``). So a matcher-seeded root and a later LLM emission
+    of the same cause must converge on ONE node rather than fragment into parallel
+    roots — the prior cross-author duplication bug. The boundary is exact
+    normalized-statement match (a fuzzy merge can't separate a true duplicate from
+    an OR-sibling differing in one parameter — the over-merge trap), so divergent
+    wording for the same cause does NOT merge; that limitation is pinned here so it
+    is visible rather than silent."""
+
+    def _emit_root(self, case, statement, turn):
+        return ingest_emitted_chain(
+            case,
+            nodes_to_add=[
+                SimpleNamespace(
+                    statement=statement,
+                    node_type=NodeType.ROOT,
+                    produces="D",
+                    and_group=None,
+                )
+            ],
+            edges_to_add=[],
+            node_evidence=[],
+            current_turn=turn,
+        )
+
+    def test_matcher_seed_and_llm_emission_converge_on_one_root(self):
+        case = _case()
+        created = instantiate_cause_chain(case, _linear_cause(), case.current_turn)
+        seeded_root = next(
+            nid
+            for nid in created
+            if nid and case.causal_nodes[nid].node_type == NodeType.ROOT
+        )
+        n_before = len(case.causal_nodes)
+
+        # The LLM re-asserts the same cause next turn, different whitespace/case.
+        # _linear_cause's root statement is "the root cause".
+        emitted = self._emit_root(case, "the  ROOT   cause", case.current_turn + 1)
+
+        assert emitted[0] == seeded_root  # reused the matcher-seeded node
+        assert len(case.causal_nodes) == n_before  # no duplicate minted
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert len(roots) == 1
+
+    def test_divergent_wording_for_same_cause_does_not_merge(self):
+        case = _case()
+        instantiate_cause_chain(case, _linear_cause(), case.current_turn)
+
+        # Same cause, materially different wording -> not an exact match -> a second
+        # root. This is the documented limit of the convergence guarantee.
+        self._emit_root(
+            case,
+            "root cause: misconfigured connection pool",
+            case.current_turn + 1,
+        )
+
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert len(roots) == 2
