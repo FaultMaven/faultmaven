@@ -32,6 +32,9 @@ we do not instantiate a chain just to mark it refuted.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
 from faultmaven.core.investigation.differential_intake import (
@@ -39,7 +42,13 @@ from faultmaven.core.investigation.differential_intake import (
     assemble_active_causes,
     evaluate_datum_against_differential,
 )
-from faultmaven.modules.case.contracts import EvidenceStance, NodeEvidenceLink
+from faultmaven.modules.case.contracts import (
+    EvidenceNeed,
+    EvidenceStance,
+    NeedPurpose,
+    NeedState,
+    NodeEvidenceLink,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -169,7 +178,7 @@ async def run_differential_intake_turn(
     active_causes = assemble_active_causes(matched)
     if not active_causes:
         return []
-    return run_intake_evaluation(
+    recorded = run_intake_evaluation(
         case,
         new_evidence,
         active_causes,
@@ -177,3 +186,91 @@ async def run_differential_intake_turn(
         resolve_root=resolve_root,
         evaluate=evaluate,
     )
+    # Demand half of the loop: keep the case's causal Evidence Needs in sync with
+    # the differential — one need per still-unsatisfied predicate, fulfilled as
+    # predicates fire. The engine owns these; the LLM keeps authoring symptom
+    # needs and any non-differential causal needs.
+    _regen_differential_evidence_needs(case, active_causes, recorded, current_turn)
+    return recorded
+
+
+def _predicate_signature(predicate: dict) -> str:
+    """A stable, order-independent key for a predicate dict, so the same
+    predicate maps to the same need across turns (idempotent regen)."""
+    return json.dumps(predicate, sort_keys=True, separators=(",", ":"))
+
+
+def _differential_need_id(candidate_id: str, predicate_sig: str) -> str:
+    """Deterministic ``need_id`` for a (candidate, predicate) — recomputable each
+    turn, so regeneration finds the existing need instead of duplicating it, and
+    the engine's needs never collide with the LLM's randomly-id'd ones."""
+    digest = hashlib.md5(
+        f"{candidate_id}|{predicate_sig}".encode(), usedforsecurity=False
+    ).hexdigest()[:12]
+    return f"eneed_{digest}"
+
+
+def _predicate_request_text(predicate: dict) -> str:
+    """A user-facing description of the telemetry that would satisfy a predicate."""
+    op = predicate.get("predicate")
+    target = predicate.get("target")
+    if op == "contains":
+        return f"telemetry (logs / command output) showing '{target}'"
+    if op == "absent":
+        return f"telemetry confirming '{target}' is absent"
+    if op == "exit_code":
+        return f"command output with exit code {predicate.get('value', target)}"
+    if op == "threshold":
+        return (
+            f"a metric for '{target}' "
+            f"{predicate.get('op', 'crossing')} {predicate.get('value', '')}".strip()
+        )
+    return f"telemetry matching {predicate}"
+
+
+def _regen_differential_evidence_needs(
+    case: "Case",
+    active_causes: "list[ActiveCauseLike]",
+    recorded: list[StanceVerdict],
+    current_turn: int,
+) -> None:
+    """Reconcile the case's engine-owned causal Evidence Needs with the active
+    differential: ensure one PENDING need per unsatisfied predicate, and flip a
+    need to FULFILLED once its predicate fires this turn. Idempotent (deterministic
+    need ids) and safe from the hypothesis-retirement supersession rule (these
+    needs carry no motivating hypotheses, like symptom needs)."""
+    fired = {
+        (v.cause_id, _predicate_signature(v.predicate))
+        for v in recorded
+        if v.stance == EvidenceStance.SUPPORTS
+    }
+    by_id = {n.need_id: n for n in case.evidence_needs}
+    for ac in active_causes:
+        predicates = getattr(ac.record, "match_predicates", None) or []
+        for predicate in predicates:
+            sig = _predicate_signature(predicate)
+            need_id = _differential_need_id(ac.candidate_id, sig)
+            existing = by_id.get(need_id)
+            if (ac.candidate_id, sig) in fired:
+                if existing is not None and existing.state not in (
+                    NeedState.FULFILLED,
+                    NeedState.SUPERSEDED,
+                ):
+                    existing.state = NeedState.FULFILLED
+                    existing.updated_at = datetime.now(UTC)
+                continue
+            if existing is None:
+                need = EvidenceNeed(
+                    need_id=need_id,
+                    case_id=case.case_id,
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    request_text=_predicate_request_text(predicate)[:500],
+                    rationale=(
+                        f"Discriminates runbook cause {ac.candidate_id} against the "
+                        "submitted telemetry."
+                    ),
+                    state=NeedState.PENDING,
+                    created_at_turn=current_turn,
+                )
+                case.evidence_needs.append(need)
+                by_id[need_id] = need

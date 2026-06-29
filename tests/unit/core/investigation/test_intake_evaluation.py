@@ -29,6 +29,8 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     EvidenceStance,
     InquiryData,
+    NeedPurpose,
+    NeedState,
     NodeState,
     NodeType,
     ProblemVerification,
@@ -342,6 +344,97 @@ async def test_differential_turn_skips_malformed_record_without_raising():
         evaluate=lambda **_: [_verdict()],
     )
     assert recorded == []  # nothing parsed → no differential → no-op, not a crash
+
+
+def _build_with_predicate(_rid, _causes_raw):
+    return [
+        SimpleNamespace(
+            cause_letter="A",
+            is_fallback_cause=False,
+            match_predicates=[{"predicate": "contains", "target": "OOMKilled"}],
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unsatisfied_predicate_creates_pending_causal_need():
+    # The demand half: an unsatisfied differential predicate becomes a PENDING
+    # causal Evidence Need describing what telemetry to collect.
+    node = _root()
+    case = _case(node)
+    await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [],  # predicate does not fire
+    )
+    assert len(case.evidence_needs) == 1
+    need = case.evidence_needs[0]
+    assert need.purpose == NeedPurpose.CAUSAL_VERIFICATION
+    assert need.state == NeedState.PENDING
+    assert need.motivating_hypothesis_ids == []  # safe from supersession rule
+    assert "OOMKilled" in need.request_text
+
+
+@pytest.mark.asyncio
+async def test_need_regen_is_idempotent_across_turns():
+    node = _root()
+    case = _case(node)
+    for _ in range(3):
+        await run_differential_intake_turn(
+            case,
+            [_evidence()],
+            case.current_turn,
+            runbook_ids=["rb1"],
+            resolve_causes=_causes_for,
+            build_records=_build_with_predicate,
+            resolve_root=_always(node.node_id),
+            evaluate=lambda **_: [],
+        )
+    assert len(case.evidence_needs) == 1  # deterministic id → never duplicated
+
+
+@pytest.mark.asyncio
+async def test_firing_predicate_fulfills_its_need():
+    node = _root()
+    case = _case(node)
+    # Turn 1: predicate unsatisfied → PENDING need.
+    await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [],
+    )
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+    # Turn 2: the same predicate fires → its need flips to FULFILLED (not a new one).
+    await run_differential_intake_turn(
+        case,
+        [_evidence("ev_000000000002")],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [
+            StanceVerdict(
+                cause_id="rb1:A",
+                stance=EvidenceStance.SUPPORTS,
+                provenance="runbook",
+                predicate={"predicate": "contains", "target": "OOMKilled"},
+            )
+        ],
+    )
+    assert len(case.evidence_needs) == 1
+    assert case.evidence_needs[0].state == NeedState.FULFILLED
 
 
 def test_default_evaluator_stub_is_inert():
