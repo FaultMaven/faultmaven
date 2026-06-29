@@ -2568,6 +2568,19 @@ class NodeEvidenceLink(BaseModel):
         description="Confidence in the stance assessment (0.0-1.0)",
     )
 
+    provenance: Optional[Literal["runbook", "llm_fallback"]] = Field(
+        default=None,
+        description=(
+            "How the deterministic intake evaluator determined this link's "
+            "stance: 'runbook' = an expert-authored predicate fired against the "
+            "telemetry (sound); 'llm_fallback' = the LLM's own predicate, "
+            "re-checked (lower-assurance). None = a legacy / LLM-asserted link not "
+            "produced by intake evaluation, treated as lower-assurance for the "
+            "sound-tier cause check. Mirrors "
+            "differential_intake.StanceVerdict.provenance."
+        ),
+    )
+
     linked_at_turn: int = Field(
         default=0, ge=0, description="Turn when the link was established"
     )
