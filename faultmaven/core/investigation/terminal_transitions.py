@@ -26,6 +26,9 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Optional
 
+from faultmaven.core.investigation.cause_assurance import (
+    cause_validation_is_fallback_only,
+)
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
@@ -851,13 +854,8 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
     # back from auto-seeding reusable knowledge: harvesting a runbook from it would
     # promote an unverified cause (the model authored both the predicate and its
     # citation) into the corpus. It still counts once a sound (runbook-grounded)
-    # support bears the cause out. Inert until labeled fallback links flow. Imported
-    # lazily: causal_graph -> hypothesis_manager -> terminal_transitions, so a
-    # module-level import here would close that cycle.
-    from faultmaven.core.investigation.causal_graph import (
-        cause_validation_is_fallback_only,
-    )
-
+    # support bears the cause out.
+    #
     # Distinguish "no root cause on record" from "root cause present but only
     # lower-assurance" — they need different user-facing asks (provide vs. verify),
     # so don't collapse the second into the first beyond gating the coverage.
