@@ -17,10 +17,10 @@ from uuid import uuid4
 
 import pytest
 
+from faultmaven.core.investigation.causal_graph import derive_node_states
 from faultmaven.core.investigation.cause_assurance import (
     cause_validation_is_fallback_only,
 )
-from faultmaven.core.investigation.causal_graph import derive_node_states
 from faultmaven.core.investigation.cause_schemas import CauseRecord
 from faultmaven.core.investigation.intake_evaluation import run_differential_intake_turn
 from faultmaven.core.investigation.runbook_cause_matcher import resolve_root
