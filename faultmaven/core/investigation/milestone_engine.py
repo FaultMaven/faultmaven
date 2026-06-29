@@ -58,6 +58,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_status_changed_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
+    runbook_cause_matcher_errored_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
     CONTEXT_OVERFLOW_PHRASES,
@@ -5841,6 +5842,7 @@ class MilestoneEngine:
                 hypothesis_manager=self.hypothesis_manager,
             )
         except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
+            runbook_cause_matcher_errored_total.inc()
             logger.warning(
                 "Runbook cause matcher skipped for case %s: %s", case.case_id, exc
             )
