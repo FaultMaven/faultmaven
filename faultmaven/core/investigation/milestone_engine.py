@@ -7822,15 +7822,74 @@ class MilestoneEngine:
 
         if is_anchored:
             logger.warning(f"Anchoring detected for case {case.case_id}: {reason}")
-            # Add to system feedback for next turn
-            anchoring_msg = f"CRITICAL: {reason}. You are stalled on these theories. Diversify your approach and generate alternative hypotheses from different categories."
+            # Anti-anchoring intervenes only on a GENUINE stall — not while the
+            # investigation is legitimately waiting on requested data, and not
+            # every turn once it has already diversified:
+            #  - Skip while any evidence need is still outstanding
+            #    (PENDING/PARTIALLY_MET): the agent is waiting on the user, which
+            #    is progress, not fixation.
+            #  - Skip if a forced-alternative retirement already fired within the
+            #    last two turns (avoid churning the differential each turn). The
+            #    cooldown is derived from existing retirement state, not a timer.
+            if self._awaiting_outstanding_evidence(case):
+                return
+            if self._forced_alternatives_recently(case, within_turns=2):
+                return
 
+            # Engine action (not merely a prompt nudge): retire stalled
+            # dominant-category hypotheses so the differential actually
+            # diversifies. Naturally bounded — only hypotheses that have stalled
+            # (iterations_without_progress >= 2) are retired, so a freshly-formed
+            # theory is never swept out.
+            result = self.hypothesis_manager.force_alternative_generation(
+                active_hypotheses, case.current_turn
+            )
+            retired = result.get("retired_count", 0)
+            dominant = result.get("dominant_category", "")
+
+            # Tell the LLM what happened and to broaden the differential.
+            anchoring_msg = (
+                f"CRITICAL: {reason}. Retired {retired} stalled '{dominant}' "
+                "hypothesis(es) to break the fixation — propose alternative "
+                "hypotheses from different categories."
+            )
             current_feedback = metadata.get("system_feedback", "")
             metadata["system_feedback"] = (
                 (current_feedback + "\n" + anchoring_msg)
                 if current_feedback
                 else anchoring_msg
             )
+
+    @staticmethod
+    def _awaiting_outstanding_evidence(case: Case) -> bool:
+        """True while any evidence need is still outstanding (PENDING /
+        PARTIALLY_MET).
+
+        An outstanding need means the investigation has asked for data and is
+        waiting on the user — that is progress, not fixation, so anti-anchoring
+        holds its hand rather than churning the differential while the lead
+        theory legitimately awaits user action.
+        """
+        return any(
+            n.state in (NeedState.PENDING, NeedState.PARTIALLY_MET)
+            for n in (case.evidence_needs or [])
+        )
+
+    @staticmethod
+    def _forced_alternatives_recently(case: Case, within_turns: int) -> bool:
+        """True if a forced-alternative retirement fired within the last
+        ``within_turns`` turns.
+
+        This is a cooldown derived from existing state — the ``retirement_reason``
+        stamped by ``force_alternative_generation`` plus the turn it was stamped
+        (``last_updated_turn``) — rather than a separate timer field.
+        """
+        return any(
+            h.state == HypothesisState.RETIRED
+            and (h.retirement_reason or "").startswith("Anchoring prevention")
+            and case.current_turn - h.last_updated_turn < within_turns
+            for h in case.hypotheses.values()
+        )
 
     def _resolve_id_ref(self, ref: str, created_ids: list[str], prefix: str) -> str:
         """Resolve ``new_index_N`` to the actual ID from ``created_ids``,
