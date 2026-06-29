@@ -317,7 +317,7 @@ def differential_runbook_ids(case: "Case") -> List[str]:
     Read from the structured ``runbook_id`` key the matcher stamps on each seeded
     ROOT node's metadata — NOT parsed from any rationale string. The per-turn
     intake hook re-resolves these into the candidate differential
-    (``resolve_causes(id)`` → ``KbQAService._build_cause_records`` →
+    (``resolve_causes(id)`` → ``cause_schemas.build_cause_records`` →
     ``assemble_active_causes``). One id today (``max_runbooks`` defaults low), but
     a list by contract. De-duplicated, insertion-ordered.
     """
