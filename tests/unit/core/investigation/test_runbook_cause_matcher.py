@@ -20,9 +20,11 @@ from faultmaven.core.investigation.cause_schemas import (
     CauseRecord,
 )
 from faultmaven.core.investigation.runbook_cause_matcher import (
+    RUNBOOK_ID_META_KEY,
     apply_runbook_cause_matcher,
     build_case_evidence_fallback_text,
     chain_to_specs,
+    differential_runbook_ids,
     instantiate_cause_chain,
     resolve_root,
 )
@@ -309,6 +311,8 @@ class TestApply:
         assert chosen is not None and chosen.runbook_id == "kb_rb1"
         roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
         assert len(roots) == 1  # the matched chain was instantiated
+        # The matched runbook is recorded (structured) for differential re-resolution.
+        assert differential_runbook_ids(case) == ["kb_rb1"]
         # Inputs threaded through to the matcher.
         assert kb.calls[0]["user_id"] == "u1"
         assert kb.calls[0]["team_ids"] == ["t1"]
@@ -1097,3 +1101,47 @@ class TestResolveRoot:
         )
 
         assert len(_roots(case)) == 2
+
+
+# ---------------------------------------------------------------------------
+# differential_runbook_ids — the structured accessor the intake hook binds to
+# ---------------------------------------------------------------------------
+
+
+class TestDifferentialRunbookIds:
+    def test_empty_when_nothing_matched(self):
+        assert differential_runbook_ids(_case()) == []
+
+    def test_returns_stamped_runbook_ids_deduped_in_order(self):
+        case = _case()
+        # Two seeded roots from the same runbook, one from another.
+        instantiate_cause_chain(case, _linear_cause("A"), case.current_turn)
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        roots[0].metadata = {RUNBOOK_ID_META_KEY: "kb_rb1"}
+        instantiate_cause_chain(
+            case,
+            CauseRecord(
+                cause_letter="B",
+                chain_nodes=[
+                    _node("root", "root", "another root"),
+                    _node("D", "problem", "the problem"),
+                ],
+                chain_edges=[_edge("root", "D")],
+            ),
+            case.current_turn,
+        )
+        new_root = next(
+            n
+            for n in case.causal_nodes.values()
+            if n.node_type == NodeType.ROOT and n.statement == "another root"
+        )
+        new_root.metadata = {RUNBOOK_ID_META_KEY: "kb_rb1"}  # same id → deduped
+        assert differential_runbook_ids(case) == ["kb_rb1"]
+
+    def test_ignores_non_string_or_missing_keys(self):
+        case = _case()
+        instantiate_cause_chain(case, _linear_cause("A"), case.current_turn)
+        # A node with unrelated metadata and no runbook id contributes nothing.
+        for n in case.causal_nodes.values():
+            n.metadata = {"runbook_interventions": ["fix"]}
+        assert differential_runbook_ids(case) == []
