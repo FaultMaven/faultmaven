@@ -508,6 +508,16 @@ class InvestigationProgress(BaseModel):
         ),
     )
 
+    last_anti_anchoring_turn: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Turn the anti-anchoring intervention last fired (0 = never). Drives "
+            "its cooldown so a detected fixation is acted on at most once per few "
+            "turns rather than churning the differential every turn."
+        ),
+    )
+
     solution_state: SolutionState = Field(
         default=SolutionState.UNKNOWN,
         description=(
@@ -2161,6 +2171,15 @@ class EvidenceNeed(BaseModel):
         default_factory=lambda: datetime.now(UTC),
         description="Wall-clock last-update time.",
     )
+
+    @property
+    def is_outstanding(self) -> bool:
+        """The need still awaits (sufficient) data — PENDING or PARTIALLY_MET.
+
+        FULFILLED and SUPERSEDED are the terminal states; an outstanding need is
+        one the investigation is still waiting on.
+        """
+        return self.state in (NeedState.PENDING, NeedState.PARTIALLY_MET)
 
     @field_validator("request_text", "rationale", mode="after")
     @classmethod

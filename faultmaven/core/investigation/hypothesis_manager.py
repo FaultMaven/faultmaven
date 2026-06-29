@@ -31,7 +31,7 @@ Anchoring Prevention:
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.terminal_transitions import (
     CAUSE_IDENTIFIED_LIKELIHOOD,
@@ -590,61 +590,53 @@ class HypothesisManager:
 
     def force_alternative_generation(
         self,
-        existing_hypotheses: list[Hypothesis],
+        target_hypothesis_ids: list[str],
+        hypotheses: list[Hypothesis],
         current_turn: int,
-    ) -> dict[str, Any]:
-        """Force generation of alternative hypotheses to break anchoring
+    ) -> list[str]:
+        """Break a detected fixation by retiring the STALLED hypotheses the
+        anchoring detector flagged.
 
-        Strategy:
-        - Identify over-represented categories
-        - Generate constraints for alternative generation
-        - Retire some low-progress hypotheses
+        ``target_hypothesis_ids`` are the ids ``detect_anchoring`` returned (the
+        over-represented category, or the stalled set) — retiring those keeps the
+        action aligned with the reason the intervention fired, rather than acting
+        on an unrelated "dominant by count" category. Only ids that are ACTIVE and
+        have stalled (``iterations_without_progress >= 2``) are retired, so a
+        freshly-formed theory is never swept out.
 
         Args:
-            existing_hypotheses: Current hypothesis list
-            current_turn: Current conversation turn
+            target_hypothesis_ids: ids flagged by ``detect_anchoring``
+            hypotheses: hypotheses to resolve the ids against
+            current_turn: current conversation turn
 
         Returns:
-            Generation constraints and actions taken
+            The list of retired hypothesis ids (possibly empty — e.g. all flagged
+            hypotheses are still fresh).
         """
-        # Identify over-represented categories
-        category_counts: dict[str, int] = {}
-        for h in existing_hypotheses:
-            if h.state not in [HypothesisState.RETIRED, HypothesisState.REFUTED]:
-                category_counts[h.category] = category_counts.get(h.category, 0) + 1
-
-        # Find dominant category
-        dominant_category = max(category_counts, key=category_counts.get)
-        dominant_count = category_counts[dominant_category]
-
-        # Retire low-progress hypotheses in dominant category
-        retired_count = 0
-        for h in existing_hypotheses:
+        by_id = {h.hypothesis_id: h for h in hypotheses}
+        retired: list[str] = []
+        for hid in target_hypothesis_ids:
+            h = by_id.get(hid)
             if (
-                h.category == dominant_category
-                and h.iterations_without_progress >= 2
+                h is not None
                 and h.state == HypothesisState.ACTIVE
+                and h.iterations_without_progress >= 2
             ):
                 h.state = HypothesisState.RETIRED
-                h.retirement_reason = f"Anchoring prevention: retired to diversify from {dominant_category}"
+                h.retirement_reason = (
+                    "Anti-anchoring: retired a stalled hypothesis to diversify "
+                    "the differential"
+                )
                 h.last_updated_turn = current_turn
-                retired_count += 1
+                retired.append(hid)
 
-        logger.warning(
-            f"Anchoring prevention triggered: retired {retired_count} hypotheses "
-            f"from over-represented category '{dominant_category}'"
-        )
-
-        return {
-            "action": "force_alternative_generation",
-            "retired_count": retired_count,
-            "dominant_category": dominant_category,
-            "constraints": {
-                "exclude_categories": [dominant_category],
-                "require_diverse_categories": True,
-                "min_new_hypotheses": 2,
-            },
-        }
+        if retired:
+            logger.warning(
+                "Anti-anchoring retired %d stalled hypotheses: %s",
+                len(retired),
+                retired,
+            )
+        return retired
 
     def get_testable_hypotheses(
         self,

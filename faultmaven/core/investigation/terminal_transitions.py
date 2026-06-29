@@ -63,6 +63,14 @@ def _cause_identified(case: "Case") -> bool:
     unanchored conclusion (emitted before the symptom is verified, or left stale
     after a symptom claim is withdrawn) does not count as a known cause. The
     primary ``cause_state`` check already implies a verified symptom.
+
+    Scope: the anchor is enforced here, at the authoritative gate that drives
+    disposition / the M5 solution gate. Other readers of ``root_cause_conclusion``
+    (the report renderer, the case UI) may surface an unanchored RCC mid-
+    investigation, which is informational only; the one consequential consumer —
+    KB runbook harvesting — runs on RESOLVED cases, by which point the symptom is
+    verified, so it never harvests an unanchored cause. If a non-terminal RCC
+    harvest is ever added, enforce the anchor at RCC production instead.
     """
     if (
         case.progress

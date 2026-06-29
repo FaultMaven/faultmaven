@@ -41,6 +41,7 @@ from faultmaven.core.investigation.causal_graph import (
     demote_disconfirmed_cause_via_evidence,
     derive_node_states,
     ingest_emitted_chain,
+    is_chain_root_validated,
     prune_abandoned_nodes,
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
@@ -141,6 +142,12 @@ from faultmaven.modules.knowledge.contracts import IKnowledgeService
 #   Tier 1: MilestoneUpdates drives state (turn-level, LLM specifies)
 #   Tier 2: System infers advances_milestones from this map (handles 90% of cases)
 #   Tier 3: LLM can override with explicit specification (handles 10% edge cases)
+
+# Anti-anchoring acts at most once per this many turns (a marker on
+# progress.last_anti_anchoring_turn records when it last fired). With a value of
+# 2 the intervention skips the single turn immediately after it fires, then may
+# act again — enough to avoid per-turn churn without going dormant.
+_ANTI_ANCHORING_COOLDOWN_TURNS = 2
 
 CATEGORY_MILESTONE_MAP = {
     EvidenceCategory.SYMPTOM_EVIDENCE: [
@@ -6026,6 +6033,12 @@ class MilestoneEngine:
                 user_confirmation=kr.user_confirmation,
             )
             metadata["knowledge_resolution_signalled"] = True
+            # A runbook matched against the reported symptom, and the user
+            # confirmed its fix worked — the symptom is, by construction, verified.
+            # Establish the cause-identification anchor so the same-turn collapse's
+            # RootCauseConclusion is honored by the M5 / readiness gates (which
+            # require a verified symptom for the RCC signal).
+            case.progress.symptom_verified = True
             logger.info(
                 "Case %s: knowledge_resolution signalled during INVESTIGATING; "
                 "match_id=%s, type=%s. Standard ProposedTransition handshake handles disposition.",
@@ -7822,36 +7835,48 @@ class MilestoneEngine:
 
         if is_anchored:
             logger.warning(f"Anchoring detected for case {case.case_id}: {reason}")
-            # Anti-anchoring intervenes only on a GENUINE stall — not while the
-            # investigation is legitimately waiting on requested data, and not
-            # every turn once it has already diversified:
-            #  - Skip while any evidence need is still outstanding
-            #    (PENDING/PARTIALLY_MET): the agent is waiting on the user, which
-            #    is progress, not fixation.
-            #  - Skip if a forced-alternative retirement already fired within the
-            #    last two turns (avoid churning the differential each turn). The
-            #    cooldown is derived from existing retirement state, not a timer.
-            if self._awaiting_outstanding_evidence(case):
+            # Anti-anchoring intervenes only on a GENUINE stall:
+            #  - Stand down while the investigation RECENTLY asked for data that is
+            #    still outstanding — it is waiting on the user, not fixated. Bounded
+            #    to recent asks so a single stale, never-answered need cannot
+            #    permanently disable the mechanism.
+            #  - Cooldown: act at most once per `_ANTI_ANCHORING_COOLDOWN_TURNS`,
+            #    read from the explicit `last_anti_anchoring_turn` marker so the
+            #    cooldown holds even on a turn that happens to retire nothing.
+            if self._awaiting_recent_evidence(case, _ANTI_ANCHORING_COOLDOWN_TURNS):
                 return
-            if self._forced_alternatives_recently(case, within_turns=2):
+            if (
+                case.current_turn - case.progress.last_anti_anchoring_turn
+                < _ANTI_ANCHORING_COOLDOWN_TURNS
+            ):
                 return
 
-            # Engine action (not merely a prompt nudge): retire stalled
-            # dominant-category hypotheses so the differential actually
-            # diversifies. Naturally bounded — only hypotheses that have stalled
-            # (iterations_without_progress >= 2) are retired, so a freshly-formed
-            # theory is never swept out.
-            result = self.hypothesis_manager.force_alternative_generation(
-                active_hypotheses, case.current_turn
+            # Engine action (not merely a prompt nudge): retire the STALLED
+            # hypotheses the detector flagged so the differential actually
+            # diversifies. Exclude any flagged hypothesis whose chain root is
+            # validated — it is grounding the cause, and retiring it for "anchoring"
+            # would discard the answer.
+            targets = [
+                hid
+                for hid in hypothesis_ids
+                if hid in case.hypotheses
+                and not is_chain_root_validated(case.hypotheses[hid], case.causal_nodes)
+            ]
+            retired = self.hypothesis_manager.force_alternative_generation(
+                targets, active_hypotheses, case.current_turn
             )
-            retired = result.get("retired_count", 0)
-            dominant = result.get("dominant_category", "")
+            # Record that the intervention fired THIS turn — drives the cooldown
+            # regardless of how many hypotheses were eligible to retire.
+            case.progress.last_anti_anchoring_turn = case.current_turn
 
-            # Tell the LLM what happened and to broaden the differential.
+            # Tell the LLM to broaden the differential. State the retirement only
+            # when one happened, so the message never claims "retired 0".
+            retired_note = (
+                f"Retired {len(retired)} stalled hypothesis(es). " if retired else ""
+            )
             anchoring_msg = (
-                f"CRITICAL: {reason}. Retired {retired} stalled '{dominant}' "
-                "hypothesis(es) to break the fixation — propose alternative "
-                "hypotheses from different categories."
+                f"CRITICAL: {reason}. {retired_note}Broaden the differential — "
+                "propose alternative hypotheses from different root-cause categories."
             )
             current_feedback = metadata.get("system_feedback", "")
             metadata["system_feedback"] = (
@@ -7861,34 +7886,18 @@ class MilestoneEngine:
             )
 
     @staticmethod
-    def _awaiting_outstanding_evidence(case: Case) -> bool:
-        """True while any evidence need is still outstanding (PENDING /
-        PARTIALLY_MET).
+    def _awaiting_recent_evidence(case: Case, within_turns: int) -> bool:
+        """True if the investigation RECENTLY (within ``within_turns``) asked for
+        data that is still outstanding.
 
-        An outstanding need means the investigation has asked for data and is
-        waiting on the user — that is progress, not fixation, so anti-anchoring
-        holds its hand rather than churning the differential while the lead
-        theory legitimately awaits user action.
+        A fresh, still-outstanding ask means the agent is waiting on the user —
+        progress, not fixation — so anti-anchoring stands down. Bounding it to
+        recent asks ensures a single stale need the user never answers cannot
+        permanently disable anti-anchoring for the rest of the case.
         """
         return any(
-            n.state in (NeedState.PENDING, NeedState.PARTIALLY_MET)
+            n.is_outstanding and case.current_turn - n.created_at_turn < within_turns
             for n in (case.evidence_needs or [])
-        )
-
-    @staticmethod
-    def _forced_alternatives_recently(case: Case, within_turns: int) -> bool:
-        """True if a forced-alternative retirement fired within the last
-        ``within_turns`` turns.
-
-        This is a cooldown derived from existing state — the ``retirement_reason``
-        stamped by ``force_alternative_generation`` plus the turn it was stamped
-        (``last_updated_turn``) — rather than a separate timer field.
-        """
-        return any(
-            h.state == HypothesisState.RETIRED
-            and (h.retirement_reason or "").startswith("Anchoring prevention")
-            and case.current_turn - h.last_updated_turn < within_turns
-            for h in case.hypotheses.values()
         )
 
     def _resolve_id_ref(self, ref: str, created_ids: list[str], prefix: str) -> str:

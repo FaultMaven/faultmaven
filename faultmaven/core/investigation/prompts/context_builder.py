@@ -2055,11 +2055,7 @@ def _build_evidence_needs_block(case: Case) -> str:
         InvestigationStage.TREATMENT,
     )
 
-    outstanding = [
-        n
-        for n in case.evidence_needs
-        if n.state in (NeedState.PENDING, NeedState.PARTIALLY_MET)
-    ]
+    outstanding = [n for n in case.evidence_needs if n.is_outstanding]
     # Re-verification checklist is anchored on confirmed presence-evidence
     # rows (symptom/causal), NOT FULFILLED needs. Evidence rows exist for
     # every confirmed finding; FULFILLED needs are gap-conditional and
