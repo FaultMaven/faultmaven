@@ -72,11 +72,24 @@ OPEN BUILD-PHASE DETAILS (not blocking ratification)
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Optional
+
+from faultmaven.core.investigation.indicator_evaluator import (
+    evaluate_predicate_against_text,
+)
+from faultmaven.core.investigation.runbook_cause_matcher import resolve_datum_text
+from faultmaven.modules.case.contracts import EvidenceStance
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.cause_schemas import CauseRecord
-    from faultmaven.modules.case.contracts import Case, Evidence, EvidenceStance
+    from faultmaven.modules.case.contracts import Case, Evidence
+
+# Predicate verdict → the stance it implies. ``untested`` maps to nothing (the
+# predicate is silent on this datum), so it is deliberately absent from the table.
+_VERDICT_STANCE = {
+    "matched": EvidenceStance.SUPPORTS,
+    "refuted": EvidenceStance.REFUTES,
+}
 
 
 @dataclass(frozen=True)
@@ -154,9 +167,66 @@ def evaluate_datum_against_differential(
             ``match_predicates`` to evaluate).
         case: for ``data_type`` classification + telemetry resolution.
 
-    STUB: returns ``[]`` until the matcher body lands (loop stays inert).
+    Resolves the datum's trusted digest once, then evaluates each candidate's
+    ``match_predicates`` against it under subset-trust and aggregates to AT MOST
+    ONE verdict per (datum, cause) — the junction PK is ``(node_id, evidence_id)``,
+    so a second stance for the same pair would not survive persistence. No trusted
+    content (no backing file / no index) ⇒ ``[]`` (the loop abstains, never
+    refutes on missing data).
     """
-    return []
+    text = resolve_datum_text(evidence, case)
+    if text is None:
+        return []
+    verdicts: list[StanceVerdict] = []
+    for candidate in active_causes:
+        predicates = getattr(candidate.record, "match_predicates", None) or []
+        if not predicates:
+            continue
+        stance, fired = _aggregate_predicates(predicates, text)
+        if stance is None:
+            continue
+        verdicts.append(
+            StanceVerdict(
+                cause_id=candidate.candidate_id,
+                stance=stance,
+                provenance="runbook",
+                predicate=fired,
+            )
+        )
+    return verdicts
+
+
+def _aggregate_predicates(
+    predicates: list, text: str
+) -> "tuple[Optional[EvidenceStance], Optional[dict]]":
+    """Collapse a cause's predicates (vs one datum's digest) into ONE stance.
+
+    Each predicate is evaluated under subset-trust (``complete=False``):
+    ``matched`` → SUPPORTS, ``refuted`` → REFUTES, untested/unknown is silent.
+    The outcome enforces the one-verdict-per-(datum, cause) invariant:
+
+      - exactly one stance fired → that stance, plus the FIRST predicate that
+        produced it (a real, re-runnable spec for ``StanceVerdict.predicate``),
+      - both SUPPORTS and REFUTES fired (the cause's own predicates disagree about
+        this datum) → abstain ``(None, None)`` — we never pick a winner between a
+        cause's conflicting predicates,
+      - nothing fired → ``(None, None)``.
+    """
+    fired: "dict[EvidenceStance, dict]" = {}
+    for pred in predicates:
+        if not isinstance(pred, dict):
+            continue
+        try:
+            verdict = evaluate_predicate_against_text(pred, text, complete=False)
+        except ValueError:
+            continue  # unknown predicate name → treat as untested
+        stance = _VERDICT_STANCE.get(verdict)
+        if stance is not None:
+            fired.setdefault(stance, pred)
+    if len(fired) == 1:
+        stance, pred = next(iter(fired.items()))
+        return stance, pred
+    return None, None
 
 
 def recheck_proposed_predicate(
@@ -173,6 +243,28 @@ def recheck_proposed_predicate(
     ``None``. Catches an incoherent LLM (a predicate its own cited datum does not
     satisfy); it does NOT make an LLM-authored predicate "sound".
 
-    STUB: returns ``None`` until the matcher body lands.
+    Same subset-trust evaluation as the runbook tier, against the same trusted
+    digest — only the provenance and the one-to-one shape differ. ``None`` when
+    there is no trusted content, the predicate is malformed/unknown, or it is
+    untested against the digest.
     """
-    return None
+    if not isinstance(proposed_predicate, dict):
+        return None
+    text = resolve_datum_text(evidence, case)
+    if text is None:
+        return None
+    try:
+        verdict = evaluate_predicate_against_text(
+            proposed_predicate, text, complete=False
+        )
+    except ValueError:
+        return None
+    stance = _VERDICT_STANCE.get(verdict)
+    if stance is None:
+        return None
+    return StanceVerdict(
+        cause_id=cause_id,
+        stance=stance,
+        provenance="llm_fallback",
+        predicate=proposed_predicate,
+    )

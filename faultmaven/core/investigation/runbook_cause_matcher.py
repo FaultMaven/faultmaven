@@ -34,6 +34,7 @@ that would bypass M5. Still flag-gated OFF until increment 5.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -57,11 +58,12 @@ from faultmaven.modules.case.domain.models import (
     HypothesisState,
     NodeType,
 )
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
     from faultmaven.core.investigation.indicator_evaluator import IndicatorEvaluator
-    from faultmaven.modules.case.domain.models import Case, Hypothesis
+    from faultmaven.modules.case.domain.models import Case, Evidence, Hypothesis
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +380,37 @@ def resolve_root(
     # instantiable node), which the caller skips.
     created = instantiate_cause_chain(case, record, case.current_turn)
     return _root_node_id(case, created)
+
+
+def resolve_datum_text(evidence: "Evidence", case: "Case") -> Optional[str]:
+    """The trusted, code-normalized text a datum's predicates evaluate against.
+
+    Resolves the datum's backing ``UploadedFile`` (via ``source_file_id``) and
+    returns its Tier-1 preprocessing digest (``structural_index.file_extract``) —
+    a verbatim SUBSET of the raw file produced deterministically by the extractor,
+    on the trusted side of the boundary. NEVER ``Evidence.summary`` / ``extract``
+    (in-loop-LLM interpretation). Because it is a subset, callers must evaluate it
+    under subset-trust (``complete=False``): trust what is present, never infer
+    from absence.
+
+    Returns ``None`` when the datum has no backing file or the file has no
+    extracted index — every predicate is then ``untested`` and the intake loop
+    abstains (it never refutes on missing content).
+    """
+    file_id = getattr(evidence, "source_file_id", None)
+    if not file_id:
+        return None
+    uf = case.find_uploaded_file(file_id)
+    raw = getattr(uf, "structural_index", None) if uf is not None else None
+    if not raw:
+        return None
+    try:
+        text = ExtractResult.from_json(raw).file_extract or ""
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        # Pre-schema / non-JSON index: treat the whole blob as the extract text
+        # (tolerant fallback, mirroring the prompt path's parser).
+        text = raw
+    return text or None
 
 
 def attach_matched_hypothesis(

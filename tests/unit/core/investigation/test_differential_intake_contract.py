@@ -54,13 +54,14 @@ def test_resolve_root_may_instantiate_is_keyword_only():
         resolve_root(None, record, True)  # type: ignore[misc]
 
 
-def test_evaluator_stubs_are_inert_until_matcher_body_lands():
-    # Runbook tier: returns [] (no verdicts) so the intake loop is a no-op.
+def test_evaluators_abstain_without_trusted_content():
+    # Bodies are live, but with no datum/causes there is no trusted content to
+    # judge — both tiers abstain (never refute on missing data). Full behavior is
+    # covered in test_differential_intake.py.
     assert (
         evaluate_datum_against_differential(evidence=None, active_causes=[], case=None)
         == []
     )
-    # Fallback tier: returns None when nothing fires.
     assert (
         recheck_proposed_predicate(
             evidence=None, cause_id="rb1:A", proposed_predicate={}, case=None

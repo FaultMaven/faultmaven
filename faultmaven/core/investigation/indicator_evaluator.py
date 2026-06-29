@@ -315,61 +315,96 @@ class IndicatorEvaluator:
         return None
 
     def _evaluate_predicate(self, predicate: dict) -> PredicateVerdict:
-        """Tri-state evaluation of a deterministic predicate.
+        """Tri-state evaluation of a step-addressed predicate against its step's
+        FULL output.
 
-        ``untested`` — the step hasn't run, or the value can't be parsed from the
-        output (we never *refute* on missing/unparseable data — that would be a
-        false negative). ``matched`` / ``refuted`` only when the output makes the
-        condition decidable.
+        Resolves the predicate's ``step`` to that step's complete output, then
+        defers operator semantics to ``evaluate_predicate_against_text`` with
+        ``complete=True`` — a step's output is the entire source the predicate
+        ranges over, so an absent substring is decisive here. ``untested`` when
+        the step hasn't run; we never *refute* on missing data.
         """
-        name = predicate.get("predicate")
         step = predicate.get("step")
         if not isinstance(step, int):
             raise ValueError(f"predicate missing valid 'step': {predicate!r}")
         output = self._resolve_step(step)
         if output is None:
             return "untested"
+        return evaluate_predicate_against_text(predicate, output, complete=True)
 
-        if name == "contains":
-            target = predicate.get("target", "")
-            if not isinstance(target, str):
-                return "untested"
-            return "matched" if target in output else "refuted"
 
-        if name == "absent":
-            target = predicate.get("target", "")
-            if not isinstance(target, str):
-                return "untested"
-            return "matched" if target not in output else "refuted"
+def evaluate_predicate_against_text(
+    predicate: dict, text: str, *, complete: bool
+) -> PredicateVerdict:
+    """Tri-state evaluation of a deterministic predicate against a text source.
 
-        if name == "exit_code":
-            target = predicate.get("target")
-            if not isinstance(target, int):
-                return "untested"
-            found = re.findall(
-                r"(?:exit[_ ]?code|rc)[:=\s]+(-?\d+)", output, re.IGNORECASE
-            )
-            if not found:
-                return "untested"  # step ran but reported no exit code
-            # Decide on the LAST reported code — the final command's status. An
-            # earlier OR-over-all-codes form matched a benign cleanup `exit 0`
-            # while the real command failed (and missed when both appeared).
-            # Compare as int so leading-zero forms ('007') still equal target 7.
-            return "matched" if int(found[-1]) == target else "refuted"
+    Shared by the step-addressed tier (``IndicatorEvaluator._evaluate_predicate``,
+    one step's full output) and the content-addressed differential-intake tier
+    (one submitted datum's preprocessing digest). The two differ only in whether
+    ``text`` is COMPLETE, and ``complete`` is what keeps both sound.
 
-        if name == "threshold":
-            target = predicate.get("target", "")
-            op = predicate.get("op", ">")
-            value = predicate.get("value")
-            if not isinstance(target, str) or not isinstance(value, (int, float)):
-                return "untested"
-            m = re.search(rf"{re.escape(target)}\s*[:=]\s*([-+]?\d+(?:\.\d+)?)", output)
-            if not m:
-                return "untested"  # metric not in output — can't decide
-            return "matched" if _apply_op(float(m.group(1)), op, value) else "refuted"
+    ``complete=True`` — ``text`` is the entire content the predicate ranges over,
+    so absence is decisive: ``contains`` → refuted when missing, ``absent`` →
+    matched when missing.
 
-        # Unknown predicate name — let the caller fall back to T2.
-        raise ValueError(f"unknown predicate '{name}'")
+    ``complete=False`` — ``text`` is a verbatim SUBSET of the real content (a
+    Tier-1 extractor digest such as ``structural_index.file_extract``, which keeps
+    the crime-scene/context, not every raw line). A substring may live in the
+    dropped remainder, so absence is NOT decisive: we trust only what is PRESENT
+    and return ``untested`` on a miss — never a false ``refuted`` (``contains``)
+    or false ``matched`` (``absent``) inferred from the digest's gaps. This is the
+    subset-trust rule that preserves NO-INCORRECT-CONCLUSION on lossy input.
+
+    ``exit_code`` / ``threshold`` are presence-only either way — a parsed value is
+    verbatim wherever it appears, and no parse → ``untested`` — so ``complete``
+    does not change them. ``untested`` for any unparseable/malformed value; a
+    ValueError only for an unknown predicate name (the caller treats it as
+    ``untested``).
+    """
+    name = predicate.get("predicate")
+
+    if name == "contains":
+        target = predicate.get("target", "")
+        if not isinstance(target, str):
+            return "untested"
+        if target in text:
+            return "matched"
+        return "refuted" if complete else "untested"
+
+    if name == "absent":
+        target = predicate.get("target", "")
+        if not isinstance(target, str):
+            return "untested"
+        if target in text:
+            return "refuted"  # present → the 'absent' assertion is contradicted
+        return "matched" if complete else "untested"
+
+    if name == "exit_code":
+        target = predicate.get("target")
+        if not isinstance(target, int):
+            return "untested"
+        found = re.findall(r"(?:exit[_ ]?code|rc)[:=\s]+(-?\d+)", text, re.IGNORECASE)
+        if not found:
+            return "untested"  # no exit code reported — can't decide
+        # Decide on the LAST reported code — the final command's status. An
+        # earlier OR-over-all-codes form matched a benign cleanup `exit 0` while
+        # the real command failed (and missed when both appeared). Compare as int
+        # so leading-zero forms ('007') still equal target 7.
+        return "matched" if int(found[-1]) == target else "refuted"
+
+    if name == "threshold":
+        target = predicate.get("target", "")
+        op = predicate.get("op", ">")
+        value = predicate.get("value")
+        if not isinstance(target, str) or not isinstance(value, (int, float)):
+            return "untested"
+        m = re.search(rf"{re.escape(target)}\s*[:=]\s*([-+]?\d+(?:\.\d+)?)", text)
+        if not m:
+            return "untested"  # metric not present — can't decide
+        return "matched" if _apply_op(float(m.group(1)), op, value) else "refuted"
+
+    # Unknown predicate name — let the caller fall back (T2 / untested).
+    raise ValueError(f"unknown predicate '{name}'")
 
 
 def _apply_op(actual: float, op: str, value: float) -> bool:

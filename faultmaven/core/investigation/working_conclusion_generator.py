@@ -16,7 +16,7 @@ Key Features:
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
 from faultmaven.modules.case.contracts import (
     Case,

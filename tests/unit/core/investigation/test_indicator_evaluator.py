@@ -14,7 +14,92 @@ from typing import Dict, List, Optional
 import pytest
 
 from faultmaven.core.investigation.cause_schemas import CauseRecord
-from faultmaven.core.investigation.indicator_evaluator import IndicatorEvaluator
+from faultmaven.core.investigation.indicator_evaluator import (
+    IndicatorEvaluator,
+    evaluate_predicate_against_text,
+)
+
+
+class TestEvaluatePredicateAgainstText:
+    """The shared operator function — and the subset-trust rule that keeps it
+    sound when ``text`` is a lossy digest (``complete=False``)."""
+
+    def test_contains_complete_refutes_on_absence(self):
+        p = {"predicate": "contains", "target": "OOMKilled"}
+        assert (
+            evaluate_predicate_against_text(p, "OOMKilled here", complete=True)
+            == "matched"
+        )
+        assert (
+            evaluate_predicate_against_text(p, "all fine", complete=True) == "refuted"
+        )
+
+    def test_contains_subset_is_untested_on_absence_never_false_refute(self):
+        # The crux: against a digest, a missing substring may live in the dropped
+        # remainder, so absence is NOT a refutation.
+        p = {"predicate": "contains", "target": "OOMKilled"}
+        assert (
+            evaluate_predicate_against_text(p, "OOMKilled here", complete=False)
+            == "matched"
+        )
+        assert (
+            evaluate_predicate_against_text(p, "all fine", complete=False) == "untested"
+        )
+
+    def test_absent_complete_matches_on_absence(self):
+        p = {"predicate": "absent", "target": "ERROR"}
+        assert (
+            evaluate_predicate_against_text(p, "clean log", complete=True) == "matched"
+        )
+        assert evaluate_predicate_against_text(p, "ERROR x", complete=True) == "refuted"
+
+    def test_absent_subset_untested_on_absence_but_refutes_on_presence(self):
+        # Presence is decisive even on a subset (it's verbatim); absence is not.
+        p = {"predicate": "absent", "target": "ERROR"}
+        assert (
+            evaluate_predicate_against_text(p, "ERROR x", complete=False) == "refuted"
+        )
+        assert (
+            evaluate_predicate_against_text(p, "clean log", complete=False)
+            == "untested"
+        )
+
+    def test_exit_code_presence_only_regardless_of_complete(self):
+        p = {"predicate": "exit_code", "target": 137}
+        for complete in (True, False):
+            assert (
+                evaluate_predicate_against_text(p, "rc=137", complete=complete)
+                == "matched"
+            )
+            assert (
+                evaluate_predicate_against_text(p, "rc=0", complete=complete)
+                == "refuted"
+            )
+            assert (
+                evaluate_predicate_against_text(p, "no code", complete=complete)
+                == "untested"
+            )
+
+    def test_threshold_presence_only(self):
+        p = {"predicate": "threshold", "target": "cpu", "op": ">", "value": 90}
+        assert evaluate_predicate_against_text(p, "cpu=95", complete=False) == "matched"
+        assert evaluate_predicate_against_text(p, "cpu=10", complete=False) == "refuted"
+        assert (
+            evaluate_predicate_against_text(p, "mem=50", complete=False) == "untested"
+        )
+
+    def test_unparseable_value_is_untested_not_refuted(self):
+        # A malformed target/value yields untested — never a refutation.
+        assert (
+            evaluate_predicate_against_text(
+                {"predicate": "contains", "target": 5}, "x", complete=True
+            )
+            == "untested"
+        )
+
+    def test_unknown_predicate_raises(self):
+        with pytest.raises(ValueError):
+            evaluate_predicate_against_text({"predicate": "wat"}, "x", complete=False)
 
 
 def _cause(
