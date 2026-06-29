@@ -847,6 +847,19 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
         case.root_cause_conclusion
         and getattr(case.root_cause_conclusion, "root_cause", None)
     )
+    # A cause established only on lower-assurance, LLM-authored validation is held
+    # back from auto-seeding reusable knowledge: harvesting a runbook from it would
+    # promote an unverified cause (the model authored both the predicate and its
+    # citation) into the corpus. It still counts once a sound (runbook-grounded)
+    # support bears the cause out. Inert until labeled fallback links flow. Imported
+    # lazily: causal_graph -> hypothesis_manager -> terminal_transitions, so a
+    # module-level import here would close that cycle.
+    from faultmaven.core.investigation.causal_graph import (
+        cause_validation_is_fallback_only,
+    )
+
+    if has_root_cause and cause_validation_is_fallback_only(case):
+        has_root_cause = False
     has_actionable_solution = False
     if case.solutions:
         for sol in case.solutions:

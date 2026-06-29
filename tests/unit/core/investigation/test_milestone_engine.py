@@ -1508,6 +1508,86 @@ class TestReadinessAssessments:
         result = assess_runbook_readiness(case)
         assert result.verdict == result.READY
 
+    def test_runbook_readiness_not_suitable_when_cause_validation_is_fallback_only(
+        self,
+    ):
+        """An otherwise-READY case whose cause was validated ONLY by lower-assurance
+        LLM-authored (llm_fallback) support is held back from runbook harvesting —
+        an unverified cause must not auto-seed reusable knowledge."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            assess_runbook_readiness,
+        )
+        from faultmaven.modules.case.contracts import (
+            CausalNode,
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+            EvidenceStance,
+            NodeEvidenceLink,
+            NodeState,
+            NodeType,
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+            ValidationMethod,
+        )
+
+        case = self._make_case()
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Connection pool timeout too low",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="1s timeout causes cascading failures under load",
+        )
+        case.solutions = [
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Increase pool timeout",
+                longterm_fix="Set pool.timeout=30s in application.yaml",
+                commands=["kubectl edit configmap app-config"],
+                implementation_steps=["Edit configmap", "Restart pods"],
+                verification_method="Check p99 latency < 500ms for 30 min",
+            )
+        ]
+        # The root validated empirically, but only off an llm_fallback support.
+        case.evidence = [
+            Evidence(
+                evidence_id="ev_aaaaaaaaaaaa",
+                category=EvidenceCategory.CAUSAL_EVIDENCE,
+                primary_purpose="diagnosis",
+                summary="pool exhausted at 14:03",
+                extract="pool: 0 idle / 0 free",
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id="file_aabb12345678",
+                collected_by="user_123",
+                collected_at_turn=1,
+            )
+        ]
+        case.causal_nodes = {
+            "cn_aaaaaaaaaaaa": CausalNode(
+                node_id="cn_aaaaaaaaaaaa",
+                statement="connection pool exhausted",
+                node_type=NodeType.ROOT,
+                node_state=NodeState.VALIDATED,
+                validation_method=ValidationMethod.EMPIRICAL,
+                actionable=True,
+                belief=0.7,
+                generated_at_turn=1,
+                evidence_links=[
+                    NodeEvidenceLink(
+                        evidence_id="ev_aaaaaaaaaaaa",
+                        stance=EvidenceStance.SUPPORTS,
+                        reasoning="pool metrics",
+                        provenance="llm_fallback",
+                        linked_at_turn=1,
+                    )
+                ],
+            )
+        }
+
+        result = assess_runbook_readiness(case)
+        assert result.verdict == result.NOT_SUITABLE
+
     def test_runbook_readiness_needs_enrichment(self):
         """Root cause + commands but no evidence, no mitigation, no verification → needs enrichment."""
         from faultmaven.core.investigation.terminal_transitions import (
