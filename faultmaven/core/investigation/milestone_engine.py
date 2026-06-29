@@ -730,32 +730,6 @@ def _investigation_confirmation_suggestions() -> list:
     ]
 
 
-def _differential_runbook_ids(case: "Case") -> list[str]:
-    """The persisted runbook id(s) whose causes form the case's standing
-    differential — the source the per-turn intake loop re-resolves candidates
-    from. The matcher establishes this once it fires; imported defensively so the
-    intake loop is simply inert (no differential) until that accessor lands."""
-    try:
-        from faultmaven.core.investigation.runbook_cause_matcher import (
-            differential_runbook_ids,
-        )
-    except ImportError:
-        return []
-    try:
-        return list(differential_runbook_ids(case) or [])
-    except Exception:  # noqa: BLE001 — a prior must never break the turn
-        return []
-
-
-def _parse_cause_record(raw: dict):
-    """Parse one raw v4 cause record (``get_runbook_causes`` output) into a
-    ``CauseRecord``. Bound to the matcher's own parser at integration; the
-    schema-validation default here is equivalent for the documented shape."""
-    from faultmaven.core.investigation.cause_schemas import CauseRecord
-
-    return CauseRecord.model_validate(raw)
-
-
 def _recompute_cause_state_from_chain(case: "Case") -> None:
     """Chain-derived ``cause_state`` (Option A, methodology §9.2; flag ON).
 
@@ -5882,7 +5856,12 @@ class MilestoneEngine:
         turn, and inert until the matcher has established a differential source.
         """
         try:
-            runbook_ids = _differential_runbook_ids(case)
+            from faultmaven.core.investigation.runbook_cause_matcher import (
+                differential_runbook_ids,
+                resolve_root,
+            )
+
+            runbook_ids = differential_runbook_ids(case)
             if not runbook_ids:
                 return
             if self.knowledge_service is None or not hasattr(
@@ -5899,7 +5878,7 @@ class MilestoneEngine:
             from faultmaven.core.investigation.intake_evaluation import (
                 run_differential_intake_turn,
             )
-            from faultmaven.core.investigation.runbook_cause_matcher import resolve_root
+            from faultmaven.modules.agent.tools.kb_qa import AnswerFromKB
 
             await run_differential_intake_turn(
                 case,
@@ -5907,7 +5886,7 @@ class MilestoneEngine:
                 case.current_turn,
                 runbook_ids=runbook_ids,
                 resolve_causes=self.knowledge_service.get_runbook_causes,
-                parse_record=_parse_cause_record,
+                build_records=AnswerFromKB._build_cause_records,
                 resolve_root=resolve_root,
             )
         except Exception as exc:  # noqa: BLE001 — validation prior, never breaks turn

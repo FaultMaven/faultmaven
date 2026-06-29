@@ -132,7 +132,7 @@ async def run_differential_intake_turn(
     *,
     runbook_ids: "list[str]",
     resolve_causes: "Callable[[str], Awaitable[list[dict] | None]]",
-    parse_record: "Callable[[dict], CauseRecord]",
+    build_records: "Callable[[str, list[dict]], list[CauseRecord]]",
     resolve_root: RootResolver,
     evaluate: Callable[..., list[StanceVerdict]] = evaluate_datum_against_differential,
 ) -> list[StanceVerdict]:
@@ -154,17 +154,17 @@ async def run_differential_intake_turn(
         return []
     matched: list[tuple[str, list[CauseRecord]]] = []
     for runbook_id in runbook_ids:
-        records = await resolve_causes(runbook_id)
-        if not records:
+        raw = await resolve_causes(runbook_id)
+        if not raw:
             continue
-        parsed: list[CauseRecord] = []
-        for raw in records:
-            try:
-                parsed.append(parse_record(raw))
-            except Exception:  # noqa: BLE001 — a malformed cause record is skipped,
-                continue  # never breaks the turn (a prior, not a gate)
-        if parsed:
-            matched.append((runbook_id, parsed))
+        try:
+            # ``build_records`` is tolerant per entry (a malformed cause is logged
+            # and skipped, not raised) — so this only guards a wholesale failure.
+            records = build_records(runbook_id, raw)
+        except Exception:  # noqa: BLE001 — a prior must never break the turn
+            continue
+        if records:
+            matched.append((runbook_id, records))
 
     active_causes = assemble_active_causes(matched)
     if not active_causes:

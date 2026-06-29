@@ -239,10 +239,10 @@ async def _causes_for(_runbook_id):
     return [{"cause_letter": "A"}]
 
 
-def _parse(_raw):
-    # Stand-in for the matcher's dict -> CauseRecord parse. assemble_active_causes
-    # only reads .cause_letter / .is_fallback_cause off it.
-    return SimpleNamespace(cause_letter="A", is_fallback_cause=False)
+def _build(_rid, _causes_raw):
+    # Stand-in for AnswerFromKB._build_cause_records (per-runbook, tolerant).
+    # assemble_active_causes only reads .cause_letter / .is_fallback_cause.
+    return [SimpleNamespace(cause_letter="A", is_fallback_cause=False)]
 
 
 @pytest.mark.asyncio
@@ -256,7 +256,7 @@ async def test_differential_turn_inert_without_runbook_ids():
         case.current_turn,
         runbook_ids=[],
         resolve_causes=_causes_for,
-        parse_record=_parse,
+        build_records=_build,
         resolve_root=_always(node.node_id),
         evaluate=lambda **_: [_verdict()],
     )
@@ -274,7 +274,7 @@ async def test_differential_turn_inert_without_new_evidence():
         case.current_turn,
         runbook_ids=["rb1"],
         resolve_causes=_causes_for,
-        parse_record=_parse,
+        build_records=_build,
         resolve_root=_always(node.node_id),
         evaluate=lambda **_: [_verdict()],
     )
@@ -293,7 +293,7 @@ async def test_differential_turn_validates_resolved_candidates():
         case.current_turn,
         runbook_ids=["rb1"],
         resolve_causes=_causes_for,
-        parse_record=_parse,
+        build_records=_build,
         resolve_root=_always(node.node_id),
         evaluate=lambda **_: [_verdict(cause_id="rb1:A", provenance="runbook")],
     )
@@ -316,7 +316,7 @@ async def test_differential_turn_skips_runbook_with_no_causes():
         case.current_turn,
         runbook_ids=["rb_missing"],
         resolve_causes=_no_causes,
-        parse_record=_parse,
+        build_records=_build,
         resolve_root=_always(node.node_id),
         evaluate=lambda **_: [_verdict()],
     )
@@ -328,8 +328,8 @@ async def test_differential_turn_skips_malformed_record_without_raising():
     node = _root()
     case = _case(node)
 
-    def _bad_parse(_raw):
-        raise ValueError("malformed cause record")
+    def _bad_build(_rid, _causes_raw):
+        raise ValueError("malformed cause records")
 
     recorded = await run_differential_intake_turn(
         case,
@@ -337,7 +337,7 @@ async def test_differential_turn_skips_malformed_record_without_raising():
         case.current_turn,
         runbook_ids=["rb1"],
         resolve_causes=_causes_for,
-        parse_record=_bad_parse,  # every record fails to parse
+        build_records=_bad_build,  # parsing the runbook's causes fails
         resolve_root=_always(node.node_id),
         evaluate=lambda **_: [_verdict()],
     )
