@@ -293,6 +293,44 @@ def _stash_interventions(
     node.metadata[RUNBOOK_INTERVENTIONS_META_KEY] = interventions
 
 
+# Structured key recording which runbook seeded a ROOT node. The differential's
+# source of truth — read by ``differential_runbook_ids``, NOT parsed from the
+# hypothesis rationale string. ``node.metadata`` persists (JSON column).
+RUNBOOK_ID_META_KEY = "runbook_id"
+
+
+def _stamp_runbook_id(case: "Case", root_id: str, runbook_id: str) -> None:
+    """Record (structured) which runbook seeded this ROOT, for differential
+    re-resolution. Unconditional — unlike interventions, the differential needs
+    the id even when the matched cause documents no fixes."""
+    node = case.causal_nodes.get(root_id)
+    if node is None or not runbook_id:
+        return
+    if not node.metadata:
+        node.metadata = {}
+    node.metadata[RUNBOOK_ID_META_KEY] = runbook_id
+
+
+def differential_runbook_ids(case: "Case") -> List[str]:
+    """The matched candidate runbook id(s) backing the case's differential.
+
+    Read from the structured ``runbook_id`` key the matcher stamps on each seeded
+    ROOT node's metadata — NOT parsed from any rationale string. The per-turn
+    intake hook re-resolves these into the candidate differential
+    (``resolve_causes(id)`` → ``KbQAService._build_cause_records`` →
+    ``assemble_active_causes``). One id today (``max_runbooks`` defaults low), but
+    a list by contract. De-duplicated, insertion-ordered.
+    """
+    ids: List[str] = []
+    seen: set = set()
+    for node in case.causal_nodes.values():
+        rid = (getattr(node, "metadata", None) or {}).get(RUNBOOK_ID_META_KEY)
+        if isinstance(rid, str) and rid and rid not in seen:
+            seen.add(rid)
+            ids.append(rid)
+    return ids
+
+
 def _root_node_id(case: "Case", created: List[Optional[str]]) -> Optional[str]:
     """The instantiated chain's ROOT node id. Found by node_type (not position),
     so a skipped/deduped node can't misidentify the root. The v4 chain has
@@ -535,6 +573,9 @@ async def apply_runbook_cause_matcher(
         # node.metadata JSON column round-trips. The matcher never creates
         # Solutions — the LLM proposes the fix and the M5 gate governs it.
         _stash_interventions(case, root_id, chosen.selected_record)
+        # Record the matched runbook (structured) so the per-turn intake hook can
+        # re-resolve the differential from differential_runbook_ids(case).
+        _stamp_runbook_id(case, root_id, chosen.runbook_id)
         if hypothesis_manager is not None:
             attached = attach_matched_hypothesis(
                 case, chosen, root_id, hypothesis_manager
