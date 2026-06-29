@@ -392,10 +392,12 @@ def cause_validation_is_fallback_only(case: Case) -> bool:
         if root.validation_method == ValidationMethod.DEDUCTIVE:
             return False  # deductive proof is sound, not a fallback grade
         for link in root.evidence_links:
+            if link.evidence_id not in evidence_by_id:
+                continue  # dangling reference (deleted evidence) — never counts,
+                # consistent with _node_evidence_tally
             if (
                 link.stance == EvidenceStance.SUPPORTS
-                and evidence_by_id.get(link.evidence_id)
-                == EvidenceCategory.CAUSAL_EVIDENCE
+                and evidence_by_id[link.evidence_id] == EvidenceCategory.CAUSAL_EVIDENCE
                 and link.provenance != "llm_fallback"
             ):
                 return False  # a sound causal support → not fallback-only

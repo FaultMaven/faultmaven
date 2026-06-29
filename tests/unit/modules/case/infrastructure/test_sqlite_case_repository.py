@@ -2006,6 +2006,7 @@ class TestCausalGraphRoundTrip:
                     reasoning="timeout signature observed",
                     stance_confidence=0.9,
                     linked_at_turn=2,
+                    provenance="llm_fallback",
                 )
             ],
         )
@@ -2079,6 +2080,9 @@ class TestCausalGraphRoundTrip:
         assert len(fi.evidence_links) == 1
         assert fi.evidence_links[0].evidence_id == ev_id
         assert fi.evidence_links[0].stance == EvidenceStance.SUPPORTS
+        # provenance must survive the junction round-trip (the relational column,
+        # not a JSON blob) — else the fallback-only signal is dead on reload.
+        assert fi.evidence_links[0].provenance == "llm_fallback"
 
         assert len(fetched.causal_edges) == 3
         and_edges = [

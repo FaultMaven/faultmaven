@@ -1587,6 +1587,10 @@ class TestReadinessAssessments:
 
         result = assess_runbook_readiness(case)
         assert result.verdict == result.NOT_SUITABLE
+        # The message must ask the user to VERIFY the cause, not to provide one
+        # (the cause is present — it's the assurance that's missing).
+        assert "lower-assurance" in result.message
+        assert "- identified root cause" not in result.message
 
     def test_runbook_readiness_needs_enrichment(self):
         """Root cause + commands but no evidence, no mitigation, no verification → needs enrichment."""
