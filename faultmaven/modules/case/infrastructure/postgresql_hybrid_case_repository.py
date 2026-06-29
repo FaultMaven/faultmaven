@@ -2054,6 +2054,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             if case.turn_history
                             else []
                         ),
+                        "differential_runbook_ids": list(case.differential_runbook_ids),
                     }.items()
                     if v
                 }
@@ -3013,6 +3014,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 else None
             ),
             "pending_transition": metadata.get("pending_transition"),
+            "differential_runbook_ids": metadata.get("differential_runbook_ids", []),
             "progress": progress,
             "current_turn": int(row.current_turn or 0),
             "turns_without_progress": int(row.turns_without_progress or 0),
