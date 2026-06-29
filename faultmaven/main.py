@@ -1468,6 +1468,7 @@ if _is_debug_enabled(settings=_debug_settings):
         Best-effort: never raises on serialization; absent graph returns empty
         collections. Not registered in production (debug block).
         """
+        from .api.debug_introspection import build_causal_graph_debug_payload
         from .api.v1.dependencies import get_case_repository
 
         repo = await get_case_repository(request)
@@ -1477,52 +1478,8 @@ if _is_debug_enabled(settings=_debug_settings):
         if case is None:
             return {"error": "case not found", "case_id": case_id}
 
-        def _dump(obj):
-            try:
-                return obj.model_dump(mode="json")
-            except Exception:  # pragma: no cover - defensive
-                return str(obj)
-
-        problem_node_id = next(
-            (
-                nid
-                for nid, n in case.causal_nodes.items()
-                if getattr(n, "node_type", None)
-                and getattr(n.node_type, "value", n.node_type) == "problem"
-            ),
-            None,
-        )
-
-        hypotheses = {}
-        for hid, h in case.hypotheses.items():
-            state = getattr(h, "state", None)
-            hypotheses[hid] = {
-                "statement": getattr(h, "statement", None),
-                "category": getattr(getattr(h, "category", None), "value", None),
-                "state": getattr(state, "value", state),
-                "likelihood": getattr(h, "likelihood", None),
-                "initial_likelihood": getattr(h, "initial_likelihood", None),
-                "root_node_id": getattr(h, "root_node_id", None),
-                "path": getattr(h, "path", None),
-                "generated_at_turn": getattr(h, "generated_at_turn", None),
-            }
-
-        progress = getattr(case, "progress", None)
-        cause_state = getattr(progress, "cause_state", None) if progress else None
-
         return {
-            "case_id": case_id,
-            "current_turn": getattr(case, "current_turn", None),
-            "cause_state": getattr(cause_state, "value", cause_state),
-            "problem_node_id": problem_node_id,
-            "causal_nodes": {nid: _dump(n) for nid, n in case.causal_nodes.items()},
-            "causal_edges": [_dump(e) for e in case.causal_edges],
-            "hypotheses": hypotheses,
-            "root_cause_conclusion": (
-                _dump(case.root_cause_conclusion)
-                if case.root_cause_conclusion
-                else None
-            ),
+            **build_causal_graph_debug_payload(case),
             "timestamp": to_json_compatible(datetime.now(timezone.utc)),
         }
 
