@@ -38,6 +38,7 @@ import logging
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from faultmaven.core.investigation.causal_graph import (
+    _normalize_statement,
     chain_path_to_problem,
     ingest_emitted_chain,
 )
@@ -301,6 +302,31 @@ def _root_node_id(case: "Case", created: List[Optional[str]]) -> Optional[str]:
     return None
 
 
+def _existing_root_id(case: "Case", record: CauseRecord) -> Optional[str]:
+    """Id of an already-instantiated ROOT for ``record``'s chain, or ``None``.
+
+    Pure lookup — no mutation. Keys on the SAME identity ``ingest_emitted_chain``
+    mints and merges with: ``(NodeType.ROOT, _normalize_statement(statement))``.
+    Reusing the shared ``_normalize_statement`` (rather than re-deriving the key
+    here) is what makes the lookup and the mint ONE identity — so a matcher-seeded
+    root and a verbatim LLM re-emit of the same cause can never split into two
+    roots (§2.2). Returns ``None`` for a degenerate / ``[Default]`` cause whose
+    chain has no instantiable ROOT spec.
+    """
+    nodes, _edges = chain_to_specs(record)
+    root_spec = next((n for n in nodes if n.node_type == NodeType.ROOT), None)
+    if root_spec is None:
+        return None
+    key = _normalize_statement(root_spec.statement)
+    for node_id, node in case.causal_nodes.items():
+        if (
+            node.node_type == NodeType.ROOT
+            and _normalize_statement(node.statement) == key
+        ):
+            return node_id
+    return None
+
+
 def resolve_root(
     case: "Case", record: CauseRecord, *, may_instantiate: bool
 ) -> Optional[str]:
@@ -334,14 +360,24 @@ def resolve_root(
     the matcher and one emitted by the LLM for the same cause resolve to the **one**
     canonical node — never duplicate roots (the spec's hardest prior bug, §2.2).
 
-    BODY PENDING (slice 5 of the matcher pull-forward unit) — signature is frozen
-    here so the process-layer intake step binds against the real shape; the body
-    (existing-root lookup + conditional instantiate) lands next.
     """
-    raise NotImplementedError(
-        "resolve_root body lands in the matcher pull-forward unit (slice 5); "
-        "the process intake step injects + binds it at integration."
-    )
+    existing = _existing_root_id(case, record)
+    if existing is not None:
+        # Idempotent: the cause already stands in the graph — same root for a
+        # SUPPORTS or a REFUTES, no mutation.
+        return existing
+    if not may_instantiate:
+        # REFUTES (or any non-promoting check) never instantiates — a refutation
+        # of an unseen cause has nothing to attach to and must not seed a node.
+        return None
+    # First SUPPORTS for this cause: lazily promote it. instantiate_cause_chain
+    # routes through ingest_emitted_chain, whose exact-match dedup reuses an
+    # identical standing root rather than minting a second one — so even this
+    # mint path cannot duplicate a root (the single-identity guarantee holds on
+    # both branches). Returns None for a degenerate / [Default] cause (no
+    # instantiable node), which the caller skips.
+    created = instantiate_cause_chain(case, record, case.current_turn)
+    return _root_node_id(case, created)
 
 
 def attach_matched_hypothesis(

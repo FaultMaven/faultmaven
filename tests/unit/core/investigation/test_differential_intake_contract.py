@@ -44,13 +44,13 @@ def test_active_cause_pairs_candidate_id_with_record():
         ac.candidate_id = "x"  # type: ignore[misc]
 
 
-def test_resolve_root_signature_bindable_and_body_pending():
-    # The process intake binds resolve_root; the signature is frozen here (case,
-    # record, *, may_instantiate). Body lands in slice 5 → NotImplementedError.
+def test_resolve_root_may_instantiate_is_keyword_only():
+    # The seam pins may_instantiate keyword-only so a positional bool can't
+    # silently flip promote/lookup mode at a call site. Binding fails before the
+    # body runs, so the case arg is never dereferenced here. (Behavior of the
+    # body itself is covered in test_runbook_cause_matcher.py::TestResolveRoot.)
     record = CauseRecord(cause_letter="A")
-    with pytest.raises(NotImplementedError):
-        resolve_root(None, record, may_instantiate=True)
-    with pytest.raises(TypeError):  # may_instantiate is keyword-only
+    with pytest.raises(TypeError):
         resolve_root(None, record, True)  # type: ignore[misc]
 
 

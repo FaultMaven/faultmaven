@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 
+from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
 from faultmaven.core.investigation.cause_schemas import (
     CauseMatch,
     CauseMatchResult,
@@ -23,7 +24,9 @@ from faultmaven.core.investigation.runbook_cause_matcher import (
     build_case_evidence_fallback_text,
     chain_to_specs,
     instantiate_cause_chain,
+    resolve_root,
 )
+from faultmaven.core.investigation.schemas import CausalNodeToAdd
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -992,3 +995,105 @@ class TestBuildCaseEvidenceFallbackText:
             SimpleNamespace(summary="   ", extract=None, category=None)
         )
         assert build_case_evidence_fallback_text(case) is None
+
+
+# ---------------------------------------------------------------------------
+# resolve_root — the lazy-promotion seam the intake loop binds to
+# ---------------------------------------------------------------------------
+
+
+def _roots(case):
+    return [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+
+
+class TestResolveRoot:
+    def test_may_instantiate_seeds_chain_and_returns_root(self):
+        case = _case()
+        root_id = resolve_root(case, _linear_cause(), may_instantiate=True)
+
+        assert root_id is not None
+        node = case.causal_nodes[root_id]
+        assert node.node_type == NodeType.ROOT
+        assert node.statement == "the root cause"
+        assert len(_roots(case)) == 1
+
+    def test_second_supports_is_idempotent_no_duplicate_root(self):
+        # A standing cause re-supported on a later turn must resolve to the SAME
+        # root, never a second one — the single-identity guarantee on the mint path.
+        case = _case()
+        cause = _linear_cause()
+        first = resolve_root(case, cause, may_instantiate=True)
+        node_count = len(case.causal_nodes)
+
+        second = resolve_root(case, cause, may_instantiate=True)
+
+        assert second == first
+        assert len(case.causal_nodes) == node_count  # nothing new minted
+        assert len(_roots(case)) == 1
+
+    def test_lookup_only_when_not_may_instantiate_has_no_side_effect(self):
+        # A REFUTES against an unseen cause must not seed a node to refute.
+        case = _case()
+        result = resolve_root(case, _linear_cause(), may_instantiate=False)
+
+        assert result is None
+        assert case.causal_nodes == {}
+
+    def test_lookup_returns_existing_root_after_instantiation(self):
+        case = _case()
+        cause = _linear_cause()
+        seeded = resolve_root(case, cause, may_instantiate=True)
+
+        # Now a non-promoting check (REFUTES) finds the same standing root.
+        found = resolve_root(case, cause, may_instantiate=False)
+
+        assert found == seeded
+
+    def test_degenerate_cause_returns_none_even_when_may_instantiate(self):
+        # A cause carrying only the engine-seeded problem node has no instantiable
+        # root; the caller must skip the verdict regardless of stance.
+        case = _case()
+        degenerate = CauseRecord(
+            cause_letter="A",
+            chain_nodes=[_node("D", "problem", "the problem")],
+        )
+        assert resolve_root(case, degenerate, may_instantiate=True) is None
+        assert case.causal_nodes == {}  # D not even seeded
+
+    def test_cross_author_same_statement_converges_on_one_root(self):
+        # A matcher-seeded root and a later verbatim LLM emission of the same root
+        # statement reconcile to ONE node — lookup and mint share one identity.
+        case = _case()
+        seeded = resolve_root(case, _linear_cause(), may_instantiate=True)
+
+        # The in-loop LLM independently emits the same root statement.
+        ingest_emitted_chain(
+            case,
+            [CausalNodeToAdd(statement="the root cause", node_type=NodeType.ROOT)],
+            [],
+            [],
+            case.current_turn,
+        )
+
+        assert len(_roots(case)) == 1
+        assert _roots(case)[0].node_id == seeded
+
+    def test_cross_author_divergent_wording_fragments_into_two_roots(self):
+        # The deliberate exact-match boundary: paraphrases are NOT merged (a fuzzy
+        # threshold can't separate a true duplicate from a distinct OR-sibling).
+        case = _case()
+        resolve_root(case, _linear_cause(), may_instantiate=True)
+
+        ingest_emitted_chain(
+            case,
+            [
+                CausalNodeToAdd(
+                    statement="a different root cause", node_type=NodeType.ROOT
+                )
+            ],
+            [],
+            [],
+            case.current_turn,
+        )
+
+        assert len(_roots(case)) == 2
