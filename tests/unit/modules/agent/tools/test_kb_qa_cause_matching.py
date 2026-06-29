@@ -317,6 +317,32 @@ class TestDegradation:
         assert [r.runbook_id for r in results] == ["kb_ok"]
 
     @pytest.mark.asyncio
+    async def test_skipped_runbook_increments_metric(self, monkeypatch):
+        # The swallow is now observable: each skipped runbook bumps the counter so
+        # a malformed-KB / evaluator-regression spike is alertable, not just logged.
+        import faultmaven.modules.agent.tools.kb_qa as kb_qa_mod
+
+        calls = {"n": 0}
+        monkeypatch.setattr(
+            kb_qa_mod.runbook_cause_match_skipped_total,
+            "inc",
+            lambda *a, **k: calls.__setitem__("n", calls["n"] + 1),
+        )
+        tool = _make_tool([_chunk("kb_bad", 0, 0.9), _chunk("kb_ok", 0, 0.8)])
+
+        async def resolve(item_id):
+            return 42 if item_id == "kb_bad" else [_matching_cause(), _fallback_cause()]
+
+        results = await tool.aget_cause_matches(
+            "q",
+            user_id="u1",
+            resolve_causes=resolve,
+            evaluator=_evaluator((1, "value x present")),
+        )
+        assert [r.runbook_id for r in results] == ["kb_ok"]  # bad one skipped
+        assert calls["n"] == 1  # exactly the one failure was counted
+
+    @pytest.mark.asyncio
     async def test_evaluator_error_skips_not_raises(self):
         tool = _make_tool([_chunk("kb_a", 0, 0.9), _chunk("kb_b", 0, 0.8)])
 

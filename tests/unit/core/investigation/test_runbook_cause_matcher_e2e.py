@@ -196,6 +196,33 @@ class TestEnabledMatcherEndToEnd:
         assert case.causal_nodes == {}
         assert case.hypotheses == {}
 
+    @pytest.mark.asyncio
+    async def test_engine_swallow_increments_errored_metric(self, monkeypatch):
+        # A failure anywhere in the matcher's OWN machinery (not a per-runbook KB
+        # skip) is swallowed at the engine level so the turn never breaks — and is
+        # now counted, so the durability/matcher code's failure mode is visible.
+        import faultmaven.core.investigation.milestone_engine as me
+        import faultmaven.core.investigation.runbook_cause_matcher as rcm
+
+        case = _case()
+        eng, _ = _engine(kb_tool=_real_kb_tool(), ce_answer=True)
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("matcher machinery blew up")
+
+        # Patch the source module: the engine imports the name function-locally.
+        monkeypatch.setattr(rcm, "apply_runbook_cause_matcher", _boom)
+        calls = {"n": 0}
+        monkeypatch.setattr(
+            me.runbook_cause_matcher_errored_total,
+            "inc",
+            lambda *a, **k: calls.__setitem__("n", calls["n"] + 1),
+        )
+
+        # Must NOT raise (swallowed), and must count the whole-pass failure.
+        await eng._apply_runbook_cause_matcher(case, None, {})
+        assert calls["n"] == 1
+
 
 class TestFlagDefault:
     def test_flag_defaults_off(self):
