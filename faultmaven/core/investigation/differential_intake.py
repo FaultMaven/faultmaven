@@ -105,10 +105,35 @@ class StanceVerdict:
     not a free-text description."""
 
 
+@dataclass(frozen=True)
+class ActiveCause:
+    """One candidate in the differential: a stable id + its full ``CauseRecord``.
+
+    A bare ``CauseRecord`` is NOT cross-runbook-unique (every runbook has a
+    "Cause A"), so it cannot mint the ``StanceVerdict.cause_id`` the process layer
+    keys on. This wrapper pairs the cross-runbook-unique ``candidate_id`` with the
+    record. Both fields are load-bearing:
+
+      - ``candidate_id`` → becomes ``StanceVerdict.cause_id``; the process layer's
+        verdict→link / lazy-promotion lookup keys on it.
+      - ``record`` → the matcher instantiates its chain on the first SUPPORTS
+        (``resolve_root(case, record, may_instantiate=True)``), and reads its
+        ``match_predicates`` to evaluate.
+    """
+
+    candidate_id: str
+    """Cross-runbook-unique candidate id — ``f"{runbook_id}:{cause_letter}"``
+    (matcher-minted/normalized). Mirrors ``StanceVerdict.cause_id``."""
+
+    record: "CauseRecord"
+    """The full cause record — chain (for lazy instantiation) + match_predicates
+    (for evaluation)."""
+
+
 def evaluate_datum_against_differential(
     *,
     evidence: "Evidence",
-    active_causes: "list[CauseRecord]",
+    active_causes: "list[ActiveCause]",
     case: "Case",
 ) -> list[StanceVerdict]:
     """Runbook (content-addressed) tier — BODY OWNED BY THE MATCHER.
@@ -120,10 +145,11 @@ def evaluate_datum_against_differential(
     Args:
         evidence: handle to the submitted datum; the body resolves the
             normalized/raw telemetry from it (never ``Evidence.summary``).
-        active_causes: the candidate differential — each item carries its full
-            ``CauseRecord`` (``chain_nodes``/``chain_edges`` so the process layer
-            can lazily instantiate on a SUPPORTS, and ``match_predicates`` to
-            evaluate).
+        active_causes: the candidate differential — a list of ``ActiveCause``,
+            each pairing a cross-runbook-unique ``candidate_id`` (→ the verdict's
+            ``cause_id``) with its full ``CauseRecord`` (``chain_nodes``/
+            ``chain_edges`` for lazy instantiation on a SUPPORTS, and
+            ``match_predicates`` to evaluate).
         case: for ``data_type`` classification + telemetry resolution.
 
     STUB: returns ``[]`` until the matcher body lands (loop stays inert).

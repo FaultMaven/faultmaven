@@ -301,6 +301,49 @@ def _root_node_id(case: "Case", created: List[Optional[str]]) -> Optional[str]:
     return None
 
 
+def resolve_root(
+    case: "Case", record: CauseRecord, *, may_instantiate: bool
+) -> Optional[str]:
+    """Map a differential candidate (its ``CauseRecord``) to its ROOT node id.
+
+    The intake-evaluation loop (process layer, ``differential_intake``) calls this
+    to turn a ``StanceVerdict`` into a link on the cause's root — instantiating the
+    chain lazily on the first SUPPORTS. Matcher-owned: it packages
+    ``instantiate_cause_chain`` + ``_root_node_id`` + the existing exact-match dedup
+    *lookup*, idempotently, behind ``may_instantiate``.
+
+    Args:
+        case: the live case (the turn is read from ``case.current_turn`` — no turn
+            param, so the seam stays clean).
+        record: the candidate's full cause record.
+        may_instantiate:
+            - ``True``  (SUPPORTS): return the existing root if the cause already
+              stands in the graph; else instantiate the chain and return its new
+              root id (lazy promotion).
+            - ``False`` (REFUTES): return the existing root id, or ``None`` — never
+              a side effect.
+
+    Returns the ROOT node id, or ``None``. **``None`` is possible even when
+    ``may_instantiate=True``** — a degenerate / ``[Default]`` cause has no
+    instantiable root (``instantiate_cause_chain`` returns ``[]``); the caller must
+    skip the verdict on ``None``, SUPPORTS or not.
+
+    SOUNDNESS — single identity for lookup + mint. Both the ``may_instantiate=
+    False`` lookup and the ``True`` instantiation route through the SAME exact-match
+    dedup identity ``ingest_emitted_chain`` uses to mint/merge, so a root seeded by
+    the matcher and one emitted by the LLM for the same cause resolve to the **one**
+    canonical node — never duplicate roots (the spec's hardest prior bug, §2.2).
+
+    BODY PENDING (slice 5 of the matcher pull-forward unit) — signature is frozen
+    here so the process-layer intake step binds against the real shape; the body
+    (existing-root lookup + conditional instantiate) lands next.
+    """
+    raise NotImplementedError(
+        "resolve_root body lands in the matcher pull-forward unit (slice 5); "
+        "the process intake step injects + binds it at integration."
+    )
+
+
 def attach_matched_hypothesis(
     case: "Case",
     match: CauseMatchResult,
