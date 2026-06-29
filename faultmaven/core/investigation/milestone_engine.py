@@ -5875,10 +5875,10 @@ class MilestoneEngine:
             if not new_evidence:
                 return
 
+            from faultmaven.core.investigation.cause_schemas import build_cause_records
             from faultmaven.core.investigation.intake_evaluation import (
                 run_differential_intake_turn,
             )
-            from faultmaven.modules.agent.tools.kb_qa import AnswerFromKB
 
             await run_differential_intake_turn(
                 case,
@@ -5886,7 +5886,7 @@ class MilestoneEngine:
                 case.current_turn,
                 runbook_ids=runbook_ids,
                 resolve_causes=self.knowledge_service.get_runbook_causes,
-                build_records=AnswerFromKB._build_cause_records,
+                build_records=build_cause_records,
                 resolve_root=resolve_root,
             )
         except Exception as exc:  # noqa: BLE001 — validation prior, never breaks turn
