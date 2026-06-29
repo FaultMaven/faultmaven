@@ -730,6 +730,32 @@ def _investigation_confirmation_suggestions() -> list:
     ]
 
 
+def _differential_runbook_ids(case: "Case") -> list[str]:
+    """The persisted runbook id(s) whose causes form the case's standing
+    differential — the source the per-turn intake loop re-resolves candidates
+    from. The matcher establishes this once it fires; imported defensively so the
+    intake loop is simply inert (no differential) until that accessor lands."""
+    try:
+        from faultmaven.core.investigation.runbook_cause_matcher import (
+            differential_runbook_ids,
+        )
+    except ImportError:
+        return []
+    try:
+        return list(differential_runbook_ids(case) or [])
+    except Exception:  # noqa: BLE001 — a prior must never break the turn
+        return []
+
+
+def _parse_cause_record(raw: dict):
+    """Parse one raw v4 cause record (``get_runbook_causes`` output) into a
+    ``CauseRecord``. Bound to the matcher's own parser at integration; the
+    schema-validation default here is equivalent for the documented shape."""
+    from faultmaven.core.investigation.cause_schemas import CauseRecord
+
+    return CauseRecord.model_validate(raw)
+
+
 def _recompute_cause_state_from_chain(case: "Case") -> None:
     """Chain-derived ``cause_state`` (Option A, methodology §9.2; flag ON).
 
@@ -5845,6 +5871,50 @@ class MilestoneEngine:
                 "Runbook cause matcher skipped for case %s: %s", case.case_id, exc
             )
 
+    async def _run_differential_intake(
+        self, case: "Case", metadata: dict[str, Any]
+    ) -> None:
+        """Validate this turn's newly submitted data against the standing
+        differential: re-resolve each differential runbook's candidate causes
+        (a cheap DB read, no LLM), then check every new datum against their
+        expert-authored predicates, attaching authority-grounded node-evidence
+        links. A validation prior, never a gate — wrapped so it can't break the
+        turn, and inert until the matcher has established a differential source.
+        """
+        try:
+            runbook_ids = _differential_runbook_ids(case)
+            if not runbook_ids:
+                return
+            if self.knowledge_service is None or not hasattr(
+                self.knowledge_service, "get_runbook_causes"
+            ):
+                return
+            added = set(metadata.get("evidence_added") or [])
+            if not added:
+                return
+            new_evidence = [e for e in case.evidence if e.evidence_id in added]
+            if not new_evidence:
+                return
+
+            from faultmaven.core.investigation.intake_evaluation import (
+                run_differential_intake_turn,
+            )
+            from faultmaven.core.investigation.runbook_cause_matcher import resolve_root
+
+            await run_differential_intake_turn(
+                case,
+                new_evidence,
+                case.current_turn,
+                runbook_ids=runbook_ids,
+                resolve_causes=self.knowledge_service.get_runbook_causes,
+                parse_record=_parse_cause_record,
+                resolve_root=resolve_root,
+            )
+        except Exception as exc:  # noqa: BLE001 — validation prior, never breaks turn
+            logger.warning(
+                "Differential intake skipped for case %s: %s", case.case_id, exc
+            )
+
     def _apply_chain_emission(
         self,
         case: "Case",
@@ -6677,6 +6747,13 @@ class MilestoneEngine:
         # the LLM as a one-turn nudge (T2a) to re-root it or declare it
         # separate, rather than guessing.
         self._nudge_ambiguous_orphan_chains(case, metadata)
+
+        # Validate this turn's NEW data against the standing differential
+        # (authority-grounded runbook predicates vs. raw telemetry), attaching
+        # provenance-typed node-evidence links BEFORE the recompute below counts
+        # them. Runs every turn (the matcher seeds the differential once; this
+        # keeps later evidence from driving an unsupported cause to IDENTIFIED).
+        await self._run_differential_intake(case, metadata)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).

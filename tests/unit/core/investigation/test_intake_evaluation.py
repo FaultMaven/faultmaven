@@ -15,7 +15,10 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.differential_intake import StanceVerdict
-from faultmaven.core.investigation.intake_evaluation import run_intake_evaluation
+from faultmaven.core.investigation.intake_evaluation import (
+    run_differential_intake_turn,
+    run_intake_evaluation,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -228,6 +231,117 @@ def test_fallback_provenance_is_carried_to_the_link():
         evaluate=lambda **_: [_verdict(provenance="llm_fallback")],
     )
     assert node.evidence_links[0].provenance == "llm_fallback"
+
+
+async def _causes_for(_runbook_id):
+    # Stand-in for knowledge_service.get_runbook_causes — a cheap DB read returning
+    # raw v4 cause dicts.
+    return [{"cause_letter": "A"}]
+
+
+def _parse(_raw):
+    # Stand-in for the matcher's dict -> CauseRecord parse. assemble_active_causes
+    # only reads .cause_letter / .is_fallback_cause off it.
+    return SimpleNamespace(cause_letter="A", is_fallback_cause=False)
+
+
+@pytest.mark.asyncio
+async def test_differential_turn_inert_without_runbook_ids():
+    # The matcher hasn't fired yet (no differential source) → no-op.
+    node = _root()
+    case = _case(node)
+    recorded = await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=[],
+        resolve_causes=_causes_for,
+        parse_record=_parse,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [_verdict()],
+    )
+    assert recorded == []
+    assert node.evidence_links == []
+
+
+@pytest.mark.asyncio
+async def test_differential_turn_inert_without_new_evidence():
+    node = _root()
+    case = _case(node)
+    recorded = await run_differential_intake_turn(
+        case,
+        [],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        parse_record=_parse,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [_verdict()],
+    )
+    assert recorded == []
+
+
+@pytest.mark.asyncio
+async def test_differential_turn_validates_resolved_candidates():
+    # rb1's cause A is re-resolved, becomes an ActiveCause, and this turn's datum
+    # fires a SUPPORTS verdict → a provenance-carrying link is attached.
+    node = _root()
+    case = _case(node)
+    recorded = await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        parse_record=_parse,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [_verdict(cause_id="rb1:A", provenance="runbook")],
+    )
+    assert len(node.evidence_links) == 1
+    assert node.evidence_links[0].provenance == "runbook"
+    assert recorded and recorded[0].cause_id == "rb1:A"
+
+
+@pytest.mark.asyncio
+async def test_differential_turn_skips_runbook_with_no_causes():
+    node = _root()
+    case = _case(node)
+
+    async def _no_causes(_rid):
+        return None  # pre-v4 / unknown runbook
+
+    recorded = await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=["rb_missing"],
+        resolve_causes=_no_causes,
+        parse_record=_parse,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [_verdict()],
+    )
+    assert recorded == []
+
+
+@pytest.mark.asyncio
+async def test_differential_turn_skips_malformed_record_without_raising():
+    node = _root()
+    case = _case(node)
+
+    def _bad_parse(_raw):
+        raise ValueError("malformed cause record")
+
+    recorded = await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        parse_record=_bad_parse,  # every record fails to parse
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [_verdict()],
+    )
+    assert recorded == []  # nothing parsed → no differential → no-op, not a crash
 
 
 def test_default_evaluator_stub_is_inert():

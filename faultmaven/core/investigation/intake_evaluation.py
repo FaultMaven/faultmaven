@@ -36,11 +36,14 @@ from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
 from faultmaven.core.investigation.differential_intake import (
     StanceVerdict,
+    assemble_active_causes,
     evaluate_datum_against_differential,
 )
 from faultmaven.modules.case.contracts import EvidenceStance, NodeEvidenceLink
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from faultmaven.core.investigation.cause_schemas import CauseRecord
     from faultmaven.modules.case.contracts import Case, Evidence
 
@@ -120,3 +123,57 @@ def run_intake_evaluation(
                 recorded.append(verdict)
 
     return recorded
+
+
+async def run_differential_intake_turn(
+    case: "Case",
+    new_evidence: "list[Evidence]",
+    current_turn: int,
+    *,
+    runbook_ids: "list[str]",
+    resolve_causes: "Callable[[str], Awaitable[list[dict] | None]]",
+    parse_record: "Callable[[dict], CauseRecord]",
+    resolve_root: RootResolver,
+    evaluate: Callable[..., list[StanceVerdict]] = evaluate_datum_against_differential,
+) -> list[StanceVerdict]:
+    """Per-turn driver: rebuild the standing differential from its persisted
+    runbook source and validate this turn's new data against it.
+
+    The matcher establishes WHICH runbook(s) are the differential once per case
+    (one-shot); this runs EVERY turn so each newly submitted datum is checked
+    against the candidates' predicates — that is what keeps a confident-but-wrong
+    LLM from driving an unsupported cause to IDENTIFIED on a later turn. The
+    candidates are re-resolved each turn (``resolve_causes`` is a cheap DB read,
+    not an LLM call), so nothing heavyweight is persisted — only the runbook
+    id(s).
+
+    No new data, or no runbook source yet (the matcher has not fired), ⇒ a no-op
+    returning ``[]`` — the loop is inert until the differential is established.
+    """
+    if not new_evidence or not runbook_ids:
+        return []
+    matched: list[tuple[str, list[CauseRecord]]] = []
+    for runbook_id in runbook_ids:
+        records = await resolve_causes(runbook_id)
+        if not records:
+            continue
+        parsed: list[CauseRecord] = []
+        for raw in records:
+            try:
+                parsed.append(parse_record(raw))
+            except Exception:  # noqa: BLE001 — a malformed cause record is skipped,
+                continue  # never breaks the turn (a prior, not a gate)
+        if parsed:
+            matched.append((runbook_id, parsed))
+
+    active_causes = assemble_active_causes(matched)
+    if not active_causes:
+        return []
+    return run_intake_evaluation(
+        case,
+        new_evidence,
+        active_causes,
+        current_turn,
+        resolve_root=resolve_root,
+        evaluate=evaluate,
+    )
