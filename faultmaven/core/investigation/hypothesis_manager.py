@@ -33,6 +33,9 @@ Anchoring Prevention:
 import logging
 from typing import TYPE_CHECKING, Any
 
+from faultmaven.core.investigation.terminal_transitions import (
+    CAUSE_IDENTIFIED_LIKELIHOOD,
+)
 from faultmaven.modules.case.contracts import (
     EvidenceStance,
     Hypothesis,
@@ -45,6 +48,24 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
 logger = logging.getLogger(__name__)
+
+# GAP 4 (process realignment): a freshly-created hypothesis is a PRIOR, never a
+# conclusion. Its initial likelihood is capped strictly below the
+# ``CAUSE_IDENTIFIED_LIKELIHOOD`` gate so no single emission — an over-confident
+# LLM ``likelihood: 1.0`` in particular — can arrive near-conclusion on creation.
+# The climb past the gate is earned only by evidence
+# (``update_likelihood_from_evidence``) or chain validation. This mirrors
+# ``runbook_cause_matcher._MATCHER_MAX_PRIOR`` (the same invariant for the
+# external-source prior) and is pinned to the single SSOT via the boot assert
+# below, so the cap can never silently drift above the gate if the gate moves
+# (Agent-2 SSOT requirement). NOTE: ``create_validated_hypothesis`` is the
+# separate, evidence-gated path for opening a hypothesis above this prior.
+NEW_HYPOTHESIS_MAX_PRIOR = 0.5
+if NEW_HYPOTHESIS_MAX_PRIOR >= CAUSE_IDENTIFIED_LIKELIHOOD:  # pragma: no cover
+    raise AssertionError(
+        f"NEW_HYPOTHESIS_MAX_PRIOR ({NEW_HYPOTHESIS_MAX_PRIOR}) must be < "
+        f"CAUSE_IDENTIFIED_LIKELIHOOD ({CAUSE_IDENTIFIED_LIKELIHOOD})"
+    )
 
 
 class HypothesisManager:
@@ -117,12 +138,26 @@ class HypothesisManager:
         state: HypothesisState = HypothesisState.ACTIVE,
         rationale: str | None = None,
     ) -> Hypothesis:
-        """Create new hypothesis"""
+        """Create new hypothesis.
+
+        GAP 4: ``initial_likelihood`` is capped at ``NEW_HYPOTHESIS_MAX_PRIOR``
+        (below the IDENTIFIED gate) — a new hypothesis is a prior, not a
+        conclusion; evidence/validation earns the climb. The runbook matcher
+        pre-caps to ``_MATCHER_MAX_PRIOR`` (same bound), so its values pass
+        through unchanged.
+        """
+        capped_likelihood = min(max(0.0, initial_likelihood), NEW_HYPOTHESIS_MAX_PRIOR)
+        if capped_likelihood < initial_likelihood:
+            logger.debug(
+                "Capped new-hypothesis prior %.3f -> %.3f (NEW_HYPOTHESIS_MAX_PRIOR)",
+                initial_likelihood,
+                capped_likelihood,
+            )
         hypothesis = Hypothesis(
             statement=statement,
             category=category,
-            likelihood=initial_likelihood,
-            initial_likelihood=initial_likelihood,
+            likelihood=capped_likelihood,
+            initial_likelihood=capped_likelihood,
             state=state,
             generation_mode=generation_mode,
             generated_at_turn=current_turn,
@@ -134,7 +169,7 @@ class HypothesisManager:
 
         logger.info(
             f"Created hypothesis {hypothesis.hypothesis_id}: "
-            f"{statement[:50]}... (category={category}, likelihood={initial_likelihood}, turn={current_turn})"
+            f"{statement[:50]}... (category={category}, likelihood={capped_likelihood}, turn={current_turn})"
         )
 
         return hypothesis
