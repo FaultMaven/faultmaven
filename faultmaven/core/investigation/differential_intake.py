@@ -35,10 +35,12 @@ Process layer owns everything AROUND them:
     the chain via the matcher's existing entry point
     ``runbook_cause_matcher.instantiate_cause_chain(case, cause_record, turn)``
     and then attaches the link,
-  - provenance is load-bearing: a fallback-only ``IDENTIFIED`` is treated
-    differently downstream (held from auto-resolution / lower surfaced
-    confidence). ``provenance → weight`` (runbook ≤ 0.5, fallback ≤ 0.2) is a
-    process-side mapping; it is deliberately NOT a field on the verdict,
+  - provenance is carried so it can be load-bearing downstream. WIRED today: the
+    runbook-harvest gate withholds a fallback-only ``IDENTIFIED`` from KB
+    harvesting. INTENDED, not yet wired: a provenance-aware validation threshold
+    (a fallback-only root needs ≥2 independent causal rows, #573) and a read-time
+    lower-assurance label on the current-case conclusion (#572). ``weight`` is
+    deliberately NOT a field on the verdict either way,
   - the demand side: regenerating Evidence Needs from the active differential.
 
 TWO TIERS, SAME OUTPUT, DIFFERENT INPUT SHAPE
