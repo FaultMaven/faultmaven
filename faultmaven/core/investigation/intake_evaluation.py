@@ -48,6 +48,7 @@ from faultmaven.modules.case.contracts import (
     NeedPurpose,
     NeedState,
     NodeEvidenceLink,
+    NodeState,
 )
 
 if TYPE_CHECKING:
@@ -175,6 +176,12 @@ async def run_differential_intake_turn(
         if records:
             matched.append((runbook_id, records))
 
+    # Retire a runbook the investigation has moved past (all its instantiated
+    # causes REFUTED) BEFORE evaluating, so we neither re-resolve it next turn nor
+    # re-attach runbook support to its refuted roots. The append-only differential
+    # would otherwise carry it for the rest of the case.
+    matched = _retire_refuted_runbooks(case, matched, resolve_root)
+
     active_causes = assemble_active_causes(matched)
     if not active_causes:
         return []
@@ -192,6 +199,42 @@ async def run_differential_intake_turn(
     # needs and any non-differential causal needs.
     _regen_differential_evidence_needs(case, active_causes, recorded, current_turn)
     return recorded
+
+
+def _retire_refuted_runbooks(
+    case: "Case",
+    matched: "list[tuple[str, list[CauseRecord]]]",
+    resolve_root: RootResolver,
+) -> "list[tuple[str, list[CauseRecord]]]":
+    """Drop a runbook from the standing differential once EVERY cause it has
+    instantiated is REFUTED — the investigation has moved past it.
+
+    Looks up each cause's existing root (``may_instantiate=False`` — never seeds a
+    node just to check) and reads its state. A runbook is retired only when it has
+    at least one instantiated root and ALL of them are REFUTED; one with a still-
+    live root (CANDIDATE / VALIDATED / INCONCLUSIVE) or with only un-instantiated
+    causes (untested soft priors) is kept. Mutates ``case.differential_runbook_ids``
+    in place and returns the surviving ``(runbook_id, records)`` pairs.
+    """
+    survivors: list[tuple[str, list[CauseRecord]]] = []
+    retired: set[str] = set()
+    for runbook_id, records in matched:
+        root_states = []
+        for record in records:
+            root_id = resolve_root(case, record, may_instantiate=False)
+            node = case.causal_nodes.get(root_id) if root_id else None
+            if node is not None:
+                root_states.append(node.node_state)
+        if root_states and all(s == NodeState.REFUTED for s in root_states):
+            retired.add(runbook_id)
+        else:
+            survivors.append((runbook_id, records))
+
+    if retired:
+        case.differential_runbook_ids[:] = [
+            rid for rid in case.differential_runbook_ids if rid not in retired
+        ]
+    return survivors
 
 
 def _predicate_signature(predicate: dict) -> str:

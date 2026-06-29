@@ -437,6 +437,64 @@ async def test_firing_predicate_fulfills_its_need():
     assert case.evidence_needs[0].state == NeedState.FULFILLED
 
 
+@pytest.mark.asyncio
+async def test_runbook_with_all_refuted_roots_is_retired():
+    # The matched runbook's only instantiated cause is REFUTED — the investigation
+    # has moved past it, so it is dropped from the standing differential.
+    node = _root()
+    node.node_state = NodeState.REFUTED
+    node.refutation_reason = "refuted by rung evidence"
+    case = _case(node)
+    case.differential_runbook_ids = ["rb1"]
+    await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build,
+        resolve_root=_always(node.node_id),  # the cause's root = the REFUTED node
+        evaluate=lambda **_: [],
+    )
+    assert "rb1" not in case.differential_runbook_ids
+
+
+@pytest.mark.asyncio
+async def test_runbook_with_a_live_root_is_kept():
+    node = _root()  # CANDIDATE — still in play
+    case = _case(node)
+    case.differential_runbook_ids = ["rb1"]
+    await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [],
+    )
+    assert "rb1" in case.differential_runbook_ids
+
+
+@pytest.mark.asyncio
+async def test_runbook_with_no_instantiated_root_is_kept():
+    # Untested soft priors (no root instantiated yet) must not retire the runbook.
+    case = _case()
+    case.differential_runbook_ids = ["rb1"]
+    await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build,
+        resolve_root=lambda c, r, *, may_instantiate: None,  # nothing instantiated
+        evaluate=lambda **_: [],
+    )
+    assert "rb1" in case.differential_runbook_ids
+
+
 def test_default_evaluator_stub_is_inert():
     # With the real (stubbed) evaluator, no verdicts → no links (loop inert until
     # the matcher body lands).
