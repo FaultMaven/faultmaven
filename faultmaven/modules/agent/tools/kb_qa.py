@@ -31,7 +31,10 @@ from typing import (
     Optional,
 )
 
-from faultmaven.core.investigation.cause_schemas import CauseMatchResult, CauseRecord
+from faultmaven.core.investigation.cause_schemas import (
+    CauseMatchResult,
+    build_cause_records,
+)
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
@@ -173,7 +176,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
                 causes_raw = await resolve_causes(item_id)
                 if not causes_raw:
                     continue  # upload-path / pre-v4 runbook — no chain to match
-                cause_records = self._build_cause_records(item_id, causes_raw)
+                cause_records = build_cause_records(item_id, causes_raw)
                 if not cause_records:
                     continue
                 match = await evaluator.evaluate(item_id, cause_records)
@@ -239,33 +242,6 @@ global documentation, your personal runbooks, and your team's shared procedures.
         if isinstance(chunk_id, str) and "_chunk_" in chunk_id:
             return chunk_id.rsplit("_chunk_", 1)[0]
         return str(chunk_id) if chunk_id else None
-
-    @staticmethod
-    def _build_cause_records(
-        item_id: str, causes_raw: List[Dict[str, Any]]
-    ) -> List[CauseRecord]:
-        """Build ``CauseRecord``s from a runbook's stored causes list.
-
-        Tolerant per entry: a malformed Cause is logged and skipped rather than
-        failing the whole runbook (re-establishes the robustness the v3
-        chunk-parser had against bad stored metadata)."""
-        records: List[CauseRecord] = []
-        for entry in causes_raw:
-            if not isinstance(entry, dict):
-                logger.warning(
-                    "Skipping non-dict cause entry in runbook %s: %r", item_id, entry
-                )
-                continue
-            try:
-                records.append(CauseRecord(**entry))
-            except Exception as exc:  # noqa: BLE001 — bad stored metadata, not fatal
-                logger.warning(
-                    "Skipping malformed cause %s in runbook %s: %s",
-                    entry.get("cause_letter", "?"),
-                    item_id,
-                    exc,
-                )
-        return records
 
     @staticmethod
     def _build_scope_filter(user_id: str, team_ids: List[str]) -> dict:

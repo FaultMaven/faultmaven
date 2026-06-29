@@ -11,7 +11,6 @@ from typing import List
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
-    HypothesisState,
     TurnOutcome,
 )
 

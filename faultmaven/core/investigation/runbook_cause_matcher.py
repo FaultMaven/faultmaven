@@ -34,10 +34,12 @@ that would bypass M5. Still flag-gated OFF until increment 5.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from faultmaven.core.investigation.causal_graph import (
+    _normalize_statement,
     chain_path_to_problem,
     ingest_emitted_chain,
 )
@@ -56,11 +58,12 @@ from faultmaven.modules.case.domain.models import (
     HypothesisState,
     NodeType,
 )
+from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
     from faultmaven.core.investigation.indicator_evaluator import IndicatorEvaluator
-    from faultmaven.modules.case.domain.models import Case, Hypothesis
+    from faultmaven.modules.case.domain.models import Case, Evidence, Hypothesis
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +293,44 @@ def _stash_interventions(
     node.metadata[RUNBOOK_INTERVENTIONS_META_KEY] = interventions
 
 
+# Structured key recording which runbook seeded a ROOT node. The differential's
+# source of truth — read by ``differential_runbook_ids``, NOT parsed from the
+# hypothesis rationale string. ``node.metadata`` persists (JSON column).
+RUNBOOK_ID_META_KEY = "runbook_id"
+
+
+def _stamp_runbook_id(case: "Case", root_id: str, runbook_id: str) -> None:
+    """Record (structured) which runbook seeded this ROOT, for differential
+    re-resolution. Unconditional — unlike interventions, the differential needs
+    the id even when the matched cause documents no fixes."""
+    node = case.causal_nodes.get(root_id)
+    if node is None or not runbook_id:
+        return
+    if not node.metadata:
+        node.metadata = {}
+    node.metadata[RUNBOOK_ID_META_KEY] = runbook_id
+
+
+def differential_runbook_ids(case: "Case") -> List[str]:
+    """The matched candidate runbook id(s) backing the case's differential.
+
+    Read from the structured ``runbook_id`` key the matcher stamps on each seeded
+    ROOT node's metadata — NOT parsed from any rationale string. The per-turn
+    intake hook re-resolves these into the candidate differential
+    (``resolve_causes(id)`` → ``cause_schemas.build_cause_records`` →
+    ``assemble_active_causes``). One id today (``max_runbooks`` defaults low), but
+    a list by contract. De-duplicated, insertion-ordered.
+    """
+    ids: List[str] = []
+    seen: set = set()
+    for node in case.causal_nodes.values():
+        rid = (getattr(node, "metadata", None) or {}).get(RUNBOOK_ID_META_KEY)
+        if isinstance(rid, str) and rid and rid not in seen:
+            seen.add(rid)
+            ids.append(rid)
+    return ids
+
+
 def _root_node_id(case: "Case", created: List[Optional[str]]) -> Optional[str]:
     """The instantiated chain's ROOT node id. Found by node_type (not position),
     so a skipped/deduped node can't misidentify the root. The v4 chain has
@@ -299,6 +340,115 @@ def _root_node_id(case: "Case", created: List[Optional[str]]) -> Optional[str]:
         if node is not None and node.node_type == NodeType.ROOT:
             return node_id
     return None
+
+
+def _existing_root_id(case: "Case", record: CauseRecord) -> Optional[str]:
+    """Id of an already-instantiated ROOT for ``record``'s chain, or ``None``.
+
+    Pure lookup — no mutation. Keys on the SAME identity ``ingest_emitted_chain``
+    mints and merges with: ``(NodeType.ROOT, _normalize_statement(statement))``.
+    Reusing the shared ``_normalize_statement`` (rather than re-deriving the key
+    here) is what makes the lookup and the mint ONE identity — so a matcher-seeded
+    root and a verbatim LLM re-emit of the same cause can never split into two
+    roots (§2.2). Returns ``None`` for a degenerate / ``[Default]`` cause whose
+    chain has no instantiable ROOT spec.
+    """
+    nodes, _edges = chain_to_specs(record)
+    root_spec = next((n for n in nodes if n.node_type == NodeType.ROOT), None)
+    if root_spec is None:
+        return None
+    key = _normalize_statement(root_spec.statement)
+    for node_id, node in case.causal_nodes.items():
+        if (
+            node.node_type == NodeType.ROOT
+            and _normalize_statement(node.statement) == key
+        ):
+            return node_id
+    return None
+
+
+def resolve_root(
+    case: "Case", record: CauseRecord, *, may_instantiate: bool
+) -> Optional[str]:
+    """Map a differential candidate (its ``CauseRecord``) to its ROOT node id.
+
+    The intake-evaluation loop (process layer, ``differential_intake``) calls this
+    to turn a ``StanceVerdict`` into a link on the cause's root — instantiating the
+    chain lazily on the first SUPPORTS. Matcher-owned: it packages
+    ``instantiate_cause_chain`` + ``_root_node_id`` + the existing exact-match dedup
+    *lookup*, idempotently, behind ``may_instantiate``.
+
+    Args:
+        case: the live case (the turn is read from ``case.current_turn`` — no turn
+            param, so the seam stays clean).
+        record: the candidate's full cause record.
+        may_instantiate:
+            - ``True``  (SUPPORTS): return the existing root if the cause already
+              stands in the graph; else instantiate the chain and return its new
+              root id (lazy promotion).
+            - ``False`` (REFUTES): return the existing root id, or ``None`` — never
+              a side effect.
+
+    Returns the ROOT node id, or ``None``. **``None`` is possible even when
+    ``may_instantiate=True``** — a degenerate / ``[Default]`` cause has no
+    instantiable root (``instantiate_cause_chain`` returns ``[]``); the caller must
+    skip the verdict on ``None``, SUPPORTS or not.
+
+    SOUNDNESS — single identity for lookup + mint. Both the ``may_instantiate=
+    False`` lookup and the ``True`` instantiation route through the SAME exact-match
+    dedup identity ``ingest_emitted_chain`` uses to mint/merge, so a root seeded by
+    the matcher and one emitted by the LLM for the same cause resolve to the **one**
+    canonical node — never duplicate roots (the spec's hardest prior bug, §2.2).
+
+    """
+    existing = _existing_root_id(case, record)
+    if existing is not None:
+        # Idempotent: the cause already stands in the graph — same root for a
+        # SUPPORTS or a REFUTES, no mutation.
+        return existing
+    if not may_instantiate:
+        # REFUTES (or any non-promoting check) never instantiates — a refutation
+        # of an unseen cause has nothing to attach to and must not seed a node.
+        return None
+    # First SUPPORTS for this cause: lazily promote it. instantiate_cause_chain
+    # routes through ingest_emitted_chain, whose exact-match dedup reuses an
+    # identical standing root rather than minting a second one — so even this
+    # mint path cannot duplicate a root (the single-identity guarantee holds on
+    # both branches). Returns None for a degenerate / [Default] cause (no
+    # instantiable node), which the caller skips.
+    created = instantiate_cause_chain(case, record, case.current_turn)
+    return _root_node_id(case, created)
+
+
+def resolve_datum_text(evidence: "Evidence", case: "Case") -> Optional[str]:
+    """The trusted, code-normalized text a datum's predicates evaluate against.
+
+    Resolves the datum's backing ``UploadedFile`` (via ``source_file_id``) and
+    returns its Tier-1 preprocessing digest (``structural_index.file_extract``) —
+    a verbatim SUBSET of the raw file produced deterministically by the extractor,
+    on the trusted side of the boundary. NEVER ``Evidence.summary`` / ``extract``
+    (in-loop-LLM interpretation). Because it is a subset, callers must evaluate it
+    under subset-trust (``complete=False``): trust what is present, never infer
+    from absence.
+
+    Returns ``None`` when the datum has no backing file or the file has no
+    extracted index — every predicate is then ``untested`` and the intake loop
+    abstains (it never refutes on missing content).
+    """
+    file_id = getattr(evidence, "source_file_id", None)
+    if not file_id:
+        return None
+    uf = case.find_uploaded_file(file_id)
+    raw = getattr(uf, "structural_index", None) if uf is not None else None
+    if not raw:
+        return None
+    try:
+        text = ExtractResult.from_json(raw).file_extract or ""
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        # Pre-schema / non-JSON index: treat the whole blob as the extract text
+        # (tolerant fallback, mirroring the prompt path's parser).
+        text = raw
+    return text or None
 
 
 def attach_matched_hypothesis(
@@ -423,6 +573,9 @@ async def apply_runbook_cause_matcher(
         # node.metadata JSON column round-trips. The matcher never creates
         # Solutions — the LLM proposes the fix and the M5 gate governs it.
         _stash_interventions(case, root_id, chosen.selected_record)
+        # Record the matched runbook (structured) so the per-turn intake hook can
+        # re-resolve the differential from differential_runbook_ids(case).
+        _stamp_runbook_id(case, root_id, chosen.runbook_id)
         if hypothesis_manager is not None:
             attached = attach_matched_hypothesis(
                 case, chosen, root_id, hypothesis_manager

@@ -31,8 +31,11 @@ Anchoring Prevention:
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from faultmaven.core.investigation.terminal_transitions import (
+    CAUSE_IDENTIFIED_LIKELIHOOD,
+)
 from faultmaven.modules.case.contracts import (
     EvidenceStance,
     Hypothesis,
@@ -45,6 +48,22 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
 logger = logging.getLogger(__name__)
+
+# A freshly-created hypothesis is a PRIOR, never a conclusion. Its initial
+# likelihood is capped strictly below the ``CAUSE_IDENTIFIED_LIKELIHOOD`` gate so
+# no single emission — an over-confident LLM ``likelihood: 1.0`` in particular —
+# can arrive near-conclusion on creation; the climb past the gate is earned only
+# by evidence (``update_likelihood_from_evidence``) or chain validation. This
+# mirrors ``runbook_cause_matcher._MATCHER_MAX_PRIOR`` (the same bound for the
+# runbook-sourced prior). The value is pinned below the gate by the import-time
+# check below, so it cannot silently drift above the gate if the gate constant
+# is later changed.
+NEW_HYPOTHESIS_MAX_PRIOR = 0.5
+if NEW_HYPOTHESIS_MAX_PRIOR >= CAUSE_IDENTIFIED_LIKELIHOOD:  # pragma: no cover
+    raise AssertionError(
+        f"NEW_HYPOTHESIS_MAX_PRIOR ({NEW_HYPOTHESIS_MAX_PRIOR}) must be < "
+        f"CAUSE_IDENTIFIED_LIKELIHOOD ({CAUSE_IDENTIFIED_LIKELIHOOD})"
+    )
 
 
 class HypothesisManager:
@@ -89,6 +108,30 @@ class HypothesisManager:
         return len(HypothesisManager.active_hypotheses(case))
 
     @staticmethod
+    def activate_queued_hypotheses(case: "Case") -> list[str]:
+        """Promote CAPTURED (queued-pending-symptom-anchor) hypotheses to ACTIVE
+        once the symptom is verified.
+
+        Cause hypotheses formed before the symptom is verified are *queued* as
+        CAPTURED rather than dropped (data of any order is retained) and rather
+        than activated on an unverified premise. CAPTURED is produced ONLY by that
+        pre-anchor queue (nothing else emits it), so every CAPTURED hypothesis here
+        is a queued one. They activate as **un-validated ACTIVE candidates** (no
+        evidence links, capped prior) — subject to the normal decay / anti-anchoring
+        culling, so a stale queued theory cannot pollute a conclusion (it simply
+        fails to gather support and decays). Forward-only: a promoted hypothesis is
+        not demoted back to CAPTURED.
+
+        Returns the promoted hypothesis ids (for turn-progress accounting).
+        """
+        promoted: list[str] = []
+        for h in case.hypotheses.values():
+            if h.state == HypothesisState.CAPTURED:
+                h.state = HypothesisState.ACTIVE
+                promoted.append(h.hypothesis_id)
+        return promoted
+
+    @staticmethod
     def calculate_evidence_ratio(hypothesis: Hypothesis) -> float:
         """Compute supporting/(supporting+refuting) evidence ratio.
 
@@ -117,12 +160,25 @@ class HypothesisManager:
         state: HypothesisState = HypothesisState.ACTIVE,
         rationale: str | None = None,
     ) -> Hypothesis:
-        """Create new hypothesis"""
+        """Create new hypothesis.
+
+        ``initial_likelihood`` is capped at ``NEW_HYPOTHESIS_MAX_PRIOR`` (below
+        the IDENTIFIED gate) — a new hypothesis is a prior, not a conclusion;
+        evidence/validation earns the climb. The runbook matcher pre-caps to
+        ``_MATCHER_MAX_PRIOR`` (same bound), so its values pass through unchanged.
+        """
+        capped_likelihood = min(max(0.0, initial_likelihood), NEW_HYPOTHESIS_MAX_PRIOR)
+        if capped_likelihood < initial_likelihood:
+            logger.debug(
+                "Capped new-hypothesis prior %.3f -> %.3f (NEW_HYPOTHESIS_MAX_PRIOR)",
+                initial_likelihood,
+                capped_likelihood,
+            )
         hypothesis = Hypothesis(
             statement=statement,
             category=category,
-            likelihood=initial_likelihood,
-            initial_likelihood=initial_likelihood,
+            likelihood=capped_likelihood,
+            initial_likelihood=capped_likelihood,
             state=state,
             generation_mode=generation_mode,
             generated_at_turn=current_turn,
@@ -134,43 +190,7 @@ class HypothesisManager:
 
         logger.info(
             f"Created hypothesis {hypothesis.hypothesis_id}: "
-            f"{statement[:50]}... (category={category}, likelihood={initial_likelihood}, turn={current_turn})"
-        )
-
-        return hypothesis
-
-    def create_validated_hypothesis(
-        self,
-        statement: str,
-        category: str,
-        likelihood: float,
-        supporting_evidence_ids: list[str],
-        current_turn: int,
-    ) -> Hypothesis:
-        """Create hypothesis already in VALIDATED state (Single-Shot Validation)."""
-        if likelihood < 0.7:
-            raise ValueError("Validated hypothesis requires likelihood >= 0.7")
-        if len(supporting_evidence_ids) < 2:
-            raise ValueError(
-                "Validated hypothesis requires at least 2 supporting evidence items"
-            )
-
-        hypothesis = self.create_hypothesis(
-            statement=statement,
-            category=category,
-            initial_likelihood=likelihood,
-            current_turn=current_turn,
-            state=HypothesisState.VALIDATED,
-            generation_mode=HypothesisGenerationMode.SYSTEMATIC,
-        )
-
-        # Manually link evidence
-        for ev_id in supporting_evidence_ids:
-            self.link_evidence(hypothesis, ev_id, True, current_turn)
-
-        logger.info(
-            f"Created VALIDATED hypothesis {hypothesis.hypothesis_id}: "
-            f"{statement[:50]}... (likelihood={likelihood:.2f})"
+            f"{statement[:50]}... (category={category}, likelihood={capped_likelihood}, turn={current_turn})"
         )
 
         return hypothesis
@@ -570,61 +590,53 @@ class HypothesisManager:
 
     def force_alternative_generation(
         self,
-        existing_hypotheses: list[Hypothesis],
+        target_hypothesis_ids: list[str],
+        hypotheses: list[Hypothesis],
         current_turn: int,
-    ) -> dict[str, Any]:
-        """Force generation of alternative hypotheses to break anchoring
+    ) -> list[str]:
+        """Break a detected fixation by retiring the STALLED hypotheses the
+        anchoring detector flagged.
 
-        Strategy:
-        - Identify over-represented categories
-        - Generate constraints for alternative generation
-        - Retire some low-progress hypotheses
+        ``target_hypothesis_ids`` are the ids ``detect_anchoring`` returned (the
+        over-represented category, or the stalled set) — retiring those keeps the
+        action aligned with the reason the intervention fired, rather than acting
+        on an unrelated "dominant by count" category. Only ids that are ACTIVE and
+        have stalled (``iterations_without_progress >= 2``) are retired, so a
+        freshly-formed theory is never swept out.
 
         Args:
-            existing_hypotheses: Current hypothesis list
-            current_turn: Current conversation turn
+            target_hypothesis_ids: ids flagged by ``detect_anchoring``
+            hypotheses: hypotheses to resolve the ids against
+            current_turn: current conversation turn
 
         Returns:
-            Generation constraints and actions taken
+            The list of retired hypothesis ids (possibly empty — e.g. all flagged
+            hypotheses are still fresh).
         """
-        # Identify over-represented categories
-        category_counts: dict[str, int] = {}
-        for h in existing_hypotheses:
-            if h.state not in [HypothesisState.RETIRED, HypothesisState.REFUTED]:
-                category_counts[h.category] = category_counts.get(h.category, 0) + 1
-
-        # Find dominant category
-        dominant_category = max(category_counts, key=category_counts.get)
-        dominant_count = category_counts[dominant_category]
-
-        # Retire low-progress hypotheses in dominant category
-        retired_count = 0
-        for h in existing_hypotheses:
+        by_id = {h.hypothesis_id: h for h in hypotheses}
+        retired: list[str] = []
+        for hid in target_hypothesis_ids:
+            h = by_id.get(hid)
             if (
-                h.category == dominant_category
-                and h.iterations_without_progress >= 2
+                h is not None
                 and h.state == HypothesisState.ACTIVE
+                and h.iterations_without_progress >= 2
             ):
                 h.state = HypothesisState.RETIRED
-                h.retirement_reason = f"Anchoring prevention: retired to diversify from {dominant_category}"
+                h.retirement_reason = (
+                    "Anti-anchoring: retired a stalled hypothesis to diversify "
+                    "the differential"
+                )
                 h.last_updated_turn = current_turn
-                retired_count += 1
+                retired.append(hid)
 
-        logger.warning(
-            f"Anchoring prevention triggered: retired {retired_count} hypotheses "
-            f"from over-represented category '{dominant_category}'"
-        )
-
-        return {
-            "action": "force_alternative_generation",
-            "retired_count": retired_count,
-            "dominant_category": dominant_category,
-            "constraints": {
-                "exclude_categories": [dominant_category],
-                "require_diverse_categories": True,
-                "min_new_hypotheses": 2,
-            },
-        }
+        if retired:
+            logger.warning(
+                "Anti-anchoring retired %d stalled hypotheses: %s",
+                len(retired),
+                retired,
+            )
+        return retired
 
     def get_testable_hypotheses(
         self,

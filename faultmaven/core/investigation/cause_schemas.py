@@ -16,9 +16,12 @@ import these types without violating the Agent module layer contract
 (.importlinter contract 7).
 """
 
+import logging
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 def is_problem_node(node: Dict[str, Any]) -> bool:
@@ -101,6 +104,37 @@ class CauseRecord(BaseModel):
         """Rung refs in chain order root→D (degenerate → ``['root', 'D']``)."""
         refs = [str(n.get("ref")) for n in self.chain_nodes if n.get("ref")]
         return refs or ["root", "D"]
+
+
+def build_cause_records(
+    item_id: str, causes_raw: List[Dict[str, Any]]
+) -> List[CauseRecord]:
+    """Parse a runbook's stored causes list into ``CauseRecord``s.
+
+    Pure ``(item_id, raw) -> List[CauseRecord]`` — the single home for the
+    dict→record parse, in ``core`` next to ``CauseRecord`` so both the retrieval
+    tool (``agent.tools.kb_qa``) and the engine's intake bind to it without a
+    backwards ``core → agent`` dependency. Tolerant per entry: a malformed Cause
+    is logged and skipped rather than failing the whole runbook (re-establishes
+    the robustness the v3 chunk-parser had against bad stored metadata).
+    """
+    records: List[CauseRecord] = []
+    for entry in causes_raw:
+        if not isinstance(entry, dict):
+            logger.warning(
+                "Skipping non-dict cause entry in runbook %s: %r", item_id, entry
+            )
+            continue
+        try:
+            records.append(CauseRecord(**entry))
+        except Exception as exc:  # noqa: BLE001 — bad stored metadata, not fatal
+            logger.warning(
+                "Skipping malformed cause %s in runbook %s: %s",
+                entry.get("cause_letter", "?"),
+                item_id,
+                exc,
+            )
+    return records
 
 
 RungMethod = Literal["deterministic", "case_evidence_qa", "untested"]

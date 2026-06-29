@@ -16,6 +16,9 @@ from faultmaven.core.investigation.causal_graph import (
     derive_node_states,
     is_chain_root_validated,
 )
+from faultmaven.core.investigation.cause_assurance import (
+    cause_validation_is_fallback_only,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -375,3 +378,84 @@ def test_validated_root_makes_chain_root_validated():
     assert is_chain_root_validated(hyp, case.causal_nodes) is False
     derive_node_states(case)
     assert is_chain_root_validated(hyp, case.causal_nodes) is True
+
+
+# ---------------------------------------------------------------------------
+# Validation-assurance from provenance (cause_validation_is_fallback_only)
+# ---------------------------------------------------------------------------
+
+
+def _plink(label, stance, provenance) -> NodeEvidenceLink:
+    return NodeEvidenceLink(
+        evidence_id=_eid(label),
+        stance=stance,
+        reasoning="bears on the rung",
+        provenance=provenance,
+        linked_at_turn=2,
+    )
+
+
+def _validated_root_case(provenances) -> Case:
+    """A case with one ROOT validated empirically by CAUSAL_EVIDENCE support
+    links carrying the given provenances."""
+    evs = [
+        _evidence(f"ev_{i}", EvidenceCategory.CAUSAL_EVIDENCE)
+        for i in range(len(provenances))
+    ]
+    links = [
+        _plink(f"ev_{i}", EvidenceStance.SUPPORTS, p) for i, p in enumerate(provenances)
+    ]
+    root = _node(_nid(50), node_type=NodeType.ROOT, links=links)
+    case = _case([root], evidence=evs)
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED  # precondition for the signal
+    return case
+
+
+def test_fallback_only_validation_is_flagged():
+    # A root borne out solely by an llm_fallback-provenance causal support is a
+    # lower-assurance identification.
+    case = _validated_root_case(["llm_fallback"])
+    assert cause_validation_is_fallback_only(case) is True
+
+
+def test_runbook_provenance_is_sound():
+    case = _validated_root_case(["runbook"])
+    assert cause_validation_is_fallback_only(case) is False
+
+
+def test_unlabeled_none_provenance_is_lower_assurance():
+    # provenance=None is the LLM's own asserted link (the emitted-chain path never
+    # tags provenance) — NOT authority-grounded, so a root borne out only by it is
+    # fallback-only. Only a runbook-grounded support is sound.
+    case = _validated_root_case([None])
+    assert cause_validation_is_fallback_only(case) is True
+
+
+def test_any_sound_support_makes_validation_sound():
+    # A single runbook-grounded support alongside a fallback one is enough.
+    case = _validated_root_case(["llm_fallback", "runbook"])
+    assert cause_validation_is_fallback_only(case) is False
+
+
+def test_no_validated_root_is_not_fallback_only():
+    # The signal applies only once a cause is identified.
+    ev = _evidence("ev_x", EvidenceCategory.SYMPTOM_EVIDENCE)
+    root = _node(
+        _nid(51),
+        node_type=NodeType.ROOT,
+        links=[_plink("ev_x", EvidenceStance.SUPPORTS, "llm_fallback")],
+    )
+    case = _case([root], evidence=[ev])
+    derive_node_states(case)
+    assert root.node_state != NodeState.VALIDATED  # symptom-backed, not validated
+    assert cause_validation_is_fallback_only(case) is False
+
+
+def test_deductively_validated_root_is_sound():
+    # Proof-by-exclusion is a methodology derivation, not an LLM-fallback grade.
+    root = _node(_nid(52), node_type=NodeType.ROOT)
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.DEDUCTIVE
+    case = _case([root])
+    assert cause_validation_is_fallback_only(case) is False

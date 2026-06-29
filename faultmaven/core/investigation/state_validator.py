@@ -26,7 +26,6 @@ from typing import List, Optional, Tuple
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
-    EvidenceStance,
     HypothesisState,
     InvestigationProgress,
 )

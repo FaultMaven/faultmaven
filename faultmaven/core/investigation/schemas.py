@@ -35,7 +35,7 @@ Applied to 23 list fields across all schemas (see git blame for specific changes
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Annotated, Any, ClassVar, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, ClassVar, Dict, List, Literal, Optional
 
 from pydantic import (
     BaseModel,
@@ -47,7 +47,6 @@ from pydantic import (
 
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent  # noqa: F401
 from faultmaven.modules.case.contracts import (
-    ConfidenceLevel,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,

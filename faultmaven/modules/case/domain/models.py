@@ -508,6 +508,16 @@ class InvestigationProgress(BaseModel):
         ),
     )
 
+    last_anti_anchoring_turn: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Turn the anti-anchoring intervention last fired (0 = never). Drives "
+            "its cooldown so a detected fixation is acted on at most once per few "
+            "turns rather than churning the differential every turn."
+        ),
+    )
+
     solution_state: SolutionState = Field(
         default=SolutionState.UNKNOWN,
         description=(
@@ -2162,6 +2172,15 @@ class EvidenceNeed(BaseModel):
         description="Wall-clock last-update time.",
     )
 
+    @property
+    def is_outstanding(self) -> bool:
+        """The need still awaits (sufficient) data — PENDING or PARTIALLY_MET.
+
+        FULFILLED and SUPERSEDED are the terminal states; an outstanding need is
+        one the investigation is still waiting on.
+        """
+        return self.state in (NeedState.PENDING, NeedState.PARTIALLY_MET)
+
     @field_validator("request_text", "rationale", mode="after")
     @classmethod
     def _text_not_whitespace_only(cls, v: str) -> str:
@@ -2547,6 +2566,19 @@ class NodeEvidenceLink(BaseModel):
         ge=0.0,
         le=1.0,
         description="Confidence in the stance assessment (0.0-1.0)",
+    )
+
+    provenance: Optional[Literal["runbook", "llm_fallback"]] = Field(
+        default=None,
+        description=(
+            "How the deterministic intake evaluator determined this link's "
+            "stance: 'runbook' = an expert-authored predicate fired against the "
+            "telemetry (sound); 'llm_fallback' = the LLM's own predicate, "
+            "re-checked (lower-assurance). None = a legacy / LLM-asserted link not "
+            "produced by intake evaluation, treated as lower-assurance for the "
+            "sound-tier cause check. Mirrors "
+            "differential_intake.StanceVerdict.provenance."
+        ),
     )
 
     linked_at_turn: int = Field(

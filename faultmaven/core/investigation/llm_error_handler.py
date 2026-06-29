@@ -13,9 +13,9 @@ Usage:
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
+from typing import Awaitable, Callable, Optional, Tuple, TypeVar
 
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,

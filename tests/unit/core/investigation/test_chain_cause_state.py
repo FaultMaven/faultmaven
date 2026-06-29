@@ -18,6 +18,7 @@ from faultmaven.core.investigation.causal_graph import (
     demote_disconfirmed_cause_via_evidence,
     seed_problem_node,
 )
+from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import (
     _recompute_assessment_state,
     _recompute_cause_state_from_chain,
@@ -154,6 +155,12 @@ def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
     case.causal_edges = edges or []
     case.evidence = evidence or []
     case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
+    # Cause identification is anchored on a verified symptom. These chain fixtures
+    # model an in-progress investigation that has already verified its symptom (the
+    # realistic state once a causal chain root validates), so the symptom-anchor
+    # precondition is satisfied and the tests exercise chain mechanics, not the
+    # anchor. The anchor itself is covered by the symptom-anchor tests below.
+    case.progress.symptom_verified = True
     return case
 
 
@@ -206,6 +213,112 @@ def test_refuted_hypothesis_root_does_not_ground():
     root.validation_method = ValidationMethod.EMPIRICAL
     hyp.state = HypothesisState.REFUTED
     assert any_chain_root_validated(case) is False
+
+
+# ---------------------------------------------------------------------------
+# IDENTIFIED is anchored on a verified symptom
+# ---------------------------------------------------------------------------
+
+
+def test_validated_root_without_verified_symptom_holds_candidates():
+    """A validated chain root with ``symptom_verified=False`` must NOT reach
+    IDENTIFIED — the verified symptom is the cause-identification anchor. It holds
+    at CANDIDATES (never flaps to UNKNOWN), and no RootCauseConclusion is
+    synthesized while unanchored."""
+    case, root, hyp = _chain_case()
+    case.progress.symptom_verified = False  # anchor not yet established
+    _recompute_cause_state_from_chain(case)
+    # the chain still validates structurally...
+    assert any_chain_root_validated(case) is True
+    assert root.node_state == NodeState.VALIDATED
+    # ...but cause_state is held at CANDIDATES, not promoted to IDENTIFIED
+    assert case.progress.cause_state == CauseState.CANDIDATES
+    assert case.progress.cause_state != CauseState.UNKNOWN  # explicit: no collapse
+    # no premature conclusion synthesized while unanchored
+    assert case.root_cause_conclusion is None
+
+
+def test_symptom_verification_promotes_candidates_to_identified():
+    """Once the symptom verifies, the same validated-root case advances to
+    IDENTIFIED — the gate is exactly the anchor, nothing else."""
+    case, root, hyp = _chain_case()
+    case.progress.symptom_verified = False
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.CANDIDATES
+
+    # The user/LLM establishes the verified symptom on a later turn.
+    case.progress.symptom_verified = True
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.root_cause_conclusion is not None  # now synthesized
+
+
+def test_unanchored_single_hypothesis_validated_root_holds_candidates():
+    """Edge: a single ACTIVE hypothesis (count < 2) whose root is validated but
+    whose symptom is unverified must still hold at CANDIDATES via the validated-root
+    arm — without that arm it would wrongly fall through to UNKNOWN."""
+    case, root, hyp = _chain_case()  # exactly one hypothesis
+    case.progress.symptom_verified = False
+    assert HypothesisManager.count_active_hypotheses(case) < 2
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.CANDIDATES
+
+
+# ---------------------------------------------------------------------------
+# Pre-anchor hypotheses are QUEUED as CAPTURED, inert in the differential, and
+# auto-promoted to ACTIVE on symptom verification
+# ---------------------------------------------------------------------------
+
+
+def test_captured_queued_hypothesis_is_inert_then_promotes_to_ground():
+    """A hypothesis QUEUED before the anchor (CAPTURED) is inert: its validated
+    root does NOT ground IDENTIFIED and it is not counted as an active candidate.
+    Promoting it (auto-apply on symptom verification) makes it ACTIVE, and the
+    same validated root then grounds IDENTIFIED — the full queue→flush→ground
+    lifecycle, using the real engine functions."""
+    case, root, hyp = _chain_case()  # validated root, symptom_verified=True
+    # Queue state: the hypothesis was formed pre-anchor → CAPTURED.
+    hyp.state = HypothesisState.CAPTURED
+
+    # Inert while queued: not standing, so the validated root does not ground,
+    # and it is not an active candidate.
+    assert any_chain_root_validated(case) is False
+    assert HypothesisManager.count_active_hypotheses(case) == 0
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+
+    # Auto-apply on verification: promote CAPTURED → ACTIVE.
+    promoted = HypothesisManager.activate_queued_hypotheses(case)
+    assert promoted == [hyp.hypothesis_id]
+    assert hyp.state == HypothesisState.ACTIVE
+
+    # Now standing → the same validated root grounds IDENTIFIED (the symptom is
+    # already verified in the fixture, so the anchor is satisfied).
+    assert any_chain_root_validated(case) is True
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+
+
+def test_activate_queued_promotes_only_captured():
+    """The promotion helper touches ONLY CAPTURED hypotheses — ACTIVE/REFUTED/
+    RETIRED are left untouched (forward-only flush of the queue)."""
+    captured = _hyp(
+        None, hypothesis_id="hyp_0000000000ca", state=HypothesisState.CAPTURED
+    )
+    active = _hyp(None, hypothesis_id="hyp_0000000000ac", state=HypothesisState.ACTIVE)
+    retired = _hyp(
+        None, hypothesis_id="hyp_0000000000ed", state=HypothesisState.RETIRED
+    )
+    case = _case(hyps=[captured, active, retired])
+
+    promoted = HypothesisManager.activate_queued_hypotheses(case)
+
+    assert promoted == [captured.hypothesis_id]
+    assert captured.state == HypothesisState.ACTIVE
+    assert active.state == HypothesisState.ACTIVE  # untouched
+    assert retired.state == HypothesisState.RETIRED  # untouched
+    # idempotent: a second flush promotes nothing (queue drained)
+    assert HypothesisManager.activate_queued_hypotheses(case) == []
 
 
 # ---------------------------------------------------------------------------

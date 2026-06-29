@@ -41,6 +41,7 @@ from faultmaven.core.investigation.causal_graph import (
     demote_disconfirmed_cause_via_evidence,
     derive_node_states,
     ingest_emitted_chain,
+    is_chain_root_validated,
     prune_abandoned_nodes,
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
@@ -141,6 +142,12 @@ from faultmaven.modules.knowledge.contracts import IKnowledgeService
 #   Tier 1: MilestoneUpdates drives state (turn-level, LLM specifies)
 #   Tier 2: System infers advances_milestones from this map (handles 90% of cases)
 #   Tier 3: LLM can override with explicit specification (handles 10% edge cases)
+
+# Anti-anchoring acts at most once per this many turns (a marker on
+# progress.last_anti_anchoring_turn records when it last fired). With a value of
+# 2 the intervention skips the single turn immediately after it fires, then may
+# act again — enough to avoid per-turn churn without going dormant.
+_ANTI_ANCHORING_COOLDOWN_TURNS = 2
 
 CATEGORY_MILESTONE_MAP = {
     EvidenceCategory.SYMPTOM_EVIDENCE: [
@@ -727,9 +734,13 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
     """Chain-derived ``cause_state`` (Option A, methodology §9.2; flag ON).
 
     ``IDENTIFIED`` iff some live hypothesis's chain ROOT is VALIDATED from real
-    rung evidence (``derive_node_states`` + ``any_chain_root_validated``), never
-    from a flat assertion. The chain is load-bearing: a cause reaches IDENTIFIED
-    only by emitting a chain and grounding its root.
+    rung evidence (``derive_node_states`` + ``any_chain_root_validated``) **AND
+    the symptom is verified** (the cause-identification anchor) — never from a flat
+    assertion.
+    The chain is load-bearing: a cause reaches IDENTIFIED only by emitting a chain,
+    grounding its root, AND having established the evidence-grounded verified
+    symptom that anchors it. A validated root without ``symptom_verified`` holds
+    at CANDIDATES (never UNKNOWN).
 
     Pure structural grounding by design — there is deliberately NO flat fallback
     and NO separate disconfirmation guard. Disconfirmation is handled by the chain
@@ -765,7 +776,15 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
     # IDENTIFIED. Runs BEFORE the cause_state branch so a freshly-validated root
     # below re-synthesizes a correct RCC via synthesize_rcc_from_validated_root.
     retract_disconfirmed_rcc(case)
-    if any_chain_root_validated(case):
+    root_validated = any_chain_root_validated(case)
+    # The evidence-grounded VERIFIED SYMPTOM is the anchor for cause
+    # identification: IDENTIFIED requires ``symptom_verified``. A validated chain
+    # root WITHOUT a verified symptom is held at CANDIDATES (never flapped to
+    # UNKNOWN), pending verification; it is not promoted to IDENTIFIED and no
+    # RootCauseConclusion is synthesized. This gates CAUSE IDENTIFICATION only —
+    # not runbook retrieval / early triage, which engage before the symptom is
+    # verified.
+    if root_validated and p.symptom_verified:
         p.cause_state = CauseState.IDENTIFIED
         # Case invariant: IDENTIFIED requires a positive likelihood + a method.
         # Floor them (the LLM's own higher confidence still wins where applied).
@@ -778,9 +797,14 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
         # (covers the LLM-validated-root-without-conclusion case and the M6
         # retracted-one-chain-while-another-stands case).
         synthesize_rcc_from_validated_root(case)
-    elif HypothesisManager.count_active_hypotheses(
-        case
-    ) >= 2 or any_chain_root_inconclusive(case):
+    elif (
+        root_validated
+        or HypothesisManager.count_active_hypotheses(case) >= 2
+        or any_chain_root_inconclusive(case)
+    ):
+        # CANDIDATES covers: ≥2 active hypotheses, an INCONCLUSIVE live root (the
+        # soft floor), AND a validated root still awaiting symptom verification —
+        # the anchor exists structurally but is not yet grounded.
         p.cause_state = CauseState.CANDIDATES
     else:
         p.cause_state = CauseState.UNKNOWN
@@ -5821,6 +5845,55 @@ class MilestoneEngine:
                 "Runbook cause matcher skipped for case %s: %s", case.case_id, exc
             )
 
+    async def _run_differential_intake(
+        self, case: "Case", metadata: dict[str, Any]
+    ) -> None:
+        """Validate this turn's newly submitted data against the standing
+        differential: re-resolve each differential runbook's candidate causes
+        (a cheap DB read, no LLM), then check every new datum against their
+        expert-authored predicates, attaching authority-grounded node-evidence
+        links. A validation prior, never a gate — wrapped so it can't break the
+        turn, and inert until the matcher has established a differential source.
+        """
+        try:
+            from faultmaven.core.investigation.runbook_cause_matcher import (
+                differential_runbook_ids,
+                resolve_root,
+            )
+
+            runbook_ids = differential_runbook_ids(case)
+            if not runbook_ids:
+                return
+            if self.knowledge_service is None or not hasattr(
+                self.knowledge_service, "get_runbook_causes"
+            ):
+                return
+            added = set(metadata.get("evidence_added") or [])
+            if not added:
+                return
+            new_evidence = [e for e in case.evidence if e.evidence_id in added]
+            if not new_evidence:
+                return
+
+            from faultmaven.core.investigation.cause_schemas import build_cause_records
+            from faultmaven.core.investigation.intake_evaluation import (
+                run_differential_intake_turn,
+            )
+
+            await run_differential_intake_turn(
+                case,
+                new_evidence,
+                case.current_turn,
+                runbook_ids=runbook_ids,
+                resolve_causes=self.knowledge_service.get_runbook_causes,
+                build_records=build_cause_records,
+                resolve_root=resolve_root,
+            )
+        except Exception as exc:  # noqa: BLE001 — validation prior, never breaks turn
+            logger.warning(
+                "Differential intake skipped for case %s: %s", case.case_id, exc
+            )
+
     def _apply_chain_emission(
         self,
         case: "Case",
@@ -6009,6 +6082,12 @@ class MilestoneEngine:
                 user_confirmation=kr.user_confirmation,
             )
             metadata["knowledge_resolution_signalled"] = True
+            # A runbook matched against the reported symptom, and the user
+            # confirmed its fix worked — the symptom is, by construction, verified.
+            # Establish the cause-identification anchor so the same-turn collapse's
+            # RootCauseConclusion is honored by the M5 / readiness gates (which
+            # require a verified symptom for the RCC signal).
+            case.progress.symptom_verified = True
             logger.info(
                 "Case %s: knowledge_resolution signalled during INVESTIGATING; "
                 "match_id=%s, type=%s. Standard ProposedTransition handshake handles disposition.",
@@ -6353,6 +6432,30 @@ class MilestoneEngine:
         # removed. Hypothesis formation is always allowed during
         # INVESTIGATING; the prompt (gated on cause uncertainty) decides when
         # the diagnostic machinery runs, not an engine emission ban.
+        #
+        # Cause hypotheses are anchored on a VERIFIED symptom. ``symptom_verified``
+        # is already applied (step 1) and reverted if unsupported (step 2b) by now,
+        # so it holds this turn's final value.
+        #  - Anchored (symptom_verified): first FLUSH any hypotheses queued
+        #    (CAPTURED) on an earlier unverified turn → ACTIVE — applied
+        #    automatically, with no LLM re-emission. Then add this turn's
+        #    hypotheses as ACTIVE.
+        #  - Unanchored: QUEUE this turn's hypotheses as CAPTURED — never drop them
+        #    (data of any order is retained), but hold them out of the ACTIVE
+        #    differential (CAPTURED is excluded from count_active / chain grounding
+        #    / UI) until the anchor lands. This gates activation of cause hypotheses
+        #    only — not runbook retrieval / early triage before verification.
+        anchored = case.progress.symptom_verified
+        if anchored:
+            promoted = HypothesisManager.activate_queued_hypotheses(case)
+            if promoted:
+                metadata["hypotheses_generated"].extend(promoted)
+                logger.info(
+                    "Promoted %d queued (CAPTURED) hypotheses to ACTIVE on "
+                    "symptom verification",
+                    len(promoted),
+                )
+        new_hyp_state = HypothesisState.ACTIVE if anchored else HypothesisState.CAPTURED
         if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
             for h_item in updates.hypotheses_to_add:
                 h = self.hypothesis_manager.create_hypothesis(
@@ -6360,7 +6463,7 @@ class MilestoneEngine:
                     category=h_item.category,
                     initial_likelihood=h_item.likelihood,
                     current_turn=case.current_turn,
-                    state=HypothesisState.ACTIVE,
+                    state=new_hyp_state,
                 )
                 case.hypotheses[h.hypothesis_id] = h
                 metadata["hypotheses_generated"].append(h.hypothesis_id)
@@ -6623,6 +6726,13 @@ class MilestoneEngine:
         # the LLM as a one-turn nudge (T2a) to re-root it or declare it
         # separate, rather than guessing.
         self._nudge_ambiguous_orphan_chains(case, metadata)
+
+        # Validate this turn's NEW data against the standing differential
+        # (authority-grounded runbook predicates vs. raw telemetry), attaching
+        # provenance-typed node-evidence links BEFORE the recompute below counts
+        # them. Runs every turn (the matcher seeds the differential once; this
+        # keeps later evidence from driving an unsupported cause to IDENTIFIED).
+        await self._run_differential_intake(case, metadata)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).
@@ -7781,15 +7891,70 @@ class MilestoneEngine:
 
         if is_anchored:
             logger.warning(f"Anchoring detected for case {case.case_id}: {reason}")
-            # Add to system feedback for next turn
-            anchoring_msg = f"CRITICAL: {reason}. You are stalled on these theories. Diversify your approach and generate alternative hypotheses from different categories."
+            # Anti-anchoring intervenes only on a GENUINE stall:
+            #  - Stand down while the investigation RECENTLY asked for data that is
+            #    still outstanding — it is waiting on the user, not fixated. Bounded
+            #    to recent asks so a single stale, never-answered need cannot
+            #    permanently disable the mechanism.
+            #  - Cooldown: act at most once per `_ANTI_ANCHORING_COOLDOWN_TURNS`,
+            #    read from the explicit `last_anti_anchoring_turn` marker so the
+            #    cooldown holds even on a turn that happens to retire nothing.
+            if self._awaiting_recent_evidence(case, _ANTI_ANCHORING_COOLDOWN_TURNS):
+                return
+            if (
+                case.current_turn - case.progress.last_anti_anchoring_turn
+                < _ANTI_ANCHORING_COOLDOWN_TURNS
+            ):
+                return
 
+            # Engine action (not merely a prompt nudge): retire the STALLED
+            # hypotheses the detector flagged so the differential actually
+            # diversifies. Exclude any flagged hypothesis whose chain root is
+            # validated — it is grounding the cause, and retiring it for "anchoring"
+            # would discard the answer.
+            targets = [
+                hid
+                for hid in hypothesis_ids
+                if hid in case.hypotheses
+                and not is_chain_root_validated(case.hypotheses[hid], case.causal_nodes)
+            ]
+            retired = self.hypothesis_manager.force_alternative_generation(
+                targets, active_hypotheses, case.current_turn
+            )
+            # Record that the intervention fired THIS turn — drives the cooldown
+            # regardless of how many hypotheses were eligible to retire.
+            case.progress.last_anti_anchoring_turn = case.current_turn
+
+            # Tell the LLM to broaden the differential. State the retirement only
+            # when one happened, so the message never claims "retired 0".
+            retired_note = (
+                f"Retired {len(retired)} stalled hypothesis(es). " if retired else ""
+            )
+            anchoring_msg = (
+                f"CRITICAL: {reason}. {retired_note}Broaden the differential — "
+                "propose alternative hypotheses from different root-cause categories."
+            )
             current_feedback = metadata.get("system_feedback", "")
             metadata["system_feedback"] = (
                 (current_feedback + "\n" + anchoring_msg)
                 if current_feedback
                 else anchoring_msg
             )
+
+    @staticmethod
+    def _awaiting_recent_evidence(case: Case, within_turns: int) -> bool:
+        """True if the investigation RECENTLY (within ``within_turns``) asked for
+        data that is still outstanding.
+
+        A fresh, still-outstanding ask means the agent is waiting on the user —
+        progress, not fixation — so anti-anchoring stands down. Bounding it to
+        recent asks ensures a single stale need the user never answers cannot
+        permanently disable anti-anchoring for the rest of the case.
+        """
+        return any(
+            n.is_outstanding and case.current_turn - n.created_at_turn < within_turns
+            for n in (case.evidence_needs or [])
+        )
 
     def _resolve_id_ref(self, ref: str, created_ids: list[str], prefix: str) -> str:
         """Resolve ``new_index_N`` to the actual ID from ``created_ids``,

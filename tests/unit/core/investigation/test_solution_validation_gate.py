@@ -86,6 +86,11 @@ def _make_case(cause_state: CauseState, *, with_symptom: bool = False) -> Case:
     )
     case.progress.cause_state = cause_state
     if with_symptom:
+        # A verified symptom is the evidence-grounded anchor for cause
+        # identification — the fallback signals in ``_cause_identified`` (a set
+        # RootCauseConclusion / a working_conclusion at threshold) are only
+        # trusted once the symptom is verified.
+        case.progress.symptom_verified = True
         case.evidence.append(
             Evidence(
                 evidence_id="ev_000000000001",
@@ -181,14 +186,29 @@ class TestSolutionCauseValidatedPredicate:
         assert _solution_cause_validated(_make_case(CauseState.IDENTIFIED)) is True
 
     def test_rcc_backstop_is_true_even_when_cause_state_not_identified(self):
-        case = _make_case(CauseState.UNKNOWN)
+        # The RCC backstop covers the under-reported-cause_state case, but only
+        # for a case whose symptom is verified (the cause-identification anchor).
+        case = _make_case(CauseState.UNKNOWN, with_symptom=True)
         case.root_cause_conclusion = _rcc()
         assert _solution_cause_validated(case) is True
 
+    def test_rcc_backstop_requires_verified_symptom(self):
+        # Without the verified-symptom anchor an RCC alone does NOT establish the
+        # cause — an unanchored conclusion must not unlock the solution/resolution
+        # gates while cause_state is not IDENTIFIED.
+        case = _make_case(CauseState.UNKNOWN)  # no verified symptom
+        case.root_cause_conclusion = _rcc()
+        assert _solution_cause_validated(case) is False
+
     def test_working_conclusion_at_threshold_is_true(self):
-        case = _make_case(CauseState.CANDIDATES)
+        case = _make_case(CauseState.CANDIDATES, with_symptom=True)
         case.working_conclusion = _wc(0.6)
         assert _solution_cause_validated(case) is True
+
+    def test_working_conclusion_backstop_requires_verified_symptom(self):
+        case = _make_case(CauseState.CANDIDATES)  # no verified symptom
+        case.working_conclusion = _wc(0.6)
+        assert _solution_cause_validated(case) is False
 
     def test_working_conclusion_below_threshold_is_false(self):
         case = _make_case(CauseState.CANDIDATES)
@@ -241,8 +261,9 @@ class TestM5SolutionGate:
         for this turn is recomputed only at the end of the method (after the
         gate), so it is still UNKNOWN at gate time — but the RCC is applied
         BEFORE the gate, so M5 (via _cause_identified) must allow the SOLUTION.
-        Keying M5 on raw cause_state would wrongly downgrade this."""
-        case = _make_case(CauseState.UNKNOWN)
+        Keying M5 on raw cause_state would wrongly downgrade this. The symptom is
+        verified (the cause-identification anchor the RCC backstop now requires)."""
+        case = _make_case(CauseState.UNKNOWN, with_symptom=True)
         eng = _make_engine()
 
         await eng._apply_investigation_updates(
