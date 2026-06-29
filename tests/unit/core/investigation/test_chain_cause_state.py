@@ -155,11 +155,11 @@ def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
     case.causal_edges = edges or []
     case.evidence = evidence or []
     case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
-    # GAP 2: cause identification is anchored on a verified symptom. These chain
-    # fixtures model an in-progress investigation that has already verified its
-    # symptom (the realistic state once a causal chain root validates), so the
-    # symptom-anchor gate is satisfied and the tests exercise chain mechanics, not
-    # the gate. The gate itself is covered by test_gap2_* below.
+    # Cause identification is anchored on a verified symptom. These chain fixtures
+    # model an in-progress investigation that has already verified its symptom (the
+    # realistic state once a causal chain root validates), so the symptom-anchor
+    # precondition is satisfied and the tests exercise chain mechanics, not the
+    # anchor. The anchor itself is covered by the symptom-anchor tests below.
     case.progress.symptom_verified = True
     return case
 
@@ -216,15 +216,15 @@ def test_refuted_hypothesis_root_does_not_ground():
 
 
 # ---------------------------------------------------------------------------
-# GAP 2 (process realignment): IDENTIFIED is anchored on a verified symptom
+# IDENTIFIED is anchored on a verified symptom
 # ---------------------------------------------------------------------------
 
 
-def test_gap2_validated_root_without_symptom_holds_candidates():
+def test_validated_root_without_verified_symptom_holds_candidates():
     """A validated chain root with ``symptom_verified=False`` must NOT reach
-    IDENTIFIED — the verified symptom is the anchor (GAP 2). It holds at
-    CANDIDATES (NO COLLAPSE — never flap to UNKNOWN), and no RootCauseConclusion
-    is synthesized while unanchored."""
+    IDENTIFIED — the verified symptom is the cause-identification anchor. It holds
+    at CANDIDATES (never flaps to UNKNOWN), and no RootCauseConclusion is
+    synthesized while unanchored."""
     case, root, hyp = _chain_case()
     case.progress.symptom_verified = False  # anchor not yet established
     _recompute_cause_state_from_chain(case)
@@ -238,7 +238,7 @@ def test_gap2_validated_root_without_symptom_holds_candidates():
     assert case.root_cause_conclusion is None
 
 
-def test_gap2_symptom_verification_promotes_candidates_to_identified():
+def test_symptom_verification_promotes_candidates_to_identified():
     """Once the symptom verifies, the same validated-root case advances to
     IDENTIFIED — the gate is exactly the anchor, nothing else."""
     case, root, hyp = _chain_case()
@@ -253,11 +253,10 @@ def test_gap2_symptom_verification_promotes_candidates_to_identified():
     assert case.root_cause_conclusion is not None  # now synthesized
 
 
-def test_gap2_unanchored_single_hypothesis_validated_root_is_candidates_not_unknown():
+def test_unanchored_single_hypothesis_validated_root_holds_candidates():
     """Edge: a single ACTIVE hypothesis (count < 2) whose root is validated but
     whose symptom is unverified must still hold at CANDIDATES via the validated-root
-    arm — without GAP 2's ``root_validated`` term in the elif it would wrongly fall
-    through to UNKNOWN (NO COLLAPSE)."""
+    arm — without that arm it would wrongly fall through to UNKNOWN."""
     case, root, hyp = _chain_case()  # exactly one hypothesis
     case.progress.symptom_verified = False
     assert HypothesisManager.count_active_hypotheses(case) < 2
@@ -266,12 +265,12 @@ def test_gap2_unanchored_single_hypothesis_validated_root_is_candidates_not_unkn
 
 
 # ---------------------------------------------------------------------------
-# GAP 3 (process realignment): pre-anchor hypotheses are QUEUED as CAPTURED,
-# inert in the differential, and auto-promoted to ACTIVE on symptom verification
+# Pre-anchor hypotheses are QUEUED as CAPTURED, inert in the differential, and
+# auto-promoted to ACTIVE on symptom verification
 # ---------------------------------------------------------------------------
 
 
-def test_gap3_captured_queued_hypothesis_is_inert_then_promotes_to_ground():
+def test_captured_queued_hypothesis_is_inert_then_promotes_to_ground():
     """A hypothesis QUEUED before the anchor (CAPTURED) is inert: its validated
     root does NOT ground IDENTIFIED and it is not counted as an active candidate.
     Promoting it (auto-apply on symptom verification) makes it ACTIVE, and the
@@ -293,14 +292,14 @@ def test_gap3_captured_queued_hypothesis_is_inert_then_promotes_to_ground():
     assert promoted == [hyp.hypothesis_id]
     assert hyp.state == HypothesisState.ACTIVE
 
-    # Now standing → the same validated root grounds IDENTIFIED (symptom already
-    # verified in the fixture, so GAP 2 is satisfied).
+    # Now standing → the same validated root grounds IDENTIFIED (the symptom is
+    # already verified in the fixture, so the anchor is satisfied).
     assert any_chain_root_validated(case) is True
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_state == CauseState.IDENTIFIED
 
 
-def test_gap3_activate_queued_promotes_only_captured():
+def test_activate_queued_promotes_only_captured():
     """The promotion helper touches ONLY CAPTURED hypotheses — ACTIVE/REFUTED/
     RETIRED are left untouched (forward-only flush of the queue)."""
     captured = _hyp(

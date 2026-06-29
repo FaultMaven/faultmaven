@@ -1,4 +1,4 @@
-"""GAP 4 (process realignment): a freshly-created hypothesis is a PRIOR, never a
+"""A freshly-created hypothesis is a PRIOR, never a
 conclusion. ``create_hypothesis`` caps ``initial_likelihood`` strictly below the
 SSOT ``CAUSE_IDENTIFIED_LIKELIHOOD`` gate, so no single emission — an over-confident
 LLM ``likelihood: 1.0`` especially — can arrive near-conclusion on creation.
@@ -35,7 +35,7 @@ def test_cap_is_below_the_identified_gate_ssot():
 
 
 def test_overconfident_llm_prior_is_capped():
-    """The headline GAP 4 case: an LLM emits likelihood=1.0; the stored hypothesis
+    """The headline case: an LLM emits likelihood=1.0; the stored hypothesis
     is capped at the prior bound, not stored near-conclusion."""
     h = _mk(1.0)
     assert h.likelihood == NEW_HYPOTHESIS_MAX_PRIOR

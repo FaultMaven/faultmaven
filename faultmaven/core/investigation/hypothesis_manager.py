@@ -49,17 +49,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# GAP 4 (process realignment): a freshly-created hypothesis is a PRIOR, never a
-# conclusion. Its initial likelihood is capped strictly below the
-# ``CAUSE_IDENTIFIED_LIKELIHOOD`` gate so no single emission — an over-confident
-# LLM ``likelihood: 1.0`` in particular — can arrive near-conclusion on creation.
-# The climb past the gate is earned only by evidence
-# (``update_likelihood_from_evidence``) or chain validation. This mirrors
-# ``runbook_cause_matcher._MATCHER_MAX_PRIOR`` (the same invariant for the
-# external-source prior) and is pinned to the single SSOT via the boot assert
-# below, so the cap can never silently drift above the gate if the gate moves
-# (Agent-2 SSOT requirement). A hypothesis only crosses the gate by EARNING it
-# (evidence-driven likelihood climb or chain validation), never on creation.
+# A freshly-created hypothesis is a PRIOR, never a conclusion. Its initial
+# likelihood is capped strictly below the ``CAUSE_IDENTIFIED_LIKELIHOOD`` gate so
+# no single emission — an over-confident LLM ``likelihood: 1.0`` in particular —
+# can arrive near-conclusion on creation; the climb past the gate is earned only
+# by evidence (``update_likelihood_from_evidence``) or chain validation. This
+# mirrors ``runbook_cause_matcher._MATCHER_MAX_PRIOR`` (the same bound for the
+# runbook-sourced prior). The value is pinned below the gate by the import-time
+# check below, so it cannot silently drift above the gate if the gate constant
+# is later changed.
 NEW_HYPOTHESIS_MAX_PRIOR = 0.5
 if NEW_HYPOTHESIS_MAX_PRIOR >= CAUSE_IDENTIFIED_LIKELIHOOD:  # pragma: no cover
     raise AssertionError(
@@ -111,19 +109,18 @@ class HypothesisManager:
 
     @staticmethod
     def activate_queued_hypotheses(case: "Case") -> list[str]:
-        """GAP 3: promote CAPTURED (queued-pending-symptom-anchor) hypotheses to
-        ACTIVE once the symptom is verified.
+        """Promote CAPTURED (queued-pending-symptom-anchor) hypotheses to ACTIVE
+        once the symptom is verified.
 
         Cause hypotheses formed before the symptom is verified are *queued* as
-        CAPTURED rather than dropped (opportunistic intake — data of any order is
-        never lost) and rather than activated on an unverified premise. CAPTURED
-        is produced ONLY by that pre-anchor queue (nothing else emits it), so every
-        CAPTURED hypothesis here is a queued one. They activate as **un-validated
-        ACTIVE candidates** (no evidence links, GAP 4-capped prior) — subject to
-        the normal decay / anti-anchoring culling, so a stale queued theory cannot
-        pollute a conclusion (it simply fails to gather support and decays). This
-        is forward-only: ``symptom_verified`` does not un-set in practice, and a
-        promoted hypothesis is not demoted back to CAPTURED.
+        CAPTURED rather than dropped (data of any order is retained) and rather
+        than activated on an unverified premise. CAPTURED is produced ONLY by that
+        pre-anchor queue (nothing else emits it), so every CAPTURED hypothesis here
+        is a queued one. They activate as **un-validated ACTIVE candidates** (no
+        evidence links, capped prior) — subject to the normal decay / anti-anchoring
+        culling, so a stale queued theory cannot pollute a conclusion (it simply
+        fails to gather support and decays). Forward-only: a promoted hypothesis is
+        not demoted back to CAPTURED.
 
         Returns the promoted hypothesis ids (for turn-progress accounting).
         """
@@ -165,11 +162,10 @@ class HypothesisManager:
     ) -> Hypothesis:
         """Create new hypothesis.
 
-        GAP 4: ``initial_likelihood`` is capped at ``NEW_HYPOTHESIS_MAX_PRIOR``
-        (below the IDENTIFIED gate) — a new hypothesis is a prior, not a
-        conclusion; evidence/validation earns the climb. The runbook matcher
-        pre-caps to ``_MATCHER_MAX_PRIOR`` (same bound), so its values pass
-        through unchanged.
+        ``initial_likelihood`` is capped at ``NEW_HYPOTHESIS_MAX_PRIOR`` (below
+        the IDENTIFIED gate) — a new hypothesis is a prior, not a conclusion;
+        evidence/validation earns the climb. The runbook matcher pre-caps to
+        ``_MATCHER_MAX_PRIOR`` (same bound), so its values pass through unchanged.
         """
         capped_likelihood = min(max(0.0, initial_likelihood), NEW_HYPOTHESIS_MAX_PRIOR)
         if capped_likelihood < initial_likelihood:

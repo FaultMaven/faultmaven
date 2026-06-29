@@ -728,7 +728,8 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
 
     ``IDENTIFIED`` iff some live hypothesis's chain ROOT is VALIDATED from real
     rung evidence (``derive_node_states`` + ``any_chain_root_validated``) **AND
-    the symptom is verified** (GAP 2 anchor gate) — never from a flat assertion.
+    the symptom is verified** (the cause-identification anchor) — never from a flat
+    assertion.
     The chain is load-bearing: a cause reaches IDENTIFIED only by emitting a chain,
     grounding its root, AND having established the evidence-grounded verified
     symptom that anchors it. A validated root without ``symptom_verified`` holds
@@ -769,14 +770,13 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
     # below re-synthesizes a correct RCC via synthesize_rcc_from_validated_root.
     retract_disconfirmed_rcc(case)
     root_validated = any_chain_root_validated(case)
-    # GAP 2 (process realignment): the evidence-grounded VERIFIED SYMPTOM is the
-    # anchor for cause identification — IDENTIFIED requires ``symptom_verified``.
-    # A validated chain root WITHOUT a verified symptom is held at CANDIDATES
-    # (NO COLLAPSE — never flap to UNKNOWN), pending verification; it is not
-    # promoted to IDENTIFIED and no RootCauseConclusion is synthesized. Scope:
-    # this gates CAUSE IDENTIFICATION only — never runbook contact / triage rails
-    # (those engage pre-verification by design). See
-    # docs/working/ANALYSIS-investigation-process-evaluation.md GAP 2 / §5.7.
+    # The evidence-grounded VERIFIED SYMPTOM is the anchor for cause
+    # identification: IDENTIFIED requires ``symptom_verified``. A validated chain
+    # root WITHOUT a verified symptom is held at CANDIDATES (never flapped to
+    # UNKNOWN), pending verification; it is not promoted to IDENTIFIED and no
+    # RootCauseConclusion is synthesized. This gates CAUSE IDENTIFICATION only —
+    # not runbook retrieval / early triage, which engage before the symptom is
+    # verified.
     if root_validated and p.symptom_verified:
         p.cause_state = CauseState.IDENTIFIED
         # Case invariant: IDENTIFIED requires a positive likelihood + a method.
@@ -796,8 +796,8 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
         or any_chain_root_inconclusive(case)
     ):
         # CANDIDATES covers: ≥2 active hypotheses, an INCONCLUSIVE live root (the
-        # finding-5 soft floor), AND (GAP 2) a validated root still awaiting symptom
-        # verification — the anchor exists structurally but is not yet grounded.
+        # soft floor), AND a validated root still awaiting symptom verification —
+        # the anchor exists structurally but is not yet grounded.
         p.cause_state = CauseState.CANDIDATES
     else:
         p.cause_state = CauseState.UNKNOWN
@@ -6371,25 +6371,25 @@ class MilestoneEngine:
         # INVESTIGATING; the prompt (gated on cause uncertainty) decides when
         # the diagnostic machinery runs, not an engine emission ban.
         #
-        # GAP 3 (process realignment): cause hypotheses are anchored on a VERIFIED
-        # symptom. ``symptom_verified`` is already applied (step 1) and reverted if
-        # unsupported (step 2b) by now, so it holds this turn's final value.
+        # Cause hypotheses are anchored on a VERIFIED symptom. ``symptom_verified``
+        # is already applied (step 1) and reverted if unsupported (step 2b) by now,
+        # so it holds this turn's final value.
         #  - Anchored (symptom_verified): first FLUSH any hypotheses queued
-        #    (CAPTURED) on an earlier unverified turn → ACTIVE — auto-apply, no LLM
-        #    re-emission. Then add this turn's hypotheses as ACTIVE.
+        #    (CAPTURED) on an earlier unverified turn → ACTIVE — applied
+        #    automatically, with no LLM re-emission. Then add this turn's
+        #    hypotheses as ACTIVE.
         #  - Unanchored: QUEUE this turn's hypotheses as CAPTURED — never drop them
-        #    (opportunistic intake), but hold them out of the ACTIVE differential
-        #    (CAPTURED is excluded from count_active / chain grounding / UI) until
-        #    the anchor lands. Scope: gates activation of cause hypotheses only,
-        #    never runbook contact / pre-verification triage rails. See
-        #    docs/working/ANALYSIS-investigation-process-evaluation.md GAP 3 / §5.7.
+        #    (data of any order is retained), but hold them out of the ACTIVE
+        #    differential (CAPTURED is excluded from count_active / chain grounding
+        #    / UI) until the anchor lands. This gates activation of cause hypotheses
+        #    only — not runbook retrieval / early triage before verification.
         anchored = case.progress.symptom_verified
         if anchored:
             promoted = HypothesisManager.activate_queued_hypotheses(case)
             if promoted:
                 metadata["hypotheses_generated"].extend(promoted)
                 logger.info(
-                    "GAP 3: promoted %d queued (CAPTURED) hypotheses to ACTIVE on "
+                    "Promoted %d queued (CAPTURED) hypotheses to ACTIVE on "
                     "symptom verification",
                     len(promoted),
                 )

@@ -1,5 +1,4 @@
-"""GAP 3 (process realignment) — apply-path wiring: cause hypotheses are anchored
-on a verified symptom.
+"""Apply-path wiring: cause hypotheses are anchored on a verified symptom.
 
 Driven through the real ``_apply_investigation_updates`` path:
   - symptom NOT verified -> ``hypotheses_to_add`` are QUEUED as CAPTURED (held out
@@ -110,7 +109,7 @@ async def test_verified_hypotheses_are_active():
 
 
 async def test_queued_hypotheses_auto_promote_on_verification_without_reemission():
-    """The headline GAP 3 guarantee: a hypothesis queued (CAPTURED) on an
+    """The headline guarantee: a hypothesis queued (CAPTURED) on an
     unverified turn is auto-promoted to ACTIVE the moment the symptom verifies —
     on a LATER turn that emits NO new hypotheses (so the flush cannot depend on
     re-emission)."""
