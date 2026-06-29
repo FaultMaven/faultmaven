@@ -180,7 +180,8 @@ async def test_confident_llm_assertion_without_predicate_match_stays_fallback_on
     # fallback-only and is therefore held back from auto-seeding reusable knowledge.
     case = _case()
     # The LLM's self-authored grounding: a CAUSAL_EVIDENCE SUPPORTS link the model
-    # emitted for itself (provenance=llm_fallback), enough to mark the root VALIDATED.
+    # emitted for itself. The real emitted-chain path leaves provenance=None (it
+    # never tags it) — which is exactly what must NOT count as sound.
     llm_ev = Evidence(
         evidence_id="ev_" + uuid4().hex[:12],
         summary="the model is sure it is OOM",
@@ -205,7 +206,7 @@ async def test_confident_llm_assertion_without_predicate_match_stays_fallback_on
                 evidence_id=llm_ev.evidence_id,
                 stance=EvidenceStance.SUPPORTS,
                 reasoning="LLM asserts OOM",
-                provenance="llm_fallback",
+                provenance=None,  # the real LLM-emitted link is untagged
                 linked_at_turn=case.current_turn,
             )
         ],

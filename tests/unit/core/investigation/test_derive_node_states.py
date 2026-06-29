@@ -422,11 +422,12 @@ def test_runbook_provenance_is_sound():
     assert cause_validation_is_fallback_only(case) is False
 
 
-def test_legacy_unlabeled_provenance_is_treated_as_sound():
-    # provenance=None predates tagging; treated as sound so the signal stays inert
-    # for existing cases and never demotes them.
+def test_unlabeled_none_provenance_is_lower_assurance():
+    # provenance=None is the LLM's own asserted link (the emitted-chain path never
+    # tags provenance) — NOT authority-grounded, so a root borne out only by it is
+    # fallback-only. Only a runbook-grounded support is sound.
     case = _validated_root_case([None])
-    assert cause_validation_is_fallback_only(case) is False
+    assert cause_validation_is_fallback_only(case) is True
 
 
 def test_any_sound_support_makes_validation_sound():

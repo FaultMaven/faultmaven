@@ -349,33 +349,34 @@ def derive_node_states(case: Case) -> bool:
 
 
 def cause_validation_is_fallback_only(case: Case) -> bool:
-    """Whether the case's cause-identification rests ONLY on lower-assurance,
-    LLM-authored validation — i.e. every VALIDATED root was borne out solely by
-    ``llm_fallback``-provenance support links.
+    """Whether the case's cause-identification rests ONLY on lower-assurance
+    validation — i.e. NO validated root was borne out by an authority-grounded
+    (``runbook``-provenance) support.
 
     A support link's ``provenance`` records who authored the predicate that the
-    link encodes:
+    link encodes, and only one grade is SOUND:
 
-    - ``"runbook"`` — an expert-authored predicate evaluated against submitted
-      telemetry (authority-grounded; the sound tier).
-    - ``None`` — a legacy/unlabeled link (predates provenance tagging); treated as
-      sound, so this signal stays inert until labeled fallback links actually
-      flow and never demotes existing cases.
+    - ``"runbook"`` — an expert-authored predicate that fired against submitted
+      telemetry. The ONLY authority-grounded (sound) tier.
     - ``"llm_fallback"`` — a predicate the LLM authored for itself when no runbook
-      covered the cause. Re-checking the model's own predicate is the weaker,
-      lower-assurance grade (the model authors both the test and what it cites).
+      covered the cause; re-checking the model's own predicate is lower-assurance
+      (it authors both the test and what it cites).
+    - ``None`` — a link the LLM asserted directly (the emitted-chain path never
+      sets provenance), or a legacy/unlabeled link. Either way it is NOT
+      authority-grounded, so it is lower-assurance — the same grade as
+      ``llm_fallback`` for this check.
 
-    Returns True only when the cause IS identified (at least one VALIDATED root)
-    AND no validated root has any sound bearing — every validated root validated
-    EMPIRICALLY off ``llm_fallback`` support alone. A root validated DEDUCTIVELY
-    (proof-by-exclusion, §7.1.1) is a methodology derivation, not LLM-fallback, so
-    it counts as sound. Any single sound support on any validated root makes the
-    identification sound.
+    Returns True when the cause IS identified (at least one VALIDATED root) but no
+    validated root has a ``runbook``-grounded support — its validation rests on
+    the LLM's own say-so. A root validated DEDUCTIVELY (proof-by-exclusion,
+    §7.1.1) is a methodology derivation, not LLM-authored, so it counts as sound.
+    A single runbook-grounded (or deductive) support makes the identification
+    sound.
 
     Downstream consumers treat a fallback-only identification as held / needing
-    confirmation (e.g. it does not auto-qualify a case for runbook harvesting),
-    so a confidently-wrong LLM cannot turn an unverified cause into reusable
-    knowledge.
+    confirmation (e.g. it does not auto-qualify a case for runbook harvesting), so
+    a confidently-wrong LLM with no firing runbook predicate cannot turn an
+    unverified cause into reusable knowledge (§7).
     """
     evidence_by_id: dict[str, EvidenceCategory | None] = {
         e.evidence_id: e.category for e in case.evidence
@@ -398,9 +399,9 @@ def cause_validation_is_fallback_only(case: Case) -> bool:
             if (
                 link.stance == EvidenceStance.SUPPORTS
                 and evidence_by_id[link.evidence_id] == EvidenceCategory.CAUSAL_EVIDENCE
-                and link.provenance != "llm_fallback"
+                and link.provenance == "runbook"
             ):
-                return False  # a sound causal support → not fallback-only
+                return False  # an authority-grounded support → not fallback-only
     return True
 
 
