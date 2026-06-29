@@ -110,6 +110,31 @@ class HypothesisManager:
         return len(HypothesisManager.active_hypotheses(case))
 
     @staticmethod
+    def activate_queued_hypotheses(case: "Case") -> list[str]:
+        """GAP 3: promote CAPTURED (queued-pending-symptom-anchor) hypotheses to
+        ACTIVE once the symptom is verified.
+
+        Cause hypotheses formed before the symptom is verified are *queued* as
+        CAPTURED rather than dropped (opportunistic intake — data of any order is
+        never lost) and rather than activated on an unverified premise. CAPTURED
+        is produced ONLY by that pre-anchor queue (nothing else emits it), so every
+        CAPTURED hypothesis here is a queued one. They activate as **un-validated
+        ACTIVE candidates** (no evidence links, GAP 4-capped prior) — subject to
+        the normal decay / anti-anchoring culling, so a stale queued theory cannot
+        pollute a conclusion (it simply fails to gather support and decays). This
+        is forward-only: ``symptom_verified`` does not un-set in practice, and a
+        promoted hypothesis is not demoted back to CAPTURED.
+
+        Returns the promoted hypothesis ids (for turn-progress accounting).
+        """
+        promoted: list[str] = []
+        for h in case.hypotheses.values():
+            if h.state == HypothesisState.CAPTURED:
+                h.state = HypothesisState.ACTIVE
+                promoted.append(h.hypothesis_id)
+        return promoted
+
+    @staticmethod
     def calculate_evidence_ratio(hypothesis: Hypothesis) -> float:
         """Compute supporting/(supporting+refuting) evidence ratio.
 

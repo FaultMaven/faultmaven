@@ -6370,6 +6370,30 @@ class MilestoneEngine:
         # removed. Hypothesis formation is always allowed during
         # INVESTIGATING; the prompt (gated on cause uncertainty) decides when
         # the diagnostic machinery runs, not an engine emission ban.
+        #
+        # GAP 3 (process realignment): cause hypotheses are anchored on a VERIFIED
+        # symptom. ``symptom_verified`` is already applied (step 1) and reverted if
+        # unsupported (step 2b) by now, so it holds this turn's final value.
+        #  - Anchored (symptom_verified): first FLUSH any hypotheses queued
+        #    (CAPTURED) on an earlier unverified turn → ACTIVE — auto-apply, no LLM
+        #    re-emission. Then add this turn's hypotheses as ACTIVE.
+        #  - Unanchored: QUEUE this turn's hypotheses as CAPTURED — never drop them
+        #    (opportunistic intake), but hold them out of the ACTIVE differential
+        #    (CAPTURED is excluded from count_active / chain grounding / UI) until
+        #    the anchor lands. Scope: gates activation of cause hypotheses only,
+        #    never runbook contact / pre-verification triage rails. See
+        #    docs/working/ANALYSIS-investigation-process-evaluation.md GAP 3 / §5.7.
+        anchored = case.progress.symptom_verified
+        if anchored:
+            promoted = HypothesisManager.activate_queued_hypotheses(case)
+            if promoted:
+                metadata["hypotheses_generated"].extend(promoted)
+                logger.info(
+                    "GAP 3: promoted %d queued (CAPTURED) hypotheses to ACTIVE on "
+                    "symptom verification",
+                    len(promoted),
+                )
+        new_hyp_state = HypothesisState.ACTIVE if anchored else HypothesisState.CAPTURED
         if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
             for h_item in updates.hypotheses_to_add:
                 h = self.hypothesis_manager.create_hypothesis(
@@ -6377,7 +6401,7 @@ class MilestoneEngine:
                     category=h_item.category,
                     initial_likelihood=h_item.likelihood,
                     current_turn=case.current_turn,
-                    state=HypothesisState.ACTIVE,
+                    state=new_hyp_state,
                 )
                 case.hypotheses[h.hypothesis_id] = h
                 metadata["hypotheses_generated"].append(h.hypothesis_id)

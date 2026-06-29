@@ -266,6 +266,63 @@ def test_gap2_unanchored_single_hypothesis_validated_root_is_candidates_not_unkn
 
 
 # ---------------------------------------------------------------------------
+# GAP 3 (process realignment): pre-anchor hypotheses are QUEUED as CAPTURED,
+# inert in the differential, and auto-promoted to ACTIVE on symptom verification
+# ---------------------------------------------------------------------------
+
+
+def test_gap3_captured_queued_hypothesis_is_inert_then_promotes_to_ground():
+    """A hypothesis QUEUED before the anchor (CAPTURED) is inert: its validated
+    root does NOT ground IDENTIFIED and it is not counted as an active candidate.
+    Promoting it (auto-apply on symptom verification) makes it ACTIVE, and the
+    same validated root then grounds IDENTIFIED — the full queue→flush→ground
+    lifecycle, using the real engine functions."""
+    case, root, hyp = _chain_case()  # validated root, symptom_verified=True
+    # Queue state: the hypothesis was formed pre-anchor → CAPTURED.
+    hyp.state = HypothesisState.CAPTURED
+
+    # Inert while queued: not standing, so the validated root does not ground,
+    # and it is not an active candidate.
+    assert any_chain_root_validated(case) is False
+    assert HypothesisManager.count_active_hypotheses(case) == 0
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+
+    # Auto-apply on verification: promote CAPTURED → ACTIVE.
+    promoted = HypothesisManager.activate_queued_hypotheses(case)
+    assert promoted == [hyp.hypothesis_id]
+    assert hyp.state == HypothesisState.ACTIVE
+
+    # Now standing → the same validated root grounds IDENTIFIED (symptom already
+    # verified in the fixture, so GAP 2 is satisfied).
+    assert any_chain_root_validated(case) is True
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+
+
+def test_gap3_activate_queued_promotes_only_captured():
+    """The promotion helper touches ONLY CAPTURED hypotheses — ACTIVE/REFUTED/
+    RETIRED are left untouched (forward-only flush of the queue)."""
+    captured = _hyp(
+        None, hypothesis_id="hyp_0000000000ca", state=HypothesisState.CAPTURED
+    )
+    active = _hyp(None, hypothesis_id="hyp_0000000000ac", state=HypothesisState.ACTIVE)
+    retired = _hyp(
+        None, hypothesis_id="hyp_0000000000ed", state=HypothesisState.RETIRED
+    )
+    case = _case(hyps=[captured, active, retired])
+
+    promoted = HypothesisManager.activate_queued_hypotheses(case)
+
+    assert promoted == [captured.hypothesis_id]
+    assert captured.state == HypothesisState.ACTIVE
+    assert active.state == HypothesisState.ACTIVE  # untouched
+    assert retired.state == HypothesisState.RETIRED  # untouched
+    # idempotent: a second flush promotes nothing (queue drained)
+    assert HypothesisManager.activate_queued_hypotheses(case) == []
+
+
+# ---------------------------------------------------------------------------
 # M6 / Option (c) — durable, evidence-driven demotion
 # ---------------------------------------------------------------------------
 
