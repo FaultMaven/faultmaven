@@ -81,6 +81,8 @@ from faultmaven.core.investigation.runbook_cause_matcher import resolve_datum_te
 from faultmaven.modules.case.contracts import EvidenceStance
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from faultmaven.core.investigation.cause_schemas import CauseRecord
     from faultmaven.modules.case.contracts import Case, Evidence
 
@@ -143,6 +145,38 @@ class ActiveCause:
     record: "CauseRecord"
     """The full cause record — chain (for lazy instantiation) + match_predicates
     (for evaluation)."""
+
+
+def assemble_active_causes(
+    matched: "Iterable[tuple[str, Iterable[CauseRecord]]]",
+) -> "list[ActiveCause]":
+    """Build the candidate differential from matched runbooks' resolved causes.
+
+    ``matched`` is ``(runbook_id, cause_records)`` per matched runbook — the same
+    ``CauseRecord``s that go INTO the matcher's evaluator, carrying the chain (for
+    lazy instantiation) and ``match_predicates`` (for evaluation) the differential
+    needs. ``CauseMatchResult`` itself can't be the source: it keeps a full record
+    only for the single *selected* cause (``selected_record``), whereas the
+    differential holds EVERY candidate as a soft prior, pruned later by evidence.
+
+    Each non-fallback cause becomes an ``ActiveCause`` with a cross-runbook-unique
+    ``candidate_id`` ``f"{runbook_id}:{cause_letter}"``. The fallback Cause
+    (``is_fallback_cause`` — its only indicator is ``[Default]``, which never
+    matches) is excluded; it is a routing default, not a differential candidate.
+    Duplicate candidate ids (same runbook + letter) keep the first.
+    """
+    active: list[ActiveCause] = []
+    seen: set[str] = set()
+    for runbook_id, records in matched:
+        for record in records:
+            if getattr(record, "is_fallback_cause", False):
+                continue
+            candidate_id = f"{runbook_id}:{record.cause_letter}"
+            if candidate_id in seen:
+                continue
+            seen.add(candidate_id)
+            active.append(ActiveCause(candidate_id=candidate_id, record=record))
+    return active
 
 
 def evaluate_datum_against_differential(

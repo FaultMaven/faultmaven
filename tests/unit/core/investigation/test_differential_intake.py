@@ -14,6 +14,7 @@ import pytest
 from faultmaven.core.investigation.cause_schemas import CauseRecord
 from faultmaven.core.investigation.differential_intake import (
     ActiveCause,
+    assemble_active_causes,
     evaluate_datum_against_differential,
     recheck_proposed_predicate,
 )
@@ -291,3 +292,38 @@ class TestRecheckProposedPredicate:
             )
             is None
         )
+
+
+# ---------------------------------------------------------------------------
+# assemble_active_causes — the candidate differential
+# ---------------------------------------------------------------------------
+
+
+def _record(letter, *, fallback=False):
+    return CauseRecord(cause_letter=letter, is_fallback_cause=fallback)
+
+
+class TestAssembleActiveCauses:
+    def test_mints_cross_runbook_unique_candidate_ids(self):
+        matched = [("rbA", [_record("A"), _record("B")]), ("rbB", [_record("A")])]
+        active = assemble_active_causes(matched)
+        assert [a.candidate_id for a in active] == ["rbA:A", "rbA:B", "rbB:A"]
+
+    def test_excludes_fallback_cause(self):
+        matched = [("rbA", [_record("A"), _record("Z", fallback=True)])]
+        active = assemble_active_causes(matched)
+        assert [a.candidate_id for a in active] == ["rbA:A"]
+
+    def test_dedupes_repeated_candidate_id_keeping_first(self):
+        first, second = _record("A"), _record("A")
+        active = assemble_active_causes([("rbA", [first, second])])
+        assert [a.candidate_id for a in active] == ["rbA:A"]
+        assert active[0].record is first
+
+    def test_carries_the_full_record(self):
+        rec = _record("A")
+        active = assemble_active_causes([("rbA", [rec])])
+        assert active[0].record is rec
+
+    def test_empty_input_yields_empty_differential(self):
+        assert assemble_active_causes([]) == []
