@@ -348,6 +348,62 @@ def derive_node_states(case: Case) -> bool:
     return changed_any
 
 
+def cause_validation_is_fallback_only(case: Case) -> bool:
+    """Whether the case's cause-identification rests ONLY on lower-assurance,
+    LLM-authored validation — i.e. every VALIDATED root was borne out solely by
+    ``llm_fallback``-provenance support links.
+
+    A support link's ``provenance`` records who authored the predicate that the
+    link encodes:
+
+    - ``"runbook"`` — an expert-authored predicate evaluated against submitted
+      telemetry (authority-grounded; the sound tier).
+    - ``None`` — a legacy/unlabeled link (predates provenance tagging); treated as
+      sound, so this signal stays inert until labeled fallback links actually
+      flow and never demotes existing cases.
+    - ``"llm_fallback"`` — a predicate the LLM authored for itself when no runbook
+      covered the cause. Re-checking the model's own predicate is the weaker,
+      lower-assurance grade (the model authors both the test and what it cites).
+
+    Returns True only when the cause IS identified (at least one VALIDATED root)
+    AND no validated root has any sound bearing — every validated root validated
+    EMPIRICALLY off ``llm_fallback`` support alone. A root validated DEDUCTIVELY
+    (proof-by-exclusion, §7.1.1) is a methodology derivation, not LLM-fallback, so
+    it counts as sound. Any single sound support on any validated root makes the
+    identification sound.
+
+    Downstream consumers treat a fallback-only identification as held / needing
+    confirmation (e.g. it does not auto-qualify a case for runbook harvesting),
+    so a confidently-wrong LLM cannot turn an unverified cause into reusable
+    knowledge.
+    """
+    evidence_by_id: dict[str, EvidenceCategory | None] = {
+        e.evidence_id: e.category for e in case.evidence
+    }
+    validated_roots = [
+        n
+        for n in case.causal_nodes.values()
+        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
+    ]
+    if not validated_roots:
+        return False  # no identified cause — "fallback-only" does not apply
+
+    for root in validated_roots:
+        if root.validation_method == ValidationMethod.DEDUCTIVE:
+            return False  # deductive proof is sound, not a fallback grade
+        for link in root.evidence_links:
+            if link.evidence_id not in evidence_by_id:
+                continue  # dangling reference (deleted evidence) — never counts,
+                # consistent with _node_evidence_tally
+            if (
+                link.stance == EvidenceStance.SUPPORTS
+                and evidence_by_id[link.evidence_id] == EvidenceCategory.CAUSAL_EVIDENCE
+                and link.provenance != "llm_fallback"
+            ):
+                return False  # a sound causal support → not fallback-only
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Graph anchoring + path walking (the PROBLEM node D + root->D paths)
 # ---------------------------------------------------------------------------

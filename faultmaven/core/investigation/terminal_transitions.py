@@ -843,10 +843,28 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
     coverage["mitigation"] = has_mitigation
 
     # Root Cause Resolution ← root_cause_conclusion + solution with actionable content
-    has_root_cause = bool(
+    has_root_cause_record = bool(
         case.root_cause_conclusion
         and getattr(case.root_cause_conclusion, "root_cause", None)
     )
+    # A cause established only on lower-assurance, LLM-authored validation is held
+    # back from auto-seeding reusable knowledge: harvesting a runbook from it would
+    # promote an unverified cause (the model authored both the predicate and its
+    # citation) into the corpus. It still counts once a sound (runbook-grounded)
+    # support bears the cause out. Inert until labeled fallback links flow. Imported
+    # lazily: causal_graph -> hypothesis_manager -> terminal_transitions, so a
+    # module-level import here would close that cycle.
+    from faultmaven.core.investigation.causal_graph import (
+        cause_validation_is_fallback_only,
+    )
+
+    # Distinguish "no root cause on record" from "root cause present but only
+    # lower-assurance" — they need different user-facing asks (provide vs. verify),
+    # so don't collapse the second into the first beyond gating the coverage.
+    root_cause_unverified = has_root_cause_record and cause_validation_is_fallback_only(
+        case
+    )
+    has_root_cause = has_root_cause_record and not root_cause_unverified
     has_actionable_solution = False
     if case.solutions:
         for sol in case.solutions:
@@ -909,7 +927,13 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
         if section == "problem_definition":
             missing_desc.append("- problem description (symptoms, error messages)")
         elif section == "root_cause_resolution":
-            if not has_root_cause:
+            if root_cause_unverified:
+                missing_desc.append(
+                    "- a verified root cause (one is identified, but it rests on "
+                    "lower-assurance evidence — confirm it with runbook-grounded "
+                    "telemetry before it can seed a runbook)"
+                )
+            elif not has_root_cause:
                 missing_desc.append("- identified root cause")
             if not has_actionable_solution:
                 missing_desc.append(
