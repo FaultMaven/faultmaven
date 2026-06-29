@@ -18,6 +18,7 @@ from faultmaven.core.investigation.causal_graph import (
     demote_disconfirmed_cause_via_evidence,
     seed_problem_node,
 )
+from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import (
     _recompute_assessment_state,
     _recompute_cause_state_from_chain,
@@ -154,6 +155,12 @@ def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
     case.causal_edges = edges or []
     case.evidence = evidence or []
     case.hypotheses = {h.hypothesis_id: h for h in (hyps or [])}
+    # GAP 2: cause identification is anchored on a verified symptom. These chain
+    # fixtures model an in-progress investigation that has already verified its
+    # symptom (the realistic state once a causal chain root validates), so the
+    # symptom-anchor gate is satisfied and the tests exercise chain mechanics, not
+    # the gate. The gate itself is covered by test_gap2_* below.
+    case.progress.symptom_verified = True
     return case
 
 
@@ -206,6 +213,56 @@ def test_refuted_hypothesis_root_does_not_ground():
     root.validation_method = ValidationMethod.EMPIRICAL
     hyp.state = HypothesisState.REFUTED
     assert any_chain_root_validated(case) is False
+
+
+# ---------------------------------------------------------------------------
+# GAP 2 (process realignment): IDENTIFIED is anchored on a verified symptom
+# ---------------------------------------------------------------------------
+
+
+def test_gap2_validated_root_without_symptom_holds_candidates():
+    """A validated chain root with ``symptom_verified=False`` must NOT reach
+    IDENTIFIED — the verified symptom is the anchor (GAP 2). It holds at
+    CANDIDATES (NO COLLAPSE — never flap to UNKNOWN), and no RootCauseConclusion
+    is synthesized while unanchored."""
+    case, root, hyp = _chain_case()
+    case.progress.symptom_verified = False  # anchor not yet established
+    _recompute_cause_state_from_chain(case)
+    # the chain still validates structurally...
+    assert any_chain_root_validated(case) is True
+    assert root.node_state == NodeState.VALIDATED
+    # ...but cause_state is held at CANDIDATES, not promoted to IDENTIFIED
+    assert case.progress.cause_state == CauseState.CANDIDATES
+    assert case.progress.cause_state != CauseState.UNKNOWN  # explicit: no collapse
+    # no premature conclusion synthesized while unanchored
+    assert case.root_cause_conclusion is None
+
+
+def test_gap2_symptom_verification_promotes_candidates_to_identified():
+    """Once the symptom verifies, the same validated-root case advances to
+    IDENTIFIED — the gate is exactly the anchor, nothing else."""
+    case, root, hyp = _chain_case()
+    case.progress.symptom_verified = False
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.CANDIDATES
+
+    # The user/LLM establishes the verified symptom on a later turn.
+    case.progress.symptom_verified = True
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.root_cause_conclusion is not None  # now synthesized
+
+
+def test_gap2_unanchored_single_hypothesis_validated_root_is_candidates_not_unknown():
+    """Edge: a single ACTIVE hypothesis (count < 2) whose root is validated but
+    whose symptom is unverified must still hold at CANDIDATES via the validated-root
+    arm — without GAP 2's ``root_validated`` term in the elif it would wrongly fall
+    through to UNKNOWN (NO COLLAPSE)."""
+    case, root, hyp = _chain_case()  # exactly one hypothesis
+    case.progress.symptom_verified = False
+    assert HypothesisManager.count_active_hypotheses(case) < 2
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.CANDIDATES
 
 
 # ---------------------------------------------------------------------------

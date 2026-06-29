@@ -727,9 +727,12 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
     """Chain-derived ``cause_state`` (Option A, methodology §9.2; flag ON).
 
     ``IDENTIFIED`` iff some live hypothesis's chain ROOT is VALIDATED from real
-    rung evidence (``derive_node_states`` + ``any_chain_root_validated``), never
-    from a flat assertion. The chain is load-bearing: a cause reaches IDENTIFIED
-    only by emitting a chain and grounding its root.
+    rung evidence (``derive_node_states`` + ``any_chain_root_validated``) **AND
+    the symptom is verified** (GAP 2 anchor gate) — never from a flat assertion.
+    The chain is load-bearing: a cause reaches IDENTIFIED only by emitting a chain,
+    grounding its root, AND having established the evidence-grounded verified
+    symptom that anchors it. A validated root without ``symptom_verified`` holds
+    at CANDIDATES (never UNKNOWN).
 
     Pure structural grounding by design — there is deliberately NO flat fallback
     and NO separate disconfirmation guard. Disconfirmation is handled by the chain
@@ -765,7 +768,16 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
     # IDENTIFIED. Runs BEFORE the cause_state branch so a freshly-validated root
     # below re-synthesizes a correct RCC via synthesize_rcc_from_validated_root.
     retract_disconfirmed_rcc(case)
-    if any_chain_root_validated(case):
+    root_validated = any_chain_root_validated(case)
+    # GAP 2 (process realignment): the evidence-grounded VERIFIED SYMPTOM is the
+    # anchor for cause identification — IDENTIFIED requires ``symptom_verified``.
+    # A validated chain root WITHOUT a verified symptom is held at CANDIDATES
+    # (NO COLLAPSE — never flap to UNKNOWN), pending verification; it is not
+    # promoted to IDENTIFIED and no RootCauseConclusion is synthesized. Scope:
+    # this gates CAUSE IDENTIFICATION only — never runbook contact / triage rails
+    # (those engage pre-verification by design). See
+    # docs/working/ANALYSIS-investigation-process-evaluation.md GAP 2 / §5.7.
+    if root_validated and p.symptom_verified:
         p.cause_state = CauseState.IDENTIFIED
         # Case invariant: IDENTIFIED requires a positive likelihood + a method.
         # Floor them (the LLM's own higher confidence still wins where applied).
@@ -778,9 +790,14 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
         # (covers the LLM-validated-root-without-conclusion case and the M6
         # retracted-one-chain-while-another-stands case).
         synthesize_rcc_from_validated_root(case)
-    elif HypothesisManager.count_active_hypotheses(
-        case
-    ) >= 2 or any_chain_root_inconclusive(case):
+    elif (
+        root_validated
+        or HypothesisManager.count_active_hypotheses(case) >= 2
+        or any_chain_root_inconclusive(case)
+    ):
+        # CANDIDATES covers: ≥2 active hypotheses, an INCONCLUSIVE live root (the
+        # finding-5 soft floor), AND (GAP 2) a validated root still awaiting symptom
+        # verification — the anchor exists structurally but is not yet grounded.
         p.cause_state = CauseState.CANDIDATES
     else:
         p.cause_state = CauseState.UNKNOWN
