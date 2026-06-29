@@ -57,17 +57,37 @@ def _cause_identified(case: "Case") -> bool:
     under-reports a known cause and stalls an otherwise resolvable case. See the
     k8s-pvc gate failure — the same stale-signal trap the redesign set out to
     remove.
+
+    The two fallback proxies are gated on a **verified symptom**: cause
+    identification is anchored on evidence that the problem exists, so an
+    unanchored conclusion (emitted before the symptom is verified, or left stale
+    after a symptom claim is withdrawn) does not count as a known cause. The
+    primary ``cause_state`` check already implies a verified symptom.
     """
     if (
         case.progress
         and getattr(case.progress, "cause_state", None) == CauseState.IDENTIFIED
     ):
         return True
+
+    # Fallback signals below cover the case where the cause is genuinely known
+    # but the chain recompute under-reported ``cause_state`` (the LLM grounded the
+    # cause without the chain formally validating). They are trusted ONLY once the
+    # symptom is verified: the verified symptom is the evidence-grounded anchor for
+    # cause identification, so an unanchored or stale conclusion — one emitted
+    # before the symptom is verified, or left behind after a symptom claim is
+    # withdrawn — must not report the cause as known and let the resolution /
+    # closure / solution gates diverge from the ``cause_state`` signal. (The
+    # primary ``cause_state == IDENTIFIED`` check above already implies a verified
+    # symptom, so this anchor only constrains the fallbacks.)
+    if not (case.progress and getattr(case.progress, "symptom_verified", False)):
+        return False
+
     # A disconfirmed RootCauseConclusion is retracted at its SOURCE
     # (causal_graph.retract_disconfirmed_rcc, run each turn in the chain
-    # recompute), so by the time we read it here a stale/disproven cause is
-    # already None — every consumer (this gate, the report, the UI, KB runbooks)
-    # sees one truth. No per-reader disconfirmation guard is needed.
+    # recompute), so by the time we read it here a disproven cause is already
+    # None — every consumer (this gate, the report, the UI, KB runbooks) sees one
+    # truth. No per-reader disconfirmation guard is needed.
     if case.root_cause_conclusion and getattr(
         case.root_cause_conclusion, "root_cause", None
     ):

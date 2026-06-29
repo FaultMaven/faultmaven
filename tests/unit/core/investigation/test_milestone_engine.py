@@ -1392,6 +1392,9 @@ class TestReadinessAssessments:
         )
 
         case = self._make_case()
+        # A known root cause presupposes a verified symptom (the anchor the RCC
+        # backstop in _cause_identified requires).
+        case.progress.symptom_verified = True
         case.root_cause_conclusion = RootCauseConclusion(
             root_cause="Connection pool exhaustion",
             confidence_level="verified",
