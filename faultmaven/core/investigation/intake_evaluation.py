@@ -199,10 +199,31 @@ async def run_differential_intake_turn(
     )
     # Demand half of the loop: keep the case's causal Evidence Needs in sync with
     # the differential — one need per still-unsatisfied predicate, fulfilled as
-    # predicates fire. The engine owns these; the LLM keeps authoring symptom
-    # needs and any non-differential causal needs.
-    _regen_differential_evidence_needs(case, active_causes, recorded, current_turn)
+    # predicates fire, and superseded for a cause whose root is now REFUTED (else
+    # its need, never fulfillable through the refuted-root guard, would hang
+    # PENDING). The engine owns these; the LLM keeps authoring symptom needs and
+    # any non-differential causal needs.
+    refuted = {
+        ac.candidate_id
+        for ac in active_causes
+        if _cause_root_is_refuted(case, ac.record, resolve_root)
+    }
+    _regen_differential_evidence_needs(
+        case, active_causes, recorded, current_turn, refuted
+    )
     return recorded
+
+
+def _cause_root_is_refuted(
+    case: "Case", record: "CauseRecord", resolve_root: RootResolver
+) -> bool:
+    """Whether a candidate cause's instantiated root is REFUTED (``may_instantiate=
+    False`` — never seeds a node just to check). False for an un-instantiated cause."""
+    root_id = resolve_root(case, record, may_instantiate=False)
+    if not root_id:
+        return False
+    node = case.causal_nodes.get(root_id)
+    return node is not None and node.node_state == NodeState.REFUTED
 
 
 def _predicate_signature(predicate: dict) -> str:
@@ -244,12 +265,24 @@ def _regen_differential_evidence_needs(
     active_causes: "list[ActiveCauseLike]",
     recorded: list[StanceVerdict],
     current_turn: int,
+    refuted_cause_ids: "set[str]",
 ) -> None:
     """Reconcile the case's engine-owned causal Evidence Needs with the active
-    differential: ensure one PENDING need per unsatisfied predicate, and flip a
-    need to FULFILLED once its predicate fires this turn. Idempotent (deterministic
-    need ids) and safe from the hypothesis-retirement supersession rule (these
-    needs carry no motivating hypotheses, like symptom needs)."""
+    differential: ensure one PENDING need per unsatisfied predicate, flip a need to
+    FULFILLED once its predicate fires this turn, and SUPERSEDE the open needs of a
+    cause whose root has been REFUTED.
+
+    The supersession closes a demand↔validate inconsistency: ``run_intake_evaluation``
+    skips re-supporting a refuted root, so a predicate that keeps firing on a
+    refuted cause never reaches the ``fired`` set — without this, its need would
+    stay PENDING forever, asking the user to collect telemetry for a cause the
+    investigation has already ruled out.
+
+    Idempotent (deterministic need ids) and safe from the hypothesis-retirement
+    supersession rule (these needs carry no motivating hypotheses, like symptom
+    needs). A need already FULFILLED stays FULFILLED — the audit trail of what was
+    collected before the cause was refuted.
+    """
     fired = {
         (v.cause_id, _predicate_signature(v.predicate))
         for v in recorded
@@ -257,11 +290,32 @@ def _regen_differential_evidence_needs(
     }
     by_id = {n.need_id: n for n in case.evidence_needs}
     for ac in active_causes:
+        cause_refuted = ac.candidate_id in refuted_cause_ids
         predicates = getattr(ac.record, "match_predicates", None) or []
         for predicate in predicates:
             sig = _predicate_signature(predicate)
             need_id = _differential_need_id(ac.candidate_id, sig)
             existing = by_id.get(need_id)
+            if cause_refuted:
+                # The cause this need discriminates is refuted — retire the open
+                # need instead of asking for telemetry that can no longer matter.
+                # TERMINAL: a SUPERSEDED need never re-opens (a later non-refuted
+                # re-derivation finds it neither re-created below nor re-pended). This
+                # is sound ONLY because a REFUTED root is settled — the same premise as
+                # the #580 re-support guard (run_intake_evaluation skips a refuted
+                # root; REFUTED is durable via derive_node_states + refutation_reason).
+                # If a root could un-refute, a revived cause would be left without
+                # demand; revisit this branch if that invariant ever changes.
+                if existing is not None and existing.state in (
+                    NeedState.PENDING,
+                    NeedState.PARTIALLY_MET,
+                ):
+                    existing.state = NeedState.SUPERSEDED
+                    existing.superseded_reason = (
+                        "the runbook cause this need discriminated is refuted"
+                    )
+                    existing.updated_at = datetime.now(UTC)
+                continue
             if (ac.candidate_id, sig) in fired:
                 if existing is not None and existing.state not in (
                     NeedState.FULFILLED,

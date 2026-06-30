@@ -853,3 +853,104 @@ class TestConversionEdgeCases:
 
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
+
+
+def _resolved_case_with_root(provenance):
+    """A minimal RESOLVED case whose single VALIDATED root carries one
+    CAUSAL_EVIDENCE SUPPORTS link with the given provenance — sound iff
+    provenance=='runbook'."""
+    from types import SimpleNamespace
+
+    from faultmaven.modules.case.contracts import (
+        CausalNode,
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+        EvidenceStance,
+        NodeEvidenceLink,
+        NodeState,
+        NodeType,
+        ValidationMethod,
+    )
+
+    ev = Evidence(
+        evidence_id="ev_aaaaaaaaaaaa",
+        category=EvidenceCategory.CAUSAL_EVIDENCE,
+        primary_purpose="diagnosis",
+        summary="connection pool exhausted",
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_by="u",
+        collected_at_turn=1,
+    )
+    root = CausalNode(
+        node_id="cn_aaaaaaaaaaaa",
+        statement="connection pool exhausted",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        actionable=True,
+        belief=0.7,
+        generated_at_turn=1,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id="ev_aaaaaaaaaaaa",
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="pool metrics",
+                provenance=provenance,
+                linked_at_turn=1,
+            )
+        ],
+    )
+    return SimpleNamespace(
+        case_id="case_aaaaaaaaaaaa",
+        title="Pod crash-loops",
+        description="d",
+        state="resolved",
+        causal_nodes={root.node_id: root},
+        evidence=[ev],
+        root_cause_conclusion=SimpleNamespace(
+            root_cause="pool exhausted", mechanism="m"
+        ),
+        problem_verification=None,
+        solutions=[],
+        hypotheses={},
+        working_conclusion=None,
+        tags=[],
+    )
+
+
+class TestConvertFromCaseSoundnessGate:
+    """§7: the API conversion path must enforce the same fallback-only gate as the
+    chat-side, so an LLM-asserted (never runbook-grounded) cause can't seed the KB."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_fallback_only_cause(self, app_with_user):
+        app = app_with_user
+        app.state.case_repository = MagicMock(
+            get_by_id=AsyncMock(return_value=_resolved_case_with_root(None))
+        )
+        async with await _client(app) as client:
+            resp = await client.post(
+                f"{API_PREFIX}/convert-from-case",
+                json={"case_id": "case_aaaaaaaaaaaa", "scope": "personal"},
+            )
+        assert resp.status_code == 422
+        assert "runbook-grounded" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_allows_runbook_grounded_cause(
+        self, app_with_user, mock_conversion_service
+    ):
+        mock_conversion_service.convert_from_case = AsyncMock(
+            return_value=_make_conversion_response()
+        )
+        app = app_with_user
+        app.state.case_repository = MagicMock(
+            get_by_id=AsyncMock(return_value=_resolved_case_with_root("runbook"))
+        )
+        async with await _client(app) as client:
+            resp = await client.post(
+                f"{API_PREFIX}/convert-from-case",
+                json={"case_id": "case_aaaaaaaaaaaa", "scope": "personal"},
+            )
+        assert resp.status_code != 422  # passed the soundness gate

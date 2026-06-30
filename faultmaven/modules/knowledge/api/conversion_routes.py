@@ -511,6 +511,27 @@ async def convert_from_case(
             detail=f"Case must be in RESOLVED status (current: {case_status})",
         )
 
+    # §7 soundness: a cause validated ONLY by lower-assurance, LLM-asserted support
+    # (no runbook-grounded predicate fired against the telemetry) must not auto-seed
+    # reusable knowledge. The chat-side suggestion path already holds it back (via
+    # assess_runbook_readiness); enforce the same bar here so this API entry point
+    # can't bypass it and harvest an unverified cause.
+    from faultmaven.core.investigation.cause_assurance import (
+        cause_validation_is_fallback_only,
+    )
+
+    if cause_validation_is_fallback_only(case):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This case's root cause rests on lower-assurance, LLM-asserted "
+                "evidence with no runbook-grounded support, so it can't be "
+                "auto-converted into a runbook — that would seed the knowledge base "
+                "with an unverified cause. If the cause is correct, document it via "
+                "POST /knowledge/runbooks/create."
+            ),
+        )
+
     # Extract case data via the canonical factory (shared with chat-side
     # `_handle_runbook_creation` in milestone_engine.py). Keeping both
     # call sites converged on `from_case` avoids the drift risk of two
