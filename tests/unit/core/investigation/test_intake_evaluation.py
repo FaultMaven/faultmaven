@@ -437,62 +437,54 @@ async def test_firing_predicate_fulfills_its_need():
     assert case.evidence_needs[0].state == NeedState.FULFILLED
 
 
-@pytest.mark.asyncio
-async def test_runbook_with_all_refuted_roots_is_retired():
-    # The matched runbook's only instantiated cause is REFUTED — the investigation
-    # has moved past it, so it is dropped from the standing differential.
+def test_supports_is_not_re_attached_to_a_refuted_root():
+    # A REFUTED root is settled — a runbook predicate firing SUPPORTS on a later
+    # turn must NOT re-support it (the standing-bias harm). The link is skipped.
     node = _root()
     node.node_state = NodeState.REFUTED
     node.refutation_reason = "refuted by rung evidence"
     case = _case(node)
-    case.differential_runbook_ids = ["rb1"]
-    await run_differential_intake_turn(
+    recorded = run_intake_evaluation(
         case,
         [_evidence()],
+        [_ac()],
         case.current_turn,
-        runbook_ids=["rb1"],
-        resolve_causes=_causes_for,
-        build_records=_build,
-        resolve_root=_always(node.node_id),  # the cause's root = the REFUTED node
-        evaluate=lambda **_: [],
-    )
-    assert "rb1" not in case.differential_runbook_ids
-
-
-@pytest.mark.asyncio
-async def test_runbook_with_a_live_root_is_kept():
-    node = _root()  # CANDIDATE — still in play
-    case = _case(node)
-    case.differential_runbook_ids = ["rb1"]
-    await run_differential_intake_turn(
-        case,
-        [_evidence()],
-        case.current_turn,
-        runbook_ids=["rb1"],
-        resolve_causes=_causes_for,
-        build_records=_build,
         resolve_root=_always(node.node_id),
-        evaluate=lambda **_: [],
+        evaluate=lambda **_: [_verdict(stance=EvidenceStance.SUPPORTS)],
     )
-    assert "rb1" in case.differential_runbook_ids
+    assert node.evidence_links == []
+    assert recorded == []
 
 
-@pytest.mark.asyncio
-async def test_runbook_with_no_instantiated_root_is_kept():
-    # Untested soft priors (no root instantiated yet) must not retire the runbook.
+def test_refuted_root_does_not_block_a_live_sibling():
+    # The guard is per-root: a refuted cause in a runbook must not stop the runbook's
+    # OTHER (still-live) causes from being supported — that is why we skip the
+    # refuted root rather than retiring the whole runbook.
+    refuted = _root("cn_000000000001")
+    refuted.node_state = NodeState.REFUTED
+    refuted.refutation_reason = "refuted by rung evidence"
+    live = _root("cn_000000000002")
     case = _case()
-    case.differential_runbook_ids = ["rb1"]
-    await run_differential_intake_turn(
+    case.causal_nodes = {refuted.node_id: refuted, live.node_id: live}
+    active = [
+        SimpleNamespace(candidate_id="rb1:A", record="A"),
+        SimpleNamespace(candidate_id="rb1:B", record="B"),
+    ]
+    roots = {"A": refuted.node_id, "B": live.node_id}
+    recorded = run_intake_evaluation(
         case,
         [_evidence()],
+        active,
         case.current_turn,
-        runbook_ids=["rb1"],
-        resolve_causes=_causes_for,
-        build_records=_build,
-        resolve_root=lambda c, r, *, may_instantiate: None,  # nothing instantiated
-        evaluate=lambda **_: [],
+        resolve_root=lambda c, record, *, may_instantiate: roots[record],
+        evaluate=lambda **_: [
+            _verdict(cause_id="rb1:A", stance=EvidenceStance.SUPPORTS),
+            _verdict(cause_id="rb1:B", stance=EvidenceStance.SUPPORTS),
+        ],
     )
-    assert "rb1" in case.differential_runbook_ids
+    assert refuted.evidence_links == []  # refuted root skipped
+    assert len(live.evidence_links) == 1  # live sibling still supported
+    assert [v.cause_id for v in recorded] == ["rb1:B"]
 
 
 def test_default_evaluator_stub_is_inert():
