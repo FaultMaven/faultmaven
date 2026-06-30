@@ -299,6 +299,13 @@ def _regen_differential_evidence_needs(
             if cause_refuted:
                 # The cause this need discriminates is refuted — retire the open
                 # need instead of asking for telemetry that can no longer matter.
+                # TERMINAL: a SUPERSEDED need never re-opens (a later non-refuted
+                # re-derivation finds it neither re-created below nor re-pended). This
+                # is sound ONLY because a REFUTED root is settled — the same premise as
+                # the #580 re-support guard (run_intake_evaluation skips a refuted
+                # root; REFUTED is durable via derive_node_states + refutation_reason).
+                # If a root could un-refute, a revived cause would be left without
+                # demand; revisit this branch if that invariant ever changes.
                 if existing is not None and existing.state in (
                     NeedState.PENDING,
                     NeedState.PARTIALLY_MET,

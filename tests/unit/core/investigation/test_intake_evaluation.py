@@ -466,6 +466,102 @@ async def test_refuted_cause_need_is_superseded_not_left_pending():
     assert case.evidence_needs[0].superseded_reason
 
 
+@pytest.mark.asyncio
+async def test_fulfilled_need_stays_fulfilled_after_refutation():
+    # Audit trail (the soundness claim): a need FULFILLED *before* the cause was
+    # refuted must NOT be rewritten to SUPERSEDED — it records what was collected
+    # before the cause was ruled out. Supersession only retires PENDING/PARTIALLY_MET.
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+    )
+    # Turn 1: predicate unsatisfied → a PENDING need is demanded.
+    await run_differential_intake_turn(
+        case, [_evidence()], case.current_turn, evaluate=lambda **_: [], **common
+    )
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+    # Turn 2: the predicate fires → the need is FULFILLED.
+    await run_differential_intake_turn(
+        case,
+        [_evidence("ev_000000000002")],
+        case.current_turn,
+        evaluate=lambda **_: [
+            StanceVerdict(
+                cause_id="rb1:A",
+                stance=EvidenceStance.SUPPORTS,
+                provenance="runbook",
+                predicate={"predicate": "contains", "target": "OOMKilled"},
+            )
+        ],
+        **common,
+    )
+    assert case.evidence_needs[0].state == NeedState.FULFILLED
+
+    # Turn 3: the cause's root is refuted — the FULFILLED need is PRESERVED.
+    node.node_state = NodeState.REFUTED
+    node.refutation_reason = "refuted by rung evidence"
+    await run_differential_intake_turn(
+        case,
+        [_evidence("ev_000000000003")],
+        case.current_turn,
+        evaluate=lambda **_: [],
+        **common,
+    )
+    assert len(case.evidence_needs) == 1
+    assert case.evidence_needs[0].state == NeedState.FULFILLED  # not SUPERSEDED
+
+
+@pytest.mark.asyncio
+async def test_uninstantiated_root_keeps_pending_need():
+    # An untested cause (no instantiated root) is NOT "refuted": _cause_root_is_refuted
+    # resolves with may_instantiate=False, gets None, and returns False — so the
+    # cause's PENDING need is preserved, never superseded.
+    case = _case()  # no root node in the graph
+    await run_differential_intake_turn(
+        case,
+        [_evidence()],
+        case.current_turn,
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_promote_only("cn_root"),  # None when may_instantiate=False
+        evaluate=lambda **_: [],
+    )
+    assert len(case.evidence_needs) == 1
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_partially_met_need_is_superseded_on_refutation():
+    # The supersede branch also retires a PARTIALLY_MET need (lower-priority path,
+    # completing the state matrix alongside PENDING→SUPERSEDED and FULFILLED-preserved).
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [],
+    )
+    # Turn 1: a PENDING need is created; drive it to PARTIALLY_MET out of band.
+    await run_differential_intake_turn(case, [_evidence()], case.current_turn, **common)
+    case.evidence_needs[0].state = NeedState.PARTIALLY_MET
+
+    # Refute the root → the PARTIALLY_MET need is superseded.
+    node.node_state = NodeState.REFUTED
+    node.refutation_reason = "refuted by rung evidence"
+    await run_differential_intake_turn(
+        case, [_evidence("ev_000000000002")], case.current_turn, **common
+    )
+    assert case.evidence_needs[0].state == NeedState.SUPERSEDED
+
+
 def test_supports_is_not_re_attached_to_a_refuted_root():
     # A REFUTED root is settled — a runbook predicate firing SUPPORTS on a later
     # turn must NOT re-support it (the standing-bias harm). The link is skipped.
