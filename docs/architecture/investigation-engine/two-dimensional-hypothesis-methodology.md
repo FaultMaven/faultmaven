@@ -352,7 +352,29 @@ the very chain it is testing. The counter is per-node and resets at
 A hypothesis — intermediate *or* root — is validated only by **direct,
 observable facts** matching its predicted state (an exact log/stack trace, a
 return code, a reproducer's output). Assumption, inference, and secondary
-correlation are not validation.
+correlation are not validation. Engine-side, a node reaches VALIDATED only on a
+**causally-grounding SUPPORTS** link (`derive_node_states` → `_node_evidence_tally`,
+`causal_graph.py`), net of refutations and behind the M7 AND-gate.
+
+A SUPPORTS link is causally grounding when **either** of two independent
+conditions holds:
+
+- its backing datum is categorized `CAUSAL_EVIDENCE` (a direct observable fact); **or**
+- the link carries **`runbook` provenance** — a deterministic, expert-authored
+  predicate that *fired against the submitted telemetry*. A predicate match **is**
+  a §7.1-grade observation by construction, so it grounds **regardless** of how
+  the LLM categorized the backing datum (`support_is_runbook_grounded`,
+  `cause_assurance.py`). Were grounding keyed on `Evidence.category` alone, an
+  authority-grounded match would be silently dropped whenever the LLM filed the
+  datum as, e.g., `SYMPTOM_EVIDENCE`.
+
+This is the **one** place the "runbook provenance is causal grounding" rule
+lives; both the node-validation tally and the KB-harvest grade ([§9.5](#95-harvest-assurance-grade-which-causes-may-seed-the-kb)) read it,
+so the rule cannot drift. Provenance also separates assurance *levels*: a
+`runbook` (or deductive) support is **authority-grounded**; a `None` /
+`llm_fallback` support is **lower-assurance** (the LLM authored both the predicate
+and its citation). Both can validate a node, but only the authority-grounded kind
+clears the harvest bar.
 
 ### 7.1.1 Deductive validation (proof by exclusion)
 
@@ -607,6 +629,31 @@ Chain-level belief replaces per-mention counting: **AND rung = min / product of
 members; OR = noisy-OR / max** (§6.1). `HypothesisManager.update_likelihood_from_evidence`
 would propagate node beliefs through the gates instead of summing
 `+0.15 / −0.20` on a flat hypothesis.
+
+### 9.5 Harvest assurance grade (which causes may seed the KB)
+
+Resolving a case is one thing; turning it into a **reusable runbook** is a
+stronger claim — a wrong cause that becomes a runbook misleads every future case
+that retrieves it. So KB harvest carries NO INCORRECT CONCLUSION one step further:
+only an **authority-grounded** cause may auto-seed knowledge.
+
+`grade_cause_assurance(case)` (`cause_assurance.py`) classifies the identified
+cause into three mutually-exclusive grades, in one pass over its validated roots:
+
+| Grade | Condition | May seed KB? |
+|-------|-----------|--------------|
+| `GROUNDED` | ≥1 VALIDATED root borne out by a `runbook`-provenance SUPPORTS ([§7.1](#71-empirical-validation-only)) **or** a deductive derivation ([§7.1.1](#711-deductive-validation-proof-by-exclusion)). | **Yes** |
+| `FALLBACK_ONLY` | ≥1 VALIDATED root, but every one rests only on lower-assurance (`None` / `llm_fallback`) support. | No — ask the user to *verify* the cause. |
+| `NO_ROOT` | No VALIDATED root at all (a bare, LLM-authored `RootCauseConclusion` with no causal graph). | No — ask the user to *identify* a cause. |
+
+`GROUNDED` is the harvest bar, and both entry points refuse to seed an unverified
+cause — the `POST /knowledge/convert-from-case` API rejects with 422 before
+conversion, and the chat-side runbook **action** returns `NOT_READY` (no draft)
+when the cause is not grounded (the suggestion is offered, but acting on it is
+gated). The full gate flow is in [document-to-runbook-conversion.md §1.1](../knowledge-and-ai/document-to-runbook-conversion.md#11-soundness-gate-only-an-authority-grounded-cause-may-seed-the-kb-7).
+The three-way grade is deliberate: a single positive bar (`GROUNDED`) makes the
+two held shapes (`FALLBACK_ONLY`, `NO_ROOT`) distinguishable for the user-facing
+ask, and unrepresentable as a "harvestable" state.
 
 ---
 
