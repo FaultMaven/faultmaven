@@ -48,6 +48,7 @@ from faultmaven.modules.case.contracts import (
     NeedPurpose,
     NeedState,
     NodeEvidenceLink,
+    NodeState,
 )
 
 if TYPE_CHECKING:
@@ -106,7 +107,8 @@ def run_intake_evaluation(
 
     Returns the verdicts that were recorded (for turn-progress accounting). A
     verdict is recorded iff its candidate is known, its root node resolves
-    (instantiated on a first SUPPORTS), and the link is not a duplicate.
+    (instantiated on a first SUPPORTS), the root is not an already-REFUTED node a
+    SUPPORTS would resurrect, and the link is not a duplicate.
     """
     records_by_id = {ac.candidate_id: ac.record for ac in active_causes}
     recorded: list[StanceVerdict] = []
@@ -127,6 +129,15 @@ def run_intake_evaluation(
                 continue  # REFUTES on an un-promoted cause, or no instantiable root
             node = case.causal_nodes.get(root_id)
             if node is None:
+                continue
+            if (
+                node.node_state == NodeState.REFUTED
+                and verdict.stance == EvidenceStance.SUPPORTS
+            ):
+                # A REFUTED root is settled — don't let a runbook predicate
+                # re-support it back to life turn after turn (the standing-bias
+                # harm). The cause stays refuted; the runbook stays in the
+                # differential, so its other (untested) causes remain testable.
                 continue
             if _attach_verdict_link(node, evidence, verdict, current_turn):
                 recorded.append(verdict)

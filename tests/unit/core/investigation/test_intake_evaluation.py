@@ -437,6 +437,56 @@ async def test_firing_predicate_fulfills_its_need():
     assert case.evidence_needs[0].state == NeedState.FULFILLED
 
 
+def test_supports_is_not_re_attached_to_a_refuted_root():
+    # A REFUTED root is settled — a runbook predicate firing SUPPORTS on a later
+    # turn must NOT re-support it (the standing-bias harm). The link is skipped.
+    node = _root()
+    node.node_state = NodeState.REFUTED
+    node.refutation_reason = "refuted by rung evidence"
+    case = _case(node)
+    recorded = run_intake_evaluation(
+        case,
+        [_evidence()],
+        [_ac()],
+        case.current_turn,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [_verdict(stance=EvidenceStance.SUPPORTS)],
+    )
+    assert node.evidence_links == []
+    assert recorded == []
+
+
+def test_refuted_root_does_not_block_a_live_sibling():
+    # The guard is per-root: a refuted cause in a runbook must not stop the runbook's
+    # OTHER (still-live) causes from being supported — that is why we skip the
+    # refuted root rather than retiring the whole runbook.
+    refuted = _root("cn_000000000001")
+    refuted.node_state = NodeState.REFUTED
+    refuted.refutation_reason = "refuted by rung evidence"
+    live = _root("cn_000000000002")
+    case = _case()
+    case.causal_nodes = {refuted.node_id: refuted, live.node_id: live}
+    active = [
+        SimpleNamespace(candidate_id="rb1:A", record="A"),
+        SimpleNamespace(candidate_id="rb1:B", record="B"),
+    ]
+    roots = {"A": refuted.node_id, "B": live.node_id}
+    recorded = run_intake_evaluation(
+        case,
+        [_evidence()],
+        active,
+        case.current_turn,
+        resolve_root=lambda c, record, *, may_instantiate: roots[record],
+        evaluate=lambda **_: [
+            _verdict(cause_id="rb1:A", stance=EvidenceStance.SUPPORTS),
+            _verdict(cause_id="rb1:B", stance=EvidenceStance.SUPPORTS),
+        ],
+    )
+    assert refuted.evidence_links == []  # refuted root skipped
+    assert len(live.evidence_links) == 1  # live sibling still supported
+    assert [v.cause_id for v in recorded] == ["rb1:B"]
+
+
 def test_default_evaluator_stub_is_inert():
     # With the real (stubbed) evaluator, no verdicts → no links (loop inert until
     # the matcher body lands).
