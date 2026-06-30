@@ -520,10 +520,11 @@ async def convert_from_case(
     # at all — pure LLM prose, zero causal graph — which the negative view let
     # through (#590 A1).
     from faultmaven.core.investigation.cause_assurance import (
-        cause_is_runbook_grounded,
+        CauseAssuranceGrade,
+        grade_cause_assurance,
     )
 
-    if not cause_is_runbook_grounded(case):
+    if grade_cause_assurance(case) != CauseAssuranceGrade.GROUNDED:
         raise HTTPException(
             status_code=422,
             detail=(

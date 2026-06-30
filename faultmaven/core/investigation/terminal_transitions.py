@@ -27,8 +27,8 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
-    cause_is_runbook_grounded,
-    cause_validation_is_fallback_only,
+    CauseAssuranceGrade,
+    grade_cause_assurance,
 )
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
@@ -852,20 +852,23 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
         and getattr(case.root_cause_conclusion, "root_cause", None)
     )
     # Harvest counts a cause only when it is AUTHORITY-GROUNDED — borne out by a
-    # runbook-provenance (or deductive) support. Gate on the positive bar directly
-    # so a RootCauseConclusion with NO validated root at all (pure LLM prose, zero
-    # causal graph) is also held: the negative "fallback-only" view is False there
-    # and would have let it through (#590 A1). A cause carried only by
-    # lower-assurance, LLM-authored validation is likewise held — harvesting a
-    # runbook from it would promote an unverified cause (the model authored both
-    # the predicate and its citation) into the corpus.
-    has_root_cause = has_root_cause_record and cause_is_runbook_grounded(case)
-    # For the user-facing ask, distinguish the two held shapes: a cause that IS
-    # graph-identified but rests only on lower-assurance support gets a "verify it"
-    # ask (fallback-only); a record with no validated root falls through to the
-    # plain "identify a root cause" ask below.
-    root_cause_unverified = has_root_cause_record and cause_validation_is_fallback_only(
-        case
+    # runbook-provenance (or deductive) support. Read the single assurance grade
+    # once and gate on GROUNDED explicitly: this also holds a RootCauseConclusion
+    # with NO validated root (pure LLM prose, zero causal graph) — graded NO_ROOT,
+    # not GROUNDED — which the old negative "fallback-only" view let through (#590
+    # A1). A cause carried only by lower-assurance validation (FALLBACK_ONLY) is
+    # likewise held: harvesting it would promote an unverified cause (the model
+    # authored both the predicate and its citation) into the corpus.
+    cause_grade = grade_cause_assurance(case)
+    has_root_cause = (
+        has_root_cause_record and cause_grade == CauseAssuranceGrade.GROUNDED
+    )
+    # For the user-facing ask, distinguish the two held shapes: a graph-identified
+    # cause resting only on lower-assurance support (FALLBACK_ONLY) gets a "verify
+    # it" ask; a record with no validated root (NO_ROOT) falls through to the plain
+    # "identify a root cause" ask below.
+    root_cause_unverified = (
+        has_root_cause_record and cause_grade == CauseAssuranceGrade.FALLBACK_ONLY
     )
     has_actionable_solution = False
     if case.solutions:

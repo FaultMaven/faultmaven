@@ -17,8 +17,11 @@ from faultmaven.core.investigation.causal_graph import (
     is_chain_root_validated,
 )
 from faultmaven.core.investigation.cause_assurance import (
+    CauseAssuranceGrade,
     cause_is_runbook_grounded,
     cause_validation_is_fallback_only,
+    grade_cause_assurance,
+    support_is_runbook_grounded,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -517,3 +520,75 @@ def test_runbook_support_validates_regardless_of_evidence_category():
     derive_node_states(case)
     assert root.node_state == NodeState.VALIDATED
     assert cause_is_runbook_grounded(case) is True
+
+
+# ---------------------------------------------------------------------------
+# The single assurance grade (grade_cause_assurance) + its shared primitive
+# ---------------------------------------------------------------------------
+
+
+def test_support_is_runbook_grounded_primitive():
+    # The one home for "runbook provenance is causal grounding". Only a
+    # runbook-provenance SUPPORTS qualifies — stance and provenance both matter.
+    assert (
+        support_is_runbook_grounded(_plink("ev_a", EvidenceStance.SUPPORTS, "runbook"))
+        is True
+    )
+    assert (
+        support_is_runbook_grounded(
+            _plink("ev_a", EvidenceStance.SUPPORTS, "llm_fallback")
+        )
+        is False
+    )
+    assert (
+        support_is_runbook_grounded(_plink("ev_a", EvidenceStance.SUPPORTS, None))
+        is False
+    )
+    # A runbook-provenance REFUTES is not a grounding SUPPORTS.
+    assert (
+        support_is_runbook_grounded(_plink("ev_a", EvidenceStance.REFUTES, "runbook"))
+        is False
+    )
+
+
+def test_grade_is_grounded_for_runbook_support():
+    case = _validated_root_case(["runbook"])
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+
+
+def test_grade_is_grounded_for_deductive_root():
+    root = _node(_nid(55), node_type=NodeType.ROOT)
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.DEDUCTIVE
+    case = _case([root])
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+
+
+def test_grade_is_fallback_only_for_lower_assurance_support():
+    case = _validated_root_case(["llm_fallback"])
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.FALLBACK_ONLY
+
+
+def test_grade_is_no_root_for_bare_rcc():
+    # No validated root at all (#590 A1) — distinct from FALLBACK_ONLY. This is the
+    # state the negative "fallback-only" view conflated into False, leaking harvest.
+    case = _case([])
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.NO_ROOT
+
+
+def test_boolean_views_agree_with_grade_across_all_states():
+    # The wrappers can never disagree with the grade — that consistency is the
+    # whole point of routing both through grade_cause_assurance.
+    cases = {
+        CauseAssuranceGrade.GROUNDED: _validated_root_case(["runbook"]),
+        CauseAssuranceGrade.FALLBACK_ONLY: _validated_root_case(["llm_fallback"]),
+        CauseAssuranceGrade.NO_ROOT: _case([]),
+    }
+    for grade, case in cases.items():
+        assert grade_cause_assurance(case) == grade
+        assert cause_is_runbook_grounded(case) is (
+            grade == CauseAssuranceGrade.GROUNDED
+        )
+        assert cause_validation_is_fallback_only(case) is (
+            grade == CauseAssuranceGrade.FALLBACK_ONLY
+        )

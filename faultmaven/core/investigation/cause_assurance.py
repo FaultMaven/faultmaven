@@ -1,15 +1,25 @@
-"""Provenance-assurance check for an identified cause (pure, contracts-only).
+"""Provenance-assurance grading for an identified cause (pure, contracts-only).
 
-Lives apart from ``causal_graph`` deliberately: the only consumer is the terminal
+Lives apart from ``causal_graph`` deliberately: consumers include the terminal
 runbook-harvest gate (``terminal_transitions``), and ``causal_graph`` already
 pulls in ``hypothesis_manager`` which pulls in ``terminal_transitions`` — so
-putting this in ``causal_graph`` and importing it from ``terminal_transitions``
-would close an import cycle. Keeping it here (it needs nothing from
-``causal_graph``, only the case contracts) breaks that back-edge.
+putting this in ``causal_graph`` and importing it back would close an import
+cycle. Keeping it here (it needs nothing from ``causal_graph``, only the case
+contracts) breaks that back-edge, and lets ``causal_graph`` import the one shared
+"runbook provenance is causal grounding" primitive (``support_is_runbook_grounded``)
+from here without a cycle.
+
+``grade_cause_assurance`` is the single source of truth: it classifies a case
+into one of three mutually-exclusive assurance grades in one pass. The boolean
+views (``cause_is_runbook_grounded`` / ``cause_validation_is_fallback_only``) are
+thin wrappers over it, so they can never disagree — the wrong-predicate footgun
+(a caller inverting "fallback-only" and missing the no-root case) is removed by
+making the three states explicit. The §7 harvest bar is ``GROUNDED``.
 """
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from faultmaven.modules.case.contracts import (
@@ -20,68 +30,87 @@ from faultmaven.modules.case.contracts import (
 )
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.contracts import Case
+    from faultmaven.modules.case.contracts import Case, NodeEvidenceLink
 
 
-def _has_validated_root(case: "Case") -> bool:
-    """Whether the case's causal graph has any VALIDATED ROOT at all (i.e. a cause
-    is graph-identified, not merely an LLM-authored RootCauseConclusion prose)."""
-    return any(
-        n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
-        for n in case.causal_nodes.values()
-    )
+def support_is_runbook_grounded(link: "NodeEvidenceLink") -> bool:
+    """Whether a link is a ``runbook``-provenance SUPPORTS — a deterministic,
+    expert-authored predicate that fired against the submitted telemetry.
 
-
-def cause_is_runbook_grounded(case: "Case") -> bool:
-    """Whether the cause is borne out by an AUTHORITY-GROUNDED support — the bar
-    for auto-seeding reusable knowledge (KB harvest, §7).
-
-    True iff at least one VALIDATED root is validated either:
-
-    - by a ``runbook``-provenance SUPPORTS link — a deterministic, expert-authored
-      predicate fired against submitted telemetry. This counts REGARDLESS of how
-      the LLM categorized the backing datum: a runbook predicate firing IS causal
-      grounding, independent of the orthogonal ``Evidence.category`` choice (#590
-      A2 — otherwise a sound signal is silently dropped when the LLM files the
-      datum as e.g. SYMPTOM_EVIDENCE); or
-    - DEDUCTIVELY (proof-by-exclusion, §7.1.1) — a methodology derivation, sound.
-
-    Returns False when there is NO validated root at all — a pure LLM-authored
-    RootCauseConclusion with zero causal graph (#590 A1, the §7 harvest hole) — and
-    when every validated root rests only on lower-assurance (``None`` /
-    ``llm_fallback``) support. Both are HELD from harvest: a confidently-wrong LLM
-    with no firing runbook predicate must not turn an unverified cause into
-    reusable knowledge.
+    This is the ONE place the "runbook provenance IS causal grounding" rule lives.
+    It counts as causal grounding REGARDLESS of the LLM's ``Evidence.category``
+    choice on the backing datum (#590 A2): the predicate firing is the causal
+    signal, independent of how the datum was filed. Both the node-validation tally
+    (``causal_graph._node_evidence_tally``) and the harvest grade
+    (``grade_cause_assurance``) read this primitive so the rule can't drift.
     """
-    evidence_by_id = {e.evidence_id for e in case.evidence}
+    return link.stance == EvidenceStance.SUPPORTS and link.provenance == "runbook"
+
+
+class CauseAssuranceGrade(str, Enum):
+    """The assurance behind a case's identified cause, as one of three mutually
+    exclusive grades. ``GROUNDED`` is the §7 bar for auto-seeding reusable
+    knowledge; the other two are held back, for different user-facing reasons."""
+
+    NO_ROOT = "no_root"
+    """No VALIDATED root at all — a pure LLM-authored RootCauseConclusion with zero
+    causal graph (#590 A1). Not graph-identified; ask the user to identify a cause."""
+
+    FALLBACK_ONLY = "fallback_only"
+    """≥1 VALIDATED root, but every one rests only on lower-assurance (``None`` /
+    ``llm_fallback``) support — never an authority-grounded one. Graph-identified
+    but unverified; ask the user to verify it."""
+
+    GROUNDED = "grounded"
+    """≥1 VALIDATED root borne out by an AUTHORITY-GROUNDED support — a
+    ``runbook``-provenance SUPPORTS, or a DEDUCTIVE derivation (proof-by-exclusion,
+    §7.1.1). The only grade that may auto-seed reusable knowledge."""
+
+
+def grade_cause_assurance(case: "Case") -> CauseAssuranceGrade:
+    """Classify the case's identified cause into a single assurance grade, in one
+    pass over its validated roots. The single source of truth for §7 gating.
+
+    A confidently-wrong LLM with no firing runbook predicate must not turn an
+    unverified cause into reusable knowledge, so only ``GROUNDED`` clears the bar.
+    """
+    evidence_ids = {e.evidence_id for e in case.evidence}
     validated_roots = [
         n
         for n in case.causal_nodes.values()
         if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
     ]
     if not validated_roots:
-        return False  # pure LLM-authored RCC, no graph — not authority-grounded
+        return CauseAssuranceGrade.NO_ROOT
 
     for root in validated_roots:
         if root.validation_method == ValidationMethod.DEDUCTIVE:
-            return True  # deductive proof-by-exclusion is sound
+            return CauseAssuranceGrade.GROUNDED  # deductive proof-by-exclusion
         for link in root.evidence_links:
-            if link.evidence_id not in evidence_by_id:
+            if link.evidence_id not in evidence_ids:
                 continue  # dangling reference (deleted evidence) — never counts
-            if link.stance == EvidenceStance.SUPPORTS and link.provenance == "runbook":
-                return True  # authority-grounded (runbook predicate, any category)
-    return False
+            if support_is_runbook_grounded(link):
+                return CauseAssuranceGrade.GROUNDED  # authority-grounded predicate
+    return CauseAssuranceGrade.FALLBACK_ONLY
+
+
+def cause_is_runbook_grounded(case: "Case") -> bool:
+    """Whether the cause clears the §7 harvest bar — an AUTHORITY-GROUNDED support
+    (runbook predicate or deductive derivation) borne out by ≥1 VALIDATED root.
+
+    Thin view over ``grade_cause_assurance``; equivalent to grade ``GROUNDED``.
+    Holds BOTH the no-root (#590 A1) and the fallback-only cases.
+    """
+    return grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
 
 
 def cause_validation_is_fallback_only(case: "Case") -> bool:
     """Whether an IDENTIFIED cause (≥1 VALIDATED root) rests ONLY on lower-assurance
-    validation — every validated root is borne out by ``None`` / ``llm_fallback``
-    support, never an authority-grounded (``runbook`` / deductive) one.
+    validation — graph-identified but never authority-grounded.
 
-    This is the "fallback-only AMONG validated roots" view, used to label / hold a
-    graph-identified-but-unverified cause. It is deliberately False when there is
-    NO validated root: that case is not "fallback-only", it is simply not
-    graph-identified at all — and the harvest bar is ``cause_is_runbook_grounded``
-    (which holds BOTH the no-root and the fallback-only cases), not this function.
+    Thin view over ``grade_cause_assurance``; equivalent to grade ``FALLBACK_ONLY``.
+    Deliberately False when there is no validated root (that is ``NO_ROOT``, not
+    fallback-only) — do NOT invert it as a harvest bar; use
+    ``cause_is_runbook_grounded`` (``GROUNDED``), which holds the no-root case too.
     """
-    return _has_validated_root(case) and not cause_is_runbook_grounded(case)
+    return grade_cause_assurance(case) == CauseAssuranceGrade.FALLBACK_ONLY
