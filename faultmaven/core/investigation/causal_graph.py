@@ -208,8 +208,11 @@ def _node_evidence_tally(
 
     Counts only links whose backing evidence row actually exists (a dangling
     ``evidence_id`` is ignored, never assumed). ``causal_supports`` is the subset
-    of SUPPORTS links backed by ``CAUSAL_EVIDENCE`` — the §7.1 "direct observable
-    fact" bar — so a node validates only on real causal grounding.
+    of SUPPORTS links that are causally grounding — either backed by
+    ``CAUSAL_EVIDENCE`` (the §7.1 "direct observable fact" bar) OR carrying
+    ``runbook`` provenance (a deterministic expert predicate fired against the
+    telemetry, causal regardless of the LLM's ``Evidence.category`` choice — #590
+    A2) — so a node validates only on real causal grounding.
     ``counterfactual_refutes`` is
     the subset of REFUTES links backed by ``CAUSAL_ABSENCE_EVIDENCE`` — a
     counterfactual disconfirmation (the cause was addressed yet ``D`` persisted),
@@ -265,8 +268,9 @@ def derive_node_states(case: Case) -> bool:
       OR its links net-refute it ``refutes > supports`` (strict; a correlational
       tie is INCONCLUSIVE, not a disproof). ``validation_method=NONE``,
       ``actionable=False``.
-    - **VALIDATED** — not refuted, has at least one CAUSAL_EVIDENCE-backed
-      SUPPORTS link, is net-supporting (``supports > refutes``), AND every
+    - **VALIDATED** — not refuted, has at least one causally-grounding SUPPORTS
+      link (CAUSAL_EVIDENCE-backed, or ``runbook``-provenance regardless of
+      category — #590 A2), is net-supporting (``supports > refutes``), AND every
       AND-set feeding it is fully VALIDATED (M7 proof, strict). EMPIRICAL grade;
       a validated ROOT is marked ``actionable`` (M1). Method/actionable/reason
       are kept mutually consistent so the node satisfies its M1/M4/refutation
