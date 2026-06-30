@@ -518,9 +518,9 @@ async def test_fulfilled_need_stays_fulfilled_after_refutation():
 
 @pytest.mark.asyncio
 async def test_uninstantiated_root_keeps_pending_need():
-    # An untested cause (no instantiated root) is NOT "refuted": _cause_root_is_refuted
-    # resolves with may_instantiate=False, gets None, and returns False — so the
-    # cause's PENDING need is preserved, never superseded.
+    # An untested cause (no instantiated root) is not settled: _cause_root_settled_state
+    # resolves with may_instantiate=False, gets None, and returns None (neither refuted
+    # nor validated) — so the cause's PENDING need is preserved, never superseded.
     case = _case()  # no root node in the graph
     await run_differential_intake_turn(
         case,
@@ -556,6 +556,167 @@ async def test_partially_met_need_is_superseded_on_refutation():
     # Refute the root → the PARTIALLY_MET need is superseded.
     node.node_state = NodeState.REFUTED
     node.refutation_reason = "refuted by rung evidence"
+    await run_differential_intake_turn(
+        case, [_evidence("ev_000000000002")], case.current_turn, **common
+    )
+    assert case.evidence_needs[0].state == NeedState.SUPERSEDED
+
+
+@pytest.mark.asyncio
+async def test_validated_cause_unfired_need_is_superseded():
+    # A3 (the symmetric twin of the refuted case): once a cause's root is VALIDATED,
+    # its still-open predicate needs are retired — the cause is proven, so asking the
+    # user to discriminate it further would hang PENDING forever.
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [],
+    )
+    # Turn 1: a PENDING need is created.
+    await run_differential_intake_turn(case, [_evidence()], case.current_turn, **common)
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+    # The root validates DEDUCTIVELY (durable) on other evidence without this
+    # predicate firing → its un-fired need is superseded.
+    node.node_state = NodeState.VALIDATED
+    node.validation_method = ValidationMethod.DEDUCTIVE
+    await run_differential_intake_turn(
+        case, [_evidence("ev_000000000002")], case.current_turn, **common
+    )
+    assert case.evidence_needs[0].state == NeedState.SUPERSEDED
+    assert case.evidence_needs[0].superseded_reason
+
+
+@pytest.mark.asyncio
+async def test_validated_cause_with_firing_predicate_fulfills_not_supersedes():
+    # If the predicate DOES fire on the turn the cause is validated, the need is
+    # FULFILLED — the fired branch runs before the validated supersession, so a genuine
+    # hit is recorded (audit trail), not retired.
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+    )
+    # Turn 1: PENDING need.
+    await run_differential_intake_turn(
+        case, [_evidence()], case.current_turn, evaluate=lambda **_: [], **common
+    )
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+    # Turn 2: predicate fires AND the root is deductively validated → FULFILLED wins.
+    node.node_state = NodeState.VALIDATED
+    node.validation_method = ValidationMethod.DEDUCTIVE
+    await run_differential_intake_turn(
+        case,
+        [_evidence("ev_000000000002")],
+        case.current_turn,
+        evaluate=lambda **_: [
+            StanceVerdict(
+                cause_id="rb1:A",
+                stance=EvidenceStance.SUPPORTS,
+                provenance="runbook",
+                predicate={"predicate": "contains", "target": "OOMKilled"},
+            )
+        ],
+        **common,
+    )
+    assert case.evidence_needs[0].state == NeedState.FULFILLED
+
+
+@pytest.mark.asyncio
+async def test_empirically_validated_cause_keeps_pending_need():
+    # The correctness fix: an EMPIRICAL validation is NOT durable — derive_node_states
+    # can demote it to INCONCLUSIVE/CANDIDATE on later evidence — so its need must STAY
+    # OPEN (superseding it would strand the cause if it un-validates). Only DEDUCTIVE
+    # validation retires the need.
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [],
+    )
+    await run_differential_intake_turn(case, [_evidence()], case.current_turn, **common)
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+    # Empirically validated (the common, revertible kind) → need is NOT superseded.
+    node.node_state = NodeState.VALIDATED
+    node.validation_method = ValidationMethod.EMPIRICAL
+    await run_differential_intake_turn(
+        case, [_evidence("ev_000000000002")], case.current_turn, **common
+    )
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_fulfilled_need_stays_fulfilled_after_validation():
+    # Audit trail (twin of the refuted-side test): a need FULFILLED before the cause
+    # was deductively validated stays FULFILLED, not rewritten to SUPERSEDED.
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+    )
+    await run_differential_intake_turn(
+        case, [_evidence()], case.current_turn, evaluate=lambda **_: [], **common
+    )
+    await run_differential_intake_turn(
+        case,
+        [_evidence("ev_000000000002")],
+        case.current_turn,
+        evaluate=lambda **_: [
+            StanceVerdict(
+                cause_id="rb1:A",
+                stance=EvidenceStance.SUPPORTS,
+                provenance="runbook",
+                predicate={"predicate": "contains", "target": "OOMKilled"},
+            )
+        ],
+        **common,
+    )
+    assert case.evidence_needs[0].state == NeedState.FULFILLED
+
+    node.node_state = NodeState.VALIDATED
+    node.validation_method = ValidationMethod.DEDUCTIVE
+    await run_differential_intake_turn(
+        case,
+        [_evidence("ev_000000000003")],
+        case.current_turn,
+        evaluate=lambda **_: [],
+        **common,
+    )
+    assert case.evidence_needs[0].state == NeedState.FULFILLED  # not SUPERSEDED
+
+
+@pytest.mark.asyncio
+async def test_partially_met_need_is_superseded_on_deductive_validation():
+    # Completes the validated-side state matrix (twin of the refuted PARTIALLY_MET test).
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [],
+    )
+    await run_differential_intake_turn(case, [_evidence()], case.current_turn, **common)
+    case.evidence_needs[0].state = NeedState.PARTIALLY_MET
+
+    node.node_state = NodeState.VALIDATED
+    node.validation_method = ValidationMethod.DEDUCTIVE
     await run_differential_intake_turn(
         case, [_evidence("ev_000000000002")], case.current_turn, **common
     )
