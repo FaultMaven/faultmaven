@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
+    cause_is_runbook_grounded,
     cause_validation_is_fallback_only,
 )
 from faultmaven.modules.case.contracts import (
@@ -850,19 +851,22 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
         case.root_cause_conclusion
         and getattr(case.root_cause_conclusion, "root_cause", None)
     )
-    # A cause established only on lower-assurance, LLM-authored validation is held
-    # back from auto-seeding reusable knowledge: harvesting a runbook from it would
-    # promote an unverified cause (the model authored both the predicate and its
-    # citation) into the corpus. It still counts once a sound (runbook-grounded)
-    # support bears the cause out.
-    #
-    # Distinguish "no root cause on record" from "root cause present but only
-    # lower-assurance" — they need different user-facing asks (provide vs. verify),
-    # so don't collapse the second into the first beyond gating the coverage.
+    # Harvest counts a cause only when it is AUTHORITY-GROUNDED — borne out by a
+    # runbook-provenance (or deductive) support. Gate on the positive bar directly
+    # so a RootCauseConclusion with NO validated root at all (pure LLM prose, zero
+    # causal graph) is also held: the negative "fallback-only" view is False there
+    # and would have let it through (#590 A1). A cause carried only by
+    # lower-assurance, LLM-authored validation is likewise held — harvesting a
+    # runbook from it would promote an unverified cause (the model authored both
+    # the predicate and its citation) into the corpus.
+    has_root_cause = has_root_cause_record and cause_is_runbook_grounded(case)
+    # For the user-facing ask, distinguish the two held shapes: a cause that IS
+    # graph-identified but rests only on lower-assurance support gets a "verify it"
+    # ask (fallback-only); a record with no validated root falls through to the
+    # plain "identify a root cause" ask below.
     root_cause_unverified = has_root_cause_record and cause_validation_is_fallback_only(
         case
     )
-    has_root_cause = has_root_cause_record and not root_cause_unverified
     has_actionable_solution = False
     if case.solutions:
         for sol in case.solutions:

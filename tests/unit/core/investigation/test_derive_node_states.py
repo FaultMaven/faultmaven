@@ -17,6 +17,7 @@ from faultmaven.core.investigation.causal_graph import (
     is_chain_root_validated,
 )
 from faultmaven.core.investigation.cause_assurance import (
+    cause_is_runbook_grounded,
     cause_validation_is_fallback_only,
 )
 from faultmaven.modules.case.contracts import (
@@ -459,3 +460,60 @@ def test_deductively_validated_root_is_sound():
     root.validation_method = ValidationMethod.DEDUCTIVE
     case = _case([root])
     assert cause_validation_is_fallback_only(case) is False
+
+
+# ---------------------------------------------------------------------------
+# Harvest bar from provenance (cause_is_runbook_grounded) — #590 A1/A2
+# ---------------------------------------------------------------------------
+
+
+def test_runbook_grounded_true_for_runbook_support():
+    case = _validated_root_case(["runbook"])
+    assert cause_is_runbook_grounded(case) is True
+
+
+def test_runbook_grounded_false_for_fallback_only():
+    case = _validated_root_case(["llm_fallback"])
+    assert cause_is_runbook_grounded(case) is False
+
+
+def test_runbook_grounded_true_when_any_support_is_runbook():
+    case = _validated_root_case(["llm_fallback", "runbook"])
+    assert cause_is_runbook_grounded(case) is True
+
+
+def test_runbook_grounded_true_for_deductive_root():
+    root = _node(_nid(53), node_type=NodeType.ROOT)
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.DEDUCTIVE
+    case = _case([root])
+    assert cause_is_runbook_grounded(case) is True
+
+
+def test_runbook_grounded_false_when_no_validated_root():
+    # #590 A1: a RootCauseConclusion may carry ZERO causal graph (pure LLM prose).
+    # With no validated root there is nothing authority-grounded, so harvest must be
+    # held. The negative "fallback-only" view returns False here too — which is
+    # exactly why gating harvest on it leaked an ungrounded cause. The positive bar
+    # returns False (not grounded), closing the hole.
+    case = _case([])  # no nodes at all — bare RCC prose shape
+    assert cause_is_runbook_grounded(case) is False
+    assert cause_validation_is_fallback_only(case) is False  # the leak it replaces
+
+
+def test_runbook_support_validates_regardless_of_evidence_category():
+    # #590 A2: a runbook-provenance SUPPORTS is causal grounding even when the LLM
+    # filed the backing datum as SYMPTOM_EVIDENCE — the deterministic predicate
+    # fired against the telemetry, which is causal independent of the orthogonal
+    # category label. (Contrast test_symptom_backed_support_does_not_validate: a
+    # None-provenance, LLM-asserted symptom support does NOT validate.)
+    ev = _evidence("ev_rb_sym", EvidenceCategory.SYMPTOM_EVIDENCE)
+    root = _node(
+        _nid(54),
+        node_type=NodeType.ROOT,
+        links=[_plink("ev_rb_sym", EvidenceStance.SUPPORTS, "runbook")],
+    )
+    case = _case([root], evidence=[ev])
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+    assert cause_is_runbook_grounded(case) is True

@@ -222,7 +222,15 @@ def _node_evidence_tally(
             continue  # dangling reference — never counts
         if link.stance == EvidenceStance.SUPPORTS:
             supports += 1
-            if evidence_by_id[link.evidence_id] == EvidenceCategory.CAUSAL_EVIDENCE:
+            # A runbook-provenance SUPPORTS is causal grounding by construction (a
+            # deterministic expert predicate fired against the telemetry), so it
+            # counts regardless of how the LLM categorized the backing datum —
+            # otherwise the authority-grounded signal is silently dropped when the
+            # datum is filed as e.g. SYMPTOM_EVIDENCE (#590 A2).
+            if (
+                evidence_by_id[link.evidence_id] == EvidenceCategory.CAUSAL_EVIDENCE
+                or link.provenance == "runbook"
+            ):
                 causal_supports += 1
         elif link.stance == EvidenceStance.REFUTES:
             refutes += 1

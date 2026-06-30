@@ -142,6 +142,67 @@ def _make_resolution_ready(case):
     return case
 
 
+def _ground_root_in_runbook(
+    case,
+    evidence_id="ev_d00dfeed0001",
+    node_id="cn_d00dfeed0001",
+):
+    """Add a runbook-grounded VALIDATED ROOT so the case clears the §7 harvest bar.
+
+    ``cause_is_runbook_grounded`` requires at least one VALIDATED root borne out by
+    a ``runbook``-provenance SUPPORTS link (a deterministic expert predicate that
+    fired against the telemetry) before a cause may auto-seed reusable knowledge
+    (#590 A1). A bare ``RootCauseConclusion`` — LLM prose with no validated root —
+    is NOT grounded and is held back from harvest. Appends (does not replace) so a
+    caller can set other evidence first.
+    """
+    from faultmaven.modules.case.contracts import (
+        CausalNode,
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+        EvidenceStance,
+        NodeEvidenceLink,
+        NodeState,
+        NodeType,
+        ValidationMethod,
+    )
+
+    case.evidence.append(
+        Evidence(
+            evidence_id=evidence_id,
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            primary_purpose="diagnosis",
+            summary="runbook predicate matched the submitted telemetry",
+            extract="pool: 0 idle / 0 free",
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id="file_aabb12345678",
+            collected_by="user_123",
+            collected_at_turn=1,
+        )
+    )
+    case.causal_nodes[node_id] = CausalNode(
+        node_id=node_id,
+        statement="connection pool exhausted",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        actionable=True,
+        belief=0.8,
+        generated_at_turn=1,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="runbook predicate fired",
+                provenance="runbook",
+                linked_at_turn=1,
+            )
+        ],
+    )
+    return case
+
+
 class TestMilestoneEngine:
 
     @pytest.mark.asyncio
@@ -1505,6 +1566,8 @@ class TestReadinessAssessments:
                 collected_at_turn=1,
             )
         ]
+        # A harvestable cause must be runbook-grounded (#590 A1), not bare RCC prose.
+        _ground_root_in_runbook(case)
         result = assess_runbook_readiness(case)
         assert result.verdict == result.READY
 
@@ -1592,6 +1655,61 @@ class TestReadinessAssessments:
         assert "lower-assurance" in result.message
         assert "- identified root cause" not in result.message
 
+    def test_runbook_readiness_not_suitable_when_rcc_has_no_validated_root(self):
+        """An otherwise-rich case whose root cause is bare RootCauseConclusion prose
+        with NO validated causal graph is held back from harvest (#590 A1).
+
+        The cause was never graph-identified, so nothing is authority-grounded — a
+        confidently-wrong LLM must not turn unverified prose into a runbook. (The
+        old negative "fallback-only" gate let this through: it is False when there
+        is no validated root.)"""
+        from faultmaven.core.investigation.terminal_transitions import (
+            assess_runbook_readiness,
+        )
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
+        case = self._make_case()
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Connection pool timeout too low",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="1s timeout causes cascading failures under load",
+        )
+        case.solutions = [
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Increase pool timeout",
+                longterm_fix="Set pool.timeout=30s in application.yaml",
+                commands=["kubectl edit configmap app-config"],
+                implementation_steps=["Edit configmap", "Restart pods"],
+                verification_method="Check p99 latency < 500ms for 30 min",
+            )
+        ]
+        case.evidence = [
+            Evidence(
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                primary_purpose="symptom_verified",
+                summary="Timeout errors in application logs at 14:03 UTC",
+                extract="Error: connection timeout after 1000ms",
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id="file_aabb12345678",
+                collected_by="user_123",
+                collected_at_turn=1,
+            )
+        ]
+        # No causal_nodes at all — RCC is pure prose.
+        assert not case.causal_nodes
+
+        result = assess_runbook_readiness(case)
+        assert result.verdict == result.NOT_SUITABLE
+
     def test_runbook_readiness_needs_enrichment(self):
         """Root cause + commands but no evidence, no mitigation, no verification → needs enrichment."""
         from faultmaven.core.investigation.terminal_transitions import (
@@ -1618,7 +1736,10 @@ class TestReadinessAssessments:
                 commands=["kubectl edit configmap"],
             )
         ]
-        # No evidence, no mitigation, no verification
+        # Cause must be runbook-grounded to be harvestable at all (#590 A1); the
+        # enrichment verdict then turns on the thin solution (no mitigation, no
+        # verification method).
+        _ground_root_in_runbook(case)
         result = assess_runbook_readiness(case)
         assert result.verdict == result.NEEDS_ENRICHMENT
 
@@ -1820,6 +1941,8 @@ class TestRunbookSuggestion:
                 collected_at_turn=1,
             )
         ]
+        # A suggestible cause must be runbook-grounded (#590 A1).
+        _ground_root_in_runbook(case)
 
         result = await evaluate_runbook_suggestion(case, runbook_kb=None)
         assert result.verdict == RunbookSuggestion.SUGGEST
@@ -1857,6 +1980,8 @@ class TestRunbookSuggestion:
         )
         _make_resolution_ready(case)
         case.solutions[0].commands = ["kubectl edit configmap"]
+        # A suggestible cause must be runbook-grounded (#590 A1).
+        _ground_root_in_runbook(case)
 
         # Mock runbook_kb that returns a high-similarity match
         mock_kb = AsyncMock()

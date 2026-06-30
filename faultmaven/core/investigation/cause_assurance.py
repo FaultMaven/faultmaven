@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from faultmaven.modules.case.contracts import (
-    EvidenceCategory,
     EvidenceStance,
     NodeState,
     NodeType,
@@ -24,57 +23,65 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
 
-def cause_validation_is_fallback_only(case: "Case") -> bool:
-    """Whether the case's cause-identification rests ONLY on lower-assurance
-    validation — i.e. NO validated root was borne out by an authority-grounded
-    (``runbook``-provenance) support.
+def _has_validated_root(case: "Case") -> bool:
+    """Whether the case's causal graph has any VALIDATED ROOT at all (i.e. a cause
+    is graph-identified, not merely an LLM-authored RootCauseConclusion prose)."""
+    return any(
+        n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
+        for n in case.causal_nodes.values()
+    )
 
-    A support link's ``provenance`` records who authored the predicate that the
-    link encodes, and only one grade is SOUND:
 
-    - ``"runbook"`` — an expert-authored predicate that fired against submitted
-      telemetry. The ONLY authority-grounded (sound) tier.
-    - ``"llm_fallback"`` — a predicate the LLM authored for itself when no runbook
-      covered the cause; re-checking the model's own predicate is lower-assurance
-      (it authors both the test and what it cites).
-    - ``None`` — a link the LLM asserted directly (the emitted-chain path never
-      sets provenance), or a legacy/unlabeled link. Either way it is NOT
-      authority-grounded, so it is lower-assurance — the same grade as
-      ``llm_fallback`` for this check.
+def cause_is_runbook_grounded(case: "Case") -> bool:
+    """Whether the cause is borne out by an AUTHORITY-GROUNDED support — the bar
+    for auto-seeding reusable knowledge (KB harvest, §7).
 
-    Returns True when the cause IS identified (at least one VALIDATED root) but no
-    validated root has a ``runbook``-grounded support — its validation rests on
-    the LLM's own say-so. A root validated DEDUCTIVELY (proof-by-exclusion,
-    §7.1.1) is a methodology derivation, not LLM-authored, so it counts as sound.
-    A single runbook-grounded (or deductive) support makes the identification
-    sound.
+    True iff at least one VALIDATED root is validated either:
 
-    Downstream consumers treat a fallback-only identification as held / needing
-    confirmation (e.g. it does not auto-qualify a case for runbook harvesting), so
-    a confidently-wrong LLM with no firing runbook predicate cannot turn an
-    unverified cause into reusable knowledge (§7).
+    - by a ``runbook``-provenance SUPPORTS link — a deterministic, expert-authored
+      predicate fired against submitted telemetry. This counts REGARDLESS of how
+      the LLM categorized the backing datum: a runbook predicate firing IS causal
+      grounding, independent of the orthogonal ``Evidence.category`` choice (#590
+      A2 — otherwise a sound signal is silently dropped when the LLM files the
+      datum as e.g. SYMPTOM_EVIDENCE); or
+    - DEDUCTIVELY (proof-by-exclusion, §7.1.1) — a methodology derivation, sound.
+
+    Returns False when there is NO validated root at all — a pure LLM-authored
+    RootCauseConclusion with zero causal graph (#590 A1, the §7 harvest hole) — and
+    when every validated root rests only on lower-assurance (``None`` /
+    ``llm_fallback``) support. Both are HELD from harvest: a confidently-wrong LLM
+    with no firing runbook predicate must not turn an unverified cause into
+    reusable knowledge.
     """
-    evidence_by_id: dict[str, EvidenceCategory | None] = {
-        e.evidence_id: e.category for e in case.evidence
-    }
+    evidence_by_id = {e.evidence_id for e in case.evidence}
     validated_roots = [
         n
         for n in case.causal_nodes.values()
         if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
     ]
     if not validated_roots:
-        return False  # no identified cause — "fallback-only" does not apply
+        return False  # pure LLM-authored RCC, no graph — not authority-grounded
 
     for root in validated_roots:
         if root.validation_method == ValidationMethod.DEDUCTIVE:
-            return False  # deductive proof is sound, not a fallback grade
+            return True  # deductive proof-by-exclusion is sound
         for link in root.evidence_links:
             if link.evidence_id not in evidence_by_id:
                 continue  # dangling reference (deleted evidence) — never counts
-            if (
-                link.stance == EvidenceStance.SUPPORTS
-                and evidence_by_id[link.evidence_id] == EvidenceCategory.CAUSAL_EVIDENCE
-                and link.provenance == "runbook"
-            ):
-                return False  # an authority-grounded support → not fallback-only
-    return True
+            if link.stance == EvidenceStance.SUPPORTS and link.provenance == "runbook":
+                return True  # authority-grounded (runbook predicate, any category)
+    return False
+
+
+def cause_validation_is_fallback_only(case: "Case") -> bool:
+    """Whether an IDENTIFIED cause (≥1 VALIDATED root) rests ONLY on lower-assurance
+    validation — every validated root is borne out by ``None`` / ``llm_fallback``
+    support, never an authority-grounded (``runbook`` / deductive) one.
+
+    This is the "fallback-only AMONG validated roots" view, used to label / hold a
+    graph-identified-but-unverified cause. It is deliberately False when there is
+    NO validated root: that case is not "fallback-only", it is simply not
+    graph-identified at all — and the harvest bar is ``cause_is_runbook_grounded``
+    (which holds BOTH the no-root and the fallback-only cases), not this function.
+    """
+    return _has_validated_root(case) and not cause_is_runbook_grounded(case)
