@@ -919,9 +919,33 @@ def _resolved_case_with_root(provenance):
     )
 
 
+def _resolved_case_no_graph():
+    """A RESOLVED case whose root cause is bare RootCauseConclusion prose with NO
+    causal graph at all (#590 A1) — never authority-grounded, must be rejected."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        case_id="case_bbbbbbbbbbbb",
+        title="Pod crash-loops",
+        description="d",
+        state="resolved",
+        causal_nodes={},  # no validated root — pure LLM prose
+        evidence=[],
+        root_cause_conclusion=SimpleNamespace(
+            root_cause="pool exhausted", mechanism="m"
+        ),
+        problem_verification=None,
+        solutions=[],
+        hypotheses={},
+        working_conclusion=None,
+        tags=[],
+    )
+
+
 class TestConvertFromCaseSoundnessGate:
-    """§7: the API conversion path must enforce the same fallback-only gate as the
-    chat-side, so an LLM-asserted (never runbook-grounded) cause can't seed the KB."""
+    """§7: the API conversion path must enforce the same authority-grounded harvest
+    bar as the chat-side, so an LLM-asserted (never runbook-grounded) cause can't
+    seed the KB."""
 
     @pytest.mark.asyncio
     async def test_rejects_fallback_only_cause(self, app_with_user):
@@ -933,6 +957,22 @@ class TestConvertFromCaseSoundnessGate:
             resp = await client.post(
                 f"{API_PREFIX}/convert-from-case",
                 json={"case_id": "case_aaaaaaaaaaaa", "scope": "personal"},
+            )
+        assert resp.status_code == 422
+        assert "runbook-grounded" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_cause_with_no_validated_root(self, app_with_user):
+        # #590 A1: a bare RCC with no causal graph must be rejected too — the old
+        # negative "fallback-only" gate let it through (it is False with no root).
+        app = app_with_user
+        app.state.case_repository = MagicMock(
+            get_by_id=AsyncMock(return_value=_resolved_case_no_graph())
+        )
+        async with await _client(app) as client:
+            resp = await client.post(
+                f"{API_PREFIX}/convert-from-case",
+                json={"case_id": "case_bbbbbbbbbbbb", "scope": "personal"},
             )
         assert resp.status_code == 422
         assert "runbook-grounded" in resp.json()["detail"]

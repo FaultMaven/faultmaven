@@ -25,15 +25,21 @@ from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    CausalNode,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    EvidenceStance,
     InquiryData,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
     ProblemVerification,
     ReportGenerationResponse,
     RootCauseConclusion,
     Solution,
     SolutionType,
+    ValidationMethod,
 )
 
 # =============================================================================
@@ -114,8 +120,40 @@ def _make_runbook_ready(case: Case) -> None:
             source_file_id="file_aabb12345678",
             collected_by="u1",
             collected_at_turn=1,
-        )
+        ),
+        # A harvestable cause must be runbook-grounded (#590 A1): a VALIDATED root
+        # borne out by a runbook-provenance SUPPORTS, not bare RCC prose.
+        Evidence(
+            evidence_id="ev_d00dfeed0001",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            primary_purpose="diagnosis",
+            summary="pool exhausted at 14:03",
+            extract="pool: 0 idle / 0 free",
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id="file_aabb12345678",
+            collected_by="u1",
+            collected_at_turn=1,
+        ),
     ]
+    case.causal_nodes["cn_d00dfeed0001"] = CausalNode(
+        node_id="cn_d00dfeed0001",
+        statement="connection pool exhausted",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        actionable=True,
+        belief=0.8,
+        generated_at_turn=1,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id="ev_d00dfeed0001",
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="runbook predicate fired",
+                provenance="runbook",
+                linked_at_turn=1,
+            )
+        ],
+    )
 
 
 # =============================================================================
