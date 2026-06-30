@@ -77,7 +77,10 @@ from typing import TYPE_CHECKING, Literal, Optional
 from faultmaven.core.investigation.indicator_evaluator import (
     evaluate_predicate_against_text,
 )
-from faultmaven.core.investigation.runbook_cause_matcher import resolve_datum_text
+from faultmaven.core.investigation.runbook_cause_matcher import (
+    resolve_datum_data_type,
+    resolve_datum_text,
+)
 from faultmaven.modules.case.contracts import EvidenceStance
 
 if TYPE_CHECKING:
@@ -211,12 +214,13 @@ def evaluate_datum_against_differential(
     text = resolve_datum_text(evidence, case)
     if text is None:
         return []
+    datum_data_type = resolve_datum_data_type(evidence, case)
     verdicts: list[StanceVerdict] = []
     for candidate in active_causes:
         predicates = getattr(candidate.record, "match_predicates", None) or []
         if not predicates:
             continue
-        stance, fired = _aggregate_predicates(predicates, text)
+        stance, fired = _aggregate_predicates(predicates, text, datum_data_type)
         if stance is None:
             continue
         verdicts.append(
@@ -230,14 +234,35 @@ def evaluate_datum_against_differential(
     return verdicts
 
 
+def _predicate_applies_to(pred: dict, datum_data_type: "Optional[str]") -> bool:
+    """Fail-open ``data_type`` pre-filter.
+
+    A predicate may declare the datum type it is meant for (e.g.
+    ``{"predicate": "threshold", "target": "cpu", "data_type": "metrics"}``).
+    Skip it ONLY when we are confident it does not apply — the predicate declares
+    a ``data_type`` AND the datum's classified ``data_type`` is known AND they
+    differ. A predicate with no declared ``data_type``, or a datum whose type is
+    unknown, is always evaluated. Fail-open by design: the pre-filter never causes
+    a miss (a skipped predicate is silent, like ``untested``), it only avoids a
+    likely-spurious cross-type match (a ``contains "OOMKilled"`` logs predicate
+    firing on a config file that happens to mention it in a comment).
+    """
+    want = pred.get("data_type")
+    if not want or not datum_data_type:
+        return True
+    return want == datum_data_type
+
+
 def _aggregate_predicates(
-    predicates: list, text: str
+    predicates: list, text: str, datum_data_type: "Optional[str]" = None
 ) -> "tuple[Optional[EvidenceStance], Optional[dict]]":
     """Collapse a cause's predicates (vs one datum's digest) into ONE stance.
 
-    Each predicate is evaluated under subset-trust (``complete=False``):
-    ``matched`` → SUPPORTS, ``refuted`` → REFUTES, untested/unknown is silent.
-    The outcome enforces the one-verdict-per-(datum, cause) invariant:
+    Predicates scoped to a different ``data_type`` than the datum are skipped
+    (``_predicate_applies_to``, fail-open). The rest are evaluated under
+    subset-trust (``complete=False``): ``matched`` → SUPPORTS, ``refuted`` →
+    REFUTES, untested/unknown/skipped is silent. The outcome enforces the
+    one-verdict-per-(datum, cause) invariant:
 
       - exactly one stance fired → that stance, plus the FIRST predicate that
         produced it (a real, re-runnable spec for ``StanceVerdict.predicate``),
@@ -250,6 +275,8 @@ def _aggregate_predicates(
     for pred in predicates:
         if not isinstance(pred, dict):
             continue
+        if not _predicate_applies_to(pred, datum_data_type):
+            continue  # scoped to a different datum type → silent (fail-open)
         try:
             verdict = evaluate_predicate_against_text(pred, text, complete=False)
         except ValueError:
@@ -287,6 +314,10 @@ def recheck_proposed_predicate(
     text = resolve_datum_text(evidence, case)
     if text is None:
         return None
+    if not _predicate_applies_to(
+        proposed_predicate, resolve_datum_data_type(evidence, case)
+    ):
+        return None  # the LLM scoped its predicate to a different datum type
     try:
         verdict = evaluate_predicate_against_text(
             proposed_predicate, text, complete=False

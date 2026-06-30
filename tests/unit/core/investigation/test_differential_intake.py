@@ -14,11 +14,15 @@ import pytest
 from faultmaven.core.investigation.cause_schemas import CauseRecord
 from faultmaven.core.investigation.differential_intake import (
     ActiveCause,
+    _predicate_applies_to,
     assemble_active_causes,
     evaluate_datum_against_differential,
     recheck_proposed_predicate,
 )
-from faultmaven.core.investigation.runbook_cause_matcher import resolve_datum_text
+from faultmaven.core.investigation.runbook_cause_matcher import (
+    resolve_datum_data_type,
+    resolve_datum_text,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -43,12 +47,13 @@ def _digest(file_extract: str) -> str:
     return ExtractResult(file_extract=file_extract).to_json()
 
 
-def _case_with_datum(file_extract, *, structural_index=None):
+def _case_with_datum(file_extract, *, structural_index=None, data_type=None):
     """A case whose single datum's backing file has the given digest.
 
     ``file_extract=None`` and ``structural_index`` unset → the datum has no
     backing file at all. ``structural_index`` overrides the blob (to test the
-    non-JSON tolerant path).
+    non-JSON tolerant path). ``data_type`` sets the file's preprocessor
+    classification (for the data_type pre-filter).
     """
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
@@ -79,6 +84,7 @@ def _case_with_datum(file_extract, *, structural_index=None):
                 size_bytes=1,
                 uploaded_at_turn=1,
                 structural_index=blob,
+                data_type=data_type,
             )
         )
         evidence = SimpleNamespace(source_file_id=file_id)
@@ -327,3 +333,122 @@ class TestAssembleActiveCauses:
 
     def test_empty_input_yields_empty_differential(self):
         assert assemble_active_causes([]) == []
+
+
+# ---------------------------------------------------------------------------
+# data_type pre-filter — skip predicates scoped to a different datum type
+# ---------------------------------------------------------------------------
+
+
+class TestPredicateAppliesTo:
+    def test_no_declared_data_type_always_applies(self):
+        assert _predicate_applies_to({"predicate": "contains"}, "logs") is True
+
+    def test_unknown_datum_type_fails_open(self):
+        assert _predicate_applies_to({"data_type": "metrics"}, None) is True
+
+    def test_matching_type_applies(self):
+        assert _predicate_applies_to({"data_type": "logs"}, "logs") is True
+
+    def test_mismatched_type_skipped(self):
+        assert _predicate_applies_to({"data_type": "metrics"}, "logs") is False
+
+
+class TestResolveDatumDataType:
+    def test_returns_files_data_type(self):
+        case, ev = _case_with_datum("x", data_type="logs")
+        assert resolve_datum_data_type(ev, case) == "logs"
+
+    def test_none_when_unclassified_or_no_file(self):
+        case, ev = _case_with_datum("x")  # data_type unset
+        assert resolve_datum_data_type(ev, case) is None
+        case2, ev2 = _case_with_datum(None)
+        assert resolve_datum_data_type(ev2, case2) is None
+
+
+class TestDataTypePrefilterEndToEnd:
+    def test_matching_data_type_predicate_fires(self):
+        case, ev = _case_with_datum("cpu=95", data_type="metrics")
+        cands = [
+            _candidate(
+                "A",
+                [
+                    {
+                        "predicate": "threshold",
+                        "target": "cpu",
+                        "op": ">",
+                        "value": 90,
+                        "data_type": "metrics",
+                    }
+                ],
+            )
+        ]
+        verdicts = evaluate_datum_against_differential(
+            evidence=ev, active_causes=cands, case=case
+        )
+        assert [v.stance for v in verdicts] == [EvidenceStance.SUPPORTS]
+
+    def test_mismatched_data_type_predicate_skipped(self):
+        # A metrics-scoped predicate must NOT fire against a config datum, even if
+        # the substring/metric coincidentally appears.
+        case, ev = _case_with_datum("cpu=95", data_type="configuration")
+        cands = [
+            _candidate(
+                "A",
+                [
+                    {
+                        "predicate": "threshold",
+                        "target": "cpu",
+                        "op": ">",
+                        "value": 90,
+                        "data_type": "metrics",
+                    }
+                ],
+            )
+        ]
+        assert (
+            evaluate_datum_against_differential(
+                evidence=ev, active_causes=cands, case=case
+            )
+            == []
+        )
+
+    def test_predicate_without_data_type_fails_open(self):
+        case, ev = _case_with_datum("OOMKilled", data_type="configuration")
+        cands = [_candidate("A", [{"predicate": "contains", "target": "OOMKilled"}])]
+        verdicts = evaluate_datum_against_differential(
+            evidence=ev, active_causes=cands, case=case
+        )
+        assert [v.stance for v in verdicts] == [EvidenceStance.SUPPORTS]
+
+    def test_unclassified_datum_fails_open(self):
+        # Datum type unknown → a data_type-scoped predicate still evaluates.
+        case, ev = _case_with_datum("OOMKilled")  # no data_type
+        cands = [
+            _candidate(
+                "A",
+                [{"predicate": "contains", "target": "OOMKilled", "data_type": "logs"}],
+            )
+        ]
+        verdicts = evaluate_datum_against_differential(
+            evidence=ev, active_causes=cands, case=case
+        )
+        assert [v.stance for v in verdicts] == [EvidenceStance.SUPPORTS]
+
+    def test_recheck_skips_mismatched_data_type(self):
+        case, ev = _case_with_datum("cpu=95", data_type="configuration")
+        assert (
+            recheck_proposed_predicate(
+                evidence=ev,
+                cause_id="rb1:A",
+                proposed_predicate={
+                    "predicate": "threshold",
+                    "target": "cpu",
+                    "op": ">",
+                    "value": 90,
+                    "data_type": "metrics",
+                },
+                case=case,
+            )
+            is None
+        )

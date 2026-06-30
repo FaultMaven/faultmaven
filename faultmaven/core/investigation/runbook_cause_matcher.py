@@ -439,6 +439,23 @@ def resolve_datum_text(evidence: "Evidence", case: "Case") -> Optional[str]:
     return text or None
 
 
+def resolve_datum_data_type(evidence: "Evidence", case: "Case") -> Optional[str]:
+    """The preprocessor's data-type classification of a datum's backing file.
+
+    Reads ``UploadedFile.data_type`` (e.g. ``"logs"`` / ``"metrics"`` /
+    ``"configuration"``) via ``source_file_id`` — a code-derived (trusted) label,
+    distinct from ``Evidence.source_type``. Feeds the content-addressed
+    ``data_type`` pre-filter, which declines to evaluate a predicate scoped to a
+    different datum type. ``None`` when there is no backing file or the file was
+    not classified; the pre-filter then fails open (evaluates anyway).
+    """
+    file_id = getattr(evidence, "source_file_id", None)
+    if not file_id:
+        return None
+    uf = case.find_uploaded_file(file_id)
+    return getattr(uf, "data_type", None) if uf is not None else None
+
+
 def attach_matched_hypothesis(
     case: "Case",
     match: CauseMatchResult,
