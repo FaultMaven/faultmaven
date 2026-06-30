@@ -49,6 +49,7 @@ from faultmaven.modules.case.contracts import (
     NeedState,
     NodeEvidenceLink,
     NodeState,
+    ValidationMethod,
 )
 
 if TYPE_CHECKING:
@@ -199,31 +200,72 @@ async def run_differential_intake_turn(
     )
     # Demand half of the loop: keep the case's causal Evidence Needs in sync with
     # the differential — one need per still-unsatisfied predicate, fulfilled as
-    # predicates fire, and superseded for a cause whose root is now REFUTED (else
-    # its need, never fulfillable through the refuted-root guard, would hang
-    # PENDING). The engine owns these; the LLM keeps authoring symptom needs and
-    # any non-differential causal needs.
-    refuted = {
-        ac.candidate_id
-        for ac in active_causes
-        if _cause_root_is_refuted(case, ac.record, resolve_root)
-    }
+    # predicates fire, and superseded for a cause whose root is now SETTLED (REFUTED,
+    # or DEDUCTIVELY VALIDATED) so its open need can no longer change the outcome.
+    # One pass: resolve each cause's root once and classify by its settled state
+    # (an EMPIRICAL validation is NOT settled — its needs stay open). The engine owns
+    # these; the LLM keeps authoring symptom needs and any non-differential ones.
+    refuted: set[str] = set()
+    validated: set[str] = set()
+    for ac in active_causes:
+        settled = _cause_root_settled_state(case, ac.record, resolve_root)
+        if settled == NodeState.REFUTED:
+            refuted.add(ac.candidate_id)
+        elif settled == NodeState.VALIDATED:
+            validated.add(ac.candidate_id)
     _regen_differential_evidence_needs(
-        case, active_causes, recorded, current_turn, refuted
+        case, active_causes, recorded, current_turn, refuted, validated
     )
     return recorded
 
 
-def _cause_root_is_refuted(
+def _cause_root_settled_state(
     case: "Case", record: "CauseRecord", resolve_root: RootResolver
-) -> bool:
-    """Whether a candidate cause's instantiated root is REFUTED (``may_instantiate=
-    False`` — never seeds a node just to check). False for an un-instantiated cause."""
+) -> "NodeState | None":
+    """The SETTLED node_state of a candidate cause's instantiated root, or None.
+
+    "Settled" means a state whose open needs can be retired *terminally* — the
+    cause cannot return to "in play, needs more telemetry":
+
+      - ``REFUTED`` — durable: the #580 re-support guard keeps a refuted root
+        refuted (``run_intake_evaluation`` won't re-support it).
+      - ``VALIDATED`` **only when** ``validation_method == DEDUCTIVE`` — the one
+        validation ``derive_node_states`` locks against demotion to
+        INCONCLUSIVE/CANDIDATE (``elif deductively_valid: continue``). A deductive
+        node can still go REFUTED, where a superseded need stays correct, but it
+        never returns to undecided. An **EMPIRICAL** validation is deliberately
+        NOT settled: ``derive_node_states`` recomputes it each turn and reverts it
+        to INCONCLUSIVE/CANDIDATE when support net-disappears, so its discriminating
+        needs must stay OPEN (retiring them would strand a cause that later
+        un-validates).
+
+    ``may_instantiate=False`` — never seeds a node just to check. None for an
+    un-instantiated cause or any non-settled state. One root resolution per call,
+    so callers classify in a single pass.
+    """
     root_id = resolve_root(case, record, may_instantiate=False)
     if not root_id:
-        return False
+        return None
     node = case.causal_nodes.get(root_id)
-    return node is not None and node.node_state == NodeState.REFUTED
+    if node is None:
+        return None
+    if node.node_state == NodeState.REFUTED:
+        return NodeState.REFUTED
+    if (
+        node.node_state == NodeState.VALIDATED
+        and node.validation_method == ValidationMethod.DEDUCTIVE
+    ):
+        return NodeState.VALIDATED
+    return None
+
+
+def _supersede_open_need(need: EvidenceNeed, reason: str) -> None:
+    """Retire an OPEN (PENDING / PARTIALLY_MET) need; no-op on FULFILLED or
+    SUPERSEDED. FULFILLED is preserved — the audit trail of what was collected."""
+    if need.state in (NeedState.PENDING, NeedState.PARTIALLY_MET):
+        need.state = NeedState.SUPERSEDED
+        need.superseded_reason = reason
+        need.updated_at = datetime.now(UTC)
 
 
 def _predicate_signature(predicate: dict) -> str:
@@ -266,22 +308,31 @@ def _regen_differential_evidence_needs(
     recorded: list[StanceVerdict],
     current_turn: int,
     refuted_cause_ids: "set[str]",
+    validated_cause_ids: "set[str]",
 ) -> None:
     """Reconcile the case's engine-owned causal Evidence Needs with the active
     differential: ensure one PENDING need per unsatisfied predicate, flip a need to
-    FULFILLED once its predicate fires this turn, and SUPERSEDE the open needs of a
-    cause whose root has been REFUTED.
+    FULFILLED once its predicate fires this turn, and SUPERSEDE the still-open needs
+    of a cause whose root is now SETTLED — passed in as ``refuted_cause_ids`` and
+    ``validated_cause_ids`` (the caller classifies; "settled validated" means
+    *deductively* validated, the only durable kind — see
+    ``_cause_root_settled_state``).
 
-    The supersession closes a demand↔validate inconsistency: ``run_intake_evaluation``
-    skips re-supporting a refuted root, so a predicate that keeps firing on a
-    refuted cause never reaches the ``fired`` set — without this, its need would
-    stay PENDING forever, asking the user to collect telemetry for a cause the
-    investigation has already ruled out.
+    Both supersessions close a demand↔validate inconsistency, and both are sound
+    only because the state is terminal. REFUTED: ``run_intake_evaluation`` skips
+    re-supporting a refuted root, so a predicate that keeps firing on it never
+    reaches the ``fired`` set. DEDUCTIVELY VALIDATED: the root validated on
+    proof-by-exclusion without *every* predicate firing, so the un-fired ones would
+    otherwise keep asking for telemetry to discriminate a cause already proven.
+    Either way the open need would hang PENDING forever, asking for telemetry that
+    can no longer change the outcome.
 
     Idempotent (deterministic need ids) and safe from the hypothesis-retirement
     supersession rule (these needs carry no motivating hypotheses, like symptom
     needs). A need already FULFILLED stays FULFILLED — the audit trail of what was
-    collected before the cause was refuted.
+    collected before the cause settled (whether refuted or validated); and because
+    the fired branch runs BEFORE the validated branch, a predicate that DID fire
+    this turn is recorded as FULFILLED rather than retired.
     """
     fired = {
         (v.cause_id, _predicate_signature(v.predicate))
@@ -291,6 +342,7 @@ def _regen_differential_evidence_needs(
     by_id = {n.need_id: n for n in case.evidence_needs}
     for ac in active_causes:
         cause_refuted = ac.candidate_id in refuted_cause_ids
+        cause_validated = ac.candidate_id in validated_cause_ids
         predicates = getattr(ac.record, "match_predicates", None) or []
         for predicate in predicates:
             sig = _predicate_signature(predicate)
@@ -299,22 +351,16 @@ def _regen_differential_evidence_needs(
             if cause_refuted:
                 # The cause this need discriminates is refuted — retire the open
                 # need instead of asking for telemetry that can no longer matter.
-                # TERMINAL: a SUPERSEDED need never re-opens (a later non-refuted
-                # re-derivation finds it neither re-created below nor re-pended). This
-                # is sound ONLY because a REFUTED root is settled — the same premise as
-                # the #580 re-support guard (run_intake_evaluation skips a refuted
-                # root; REFUTED is durable via derive_node_states + refutation_reason).
-                # If a root could un-refute, a revived cause would be left without
-                # demand; revisit this branch if that invariant ever changes.
-                if existing is not None and existing.state in (
-                    NeedState.PENDING,
-                    NeedState.PARTIALLY_MET,
-                ):
-                    existing.state = NeedState.SUPERSEDED
-                    existing.superseded_reason = (
-                        "the runbook cause this need discriminated is refuted"
+                # TERMINAL: a SUPERSEDED need never re-opens (a later re-derivation
+                # finds it neither re-created below nor re-pended). Sound because a
+                # REFUTED root is settled — the #580 re-support guard keeps it
+                # refuted. Note this runs BEFORE the fired branch: a refuted cause's
+                # need is retired even if a predicate fired (the hit is moot).
+                if existing is not None:
+                    _supersede_open_need(
+                        existing,
+                        "the runbook cause this need discriminated is refuted",
                     )
-                    existing.updated_at = datetime.now(UTC)
                 continue
             if (ac.candidate_id, sig) in fired:
                 if existing is not None and existing.state not in (
@@ -323,6 +369,22 @@ def _regen_differential_evidence_needs(
                 ):
                     existing.state = NeedState.FULFILLED
                     existing.updated_at = datetime.now(UTC)
+                continue
+            if cause_validated:
+                # The cause is DEDUCTIVELY validated (the caller already excluded
+                # EMPIRICAL validation, which can revert). Any predicate that fired
+                # this turn was FULFILLED above; the REMAINING un-fired needs would
+                # otherwise hang PENDING, asking the user to discriminate a cause
+                # already proven — so retire them. TERMINAL is sound here because a
+                # deductive validation is locked against demotion to undecided by
+                # derive_node_states (it can only go REFUTED, where a superseded need
+                # stays correct), unlike an empirical one.
+                if existing is not None:
+                    _supersede_open_need(
+                        existing,
+                        "the runbook cause this need discriminated is already "
+                        "validated (deductively)",
+                    )
                 continue
             if existing is None:
                 need = EvidenceNeed(
