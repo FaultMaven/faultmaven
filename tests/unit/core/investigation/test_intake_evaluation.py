@@ -437,6 +437,35 @@ async def test_firing_predicate_fulfills_its_need():
     assert case.evidence_needs[0].state == NeedState.FULFILLED
 
 
+@pytest.mark.asyncio
+async def test_refuted_cause_need_is_superseded_not_left_pending():
+    # The demand↔validate consistency fix: once a cause's root is REFUTED, its open
+    # need is superseded — the refuted-root guard means its predicate can never
+    # fulfill the need, so it must not keep asking for telemetry for a ruled-out cause.
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [],
+    )
+    # Turn 1: cause still in play → a PENDING need is created.
+    await run_differential_intake_turn(case, [_evidence()], case.current_turn, **common)
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+    # The cause's root is refuted; next turn the open need is superseded, not hung.
+    node.node_state = NodeState.REFUTED
+    node.refutation_reason = "refuted by rung evidence"
+    await run_differential_intake_turn(
+        case, [_evidence("ev_000000000002")], case.current_turn, **common
+    )
+    assert len(case.evidence_needs) == 1
+    assert case.evidence_needs[0].state == NeedState.SUPERSEDED
+    assert case.evidence_needs[0].superseded_reason
+
+
 def test_supports_is_not_re_attached_to_a_refuted_root():
     # A REFUTED root is settled — a runbook predicate firing SUPPORTS on a later
     # turn must NOT re-support it (the standing-bias harm). The link is skipped.
