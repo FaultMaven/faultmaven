@@ -157,6 +157,25 @@ The `ConversionService.convert_from_case()` method constructs a `FailureModeAnal
 
 **Case conversion lookup**: `GET /knowledge/conversions/by-case/{case_id}` returns the conversion job and drafts for a specific case, used by the Dashboard Runbook tab.
 
+### 1.1 Soundness gate: only an authority-grounded cause may seed the KB (§7)
+
+Auto-converting a case into a runbook seeds *reusable* knowledge, so it carries the first soundness guarantee (NO INCORRECT CONCLUSION) one step further than a single investigation: a confidently-wrong cause that becomes a runbook can mislead every future case that retrieves it. Both case-sourced paths therefore gate on a single assurance grade before any conversion runs.
+
+`grade_cause_assurance(case)` (in `faultmaven/core/investigation/cause_assurance.py`) classifies the case's identified cause into one of three mutually-exclusive grades:
+
+| Grade | Meaning | Convertible? |
+|-------|---------|--------------|
+| `GROUNDED` | ≥1 VALIDATED root borne out by an **authority-grounded** support — a `runbook`-provenance `SUPPORTS` link (an expert-authored predicate that fired against the telemetry) **or** a deductive derivation (proof-by-exclusion, §7.1.1). | **Yes** |
+| `FALLBACK_ONLY` | ≥1 VALIDATED root, but every one rests only on lower-assurance (`None` / `llm_fallback`) support — the LLM authored both the predicate and its citation. | No |
+| `NO_ROOT` | No VALIDATED root at all — a bare `RootCauseConclusion` is LLM prose with zero causal graph. | No |
+
+Only `GROUNDED` clears the bar. The two non-grounded grades are held back for *different* reasons, which the user-facing copy distinguishes (verify the cause vs. identify one).
+
+- **API path** — `POST /knowledge/convert-from-case` rejects a non-`GROUNDED` case with **HTTP 422** before constructing the `CaseConversionRequest` ([conversion_routes.py](../../../faultmaven/modules/knowledge/api/conversion_routes.py)), directing the user to author it manually via `POST /knowledge/runbooks/create` if the cause is correct.
+- **Chat path** — the *"Generate runbook from this case"* DECIDE suggestion is offered on RESOLVED turns (subject only to "a draft doesn't already exist"), but **acting on it** routes through `_handle_runbook_creation`, which runs `evaluate_runbook_suggestion` → `assess_runbook_readiness` (the grade read via `cause_is_runbook_grounded`). A non-`GROUNDED` cause returns `NOT_READY` — a "not ready, verify the cause" message with **no draft side effect** — so clicking never produces a runbook from an ungrounded cause. The gate is at action time, not suggestion-emission time.
+
+> **Rejected alternative:** an earlier gate keyed on the *negative* predicate "cause validated only by fallback support." It returned False for the `NO_ROOT` case (no validated root is not "fallback-only"), so a pure-prose `RootCauseConclusion` slipped through. Gating on the positive `GROUNDED` grade closes that hole — a record with no validated root is graded `NO_ROOT`, never `GROUNDED`.
+
 ---
 
 ## 2. Preprocessing Pipeline
@@ -782,6 +801,7 @@ Implementation: Reuse existing `require_admin` dependency for global scope. Add 
 | 413 | File too large | `{"detail": "File exceeds maximum size of 10MB"}` |
 | 415 | Unsupported file type | `{"detail": "Unsupported file type: image/png. Allowed: ..."}` |
 | 422 | Document not actionable | `{"detail": "Source document does not contain actionable failure modes..."}` |
+| 422 | Case cause not authority-grounded (§1.1; `convert-from-case` only) | `{"detail": "This case's root cause is not backed by runbook-grounded (or deductive) support, so it can't be auto-converted into a runbook..."}` |
 | 422 | All drafts failed validation | `{"detail": "Generated runbooks failed quality validation", "validation_errors": [...]}` |
 | 500 | LLM failure after retries | `{"detail": "Document conversion failed. Please try again."}` |
 | 503 | No LLM provider available | `{"detail": "Knowledge provider is not configured or unavailable"}` |
