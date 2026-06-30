@@ -191,9 +191,9 @@ at runtime; runbooks do not pre-author them. This keeps each Cause one
 validate/refute/demote unit and maps cleanly to the engine's single-root
 `Hypothesis`.
 
-### Match surface — the cause `Statement` is load-bearing
+### Match surface vs validation surface — `Statement` matches, predicates validate
 
-A Cause has two distinct jobs:
+A Cause has **three** distinct jobs, and they run on **different surfaces**:
 
 1. **Matching** (does this cause explain the case?) is judged holistically over
    the Cause's **symptom-level description** — its name + `Statement` +
@@ -205,15 +205,29 @@ A Cause has two distinct jobs:
 2. **Instantiation** (once matched) seeds the chain **topology** (nodes/edges)
    into the case causal graph as a **CANDIDATE prior** — never VALIDATED without
    case evidence. Keep topology richly structured; that is its value.
+3. **Validation** (does a submitted datum support or refute this cause?) is the
+   job of the `<!-- match -->` **predicates**. The differential-intake loop
+   evaluates each piece of submitted telemetry against the predicates of every
+   candidate Cause; a firing predicate yields a deterministic SUPPORTS/REFUTES
+   that moves the cause toward — or away from — `IDENTIFIED`. This is the
+   **load-bearing validation surface**, and the *sound* tier: an expert-authored
+   runbook predicate against trusted telemetry outranks the LLM's own
+   self-authored predicate (the labeled lower-assurance fallback).
 
-**Per-rung `Indicators` and `<!-- match -->` predicates are optional annotations,
-not the match surface.** FaultMaven matches against **symptom-level** case
-evidence and does not execute runbook steps, so operator/tool-output-level
-indicators carry no matching weight. Keep them as human-readable diagnostic notes
-or an opportunistic fast-path — but the **`Statement`** is what makes a Cause
-match, so the matching signal must live there, not in the indicators.
+**`Statement` matches; predicates validate — two different surfaces, not a
+hierarchy.** Predicates carry **no matching weight**: FaultMaven retrieves and
+matches a Cause holistically over its symptom-level `Statement`, never over
+operator/tool-output-level predicates, so the matching signal must still live in
+the `Statement`. But predicates are **not inert** — once a Cause is a candidate,
+its predicates are the deterministic check that submitted evidence bears it out.
+A Cause with a strong `Statement` but no predicates still *matches*; it simply
+falls back to the lower-assurance LLM tier for *validation*. (This supersedes the
+earlier framing of predicates as an inert "opportunistic fast-path.")
 
-Two authoring invariants follow directly, and the validator/generator enforce them:
+Four authoring invariants follow. The first two govern the **match surface**
+(`Statement`); the last two govern the **validation surface** (predicates). The
+validator/generator enforce the `Statement` rules; the predicate rules are an
+authoring discipline (see the Predicate-Coverage Authoring campaign).
 
 - **The `Statement` must be symptom-level.** It describes *what the evidence
   would show* (the observable failure and its mechanism), not what an operator
@@ -227,6 +241,26 @@ Two authoring invariants follow directly, and the validator/generator enforce th
   it abstains and instantiates nothing. MECE on the OR-roots is therefore
   load-bearing, not just conceptual hygiene: each sibling `Statement` must be
   distinguishable from the others from case evidence alone.
+- **Predicates are content-addressed, not step-addressed.** A predicate is
+  evaluated against the *submitted datum* — the trusted preprocessing digest of
+  whatever the user uploads — not against a numbered Diagnostic Step's output
+  (FaultMaven does not execute runbook steps). The `step` key in a `<!-- match -->`
+  block is **provenance/agenda only** (which step would surface this signal); it
+  is *not* an evaluation key. Author the `target`/`op`/`value` to fire against the
+  symptom-level content the evidence actually contains, not a step's tool output.
+- **Predicates evaluate under subset-trust, and sibling predicates must be MECE.**
+  The validator sees the preprocessing *digest* (the crime-scene/error excerpt),
+  not the whole raw file: a **present** substring/value is decisive, but an
+  **absent** one is `untested` — never a refutation inferred from the digest's
+  gaps. Bias predicates toward symptom/error content that lands in the digest. As
+  with `Statement`s, a predicate that fires for Cause A should **not** fire for a
+  sibling Cause B — non-discriminating predicates dilute the validation signal.
+
+> **Planned (not yet authored):** an optional `data_type` key on a predicate —
+> scoping it to a datum type (`logs` / `metrics` / `configuration` / …) so it only
+> validates against a matching datum — is gated on first unifying the stored
+> data-type vocabulary (see issues #583 / #584). **Do not author `data_type` yet;**
+> predicates without it evaluate against every datum (the current behavior).
 
 **`Chain` is optional.** Omit it and the Cause is a degenerate `root → D` chain —
 ingestion stays tolerant (no runbook breaks for lacking a decomposed ladder).
@@ -338,7 +372,7 @@ This section explains WHY each template section is structured the way it is. Thi
 | **Causes → `### Cause N`** | Each Cause subsection is one chunk and one **causal chain** terminating in a single ROOT. Retrieval surfaces a complete cause→fix unit. The root `Statement` seeds `RootCauseConclusion.root_cause`; `Interventions` seed `Solution` (`immediate_action`/`longterm_fix` by quadrant). | Per-Cause inlining of `Statement` / `Chain` / `Indicators` / `Interventions` keeps the chunk self-contained. One ROOT per Cause maps to the engine's single-root `Hypothesis`; no AND-sets are authored. |
 | **Causes → `Statement`** | Direct copy → `RootCauseConclusion.root_cause`. **The load-bearing match surface** (holistic per-cause matching judges the case against it). | Single **symptom-level** declarative sentence — what the *evidence would show* (observable failure + mechanism), not a tool command or internal field. Must be discriminative from sibling Causes (MECE). Fold any *parallel* co-necessary condition in here; sequential co-necessity becomes `Chain` rungs instead. Not a fix, not a bare symptom. ≤300 characters. |
 | **Causes → `Chain`** *(optional)* | Decomposes the causal ladder into rung nodes the engine instantiates as `CausalNode`s. Absence → degenerate `root → D` chain. | Linear `root → s1 → … → D`; each rung a short ref (`root`, `s1`, …, reserved `D`). No AND-gate — *sequential* co-necessity becomes rungs here; *parallel* co-necessity folds into the root `Statement`. Each rung ≤300 chars. |
-| **Causes → `Indicators`** *(optional annotation — NOT the match surface)* | Human-readable per-rung diagnostic notes + an opportunistic deterministic fast-path. **Inert for matching in evidence-only FM** (they are operator/tool-output level; matching is holistic over the symptom-level `Statement`). | Bullet list addressed by rung ref; each entry carries a `[Step N]` finding, `[Symptom]` pattern, or `[Default]` (fallback only). Optional `<!-- match: ... -->` predicate; see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary). Do not rely on these to make a Cause match — the `Statement` does that. |
+| **Causes → `Indicators`** *(NOT the match surface — the VALIDATION surface)* | Per-rung diagnostic notes; the optional `<!-- match -->` predicate is the deterministic **validation** check — the differential-intake loop runs submitted telemetry against it → SUPPORTS/REFUTES, the *sound* tier above the LLM's self-authored fallback. **No matching weight** (matching is holistic over the symptom-level `Statement`), but **not inert**. | Bullet list addressed by rung ref; each entry carries a `[Step N]` finding, `[Symptom]` pattern, or `[Default]` (fallback only). Optional `<!-- match: ... -->` predicate (content-addressed: `step` is provenance, not an eval key); see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary). Do not rely on these to make a Cause *match* — the `Statement` does that; do author them to make *validation* deterministic. |
 | **Causes → `Interventions`** | Each intervention seeds a `Solution` tagged with an `InterventionQuadrant` and the node it targets. | Per-node, quadrant-tagged: `remediation` (permanent @ root), `defensive_fix` (permanent @ intermediate), `mitigation` (temporary @ intermediate — carries **Risk** + **Duration**), `loop_break`. One root may carry two interventions (e.g. a `defensive_fix` and a `remediation`). Every intervention carries a `Verification` (feeds the `solution_verified` prompt). |
 | **`### Cause Z: Unidentified`** | Fallback when no real Cause's `Statement` matches the case (holistic verdict `none`). | Mandatory in every runbook. Carries the `[Default]` Indicator token (the structural fallback marker — engine-side fallback detection reads it). Its single intervention is a `mitigation`/`loop_break` describing a safe diagnostic/escalation path. |
 | **Prevention** | Used in post-resolution recommendations and report generation. **Rarely retrieved during active investigation** — Prevention chunks don't match symptom queries. They become relevant after the problem is resolved, when the agent generates recommendations. | Configuration changes, monitoring alerts, capacity thresholds — concrete actions. |
