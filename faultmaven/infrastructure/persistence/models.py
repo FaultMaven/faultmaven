@@ -1553,7 +1553,10 @@ class CausalNodeEvidenceModel(Base):
     linked_at_turn = Column(Integer, nullable=True)
     # Who authored the predicate this link encodes: runbook (authority-grounded)
     # vs llm_fallback (the model's own predicate, lower-assurance). NULL =
-    # legacy/unlabeled link (predates provenance tagging), read as sound.
+    # legacy/unlabeled or LLM-asserted link (the emitted-chain path sets no
+    # provenance); read as LOWER-ASSURANCE, NOT authority-grounded — the same
+    # grade as llm_fallback. Only "runbook" clears the §7 grounding bar
+    # (cause_assurance.support_is_runbook_grounded / grade_cause_assurance).
     provenance = Column(String(20), nullable=True)  # runbook | llm_fallback | NULL
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
