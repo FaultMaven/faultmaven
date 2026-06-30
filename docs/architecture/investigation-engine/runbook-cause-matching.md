@@ -169,7 +169,8 @@ rigidity trap the governing principle warns against.
 - **Belief is per-cause, not per-rung k-of-n** (#545 — see the §2.1 superseded
   note for why per-rung matching was replaced). The semantic tier is one holistic
   judgment per Cause over its **symptom-level Statement** — the sole load-bearing
-  match surface (see runbook-content-architecture.md § "Match surface"). Belief =
+  match surface (see runbook-content-architecture.md § "Match surface vs
+  validation surface"). Belief =
   `0` if any rung is deterministically refuted; else `1.0` when the holistic
   judgment supports the Cause; else the deterministic T1 matched-rung fraction (the
   residual T1 signal, ~0 in evidence-only FaultMaven). The Statement match is **not
@@ -179,6 +180,15 @@ rigidity trap the governing principle warns against.
   had no indicator rungs; that contradicted the ratified match-surface decision and
   has been removed — a content-less Cause still can't match because the holistic
   condition builder yields nothing to judge, falling to the residual ~0 T1 signal.)
+  **Indicators are inert *only* for matching, and `<!-- match -->` predicates are
+  inert *only* in this matcher's step-addressed T1** (FaultMaven runs no runbook
+  steps, so there is no per-step output to resolve). The same predicates are the
+  **load-bearing validation surface** in the *content-addressed* differential-intake
+  loop: one submitted datum is evaluated against every candidate Cause's predicates,
+  yielding the deterministic SUPPORTS/REFUTES that drives `cause_state`. So "author
+  them" is the right guidance even though they carry no *matching* weight — see
+  runbook-content-architecture.md § "Match surface vs validation surface" for the
+  authoring discipline.
 - **Refutation prunes.** A rung whose indicator is *contradicted* (REFUTES
   evidence) drops the chain hard. (M7 AND-member pruning applies only to
   engine-formed AND-sets at runtime; runbooks author none.)
