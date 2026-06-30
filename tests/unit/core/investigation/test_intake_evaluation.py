@@ -562,6 +562,71 @@ async def test_partially_met_need_is_superseded_on_refutation():
     assert case.evidence_needs[0].state == NeedState.SUPERSEDED
 
 
+@pytest.mark.asyncio
+async def test_validated_cause_unfired_need_is_superseded():
+    # A3 (the symmetric twin of the refuted case): once a cause's root is VALIDATED,
+    # its still-open predicate needs are retired — the cause is proven, so asking the
+    # user to discriminate it further would hang PENDING forever.
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+        evaluate=lambda **_: [],
+    )
+    # Turn 1: a PENDING need is created.
+    await run_differential_intake_turn(case, [_evidence()], case.current_turn, **common)
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+    # The root validates on OTHER evidence without this predicate firing → superseded.
+    node.node_state = NodeState.VALIDATED
+    await run_differential_intake_turn(
+        case, [_evidence("ev_000000000002")], case.current_turn, **common
+    )
+    assert case.evidence_needs[0].state == NeedState.SUPERSEDED
+    assert case.evidence_needs[0].superseded_reason
+
+
+@pytest.mark.asyncio
+async def test_validated_cause_with_firing_predicate_fulfills_not_supersedes():
+    # If the predicate DOES fire on the turn the cause is validated, the need is
+    # FULFILLED — the fired branch runs before the validated supersession, so a genuine
+    # hit is recorded (audit trail), not retired.
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+    )
+    # Turn 1: PENDING need.
+    await run_differential_intake_turn(
+        case, [_evidence()], case.current_turn, evaluate=lambda **_: [], **common
+    )
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+    # Turn 2: predicate fires AND the root is validated → FULFILLED wins.
+    node.node_state = NodeState.VALIDATED
+    await run_differential_intake_turn(
+        case,
+        [_evidence("ev_000000000002")],
+        case.current_turn,
+        evaluate=lambda **_: [
+            StanceVerdict(
+                cause_id="rb1:A",
+                stance=EvidenceStance.SUPPORTS,
+                provenance="runbook",
+                predicate={"predicate": "contains", "target": "OOMKilled"},
+            )
+        ],
+        **common,
+    )
+    assert case.evidence_needs[0].state == NeedState.FULFILLED
+
+
 def test_supports_is_not_re_attached_to_a_refuted_root():
     # A REFUTED root is settled — a runbook predicate firing SUPPORTS on a later
     # turn must NOT re-support it (the standing-bias harm). The link is skipped.
