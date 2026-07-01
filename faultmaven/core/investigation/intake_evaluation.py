@@ -274,6 +274,19 @@ def _predicate_signature(predicate: dict) -> str:
     return json.dumps(predicate, sort_keys=True, separators=(",", ":"))
 
 
+# Prefix on every engine-derived differential need id — the one marker that tells a
+# differential (matcher-predicate) need apart from a symptom need or an LLM-emitted
+# causal need (which carry random ids). Used to count the open differential pool for
+# the emission budget below.
+_DIFFERENTIAL_NEED_ID_PREFIX = "eneed_"
+
+# Per-turn cap on OPEN (PENDING) differential evidence-needs — the user-facing
+# "provide X to discriminate cause Y" ask list. Bounds the demand side so a broad
+# retrieval-seeded differential (Part A) can't flood the user with one ask per
+# untested predicate per candidate. See ``_regen_differential_evidence_needs``.
+_DIFFERENTIAL_NEED_BUDGET = 3
+
+
 def _differential_need_id(candidate_id: str, predicate_sig: str) -> str:
     """Deterministic ``need_id`` for a (candidate, predicate) — recomputable each
     turn, so regeneration finds the existing need instead of duplicating it, and
@@ -281,7 +294,38 @@ def _differential_need_id(candidate_id: str, predicate_sig: str) -> str:
     digest = hashlib.md5(
         f"{candidate_id}|{predicate_sig}".encode(), usedforsecurity=False
     ).hexdigest()[:12]
-    return f"eneed_{digest}"
+    return f"{_DIFFERENTIAL_NEED_ID_PREFIX}{digest}"
+
+
+def _predicate_signature_spread(
+    active_causes: "list[ActiveCauseLike]",
+    refuted_cause_ids: "set[str]",
+    validated_cause_ids: "set[str]",
+) -> "dict[str, int]":
+    """Map each predicate signature to the number of still-live candidate causes that
+    carry it — the discrimination weight for the emission budget.
+
+    A datum satisfying a widely-shared predicate bears on more of the differential, so
+    one user-facing ask advances more candidates; asking for it first maximises what a
+    single collected datum resolves. First-cut heuristic (candidates-a-datum-bears-on),
+    deliberately cheap and deterministic — a true information-gain "split" metric
+    (favouring predicates true for some candidates and false for others) is a later
+    refinement that can swap in here without touching the budget logic.
+    """
+    counts: "dict[str, int]" = {}
+    for ac in active_causes:
+        if (
+            ac.candidate_id in refuted_cause_ids
+            or ac.candidate_id in validated_cause_ids
+        ):
+            continue
+        seen = {
+            _predicate_signature(p)
+            for p in (getattr(ac.record, "match_predicates", None) or [])
+        }
+        for sig in seen:
+            counts[sig] = counts.get(sig, 0) + 1
+    return counts
 
 
 def _predicate_request_text(predicate: dict) -> str:
@@ -311,12 +355,19 @@ def _regen_differential_evidence_needs(
     validated_cause_ids: "set[str]",
 ) -> None:
     """Reconcile the case's engine-owned causal Evidence Needs with the active
-    differential: ensure one PENDING need per unsatisfied predicate, flip a need to
-    FULFILLED once its predicate fires this turn, and SUPERSEDE the still-open needs
-    of a cause whose root is now SETTLED — passed in as ``refuted_cause_ids`` and
-    ``validated_cause_ids`` (the caller classifies; "settled validated" means
-    *deductively* validated, the only durable kind — see
+    differential: open PENDING needs for unsatisfied predicates (up to the
+    ``_DIFFERENTIAL_NEED_BUDGET`` cap on the open pool, highest-discrimination first),
+    flip a need to FULFILLED once its predicate fires this turn, and SUPERSEDE the
+    still-open needs of a cause whose root is now SETTLED — passed in as
+    ``refuted_cause_ids`` and ``validated_cause_ids`` (the caller classifies; "settled
+    validated" means *deductively* validated, the only durable kind — see
     ``_cause_root_settled_state``).
+
+    The budget bounds the demand side: a retrieval-seeded differential (Part A) can
+    span many candidate causes, each with several untested predicates, so emitting one
+    need per (cause, predicate) would flood the user with "provide X to discriminate
+    cause Y" asks. Emission is therefore capped at ``_DIFFERENTIAL_NEED_BUDGET`` OPEN
+    needs at a time, refilled as needs resolve — coverage is preserved, rate-limited.
 
     Both supersessions close a demand↔validate inconsistency, and both are sound
     only because the state is terminal. REFUTED: ``run_intake_evaluation`` skips
@@ -340,6 +391,15 @@ def _regen_differential_evidence_needs(
         if v.stance == EvidenceStance.SUPPORTS
     }
     by_id = {n.need_id: n for n in case.evidence_needs}
+    spread = _predicate_signature_spread(
+        active_causes, refuted_cause_ids, validated_cause_ids
+    )
+
+    # Pass 1 — reconcile existing needs (fulfill fired / supersede settled), and
+    # collect the unsatisfied predicates that WOULD open a new need. Creation is
+    # deferred to the budgeted pass so an over-broad differential can't flood the
+    # demand side; each candidate carries its discrimination weight for ranking.
+    pending: list[tuple[int, str, "ActiveCauseLike", dict]] = []
     for ac in active_causes:
         cause_refuted = ac.candidate_id in refuted_cause_ids
         cause_validated = ac.candidate_id in validated_cause_ids
@@ -387,17 +447,40 @@ def _regen_differential_evidence_needs(
                     )
                 continue
             if existing is None:
-                need = EvidenceNeed(
-                    need_id=need_id,
-                    case_id=case.case_id,
-                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
-                    request_text=_predicate_request_text(predicate)[:500],
-                    rationale=(
-                        f"Discriminates runbook cause {ac.candidate_id} against the "
-                        "submitted telemetry."
-                    ),
-                    state=NeedState.PENDING,
-                    created_at_turn=current_turn,
-                )
-                case.evidence_needs.append(need)
-                by_id[need_id] = need
+                pending.append((spread.get(sig, 1), need_id, ac, predicate))
+
+    # Pass 2 — budgeted emission. Keep at most ``_DIFFERENTIAL_NEED_BUDGET`` OPEN
+    # (PENDING) differential needs at any time: Pass 1 may have freed slots
+    # (FULFILLED / SUPERSEDED), so fill the remainder with the highest-discrimination
+    # untested predicates. This bounds the user-facing ask list regardless of how
+    # broad the differential is; as needs resolve, freed slots refill on later turns
+    # with the next-most-discriminating predicates, so coverage is preserved — just
+    # rate-limited. (Open needs are never evicted in favour of a higher-ranked one; a
+    # re-ranking/eviction policy is a possible refinement.)
+    open_differential = sum(
+        1
+        for n in case.evidence_needs
+        if n.need_id.startswith(_DIFFERENTIAL_NEED_ID_PREFIX)
+        and n.state == NeedState.PENDING
+    )
+    slots = _DIFFERENTIAL_NEED_BUDGET - open_differential
+    if slots <= 0:
+        return
+    # Highest discrimination first; deterministic tie-break on need_id so re-running
+    # the same turn selects the same needs (idempotent regen).
+    pending.sort(key=lambda item: (-item[0], item[1]))
+    for _score, need_id, ac, predicate in pending[:slots]:
+        case.evidence_needs.append(
+            EvidenceNeed(
+                need_id=need_id,
+                case_id=case.case_id,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text=_predicate_request_text(predicate)[:500],
+                rationale=(
+                    f"Discriminates runbook cause {ac.candidate_id} against the "
+                    "submitted telemetry."
+                ),
+                state=NeedState.PENDING,
+                created_at_turn=current_turn,
+            )
+        )

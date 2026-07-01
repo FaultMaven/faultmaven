@@ -16,6 +16,8 @@ import pytest
 
 from faultmaven.core.investigation.differential_intake import StanceVerdict
 from faultmaven.core.investigation.intake_evaluation import (
+    _DIFFERENTIAL_NEED_BUDGET,
+    _regen_differential_evidence_needs,
     run_differential_intake_turn,
     run_intake_evaluation,
 )
@@ -787,3 +789,91 @@ def test_default_evaluator_stub_is_inert():
     )
     assert recorded == []
     assert node.evidence_links == []
+
+
+# ---------------------------------------------------------------------------
+# Demand-side budget: _regen_differential_evidence_needs caps the OPEN differential
+# evidence-need pool at _DIFFERENTIAL_NEED_BUDGET, highest-discrimination first, so a
+# broad (Part A retrieval-seeded) differential can't flood the user with asks.
+# ---------------------------------------------------------------------------
+
+
+def _pred(target: str, op: str = "contains") -> dict:
+    return {"predicate": op, "target": target}
+
+
+def _ac_preds(candidate_id: str, targets: list[str]):
+    # ActiveCause stand-in: only candidate_id + record.match_predicates are read here.
+    return SimpleNamespace(
+        candidate_id=candidate_id,
+        record=SimpleNamespace(match_predicates=[_pred(t) for t in targets]),
+    )
+
+
+def _pending(case) -> list:
+    return [n for n in case.evidence_needs if n.state == NeedState.PENDING]
+
+
+def test_differential_need_emission_within_budget_emits_all():
+    # Below the cap, every unsatisfied predicate still gets its need (budget inert).
+    case = _case()
+    acs = [_ac_preds("rb1:A", ["only1", "only2"])]
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    assert len(_pending(case)) == 2
+
+
+def test_differential_need_emission_capped_at_budget():
+    # One cause with 6 unsatisfied predicates → only _DIFFERENTIAL_NEED_BUDGET needs.
+    case = _case()
+    acs = [_ac_preds("rb1:A", [f"tok{i}" for i in range(6)])]
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    assert len(_pending(case)) == _DIFFERENTIAL_NEED_BUDGET
+
+
+def test_differential_need_emission_prefers_high_discrimination():
+    # 'shared' is carried by 3 causes (spread 3); each cause also has a unique
+    # predicate (spread 1). With a budget of 3, every slot goes to the shared datum
+    # (one ask that bears on the most candidates), never to a unique one.
+    case = _case()
+    acs = [
+        _ac_preds("rb1:A", ["shared", "uniqueA"]),
+        _ac_preds("rb1:B", ["shared", "uniqueB"]),
+        _ac_preds("rb1:C", ["shared", "uniqueC"]),
+    ]
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    pend = _pending(case)
+    assert len(pend) == _DIFFERENTIAL_NEED_BUDGET
+    assert all("shared" in n.request_text for n in pend)
+    assert not any("unique" in n.request_text for n in pend)
+
+
+def test_differential_need_budget_refills_freed_slots():
+    # 4 unsatisfied predicates, budget 3 → 3 open, 1 deferred. Resolving the 3 open
+    # needs frees the slots, and the deferred predicate is emitted on the next pass.
+    case = _case()
+    acs = [_ac_preds("rb1:A", [f"tok{i}" for i in range(4)])]
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    first = _pending(case)
+    assert len(first) == _DIFFERENTIAL_NEED_BUDGET
+    first_ids = {n.need_id for n in first}
+
+    for n in first:  # simulate the user satisfying the open asks
+        n.state = NeedState.FULFILLED
+
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    pend = _pending(case)
+    assert len(pend) == 1  # exactly the previously-deferred predicate
+    assert pend[0].need_id not in first_ids  # a genuinely new need, not a re-open
+
+
+def test_differential_need_budget_holds_across_causes():
+    # The cap is GLOBAL, not per-cause: three causes with two unsatisfied predicates
+    # each (6 total) still yield only _DIFFERENTIAL_NEED_BUDGET open needs.
+    case = _case()
+    acs = [
+        _ac_preds("rb1:A", ["a1", "a2"]),
+        _ac_preds("rb2:B", ["b1", "b2"]),
+        _ac_preds("rb3:C", ["c1", "c2"]),
+    ]
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    assert len(_pending(case)) == _DIFFERENTIAL_NEED_BUDGET
