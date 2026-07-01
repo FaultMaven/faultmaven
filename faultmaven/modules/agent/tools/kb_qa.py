@@ -203,6 +203,32 @@ global documentation, your personal runbooks, and your team's shared procedures.
                 continue
         return results
 
+    async def aget_retrieved_runbook_ids(
+        self,
+        question: str,
+        user_id: str,
+        *,
+        team_ids: Optional[List[str]] = None,
+        top_k: int = _DEFAULT_MAX_RUNBOOKS,
+    ) -> List[str]:
+        """Retrieval-only ranking of the top runbook ids for ``question`` — the
+        embedding-search half of ``aget_cause_matches`` WITHOUT its per-runbook T2
+        LLM evaluation.
+
+        Part A seeds the differential from this: broadening the candidate set to the
+        top-``top_k`` *retrieved* runbooks (regardless of the T2 verdict) is what makes
+        the deterministic intake loop run on ``none``/``multiple`` verdicts — and doing
+        it here, off retrieval alone, keeps the cost at **one embedding search, no LLM**
+        (the T2 verdict is still computed once, on the top-1, by ``aget_cause_matches``
+        for the conservative chain prior). Returns distinct runbook ``item_id``s in
+        retrieval-rank order (best first); ``[]`` on a retrieval miss or error (a prior
+        must never break the turn — ``_retrieve_chunks`` already degrades to ``[]``).
+        """
+        retrieval_k = top_k * _RETRIEVAL_FANOUT
+        filters = self._build_scope_filter(user_id, team_ids or [])
+        chunks = await self._retrieve_chunks(question, k=retrieval_k, filters=filters)
+        return self._rank_runbook_ids(chunks, top_k)
+
     async def _retrieve_chunks(
         self, question: str, k: int, filters: Optional[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
