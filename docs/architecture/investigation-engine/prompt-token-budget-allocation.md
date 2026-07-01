@@ -1,6 +1,6 @@
 # Prompt Context Management & Token-Budget Allocation
 
-> **Status: PROPOSED — design under review (pre-implementation).**
+> **Status: ACTIVE — fully implemented.**
 >
 > The token-budget number itself (`PROMPT_TARGET_TOKENS`) and the model
 > context-window registry already exist. The **allocation** of that budget

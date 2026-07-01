@@ -36,7 +36,7 @@ An append-only list of short, structured entries that capture the key decisions,
 1. **Distilled, not verbose.** Each entry is max 200 characters. The journal is a compressed signal, not a conversation transcript.
 2. **Append-only.** Entries are never modified or deleted. The chronological record is the ground truth.
 3. **Agent-generated.** The LLM produces journal entries as part of its structured output, like it produces evidence and hypotheses.
-4. **Always in context.** The context builder includes the full journal in every prompt. At 200 chars per entry and ~1 entry per 2 turns, a 50-turn investigation produces ~25 entries = ~5 KB. Well within budget.
+4. **Always in context (with middle-out compaction).** The context builder includes the journal in every prompt. Under token budget pressure, if the journal exceeds 20 entries, the builder uses a **middle-out compaction algorithm**: it preserves the first 3 anchor entries and the last 5 recent entries verbatim, and filters the middle entries to keep only high-signal events (`decision`, `finding`, `ruled_out`, `blocker`), compressing routine entries with an elided count marker (e.g. `... [ 12 routine entries compressed ] ...`).
 5. **Selective, not exhaustive.** Not every turn produces a journal entry. Only turns with significant findings, decisions, or user context.
 
 ### Entry Types
