@@ -46,6 +46,7 @@ from faultmaven.core.investigation.causal_graph import (
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
     synthesize_rcc_from_validated_root,
+    validate_by_exclusion,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
@@ -731,8 +732,16 @@ def _investigation_confirmation_suggestions() -> list:
     ]
 
 
-def _recompute_cause_state_from_chain(case: "Case") -> None:
+def _recompute_cause_state_from_chain(
+    case: "Case", *, exclusion_survivors: "set[str] | frozenset[str]" = frozenset()
+) -> None:
     """Chain-derived ``cause_state`` (Option A, methodology §9.2; flag ON).
+
+    ``exclusion_survivors`` are the ROOT nodes the LLM certified this turn as the
+    sole survivor of an exhaustive differential (§7.1.1); each is validated by
+    ``validate_by_exclusion`` iff its differential has genuinely collapsed. Empty on
+    reload/terminal recomputes — a previously stamped DEDUCTIVE node survives on its
+    own (``derive_node_states`` locks it), so no re-assertion is needed to keep it.
 
     ``IDENTIFIED`` iff some live hypothesis's chain ROOT is VALIDATED from real
     rung evidence (``derive_node_states`` + ``any_chain_root_validated``) **AND
@@ -771,6 +780,14 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
     p = case.progress
     demote_disconfirmed_cause_via_evidence(case)
     derive_node_states(case)
+    # Deductive validation (§7.1.1, proof-by-exclusion): stamp DEDUCTIVE on any
+    # LLM-certified survivor whose differential has now collapsed to it. Runs AFTER
+    # derive_node_states (so siblings have reached REFUTED and their exclusion
+    # strength is set) and BEFORE any_chain_root_validated below, so a freshly
+    # validated root promotes cause_state in this same pass. The asserted set is the
+    # agent's exhaustiveness certification; validate_by_exclusion re-checks the
+    # engine-computable guards (≥2 members, all-but-survivor absolutely refuted).
+    validate_by_exclusion(case, exclusion_survivors)
     # Source-of-truth retraction: clear a RootCauseConclusion whose named cause
     # (validated_hypothesis_id) is now disconfirmed, so no consumer asserts a
     # disproven cause. Covers the gap M6 misses when cause_state never reached
@@ -811,7 +828,9 @@ def _recompute_cause_state_from_chain(case: "Case") -> None:
         p.cause_state = CauseState.UNKNOWN
 
 
-def _recompute_assessment_state(case: "Case") -> None:
+def _recompute_assessment_state(
+    case: "Case", *, exclusion_survivors: "set[str] | frozenset[str]" = frozenset()
+) -> None:
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
     Assessment variables are TRUTH signals the engine derives — never
@@ -829,7 +848,7 @@ def _recompute_assessment_state(case: "Case") -> None:
     """
     p = case.progress
 
-    _recompute_cause_state_from_chain(case)
+    _recompute_cause_state_from_chain(case, exclusion_survivors=exclusion_survivors)
 
     if p.solution_state != SolutionState.SELECTED:
         if p.solution_proposed or bool(case.solutions):
@@ -5977,6 +5996,22 @@ class MilestoneEngine:
             if old_root and old_root != root_id:
                 self._gc_orphan_chain(case, old_path)
 
+        # Deductive validation (§7.1.1): resolve the ROOT survivors the LLM
+        # certified as the sole survivor of an EXHAUSTIVE differential. The
+        # resolved id set is the exhaustiveness assertion (guard #1 — the one the
+        # engine cannot compute); it is stashed for the assessment recompute, which
+        # runs ``validate_by_exclusion`` AFTER ``derive_node_states`` has settled the
+        # siblings' states so the "all-but-survivor absolutely refuted" guard can be
+        # checked. ``_resolve_root`` enforces ROOT-only (a survivor must be a root
+        # cause); an unresolvable/non-root ref is silently dropped.
+        survivor_ids: set[str] = set()
+        for dv in getattr(updates, "deductive_validations", None) or []:
+            root_id = _resolve_root(getattr(dv, "survivor_node_ref", None))
+            if root_id is not None:
+                survivor_ids.add(root_id)
+        if survivor_ids:
+            metadata["deductive_survivor_ids"] = survivor_ids
+
     @staticmethod
     def _gc_orphan_chain(case: "Case", abandoned_node_ids: list) -> None:
         """Drop the nodes of a chain abandoned by a hypothesis re-root that are
@@ -6738,7 +6773,12 @@ class MilestoneEngine:
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).
-        _recompute_assessment_state(case)
+        # Pass this turn's LLM-certified deductive survivors (resolved in
+        # _apply_chain_emission) so proof-by-exclusion can stamp them post-derive.
+        _recompute_assessment_state(
+            case,
+            exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
+        )
 
         # Deferred-implementation disposition: if the fix is known but can't be
         # applied this session, propose CLOSE-with-documented-solution (§3.1 row 3).
