@@ -98,13 +98,36 @@ class AnthropicProvider(BaseLLMProvider):
 
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)
+        cache_prompt = kwargs.pop("cache_prompt", False)
+
         if messages:
-            converted = self._convert_messages_to_anthropic(messages)
+            converted = self._convert_messages_to_anthropic(
+                messages, cache_prompt=cache_prompt
+            )
             request_body["messages"] = converted["messages"]
             if converted.get("system"):
-                request_body["system"] = converted["system"]
+                if cache_prompt:
+                    request_body["system"] = [
+                        {
+                            "type": "text",
+                            "text": converted["system"],
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
+                else:
+                    request_body["system"] = converted["system"]
         else:
-            request_body["messages"] = [{"role": "user", "content": prompt}]
+            if cache_prompt:
+                msg_content = [
+                    {
+                        "type": "text",
+                        "text": prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+                request_body["messages"] = [{"role": "user", "content": msg_content}]
+            else:
+                request_body["messages"] = [{"role": "user", "content": prompt}]
 
         # Add any additional parameters (system kwarg overrides messages-extracted system)
         if "system" in kwargs:
@@ -212,7 +235,15 @@ class AnthropicProvider(BaseLLMProvider):
 
         # Calculate metrics
         response_time_ms = int((time.time() - start_time) * 1000)
-        tokens_used = response_data.get("usage", {}).get("output_tokens", 0)
+
+        usage_data = response_data.get("usage") or {}
+        input_tokens = usage_data.get("input_tokens") or 0
+        output_tokens = usage_data.get("output_tokens") or 0
+        cache_write_tokens = usage_data.get("cache_creation_input_tokens") or 0
+        cache_read_tokens = usage_data.get("cache_read_input_tokens") or 0
+        tokens_used = (
+            input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+        )
 
         # Calculate confidence based on model and response quality
         # For structured output (tool calls), content may be empty - that's expected
@@ -228,8 +259,12 @@ class AnthropicProvider(BaseLLMProvider):
             model=selected_model,
             tokens_used=tokens_used,
             response_time_ms=response_time_ms,
-            cached=False,
+            cached=bool(cache_read_tokens > 0),
             tool_calls=tool_calls,  # Add tool_calls for function calling support
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cache_read_tokens=cache_read_tokens,
         )
 
     def _calculate_confidence(
@@ -306,7 +341,9 @@ class AnthropicProvider(BaseLLMProvider):
         # Ensure confidence is within valid range
         return min(1.0, max(0.0, model_confidence))
 
-    def _convert_messages_to_anthropic(self, messages: list) -> dict:
+    def _convert_messages_to_anthropic(
+        self, messages: list, cache_prompt: bool = False
+    ) -> dict:
         """Convert OpenAI-format messages to Anthropic API format.
 
         Handles:
@@ -330,7 +367,26 @@ class AnthropicProvider(BaseLLMProvider):
                 system_parts.append(content)
 
             elif role == "user":
-                anthropic_messages.append({"role": "user", "content": content})
+                # If cache_prompt is true, add cache_control to the first user message
+                if (
+                    cache_prompt
+                    and isinstance(content, str)
+                    and not any(m["role"] == "user" for m in anthropic_messages)
+                ):
+                    anthropic_messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": content,
+                                    "cache_control": {"type": "ephemeral"},
+                                }
+                            ],
+                        }
+                    )
+                else:
+                    anthropic_messages.append({"role": "user", "content": content})
 
             elif role == "assistant":
                 content_blocks = []

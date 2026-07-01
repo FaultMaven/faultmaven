@@ -13,7 +13,12 @@ import functools
 import logging
 import os
 import time
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
+
+active_token_tracker: ContextVar[Optional[Any]] = ContextVar(
+    "active_token_tracker", default=None
+)
 
 from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
@@ -280,6 +285,13 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         This works whether the span was created by @opik.track on this function
         or by a parent caller.
         """
+        try:
+            tracker = active_token_tracker.get()
+            if tracker is not None:
+                tracker.add(response)
+        except Exception as e:
+            self.logger.warning(f"Failed to record token usage in tracker: {e}")
+
         if not OPIK_AVAILABLE:
             self.logger.warning("Opik SDK not available — skipping span update")
             return
@@ -301,11 +313,17 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 "tokens_used": response.tokens_used,
                 "response_time_ms": response.response_time_ms,
                 "confidence": response.confidence,
+                "cache_write_tokens": getattr(response, "cache_write_tokens", 0),
+                "cache_read_tokens": getattr(response, "cache_read_tokens", 0),
             }
 
             usage = None
             if response.tokens_used:
-                usage = {"total_tokens": response.tokens_used}
+                usage = {
+                    "total_tokens": response.tokens_used,
+                    "prompt_tokens": getattr(response, "input_tokens", 0),
+                    "completion_tokens": getattr(response, "output_tokens", 0),
+                }
 
             opik_context.update_current_span(
                 input=input_data,

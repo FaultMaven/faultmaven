@@ -2305,23 +2305,35 @@ def _allocate_sections(
             conclusion_str,
             budget.count(conclusion_str),
             0,
-            section_budget,
+            min(section_budget, 1000),
         ),
-        ("kb_results", kb_str, budget.count(kb_str), 0, section_budget),
-        ("hypotheses", hypothesis_str, budget.count(hypothesis_str), 0, section_budget),
+        (
+            "kb_results",
+            kb_str,
+            budget.count(kb_str),
+            0,
+            min(section_budget, 4000),
+        ),
+        (
+            "hypotheses",
+            hypothesis_str,
+            budget.count(hypothesis_str),
+            0,
+            min(section_budget, 2000),
+        ),
         (
             "evidence_needs",
             evidence_needs_str,
             budget.count(evidence_needs_str),
             0,
-            section_budget,
+            min(section_budget, 1000),
         ),
         (
             "entity_highlights",
             entity_highlights_str,
             budget.count(entity_highlights_str),
             0,
-            section_budget,
+            min(section_budget, 3000),
         ),
     ]
 
@@ -2683,10 +2695,42 @@ def build_investigation_context(
     # Always included in full — ~5 KB for a 50-turn investigation.
     journal_str = ""
     if case.investigation_journal:
+        journal = case.investigation_journal
+        max_entries = 20
         journal_str = "<investigation_journal>\n"
-        for entry in case.investigation_journal:
-            tag = entry.entry_type.upper()
-            journal_str += f"[T{entry.turn}] {tag}: {entry.content}\n"
+
+        if len(journal) <= max_entries:
+            for entry in journal:
+                tag = entry.entry_type.upper() if entry.entry_type else "NOTE"
+                journal_str += f"[T{entry.turn}] {tag}: {entry.content}\n"
+        else:
+            anchor_count = 3
+            recent_count = 5
+            high_signal = {"decision", "finding", "ruled_out", "blocker"}
+
+            # Anchors
+            for entry in journal[:anchor_count]:
+                tag = entry.entry_type.upper() if entry.entry_type else "NOTE"
+                journal_str += f"[T{entry.turn}] {tag}: {entry.content}\n"
+
+            # Middle (high signal only)
+            middle = journal[anchor_count:-recent_count]
+            elided = 0
+            for entry in middle:
+                if (entry.entry_type or "").lower() in high_signal:
+                    tag = entry.entry_type.upper()
+                    journal_str += f"[T{entry.turn}] {tag}: {entry.content}\n"
+                else:
+                    elided += 1
+
+            if elided > 0:
+                journal_str += f"... [ {elided} routine entries compressed ] ...\n"
+
+            # Recent
+            for entry in journal[-recent_count:]:
+                tag = entry.entry_type.upper() if entry.entry_type else "NOTE"
+                journal_str += f"[T{entry.turn}] {tag}: {entry.content}\n"
+
         journal_str += "</investigation_journal>"
 
     # 5b. Working Conclusion (durable case-level understanding)

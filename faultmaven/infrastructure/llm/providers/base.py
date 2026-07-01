@@ -62,6 +62,10 @@ class NormalizedResponse:
     response_time_ms: int = 0
     cached: bool = False
     raw_response: Any = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
 
     def __post_init__(self):
         if self.tool_calls is None:
@@ -179,6 +183,10 @@ class LLMResponse:
     # thoughtSignature, and skipping any one of them produces an HTTP 400 on
     # the next turn. Stays `None` for providers that don't need this.
     provider_metadata: Optional[Dict[str, Any]] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
 
 
 @dataclass

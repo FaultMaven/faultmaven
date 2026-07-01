@@ -341,9 +341,16 @@ class GeminiProvider(BaseLLMProvider):
                         )
 
             # Extract token usage if available
+            input_tokens = 0
+            output_tokens = 0
+            cache_read_tokens = 0
             if response_data.get("usageMetadata"):
-                tokens_used = response_data["usageMetadata"].get(
-                    "candidatesTokenCount", 0
+                usage = response_data["usageMetadata"]
+                input_tokens = usage.get("promptTokenCount") or 0
+                output_tokens = usage.get("candidatesTokenCount") or 0
+                cache_read_tokens = usage.get("cachedContentTokenCount") or 0
+                tokens_used = usage.get("totalTokenCount") or (
+                    input_tokens + output_tokens
                 )
 
         # Handle potential safety blocks or other issues
@@ -408,9 +415,12 @@ class GeminiProvider(BaseLLMProvider):
             model=selected_model,
             tokens_used=tokens_used,
             response_time_ms=response_time_ms,
-            cached=False,
+            cached=bool(cache_read_tokens > 0),
             tool_calls=tool_calls,
             provider_metadata=provider_metadata,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
         )
 
     def _calculate_confidence(

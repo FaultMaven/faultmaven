@@ -192,10 +192,13 @@ class CohereProvider(BaseLLMProvider):
                         content = self._validate_response_content(content)
 
                     # Extract token usage (Cohere v2 format)
-                    usage = data.get("usage", {}).get("tokens", {})
-                    input_tokens = usage.get("input_tokens", 0)
-                    output_tokens = usage.get("output_tokens", 0)
-                    total_tokens = input_tokens + output_tokens
+                    usage_block = data.get("usage") or {}
+                    usage = usage_block.get("tokens") or {}
+                    input_tokens = usage.get("input_tokens") or 0
+                    output_tokens = usage.get("output_tokens") or 0
+                    total_tokens = usage_block.get("total_tokens") or (
+                        input_tokens + output_tokens
+                    )
 
                     response_time = self._get_response_time_ms()
 
@@ -207,6 +210,8 @@ class CohereProvider(BaseLLMProvider):
                         tokens_used=total_tokens,
                         response_time_ms=response_time,
                         tool_calls=tool_calls,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
                     )
         except asyncio.TimeoutError:
             raise LLMException(

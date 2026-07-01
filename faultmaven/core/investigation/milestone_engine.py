@@ -27,6 +27,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
@@ -126,6 +127,41 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
+
+
+@dataclass
+class TurnTokenTracker:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    total_calls: int = 0
+    seen_responses: set = field(
+        default_factory=set, compare=False, hash=False, repr=False
+    )
+
+    def add(self, response):
+        if response is None:
+            return
+        response_id = id(response)
+        if response_id in self.seen_responses:
+            return
+        self.seen_responses.add(response_id)
+        self.input_tokens += getattr(response, "input_tokens", 0)
+        self.output_tokens += getattr(response, "output_tokens", 0)
+        self.cache_read_tokens += getattr(response, "cache_read_tokens", 0)
+        self.cache_write_tokens += getattr(response, "cache_write_tokens", 0)
+        self.total_calls += 1
+
+    @property
+    def total_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+        )
+
 
 # =============================================================================
 # Evidence Category - Milestone Mapping (Option 2.5: System-Inferred Attribution)
@@ -2112,13 +2148,20 @@ class MilestoneEngine:
         # G10: Acquire per-case lock to prevent concurrent turns from
         # interleaving reads/writes on the same case state
         async with self._case_locks[case.case_id]:
-            return await self._process_turn_impl(
-                case,
-                user_message,
-                attachments,
-                intent_type,
-                intent_data,
-            )
+            from faultmaven.infrastructure.llm.router import active_token_tracker
+
+            tracker = TurnTokenTracker()
+            token = active_token_tracker.set(tracker)
+            try:
+                return await self._process_turn_impl(
+                    case,
+                    user_message,
+                    attachments,
+                    intent_type,
+                    intent_data,
+                )
+            finally:
+                active_token_tracker.reset(token)
 
     async def _process_turn_impl(
         self,
@@ -2152,6 +2195,10 @@ class MilestoneEngine:
             )
 
         try:
+            from faultmaven.infrastructure.llm.router import active_token_tracker
+
+            tracker = active_token_tracker.get() or TurnTokenTracker()
+
             # Initialize metadata early so it can be used throughout the function
             metadata = {
                 "milestones_completed": [],
@@ -2166,6 +2213,7 @@ class MilestoneEngine:
                 "progress_made": False,
                 "status_transitioned": False,
                 "outcome": TurnOutcome.CONVERSATION,
+                "token_tracker": tracker,
             }
 
             # Evidence-needs Phase 3: snapshot which hypothesis IDs are
@@ -3347,6 +3395,22 @@ class MilestoneEngine:
                 },
             )
 
+            if "token_tracker" in metadata:
+                tracker = metadata["token_tracker"]
+                logger.info(
+                    "turn_token_spend",
+                    extra={
+                        "case_id": case_updated.case_id,
+                        "turn": case_updated.current_turn,
+                        "input_tokens": tracker.input_tokens,
+                        "output_tokens": tracker.output_tokens,
+                        "cache_read_tokens": tracker.cache_read_tokens,
+                        "cache_write_tokens": tracker.cache_write_tokens,
+                        "total_tokens": tracker.total_tokens,
+                        "total_calls": tracker.total_calls,
+                    },
+                )
+
             return {
                 "agent_response": agent_response_text,
                 "suggested_follow_ups": follow_ups,
@@ -3496,6 +3560,9 @@ class MilestoneEngine:
                 case, tool_context
             )
 
+        from faultmaven.infrastructure.llm.router import active_token_tracker
+
+        token_tracker = active_token_tracker.get()
         force_schema_next = False
 
         for iteration in range(self.MAX_TOOL_ITERATIONS + 1):
@@ -3533,6 +3600,7 @@ class MilestoneEngine:
                 max_tokens=max_tokens,
                 temperature=0.2,
                 case_id=case.case_id if case is not None else None,
+                cache_prompt=True,
             )
             if self.da_model and self.da_provider:
                 generate_kwargs["model"] = self.da_model
@@ -3560,6 +3628,19 @@ class MilestoneEngine:
 
             try:
                 response = await provider.generate(**generate_kwargs)
+                if token_tracker:
+                    token_tracker.add(response)
+                    if (
+                        token_tracker.total_tokens > 150000
+                        and not is_final
+                        and not force_schema_next
+                    ):
+                        logger.warning(
+                            f"Turn token spend ({token_tracker.total_tokens}) exceeded safety threshold. Aborting tool loop."
+                        )
+                        force_schema_next = True
+                        # Need to re-evaluate tools_for_call and choice for this iteration?
+                        # Actually, since we already called generate, we just set the flag so the NEXT iteration forces the schema.
             except Exception as e:
                 # Any iteration failure (timeout, provider error, transient
                 # issue) raises ToolCallingUnsupportedError so the caller

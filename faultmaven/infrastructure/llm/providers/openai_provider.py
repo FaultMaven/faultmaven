@@ -230,8 +230,15 @@ class OpenAIProvider(BaseLLMProvider):
                             content = "{}"
 
                     # Extract token usage
-                    usage = data.get("usage", {})
-                    tokens_used = usage.get("total_tokens", 0)
+                    usage = data.get("usage") or {}
+                    input_tokens = usage.get("prompt_tokens") or 0
+                    output_tokens = usage.get("completion_tokens") or 0
+                    tokens_used = usage.get("total_tokens") or (
+                        input_tokens + output_tokens
+                    )
+
+                    prompt_details = usage.get("prompt_tokens_details") or {}
+                    cache_read_tokens = prompt_details.get("cached_tokens") or 0
 
                     response_time = self._get_response_time_ms()
 
@@ -242,7 +249,11 @@ class OpenAIProvider(BaseLLMProvider):
                         model=effective_model,
                         tokens_used=tokens_used,
                         response_time_ms=response_time,
+                        cached=bool(cache_read_tokens > 0),
                         tool_calls=tool_calls,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens,
                     )
         except asyncio.TimeoutError:
             raise LLMException(
