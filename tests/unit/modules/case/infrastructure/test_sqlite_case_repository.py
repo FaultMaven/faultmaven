@@ -363,6 +363,21 @@ class TestRelatedDataRoundTrip:
         assert retrieved.differential_runbook_ids == ["kb_rb1", "kb_rb2"]
 
     @pytest.mark.asyncio
+    async def test_round_trips_runbook_retrieved_marker(self, repository):
+        # The R3 denominator marker for the grounding baseline metric — set at
+        # retrieval time, before the verdict gate. It must survive save→load so the
+        # matching-runbook population is measurable across turns/reloads. Defaults
+        # False (unset), so pin both the True round-trip and the False default.
+        default_case = _make_case()
+        await repository.save(default_case)
+        assert (await repository.get(default_case.case_id)).runbook_retrieved is False
+
+        case = _make_case()
+        case.runbook_retrieved = True
+        await repository.save(case)
+        assert (await repository.get(case.case_id)).runbook_retrieved is True
+
+    @pytest.mark.asyncio
     async def test_evidence_upsert_is_purely_additive(self, repository):
         """save(case) must NOT delete evidence rows that are absent from the
         in-memory case.evidence list.
