@@ -1,10 +1,10 @@
 """Phase 0b — the both-arms grounding baseline metric.
 
 Rolls the drift-locked per-case counter (``cause_assurance.count_grounded_roots``) up
-over a case population, applying the non-circular R3 denominator (cases where a runbook
-was retrieved, captured pre-verdict via ``Case.runbook_retrieved``) and the two ratified
-projections (all-INVESTIGATING vs terminal-only). Contract:
-``docs/working/DRAFT-grounded-cause-counting-definition.md`` §8.
+over a case population, applying the non-circular R3 denominator (cases where a
+v4-matchable runbook was found, captured pre-verdict via ``Case.runbook_retrieved``) and
+the two ratified projections (all-INVESTIGATING vs terminal-only). Contract:
+``docs/architecture/investigation-engine/grounded-cause-counting.md``.
 
 Why it exists: to make a dead mechanism *visible*. Today both grounding arms read ~0 over
 a real, non-zero denominator — the runbook arm because the differential is seeded only on
@@ -26,16 +26,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from faultmaven.core.investigation.cause_assurance import count_grounded_roots
-from faultmaven.modules.case.contracts import CaseState
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
 GroundingScope = Literal["all", "terminal"]
-
-# Terminal dispositions — the harvest-readiness projection (where convert-from-case
-# actually reads the §7 grade).
-_TERMINAL_STATES = frozenset({CaseState.RESOLVED, CaseState.CLOSED})
 
 
 @dataclass(frozen=True)
@@ -84,10 +79,11 @@ def _in_population(case: "Case", scope: GroundingScope) -> bool:
     pre-verdict retrieval marker), never on the verdict-gated ``differential_runbook_ids``.
     'reached INVESTIGATING' is implied by ``runbook_retrieved`` — the matcher only runs in
     INVESTIGATING — so the 'all' scope needs no extra state test."""
-    if not getattr(case, "runbook_retrieved", False):
+    if not case.runbook_retrieved:
         return False
     if scope == "terminal":
-        return case.state in _TERMINAL_STATES
+        # Harvest-readiness view; reuse the single terminal-set owner (CaseState).
+        return case.state.is_terminal
     return True
 
 
@@ -95,7 +91,12 @@ def compute_grounding_baseline(
     cases: Iterable["Case"], *, scope: GroundingScope = "all"
 ) -> GroundingBaseline:
     """Roll ``count_grounded_roots`` up over ``cases`` within the scoped, matching-runbook
-    population. See module docstring for the projections and their meaning."""
+    population. See module docstring for the projections and their meaning.
+
+    ``cases`` is consumed exactly once. To report both scopes ('all' and 'terminal') of
+    the same population, pass a re-iterable collection (list/tuple), NOT a one-shot
+    generator — a generator would be exhausted by the first call and the second scope
+    would read an empty population."""
     population = 0
     cases_grounded = 0
     grounded_roots = 0

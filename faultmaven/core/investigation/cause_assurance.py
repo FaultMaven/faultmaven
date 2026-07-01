@@ -31,7 +31,7 @@ from faultmaven.modules.case.contracts import (
 )
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.contracts import Case, NodeEvidenceLink
+    from faultmaven.modules.case.contracts import Case, CausalNode, NodeEvidenceLink
 
 
 def support_is_runbook_grounded(link: "NodeEvidenceLink") -> bool:
@@ -68,6 +68,35 @@ class CauseAssuranceGrade(str, Enum):
     §7.1.1). The only grade that may auto-seed reusable knowledge."""
 
 
+def _validated_roots(case: "Case") -> list["CausalNode"]:
+    """The case's VALIDATED root nodes — the only harvest-relevant unit (§7 never
+    harvests an intermediate rung or a candidate). The single home for the
+    validated-root filter, shared by the grade and the counter so they cannot
+    disagree on what a validated root is."""
+    return [
+        n
+        for n in case.causal_nodes.values()
+        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
+    ]
+
+
+def _root_grounding(root: "CausalNode", evidence_ids: set[str]) -> tuple[bool, bool]:
+    """The shared per-root grounding classifier: ``(is_deductive, is_runbook)``.
+
+    The ONE place the two grounding arms are decided for a validated root, so the
+    §7 grade (``grade_cause_assurance``) and the observability counter
+    (``count_grounded_roots``) read identical logic — R1 drift-lock holds *by
+    construction*, not by a mirrored copy. ``is_runbook`` requires a NON-DANGLING
+    ``runbook``-provenance SUPPORTS (a link to deleted evidence never counts).
+    """
+    is_deductive = root.validation_method == ValidationMethod.DEDUCTIVE
+    is_runbook = any(
+        link.evidence_id in evidence_ids and support_is_runbook_grounded(link)
+        for link in root.evidence_links
+    )
+    return is_deductive, is_runbook
+
+
 def grade_cause_assurance(case: "Case") -> CauseAssuranceGrade:
     """Classify the case's identified cause into a single assurance grade, in one
     pass over its validated roots. The single source of truth for §7 gating.
@@ -76,22 +105,14 @@ def grade_cause_assurance(case: "Case") -> CauseAssuranceGrade:
     unverified cause into reusable knowledge, so only ``GROUNDED`` clears the bar.
     """
     evidence_ids = {e.evidence_id for e in case.evidence}
-    validated_roots = [
-        n
-        for n in case.causal_nodes.values()
-        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
-    ]
+    validated_roots = _validated_roots(case)
     if not validated_roots:
         return CauseAssuranceGrade.NO_ROOT
 
     for root in validated_roots:
-        if root.validation_method == ValidationMethod.DEDUCTIVE:
-            return CauseAssuranceGrade.GROUNDED  # deductive proof-by-exclusion
-        for link in root.evidence_links:
-            if link.evidence_id not in evidence_ids:
-                continue  # dangling reference (deleted evidence) — never counts
-            if support_is_runbook_grounded(link):
-                return CauseAssuranceGrade.GROUNDED  # authority-grounded predicate
+        is_deductive, is_runbook = _root_grounding(root, evidence_ids)
+        if is_deductive or is_runbook:
+            return CauseAssuranceGrade.GROUNDED  # authority-grounded root
     return CauseAssuranceGrade.FALLBACK_ONLY
 
 
@@ -139,28 +160,21 @@ def count_grounded_roots(case: "Case") -> GroundedRootTally:
     """Count a case's grounded root causes per arm, reusing the exact primitives
     ``grade_cause_assurance`` reads so the metric can never drift from the §7 gate.
 
-    Mirrors ``grade_cause_assurance`` node-for-node — same validated-root filter, same
-    DEDUCTIVE check, same non-dangling runbook-link check — but counts every root and
-    the arm(s) that grounded it instead of short-circuiting on the first grounded root,
-    recovering the two facts the case-level grade discards: how many roots grounded, and
-    via which arm. ``grade_cause_assurance(case) == GROUNDED`` iff ``grounded_roots >= 1``.
+    Shares ``grade_cause_assurance``'s exact primitives (``_validated_roots`` +
+    ``_root_grounding``) rather than mirroring them, so it cannot drift from the §7
+    gate; it counts every root and the arm(s) that grounded it instead of
+    short-circuiting on the first grounded root, recovering the two facts the
+    case-level grade discards: how many roots grounded, and via which arm.
+    ``grade_cause_assurance(case) == GROUNDED`` iff ``grounded_roots >= 1``.
     """
     evidence_ids = {e.evidence_id for e in case.evidence}
-    validated_roots = [
-        n
-        for n in case.causal_nodes.values()
-        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
-    ]
+    validated_roots = _validated_roots(case)
 
     runbook_arm = 0
     deductive_arm = 0
     grounded_roots = 0
     for root in validated_roots:
-        is_deductive = root.validation_method == ValidationMethod.DEDUCTIVE
-        is_runbook = any(
-            link.evidence_id in evidence_ids and support_is_runbook_grounded(link)
-            for link in root.evidence_links
-        )
+        is_deductive, is_runbook = _root_grounding(root, evidence_ids)
         if is_deductive:
             deductive_arm += 1
         if is_runbook:

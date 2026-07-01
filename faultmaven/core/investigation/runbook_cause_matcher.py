@@ -315,9 +315,16 @@ def _record_runbook_retrieval_hit(case: "Case") -> None:
     on a 'single' verdict). Sourcing the population from that field pre-Part-A would
     divide by the very seeding gap the metric exists to detect. Idempotent monotonic
     flag: once True it stays True for the life of the case (membership, not a count —
-    see the ``Case.runbook_retrieved`` field docstring for why boolean, not count)."""
+    see the ``Case.runbook_retrieved`` field docstring for why boolean, not count).
+
+    Set via ``object.__setattr__`` to bypass ``Case``'s ``validate_assignment=True``:
+    a plain assignment re-runs every Case model-validator, and since the matcher is a
+    prior whose caller swallows all exceptions, a validator trip on an unrelated,
+    mid-turn-inconsistent field would silently drop this marker (and pay a full
+    revalidation each turn). This mirrors the sibling ``_record_differential_runbook``,
+    whose in-place ``list.append`` likewise never triggers revalidation."""
     if not case.runbook_retrieved:
-        case.runbook_retrieved = True
+        object.__setattr__(case, "runbook_retrieved", True)
 
 
 def differential_runbook_ids(case: "Case") -> List[str]:
@@ -561,7 +568,9 @@ async def apply_runbook_cause_matcher(
     # Mark the matching-runbook population BEFORE the verdict gate below, so the
     # grounding-baseline denominator is not gated by the 'single'-verdict seeding path
     # (see _record_runbook_retrieval_hit). Fires on every verdict, including the
-    # none/multiple verdicts that instantiate nothing.
+    # none/multiple verdicts that instantiate nothing. `matches` is the v4-matchable
+    # set (aget_cause_matches drops pre-v4/upload runbooks with no chain) — the correct
+    # grounding denominator, since only a runbook with predicates can ground a cause.
     if matches:
         _record_runbook_retrieval_hit(case)
     chosen = next(
