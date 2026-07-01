@@ -373,3 +373,81 @@ def test_recompute_without_assertion_leaves_cause_unidentified():
 
     assert case.causal_nodes[survivor_id].node_state == NodeState.CANDIDATE
     assert case.progress.cause_state != CauseState.IDENTIFIED
+
+
+def _and_gate_case():
+    """A survivor ROOT S validated by exclusion (OR-differential S vs S2→M), that
+    is ALSO an AND-member of a downstream effect E (AND{S, J}→D) with its own causal
+    support. Before S is stamped, E's AND-gate is unsatisfied (S is CANDIDATE); once
+    S is deductively validated, E should validate — but only if derivation RE-RUNS
+    after the stamp. Returns (case, S_id, E_id)."""
+    d = _problem()
+    s = _node(_nid(1), node_type=NodeType.ROOT, state=NodeState.CANDIDATE)
+    s2 = _node(
+        _nid(2),
+        node_type=NodeType.ROOT,
+        state=NodeState.CANDIDATE,
+        links=[
+            _link("cf_s2", EvidenceStance.REFUTES)
+        ],  # counterfactual → REFUTED, belief 0
+    )
+    m = _node(_nid(3), node_type=NodeType.INTERMEDIATE, state=NodeState.CANDIDATE)
+    j = _node(
+        _nid(4),
+        node_type=NodeType.INTERMEDIATE,
+        state=NodeState.CANDIDATE,
+        links=[
+            _link("cs_j", EvidenceStance.SUPPORTS)
+        ],  # own causal support → VALIDATED
+    )
+    e = _node(
+        _nid(5),
+        node_type=NodeType.INTERMEDIATE,
+        state=NodeState.CANDIDATE,
+        links=[_link("cs_e", EvidenceStance.SUPPORTS)],  # own causal support
+    )
+    evidence = [
+        _evidence("cf_s2", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE),
+        _evidence("cs_j", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("cs_e", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
+    edges = [
+        _edge(s.node_id, m.node_id),  # OR-differential for M: S vs S2
+        _edge(s2.node_id, m.node_id),
+        _edge(m.node_id, d.node_id),
+        _edge(s.node_id, e.node_id, and_group="g1"),  # AND-gate for E: {S, J}
+        _edge(j.node_id, e.node_id, and_group="g1"),
+        _edge(e.node_id, d.node_id),
+    ]
+    case = _case([d, s, s2, m, j, e], edges=edges, evidence=evidence)
+    return case, s.node_id, e.node_id
+
+
+def test_deductive_root_unlocks_downstream_and_gate_same_turn():
+    """The recompute re-derives after a deductive stamp, so a DEDUCTIVE root
+    satisfies its downstream AND-gate in the SAME turn (finding-2 fix)."""
+    case, s_id, e_id = _and_gate_case()
+
+    _recompute_cause_state_from_chain(case, exclusion_survivors={s_id})
+
+    assert case.causal_nodes[s_id].validation_method == ValidationMethod.DEDUCTIVE
+    # E's AND-gate {S, J} is now satisfied and E has its own causal support → VALIDATED.
+    assert case.causal_nodes[e_id].node_state == NodeState.VALIDATED
+
+
+def test_single_pass_without_rederive_leaves_and_gate_pending():
+    """Contrast: a lone derive + validate_by_exclusion (no re-derive) stamps S but
+    leaves E's AND-gate unsatisfied — demonstrating the re-derive is load-bearing."""
+    case, s_id, e_id = _and_gate_case()
+
+    derive_node_states(
+        case
+    )  # empirical pass — S still CANDIDATE, so E's AND-gate fails
+    changed = validate_by_exclusion(
+        case, {s_id}
+    )  # stamps S DEDUCTIVE, but no re-derive
+
+    assert changed is True
+    assert case.causal_nodes[s_id].validation_method == ValidationMethod.DEDUCTIVE
+    # Without the re-derive, E never re-evaluates its AND-gate this turn.
+    assert case.causal_nodes[e_id].node_state == NodeState.INCONCLUSIVE

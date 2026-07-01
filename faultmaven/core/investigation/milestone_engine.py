@@ -787,7 +787,13 @@ def _recompute_cause_state_from_chain(
     # validated root promotes cause_state in this same pass. The asserted set is the
     # agent's exhaustiveness certification; validate_by_exclusion re-checks the
     # engine-computable guards (≥2 members, all-but-survivor absolutely refuted).
-    validate_by_exclusion(case, exclusion_survivors)
+    # If it stamps anything, re-derive: a newly-DEDUCTIVE root can satisfy a
+    # downstream effect's AND-gate (M7) that the empirical pass above missed because
+    # it settled before the stamp. The demotion-guard preserves the DEDUCTIVE node on
+    # the re-run, so this only ADDS downstream validations (no churn when nothing
+    # stamped — the common case returns early).
+    if validate_by_exclusion(case, exclusion_survivors):
+        derive_node_states(case)
     # Source-of-truth retraction: clear a RootCauseConclusion whose named cause
     # (validated_hypothesis_id) is now disconfirmed, so no consumer asserts a
     # disproven cause. Covers the gap M6 misses when cause_state never reached
