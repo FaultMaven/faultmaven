@@ -148,6 +148,15 @@ def is_chain_root_validated(
 # ---------------------------------------------------------------------------
 # §7.1.1 — deductive validation (proof by exclusion, strict)
 # ---------------------------------------------------------------------------
+# TODO(#593): NOT YET CALLED. This predicate, DEDUCTIVE_EXCLUSION_MAX_BELIEF, the
+# derive_node_states demotion-guard, and every DEDUCTIVE reader (cause_assurance,
+# intake_evaluation) exist, but nothing STAMPS validation_method=DEDUCTIVE — so
+# proof-by-exclusion never fires. Wiring = call this in derive_node_states'
+# validation lane and, when it holds, set node_state=VALIDATED +
+# validation_method=DEDUCTIVE. When you land that, DELETE the "designed; not yet
+# wired — #593" markers added in PR #595 (two-dimensional-hypothesis-methodology.md
+# §7.1.1 + §9.5 table, investigation-invariants.md INV-25,
+# document-to-runbook-conversion.md §1.1 table) in the same PR.
 
 
 def deductively_validated(
