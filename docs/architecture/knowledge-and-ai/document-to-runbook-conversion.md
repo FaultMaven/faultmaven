@@ -165,7 +165,7 @@ Auto-converting a case into a runbook seeds *reusable* knowledge, so it carries 
 
 | Grade | Meaning | Convertible? |
 |-------|---------|--------------|
-| `GROUNDED` | ≥1 VALIDATED root borne out by an **authority-grounded** support — a `runbook`-provenance `SUPPORTS` link (an expert-authored predicate that fired against the telemetry) **or** a deductive derivation (proof-by-exclusion, §7.1.1 — *designed; not yet wired, [#593](https://github.com/FaultMaven/faultmaven/issues/593); only the `runbook`-provenance path fires today*). | **Yes** |
+| `GROUNDED` | ≥1 VALIDATED root borne out by an **authority-grounded** support — a `runbook`-provenance `SUPPORTS` link (an expert-authored predicate that fired against the telemetry) **or** a deductive derivation (proof-by-exclusion, §7.1.1). | **Yes** |
 | `FALLBACK_ONLY` | ≥1 VALIDATED root, but every one rests only on lower-assurance (`None` / `llm_fallback`) support — the LLM authored both the predicate and its citation. | No |
 | `NO_ROOT` | No VALIDATED root at all — a bare `RootCauseConclusion` is LLM prose with zero causal graph. | No |
 

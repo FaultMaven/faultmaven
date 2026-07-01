@@ -378,16 +378,6 @@ clears the harvest bar.
 
 ### 7.1.1 Deductive validation (proof by exclusion)
 
-> **Status: designed; not yet wired — [#593](https://github.com/FaultMaven/faultmaven/issues/593).**
-> The predicate `deductively_validated()` and its guards
-> (`DEDUCTIVE_EXCLUSION_MAX_BELIEF`, the demotion protection in
-> `derive_node_states`) and every downstream reader of the `DEDUCTIVE` grade
-> exist, but no code yet **stamps** a node `validation_method = DEDUCTIVE` (the
-> predicate is never called). So proof-by-exclusion does not fire in production
-> today: an unobservable-but-correctly-excluded cause stays CANDIDATE/INCONCLUSIVE
-> rather than reaching a `DEDUCTIVE` `GROUNDED` grade. This section describes the
-> intended, ratified behaviour; the note is removed by whoever lands the wiring.
-
 Some root causes are *unobservable in principle* — microsecond race conditions,
 silent memory corruption, transient network blips — and leave no direct
 footprint to match against §7.1. To keep the agent from stalling forever on an
@@ -428,6 +418,24 @@ Four guards keep this from becoming a fallacy:
    on a deductively-validated cause, that is strong evidence the OR-set was **not**
    exhaustive — the correct response is to **re-expand the differential (R6)**,
    not merely to demote the surviving chain.
+
+**How it is wired (the division of labour).** The engine cannot compute guard #1
+— F4 exhaustiveness is LLM judgment (see [Status](#status)), so a pure derivation
+function has no sound source for it. So the guards split by who can supply each:
+the **agent** certifies exhaustiveness by naming the survivor in a
+`deductive_validations` assertion (the one un-computable guard, opt-in, rare, on
+the unobservable-cause path only); the **engine** owns every guard it can check.
+`causal_graph.validate_by_exclusion` runs each turn right after `derive_node_states`
+(so the siblings' states are settled), and for each asserted survivor calls
+`deductively_validated(..., exhaustive=True)` — which re-checks ≥2 members and that
+every non-survivor is *absolutely* excluded — before stamping
+`validation_method=DEDUCTIVE`. Guard #3's "absolute" bar is itself engine-computed:
+`derive_node_states` drives a sibling's `belief` to `0` **only** on a counterfactual
+(absence-based) refutation, so a merely-correlational net-refute stays above
+`DEDUCTIVE_EXCLUSION_MAX_BELIEF` and blocks the deduction. A mis-asserted
+exhaustiveness therefore cannot fabricate a validation on its own — the differential
+must have genuinely collapsed — and guard #4 (counterfactual before RESOLVED, and
+harvest is RESOLVED-only) is the downstream backstop against a missed family.
 
 ### 7.2 Two grades of root-cause confidence
 
@@ -652,7 +660,7 @@ cause into three mutually-exclusive grades, in one pass over its validated roots
 
 | Grade | Condition | May seed KB? |
 |-------|-----------|--------------|
-| `GROUNDED` | ≥1 VALIDATED root borne out by a `runbook`-provenance SUPPORTS ([§7.1](#71-empirical-validation-only)) **or** a deductive derivation ([§7.1.1](#711-deductive-validation-proof-by-exclusion) — *the deductive path is designed; not yet wired, [#593](https://github.com/FaultMaven/faultmaven/issues/593)*). | **Yes** |
+| `GROUNDED` | ≥1 VALIDATED root borne out by a `runbook`-provenance SUPPORTS ([§7.1](#71-empirical-validation-only)) **or** a deductive derivation ([§7.1.1](#711-deductive-validation-proof-by-exclusion)). | **Yes** |
 | `FALLBACK_ONLY` | ≥1 VALIDATED root, but every one rests only on lower-assurance (`None` / `llm_fallback`) support. | No — ask the user to *verify* the cause. |
 | `NO_ROOT` | No VALIDATED root at all (a bare, LLM-authored `RootCauseConclusion` with no causal graph). | No — ask the user to *identify* a cause. |
 
