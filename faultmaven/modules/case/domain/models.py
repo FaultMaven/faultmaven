@@ -4106,6 +4106,24 @@ class Case(BaseModel):
         ),
     )
 
+    runbook_retrieved: bool = Field(
+        default=False,
+        description=(
+            "Whether runbook retrieval returned >=1 candidate on any turn of this "
+            "case — set by the Cause matcher at retrieval time, BEFORE the "
+            "single/multiple/none verdict gate. This is the gate-independent R3 "
+            "denominator for the grounding baseline metric: it marks the "
+            "matching-runbook population WITHOUT depending on the verdict-gated "
+            "``differential_runbook_ids`` (which is written only on a 'single' "
+            "verdict, so using it as the denominator would divide by the very "
+            "seeding gap the metric measures). Boolean, not a count, on purpose: "
+            "the matcher is one-shot on the productive path but re-fires each turn "
+            "on the unproductive path, so a count would be a misleading throughput "
+            "signal; membership (>=1 ever retrieved) is exactly what R3 needs. "
+            "Parallels post-Part-A ``differential_runbook_ids != []``."
+        ),
+    )
+
     # ============================================================
     # Investigation Progress (SECONDARY - Internal Detail)
     # ============================================================

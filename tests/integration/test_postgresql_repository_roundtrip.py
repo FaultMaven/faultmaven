@@ -227,6 +227,32 @@ async def test_differential_runbook_ids_roundtrip_on_pg(pg_repo):
 
 
 @pytest.mark.asyncio
+async def test_runbook_retrieved_marker_roundtrip_on_pg(pg_repo):
+    """The grounding-metric R3 denominator marker (``runbook_retrieved``) rides the
+    same ``metadata`` JSONB blob and the same ``if v`` write filter — and being a
+    BOOLEAN, its ``False`` default is dropped by that filter on write. Verify the
+    True value round-trips AND the dropped-False default reads back as ``False``
+    (not None), on real PostgreSQL — the SQLite path can't cover the ``if v`` drop.
+    """
+    session = pg_repo.db
+    org_id = f"org_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_organizations(session, [org_id])
+    await seed_users(session, [user_id])
+
+    # True → survives the JSONB blob round-trip.
+    case = _make_case(org_id, user_id)
+    case.runbook_retrieved = True
+    await pg_repo.save(case)
+    assert (await pg_repo.get(case.case_id)).runbook_retrieved is True
+
+    # False default → dropped by ``if v`` on write; read side must default to False.
+    default = _make_case(org_id, user_id)
+    await pg_repo.save(default)
+    assert (await pg_repo.get(default.case_id)).runbook_retrieved is False
+
+
+@pytest.mark.asyncio
 async def test_upsert_case_entities_roundtrip(pg_repo):
     """upsert_case_entities() is a standalone path NOT reached by save() — it
     is the 4th org-id-subquery site, and the one whose enclosing text() was

@@ -20,8 +20,12 @@ from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
     cause_is_runbook_grounded,
     cause_validation_is_fallback_only,
+    count_grounded_roots,
     grade_cause_assurance,
     support_is_runbook_grounded,
+)
+from faultmaven.core.investigation.grounding_metrics import (
+    compute_grounding_baseline,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -592,3 +596,172 @@ def test_boolean_views_agree_with_grade_across_all_states():
         assert cause_validation_is_fallback_only(case) is (
             grade == CauseAssuranceGrade.FALLBACK_ONLY
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 0b — per-case grounded-root counter (count_grounded_roots).
+# Drift-lock: it mirrors grade_cause_assurance, so R1 equivalence
+# (grade == GROUNDED  iff  grounded_roots >= 1) must hold on every fixture.
+# ---------------------------------------------------------------------------
+
+
+def _both_arms_root_case() -> Case:
+    """One VALIDATED root grounded by BOTH arms — a runbook SUPPORTS link AND a
+    DEDUCTIVE validation_method. The overlap fixture for R2 sum-safety."""
+    ev = _evidence("ev_both", EvidenceCategory.CAUSAL_EVIDENCE)
+    root = _node(
+        _nid(60),
+        node_type=NodeType.ROOT,
+        links=[_plink("ev_both", EvidenceStance.SUPPORTS, "runbook")],
+    )
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.DEDUCTIVE
+    return _case([root], evidence=[ev])
+
+
+def test_count_r1_equivalence_across_all_grades():
+    # The ratification test for R1: grade == GROUNDED  iff  grounded_roots >= 1, on
+    # the SAME fixtures the grade tests use. If these ever disagree the counter has
+    # drifted from the gate.
+    fixtures = {
+        CauseAssuranceGrade.GROUNDED: _validated_root_case(["runbook"]),
+        CauseAssuranceGrade.FALLBACK_ONLY: _validated_root_case(["llm_fallback"]),
+        CauseAssuranceGrade.NO_ROOT: _case([]),
+    }
+    for grade, case in fixtures.items():
+        tally = count_grounded_roots(case)
+        assert (tally.grounded_roots >= 1) is (
+            grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+        )
+        assert grade_cause_assurance(case) == grade  # fixture sanity
+
+
+def test_count_runbook_arm_only():
+    tally = count_grounded_roots(_validated_root_case(["runbook"]))
+    assert tally.grounded_roots == 1
+    assert tally.runbook_arm == 1
+    assert tally.deductive_arm == 0
+    assert tally.validated_roots == 1
+
+
+def test_count_deductive_arm_only():
+    root = _node(_nid(56), node_type=NodeType.ROOT)
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.DEDUCTIVE
+    tally = count_grounded_roots(_case([root]))
+    assert tally.grounded_roots == 1
+    assert tally.deductive_arm == 1
+    assert tally.runbook_arm == 0
+
+
+def test_count_r2_arms_are_non_exclusive_and_must_not_sum():
+    # A root grounded by both arms is ONE grounded root but appears in BOTH arm
+    # tallies — so runbook_arm + deductive_arm (2) > grounded_roots (1). Reporting the
+    # sum as the total would double-count; this pins the sum-safety invariant.
+    tally = count_grounded_roots(_both_arms_root_case())
+    assert tally.grounded_roots == 1
+    assert tally.runbook_arm == 1
+    assert tally.deductive_arm == 1
+    assert tally.runbook_arm + tally.deductive_arm > tally.grounded_roots
+
+
+def test_count_ignores_dangling_runbook_link():
+    # A runbook SUPPORTS link whose evidence was deleted (not in case.evidence) never
+    # grounds — mirrors grade_cause_assurance's dangling guard.
+    root = _node(
+        _nid(57),
+        node_type=NodeType.ROOT,
+        links=[_plink("ev_gone", EvidenceStance.SUPPORTS, "runbook")],
+    )
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.EMPIRICAL
+    case = _case([root], evidence=[])  # dangling: evidence absent
+    tally = count_grounded_roots(case)
+    assert tally.grounded_roots == 0
+    assert tally.runbook_arm == 0
+    # Equivalence still holds: grade is not GROUNDED either.
+    assert grade_cause_assurance(case) != CauseAssuranceGrade.GROUNDED
+
+
+def test_count_links_fired_counts_intermediate_nodes_but_not_as_grounding():
+    # Leading indicator: a runbook predicate that fired on an INTERMEDIATE rung (no
+    # validated root yet) — the earliest proof the loop is alive, but NOT a grounded
+    # root. runbook_links_fired moves off 0 while grounded_roots stays 0.
+    ev = _evidence("ev_mid", EvidenceCategory.CAUSAL_EVIDENCE)
+    inter = _node(
+        _nid(58),
+        node_type=NodeType.INTERMEDIATE,
+        links=[_plink("ev_mid", EvidenceStance.SUPPORTS, "runbook")],
+    )
+    case = _case([inter], evidence=[ev])
+    tally = count_grounded_roots(case)
+    assert tally.grounded_roots == 0
+    assert tally.validated_roots == 0
+    assert tally.runbook_links_fired == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 0b — grounding baseline aggregation (compute_grounding_baseline).
+# R3: the denominator is the retrieval marker (runbook_retrieved), NEVER the
+# verdict-gated differential_runbook_ids — so a non-zero denominator can sit
+# over a zero numerator (the dead-arm baseline this metric exists to expose).
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_r3_denominator_excludes_non_retrieved_cases():
+    # A grounded case that never had a runbook retrieved is NOT in the matching-runbook
+    # population — it must not inflate the denominator.
+    grounded = _validated_root_case(["runbook"])
+    grounded.runbook_retrieved = False
+    baseline = compute_grounding_baseline([grounded])
+    assert baseline.population == 0
+    assert baseline.grounded_rate == 0.0
+
+
+def test_baseline_r3_non_circular_zero_numerator_over_nonzero_denominator():
+    # The finding this metric was built to surface: cases WHERE a runbook was retrieved
+    # (real denominator) but nothing grounded (dead arms) — a 7%-style dead baseline,
+    # distinct from a meaningless 0/0.
+    retrieved_but_ungrounded = _validated_root_case(["llm_fallback"])
+    retrieved_but_ungrounded.runbook_retrieved = True
+    baseline = compute_grounding_baseline([retrieved_but_ungrounded])
+    assert baseline.population == 1  # denominator is real
+    assert baseline.grounded_roots == 0  # numerator is dead
+    assert baseline.runbook_arm_roots == 0
+    assert baseline.deductive_arm_roots == 0
+
+
+def test_baseline_counts_grounded_case_in_population():
+    grounded = _validated_root_case(["runbook"])
+    grounded.runbook_retrieved = True
+    baseline = compute_grounding_baseline([grounded])
+    assert baseline.population == 1
+    assert baseline.cases_grounded == 1
+    assert baseline.grounded_roots == 1
+    assert baseline.runbook_arm_roots == 1
+    assert baseline.grounded_rate == 1.0
+
+
+def test_baseline_terminal_scope_filters_non_terminal_cases():
+    investigating = _validated_root_case(["runbook"])
+    investigating.runbook_retrieved = True
+    investigating.state = CaseState.INVESTIGATING
+    resolved = _validated_root_case(["runbook"])
+    resolved.runbook_retrieved = True
+    # Bypass the RESOLVED cross-field validator (needs resolved_at/closed_at/closure
+    # metadata) — the aggregation only reads case.state, so the disposition timestamps
+    # are irrelevant to this test.
+    object.__setattr__(resolved, "state", CaseState.RESOLVED)
+
+    all_scope = compute_grounding_baseline([investigating, resolved], scope="all")
+    terminal_scope = compute_grounding_baseline(
+        [investigating, resolved], scope="terminal"
+    )
+    assert all_scope.population == 2  # both reached INVESTIGATING
+    assert terminal_scope.population == 1  # only the RESOLVED case is harvest-ready
+
+
+def test_baseline_empty_population_rate_is_zero():
+    baseline = compute_grounding_baseline([])
+    assert baseline.population == 0
+    assert baseline.grounded_rate == 0.0

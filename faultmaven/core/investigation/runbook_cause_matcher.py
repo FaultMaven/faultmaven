@@ -306,6 +306,20 @@ def _record_differential_runbook(case: "Case", runbook_id: str) -> None:
     case.differential_runbook_ids.append(runbook_id)
 
 
+def _record_runbook_retrieval_hit(case: "Case") -> None:
+    """Mark that runbook retrieval returned >=1 candidate on this case.
+
+    Written at RETRIEVAL time, BEFORE the single/multiple/none verdict gate — so the
+    grounding baseline metric's denominator (the matching-runbook population) is
+    independent of the verdict-gated ``differential_runbook_ids`` (which is stamped only
+    on a 'single' verdict). Sourcing the population from that field pre-Part-A would
+    divide by the very seeding gap the metric exists to detect. Idempotent monotonic
+    flag: once True it stays True for the life of the case (membership, not a count —
+    see the ``Case.runbook_retrieved`` field docstring for why boolean, not count)."""
+    if not case.runbook_retrieved:
+        case.runbook_retrieved = True
+
+
 def differential_runbook_ids(case: "Case") -> List[str]:
     """The matched candidate runbook id(s) backing the case's differential.
 
@@ -544,6 +558,12 @@ async def apply_runbook_cause_matcher(
         team_ids=team_ids,
         max_runbooks=max_runbooks,
     )
+    # Mark the matching-runbook population BEFORE the verdict gate below, so the
+    # grounding-baseline denominator is not gated by the 'single'-verdict seeding path
+    # (see _record_runbook_retrieval_hit). Fires on every verdict, including the
+    # none/multiple verdicts that instantiate nothing.
+    if matches:
+        _record_runbook_retrieval_hit(case)
     chosen = next(
         (m for m in matches if m.verdict == "single" and m.selected_record is not None),
         None,
