@@ -1444,6 +1444,24 @@ The mandate is that every HYPOTHESIS has a root, NOT that every root has a
 hypothesis: a root you surface but no hypothesis yet names may stand alone as a
 candidate — do not force-link it to an unrelated hypothesis, and do not invent a
 hypothesis just to carry it.
+
+**Validate by exclusion when a cause is UNOBSERVABLE (rare).** Some root causes
+leave no direct footprint to confirm — a microsecond race, a transient blip, silent
+corruption. If you have a differential you are confident is COMPLETE and every
+sibling but one is refuted, validate the survivor by exclusion: add a
+`deductive_validations` entry naming the survivor root and stating why the
+differential is exhaustive (which families you considered, why no other could
+produce D's signature). Only use this when the cause is genuinely unobservable —
+if you could confirm it with direct evidence, do that via `node_evidence_links`
+instead. The engine confirms ≥2 alternatives existed and every other is decisively
+refuted before it accepts the exclusion, and a cause validated this way still needs
+a working fix (removing it makes D disappear) to resolve the case.
+
+Example (unobservable race, two rivals both refuted):
+  deductive_validations:
+    [{survivor_node_ref:"cn_...raceroot", exhaustive_rationale:"Only a lock-order
+      race, a disk stall, or a GC pause can produce this intermittent latency
+      signature; disk metrics and GC logs refuted the latter two."}]
 """
 
 

@@ -614,6 +614,38 @@ class CausalEdgeToAdd(BaseModel):
     reasoning: Optional[str] = Field(default=None)
 
 
+class DeductiveValidationToAdd(BaseModel):
+    """Validate an UNOBSERVABLE root cause by proof-by-exclusion (§7.1.1).
+
+    Emit ONLY when a root cause leaves no direct footprint to confirm (a race
+    condition, a transient blip, silent corruption) AND every *other* candidate in
+    a differential you certify COMPLETE has been empirically refuted. This is the
+    one place you assert the differential is collectively exhaustive (F4) — the
+    guard the engine cannot check for you. The engine independently re-checks that
+    ≥2 alternatives existed and ALL but this survivor are ABSOLUTELY (counterfactually)
+    refuted before it validates, so a wrong exhaustiveness claim cannot fabricate a
+    validation on its own; and a deductively-validated cause unlocks TREATMENT only —
+    the case still resolves only on a counterfactual confirmation (§7.2). Do NOT use
+    this to shortcut a cause you could confirm with direct evidence — validate that
+    empirically via ``node_evidence_links`` instead.
+    """
+
+    survivor_node_ref: str = Field(
+        description=(
+            "The surviving ROOT cause to validate by exclusion: an existing "
+            "``cn_...`` id, or ``new_index_N`` for a root emitted this turn."
+        )
+    )
+    exhaustive_rationale: str = Field(
+        max_length=1000,
+        description=(
+            "Why this cause's differential is collectively exhaustive (F4): which "
+            "candidate families you considered and why no other could produce D's "
+            "observed signature — the basis for the exhaustiveness certification."
+        ),
+    )
+
+
 class NodeEvidenceLinkToAdd(BaseModel):
     """Link evidence to a specific causal NODE (rung-level), not the whole chain
     — what makes step-by-step descent and AND-validation computable (§9.1)."""
@@ -1333,6 +1365,16 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
         )
         node_evidence_links: Optional[List[NodeEvidenceLinkToAdd]] = Field(
             default_factory=list
+        )
+        deductive_validations: Optional[List[DeductiveValidationToAdd]] = Field(
+            default_factory=list,
+            description=(
+                "RARE: validate an UNOBSERVABLE root cause by proof-by-exclusion "
+                "(§7.1.1) — only when every sibling in a differential you certify "
+                "COMPLETE is already refuted. Prefer empirical validation via "
+                "``node_evidence_links`` whenever the cause is observable. See the "
+                "``DeductiveValidationToAdd`` schema for the guards the engine enforces."
+            ),
         )
         evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
             default_factory=list,

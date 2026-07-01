@@ -148,25 +148,14 @@ def is_chain_root_validated(
 # ---------------------------------------------------------------------------
 # §7.1.1 — deductive validation (proof by exclusion, strict)
 # ---------------------------------------------------------------------------
-# TODO(#593): NOT YET CALLED. This predicate, DEDUCTIVE_EXCLUSION_MAX_BELIEF, the
-# derive_node_states demotion-guard, and every DEDUCTIVE reader (cause_assurance,
-# intake_evaluation) exist, but nothing STAMPS validation_method=DEDUCTIVE — so
-# proof-by-exclusion never fires. Wiring = call this in derive_node_states'
-# validation lane and, when it holds, set node_state=VALIDATED +
-# validation_method=DEDUCTIVE.
-#   HARD PART FIRST — where does `exhaustive` come from? This predicate returns
-#   False unless `exhaustive=True`, and §7.1.1 guard #1 makes exhaustiveness
-#   MANDATORY. But F4 (family-completeness) is an LLM-judgment guideline, NOT an
-#   engine-enforced sweep, so pure-engine `derive_node_states` has no sound source
-#   for it. Do NOT pass `exhaustive=True` unconditionally — that ships the exact
-#   non-exhaustive-OR-set fallacy the guards exist to prevent (validating the
-#   survivor of a set that was never certified complete). Resolve the
-#   exhaustiveness signal (an engine-visible F4 result / an explicit certified
-#   flag on the OR-set) BEFORE the promotion is sound.
-# When you land the wiring, DELETE the "designed; not yet wired — #593" markers
-# added in PR #595 (two-dimensional-hypothesis-methodology.md §7.1.1 + §9.5 table,
-# investigation-invariants.md INV-25, document-to-runbook-conversion.md §1.1 table)
-# in the same PR.
+# `exhaustive` (guard #1) is NEVER engine-inferred: F4 family-completeness is an
+# LLM-judgment guideline, not an engine sweep, so a pure `(case)` function cannot
+# certify the OR-set complete. It is supplied ONLY by an explicit agent assertion
+# (``validate_by_exclusion`` is called with the survivors the LLM certified via
+# ``deductive_validations``); this predicate still re-checks every guard the engine
+# CAN compute (≥2 members, all-but-survivor absolutely refuted), so a mis-asserted
+# exhaustiveness cannot fabricate a validation on its own. See #593 / the
+# deductive-validation-wiring design doc for the full division of labour.
 
 
 def deductively_validated(
@@ -347,6 +336,19 @@ def derive_node_states(case: Case) -> bool:
             else:
                 target_state = NodeState.CANDIDATE
 
+            # §7.1.1 guard #3 (engine-computable half): a COUNTERFACTUAL
+            # (absence-based, §7.2 strongest) refutation is an ABSOLUTE exclusion —
+            # drive ``belief`` to 0 so proof-by-exclusion (``deductively_validated``)
+            # may count this sibling as excluded. A merely-correlational net-refute
+            # keeps its belief above ``DEDUCTIVE_EXCLUSION_MAX_BELIEF``, so it BLOCKS
+            # the deduction (graceful denial — noise-sensitive exclusion never fires
+            # on a weakly-refuted sibling). Set independent of the state-change
+            # short-circuit below: a node already correlationally REFUTED may become
+            # counterfactually refuted on a later turn, and must then drop to 0. The
+            # exhaustiveness half of the guards (guard #1) stays agent-asserted.
+            if counterfactual_refutes >= 1 and node.belief != 0.0:
+                node.belief = 0.0
+
             if target_state == node.node_state:
                 continue
 
@@ -375,6 +377,76 @@ def derive_node_states(case: Case) -> bool:
         if not changed_this_pass:
             break
     return changed_any
+
+
+# ---------------------------------------------------------------------------
+# §7.1.1 — deductive-validation stamping (the caller of ``deductively_validated``)
+# ---------------------------------------------------------------------------
+
+
+def _survivor_or_sets(survivor_id: str, edges: list[CausalEdge]) -> list[list[str]]:
+    """The OR-differential(s) ``survivor_id`` competes in.
+
+    For each effect the survivor causes *as an OR-alternative* (its edge to that
+    effect carries no ``and_group`` — an AND-member is not competing by exclusion),
+    return that effect's set of OR-alternative direct causes (``incoming_and_groups``
+    ``None`` group), which includes the survivor. A survivor may point at several
+    effects (S2 convergence); each is a separate differential to try exclusion over.
+    """
+    or_sets: list[list[str]] = []
+    effects = {
+        e.effect_node_id
+        for e in edges
+        if e.cause_node_id == survivor_id and e.and_group is None
+    }
+    for eff in effects:
+        or_group = incoming_and_groups(eff, edges).get(None, [])
+        if survivor_id in or_group:
+            or_sets.append(or_group)
+    return or_sets
+
+
+def validate_by_exclusion(case: Case, asserted_survivor_ids: set[str]) -> bool:
+    """Stamp ``DEDUCTIVE`` on each asserted survivor whose OR-differential has
+    collapsed to it (§7.1.1, proof by exclusion). Returns True if any node changed.
+
+    ``asserted_survivor_ids`` carries the agent's exhaustiveness certification — the
+    one guard (§7.1.1 #1) the engine cannot compute (F4 family-completeness is
+    LLM-judgment, not an engine sweep). A survivor the LLM never asserted never
+    enters this lane. For each asserted survivor the engine STILL independently
+    requires (via ``deductively_validated``, ``exhaustive=True``) that ≥2
+    alternatives existed and ALL but the survivor are ABSOLUTELY refuted (REFUTED +
+    ``belief <= DEDUCTIVE_EXCLUSION_MAX_BELIEF`` — the counterfactual bar set in
+    ``derive_node_states``), so a mis-asserted exhaustiveness cannot fabricate a
+    validation on its own — the differential must genuinely have collapsed.
+
+    Runs AFTER ``derive_node_states`` (siblings must have reached REFUTED first). A
+    survivor already VALIDATED (empirically or deductively) or REFUTED is left alone
+    — an assertion neither re-validates nor resurrects. Deductive validation is
+    mechanistic grade only (§7.2): it validates the ROOT (unlocking treatment) but
+    the case still needs a counterfactual confirmation to resolve, and harvest is
+    RESOLVED-only — so the exhaustiveness assertion is backstopped downstream.
+    """
+    if not asserted_survivor_ids:
+        return False
+    nodes = case.causal_nodes
+    edges = case.causal_edges
+    changed = False
+    for sid in asserted_survivor_ids:
+        node = nodes.get(sid)
+        if node is None or node.node_type != NodeType.ROOT:
+            continue  # only a ROOT cause is validated by exclusion
+        if node.node_state in (NodeState.VALIDATED, NodeState.REFUTED):
+            continue  # already settled — assertion does not re-open it
+        for or_set in _survivor_or_sets(sid, edges):
+            if deductively_validated(sid, or_set, nodes, exhaustive=True):
+                node.node_state = NodeState.VALIDATED
+                node.validation_method = ValidationMethod.DEDUCTIVE
+                node.actionable = True  # M1: a VALIDATED ROOT is actionable
+                node.refutation_reason = None
+                changed = True
+                break
+    return changed
 
 
 # ---------------------------------------------------------------------------
