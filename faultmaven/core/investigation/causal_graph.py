@@ -148,6 +148,25 @@ def is_chain_root_validated(
 # ---------------------------------------------------------------------------
 # §7.1.1 — deductive validation (proof by exclusion, strict)
 # ---------------------------------------------------------------------------
+# TODO(#593): NOT YET CALLED. This predicate, DEDUCTIVE_EXCLUSION_MAX_BELIEF, the
+# derive_node_states demotion-guard, and every DEDUCTIVE reader (cause_assurance,
+# intake_evaluation) exist, but nothing STAMPS validation_method=DEDUCTIVE — so
+# proof-by-exclusion never fires. Wiring = call this in derive_node_states'
+# validation lane and, when it holds, set node_state=VALIDATED +
+# validation_method=DEDUCTIVE.
+#   HARD PART FIRST — where does `exhaustive` come from? This predicate returns
+#   False unless `exhaustive=True`, and §7.1.1 guard #1 makes exhaustiveness
+#   MANDATORY. But F4 (family-completeness) is an LLM-judgment guideline, NOT an
+#   engine-enforced sweep, so pure-engine `derive_node_states` has no sound source
+#   for it. Do NOT pass `exhaustive=True` unconditionally — that ships the exact
+#   non-exhaustive-OR-set fallacy the guards exist to prevent (validating the
+#   survivor of a set that was never certified complete). Resolve the
+#   exhaustiveness signal (an engine-visible F4 result / an explicit certified
+#   flag on the OR-set) BEFORE the promotion is sound.
+# When you land the wiring, DELETE the "designed; not yet wired — #593" markers
+# added in PR #595 (two-dimensional-hypothesis-methodology.md §7.1.1 + §9.5 table,
+# investigation-invariants.md INV-25, document-to-runbook-conversion.md §1.1 table)
+# in the same PR.
 
 
 def deductively_validated(

@@ -378,6 +378,16 @@ clears the harvest bar.
 
 ### 7.1.1 Deductive validation (proof by exclusion)
 
+> **Status: designed; not yet wired — [#593](https://github.com/FaultMaven/faultmaven/issues/593).**
+> The predicate `deductively_validated()` and its guards
+> (`DEDUCTIVE_EXCLUSION_MAX_BELIEF`, the demotion protection in
+> `derive_node_states`) and every downstream reader of the `DEDUCTIVE` grade
+> exist, but no code yet **stamps** a node `validation_method = DEDUCTIVE` (the
+> predicate is never called). So proof-by-exclusion does not fire in production
+> today: an unobservable-but-correctly-excluded cause stays CANDIDATE/INCONCLUSIVE
+> rather than reaching a `DEDUCTIVE` `GROUNDED` grade. This section describes the
+> intended, ratified behaviour; the note is removed by whoever lands the wiring.
+
 Some root causes are *unobservable in principle* — microsecond race conditions,
 silent memory corruption, transient network blips — and leave no direct
 footprint to match against §7.1. To keep the agent from stalling forever on an
@@ -642,7 +652,7 @@ cause into three mutually-exclusive grades, in one pass over its validated roots
 
 | Grade | Condition | May seed KB? |
 |-------|-----------|--------------|
-| `GROUNDED` | ≥1 VALIDATED root borne out by a `runbook`-provenance SUPPORTS ([§7.1](#71-empirical-validation-only)) **or** a deductive derivation ([§7.1.1](#711-deductive-validation-proof-by-exclusion)). | **Yes** |
+| `GROUNDED` | ≥1 VALIDATED root borne out by a `runbook`-provenance SUPPORTS ([§7.1](#71-empirical-validation-only)) **or** a deductive derivation ([§7.1.1](#711-deductive-validation-proof-by-exclusion) — *the deductive path is designed; not yet wired, [#593](https://github.com/FaultMaven/faultmaven/issues/593)*). | **Yes** |
 | `FALLBACK_ONLY` | ≥1 VALIDATED root, but every one rests only on lower-assurance (`None` / `llm_fallback`) support. | No — ask the user to *verify* the cause. |
 | `NO_ROOT` | No VALIDATED root at all (a bare, LLM-authored `RootCauseConclusion` with no causal graph). | No — ask the user to *identify* a cause. |
 
