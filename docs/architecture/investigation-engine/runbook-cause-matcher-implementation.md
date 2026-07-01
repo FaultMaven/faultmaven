@@ -4,10 +4,13 @@
 [runbook-cause-matching.md](./runbook-cause-matching.md) (the component spec).
 **Status:** Built behind a flag — increments 1–5 landed (PRs #534–#541). The
 matcher is wired per-turn behind `enable_runbook_cause_matcher` (default off),
-with the T2 semantic tier supplying the resolvers. Remaining before default-on is
-operational, not code: the T2 tier needs case evidence it can retrieve, which the
-normal flow does not always vectorize (issue #543), so a clean live full-flow
-firing must be demonstrated before the flag is flipped.
+with the T2 semantic tier supplying the resolvers. The live full-flow firing has
+now been demonstrated (2026-07-01): **#543 is resolved** (T2 fires, belief 1.0 off
+the raw-evidence fallback), **but** the run surfaced a deeper blocker to default-on
+— the differential-intake grounding loop is inert (~0 `provenance="runbook"`
+links), so the matcher's knowledge never becomes authority-grounded. See
+[Live validation (2026-07-01)](#live-validation-2026-07-01-the-matcher-fires-but-grounding-is-inert)
+below; the flag stays `False` pending the fix decision.
 
 The spec describes the target behaviour; this document is the **how/when** —
 the incremental, flag-gated path that takes the matcher from dormant to live
@@ -67,7 +70,7 @@ Two contracts the consumer (increment 4) must honour:
 | **4b-1** | **Hypothesis attachment (load-bearing chain)** | A matcher-instantiated chain with no hypothesis is structurally inert — invisible to `cause_state` / `any_chain_root_validated` / RCC synthesis (these read standing hypotheses, not bare nodes). `attach_matched_hypothesis` creates an ACTIVE hypothesis (`HypothesisCategory.OTHER`, `OPPORTUNISTIC`, belief→likelihood prior) rooted at the matched chain's ROOT and sets `path` via `chain_path_to_problem`. Idempotent: dedup by `root_node_id` (the matcher runs every turn; nodes dedup, so the hypothesis must too). Root stays CANDIDATE → no premature IDENTIFIED. `apply_runbook_cause_matcher` takes `hypothesis_manager`; the engine passes `self.hypothesis_manager`. | **Done** |
 | **4b-2** | **Make matching fire (T2) + cost guard** | **Done.** Decision (analysis in §2.1): T1 deterministic is architecturally infeasible in FaultMaven (no runbook-step execution → no `step_output` to resolve; T1 is the spec's opportunistic fast-path, T2 the canonical floor), so matching fires on **T2** only. New `DocumentQATool.answer_yes_no` = a single-LLM-call boolean over evidence (retrieve top-k + one classifier YES/NO; conservative — no evidence / unparsed / error → False, never refutes). The engine builds `case_evidence_qa` from the `case_evidence_search` tool (`CaseEvidenceQAAdapter.wrapped`) and passes it to the evaluator; `step_output_resolver` stays `None`. **Cost guards:** top-1 runbook (`max_runbooks=1` → ≤1 candidate chain/case) + a per-case skip-guard (skip when `cause_state==IDENTIFIED` or `is_runbook_match_hypothesis` finds a prior match). The match signal keys on the hypothesis **`rationale`** (a persisted `hypotheses` column, via the `RUNBOOK_MATCH_RATIONALE_PREFIX` marker) so the guard survives the case being reloaded between turns — a fresh model field would not persist (hypotheses map to explicit columns, no JSON blob). Still flag-OFF. | **Done** |
 | **4b-3** | **interventions → remediation context** | **Done — reframed for soundness.** Direct `interventions → Solution` would BYPASS M5 (`case.solutions.append` happens before the gate; M5 only downgrades the LLM's proposed *action_type*, not writes to `case.solutions`). The sound mechanism surfaces a matched runbook's documented fixes as **LLM context**, so the LLM proposes them and they flow through M5 normally. Implementation (Path A): the matcher stashes the Cause's `interventions` on the chain ROOT node's `metadata["runbook_interventions"]` (persists — JSON column, round-trips); `context_builder._build_documented_fixes_block` renders a `<documented_fixes>` block **only** when `cause_state == IDENTIFIED` and that root has VALIDATED (so the fixes appear exactly when actionable). Self-gating: only the flag-gated matcher stashes the data. The matcher never creates Solutions; M5 stays the single gate. Root `Statement` → `RootCauseConclusion` needs nothing new (engine-synthesized on a VALIDATED root via `synthesize_rcc_from_validated_root`). | **Done** |
-| **5** | **Enable + validate** | **Code side done.** In-process e2e test (`test_runbook_cause_matcher_e2e.py`) forces the enabled path through the *real* AnswerFromKB + IndicatorEvaluator (T2) and asserts the whole flow: retrieve → match → instantiate (root CANDIDATE) → capped hypothesis (≤ 0.5) → stash interventions → root VALIDATES → documented fixes reach the prompt; plus no-match-when-evidence-says-no and flag-defaults-off. The **live** behavioral validation (`fm-sre-simulator` against a deployed server with `ENABLE_RUNBOOK_CAUSE_MATCHER=true`) follows [runbook-cause-matcher-sim-plan.md](./runbook-cause-matcher-sim-plan.md) — S1–S5 scenarios, T2 false-match rate, soundness gates, A/B convergence, then the default-on decision. Flag stays `False` until that run. | **Code done; live sim pending** |
+| **5** | **Enable + validate** | **Code side done.** In-process e2e test (`test_runbook_cause_matcher_e2e.py`) forces the enabled path through the *real* AnswerFromKB + IndicatorEvaluator (T2) and asserts the whole flow: retrieve → match → instantiate (root CANDIDATE) → capped hypothesis (≤ 0.5) → stash interventions → root VALIDATES → documented fixes reach the prompt; plus no-match-when-evidence-says-no and flag-defaults-off. The **live** behavioral validation (`fm-sre-simulator` against a deployed server with `ENABLE_RUNBOOK_CAUSE_MATCHER=true`) follows [runbook-cause-matcher-sim-plan.md](./runbook-cause-matcher-sim-plan.md) — S1–S5 scenarios, T2 false-match rate, soundness gates, A/B convergence, then the default-on decision. Flag stays `False` until that run. | **Code done; live sim run 2026-07-01 — matcher fires (#543 resolved) but grounding inert (RC-1/RC-2); see [Live validation](#live-validation-2026-07-01-the-matcher-fires-but-grounding-is-inert))** |
 
 ## Reuse (deliberately not reinvented)
 
@@ -140,6 +143,52 @@ evidence yields `None` (the tool keeps abstaining). Deeper fixes to the
 vectorization pipeline itself (eager-vectorize on Evidence creation; relax the
 size gate) remain open in #543; this fallback decouples the matcher from that
 pipeline so it can fire today.
+
+## Live validation (2026-07-01): the matcher fires, but grounding is inert
+
+The "clean live full-flow firing" the header calls for was run this session
+(`fm-sre-simulator`-style cases driven through the real API against a server with
+`ENABLE_RUNBOOK_CAUSE_MATCHER=true`). Two decision-independent facts were
+established and are load-bearing for the default-on decision:
+
+- **#543 is resolved.** The raw-evidence fallback works: on a live OOMKilled case
+  the T2 holistic tier scored the correct cause **belief 1.0** off
+  `build_case_evidence_fallback_text` (verdict `single`), and correctly returned
+  `False` for the distractor causes. The matcher *fires*.
+- **But the runbook layer contributes ~0 authority-grounded links.** No
+  `causal_node_evidence` row in the DB carries `provenance="runbook"`. The full
+  differential-intake loop — the *content-addressed validation surface* §4 relies
+  on — almost never runs, for two reasons:
+  - **RC-1 (dominant):** the differential's candidate source
+    (`case.differential_runbook_ids`) is written **only** on a confident `single`
+    verdict (`_record_differential_runbook`, the sole writer, on the `single`
+    branch of `apply_runbook_cause_matcher`). On `none`/`multiple` — the common
+    outcome for MECE causes, and the case the differential exists to discriminate —
+    nothing is recorded, so `_run_differential_intake` returns at its first gate.
+    The "graph prior" (conservative, `single`-only) and the "differential source"
+    (should be broad) are gated by the same condition.
+  - **RC-2 (secondary):** predicates are authored as step-output assertions, so
+    symptom-first telemetry rarely carries the discriminating token until the
+    demand-side solicits it; and `absent`-only causes (**56 of 756 predicates; 38
+    of 538 causes ≈ 7%**) can never produce a `SUPPORTS` under subset-trust
+    (`complete=False`). The evaluator itself is correct — **93% of causes are
+    groundable** and a positive control grounds on token presence — so RC-2 is real
+    but minor next to RC-1.
+
+**Harvest-gate coupling (why this matters beyond dead cost):** the
+`provenance="runbook"` link is the **sole non-deductive source** of
+`CauseAssuranceGrade.GROUNDED`, the bar `convert-from-case` enforces. The *other*
+source — deductive proof-by-exclusion (`validation_method == DEDUCTIVE`) — is
+**not wired** (`deductively_validated()` has no callers; the engine only stamps
+`EMPIRICAL`/`NONE` — TODO #593). So **today `GROUNDED` is unreachable by any path**
+and the automatic knowledge-flywheel is fully gated shut.
+
+**Consequence for default-on:** the gate is no longer #543 (resolved) — it is the
+grounding pipeline (RC-1/RC-2). The full root-cause analysis, the holistic fix
+(decouple the differential source from the T2 verdict), the trilemma
+(fix / remove / keep-dormant), and the phased plan (Phase 0 acceptance gate → a
+both-arms grounding metric + an adversarial acceptance case, gating the fix) are in
+the working RCA `docs/working/ANALYSIS-runbook-grounding-pipeline.md`.
 
 ## Soundness guarantees (held by construction)
 

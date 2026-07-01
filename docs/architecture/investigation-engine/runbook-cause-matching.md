@@ -189,6 +189,13 @@ rigidity trap the governing principle warns against.
   them" is the right guidance even though they carry no *matching* weight — see
   runbook-content-architecture.md § "Match surface vs validation surface" for the
   authoring discipline.
+  > **Current limitation (2026-07-01):** this loop is implemented but effectively
+  > **inert in practice** — it produces ~0 `provenance="runbook"` links because its
+  > candidate source (`differential_runbook_ids`) is seeded **only** on a `single`
+  > verdict (§4 below), and predicates authored at step-output level rarely match
+  > symptom-first telemetry. So the differential does not yet drive `cause_state` on
+  > real cases. Root cause + fix plan:
+  > [runbook-cause-matcher-implementation.md § Live validation](./runbook-cause-matcher-implementation.md#live-validation-2026-07-01-the-matcher-fires-but-grounding-is-inert).
 - **Refutation prunes.** A rung whose indicator is *contradicted* (REFUTES
   evidence) drops the chain hard. (M7 AND-member pruning applies only to
   engine-formed AND-sets at runtime; runbooks author none.)
@@ -287,12 +294,17 @@ The full matcher is **built and wired, behind a flag** (increments 1–5,
 PRs #534–#541). The consumer is **not yet live by default**: the
 `enable_runbook_cause_matcher` flag defaults **off** (`settings.py`
 `FeatureSettings`), so a v4 runbook behaves like a v3 runbook on the default path
-until the flag is flipped. The remaining gate to default-on is operational, not
-code: the matcher's T2 tier needs case evidence it can retrieve, which the normal
-flow does not always vectorize (issue #543) — so a clean live full-flow firing
-must be demonstrated before the default-on decision. The incremental, flag-gated
-activation path and that decision are tracked in
-[runbook-cause-matcher-implementation.md](./runbook-cause-matcher-implementation.md).
+until the flag is flipped. The live full-flow firing has now been demonstrated
+(2026-07-01): **#543 is resolved** (T2 fires, belief 1.0 off the raw-evidence
+fallback), **but** the run surfaced the real gate to default-on — the
+differential-intake grounding loop is **inert** (~0 `provenance="runbook"` links),
+because its candidate source is seeded only on a `single` verdict (RC-1) and
+step-output predicates rarely match symptom telemetry (RC-2). So the matcher fires
+yet its knowledge never becomes authority-grounded, and — via the §7 harvest gate —
+the auto knowledge-flywheel stays shut. The incremental activation path, the live
+validation result, and the fix decision are tracked in
+[runbook-cause-matcher-implementation.md](./runbook-cause-matcher-implementation.md)
+(full RCA + phased plan in `docs/working/ANALYSIS-runbook-grounding-pipeline.md`).
 
 | Component | Location | Status |
 |---|---|---|
