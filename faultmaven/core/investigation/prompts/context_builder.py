@@ -2100,24 +2100,22 @@ def _build_evidence_needs_block(case: Case) -> str:
     if not outstanding and not re_verification:
         return ""
 
-    # Outstanding needs: high-priority first (stable sort preserves the
-    # repo's created_at/need_id secondary order for ties). Re-verification
-    # findings: chronological by the turn they were established.
-    outstanding.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
+    # Re-verification findings: chronological by the turn they were established.
     re_verification.sort(key=lambda ev: ev.collected_at_turn)
 
-    # Render-cap budgets are computed per-section so neither one starves
-    # the other. With both sections active, each gets up to
-    # _EVIDENCE_NEEDS_RENDER_CAP entries — generous enough that real
-    # cases never hit the cap.
+    # Render-cap budget: up to _EVIDENCE_NEEDS_RENDER_CAP entries per section so neither
+    # starves the other — generous enough that real cases never hit the cap.
     #
-    # The surface cap already chose ≤ _SURFACED_CAUSAL_CAP causal asks to show; those
-    # are RESERVED a render slot. Otherwise the priority sort — causal needs are MEDIUM,
-    # symptom needs HIGH — could push all of them past _EVIDENCE_NEEDS_RENDER_CAP behind
-    # a wall of HIGH symptom needs, silently dropping the asks the surface cap just
-    # picked. Reserve the surfaced causal slots, fill the remainder by priority.
+    # The surface cap already chose ≤ _SURFACED_CAUSAL_CAP causal asks to show; those are
+    # RESERVED a render slot. Otherwise the priority sort — causal needs are MEDIUM,
+    # symptom needs HIGH — could push all of them past _EVIDENCE_NEEDS_RENDER_CAP behind a
+    # wall of HIGH symptom needs, silently dropping the asks the surface cap just picked.
+    # Only out_rest needs priority-sorting (it feeds the render-cap slice); the reserved
+    # causal needs are kept regardless of priority, and out_rendered is sorted once at the
+    # end for display (stable sort preserves the repo's created_at/need_id tie order).
     out_reserved = [n for n in outstanding if n.need_id in _surfaced_causal_ids]
     out_rest = [n for n in outstanding if n.need_id not in _surfaced_causal_ids]
+    out_rest.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
     out_rendered = (
         out_reserved
         + out_rest[: max(0, _EVIDENCE_NEEDS_RENDER_CAP - len(out_reserved))]

@@ -883,34 +883,34 @@ def test_surfaced_prefers_discriminating():
 
 
 def test_surfaced_rotates_under_non_progress():
-    # The anti-stall guarantee: a low-rarity predicate outside the initial window is
-    # EVENTUALLY surfaced as turns-of-non-progress accrue — pure render-time rotation,
-    # nothing is SUPERSEDED (that would be a one-way door that kills liveness).
+    # Paged anti-stall guarantee: under sustained non-progress the window sweeps the WHOLE
+    # pool in ceil(pool / CAP) non-progress turns (one full page per turn). This is the
+    # REACHABLE bound that matters — the engine can declare exhaustion within a few
+    # non-progress turns, so coverage must be fast, not merely eventual. Pure render-time
+    # paging: nothing is SUPERSEDED (a one-way door that would kill liveness).
     case = _case()
-    _seed_causal(case, [f"tok{i}" for i in range(6)])
+    _seed_causal(case, [f"tok{i}" for i in range(9)])  # 3 full pages of CAP=3
     all_ids = {n.need_id for n in _pending(case)}
+    pool_size = len(all_ids)
+    pages_to_cover = (pool_size + _SURFACED_CAUSAL_CAP - 1) // _SURFACED_CAUSAL_CAP
     ever_surfaced: set[str] = set()
-    for stuck in range(0, 24):
+    for stuck in range(pages_to_cover):  # only the reachable span, not an unbounded 24
         case.turns_without_progress = stuck
         window = select_surfaced_causal_needs(case)
-        # The window must stay FULL on every turn — the liveness guarantee rests on
-        # this. A union-only assertion would still pass a wrap regression that returns
-        # an empty/short window at some high offset (as long as other offsets cover the
-        # pool), so assert the per-turn size, not just the eventual coverage.
+        # The window must stay FULL on every turn — a union-only assertion would pass a
+        # wrap regression that empties at some offset, so assert per-turn size too.
         assert len(window) == _SURFACED_CAUSAL_CAP
         ever_surfaced |= {n.need_id for n in window}
-    assert (
-        ever_surfaced == all_ids
-    )  # every need surfaced within a bounded non-progress span
+    assert ever_surfaced == all_ids  # full coverage within ceil(pool / CAP) turns
     assert all(
         n.state == NeedState.PENDING for n in case.evidence_needs
     )  # none superseded
 
 
 def test_surfaced_resets_to_most_discriminating_on_progress():
-    # On progress the non-progress counter resets, so the window returns to offset 0 —
-    # the most-discriminating asks. This is the other half of the liveness contract:
-    # rotation advances the window while stuck, progress snaps it back to the best asks.
+    # On progress the non-progress counter resets, so the window returns to page 0 —
+    # the most-discriminating asks. The other half of the liveness contract: the window
+    # advances one page per non-progress turn, and progress snaps it back to page 0.
     case = _case()
     acs = [
         _ac_preds("rb1:A", ["shared", "uniqueA"]),
@@ -920,10 +920,12 @@ def test_surfaced_resets_to_most_discriminating_on_progress():
     _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
     case.turns_without_progress = 0
     fresh = {n.need_id for n in select_surfaced_causal_needs(case)}
-    case.turns_without_progress = 10  # stuck: window has rotated off the best asks
+    case.turns_without_progress = 1  # one non-progress turn: advanced to the next page
     rotated = {n.need_id for n in select_surfaced_causal_needs(case)}
     assert rotated != fresh
-    case.turns_without_progress = 0  # progress made: back to the most-discriminating
+    case.turns_without_progress = (
+        0  # progress made: back to page 0 (most-discriminating)
+    )
     assert {n.need_id for n in select_surfaced_causal_needs(case)} == fresh
 
 

@@ -289,11 +289,10 @@ _DIFFERENTIAL_NEED_ID_PREFIX = "eneed_"
 # lets 3 unanswerable asks lock the slots forever; a surface cap rotates past them.
 _SURFACED_CAUSAL_CAP = 3
 
-# Advance the surfaced window every this-many turns-of-non-progress
-# (``case.turns_without_progress``), so a stuck investigation cycles through all
-# discriminators rather than re-showing the same unanswerable 3. On progress the counter
-# resets and the window returns to the most-discriminating asks.
-_ROTATE_EVERY_K = 2
+# Advance the surfaced window by one full page each this-many turns-of-non-progress
+# (``case.turns_without_progress``). See ``select_surfaced_causal_needs`` for the paged
+# coverage guarantee this provides and its (exhaustion-horizon) bound.
+_ROTATE_EVERY_K = 1
 
 
 def _differential_need_id(candidate_id: str, predicate_sig: str) -> str:
@@ -339,13 +338,25 @@ def select_surfaced_causal_needs(case: "Case") -> "list[EvidenceNeed]":
     LLM-emitted causal — they can't be told apart at render, and "≤N causal asks, whatever
     the source" is the right user-facing invariant). SYMPTOM needs are untouched.
 
-    Ranking — most-discriminating first: rarity is read from the pool itself as the number
-    of outstanding causal needs sharing a ``request_text`` (each (cause, predicate) is one
-    need, so a widely-shared predicate = more needs = less discriminating). To keep the
-    demand side LIVE under pressure, the ≤N window ROTATES by ``turns_without_progress //
-    _ROTATE_EVERY_K``: while the case is stuck the window slides through the whole ranked
-    pool, so every need — including low-rarity ones — surfaces within a bounded number of
-    non-progress turns; on progress the counter resets to the most-discriminating asks.
+    Ordering + coverage:
+      - Rarity-first: needs are ranked by how many outstanding causal needs share their
+        ``request_text`` (fewer sharers = more discriminating = shown first). This is a
+        FIRST-ORDER proxy — distinct predicates that render to the same text collide, and
+        a stale LLM-authored need with unique text can rank high — so it governs the
+        ORDER of surfacing, not WHETHER a need is seen; the paged rotation below
+        guarantees coverage regardless of ranking precision.
+      - Paged rotation under non-progress: the window advances one full
+        ``_SURFACED_CAUSAL_CAP``-sized PAGE per non-progress turn, so the whole pool is
+        covered in ``ceil(pool / _SURFACED_CAUSAL_CAP)`` non-progress turns (vs a 1-rank
+        slide, which needs ~``pool`` turns). This coverage is deliberately BOUNDED, not
+        unlimited: the engine can declare exhaustion once ``turns_without_progress``
+        reaches the stall threshold (``progress_monitor``), so for pools larger than
+        roughly ``_SURFACED_CAUSAL_CAP * stall_threshold`` the lowest-ranked needs may not
+        surface before the case is closed as exhausted. Realistic differentials (a few
+        retrieved runbooks) sit well inside that bound, and rarity-first ordering means the
+        most-discriminating asks are always shown first anyway. On ANY progress the counter
+        resets and the window returns to page 0 — correct, because a progressing case is
+        not deadlocked (rotation is the safety net for a genuinely stuck one).
     """
     causal = [
         n
@@ -354,11 +365,14 @@ def select_surfaced_causal_needs(case: "Case") -> "list[EvidenceNeed]":
     ]
     if len(causal) <= _SURFACED_CAUSAL_CAP:
         return causal
-    shared = Counter(n.request_text for n in causal)  # carrier count per datum
+    shared = Counter(n.request_text for n in causal)  # sharers per rendered datum
     ranked = sorted(causal, key=lambda n: (shared[n.request_text], n.need_id))
     pool_size = len(ranked)
-    stuck = case.turns_without_progress
-    offset = (stuck // _ROTATE_EVERY_K) % pool_size
+    # Paged, non-overlapping rotation: one CAP-sized page per non-progress turn, so the
+    # pool is covered in ceil(pool_size / CAP) turns — fast enough to sweep a realistic
+    # pool before the exhaustion horizon, unlike a 1-rank slide.
+    page = case.turns_without_progress // _ROTATE_EVERY_K
+    offset = (page * _SURFACED_CAUSAL_CAP) % pool_size
     return [ranked[(offset + i) % pool_size] for i in range(_SURFACED_CAUSAL_CAP)]
 
 
