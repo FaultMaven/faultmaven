@@ -1771,3 +1771,119 @@ class TestCurrentTurnFloor:
         # But all 5 are still present (degraded to summary, not dropped).
         for ev in evidence:
             assert f'id="{ev.evidence_id}"' in result
+
+
+# ============================================================
+# Directed-analysis index+stub (tool-gated; historical extract elided)
+# ============================================================
+
+
+def test_da_index_stub_elides_historical_extract_keeps_current_turn():
+    """In a directed-analysis turn WITH tools available, historical evidence
+    renders stub + search_map only (no file_extract body), while the current-turn
+    upload keeps its extract and every file stays addressable."""
+    PROVIDER, MODEL = "openai", "gpt-4"
+    HIST_ID = "file_aaaa11112222"
+    CUR_ID = "file_bbbb33334444"
+    hist = _make_evidence(
+        summary="historical log",
+        extract="HISTORICAL_EXTRACT_BODY " * 40,
+        source_file_id=HIST_ID,
+        collected_at_turn=1,
+    )
+    cur = _make_evidence(
+        summary="fresh log",
+        extract="CURRENTTURN_EXTRACT_BODY " * 40,
+        source_file_id=CUR_ID,
+        collected_at_turn=5,
+    )
+    case = _make_case_with_evidence([hist, cur])
+    case.current_turn = 5
+
+    # DA turn + tools available: historical extract elided (marked + addressable);
+    # current-turn extract kept.
+    on = _build_evidence_context(
+        case,
+        processing_mode="directed_analysis",
+        provider_name=PROVIDER,
+        model_name=MODEL,
+        tools_available=True,
+    )
+    assert "HISTORICAL_EXTRACT_BODY" not in on, "historical extract body must be elided"
+    assert 'elided="directed_analysis"' in on, "elision must be marked (INV-4)"
+    assert HIST_ID in on, "historical file must stay addressable"
+    assert "CURRENTTURN_EXTRACT_BODY" in on, "current-turn extract must be kept"
+
+    # Tools NOT available (tool-less / tool-incapable turn): the extract must NOT
+    # be elided — the agent has no search_file to recover it, so eliding would
+    # strand it (NO INCORRECT CONCLUSION).
+    toolless = _build_evidence_context(
+        case,
+        processing_mode="directed_analysis",
+        provider_name=PROVIDER,
+        model_name=MODEL,
+        tools_available=False,
+    )
+    assert (
+        "HISTORICAL_EXTRACT_BODY" in toolless
+    ), "extract must be kept when search_file is unavailable"
+
+
+def test_da_index_stub_off_in_triage_mode():
+    """Index+stub only fires in directed_analysis; TRIAGE keeps the extract so
+    triage can answer from the structural index (even with tools available)."""
+    ev = _make_evidence(
+        summary="historical log",
+        extract="TRIAGE_EXTRACT_BODY " * 40,
+        source_file_id="file_cccc55556666",
+        collected_at_turn=1,
+    )
+    case = _make_case_with_evidence([ev])
+    case.current_turn = 5
+    out = _build_evidence_context(
+        case,
+        processing_mode="triage",
+        provider_name="openai",
+        model_name="gpt-4",
+        tools_available=True,
+    )
+    assert "TRIAGE_EXTRACT_BODY" in out
+
+
+def test_evidence_omitted_marker_when_budget_drops_items():
+    """INV-4: when evidence items are skipped for budget, an <evidence_omitted>
+    marker is emitted so the omission is never silent."""
+    evs = [
+        _make_evidence(
+            summary="summary " + "x" * 200,
+            extract="idx",
+            source_file_id=f"file_{i:012x}",
+            collected_at_turn=1,
+        )
+        for i in range(10)
+    ]
+    case = _make_case_with_evidence(evs)
+    case.current_turn = 5
+    # Tight char budget → most items can't fit → some are skipped.
+    out = _build_evidence_context(case, char_budget_override=600)
+    assert "<evidence_omitted" in out, "omitted evidence must be marked (INV-4)"
+    assert 'reason="prompt_budget"' in out
+
+
+def test_tier_c_chat_cap_marks_omitted():
+    """The Tier-C 5-most-recent cap on chat-extracted evidence now feeds the
+    <evidence_omitted> marker (INV-4) — these have no source_file_id, so a silent
+    drop would be unrecoverable."""
+    evs = [
+        _make_evidence(
+            summary=f"chat evidence {i}",
+            source_file_id=None,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_at_turn=1,
+        )
+        for i in range(8)  # > 5 → 3 omitted
+    ]
+    case = _make_case_with_evidence(evs)
+    out = _build_evidence_context(case)
+    assert "<evidence_omitted" in out, "the >5 chat-evidence cap must be marked"
+    assert 'reason="prompt_budget"' in out

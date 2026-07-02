@@ -598,13 +598,14 @@ def get_token_budget_for_provider(
 
     Reference: Prompt Engineering Guide Section 11.3 - Provider-Specific Limits
 
-    This is the budget used by the **legacy (default) assembly path** and is
-    intentionally the original conservative per-provider table — so the
-    default, allocator-OFF behavior is unchanged. The priority-greedy allocator
-    does NOT use this function: it sizes against
+    A conservative per-provider budget table. The main prompt-assembly path does
+    NOT size against this — it uses
     ``model_context.resolve_model_budget(...).prompt_target`` (the flat
-    ``PROMPT_TARGET_TOKENS``) directly. Keeping the two separate is what makes
-    "allocator flags default OFF ⇒ production prompt assembly unchanged" true.
+    ``PROMPT_TARGET_TOKENS``) directly. This function survives as a fallback for
+    the two spots that need a per-provider number without a resolved budget: the
+    evidence char-cap in ``_effective_evidence_char_budget`` when no explicit
+    override is passed, and the ``max_tokens is None`` default in
+    ``build_investigation_context`` (direct callers / tests that omit a budget).
 
     Args:
         provider_name: Provider name (e.g., "anthropic", "openai", "fireworks")
@@ -684,37 +685,22 @@ class TokenBudget:
         *,
         provider_name: Optional[str] = None,
         model_name: Optional[str] = None,
-        char_mode: bool = False,
     ):
-        # char_mode reproduces the ORIGINAL char-based budget (1 token ≈ 4 chars)
-        # used by the legacy/default assembly path, so that path stays
-        # byte-identical to its pre-allocator behavior. The allocator uses the
-        # token-native mode (char_mode=False).
-        self._char_mode = char_mode
         self.limit_tokens = limit_tokens
-        self._limit_units = limit_tokens * 4 if char_mode else limit_tokens
-        self.used_tokens = 0  # "units": chars in char_mode, tokens otherwise
+        self._limit_units = limit_tokens
+        self.used_tokens = 0
         self._provider = provider_name
         self._model = model_name
 
     def count(self, text: str) -> int:
-        """Size of *text* in the active unit (chars in char_mode, else tokens)."""
+        """Size of *text* in tokens."""
         if not text:
             return 0
-        if self._char_mode:
-            return len(text)
         from faultmaven.utils.token_estimation import estimate_tokens
 
         return estimate_tokens(
             text, provider=self._provider or "local", model=self._model
         )
-
-    @property
-    def remaining_tokens(self) -> int:
-        return max(0, self._limit_units - self.used_tokens)
-
-    def has_budget(self, text: str) -> bool:
-        return self.used_tokens + self.count(text) <= self._limit_units
 
     def _truncate_to(self, text: str, token_limit: int, keep: str = "head") -> str:
         """Truncate *text* to ~``token_limit`` tokens with a marker.
@@ -760,24 +746,6 @@ class TokenBudget:
         cap it may take all remaining budget. Over-limit content is truncated
         with a marker (never silently dropped — see INV-4).
         """
-        if self._char_mode:
-            # Exact reproduction of the original (pre-allocator) char-based use()
-            # so the legacy path is unchanged. ``cap`` is unused here.
-            if not text:
-                return text
-            if self.used_tokens + len(text) <= self._limit_units:
-                self.used_tokens += len(text)
-                return text
-            remaining = self._limit_units - self.used_tokens
-            if remaining > 100:
-                truncated = (
-                    text[: remaining - 50]
-                    + "\n[... Content truncated due to context limit ...]"
-                )
-                self.used_tokens = self._limit_units
-                return truncated
-            return ""
-
         if not text:
             return text
         allowance = self._limit_units - self.used_tokens
@@ -1256,7 +1224,11 @@ def _current_turn_reserve_fraction() -> float:
 
 
 def _render_orphan_file_block(
-    uf, hash_first_seen: dict, current_turn: int, summary_only: bool = False
+    uf,
+    hash_first_seen: dict,
+    current_turn: int,
+    summary_only: bool = False,
+    elide_extract: bool = False,
 ) -> str:
     """Render one orphan ``UploadedFile`` as an ``<uploaded_file>`` block.
 
@@ -1271,6 +1243,11 @@ def _render_orphan_file_block(
     full structural index within the reserve. The file stays present and
     addressable (the LLM can still ``search_file`` it by ``file_id``) instead of
     vanishing (INV-EC-1 / INV-EC-3).
+
+    ``elide_extract=True`` (directed-analysis index+stub) drops only the
+    ``file_extract`` body but KEEPS ``search_map`` + ``file_meta`` — the same
+    render Evidence-backed Tier-A items get in that mode, so a not-yet-promoted
+    orphan gets identical navigation hints (search_map), not a bare stub.
     """
     file_extract, search_map, file_meta = _parse_extract(uf.structural_index or "")
     file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
@@ -1291,7 +1268,17 @@ def _render_orphan_file_block(
         )
         entry += "  </uploaded_file>\n"
         return entry
-    if file_extract.strip():
+    if elide_extract and file_extract.strip():
+        # DA index+stub: drop the extract body, keep search_map (below). Same
+        # marker Evidence-backed items get, so navigation parity holds.
+        entry += (
+            '    <file_extract role="orientation" elided="directed_analysis">\n'
+            "[Structural index elided in directed-analysis mode — call "
+            "search_file with the file_id above to read specifics from the "
+            "raw file.]\n"
+            "    </file_extract>\n"
+        )
+    elif file_extract.strip():
         truncation_note = ""
         if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
             remaining_chars = len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
@@ -1322,6 +1309,7 @@ def _build_evidence_context(
     provider_name: Optional[str] = None,
     model_name: Optional[str] = None,
     char_budget_override: Optional[int] = None,
+    tools_available: bool = False,
 ) -> str:
     """
     Build the evidence context section using a three-tier sliding window.
@@ -1495,8 +1483,25 @@ def _build_evidence_context(
         int(effective_total_chars * _current_turn_reserve_fraction()),
     )
 
+    # Directed-analysis index+stub: in DA turns, historical evidence carries only
+    # its addressable stub + search_map, not the large <file_extract> body — the
+    # agent fetches specifics via search_file. Validated (A/B + eval, no conclusion
+    # regression), so it is the standing behavior rather than a flag. Gated on TWO
+    # conditions, both required:
+    #   1. this is a directed_analysis turn, AND
+    #   2. tools_available — search_file will ACTUALLY run this turn. Without (2)
+    #      a tool-less / tool-incapable turn would be stranded with a stub that
+    #      points at a tool it cannot call (NO INCORRECT CONCLUSION). "directed_
+    #      analysis" is the classifier's ambiguous default and does NOT by itself
+    #      imply tool calling works, so tool-availability must be checked here.
+    # The current-turn upload always keeps its full extract (freshness / INV-EC-1).
+    da_index_only = processing_mode == "directed_analysis" and tools_available
+
     result = "<evidence_collected>\n"
     total_chars = 0
+    # INV-4: count evidence items skipped for budget (Tiers B/C/D) so their
+    # omission is never silent — a marker is emitted before the closing tag.
+    n_omitted = 0
 
     # File ids already backed by an Evidence row — computed once and reused by
     # both the current-turn floor and the historical Tier-D fill (they used to
@@ -1567,8 +1572,16 @@ def _build_evidence_context(
 
         truncated = False
 
+        is_current_turn_ev = current_turn > 0 and ev.collected_at_turn == current_turn
+        # In DA index-only mode, HISTORICAL evidence drops its file_extract body
+        # (stub + search_map only). The current-turn upload keeps its extract.
+        suppress_extract = da_index_only and not is_current_turn_ev
+
         # Per-item cap applies to file_extract (the orientation content)
-        if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
+        if (
+            not suppress_extract
+            and len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
+        ):
             remaining_chars = len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
             file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
             truncated = True
@@ -1579,10 +1592,13 @@ def _build_evidence_context(
         # otherwise N current-turn evidence rows could each render in full with
         # no cap and blow the whole evidence budget. Once the reserve is spent,
         # current-turn evidence degrades to a Tier-B summary like everything else.
+        # A suppressed extract contributes no extract bytes to the estimate.
         entry_estimate = (
-            len(file_extract) + len(ev.summary or "") + len(ev.extract or "") + 200
+            (0 if suppress_extract else len(file_extract))
+            + len(ev.summary or "")
+            + len(ev.extract or "")
+            + 200
         )  # overhead for XML tags
-        is_current_turn_ev = current_turn > 0 and ev.collected_at_turn == current_turn
         within_reserve = total_chars < current_turn_floor_chars
         exempt_from_downgrade = is_current_turn_ev and within_reserve
         if (
@@ -1613,7 +1629,19 @@ def _build_evidence_context(
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
         result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{duplicate_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
-        if file_extract.strip():
+        if file_extract.strip() and suppress_extract:
+            # DA index-only: elide the extract body, keep the file addressable.
+            # The <search_map> below and the evidence id/file_id on the tag give
+            # the agent everything it needs to search_file for specifics (INV-4:
+            # the elision is marked, never silent).
+            result += (
+                '    <file_extract role="orientation" elided="directed_analysis">\n'
+                "[Structural index elided in directed-analysis mode — call "
+                "search_file with the evidence id above to read specifics from "
+                "the raw file.]\n"
+                "    </file_extract>\n"
+            )
+        elif file_extract.strip():
             role_attr = (
                 ' role="orientation"' if processing_mode == "directed_analysis" else ""
             )
@@ -1662,6 +1690,7 @@ def _build_evidence_context(
         # Skip (not break) over-budget summaries so a single large item never
         # drops every lower-ranked item behind it (INV-EC-2).
         if total_chars + len(entry) > effective_total_chars:
+            n_omitted += 1
             continue
         result += entry
         total_chars += len(entry)
@@ -1671,6 +1700,11 @@ def _build_evidence_context(
     # Include the verbatim_quote when present: for chat-extracted
     # evidence it carries the actual system-output slice the user typed
     # in (the summary alone would lose that detail).
+    # INV-4: the 5-most-recent cap drops OLDER chat evidence — count it so the
+    # <evidence_omitted> marker reflects the omission (these have no
+    # source_file_id, so the marker signals it, since search_file can't reach
+    # them).
+    n_omitted += max(0, len(text_evidence) - 5)
     for ev in text_evidence[-5:]:  # Cap at 5 most recent items
         label = _evidence_label(ev, file_lookup, case)
         label_attr = f' label="{label}"'
@@ -1683,6 +1717,7 @@ def _build_evidence_context(
             f"<summary>{ev.summary}</summary>{quote_block}</evidence>\n"
         )
         if total_chars + len(entry) > effective_total_chars:
+            n_omitted += 1
             continue
         result += entry
         total_chars += len(entry)
@@ -1719,16 +1754,33 @@ def _build_evidence_context(
             reverse=True,
         )
         for uf in orphan_files:
-            entry = _render_orphan_file_block(uf, hash_first_seen, current_turn)
+            # DA index-only elides HISTORICAL evidence extracts (these orphans are
+            # all historical — current-turn ones went through the floor above), so
+            # a not-yet-promoted file is treated the same as an Evidence-backed one
+            # (stub only, addressable via search_file) instead of dumped in full.
+            entry = _render_orphan_file_block(
+                uf, hash_first_seen, current_turn, elide_extract=da_index_only
+            )
             # Greedy newest-first fill with skip-not-break (INV-EC-2): one large
             # orphan never drops every smaller orphan behind it. Note this is a
             # greedy fit, not a strict newest-wins policy — a large newer orphan
             # may be skipped while a smaller older one fits. Current-turn files
             # are never affected (handled by the floor above).
             if total_chars + len(entry) > effective_total_chars:
+                n_omitted += 1
                 continue
             result += entry
             total_chars += len(entry)
+
+    # INV-4: never drop evidence silently. If any item was skipped for budget,
+    # say so — the agent can then ask for it or search_file rather than assume
+    # the shown set is exhaustive.
+    if n_omitted:
+        result += (
+            f'  <evidence_omitted count="{n_omitted}" '
+            f'reason="prompt_budget" note="More evidence exists but did not fit '
+            f'this turn; use search_file / list_evidence to reach it." />\n'
+        )
 
     result += "</evidence_collected>"
     return result
@@ -2259,8 +2311,10 @@ def _allocate_sections(
         user_cap = pb.user_message_max_tokens
         feedback_cap = pb.system_feedback_max_tokens
         journal_cap = pb.journal_max_tokens
+        conversation_cap = pb.conversation_history_max_tokens
     except Exception:
         user_cap, feedback_cap, journal_cap = 4000, 1500, 1500
+        conversation_cap = 8000
 
     try:
         evidence_fraction = (
@@ -2328,7 +2382,14 @@ def _allocate_sections(
             graduated_history,
             graduated_tokens,
             min(compact_tokens, section_budget),
-            section_budget,
+            # Bounded cap (§5.1): must not default to the whole section_budget or
+            # verbose history starves the journal/KB/hypotheses below it. Kept at
+            # least as large as the continuity floor so the compact-history floor
+            # is never capped below itself.
+            max(
+                min(compact_tokens, section_budget),
+                min(section_budget, conversation_cap),
+            ),
         ),
         (
             "investigation_journal",
@@ -2394,7 +2455,14 @@ def _allocate_sections(
         elif size <= alloc:
             rendered = text
         else:
-            rendered = budget._truncate_to(text, alloc)
+            # The journal is recency-ordered (oldest anchors first, newest last)
+            # and is anti-amnesia memory: under hard truncation keep the TAIL so
+            # the most-recent decisions/findings/blockers survive — dropping the
+            # newest (the default keep="head") is exactly wrong here. The other
+            # variable sections (KB, hypotheses) are rank-ordered best-first, so
+            # keep="head" is correct for them.
+            keep = "tail" if key == "investigation_journal" else "head"
+            rendered = budget._truncate_to(text, alloc, keep=keep)
 
         ctx[key] = rendered
         # Reuse the known size when the section was admitted whole (no recount).
@@ -2570,7 +2638,7 @@ def build_investigation_context(
     enable_stage_specific_loading: bool = True,
     processing_mode: Optional[str] = None,
     entity_highlights: Optional[str] = None,
-    use_allocator: bool = False,
+    tools_available: bool = False,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
@@ -2617,7 +2685,6 @@ def build_investigation_context(
         max_tokens,
         provider_name=provider_name,
         model_name=model_name,
-        char_mode=not use_allocator,
     )
 
     # 1. Identity & Status (Gap #8: XML tags for better LLM attention)
@@ -2689,7 +2756,7 @@ def build_investigation_context(
     # (≈ evidence_fraction of the section budget) rather than the full model
     # budget — see _build_evidence_context (avoids the double-budget).
     evidence_char_override = None
-    if use_allocator and max_tokens:
+    if max_tokens:
         try:
             from faultmaven.config.settings import get_settings
 
@@ -2706,6 +2773,7 @@ def build_investigation_context(
         provider_name=provider_name,
         model_name=model_name,
         char_budget_override=evidence_char_override,
+        tools_available=tools_available,
     )
 
     # 5. Causal graph (hypotheses ARE chains, methodology M3).
@@ -2980,56 +3048,32 @@ def build_investigation_context(
     # =====================================================================
     # Budget allocation
     # =====================================================================
-    if use_allocator:
-        # Priority-greedy allocator (the token-budget allocation model). Needs
-        # both history fidelities so it can pick the one that fits; the compact
-        # one is the continuity floor (always carries the latest turn).
-        compact_history = _build_compact_history(case, user_message_safe)
-        ctx = _allocate_sections(
-            budget=budget,
-            case=case,
-            provider_name=provider_name,
-            model_name=model_name,
-            identity=identity,
-            core_context=core_context,
-            milestones_str=milestones_str,
-            inquiry_state_str=inquiry_state_str,
-            pending_action_str=pending_action_str,
-            user_message_safe=user_message_safe,
-            feedback_str=feedback_str,
-            evidence_str=evidence_str,
-            graduated_history=recent_history,
-            compact_history=compact_history,
-            journal_str=journal_str,
-            conclusion_str=conclusion_str,
-            kb_str=kb_str,
-            hypothesis_str=hypothesis_str,
-            evidence_needs_str=evidence_needs_str,
-            entity_highlights_str=entity_highlights_str,
-        )
-        return ctx
-
-    # ---- Legacy (default, allocator-OFF) assembly — unchanged from pre-allocator
-    # behavior (char-mode budget, original section order). ----
-    # Assembly with budget check
-    ctx = {
-        "identity": budget.use(identity),
-        "core_context": budget.use(core_context),
-        "milestones": budget.use(milestones_str),
-        "evidence": budget.use(evidence_str),
-        "evidence_needs": budget.use(evidence_needs_str),
-        "entity_highlights": budget.use(entity_highlights_str),
-        "hypotheses": budget.use(hypothesis_str),
-        "investigation_journal": budget.use(journal_str),
-        "working_conclusion": budget.use(conclusion_str),
-        "pending_action": budget.use(pending_action_str),
-        "kb_results": budget.use(kb_str),
-        "system_feedback": feedback_str,  # Prioritize feedback
-        "conversation_history": budget.use(recent_history),
-        "user_message": user_message_safe,  # Sanitized user message always included
-        "inquiry_state": budget.use(inquiry_state_str),
-    }
-
+    # Priority-greedy allocator (the token-budget allocation model). Needs both
+    # history fidelities so it can pick the one that fits; the compact one is the
+    # continuity floor (always carries the latest turn).
+    compact_history = _build_compact_history(case, user_message_safe)
+    ctx = _allocate_sections(
+        budget=budget,
+        case=case,
+        provider_name=provider_name,
+        model_name=model_name,
+        identity=identity,
+        core_context=core_context,
+        milestones_str=milestones_str,
+        inquiry_state_str=inquiry_state_str,
+        pending_action_str=pending_action_str,
+        user_message_safe=user_message_safe,
+        feedback_str=feedback_str,
+        evidence_str=evidence_str,
+        graduated_history=recent_history,
+        compact_history=compact_history,
+        journal_str=journal_str,
+        conclusion_str=conclusion_str,
+        kb_str=kb_str,
+        hypothesis_str=hypothesis_str,
+        evidence_needs_str=evidence_needs_str,
+        entity_highlights_str=entity_highlights_str,
+    )
     return ctx
 
 

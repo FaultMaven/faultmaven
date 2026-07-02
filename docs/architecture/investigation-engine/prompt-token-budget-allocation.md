@@ -1,13 +1,14 @@
 # Prompt Context Management & Token-Budget Allocation
 
-> **Status: PROPOSED — design under review (pre-implementation).**
+> **Status: IMPLEMENTED — the allocator is the only prompt-assembly path.**
 >
-> The token-budget number itself (`PROMPT_TARGET_TOKENS`) and the model
-> context-window registry already exist. The **allocation** of that budget
-> across the prompt and the **compaction** that keeps each part within it — the
-> subject of this document — are proposed and under review.
+> The token-budget number (`PROMPT_TARGET_TOKENS`), the model context-window
+> registry, and the **allocation + compaction** described here are all live. The
+> earlier char-based first-draft assembly and the `PROMPT_ALLOCATOR_ENABLED` /
+> `PROMPT_ALLOCATOR_SHADOW` rollout flags have been removed — every prompt is
+> assembled through this allocator.
 >
-> **Authoritative source (after implementation):**
+> **Authoritative source:**
 > `faultmaven/core/investigation/prompts/context_builder.py`
 > (`build_investigation_context`, `TokenBudget`) and
 > `faultmaven/core/investigation/prompts/templates.py` (`get_prompt_for_case`,
@@ -378,15 +379,9 @@ Every backstop event logs at WARNING (`prompt_overflow_trimmed` /
 `prompt_overflow_fallback` / `prompt_starvation_fallback`) with token counts and
 the action taken — rare, visible, never silent.
 
-> **Default (legacy, allocator-off) path:** the pre-send overflow/starvation
-> backstop above runs only in the allocator path. The legacy assembly does **not**
-> measure the whole prompt against the ceiling every turn — that per-turn
-> full-prompt tokenization is a cost we deliberately avoid on the hot path while
-> the allocator is the future home of pre-send budgeting. The legacy path's net
-> is the **runtime recovery (§7.1)**: reactive, but it costs only one failed
-> request on the rare turn that actually overflows, rather than a tokenization on
-> every turn. (Pre-allocator, there was no overflow handling at all, so this is
-> strictly better; once the allocator is enabled, handling is proactive.)
+The pre-send overflow/starvation backstop above runs on every turn (the allocator
+is the only assembly path). The **runtime recovery (§7.1)** is the complementary
+net for the case where our *estimate* of the model window is wrong.
 
 ### 7.1 Runtime recovery: provider context-length rejection
 
@@ -524,12 +519,11 @@ These are properties of the allocator's structure, asserted by tests (§14):
 | Overflow **and starvation** backstop (§7) | Implemented — `templates._assemble_allocated` |
 | `FALLBACK_*` templates: current-turn stub slot + compact journal slot (§7) | Implemented |
 | Runtime context-length-error recovery → one `FALLBACK_*` retry (§7.1) | Implemented — `milestone_engine._generate_structured_output` wrapper |
-| Token-native accounting (§8) | Implemented (`TokenBudget` + sub-budget checks) |
-| Rollout: `PROMPT_ALLOCATOR_ENABLED` / `PROMPT_ALLOCATOR_SHADOW` flags (§14) | Implemented (**both default OFF**) |
-| Invariant test matrix (§14) | Implemented — `tests/.../test_prompt_budget_allocator.py` (17 tests) |
+| Token-native accounting (§8) | Implemented (`TokenBudget`, token-native only) |
+| Sole assembly path | The allocator is the only path — the char-based first draft and the `PROMPT_ALLOCATOR_*` gate flags were removed |
+| Invariant test matrix (§14) | Implemented — `tests/.../test_prompt_budget_allocator.py` |
 
-**Default behavior is unchanged:** both flags ship OFF, so production assembly is
-the legacy path until shadow-validated and explicitly enabled.
+The allocator assembles every prompt; there is no alternate path to fall back to.
 
 Evidence-creation timing (when `Evidence` rows are born) is a separate concern
 and is not covered here.
@@ -563,11 +557,9 @@ zones/MITIGATION/TREATMENT, knowledge-query, TERMINAL):
 - no section is dropped without a marker (INV-4),
 - `section_budget` is never negative (INV-5).
 
-**Rollout — shadow before flip.** Behind a feature flag, run the new allocator
-in **shadow mode**: assemble both the current and the new prompt for N turns,
-log the size/section deltas (do not send the new one), and add a golden-prompt
-regression test. Flip to the new allocator only after shadow output is validated.
-Given prior hot-path regressions, shadow-validate first.
+The allocator is the sole assembly path, guarded by the invariant matrix above
+rather than a rollout flag. Changes to it are validated by that matrix plus the
+sim/playbook eval before merge.
 
 ---
 
