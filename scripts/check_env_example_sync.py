@@ -38,8 +38,15 @@ sys.path.insert(0, str(ROOT))
 import faultmaven.config.settings as settings_module  # noqa: E402
 
 # Variables that legitimately appear in .env.example but are not pydantic
-# settings fields (consumed elsewhere, e.g. by docker compose).
-ALLOWLIST = {"FM_IMAGE_TAG", "FM_DASHBOARD_IMAGE_TAG"}
+# settings fields (consumed elsewhere, e.g. by docker compose, or read directly
+# via os.getenv by a dependency-free module).
+ALLOWLIST = {
+    "FM_IMAGE_TAG",
+    "FM_DASHBOARD_IMAGE_TAG",
+    # Read via os.getenv in infrastructure/llm/pricing.py, which is kept free of
+    # the settings import so it stays trivially unit-testable and hot-path-safe.
+    "LLM_PRICING_OVERRIDES",
+}
 
 # Capture optional leading "#": commented lines document the DEFAULT (checked
 # against settings.py); active lines are user overrides/placeholders (not checked).
