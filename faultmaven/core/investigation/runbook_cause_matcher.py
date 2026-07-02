@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 # Distinct runbooks the matcher evaluates per turn.
 _DEFAULT_MAX_RUNBOOKS = 3
 
-# Distinct runbooks the matcher SEEDS into the differential from retrieval (Part A).
+# Distinct runbooks the matcher SEEDS into the differential from retrieval.
 # The differential source is decoupled from the T2 verdict: the top-K *retrieved*
 # runbooks (no LLM) become the candidate universe the deterministic intake validates
 # against, so the predicate loop runs on every verdict (RC-1 fix) — not only 'single'.
@@ -322,8 +322,9 @@ def _record_runbook_retrieval_hit(case: "Case") -> None:
     Written at RETRIEVAL time, BEFORE the single/multiple/none verdict gate — so the
     grounding baseline metric's denominator (the matching-runbook population) is
     independent of the verdict-gated ``differential_runbook_ids`` (which is stamped only
-    on a 'single' verdict). Sourcing the population from that field pre-Part-A would
-    divide by the very seeding gap the metric exists to detect. Idempotent monotonic
+    on a 'single' verdict). Sourcing the population from that field before the
+    retrieval-seeding path exists would divide by the very seeding gap the metric
+    exists to detect. Idempotent monotonic
     flag: once True it stays True for the life of the case (membership, not a count —
     see the ``Case.runbook_retrieved`` field docstring for why boolean, not count).
 
@@ -558,7 +559,7 @@ async def apply_runbook_cause_matcher(
     """Match retrieved runbooks against the case: seed the differential and
     instantiate the winner.
 
-    Two decoupled effects (Part A):
+    Two decoupled effects:
 
     - **Differential source (broad):** seeds ``differential_runbook_ids`` from the
       top-``differential_top_k`` *retrieved* runbooks (v4-filtered, no LLM),
@@ -574,7 +575,7 @@ async def apply_runbook_cause_matcher(
     the differential may still have been seeded). A *prior, not a gate*: the engine
     caller wraps this so it can never break a turn.
     """
-    # --- Differential source (Part A): seed ONCE per case from RETRIEVAL, decoupled
+    # --- Differential source: seed ONCE per case from RETRIEVAL, decoupled
     # from the T2 verdict. The top-K retrieved runbooks (embedding-only, no LLM) become
     # the candidate universe for the deterministic intake, so the predicate loop runs on
     # 'none'/'multiple' verdicts too (RC-1 fix), not only the rare 'single'. Each id is
