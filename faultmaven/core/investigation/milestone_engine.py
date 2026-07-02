@@ -34,11 +34,6 @@ from uuid import uuid4
 # Module initialization
 logger = logging.getLogger(__name__)
 
-from faultmaven.infrastructure.llm.metering import (
-    TurnTokenTracker,
-    active_token_tracker,
-    record_provider_call,
-)
 from faultmaven.core.investigation.causal_graph import (
     any_chain_root_inconclusive,
     any_chain_root_validated,
@@ -87,6 +82,11 @@ from faultmaven.core.investigation.state_validator import (
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
     generate_working_conclusion,
+)
+from faultmaven.infrastructure.llm.metering import (
+    TurnTokenTracker,
+    active_token_tracker,
+    record_provider_call,
 )
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,

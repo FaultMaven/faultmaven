@@ -345,9 +345,15 @@ class GeminiProvider(BaseLLMProvider):
 
             # Extract token usage if available. promptTokenCount is inclusive of
             # cached content, so subtract to keep buckets disjoint for cost.
+            # thoughtsTokenCount (thinking models, e.g. the default
+            # gemini-3.5-flash) is billed at the output rate and is NOT included
+            # in candidatesTokenCount, so fold it into output_tokens — otherwise
+            # cost under-reports and the buckets don't sum to totalTokenCount.
             if response_data.get("usageMetadata"):
                 _usage = response_data["usageMetadata"]
-                output_tokens = _usage.get("candidatesTokenCount") or 0
+                output_tokens = (_usage.get("candidatesTokenCount") or 0) + (
+                    _usage.get("thoughtsTokenCount") or 0
+                )
                 cache_read_tokens = _usage.get("cachedContentTokenCount") or 0
                 _prompt = _usage.get("promptTokenCount") or 0
                 input_tokens = max(_prompt - cache_read_tokens, 0)

@@ -30,9 +30,10 @@ llm_tokens_total`, and the gap is the fallback overhead.
 
 ### Structured logs
 
-- **`llm_call`** — one per billed provider call: `provider`, `model`,
+- **`llm_call`** (DEBUG) — one per billed provider call: `provider`, `model`,
   `outcome`, the four token buckets, `total_tokens`, `prompt_cache_hit`,
-  `estimated_cost_usd`, `cost_priced`, `latency_ms`. Per-call forensics.
+  `estimated_cost_usd`, `cost_priced`, `latency_ms`. Per-call forensics —
+  logged at DEBUG (it fires on every call); enable DEBUG to see it.
 - **`turn_token_spend`** — one per investigation turn: `case_id`, per-bucket
   totals, `total_tokens`, `total_calls`, `estimated_cost_usd`, `unpriced_calls`.
   This is the per-turn amplification signal — a turn making 40 calls stands out
@@ -85,7 +86,7 @@ landing.
 3. **Which turns?** Sort `turn_token_spend` logs by `total_calls` /
    `estimated_cost_usd`. A turn with an outlier `total_calls` points at a
    per-turn amplifier (tool-loop iterations, per-cause fan-out, retries).
-4. **Is caching working?** Check `prompt_cache_hit` in `llm_call` logs and the
+4. **Is caching working?** Check `prompt_cache_hit` in `llm_call` logs (DEBUG) and the
    `cache_read` series. Zero cache reads on Anthropic tool-loop turns means the
    prefix isn't being reused (e.g. turns > 5 min apart, so the ephemeral cache
    expired).

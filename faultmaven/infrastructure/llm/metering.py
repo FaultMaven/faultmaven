@@ -152,8 +152,11 @@ def record_provider_call(
         if tracker is not None:
             tracker.add(response, cost_usd=cost_usd, priced=priced)
 
-        # Per-call structured forensics.
-        logger.info(
+        # Per-call structured forensics. DEBUG, not INFO: this fires on every
+        # billed call (dozens per turn once tool loops and fallback are counted),
+        # so it would flood INFO logs. The per-turn turn_token_spend aggregate is
+        # logged at INFO by the engine; enable DEBUG for per-call diagnosis.
+        logger.debug(
             "llm_call",
             extra={
                 "provider": provider,

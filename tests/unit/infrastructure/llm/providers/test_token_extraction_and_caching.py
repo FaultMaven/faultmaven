@@ -18,6 +18,7 @@ import pytest
 
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+from faultmaven.infrastructure.llm.providers.gemini import GeminiProvider
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
 
 
@@ -50,6 +51,21 @@ def anthropic_provider():
             base_url="https://api.anthropic.com/v1",
             models=["claude-sonnet-4-6"],
             default_model="claude-sonnet-4-6",
+            timeout=30,
+            confidence_score=0.9,
+        )
+    )
+
+
+@pytest.fixture
+def gemini_provider():
+    return GeminiProvider(
+        ProviderConfig(
+            name="gemini",
+            api_key="test-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            models=["gemini-3.5-flash"],
+            default_model="gemini-3.5-flash",
             timeout=30,
             confidence_score=0.9,
         )
@@ -137,6 +153,40 @@ class TestAnthropicExtractionAndCaching:
 
         body = _request_body(mock_session)
         assert body["system"] == "Be helpful."
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestGeminiExtractionAndCaching:
+    async def test_thinking_tokens_counted_as_output(self, gemini_provider):
+        # gemini-3.5-flash (a thinking model) reports thoughtsTokenCount
+        # separately from candidatesTokenCount; both are billed at the output
+        # rate. They must fold into output_tokens, and the disjoint buckets must
+        # sum to totalTokenCount.
+        response_data = {
+            "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 1000,  # inclusive of cached content
+                "candidatesTokenCount": 200,
+                "thoughtsTokenCount": 1500,
+                "cachedContentTokenCount": 300,
+                "totalTokenCount": 2700,
+            },
+        }
+        mock_session = _mock_aiohttp_session(response_data)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = await gemini_provider.generate("hi")
+
+        assert result.cache_read_tokens == 300
+        assert result.input_tokens == 700  # 1000 prompt - 300 cached
+        assert result.output_tokens == 1700  # 200 candidates + 1500 thoughts
+        assert result.tokens_used == 2700
+        assert result.prompt_cache_hit is True
+        # Disjoint buckets sum to the reported total (no lost thinking tokens).
+        assert (
+            result.input_tokens + result.output_tokens + result.cache_read_tokens
+            == result.tokens_used
+        )
 
 
 @pytest.mark.unit
