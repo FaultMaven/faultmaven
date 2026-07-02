@@ -448,3 +448,36 @@ class TestRetrieval:
         )
         vector_store.search.assert_awaited_once()
         assert [r.runbook_id for r in results] == ["kb_a"]
+
+
+# ---------------------------------------------------------------------------
+# aget_retrieved_runbook_ids — retrieval-only seeding (Part A), no LLM
+# ---------------------------------------------------------------------------
+
+
+class TestRetrievedRunbookIds:
+    @pytest.mark.asyncio
+    async def test_ranks_distinct_runbook_ids_without_evaluator(self):
+        # Retrieval-only ranking: distinct runbook ids, best-first, deduped — with NO
+        # resolve_causes and NO evaluator (the T2 LLM step is not on this path).
+        tool = _make_tool(
+            [
+                _chunk("kb_a", idx=0, score=0.9),
+                _chunk("kb_b", idx=0, score=0.8),
+                _chunk("kb_a", idx=1, score=0.7),  # same runbook, lower — deduped
+                _chunk("kb_c", idx=0, score=0.6),
+            ]
+        )
+        ids = await tool.aget_retrieved_runbook_ids("q", "u1", top_k=3)
+        assert ids == ["kb_a", "kb_b", "kb_c"]
+
+    @pytest.mark.asyncio
+    async def test_top_k_caps_distinct_runbooks(self):
+        tool = _make_tool([_chunk(f"kb_{i}", score=1.0 - i * 0.1) for i in range(5)])
+        ids = await tool.aget_retrieved_runbook_ids("q", "u1", top_k=2)
+        assert ids == ["kb_0", "kb_1"]
+
+    @pytest.mark.asyncio
+    async def test_empty_retrieval_returns_empty(self):
+        tool = _make_tool([])
+        assert await tool.aget_retrieved_runbook_ids("q", "u1", top_k=3) == []
