@@ -278,9 +278,8 @@ def _predicate_signature(predicate: dict) -> str:
 # The id prefix shared by ALL engine EvidenceNeeds — the model's ``need_id``
 # default_factory uses ``eneed_`` too (models.py), so this is NOT a differential-only
 # marker: symptom needs and LLM-emitted causal needs carry it as well. Differential
-# needs are identified by their DETERMINISTIC id (``_differential_need_id``); the open
-# pool for the budget below is tallied over the CURRENT differential's (cause, predicate)
-# needs directly (Pass 1), never by prefix-scanning the whole need list.
+# needs are identified by their DETERMINISTIC id (``_differential_need_id``), which lets
+# regeneration find and reconcile the existing need instead of scanning by prefix.
 _DIFFERENTIAL_NEED_ID_PREFIX = "eneed_"
 
 # SURFACE cap (not an existence cap): at most this many CAUSAL_VERIFICATION needs are
@@ -378,7 +377,7 @@ def _regen_differential_evidence_needs(
     ``validated_cause_ids`` (the caller classifies; "settled validated" means *deductively*
     validated, the only durable kind — see ``_cause_root_settled_state``).
 
-    Emission is UNCAPPED: a retrieval-seeded differential (Part A) can span many candidate
+    Emission is UNCAPPED: a retrieval-seeded differential can span many candidate
     causes with several untested predicates each, but the flood is bounded at RENDER by a
     surface cap (``select_surfaced_causal_needs`` shows ≤ ``_SURFACED_CAUSAL_CAP``), NOT by
     capping emission here. Capping emission would be an *existence* cap: the first N
@@ -387,6 +386,23 @@ def _regen_differential_evidence_needs(
     under pressure, so an answerable discriminator is never permanently hidden behind
     unanswerable ones. (The prior emission-cap approach + its eviction/departed-cause
     limitations are superseded by this surface cap.)
+
+    Pool bound & staleness (why uncapped emission does not leak): the differential
+    runbook set is seed-once + grow-only, and ``active_causes`` is rebuilt each turn from
+    it by deterministic DB reads, so the candidate set never SHRINKS — a cause cannot
+    silently depart and strand an orphan need. Every engine causal need therefore falls
+    into exactly one of the branches below (fired → FULFILLED, refuted → SUPERSEDED,
+    deductively validated → SUPERSEDED, live+unsatisfied → PENDING), so an OPEN engine
+    causal need is always a *live, unsatisfied* discriminator — never stale. The pool is
+    thus bounded (one need per (cause, predicate) over a grow-only, seed-once
+    differential) and re-persisting it each turn on the additive repo is an accepted,
+    bounded cost. GC-by-supersede is deliberately NOT used to trim it: the need_id is
+    deterministic, so superseding a still-live need whose predicate merely oscillated
+    out-and-back would permanently hide it (the #604 supersede trap). The one residual is
+    LLM-authored causal needs — not managed here, never GC'd — but they carry random ids
+    (trap-free to retire later), the LLM re-emits the live ones each turn, and they are
+    bounded at RENDER by the same ≤N surface cap + rotation; retiring stale ones is a
+    separate follow-up, not a correctness gap in this reconcile.
 
     Both supersessions close a demand↔validate inconsistency, and both are sound
     only because the state is terminal. REFUTED: ``run_intake_evaluation`` skips

@@ -2100,7 +2100,19 @@ def _build_evidence_needs_block(case: Case) -> str:
     # the other. With both sections active, each gets up to
     # _EVIDENCE_NEEDS_RENDER_CAP entries — generous enough that real
     # cases never hit the cap.
-    out_rendered = outstanding[:_EVIDENCE_NEEDS_RENDER_CAP]
+    #
+    # The surface cap already chose ≤ _SURFACED_CAUSAL_CAP causal asks to show; those
+    # are RESERVED a render slot. Otherwise the priority sort — causal needs are MEDIUM,
+    # symptom needs HIGH — could push all of them past _EVIDENCE_NEEDS_RENDER_CAP behind
+    # a wall of HIGH symptom needs, silently dropping the asks the surface cap just
+    # picked. Reserve the surfaced causal slots, fill the remainder by priority.
+    out_reserved = [n for n in outstanding if n.need_id in _surfaced_causal_ids]
+    out_rest = [n for n in outstanding if n.need_id not in _surfaced_causal_ids]
+    out_rendered = (
+        out_reserved
+        + out_rest[: max(0, _EVIDENCE_NEEDS_RENDER_CAP - len(out_reserved))]
+    )
+    out_rendered.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
     out_overflow = len(outstanding) - len(out_rendered)
     reverif_rendered = re_verification[:_EVIDENCE_NEEDS_RENDER_CAP]
     reverif_overflow = len(re_verification) - len(reverif_rendered)

@@ -892,13 +892,60 @@ def test_surfaced_rotates_under_non_progress():
     ever_surfaced: set[str] = set()
     for stuck in range(0, 24):
         case.turns_without_progress = stuck
-        ever_surfaced |= {n.need_id for n in select_surfaced_causal_needs(case)}
+        window = select_surfaced_causal_needs(case)
+        # The window must stay FULL on every turn — the liveness guarantee rests on
+        # this. A union-only assertion would still pass a wrap regression that returns
+        # an empty/short window at some high offset (as long as other offsets cover the
+        # pool), so assert the per-turn size, not just the eventual coverage.
+        assert len(window) == _SURFACED_CAUSAL_CAP
+        ever_surfaced |= {n.need_id for n in window}
     assert (
         ever_surfaced == all_ids
     )  # every need surfaced within a bounded non-progress span
     assert all(
         n.state == NeedState.PENDING for n in case.evidence_needs
     )  # none superseded
+
+
+def test_surfaced_resets_to_most_discriminating_on_progress():
+    # On progress the non-progress counter resets, so the window returns to offset 0 —
+    # the most-discriminating asks. This is the other half of the liveness contract:
+    # rotation advances the window while stuck, progress snaps it back to the best asks.
+    case = _case()
+    acs = [
+        _ac_preds("rb1:A", ["shared", "uniqueA"]),
+        _ac_preds("rb1:B", ["shared", "uniqueB"]),
+        _ac_preds("rb1:C", ["shared", "uniqueC"]),
+    ]
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    case.turns_without_progress = 0
+    fresh = {n.need_id for n in select_surfaced_causal_needs(case)}
+    case.turns_without_progress = 10  # stuck: window has rotated off the best asks
+    rotated = {n.need_id for n in select_surfaced_causal_needs(case)}
+    assert rotated != fresh
+    case.turns_without_progress = 0  # progress made: back to the most-discriminating
+    assert {n.need_id for n in select_surfaced_causal_needs(case)} == fresh
+
+
+def test_surfaced_caps_a_mixed_engine_and_llm_pool():
+    # The cap covers ALL outstanding causal needs regardless of source — engine
+    # (deterministic id) and LLM-emitted (random id) are indistinguishable at render.
+    # 4 engine + 4 LLM causal needs → still ≤ _SURFACED_CAUSAL_CAP shown.
+    case = _case()
+    _seed_causal(case, [f"eng{i}" for i in range(4)])
+    for i in range(4):
+        case.evidence_needs.append(
+            EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text=f"llm-authored causal ask {i}",
+                rationale="emitted by the LLM this turn",
+                state=NeedState.PENDING,
+                created_at_turn=1,
+            )
+        )
+    assert len(_pending(case)) == 8
+    assert len(select_surfaced_causal_needs(case)) == _SURFACED_CAUSAL_CAP
 
 
 def test_surfaced_excludes_symptom_and_non_outstanding():

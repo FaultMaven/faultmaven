@@ -604,7 +604,8 @@ class TestTiedPriorityOrdering:
 @pytest.mark.unit
 class TestCausalSurfaceCap:
     """#604: the block shows at most _SURFACED_CAUSAL_CAP causal asks (surface cap),
-    but never caps SYMPTOM needs — a broad Part-A differential can't flood the user."""
+    but never caps SYMPTOM needs — a broad retrieval-seeded differential can't flood
+    the user."""
 
     def test_causal_needs_capped_symptom_untouched(self):
         case = _make_case(stage=InvestigationStage.DIAGNOSIS)
@@ -623,3 +624,37 @@ class TestCausalSurfaceCap:
         shown_causal = sum(f"causal datum {i}" in out for i in range(6))
         assert shown_causal == _SURFACED_CAUSAL_CAP  # causal asks bounded
         assert "the symptom datum" in out  # symptom need never capped
+
+    def test_surfaced_causal_survive_render_cap_behind_symptom_wall(self):
+        # Render-cap reservation: a full render-cap wall of HIGH symptom needs must not
+        # evict the MEDIUM causal asks the surface cap chose. Without reserving their
+        # slots, the priority sort + _EVIDENCE_NEEDS_RENDER_CAP would drop all causal
+        # needs (HIGH symptoms fill every slot). Asserts identity, not just count.
+        from faultmaven.core.investigation.intake_evaluation import (
+            select_surfaced_causal_needs,
+        )
+        from faultmaven.core.investigation.prompts.context_builder import (
+            _EVIDENCE_NEEDS_RENDER_CAP,
+        )
+
+        case = _make_case(stage=InvestigationStage.DIAGNOSIS)
+        for i in range(_EVIDENCE_NEEDS_RENDER_CAP):  # a full cap wall of HIGH symptoms
+            _make_need(
+                case,
+                purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+                priority=NeedPriority.HIGH,
+                request_text=f"symptom datum {i}",
+            )
+        for i in range(6):  # MEDIUM causal asks, outnumbered and lower priority
+            _make_need(
+                case,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                priority=NeedPriority.MEDIUM,
+                request_text=f"causal datum {i}",
+            )
+        expected = select_surfaced_causal_needs(case)
+        out = _build_evidence_needs_block(case)
+        for need in expected:  # each surfaced causal ask survives the render cap
+            assert need.request_text in out
+        shown_causal = sum(f"causal datum {i}" in out for i in range(6))
+        assert shown_causal == _SURFACED_CAUSAL_CAP
