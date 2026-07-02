@@ -1936,6 +1936,20 @@ class PromptBudgetSettings(BaseSettings):
             "disable the alert."
         ),
     )
+    tool_observation_max_tokens: int = Field(
+        default=16_000,
+        ge=1_000,
+        le=500_000,
+        validation_alias="PROMPT_TOOL_OBSERVATION_MAX_TOKENS",
+        description=(
+            "Bounded scratchpad allowance for accumulated tool-loop observations "
+            "(tool calls + results). Each tool-loop LLM call is hard-bounded to "
+            "min(model_ceiling, prompt_target + this) — so no continuation call "
+            "grows unbounded past the jar. When the accumulated tool exchanges "
+            "would exceed it, the OLDEST are elided (with a marker; the agent can "
+            "re-search), keeping the base task + newest observations."
+        ),
+    )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 

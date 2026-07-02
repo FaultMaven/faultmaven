@@ -3447,6 +3447,100 @@ class MilestoneEngine:
     TOOL_RESULT_MAX_CHARS = 8000
     MAX_DEEP_ANALYSIS = 1
 
+    def _resolve_tool_loop_budget(self, provider_name: str) -> int:
+        """Per-call token budget for the tool loop: min(model hard ceiling,
+        prompt_target + a bounded observation scratchpad). Best-known method for
+        an agent working context — the base task fits the jar, the accumulated
+        tool observations get a bounded allowance, and no call may exceed the
+        model's hard limit."""
+        from faultmaven.config.settings import get_settings
+        from faultmaven.utils.model_context import resolve_model_budget
+
+        try:
+            obs = get_settings().prompt_budget.tool_observation_max_tokens
+        except Exception:
+            obs = 16_000
+        try:
+            pn = provider_name if isinstance(provider_name, str) else None
+            resolved = resolve_model_budget(pn, self.da_model)
+            budget = resolved.prompt_target + obs
+            if resolved.prompt_budget is not None:  # known window → hard ceiling
+                budget = min(budget, resolved.prompt_budget)
+            return budget
+        except Exception:
+            # Best-effort — never let budget resolution break a turn.
+            return 32_000 + obs
+
+    def _bound_tool_loop_messages(
+        self,
+        messages: list[dict],
+        budget_tokens: int,
+        provider_name: str,
+    ) -> list[dict]:
+        """Keep the tool-loop ``messages`` within ``budget_tokens`` by eliding the
+        OLDEST tool-exchange groups (an assistant tool-call message plus its tool
+        results), preserving the system + base task messages and the most-recent
+        exchanges. Guarantees no oversized prompt is ever sent.
+
+        Invariants: the elided span is replaced by a single marker (INV-4 — never
+        a silent drop; the agent can re-run a search), and whole assistant/tool
+        groups are elided together so tool_call ↔ tool_result pairing stays valid
+        (providers reject an orphan tool result).
+        """
+        from faultmaven.utils.token_estimation import estimate_tokens
+
+        _prov = provider_name if isinstance(provider_name, str) else "local"
+        _model = self.da_model if isinstance(self.da_model, str) else None
+
+        def _tok(m: dict) -> int:
+            parts = [str(m.get("content") or "")]
+            if m.get("tool_calls"):
+                parts.append(str(m.get("tool_calls")))
+            return estimate_tokens(" ".join(parts), provider=_prov, model=_model)
+
+        if sum(_tok(m) for m in messages) <= budget_tokens:
+            return messages
+
+        head = messages[:2]  # system + base task (always kept)
+        rest = messages[2:]
+        groups: list[list[dict]] = []
+        for m in rest:
+            if m.get("role") == "assistant" or not groups:
+                groups.append([m])
+            else:
+                groups[-1].append(m)
+
+        marker = {
+            "role": "user",
+            "content": (
+                "[Earlier tool calls and their results were elided to stay within "
+                "the context budget. Re-run a search if you need those specifics.]"
+            ),
+        }
+        avail = budget_tokens - sum(_tok(m) for m in head) - _tok(marker)
+        kept: list[list[dict]] = []
+        for g in reversed(groups):
+            gt = sum(_tok(m) for m in g)
+            if gt <= avail:
+                kept.insert(0, g)
+                avail -= gt
+            else:
+                break
+        if len(kept) == len(groups):
+            return messages  # nothing to elide (head already near budget)
+
+        logger.warning(
+            "tool_loop_context_bounded: elided %d of %d tool-exchange group(s) to "
+            "fit the %d-token budget",
+            len(groups) - len(kept),
+            len(groups),
+            budget_tokens,
+        )
+        out = list(head) + [marker]
+        for g in kept:
+            out.extend(g)
+        return out
+
     async def _tool_augmented_generate(
         self,
         prompt: str,
@@ -3499,6 +3593,10 @@ class MilestoneEngine:
         logger.info(
             f"Tool-augmented generate using provider: {provider_name}{model_info}"
         )
+        # Per-call size budget: every tool-loop call is bounded to this so an
+        # oversized prompt can never be sent (accumulated observations compact to
+        # fit — see _bound_tool_loop_messages / _resolve_tool_loop_budget).
+        tool_loop_budget = self._resolve_tool_loop_budget(provider_name)
 
         # Build schema tool (same pattern used by single-shot path)
         schema_tools = pydantic_to_openai_tools(schema_model)
@@ -3580,9 +3678,16 @@ class MilestoneEngine:
             )
 
             # Pass da_model when using dedicated provider
+            # Hard-bound EVERY tool-loop call: the accumulated observations can
+            # never grow the sent prompt past the budget. The full `messages`
+            # history is kept for accumulation; only a bounded, most-recent view
+            # is sent.
+            bounded_messages = self._bound_tool_loop_messages(
+                messages, tool_loop_budget, provider_name
+            )
             generate_kwargs = dict(
                 prompt="",
-                messages=messages,
+                messages=bounded_messages,
                 tools=tools_for_call,
                 tool_choice=choice,
                 max_tokens=max_tokens,

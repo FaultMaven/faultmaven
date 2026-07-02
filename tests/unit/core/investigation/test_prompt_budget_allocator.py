@@ -348,3 +348,68 @@ def test_get_prompt_for_case_assembles_via_allocator():
     )
     assert FILE_ID in prompt
     assert "STATE: INVESTIGATING" in prompt or "INVESTIGATING" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Tool-loop per-call size enforcement (no oversized prompt may be sent)
+# ---------------------------------------------------------------------------
+def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
+    """Every tool-loop call is bounded: accumulated tool exchanges compact
+    (oldest-first, with a marker) so the sent prompt never exceeds the budget,
+    while the system+base task and the newest observations are preserved and
+    assistant/tool pairing stays valid."""
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    fake = SimpleNamespace(da_model=None)
+    msgs = [
+        {"role": "system", "content": "SYS " + "s" * 200},
+        {"role": "user", "content": "BASE " + "x" * 400},
+    ]
+    for i in range(6):
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"c{i}",
+                        "function": {"name": "search_file", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        msgs.append(
+            {
+                "role": "tool",
+                "tool_call_id": f"c{i}",
+                "name": "search_file",
+                "content": f"RESULT_{i} " + "y" * 400,
+            }
+        )
+    budget = 400
+    out = MilestoneEngine._bound_tool_loop_messages(fake, msgs, budget, "openai")
+
+    total = sum(
+        _count(str(m.get("content") or "") + str(m.get("tool_calls") or ""))
+        for m in out
+    )
+    joined = " ".join(str(m.get("content")) for m in out)
+    assert total <= budget, "bounded: sent prompt must fit the budget"
+    assert out[0]["role"] == "system" and out[1]["content"].startswith("BASE")
+    assert any(
+        "elided to stay within" in (m.get("content") or "") for m in out
+    ), "INV-4 marker"
+    assert "RESULT_5" in joined, "newest observation kept"
+    assert "RESULT_0" not in joined, "oldest observation elided"
+    # Pairing valid: every tool result is immediately preceded by an assistant.
+    for idx, m in enumerate(out):
+        if m.get("role") == "tool":
+            assert out[idx - 1].get("role") == "assistant"
+
+    # No-op (returns the SAME list object) when already under budget.
+    under = msgs[:4]
+    assert (
+        MilestoneEngine._bound_tool_loop_messages(fake, under, 10**6, "openai") is under
+    )
