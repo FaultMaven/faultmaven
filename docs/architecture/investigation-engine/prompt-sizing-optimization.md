@@ -38,7 +38,7 @@ tiny tool-call (~180 output tokens) — carries a ~22K prompt.
 |---|---|---|---|
 | **A** | **Evidence dump in the base prompt** | The assembled base is ~22K, of which **~19K is the evidence block**. `_effective_evidence_char_budget` fills `evidence_budget_fraction (0.6) × prompt_budget × 4` chars with the file `file_extract`, even in Directed-Analysis turns where `search_file` exists to fetch specifics on demand. | independent (assembly) |
 | **B** | **Tool-loop re-send multiplier** | `_tool_augmented_generate` re-sends the growing `messages` list (base + accumulated tool calls/results) on every iteration. `cache_prompt=True` is set, but only Anthropic honors it — other providers pop it, so the full ~22K base is re-sent at full price each of the ~2.8 iterations. | worse off-Anthropic |
-| **C** | **Whole-prompt jar not enforced** | The priority-greedy allocator that bounds the whole assembled prompt to `PROMPT_TARGET_TOKENS` exists but is dark-launched (`PROMPT_ALLOCATOR_ENABLED=false`). The live legacy path caps sections independently, never sums them, and omits the ~5K template — landing near budget by luck. | independent |
+| **C** | **Whole-prompt jar not enforced** | The priority-greedy allocator that bounds the whole assembled prompt to `PROMPT_TARGET_TOKENS` was dark-launched behind a flag while the live path was an obsolete char-based assembly that capped sections independently, never summed them, and omitted the ~5K template — landing near budget by luck. *(Resolved: the allocator is now the only assembly path — §4.1.)* | independent |
 | **D** | **No per-turn budget** | Nothing sums the tool-loop calls against a turn-level ceiling; the ~2.8× multiplier is invisible to any control. | independent |
 
 `classify_query` is mechanical (regex, not billed) and is **not** a cause.
@@ -57,35 +57,34 @@ tiny tool-call (~180 output tokens) — carries a ~22K prompt.
    tool-loop base cached / not-re-sent across **all** providers (§4.3).
 
 **Non-goal / guardrail:** none of these may cause a wrong or collapsed
-investigation. Per [soundness guarantees](../../../SOUNDNESS_ANALYSIS.md), the behavioral
-changes (2, and enabling 1) ship behind shadow-mode + a sim/playbook eval for
-conclusion regressions before the flag flips.
+investigation. Per [soundness guarantees](../../../SOUNDNESS_ANALYSIS.md), the
+still-validating behavioral lever (goal 2, `DA_EVIDENCE_INDEX_ONLY`) ships **off
+by default** behind a sim/playbook eval for conclusion regressions before it
+becomes the default (§5).
 
 ## 4. Strategy
 
 Most of the machinery already exists; this is largely *enable + wire*, not
 greenfield.
 
-### 4.1 Enforce the per-call jar (goal 1) — enable + harden the allocator
+### 4.1 The per-call jar (goal 1) — the allocator is the only assembly path
 
-The allocator (`context_builder._allocate_sections`, `templates._assemble_allocated`)
-and its 17-test matrix are implemented and dark-launched. Enabling it requires
-first fixing four dormant defects:
+The allocator (`context_builder._allocate_sections`,
+`templates._assemble_allocated`) is now the **single** prompt-assembly path — the
+obsolete first-draft ("legacy") char-based assembly and its
+`PROMPT_ALLOCATOR_ENABLED` / `PROMPT_ALLOCATOR_SHADOW` gate flags have been
+deleted (pre-production system, no users, no backward-compat). Two dormant defects
+were fixed as part of collapsing to it (two others listed in earlier drafts were
+already fixed on `main`):
 
-1. **Journal truncation keeps the wrong end** — falls through to `_truncate_to`
-   default `keep="head"` (drops the *newest* entries). The journal is
-   recency-ordered; use the middle-out keep-set (oldest anchor + newest N +
-   high-signal types) per `prompt-token-budget-allocation.md` §5.2.
-2. **Five sections effectively uncapped** — `cap=section_budget` for
-   working_conclusion, kb_results, hypotheses, evidence_needs, entity_highlights;
-   give each an explicit `min(section_budget, N)` cap so pass B can't let one
-   section starve the rest.
-3. **Double assembly** in `_assemble_allocated` — measure template overhead once,
-   then assemble at the tightened budget.
-4. **conversation_history uncapped at priority #2** — cap it so journal /
-   conclusion / KB (floor 0) aren't starved on long verbose cases.
+- **Journal truncation kept the wrong end** — `_truncate_to` defaulted to
+  `keep="head"`, dropping the *newest* entries. The journal is recency-ordered
+  anti-amnesia memory → now `keep="tail"` (rank-ordered sections keep head).
+- **conversation_history uncapped at priority #2** (`cap=section_budget`) could
+  starve the lower-priority journal / KB / hypotheses. Now bounded by
+  `PROMPT_CONVERSATION_HISTORY_MAX_TOKENS` (default 8000).
 
-Fixes 1/2/3/4 are mechanical and unit-testable against the existing matrix.
+Both are covered by bite-verified regression tests.
 
 ### 4.2 DA-turn evidence = index + stub (goal 2) — the biggest single lever
 
@@ -140,27 +139,30 @@ yet on `main`; they are *not* part of this prompt-sizing branch:
   the active handler prints only `%(message)s`, so the token fields never render.
   Fold the key fields into the message (or route through the structured logger).
 
-This branch's shadow/eval instrument is the `prompt_allocator_shadow` log (§5),
-which is already on `main` and independent of the per-call metering.
+This branch's measurement instrument is the per-turn `turn_token_spend` tracker
+plus the A/B run described in §5.
 
 ## 5. Rollout & acceptance
 
-Per prior hot-path regressions and the soundness guarantee, ship behind
-validation, not a flip:
+The allocator is the single assembly path (§4.1) and is covered by the full
+investigation unit + integration suite. The remaining, still-validating levers
+(§4.2 `DA_EVIDENCE_INDEX_ONLY`, §4.3 `PROMPT_TURN_TOKEN_BUDGET`) ship **off by
+default** and are adopted only after:
 
-1. Land §4.1 fixes + §4.4 instrument fixes (mechanical, unit-tested) first.
-2. Implement §4.2 / §4.3 behind the allocator flag.
-3. **Shadow mode** (`PROMPT_ALLOCATOR_SHADOW=true`): assemble both prompts, log
-   size/section deltas, send the legacy one. Confirm the projected per-turn and
-   per-call reductions on real traffic.
-4. **Eval**: run the sim / playbook suite and confirm no conclusion regression
-   (INV-1 current-turn floor holds, no wrong/collapsed investigations) between
-   legacy and allocator prompts.
-5. Flip `PROMPT_ALLOCATOR_ENABLED=true` only after 3 + 4 pass.
+1. **A/B measurement.** Drive the playbook (e.g. S9) with the lever off vs on and
+   read `turn_token_spend`: confirm the projected per-turn reduction (the ~19K
+   historical evidence dump collapsing to a stub on directed-analysis turns).
+2. **Eval.** Run the sim / playbook suite and confirm no conclusion regression
+   (INV-1 current-turn floor holds, no wrong/collapsed investigations) with the
+   lever on.
+3. Default the lever on only after 1 + 2 pass; once a lever is the settled
+   behavior, collapse its flag too (same no-dead-flags principle that retired the
+   allocator gate).
 
 ## 6. Projected effect
 
-With §4.2 (evidence ~19K → ~4K) the base drops to ~7–9K; with §4.3 the tool-loop
-re-send stops multiplying that base. Per-turn prompt tokens project from ~66K to
-the ~15–25K range (dominated by the one full reasoning call under the 32K jar),
-a ~60–75% reduction — to be **confirmed in shadow mode**, not assumed.
+With §4.2 (evidence ~19K → a stub) the directed-analysis base drops sharply, and
+with the base no longer re-sent large across tool-loop iterations, per-turn prompt
+tokens project from ~66K into the ~15–25K range (dominated by the one full
+reasoning call under the 32K jar), a ~60–75% reduction — to be **confirmed by the
+§5 A/B**, not assumed.

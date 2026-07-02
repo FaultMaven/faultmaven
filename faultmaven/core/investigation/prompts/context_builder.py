@@ -684,25 +684,17 @@ class TokenBudget:
         *,
         provider_name: Optional[str] = None,
         model_name: Optional[str] = None,
-        char_mode: bool = False,
     ):
-        # char_mode reproduces the ORIGINAL char-based budget (1 token ≈ 4 chars)
-        # used by the legacy/default assembly path, so that path stays
-        # byte-identical to its pre-allocator behavior. The allocator uses the
-        # token-native mode (char_mode=False).
-        self._char_mode = char_mode
         self.limit_tokens = limit_tokens
-        self._limit_units = limit_tokens * 4 if char_mode else limit_tokens
-        self.used_tokens = 0  # "units": chars in char_mode, tokens otherwise
+        self._limit_units = limit_tokens
+        self.used_tokens = 0
         self._provider = provider_name
         self._model = model_name
 
     def count(self, text: str) -> int:
-        """Size of *text* in the active unit (chars in char_mode, else tokens)."""
+        """Size of *text* in tokens."""
         if not text:
             return 0
-        if self._char_mode:
-            return len(text)
         from faultmaven.utils.token_estimation import estimate_tokens
 
         return estimate_tokens(
@@ -760,24 +752,6 @@ class TokenBudget:
         cap it may take all remaining budget. Over-limit content is truncated
         with a marker (never silently dropped — see INV-4).
         """
-        if self._char_mode:
-            # Exact reproduction of the original (pre-allocator) char-based use()
-            # so the legacy path is unchanged. ``cap`` is unused here.
-            if not text:
-                return text
-            if self.used_tokens + len(text) <= self._limit_units:
-                self.used_tokens += len(text)
-                return text
-            remaining = self._limit_units - self.used_tokens
-            if remaining > 100:
-                truncated = (
-                    text[: remaining - 50]
-                    + "\n[... Content truncated due to context limit ...]"
-                )
-                self.used_tokens = self._limit_units
-                return truncated
-            return ""
-
         if not text:
             return text
         allowance = self._limit_units - self.used_tokens
@@ -2620,7 +2594,6 @@ def build_investigation_context(
     enable_stage_specific_loading: bool = True,
     processing_mode: Optional[str] = None,
     entity_highlights: Optional[str] = None,
-    use_allocator: bool = False,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
@@ -2667,7 +2640,6 @@ def build_investigation_context(
         max_tokens,
         provider_name=provider_name,
         model_name=model_name,
-        char_mode=not use_allocator,
     )
 
     # 1. Identity & Status (Gap #8: XML tags for better LLM attention)
@@ -2739,7 +2711,7 @@ def build_investigation_context(
     # (≈ evidence_fraction of the section budget) rather than the full model
     # budget — see _build_evidence_context (avoids the double-budget).
     evidence_char_override = None
-    if use_allocator and max_tokens:
+    if max_tokens:
         try:
             from faultmaven.config.settings import get_settings
 
@@ -3030,56 +3002,32 @@ def build_investigation_context(
     # =====================================================================
     # Budget allocation
     # =====================================================================
-    if use_allocator:
-        # Priority-greedy allocator (the token-budget allocation model). Needs
-        # both history fidelities so it can pick the one that fits; the compact
-        # one is the continuity floor (always carries the latest turn).
-        compact_history = _build_compact_history(case, user_message_safe)
-        ctx = _allocate_sections(
-            budget=budget,
-            case=case,
-            provider_name=provider_name,
-            model_name=model_name,
-            identity=identity,
-            core_context=core_context,
-            milestones_str=milestones_str,
-            inquiry_state_str=inquiry_state_str,
-            pending_action_str=pending_action_str,
-            user_message_safe=user_message_safe,
-            feedback_str=feedback_str,
-            evidence_str=evidence_str,
-            graduated_history=recent_history,
-            compact_history=compact_history,
-            journal_str=journal_str,
-            conclusion_str=conclusion_str,
-            kb_str=kb_str,
-            hypothesis_str=hypothesis_str,
-            evidence_needs_str=evidence_needs_str,
-            entity_highlights_str=entity_highlights_str,
-        )
-        return ctx
-
-    # ---- Legacy (default, allocator-OFF) assembly — unchanged from pre-allocator
-    # behavior (char-mode budget, original section order). ----
-    # Assembly with budget check
-    ctx = {
-        "identity": budget.use(identity),
-        "core_context": budget.use(core_context),
-        "milestones": budget.use(milestones_str),
-        "evidence": budget.use(evidence_str),
-        "evidence_needs": budget.use(evidence_needs_str),
-        "entity_highlights": budget.use(entity_highlights_str),
-        "hypotheses": budget.use(hypothesis_str),
-        "investigation_journal": budget.use(journal_str),
-        "working_conclusion": budget.use(conclusion_str),
-        "pending_action": budget.use(pending_action_str),
-        "kb_results": budget.use(kb_str),
-        "system_feedback": feedback_str,  # Prioritize feedback
-        "conversation_history": budget.use(recent_history),
-        "user_message": user_message_safe,  # Sanitized user message always included
-        "inquiry_state": budget.use(inquiry_state_str),
-    }
-
+    # Priority-greedy allocator (the token-budget allocation model). Needs both
+    # history fidelities so it can pick the one that fits; the compact one is the
+    # continuity floor (always carries the latest turn).
+    compact_history = _build_compact_history(case, user_message_safe)
+    ctx = _allocate_sections(
+        budget=budget,
+        case=case,
+        provider_name=provider_name,
+        model_name=model_name,
+        identity=identity,
+        core_context=core_context,
+        milestones_str=milestones_str,
+        inquiry_state_str=inquiry_state_str,
+        pending_action_str=pending_action_str,
+        user_message_safe=user_message_safe,
+        feedback_str=feedback_str,
+        evidence_str=evidence_str,
+        graduated_history=recent_history,
+        compact_history=compact_history,
+        journal_str=journal_str,
+        conclusion_str=conclusion_str,
+        kb_str=kb_str,
+        hypothesis_str=hypothesis_str,
+        evidence_needs_str=evidence_needs_str,
+        entity_highlights_str=entity_highlights_str,
+    )
     return ctx
 
 

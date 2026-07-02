@@ -63,7 +63,6 @@ def test_allocator_fits_budget_and_keeps_reserve_and_current_turn(budget):
         max_tokens=budget,
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     total = sum(_count(v) for v in ctx.values() if v)
     # Fits within budget (+ small tolerance for the truncation marker / estimate)
@@ -87,7 +86,6 @@ def test_allocator_bounds_huge_user_message(monkeypatch):
         max_tokens=24000,
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     # user_message present but capped well below its raw size.
     assert ctx["user_message"]
@@ -112,7 +110,6 @@ def test_allocator_keeps_journal_above_kb_under_pressure():
         max_tokens=1600,
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     # Journal (priority #3) survives; KB (lower) is the one squeezed.
     assert ctx["investigation_journal"], "journal must survive under pressure"
@@ -167,12 +164,11 @@ def test_fallback_formats_without_current_turn_upload():
 # Starvation backstop: tiny budget → minimal fallback (not a near-empty prompt)
 # ---------------------------------------------------------------------------
 def test_starvation_routes_to_fallback(monkeypatch):
-    # Enable the allocator and set a target below the (~14K-token) template
-    # overhead by mutating the cached settings singleton (auto-restored).
+    # Set a target below the (~14K-token) template overhead by mutating the
+    # cached settings singleton (auto-restored).
     from faultmaven.config.settings import get_settings
 
     s = get_settings()
-    monkeypatch.setattr(s.prompt_budget, "allocator_enabled", True)
     monkeypatch.setattr(s.model_context, "prompt_target_tokens", 2500)
 
     case = _case_with_current_turn_upload()
@@ -252,7 +248,6 @@ def test_allocator_conversation_keeps_latest_turn_under_pressure():
         max_tokens=1500,  # tight: evidence will pressure conversation
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     conv = ctx["conversation_history"]
     # The latest content must survive — never front-truncated away.
@@ -283,7 +278,6 @@ def test_allocator_journal_truncation_keeps_newest_not_oldest():
         max_tokens=24000,
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     journal = ctx["investigation_journal"]
     assert journal, "journal must survive"
@@ -334,7 +328,6 @@ def test_allocator_conversation_cap_does_not_starve_journal():
         max_tokens=24000,
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     # Conversation is bounded by its cap (+ small marker/estimate tolerance)...
     assert _count(ctx["conversation_history"]) <= conv_cap + 80
@@ -344,14 +337,14 @@ def test_allocator_conversation_cap_does_not_starve_journal():
 
 
 # ---------------------------------------------------------------------------
-# Legacy path unchanged when the flag is off (default)
+# The allocator is the only assembly path — get_prompt_for_case always uses it.
 # ---------------------------------------------------------------------------
-def test_legacy_default_does_not_use_allocator():
-    """With the flag off, get_prompt_for_case uses the legacy assembly."""
+def test_get_prompt_for_case_assembles_via_allocator():
+    """A normal turn renders the full template + current-turn upload through the
+    (only) allocator path."""
     case = _case_with_current_turn_upload()
     prompt = get_prompt_for_case(
         case, "why slow?", provider_name=PROVIDER, model_name=MODEL
     )
-    # Legacy path still renders the full template + current-turn upload.
     assert FILE_ID in prompt
     assert "STATE: INVESTIGATING" in prompt or "INVESTIGATING" in prompt

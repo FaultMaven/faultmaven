@@ -2697,7 +2697,7 @@ def get_prompt_for_case(
     prompt (``get_fallback_prompt_for_case``). Every overflow event is logged.
     """
 
-    def _build_ctx(section_budget: Optional[int], use_allocator: bool) -> dict:
+    def _build_ctx(section_budget: Optional[int]) -> dict:
         """Build the section ctx dict sized to *section_budget*."""
         return build_investigation_context(
             case,
@@ -2709,7 +2709,6 @@ def get_prompt_for_case(
             use_state_summary=use_state_summary,
             processing_mode=processing_mode,
             entity_highlights=entity_highlights,
-            use_allocator=use_allocator,
         )
 
     def _render(ctx: dict) -> str:
@@ -2789,11 +2788,10 @@ def _budgeted_prompt(
 
     See docs/architecture/investigation-engine/prompt-token-budget-allocation.md.
 
-    Rollout flags:
-      - allocator OFF (default): legacy assembly, unchanged.
-      - shadow: assemble both, log the delta, SEND legacy.
-      - allocator ON: allocator assembly with template-aware section budget +
-        overflow/starvation backstop.
+    Every prompt is assembled through the priority-greedy allocator: reserve the
+    bounded fixed parts, fill the variable sections by strict priority up to their
+    caps, compact each to fit, then measure the real assembled total against the
+    model's hard ceiling (overflow → tighter re-assembly → minimal fallback).
     """
     from faultmaven.config.settings import get_settings
     from faultmaven.utils.model_context import resolve_model_budget
@@ -2806,54 +2804,13 @@ def _budgeted_prompt(
 
     try:
         pb = get_settings().prompt_budget
-        allocator_enabled, allocator_shadow = pb.allocator_enabled, pb.allocator_shadow
         margin, min_viable = pb.overhead_margin_tokens, pb.min_viable_tokens
     except Exception:
-        allocator_enabled = allocator_shadow = False
         margin, min_viable = 256, 1500
 
-    # --- Legacy path (default + shadow's shipped output) ---
-    legacy_prompt = render(build_ctx(None, False))
-
-    if not allocator_enabled and not allocator_shadow:
-        return legacy_prompt
-    if not provider_name:
-        return legacy_prompt  # cannot resolve a budget; stay on legacy
-
+    # Single assembly path: resolve the budget (unknown provider/model trusts the
+    # configured target with no hard ceiling) and assemble through the allocator.
     resolved = resolve_model_budget(provider_name, model_name)
-
-    if allocator_shadow and not allocator_enabled:
-        # Build the allocator prompt for comparison only; SEND legacy.
-        try:
-            shadow = _assemble_allocated(
-                case,
-                build_ctx,
-                render,
-                resolved,
-                margin,
-                min_viable,
-                _count,
-                user_message,
-                provider_name,
-                model_name,
-            )
-            logger.info(
-                "prompt_allocator_shadow",
-                extra={
-                    "case_id": case.case_id,
-                    "provider": provider_name,
-                    "model": model_name,
-                    "legacy_tokens": _count(legacy_prompt),
-                    "allocator_tokens": _count(shadow),
-                    "prompt_target": resolved.prompt_target,
-                    "hard_ceiling": resolved.prompt_budget,
-                },
-            )
-        except Exception as exc:  # shadow must never break a turn
-            logger.warning("prompt_allocator_shadow_failed: %s", exc)
-        return legacy_prompt
-
-    # --- Allocator enabled ---
     return _assemble_allocated(
         case,
         build_ctx,
@@ -2897,7 +2854,7 @@ def _assemble_allocated(
 
     # First cut: size sections to the full target, then measure the fixed
     # template overhead so we can re-size so template + sections ≈ target (§6).
-    ctx = build_ctx(target, True)
+    ctx = build_ctx(target)
     # Single pass over the ctx: accumulate the total section tokens and the
     # reserve subset together (avoids tokenizing every section twice).
     reserve_keys = frozenset(_RESERVE_KEYS)
@@ -2944,7 +2901,7 @@ def _assemble_allocated(
     # wasted second assembly + tokenization.
     section_budget = target - template_overhead - margin
     if total > target and section_budget < target:
-        ctx = build_ctx(section_budget, True)
+        ctx = build_ctx(section_budget)
         prompt = render(ctx)
         total = count(prompt)
 
@@ -2954,7 +2911,7 @@ def _assemble_allocated(
         if retry_budget >= min_viable:
             # Only re-assemble if there's viable room; otherwise go straight to
             # the fallback rather than build a prompt that can't fit anyway.
-            ctx = build_ctx(retry_budget, True)
+            ctx = build_ctx(retry_budget)
             prompt = render(ctx)
             total = count(prompt)
         if total > ceiling:

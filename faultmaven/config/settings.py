@@ -1849,30 +1849,8 @@ class PromptBudgetSettings(BaseSettings):
     the resolved budget (``PROMPT_TARGET_TOKENS`` clamped to the model window) is
     poured into a single jar — reserve first, then variable sections by
     strict-priority greedy fill up to per-section caps, each compacted to fit.
-
-    The allocator is gated for safe rollout (shadow → enable), per the doc's
-    acceptance/rollout section.
+    This is the only prompt-assembly path.
     """
-
-    # --- Rollout flags (§14) ---
-    allocator_enabled: bool = Field(
-        default=False,
-        validation_alias="PROMPT_ALLOCATOR_ENABLED",
-        description=(
-            "Use the priority-greedy budget allocator for prompt assembly. "
-            "Default OFF — the legacy assembly path is used until validated."
-        ),
-    )
-    allocator_shadow: bool = Field(
-        default=False,
-        validation_alias="PROMPT_ALLOCATOR_SHADOW",
-        description=(
-            "Shadow mode: assemble BOTH the legacy and allocator prompts, log "
-            "the size/section deltas, but SEND the legacy one. For validating "
-            "the allocator on real traffic before enabling it. Ignored when "
-            "allocator_enabled is true."
-        ),
-    )
 
     # --- Reserve bounds (§6) — keep the never-trimmed reserve bounded ---
     user_message_max_tokens: int = Field(
