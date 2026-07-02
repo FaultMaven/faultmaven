@@ -135,9 +135,15 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         messages: Optional[List[Dict[str, Any]]] = None,
         case_id: Optional[str] = None,
         provider_override: Optional[str] = None,
+        cache_prompt: bool = False,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
+
+        cache_prompt: when True, ask the provider to cache the stable prompt
+            prefix (system + tools). Only the Anthropic provider acts on it;
+            every other provider pops and ignores it, so it can never leak into
+            a request body. Transparent to model output.
 
         Args:
             prompt: Input prompt (optional if messages is provided)
@@ -205,6 +211,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 messages=sanitized_messages,
                 confidence_threshold=self.confidence_threshold,
                 provider_override=provider_override,
+                cache_prompt=cache_prompt,
                 timeout=self._resolve_timeout(),  # Provider-aware ceiling
                 retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
                 retry_delay=1.0,
@@ -298,14 +305,21 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
             metadata = {
                 "cached": cached or response.cached,
+                "prompt_cache_hit": getattr(response, "prompt_cache_hit", False),
                 "tokens_used": response.tokens_used,
                 "response_time_ms": response.response_time_ms,
                 "confidence": response.confidence,
+                "cache_read_tokens": getattr(response, "cache_read_tokens", 0),
+                "cache_write_tokens": getattr(response, "cache_write_tokens", 0),
             }
 
             usage = None
             if response.tokens_used:
-                usage = {"total_tokens": response.tokens_used}
+                usage = {
+                    "total_tokens": response.tokens_used,
+                    "prompt_tokens": getattr(response, "input_tokens", 0),
+                    "completion_tokens": getattr(response, "output_tokens", 0),
+                }
 
             opik_context.update_current_span(
                 input=input_data,
@@ -355,6 +369,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         messages = kwargs.get("messages")
         case_id = kwargs.get("case_id")
         provider_override = kwargs.get("provider_override")
+        cache_prompt = kwargs.get("cache_prompt", False)
 
         # Call existing route method with all the robust functionality
         response = await self.route(
@@ -369,6 +384,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             messages=messages,
             case_id=case_id,
             provider_override=provider_override,
+            cache_prompt=cache_prompt,
         )
 
         # Return the full LLMResponse (milestone_engine expects this)

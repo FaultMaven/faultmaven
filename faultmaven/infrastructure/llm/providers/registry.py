@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Type, Union
 
 from faultmaven.exceptions import ModelLoadingException
+from faultmaven.infrastructure.llm.metering import record_provider_call
 
 from .anthropic import AnthropicProvider
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
@@ -764,6 +765,21 @@ class ProviderRegistry:
 
                 # Calculate latency
                 latency_ms = (time.monotonic() - start_time) * 1000
+
+                # Meter this real, billed provider call BEFORE the confidence
+                # branch, so a response that gets discarded as low-confidence
+                # below is still counted — it was paid for. This is the single
+                # chokepoint where fallback-chain spend becomes visible.
+                _kept = skip_confidence_check or (
+                    response.confidence >= confidence_threshold
+                )
+                record_provider_call(
+                    provider_name,
+                    model or getattr(response, "model", None) or "unknown",
+                    response,
+                    latency_ms,
+                    outcome="kept" if _kept else "low_confidence",
+                )
 
                 # For tool-calling requests, skip confidence filtering and
                 # return the response directly. The caller has its own retry

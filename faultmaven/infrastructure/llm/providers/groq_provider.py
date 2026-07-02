@@ -115,6 +115,8 @@ class GroqProvider(BaseLLMProvider):
 
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)
+        # Anthropic-only caching hint; drop before payload.update(kwargs).
+        kwargs.pop("cache_prompt", None)
 
         payload = {
             "model": effective_model,
@@ -206,9 +208,17 @@ class GroqProvider(BaseLLMProvider):
                     except Exception:
                         content = "{}"
 
-                # Extract token usage
-                usage = data.get("usage", {})
-                tokens_used = usage.get("total_tokens", 0)
+                # Extract token usage (OpenAI-compatible; prompt_tokens is
+                # inclusive of cached tokens, so subtract to keep buckets disjoint).
+                usage = data.get("usage") or {}
+                prompt_tokens = usage.get("prompt_tokens") or 0
+                output_tokens = usage.get("completion_tokens") or 0
+                tokens_used = usage.get("total_tokens") or (
+                    prompt_tokens + output_tokens
+                )
+                prompt_details = usage.get("prompt_tokens_details") or {}
+                cache_read_tokens = prompt_details.get("cached_tokens") or 0
+                input_tokens = max(prompt_tokens - cache_read_tokens, 0)
 
                 response_time = self._get_response_time_ms()
 
@@ -220,6 +230,10 @@ class GroqProvider(BaseLLMProvider):
                     tokens_used=tokens_used,
                     response_time_ms=response_time,
                     tool_calls=tool_calls,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    prompt_cache_hit=bool(cache_read_tokens > 0),
                 )
         except asyncio.TimeoutError:
             raise LLMException(

@@ -83,6 +83,11 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
     generate_working_conclusion,
 )
+from faultmaven.infrastructure.llm.metering import (
+    TurnTokenTracker,
+    active_token_tracker,
+    record_provider_call,
+)
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
@@ -2112,13 +2117,40 @@ class MilestoneEngine:
         # G10: Acquire per-case lock to prevent concurrent turns from
         # interleaving reads/writes on the same case state
         async with self._case_locks[case.case_id]:
-            return await self._process_turn_impl(
-                case,
-                user_message,
-                attachments,
-                intent_type,
-                intent_data,
-            )
+            # Bind a per-turn spend tracker for the duration of this turn. Every
+            # billed LLM call made while handling the turn — main generation,
+            # tool loop, KB Q&A, classifier, synthesis, and any fallback
+            # attempts — accrues to it via the registry metering chokepoint.
+            tracker = TurnTokenTracker()
+            token = active_token_tracker.set(tracker)
+            try:
+                result = await self._process_turn_impl(
+                    case,
+                    user_message,
+                    attachments,
+                    intent_type,
+                    intent_data,
+                )
+            finally:
+                active_token_tracker.reset(token)
+                try:
+                    logger.info(
+                        "turn_token_spend",
+                        extra={
+                            "case_id": getattr(case, "case_id", None),
+                            "input_tokens": tracker.input_tokens,
+                            "output_tokens": tracker.output_tokens,
+                            "cache_read_tokens": tracker.cache_read_tokens,
+                            "cache_write_tokens": tracker.cache_write_tokens,
+                            "total_tokens": tracker.total_tokens,
+                            "total_calls": tracker.total_calls,
+                            "estimated_cost_usd": round(tracker.cost_usd, 6),
+                            "unpriced_calls": tracker.unpriced_calls,
+                        },
+                    )
+                except Exception:
+                    pass
+            return result
 
     async def _process_turn_impl(
         self,
@@ -3533,6 +3565,9 @@ class MilestoneEngine:
                 max_tokens=max_tokens,
                 temperature=0.2,
                 case_id=case.case_id if case is not None else None,
+                # Cache the stable prefix (system + tools) across the tool-loop
+                # iterations. Only Anthropic acts on this; other providers pop it.
+                cache_prompt=True,
             )
             if self.da_model and self.da_provider:
                 generate_kwargs["model"] = self.da_model
@@ -3560,6 +3595,20 @@ class MilestoneEngine:
 
             try:
                 response = await provider.generate(**generate_kwargs)
+                if self.da_provider is not None:
+                    # A dedicated DA provider is a concrete provider instance,
+                    # so this call bypassed the registry metering chokepoint.
+                    # Meter it here so DA-turn spend is still counted. (When no
+                    # DA provider is set, `provider` is the router and the
+                    # registry already metered the underlying call.)
+                    record_provider_call(
+                        getattr(provider, "provider_name", "unknown"),
+                        generate_kwargs.get("model")
+                        or getattr(response, "model", None)
+                        or "unknown",
+                        response,
+                        getattr(response, "response_time_ms", 0),
+                    )
             except Exception as e:
                 # Any iteration failure (timeout, provider error, transient
                 # issue) raises ToolCallingUnsupportedError so the caller

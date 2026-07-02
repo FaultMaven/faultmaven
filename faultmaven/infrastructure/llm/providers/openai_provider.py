@@ -163,6 +163,9 @@ class OpenAIProvider(BaseLLMProvider):
         # (sending both 400s on the models that reject the legacy name).
         kwargs.pop("max_tokens", None)
         kwargs.pop("max_completion_tokens", None)
+        # Anthropic-only caching hint; OpenAI caches prompts automatically and
+        # rejects unknown body fields, so drop it before payload.update(kwargs).
+        kwargs.pop("cache_prompt", None)
         token_limit_param = (
             "max_completion_tokens"
             if self._uses_completion_tokens_param(effective_model)
@@ -229,9 +232,18 @@ class OpenAIProvider(BaseLLMProvider):
                         except Exception:
                             content = "{}"
 
-                    # Extract token usage
-                    usage = data.get("usage", {})
-                    tokens_used = usage.get("total_tokens", 0)
+                    # Extract token usage. prompt_tokens is INCLUSIVE of cached
+                    # prompt tokens on OpenAI-family APIs, so subtract to keep
+                    # input_tokens/cache_read_tokens disjoint for cost summing.
+                    usage = data.get("usage") or {}
+                    prompt_tokens = usage.get("prompt_tokens") or 0
+                    output_tokens = usage.get("completion_tokens") or 0
+                    tokens_used = usage.get("total_tokens") or (
+                        prompt_tokens + output_tokens
+                    )
+                    prompt_details = usage.get("prompt_tokens_details") or {}
+                    cache_read_tokens = prompt_details.get("cached_tokens") or 0
+                    input_tokens = max(prompt_tokens - cache_read_tokens, 0)
 
                     response_time = self._get_response_time_ms()
 
@@ -243,6 +255,10 @@ class OpenAIProvider(BaseLLMProvider):
                         tokens_used=tokens_used,
                         response_time_ms=response_time,
                         tool_calls=tool_calls,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        prompt_cache_hit=bool(cache_read_tokens > 0),
                     )
         except asyncio.TimeoutError:
             raise LLMException(

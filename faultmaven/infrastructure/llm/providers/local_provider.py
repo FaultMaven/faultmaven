@@ -241,6 +241,9 @@ class LocalProvider(BaseLLMProvider):
         if "response_format" in kwargs:
             payload["response_format"] = kwargs.pop("response_format")
 
+        # Anthropic-only caching hint; drop before payload.update(kwargs).
+        kwargs.pop("cache_prompt", None)
+
         payload.update({k: v for k, v in kwargs.items() if v is not None})
 
         self.logger.debug(f"Request payload: {payload}")
@@ -301,9 +304,17 @@ class LocalProvider(BaseLLMProvider):
                             self.logger.error(f"Content validation failed: {e}")
                             raise
 
-                    # Extract token usage
-                    usage = data.get("usage", {})
-                    tokens_used = usage.get("total_tokens", 0)
+                    # Extract token usage (OpenAI-compatible; prompt_tokens is
+                    # inclusive of cached tokens, so subtract for disjoint buckets).
+                    usage = data.get("usage") or {}
+                    prompt_tokens = usage.get("prompt_tokens") or 0
+                    output_tokens = usage.get("completion_tokens") or 0
+                    tokens_used = usage.get("total_tokens") or (
+                        prompt_tokens + output_tokens
+                    )
+                    prompt_details = usage.get("prompt_tokens_details") or {}
+                    cache_read_tokens = prompt_details.get("cached_tokens") or 0
+                    input_tokens = max(prompt_tokens - cache_read_tokens, 0)
 
                     response_time = self._get_response_time_ms()
 
@@ -319,6 +330,10 @@ class LocalProvider(BaseLLMProvider):
                         tokens_used=tokens_used,
                         response_time_ms=response_time,
                         tool_calls=tool_calls,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        prompt_cache_hit=bool(cache_read_tokens > 0),
                     )
 
             except asyncio.TimeoutError as e:
