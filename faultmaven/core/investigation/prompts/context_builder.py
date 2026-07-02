@@ -29,6 +29,9 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any, Dict, List, Optional
 
+from faultmaven.core.investigation.intake_evaluation import (
+    select_surfaced_causal_needs,
+)
 from faultmaven.core.preprocessing.evidence_metadata import (
     LOW_CONFIDENCE_THRESHOLD,
     EvidenceMetadata,
@@ -2055,7 +2058,29 @@ def _build_evidence_needs_block(case: Case) -> str:
         InvestigationStage.TREATMENT,
     )
 
-    outstanding = [n for n in case.evidence_needs if n.is_outstanding]
+    outstanding_all = [n for n in case.evidence_needs if n.is_outstanding]
+    # Surface-cap the causal asks (engine-differential + LLM-emitted causal) to the
+    # rotating top-≤N (select_surfaced_causal_needs) so a broad retrieval-seeded
+    # differential can't flood the user; SYMPTOM needs are unaffected. All needs stay
+    # PENDING — this only bounds what is SHOWN, and rotates under non-progress so no
+    # answerable ask is permanently hidden (#604).
+    _surfaced_causal_ids = {n.need_id for n in select_surfaced_causal_needs(case)}
+    # Causal needs the surface cap held back this turn. Counted into the overflow
+    # notice below so the "…and N more not shown" signal reflects the TRUE hidden
+    # demand — otherwise these vanish from `outstanding` and the LLM is told the ask
+    # list is near-complete while live discriminators are withheld (anti-anchoring §6.1).
+    hidden_causal = sum(
+        1
+        for n in outstanding_all
+        if n.purpose == NeedPurpose.CAUSAL_VERIFICATION
+        and n.need_id not in _surfaced_causal_ids
+    )
+    outstanding = [
+        n
+        for n in outstanding_all
+        if n.purpose != NeedPurpose.CAUSAL_VERIFICATION
+        or n.need_id in _surfaced_causal_ids
+    ]
     # Re-verification checklist is anchored on confirmed presence-evidence
     # rows (symptom/causal), NOT FULFILLED needs. Evidence rows exist for
     # every confirmed finding; FULFILLED needs are gap-conditional and
@@ -2075,18 +2100,30 @@ def _build_evidence_needs_block(case: Case) -> str:
     if not outstanding and not re_verification:
         return ""
 
-    # Outstanding needs: high-priority first (stable sort preserves the
-    # repo's created_at/need_id secondary order for ties). Re-verification
-    # findings: chronological by the turn they were established.
-    outstanding.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
+    # Re-verification findings: chronological by the turn they were established.
     re_verification.sort(key=lambda ev: ev.collected_at_turn)
 
-    # Render-cap budgets are computed per-section so neither one starves
-    # the other. With both sections active, each gets up to
-    # _EVIDENCE_NEEDS_RENDER_CAP entries — generous enough that real
-    # cases never hit the cap.
-    out_rendered = outstanding[:_EVIDENCE_NEEDS_RENDER_CAP]
-    out_overflow = len(outstanding) - len(out_rendered)
+    # Render-cap budget: up to _EVIDENCE_NEEDS_RENDER_CAP entries per section so neither
+    # starves the other — generous enough that real cases never hit the cap.
+    #
+    # The surface cap already chose ≤ _SURFACED_CAUSAL_CAP causal asks to show; those are
+    # RESERVED a render slot. Otherwise the priority sort — causal needs are MEDIUM,
+    # symptom needs HIGH — could push all of them past _EVIDENCE_NEEDS_RENDER_CAP behind a
+    # wall of HIGH symptom needs, silently dropping the asks the surface cap just picked.
+    # Only out_rest needs priority-sorting (it feeds the render-cap slice); the reserved
+    # causal needs are kept regardless of priority, and out_rendered is sorted once at the
+    # end for display (stable sort preserves the repo's created_at/need_id tie order).
+    out_reserved = [n for n in outstanding if n.need_id in _surfaced_causal_ids]
+    out_rest = [n for n in outstanding if n.need_id not in _surfaced_causal_ids]
+    out_rest.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
+    out_rendered = (
+        out_reserved
+        + out_rest[: max(0, _EVIDENCE_NEEDS_RENDER_CAP - len(out_reserved))]
+    )
+    out_rendered.sort(key=lambda n: _PRIORITY_ORDER[n.priority])
+    # Overflow = needs dropped by the render cap PLUS causal needs the surface cap
+    # held back (`hidden_causal`), so the notice never under-reports the hidden demand.
+    out_overflow = (len(outstanding) - len(out_rendered)) + hidden_causal
     reverif_rendered = re_verification[:_EVIDENCE_NEEDS_RENDER_CAP]
     reverif_overflow = len(re_verification) - len(reverif_rendered)
 

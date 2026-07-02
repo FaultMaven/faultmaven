@@ -30,6 +30,7 @@ from uuid import uuid4
 
 import pytest
 
+from faultmaven.core.investigation.intake_evaluation import _SURFACED_CAUSAL_CAP
 from faultmaven.core.investigation.prompts.context_builder import (
     _build_evidence_needs_block,
     build_investigation_context,
@@ -598,3 +599,77 @@ class TestTiedPriorityOrdering:
         b = _make_need(case, priority=NeedPriority.HIGH, request_text="second high")
         out = _build_evidence_needs_block(case)
         assert out.index(a.need_id) < out.index(b.need_id)
+
+
+@pytest.mark.unit
+class TestCausalSurfaceCap:
+    """#604: the block shows at most _SURFACED_CAUSAL_CAP causal asks (surface cap),
+    but never caps SYMPTOM needs — a broad retrieval-seeded differential can't flood
+    the user."""
+
+    def test_causal_needs_capped_symptom_untouched(self):
+        case = _make_case(stage=InvestigationStage.DIAGNOSIS)
+        for i in range(6):  # 6 distinct PENDING causal needs
+            _make_need(
+                case,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text=f"causal datum {i}",
+            )
+        _make_need(
+            case,
+            purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+            request_text="the symptom datum",
+        )
+        out = _build_evidence_needs_block(case)
+        shown_causal = sum(f"causal datum {i}" in out for i in range(6))
+        assert shown_causal == _SURFACED_CAUSAL_CAP  # causal asks bounded
+        assert "the symptom datum" in out  # symptom need never capped
+
+    def test_surfaced_causal_survive_render_cap_behind_symptom_wall(self):
+        # Render-cap reservation: a full render-cap wall of HIGH symptom needs must not
+        # evict the MEDIUM causal asks the surface cap chose. Without reserving their
+        # slots, the priority sort + _EVIDENCE_NEEDS_RENDER_CAP would drop all causal
+        # needs (HIGH symptoms fill every slot). Asserts identity, not just count.
+        from faultmaven.core.investigation.intake_evaluation import (
+            select_surfaced_causal_needs,
+        )
+        from faultmaven.core.investigation.prompts.context_builder import (
+            _EVIDENCE_NEEDS_RENDER_CAP,
+        )
+
+        case = _make_case(stage=InvestigationStage.DIAGNOSIS)
+        for i in range(_EVIDENCE_NEEDS_RENDER_CAP):  # a full cap wall of HIGH symptoms
+            _make_need(
+                case,
+                purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+                priority=NeedPriority.HIGH,
+                request_text=f"symptom datum {i}",
+            )
+        for i in range(6):  # MEDIUM causal asks, outnumbered and lower priority
+            _make_need(
+                case,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                priority=NeedPriority.MEDIUM,
+                request_text=f"causal datum {i}",
+            )
+        expected = select_surfaced_causal_needs(case)
+        out = _build_evidence_needs_block(case)
+        for need in expected:  # each surfaced causal ask survives the render cap
+            assert need.request_text in out
+        shown_causal = sum(f"causal datum {i}" in out for i in range(6))
+        assert shown_causal == _SURFACED_CAUSAL_CAP
+
+    def test_overflow_notice_counts_surface_capped_causal_needs(self):
+        # The "…and N more not shown" notice must count causal needs the SURFACE cap
+        # held back, not just render-cap remainder — otherwise the LLM is told the ask
+        # list is near-complete while live discriminators are withheld (anti-anchoring).
+        case = _make_case(stage=InvestigationStage.DIAGNOSIS)
+        for i in range(6):  # 6 causal, only _SURFACED_CAUSAL_CAP shown, 0 symptom
+            _make_need(
+                case,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text=f"causal datum {i}",
+            )
+        out = _build_evidence_needs_block(case)
+        hidden = 6 - _SURFACED_CAUSAL_CAP
+        assert f"{hidden} more" in out  # hidden causal asks are reported, not silent

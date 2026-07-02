@@ -16,12 +16,11 @@ import pytest
 
 from faultmaven.core.investigation.differential_intake import StanceVerdict
 from faultmaven.core.investigation.intake_evaluation import (
-    _DIFFERENTIAL_NEED_BUDGET,
-    _differential_need_id,
-    _predicate_signature,
+    _SURFACED_CAUSAL_CAP,
     _regen_differential_evidence_needs,
     run_differential_intake_turn,
     run_intake_evaluation,
+    select_surfaced_causal_needs,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -795,9 +794,9 @@ def test_default_evaluator_stub_is_inert():
 
 
 # ---------------------------------------------------------------------------
-# Demand-side budget: _regen_differential_evidence_needs caps the OPEN differential
-# evidence-need pool at _DIFFERENTIAL_NEED_BUDGET, highest-discrimination first, so a
-# broad (Part A retrieval-seeded) differential can't flood the user with asks.
+# Demand side (#604): emission is UNCAPPED (one need per unsatisfied predicate);
+# the ≤N user-facing cap is a render-time SURFACE cap (select_surfaced_causal_needs)
+# that rotates under non-progress so no answerable ask is permanently hidden.
 # ---------------------------------------------------------------------------
 
 
@@ -817,28 +816,59 @@ def _pending(case) -> list:
     return [n for n in case.evidence_needs if n.state == NeedState.PENDING]
 
 
-def test_differential_need_emission_within_budget_emits_all():
-    # Below the cap, every unsatisfied predicate still gets its need (budget inert).
+def _seed_causal(case, targets):
+    _regen_differential_evidence_needs(
+        case, [_ac_preds("rb1:A", targets)], [], case.current_turn, set(), set()
+    )
+
+
+# --- emission: UNCAPPED create-all + dedup ---
+
+
+def test_emission_creates_a_need_per_unsatisfied_predicate():
+    # Emission is uncapped — every unsatisfied predicate gets a PENDING need (the ≤N cap
+    # moved to render). 6 predicates → 6 needs, so the full pool exists to rotate over.
     case = _case()
-    acs = [_ac_preds("rb1:A", ["only1", "only2"])]
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    assert len(_pending(case)) == 2
+    _seed_causal(case, [f"tok{i}" for i in range(6)])
+    assert len(_pending(case)) == 6
 
 
-def test_differential_need_emission_capped_at_budget():
-    # One cause with 6 unsatisfied predicates → only _DIFFERENTIAL_NEED_BUDGET needs.
+def test_emission_dedups_repeated_predicate():
+    # A predicate repeated in match_predicates → exactly one need (deterministic need_id PK).
     case = _case()
-    acs = [_ac_preds("rb1:A", [f"tok{i}" for i in range(6)])]
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    assert len(_pending(case)) == _DIFFERENTIAL_NEED_BUDGET
+    _seed_causal(case, ["dup", "dup"])
+    pend = _pending(case)
+    assert len(pend) == 1
+    assert len({n.need_id for n in pend}) == 1
 
 
-def test_differential_need_emission_prefers_discriminating_predicate():
-    # 'shared' is carried by all 3 causes (carrier count 3 -> least discriminating);
-    # each cause also has a unique predicate (carrier count 1 -> most discriminating).
-    # With a budget of 3 the slots go to the three DISTINCT unique datums; the shared
-    # datum (advances every candidate equally, separates none) is asked last. This also
-    # keeps the <=3 asks distinct (no near-duplicate "provide X" spam).
+def test_emission_idempotent_across_turns():
+    case = _case()
+    for _ in range(3):
+        _seed_causal(case, ["a", "b", "c"])
+    assert len(_pending(case)) == 3  # deterministic ids → never re-created
+
+
+# --- surface cap: select_surfaced_causal_needs (render-time view; nothing superseded) ---
+
+
+def test_surfaced_returns_all_within_cap():
+    case = _case()
+    _seed_causal(case, ["only1", "only2"])
+    assert len(select_surfaced_causal_needs(case)) == 2
+
+
+def test_surfaced_caps_the_shown_set():
+    case = _case()
+    _seed_causal(case, [f"tok{i}" for i in range(6)])
+    assert len(select_surfaced_causal_needs(case)) == _SURFACED_CAUSAL_CAP
+    assert len(_pending(case)) == 6  # all still PENDING — cap is a view, not existence
+
+
+def test_surfaced_prefers_discriminating():
+    # 'shared' is carried by all 3 causes (3 needs, one shared request_text → least
+    # discriminating); each cause's unique predicate (1 need → most discriminating) is
+    # surfaced first. Also keeps the shown asks distinct (no near-duplicate spam).
     case = _case()
     acs = [
         _ac_preds("rb1:A", ["shared", "uniqueA"]),
@@ -846,129 +876,105 @@ def test_differential_need_emission_prefers_discriminating_predicate():
         _ac_preds("rb1:C", ["shared", "uniqueC"]),
     ]
     _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    pend = _pending(case)
-    assert len(pend) == _DIFFERENTIAL_NEED_BUDGET
-    assert all("unique" in n.request_text for n in pend)
-    assert not any("shared" in n.request_text for n in pend)
+    surfaced = select_surfaced_causal_needs(case)
+    assert len(surfaced) == _SURFACED_CAUSAL_CAP
+    assert all("unique" in n.request_text for n in surfaced)
+    assert not any("shared" in n.request_text for n in surfaced)
 
 
-def test_budget_not_starved_by_nondifferential_needs():
-    # Symptom / LLM needs share the 'eneed_' id prefix (the model default_factory), so a
-    # prefix-based open-pool count would let them consume the differential budget. Seed 3
-    # PENDING symptom needs; a broad differential must STILL emit its own asks up to the
-    # budget (the count is over the current differential's needs, not the prefix).
+def test_surfaced_rotates_under_non_progress():
+    # Paged anti-stall guarantee: under sustained non-progress the window sweeps the WHOLE
+    # pool in ceil(pool / CAP) non-progress turns (one full page per turn). This is the
+    # REACHABLE bound that matters — the engine can declare exhaustion within a few
+    # non-progress turns, so coverage must be fast, not merely eventual. Pure render-time
+    # paging: nothing is SUPERSEDED (a one-way door that would kill liveness).
     case = _case()
-    for i in range(_DIFFERENTIAL_NEED_BUDGET):
+    _seed_causal(case, [f"tok{i}" for i in range(9)])  # 3 full pages of CAP=3
+    all_ids = {n.need_id for n in _pending(case)}
+    pool_size = len(all_ids)
+    pages_to_cover = (pool_size + _SURFACED_CAUSAL_CAP - 1) // _SURFACED_CAUSAL_CAP
+    ever_surfaced: set[str] = set()
+    for stuck in range(pages_to_cover):  # only the reachable span, not an unbounded 24
+        case.turns_without_progress = stuck
+        window = select_surfaced_causal_needs(case)
+        # The window must stay FULL on every turn — a union-only assertion would pass a
+        # wrap regression that empties at some offset, so assert per-turn size too.
+        assert len(window) == _SURFACED_CAUSAL_CAP
+        ever_surfaced |= {n.need_id for n in window}
+    assert ever_surfaced == all_ids  # full coverage within ceil(pool / CAP) turns
+    assert all(
+        n.state == NeedState.PENDING for n in case.evidence_needs
+    )  # none superseded
+
+
+def test_surfaced_resets_to_most_discriminating_on_progress():
+    # On progress the non-progress counter resets, so the window returns to page 0 —
+    # the most-discriminating asks. The other half of the liveness contract: the window
+    # advances one page per non-progress turn, and progress snaps it back to page 0.
+    case = _case()
+    acs = [
+        _ac_preds("rb1:A", ["shared", "uniqueA"]),
+        _ac_preds("rb1:B", ["shared", "uniqueB"]),
+        _ac_preds("rb1:C", ["shared", "uniqueC"]),
+    ]
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    case.turns_without_progress = 0
+    fresh = {n.need_id for n in select_surfaced_causal_needs(case)}
+    case.turns_without_progress = 1  # one non-progress turn: advanced to the next page
+    rotated = {n.need_id for n in select_surfaced_causal_needs(case)}
+    assert rotated != fresh
+    case.turns_without_progress = (
+        0  # progress made: back to page 0 (most-discriminating)
+    )
+    assert {n.need_id for n in select_surfaced_causal_needs(case)} == fresh
+
+
+def test_surfaced_caps_a_mixed_engine_and_llm_pool():
+    # The cap covers ALL outstanding causal needs regardless of source — engine
+    # (deterministic id) and LLM-emitted (random id) are indistinguishable at render.
+    # 4 engine + 4 LLM causal needs → still ≤ _SURFACED_CAUSAL_CAP shown.
+    case = _case()
+    _seed_causal(case, [f"eng{i}" for i in range(4)])
+    for i in range(4):
         case.evidence_needs.append(
             EvidenceNeed(
                 case_id=case.case_id,
-                purpose=NeedPurpose.SYMPTOM_VERIFICATION,
-                request_text=f"symptom detail {i}",
-                rationale="motivated by the problem statement",
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text=f"llm-authored causal ask {i}",
+                rationale="emitted by the LLM this turn",
                 state=NeedState.PENDING,
                 created_at_turn=1,
             )
         )
-    # Precondition: the seeded non-differential needs really do carry the shared prefix.
-    assert all(n.need_id.startswith("eneed_") for n in case.evidence_needs)
-
-    acs = [_ac_preds("rb1:A", [f"tok{i}" for i in range(5)])]
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    differential = [
-        n
-        for n in case.evidence_needs
-        if n.purpose == NeedPurpose.CAUSAL_VERIFICATION and n.state == NeedState.PENDING
-    ]
-    assert len(differential) == _DIFFERENTIAL_NEED_BUDGET  # not starved to 0
+    assert len(_pending(case)) == 8
+    assert len(select_surfaced_causal_needs(case)) == _SURFACED_CAUSAL_CAP
 
 
-def test_duplicate_predicate_creates_single_need():
-    # match_predicates is free-form and may repeat; the same (cause, predicate) must
-    # yield exactly one need (its deterministic need_id is a primary key).
+def test_surfaced_excludes_symptom_and_non_outstanding():
     case = _case()
-    acs = [_ac_preds("rb1:A", ["dup", "dup"])]  # identical predicate twice
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    pend = _pending(case)
-    assert len(pend) == 1
-    assert len({n.need_id for n in pend}) == 1  # no duplicate need_id
-
-
-def test_duplicate_predicate_over_existing_need_counts_once():
-    # A predicate repeated in match_predicates that ALREADY has an open need (turn 2+)
-    # must count ONCE toward the budget, not once per duplicate — else slots is
-    # under-computed and other live causes are starved of asks.
-    case = _case()
-    # Pre-existing open need for cause A's (about-to-be-duplicated) predicate P.
-    dup_id = _differential_need_id("rb1:A", _predicate_signature(_pred("P")))
+    _seed_causal(case, ["c1", "c2"])
     case.evidence_needs.append(
         EvidenceNeed(
-            need_id=dup_id,
             case_id=case.case_id,
-            purpose=NeedPurpose.CAUSAL_VERIFICATION,
-            request_text="telemetry showing 'P'",
-            rationale="pre-existing",
+            purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+            request_text="symptom detail",
+            rationale="motivated by the problem statement",
             state=NeedState.PENDING,
             created_at_turn=1,
         )
     )
-    acs = [
-        _ac_preds("rb1:A", ["P", "P"]),  # duplicate predicate, need already open
-        _ac_preds("rb2:B", ["q1", "q2"]),  # two fresh discriminating predicates
-    ]
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    # A's one open need counts once → 2 slots remain → BOTH q1 and q2 emit (total 3).
-    pend = _pending(case)
-    assert len(pend) == _DIFFERENTIAL_NEED_BUDGET
-    texts = " ".join(n.request_text for n in pend)
-    assert "q1" in texts and "q2" in texts  # neither starved by a double-count
-
-
-def test_partially_met_differential_need_holds_a_slot():
-    # An outstanding need is PENDING *or* PARTIALLY_MET; a PARTIALLY_MET need must still
-    # consume a budget slot, else a 4th ask leaks past the cap.
-    case = _case()
-    acs = [_ac_preds("rb1:A", [f"tok{i}" for i in range(4)])]  # 4 preds, budget 3
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    pend = _pending(case)
-    assert len(pend) == _DIFFERENTIAL_NEED_BUDGET
-    pend[0].state = NeedState.PARTIALLY_MET  # still outstanding, not resolved
-
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    outstanding = [
-        n
-        for n in case.evidence_needs
-        if n.purpose == NeedPurpose.CAUSAL_VERIFICATION and n.is_outstanding
-    ]
-    assert len(outstanding) == _DIFFERENTIAL_NEED_BUDGET  # PARTIALLY_MET held its slot
-
-
-def test_differential_need_budget_refills_freed_slots():
-    # 4 unsatisfied predicates, budget 3 → 3 open, 1 deferred. Resolving the 3 open
-    # needs frees the slots, and the deferred predicate is emitted on the next pass.
-    case = _case()
-    acs = [_ac_preds("rb1:A", [f"tok{i}" for i in range(4)])]
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    first = _pending(case)
-    assert len(first) == _DIFFERENTIAL_NEED_BUDGET
-    first_ids = {n.need_id for n in first}
-
-    for n in first:  # simulate the user satisfying the open asks
-        n.state = NeedState.FULFILLED
-
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    pend = _pending(case)
-    assert len(pend) == 1  # exactly the previously-deferred predicate
-    assert pend[0].need_id not in first_ids  # a genuinely new need, not a re-open
-
-
-def test_differential_need_budget_holds_across_causes():
-    # The cap is GLOBAL, not per-cause: three causes with two unsatisfied predicates
-    # each (6 total) still yield only _DIFFERENTIAL_NEED_BUDGET open needs.
-    case = _case()
-    acs = [
-        _ac_preds("rb1:A", ["a1", "a2"]),
-        _ac_preds("rb2:B", ["b1", "b2"]),
-        _ac_preds("rb3:C", ["c1", "c2"]),
-    ]
-    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
-    assert len(_pending(case)) == _DIFFERENTIAL_NEED_BUDGET
+    case.evidence_needs.append(
+        EvidenceNeed(
+            case_id=case.case_id,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            request_text="already collected",
+            rationale="x",
+            state=NeedState.FULFILLED,
+            fulfilling_evidence_ids=["ev_000000000000"],
+            created_at_turn=1,
+        )
+    )
+    surfaced = select_surfaced_causal_needs(case)
+    assert len(surfaced) == 2  # only the 2 outstanding causal needs
+    assert all(n.purpose == NeedPurpose.CAUSAL_VERIFICATION for n in surfaced)
+    assert all(n.state == NeedState.PENDING for n in surfaced)

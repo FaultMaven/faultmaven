@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
@@ -277,16 +278,21 @@ def _predicate_signature(predicate: dict) -> str:
 # The id prefix shared by ALL engine EvidenceNeeds — the model's ``need_id``
 # default_factory uses ``eneed_`` too (models.py), so this is NOT a differential-only
 # marker: symptom needs and LLM-emitted causal needs carry it as well. Differential
-# needs are identified by their DETERMINISTIC id (``_differential_need_id``); the open
-# pool for the budget below is tallied over the CURRENT differential's (cause, predicate)
-# needs directly (Pass 1), never by prefix-scanning the whole need list.
+# needs are identified by their DETERMINISTIC id (``_differential_need_id``), which lets
+# regeneration find and reconcile the existing need instead of scanning by prefix.
 _DIFFERENTIAL_NEED_ID_PREFIX = "eneed_"
 
-# Per-turn cap on OPEN (PENDING) differential evidence-needs — the user-facing
-# "provide X to discriminate cause Y" ask list. Bounds the demand side so a broad
-# retrieval-seeded differential (Part A) can't flood the user with one ask per
-# untested predicate per candidate. See ``_regen_differential_evidence_needs``.
-_DIFFERENTIAL_NEED_BUDGET = 3
+# SURFACE cap (not an existence cap): at most this many CAUSAL_VERIFICATION needs are
+# SHOWN at once (``select_surfaced_causal_needs``). All needs stay PENDING in the pool;
+# capping at render — not emission — keeps the full pool available so the surfaced window
+# can rotate, which is what prevents the demand-side deadlock (#604): an existence cap
+# lets 3 unanswerable asks lock the slots forever; a surface cap rotates past them.
+_SURFACED_CAUSAL_CAP = 3
+
+# Advance the surfaced window by one full page each this-many turns-of-non-progress
+# (``case.turns_without_progress``). See ``select_surfaced_causal_needs`` for the paged
+# coverage guarantee this provides and its (exhaustion-horizon) bound.
+_ROTATE_EVERY_K = 1
 
 
 def _differential_need_id(candidate_id: str, predicate_sig: str) -> str:
@@ -297,38 +303,6 @@ def _differential_need_id(candidate_id: str, predicate_sig: str) -> str:
         f"{candidate_id}|{predicate_sig}".encode(), usedforsecurity=False
     ).hexdigest()[:12]
     return f"{_DIFFERENTIAL_NEED_ID_PREFIX}{digest}"
-
-
-def _predicate_signature_spread(
-    active_causes: "list[ActiveCauseLike]",
-    refuted_cause_ids: "set[str]",
-    validated_cause_ids: "set[str]",
-) -> "dict[str, int]":
-    """Map each predicate signature to the number of still-live candidate causes that
-    carry it — the carrier count the emission budget ranks by.
-
-    The emitter asks for the FEWEST-carrier predicates first: a datum specific to one
-    candidate, when collected, confirms that candidate and narrows the differential to
-    the smallest set — i.e. it discriminates. A predicate shared by every live candidate
-    (max carrier count) advances them all equally and separates none, so it is asked
-    last. This ranks by "how much a datum splits the differential" (the ratified intent),
-    approximated by cause-specificity; it is deliberately cheap and deterministic. A
-    fuller information-gain metric could swap in here without touching the budget logic.
-    """
-    counts: "dict[str, int]" = {}
-    for ac in active_causes:
-        if (
-            ac.candidate_id in refuted_cause_ids
-            or ac.candidate_id in validated_cause_ids
-        ):
-            continue
-        seen = {
-            _predicate_signature(p)
-            for p in (getattr(ac.record, "match_predicates", None) or [])
-        }
-        for sig in seen:
-            counts[sig] = counts.get(sig, 0) + 1
-    return counts
 
 
 def _predicate_request_text(predicate: dict) -> str:
@@ -349,6 +323,59 @@ def _predicate_request_text(predicate: dict) -> str:
     return f"telemetry matching {predicate}"
 
 
+def select_surfaced_causal_needs(case: "Case") -> "list[EvidenceNeed]":
+    """The ≤``_SURFACED_CAUSAL_CAP`` causal evidence-needs to SHOW this turn.
+
+    A SURFACE cap, not an existence cap: every need stays PENDING in
+    ``case.evidence_needs`` (so a datum that arrives still grounds regardless of what is
+    shown). This is a pure render-time VIEW — it writes nothing and supersedes nothing
+    (superseding is terminal and the differential need_id is deterministic, so a yielded
+    slot could never re-open; #604). The prompt block is the single choke point that reads
+    this; the copilot's EVIDENCE suggestions are downstream of what the prompt showed, so
+    they inherit the cap by construction.
+
+    Applies to ALL outstanding ``CAUSAL_VERIFICATION`` needs (engine-differential AND
+    LLM-emitted causal — they can't be told apart at render, and "≤N causal asks, whatever
+    the source" is the right user-facing invariant). SYMPTOM needs are untouched.
+
+    Ordering + coverage:
+      - Rarity-first: needs are ranked by how many outstanding causal needs share their
+        ``request_text`` (fewer sharers = more discriminating = shown first). This is a
+        FIRST-ORDER proxy — distinct predicates that render to the same text collide, and
+        a stale LLM-authored need with unique text can rank high — so it governs the
+        ORDER of surfacing, not WHETHER a need is seen; the paged rotation below
+        guarantees coverage regardless of ranking precision.
+      - Paged rotation under non-progress: the window advances one full
+        ``_SURFACED_CAUSAL_CAP``-sized PAGE per non-progress turn, so the whole pool is
+        covered in ``ceil(pool / _SURFACED_CAUSAL_CAP)`` non-progress turns (vs a 1-rank
+        slide, which needs ~``pool`` turns). This coverage is deliberately BOUNDED, not
+        unlimited: the engine can declare exhaustion once ``turns_without_progress``
+        reaches the stall threshold (``progress_monitor``), so for pools larger than
+        roughly ``_SURFACED_CAUSAL_CAP * stall_threshold`` the lowest-ranked needs may not
+        surface before the case is closed as exhausted. Realistic differentials (a few
+        retrieved runbooks) sit well inside that bound, and rarity-first ordering means the
+        most-discriminating asks are always shown first anyway. On ANY progress the counter
+        resets and the window returns to page 0 — correct, because a progressing case is
+        not deadlocked (rotation is the safety net for a genuinely stuck one).
+    """
+    causal = [
+        n
+        for n in case.evidence_needs
+        if n.is_outstanding and n.purpose == NeedPurpose.CAUSAL_VERIFICATION
+    ]
+    if len(causal) <= _SURFACED_CAUSAL_CAP:
+        return causal
+    shared = Counter(n.request_text for n in causal)  # sharers per rendered datum
+    ranked = sorted(causal, key=lambda n: (shared[n.request_text], n.need_id))
+    pool_size = len(ranked)
+    # Paged, non-overlapping rotation: one CAP-sized page per non-progress turn, so the
+    # pool is covered in ceil(pool_size / CAP) turns — fast enough to sweep a realistic
+    # pool before the exhaustion horizon, unlike a 1-rank slide.
+    page = case.turns_without_progress // _ROTATE_EVERY_K
+    offset = (page * _SURFACED_CAUSAL_CAP) % pool_size
+    return [ranked[(offset + i) % pool_size] for i in range(_SURFACED_CAUSAL_CAP)]
+
+
 def _regen_differential_evidence_needs(
     case: "Case",
     active_causes: "list[ActiveCauseLike]",
@@ -358,31 +385,38 @@ def _regen_differential_evidence_needs(
     validated_cause_ids: "set[str]",
 ) -> None:
     """Reconcile the case's engine-owned causal Evidence Needs with the active
-    differential: open PENDING needs for unsatisfied predicates (up to the
-    ``_DIFFERENTIAL_NEED_BUDGET`` cap on the open pool, highest-discrimination first),
-    flip a need to FULFILLED once its predicate fires this turn, and SUPERSEDE the
-    still-open needs of a cause whose root is now SETTLED — passed in as
-    ``refuted_cause_ids`` and ``validated_cause_ids`` (the caller classifies; "settled
-    validated" means *deductively* validated, the only durable kind — see
-    ``_cause_root_settled_state``).
+    differential: open ONE PENDING need per unsatisfied predicate, flip a need to
+    FULFILLED once its predicate fires this turn, and SUPERSEDE the still-open needs of a
+    cause whose root is now SETTLED — passed in as ``refuted_cause_ids`` and
+    ``validated_cause_ids`` (the caller classifies; "settled validated" means *deductively*
+    validated, the only durable kind — see ``_cause_root_settled_state``).
 
-    The budget bounds the demand side: a retrieval-seeded differential (Part A) can
-    span many candidate causes, each with several untested predicates, so emitting one
-    need per (cause, predicate) would flood the user with "provide X to discriminate
-    cause Y" asks. Emission is therefore capped at ``_DIFFERENTIAL_NEED_BUDGET`` OPEN
-    needs at a time, refilled as needs resolve — coverage is preserved, rate-limited.
+    Emission is UNCAPPED: a retrieval-seeded differential can span many candidate
+    causes with several untested predicates each, but the flood is bounded at RENDER by a
+    surface cap (``select_surfaced_causal_needs`` shows ≤ ``_SURFACED_CAUSAL_CAP``), NOT by
+    capping emission here. Capping emission would be an *existence* cap: the first N
+    unanswerable asks would lock the surface with no pool left to rotate through — the
+    demand-side deadlock #604. Keeping the full pool PENDING lets the render window rotate
+    under pressure, so an answerable discriminator is never permanently hidden behind
+    unanswerable ones. (The prior emission-cap approach + its eviction/departed-cause
+    limitations are superseded by this surface cap.)
 
-    Scope of the cap (known limitations, tracked in issue #604 — a HARD gate on
-    enabling ``enable_runbook_cause_matcher``): it bounds the OPEN
-    pool of the CURRENT differential's needs. It does NOT (a) evict a lower-ranked open
-    need in favour of a higher-ranked one that appears later, nor (b) supersede/GC a need
-    whose cause has silently dropped out of the differential (only REFUTED / deductively
-    VALIDATED causes are superseded here). (b) is hard to do safely without an explicit
-    differential-origin marker on ``EvidenceNeed`` — the ``eneed_`` id prefix is shared
-    with symptom/LLM needs, so departed-cause needs can't be told apart by scanning. In a
-    stable-differential case (the common path — ``differential_runbook_ids`` is fixed and
-    ``resolve_causes`` is deterministic) neither fires; both matter only under differential
-    churn and are deferred to the origin-field refinement.
+    Pool bound & staleness (why uncapped emission does not leak): the differential
+    runbook set is seed-once + grow-only, and ``active_causes`` is rebuilt each turn from
+    it by deterministic DB reads, so the candidate set never SHRINKS — a cause cannot
+    silently depart and strand an orphan need. Every engine causal need therefore falls
+    into exactly one of the branches below (fired → FULFILLED, refuted → SUPERSEDED,
+    deductively validated → SUPERSEDED, live+unsatisfied → PENDING), so an OPEN engine
+    causal need is always a *live, unsatisfied* discriminator — never stale. The pool is
+    thus bounded (one need per (cause, predicate) over a grow-only, seed-once
+    differential) and re-persisting it each turn on the additive repo is an accepted,
+    bounded cost. GC-by-supersede is deliberately NOT used to trim it: the need_id is
+    deterministic, so superseding a still-live need whose predicate merely oscillated
+    out-and-back would permanently hide it (the #604 supersede trap). The one residual is
+    LLM-authored causal needs — not managed here, never GC'd — but they carry random ids
+    (trap-free to retire later), the LLM re-emits the live ones each turn, and they are
+    bounded at RENDER by the same ≤N surface cap + rotation; retiring stale ones is a
+    separate follow-up, not a correctness gap in this reconcile.
 
     Both supersessions close a demand↔validate inconsistency, and both are sound
     only because the state is terminal. REFUTED: ``run_intake_evaluation`` skips
@@ -406,23 +440,11 @@ def _regen_differential_evidence_needs(
         if v.stance == EvidenceStance.SUPPORTS
     }
     by_id = {n.need_id: n for n in case.evidence_needs}
-    spread = _predicate_signature_spread(
-        active_causes, refuted_cause_ids, validated_cause_ids
-    )
-
-    # Pass 1 — reconcile existing needs (fulfill fired / supersede settled), tally the
-    # CURRENT differential's already-open pool, and collect unsatisfied predicates that
-    # WOULD open a new need. Creation is deferred to the budgeted pass so an over-broad
-    # differential can't flood the demand side.
-    #
-    # ``open_differential`` is counted HERE, over the current differential's own
-    # (cause, predicate) needs — NOT by prefix-scanning ``case.evidence_needs``, because
-    # the ``eneed_`` prefix is shared by symptom and LLM needs too (they'd pollute the
-    # count and could starve emission to zero), and because a need for a cause that has
-    # dropped out of the differential must not hold a slot hostage.
-    open_differential = 0
-    pending: list[tuple[int, str, "ActiveCauseLike", dict]] = []
-    seen_need_ids: set[str] = set()  # dedup a repeated (cause, predicate) across both
+    # Reconcile every current (cause, predicate), then create ONE PENDING need per
+    # still-unsatisfied predicate. Emission is UNCAPPED — the ≤N user-facing cap is a
+    # render-time surface cap (``select_surfaced_causal_needs``), not an existence cap
+    # here, so the full pool stays available for the surfaced window to rotate over (#604).
+    seen_need_ids: set[str] = set()  # dedup a predicate repeated within a cause
     for ac in active_causes:
         cause_refuted = ac.candidate_id in refuted_cause_ids
         cause_validated = ac.candidate_id in validated_cause_ids
@@ -469,47 +491,23 @@ def _regen_differential_evidence_needs(
                         "validated (deductively)",
                     )
                 continue
-            # Live cause, unsatisfied predicate. Dedup the WHOLE branch by need_id:
-            # match_predicates is free-form and may repeat a predicate, and the two
-            # duplicates share a deterministic need_id. Guarding both the count and the
-            # create path (not just create) keeps a repeated predicate from counting its
-            # one open need twice (which would under-compute ``slots`` and starve other
-            # causes) and from being emitted twice (a need_id primary-key collision).
-            if need_id in seen_need_ids:
+            # Live cause, unsatisfied predicate → ensure exactly ONE PENDING need.
+            # Dedup by deterministic need_id: match_predicates is free-form and may repeat
+            # a predicate; the copies share one need_id (a PK), so create it once.
+            if existing is not None or need_id in seen_need_ids:
                 continue
             seen_need_ids.add(need_id)
-            if existing is not None:
-                if existing.is_outstanding:  # PENDING or PARTIALLY_MET — holds a slot
-                    open_differential += 1
-                continue
-            pending.append((spread.get(sig, 1), need_id, ac, predicate))
-
-    # Pass 2 — budgeted emission. Keep at most ``_DIFFERENTIAL_NEED_BUDGET`` OPEN
-    # differential needs at a time: Pass 1 may have freed slots (FULFILLED / SUPERSEDED),
-    # so fill the remainder with the most-discriminating untested predicates. This bounds
-    # the user-facing ask list regardless of how broad the differential is; as needs
-    # resolve, freed slots refill on later turns. (Open needs are not evicted for a
-    # higher-ranked one — a re-ranking/eviction policy is a possible refinement.)
-    slots = _DIFFERENTIAL_NEED_BUDGET - open_differential
-    if slots <= 0:
-        return
-    # Fewest carriers first = most discriminating (see _predicate_signature_spread);
-    # need_id tie-break so re-running the same turn selects the same needs (idempotent).
-    # Rarest-first also spends the budget on distinct datums before shared ones, so the
-    # ≤3 asks are ≤3 distinct requests except in the degenerate all-shared case.
-    pending.sort(key=lambda item: (item[0], item[1]))
-    for _score, need_id, ac, predicate in pending[:slots]:
-        case.evidence_needs.append(
-            EvidenceNeed(
-                need_id=need_id,
-                case_id=case.case_id,
-                purpose=NeedPurpose.CAUSAL_VERIFICATION,
-                request_text=_predicate_request_text(predicate)[:500],
-                rationale=(
-                    f"Discriminates runbook cause {ac.candidate_id} against the "
-                    "submitted telemetry."
-                ),
-                state=NeedState.PENDING,
-                created_at_turn=current_turn,
+            case.evidence_needs.append(
+                EvidenceNeed(
+                    need_id=need_id,
+                    case_id=case.case_id,
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    request_text=_predicate_request_text(predicate)[:500],
+                    rationale=(
+                        f"Discriminates runbook cause {ac.candidate_id} against the "
+                        "submitted telemetry."
+                    ),
+                    state=NeedState.PENDING,
+                    created_at_turn=current_turn,
+                )
             )
-        )
