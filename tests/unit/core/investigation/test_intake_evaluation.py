@@ -28,6 +28,7 @@ from faultmaven.modules.case.contracts import (
     CausalNode,
     Evidence,
     EvidenceCategory,
+    EvidenceNeed,
     EvidenceSourceType,
     EvidenceStance,
     InquiryData,
@@ -830,10 +831,12 @@ def test_differential_need_emission_capped_at_budget():
     assert len(_pending(case)) == _DIFFERENTIAL_NEED_BUDGET
 
 
-def test_differential_need_emission_prefers_high_discrimination():
-    # 'shared' is carried by 3 causes (spread 3); each cause also has a unique
-    # predicate (spread 1). With a budget of 3, every slot goes to the shared datum
-    # (one ask that bears on the most candidates), never to a unique one.
+def test_differential_need_emission_prefers_discriminating_predicate():
+    # 'shared' is carried by all 3 causes (carrier count 3 -> least discriminating);
+    # each cause also has a unique predicate (carrier count 1 -> most discriminating).
+    # With a budget of 3 the slots go to the three DISTINCT unique datums; the shared
+    # datum (advances every candidate equally, separates none) is asked last. This also
+    # keeps the <=3 asks distinct (no near-duplicate "provide X" spam).
     case = _case()
     acs = [
         _ac_preds("rb1:A", ["shared", "uniqueA"]),
@@ -843,8 +846,68 @@ def test_differential_need_emission_prefers_high_discrimination():
     _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
     pend = _pending(case)
     assert len(pend) == _DIFFERENTIAL_NEED_BUDGET
-    assert all("shared" in n.request_text for n in pend)
-    assert not any("unique" in n.request_text for n in pend)
+    assert all("unique" in n.request_text for n in pend)
+    assert not any("shared" in n.request_text for n in pend)
+
+
+def test_budget_not_starved_by_nondifferential_needs():
+    # Symptom / LLM needs share the 'eneed_' id prefix (the model default_factory), so a
+    # prefix-based open-pool count would let them consume the differential budget. Seed 3
+    # PENDING symptom needs; a broad differential must STILL emit its own asks up to the
+    # budget (the count is over the current differential's needs, not the prefix).
+    case = _case()
+    for i in range(_DIFFERENTIAL_NEED_BUDGET):
+        case.evidence_needs.append(
+            EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+                request_text=f"symptom detail {i}",
+                rationale="motivated by the problem statement",
+                state=NeedState.PENDING,
+                created_at_turn=1,
+            )
+        )
+    # Precondition: the seeded non-differential needs really do carry the shared prefix.
+    assert all(n.need_id.startswith("eneed_") for n in case.evidence_needs)
+
+    acs = [_ac_preds("rb1:A", [f"tok{i}" for i in range(5)])]
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    differential = [
+        n
+        for n in case.evidence_needs
+        if n.purpose == NeedPurpose.CAUSAL_VERIFICATION and n.state == NeedState.PENDING
+    ]
+    assert len(differential) == _DIFFERENTIAL_NEED_BUDGET  # not starved to 0
+
+
+def test_duplicate_predicate_creates_single_need():
+    # match_predicates is free-form and may repeat; the same (cause, predicate) must
+    # yield exactly one need (its deterministic need_id is a primary key).
+    case = _case()
+    acs = [_ac_preds("rb1:A", ["dup", "dup"])]  # identical predicate twice
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    pend = _pending(case)
+    assert len(pend) == 1
+    assert len({n.need_id for n in pend}) == 1  # no duplicate need_id
+
+
+def test_partially_met_differential_need_holds_a_slot():
+    # An outstanding need is PENDING *or* PARTIALLY_MET; a PARTIALLY_MET need must still
+    # consume a budget slot, else a 4th ask leaks past the cap.
+    case = _case()
+    acs = [_ac_preds("rb1:A", [f"tok{i}" for i in range(4)])]  # 4 preds, budget 3
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    pend = _pending(case)
+    assert len(pend) == _DIFFERENTIAL_NEED_BUDGET
+    pend[0].state = NeedState.PARTIALLY_MET  # still outstanding, not resolved
+
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    outstanding = [
+        n
+        for n in case.evidence_needs
+        if n.purpose == NeedPurpose.CAUSAL_VERIFICATION and n.is_outstanding
+    ]
+    assert len(outstanding) == _DIFFERENTIAL_NEED_BUDGET  # PARTIALLY_MET held its slot
 
 
 def test_differential_need_budget_refills_freed_slots():

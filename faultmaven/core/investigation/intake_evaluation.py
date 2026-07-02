@@ -274,10 +274,12 @@ def _predicate_signature(predicate: dict) -> str:
     return json.dumps(predicate, sort_keys=True, separators=(",", ":"))
 
 
-# Prefix on every engine-derived differential need id — the one marker that tells a
-# differential (matcher-predicate) need apart from a symptom need or an LLM-emitted
-# causal need (which carry random ids). Used to count the open differential pool for
-# the emission budget below.
+# The id prefix shared by ALL engine EvidenceNeeds — the model's ``need_id``
+# default_factory uses ``eneed_`` too (models.py), so this is NOT a differential-only
+# marker: symptom needs and LLM-emitted causal needs carry it as well. Differential
+# needs are identified by their DETERMINISTIC id (``_differential_need_id``); the open
+# pool for the budget below is tallied over the CURRENT differential's (cause, predicate)
+# needs directly (Pass 1), never by prefix-scanning the whole need list.
 _DIFFERENTIAL_NEED_ID_PREFIX = "eneed_"
 
 # Per-turn cap on OPEN (PENDING) differential evidence-needs — the user-facing
@@ -303,14 +305,15 @@ def _predicate_signature_spread(
     validated_cause_ids: "set[str]",
 ) -> "dict[str, int]":
     """Map each predicate signature to the number of still-live candidate causes that
-    carry it — the discrimination weight for the emission budget.
+    carry it — the carrier count the emission budget ranks by.
 
-    A datum satisfying a widely-shared predicate bears on more of the differential, so
-    one user-facing ask advances more candidates; asking for it first maximises what a
-    single collected datum resolves. First-cut heuristic (candidates-a-datum-bears-on),
-    deliberately cheap and deterministic — a true information-gain "split" metric
-    (favouring predicates true for some candidates and false for others) is a later
-    refinement that can swap in here without touching the budget logic.
+    The emitter asks for the FEWEST-carrier predicates first: a datum specific to one
+    candidate, when collected, confirms that candidate and narrows the differential to
+    the smallest set — i.e. it discriminates. A predicate shared by every live candidate
+    (max carrier count) advances them all equally and separates none, so it is asked
+    last. This ranks by "how much a datum splits the differential" (the ratified intent),
+    approximated by cause-specificity; it is deliberately cheap and deterministic. A
+    fuller information-gain metric could swap in here without touching the budget logic.
     """
     counts: "dict[str, int]" = {}
     for ac in active_causes:
@@ -395,11 +398,19 @@ def _regen_differential_evidence_needs(
         active_causes, refuted_cause_ids, validated_cause_ids
     )
 
-    # Pass 1 — reconcile existing needs (fulfill fired / supersede settled), and
-    # collect the unsatisfied predicates that WOULD open a new need. Creation is
-    # deferred to the budgeted pass so an over-broad differential can't flood the
-    # demand side; each candidate carries its discrimination weight for ranking.
+    # Pass 1 — reconcile existing needs (fulfill fired / supersede settled), tally the
+    # CURRENT differential's already-open pool, and collect unsatisfied predicates that
+    # WOULD open a new need. Creation is deferred to the budgeted pass so an over-broad
+    # differential can't flood the demand side.
+    #
+    # ``open_differential`` is counted HERE, over the current differential's own
+    # (cause, predicate) needs — NOT by prefix-scanning ``case.evidence_needs``, because
+    # the ``eneed_`` prefix is shared by symptom and LLM needs too (they'd pollute the
+    # count and could starve emission to zero), and because a need for a cause that has
+    # dropped out of the differential must not hold a slot hostage.
+    open_differential = 0
     pending: list[tuple[int, str, "ActiveCauseLike", dict]] = []
+    seen_pending: set[str] = set()
     for ac in active_causes:
         cause_refuted = ac.candidate_id in refuted_cause_ids
         cause_validated = ac.candidate_id in validated_cause_ids
@@ -446,29 +457,33 @@ def _regen_differential_evidence_needs(
                         "validated (deductively)",
                     )
                 continue
-            if existing is None:
-                pending.append((spread.get(sig, 1), need_id, ac, predicate))
+            # Live cause, unsatisfied predicate.
+            if existing is not None:
+                if existing.is_outstanding:  # PENDING or PARTIALLY_MET — holds a slot
+                    open_differential += 1
+                continue
+            if need_id in seen_pending:
+                # Same (cause, predicate) appearing twice in match_predicates — one
+                # need only (deterministic need_id would otherwise be created twice,
+                # colliding on the need_id primary key).
+                continue
+            seen_pending.add(need_id)
+            pending.append((spread.get(sig, 1), need_id, ac, predicate))
 
     # Pass 2 — budgeted emission. Keep at most ``_DIFFERENTIAL_NEED_BUDGET`` OPEN
-    # (PENDING) differential needs at any time: Pass 1 may have freed slots
-    # (FULFILLED / SUPERSEDED), so fill the remainder with the highest-discrimination
-    # untested predicates. This bounds the user-facing ask list regardless of how
-    # broad the differential is; as needs resolve, freed slots refill on later turns
-    # with the next-most-discriminating predicates, so coverage is preserved — just
-    # rate-limited. (Open needs are never evicted in favour of a higher-ranked one; a
-    # re-ranking/eviction policy is a possible refinement.)
-    open_differential = sum(
-        1
-        for n in case.evidence_needs
-        if n.need_id.startswith(_DIFFERENTIAL_NEED_ID_PREFIX)
-        and n.state == NeedState.PENDING
-    )
+    # differential needs at a time: Pass 1 may have freed slots (FULFILLED / SUPERSEDED),
+    # so fill the remainder with the most-discriminating untested predicates. This bounds
+    # the user-facing ask list regardless of how broad the differential is; as needs
+    # resolve, freed slots refill on later turns. (Open needs are not evicted for a
+    # higher-ranked one — a re-ranking/eviction policy is a possible refinement.)
     slots = _DIFFERENTIAL_NEED_BUDGET - open_differential
     if slots <= 0:
         return
-    # Highest discrimination first; deterministic tie-break on need_id so re-running
-    # the same turn selects the same needs (idempotent regen).
-    pending.sort(key=lambda item: (-item[0], item[1]))
+    # Fewest carriers first = most discriminating (see _predicate_signature_spread);
+    # need_id tie-break so re-running the same turn selects the same needs (idempotent).
+    # Rarest-first also spends the budget on distinct datums before shared ones, so the
+    # ≤3 asks are ≤3 distinct requests except in the degenerate all-shared case.
+    pending.sort(key=lambda item: (item[0], item[1]))
     for _score, need_id, ac, predicate in pending[:slots]:
         case.evidence_needs.append(
             EvidenceNeed(
