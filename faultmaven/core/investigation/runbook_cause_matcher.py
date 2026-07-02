@@ -46,6 +46,7 @@ from faultmaven.core.investigation.causal_graph import (
 from faultmaven.core.investigation.cause_schemas import (
     CauseMatchResult,
     CauseRecord,
+    build_cause_records,
     is_problem_node,
 )
 from faultmaven.core.investigation.schemas import CausalEdgeToAdd, CausalNodeToAdd
@@ -69,6 +70,15 @@ logger = logging.getLogger(__name__)
 
 # Distinct runbooks the matcher evaluates per turn.
 _DEFAULT_MAX_RUNBOOKS = 3
+
+# Distinct runbooks the matcher SEEDS into the differential from retrieval (Part A).
+# The differential source is decoupled from the T2 verdict: the top-K *retrieved*
+# runbooks (no LLM) become the candidate universe the deterministic intake validates
+# against, so the predicate loop runs on every verdict (RC-1 fix) — not only 'single'.
+# The T2 verdict still gates chain instantiation, on the top-1 only (the graph prior
+# stays conservative). This is the breadth the intake's evidence-need budget is sized
+# against.
+_DIFFERENTIAL_TOP_K = 3
 
 # A matched runbook seeds a PRIOR, not a conclusion. Cap its hypothesis
 # likelihood strictly below the ``CAUSE_IDENTIFIED_LIKELIHOOD`` "cause identified"
@@ -542,21 +552,70 @@ async def apply_runbook_cause_matcher(
     user_id: str,
     team_ids: Optional[List[str]] = None,
     max_runbooks: int = _DEFAULT_MAX_RUNBOOKS,
+    differential_top_k: int = _DIFFERENTIAL_TOP_K,
     hypothesis_manager: Optional["HypothesisManager"] = None,
 ) -> Optional[CauseMatchResult]:
-    """Match retrieved runbooks against the case and instantiate the winner.
+    """Match retrieved runbooks against the case: seed the differential and
+    instantiate the winner.
 
-    Runs the structured matcher, picks the first runbook with a confident
-    single-Cause verdict, instantiates that Cause's chain as CANDIDATE priors,
-    and (when ``hypothesis_manager`` is supplied) attaches a hypothesis to the
-    chain's root so it becomes load-bearing. Returns the chosen
-    ``CauseMatchResult`` (or None if nothing matched confidently). The matcher is
-    conservative by construction: 'none'/'multiple' verdicts instantiate nothing,
-    leaving attribution to the LLM.
+    Two decoupled effects (Part A):
 
-    A *prior, not a gate*: the engine caller wraps this so it can never break a
-    turn.
+    - **Differential source (broad):** seeds ``differential_runbook_ids`` from the
+      top-``differential_top_k`` *retrieved* runbooks (v4-filtered, no LLM),
+      regardless of the T2 verdict — the candidate universe the deterministic intake
+      loop validates against every turn. This is what makes the loop run on
+      'none'/'multiple' verdicts, not only the rare 'single'.
+    - **Graph prior (conservative):** picks the first runbook with a confident
+      single-Cause verdict, instantiates that Cause's chain as CANDIDATE priors, and
+      (when ``hypothesis_manager`` is supplied) attaches a hypothesis to the chain's
+      root so it becomes load-bearing. 'none'/'multiple' instantiate nothing.
+
+    Returns the chosen ``CauseMatchResult`` (or None if nothing matched confidently;
+    the differential may still have been seeded). A *prior, not a gate*: the engine
+    caller wraps this so it can never break a turn.
     """
+    # --- Differential source (Part A): seed ONCE per case from RETRIEVAL, decoupled
+    # from the T2 verdict. The top-K retrieved runbooks (embedding-only, no LLM) become
+    # the candidate universe for the deterministic intake, so the predicate loop runs on
+    # 'none'/'multiple' verdicts too (RC-1 fix), not only the rare 'single'. Each id is
+    # v4-filtered via ``build_cause_records`` (see the inner comment — the SAME gate the
+    # T2 path applies), so the seeded set is the v4-matchable retrieved set.
+    #
+    # Seed-once guard: the engine skip-guard only trips on a 'single'-verdict hypothesis,
+    # so on 'none'/'multiple' this matcher re-runs every turn; guarding on an
+    # already-seeded differential keeps the retrieval-seed one-shot for ALL verdicts
+    # (consistent with the one-shot-prior contract) so it can't re-embed and re-accumulate
+    # per turn as the query drifts. The differential is NOT strictly frozen, though: the
+    # tail below may still add the 'single'-verdict winner (bounded, +1). The
+    # ``runbook_retrieved`` denominator marker is therefore set BOTH here and after the
+    # tail — a case whose differential is populated only by the tail (e.g. a transient
+    # seed-retrieval miss + a later winner) must still land in-population.
+    if not differential_runbook_ids(case):
+        retrieved_ids = await kb_tool.aget_retrieved_runbook_ids(
+            question, user_id, team_ids=team_ids, top_k=differential_top_k
+        )
+        for runbook_id in retrieved_ids:
+            try:
+                causes_raw = await resolve_causes(runbook_id)
+                # v4-filter via build_cause_records, NOT merely "resolve_causes
+                # non-empty": this is the SAME gate aget_cause_matches applies before
+                # evaluating (a runbook with raw-but-malformed causes builds no records
+                # and is skipped there too), so the seeded set and the T2-matchable set
+                # share one "v4-matchable" definition — no divergence.
+                records = (
+                    build_cause_records(runbook_id, causes_raw) if causes_raw else []
+                )
+            except Exception:  # noqa: BLE001 — a prior must never break the turn
+                continue
+            if not records:
+                continue  # pre-v4 / upload-path / malformed — no chain to validate
+            _record_differential_runbook(case, runbook_id)
+        if differential_runbook_ids(case):
+            _record_runbook_retrieval_hit(case)
+
+    # --- Graph prior (unchanged): the T2 verdict gates chain instantiation on the
+    # top-1 only. 'none'/'multiple' instantiate nothing (conservative by construction);
+    # the differential above still drives the predicate loop regardless of this verdict.
     matches = await kb_tool.aget_cause_matches(
         question,
         user_id,
@@ -565,14 +624,6 @@ async def apply_runbook_cause_matcher(
         team_ids=team_ids,
         max_runbooks=max_runbooks,
     )
-    # Mark the matching-runbook population BEFORE the verdict gate below, so the
-    # grounding-baseline denominator is not gated by the 'single'-verdict seeding path
-    # (see _record_runbook_retrieval_hit). Fires on every verdict, including the
-    # none/multiple verdicts that instantiate nothing. `matches` is the v4-matchable
-    # set (aget_cause_matches drops pre-v4/upload runbooks with no chain) — the correct
-    # grounding denominator, since only a runbook with predicates can ground a cause.
-    if matches:
-        _record_runbook_retrieval_hit(case)
     chosen = next(
         (m for m in matches if m.verdict == "single" and m.selected_record is not None),
         None,
@@ -580,11 +631,18 @@ async def apply_runbook_cause_matcher(
     if chosen is None:
         return None
 
-    # Record the matched runbook (durable, case-level) BEFORE instantiation so the
-    # per-turn intake hook can re-resolve the differential from
-    # differential_runbook_ids(case) — independent of whether a chain node was
-    # instantiated and of any later node pruning / re-rooting.
+    # Ensure the 'single'-verdict winner is in the differential. Usually a dedup no-op
+    # (the winner is the top-1 of the same ranking that seeded the differential above),
+    # but on a later turn where the seed block was skipped (already seeded) and the query
+    # has drifted, this ADDS the winner — a bounded (+1) growth, not a no-op. Re-mark the
+    # denominator here too: if the seed block produced an empty differential this turn
+    # (e.g. a transient seed-retrieval miss) but a winner is then found, the differential
+    # is non-empty ONLY via this tail, and the seed-once guard would otherwise block the
+    # marker above from ever running again. ``_record_runbook_retrieval_hit`` is
+    # idempotent, so setting it in both places is safe.
     _record_differential_runbook(case, chosen.runbook_id)
+    if differential_runbook_ids(case):
+        _record_runbook_retrieval_hit(case)
 
     created = instantiate_cause_chain(case, chosen.selected_record, case.current_turn)
     root_id = _root_node_id(case, created)

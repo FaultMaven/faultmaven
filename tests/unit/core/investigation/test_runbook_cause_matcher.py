@@ -245,11 +245,23 @@ class TestInstantiate:
 
 
 class _FakeKB:
-    """Stand-in for AnswerFromKB.aget_cause_matches."""
+    """Stand-in for AnswerFromKB.aget_cause_matches + aget_retrieved_runbook_ids.
 
-    def __init__(self, results):
+    ``retrieved_ids`` seeds the retrieval-only ranking Part A reads; when not given it
+    defaults to the runbook ids of ``results`` (the realistic case — the T2-evaluated
+    set is drawn from the retrieved set). Whether a retrieved id is actually seeded
+    still depends on the ``resolve_causes`` v4-filter in the matcher.
+    """
+
+    def __init__(self, results, *, retrieved_ids=None):
         self._results = results
+        self._retrieved_ids = (
+            retrieved_ids
+            if retrieved_ids is not None
+            else [r.runbook_id for r in results]
+        )
         self.calls = []
+        self.retrieved_calls = []
 
     async def aget_cause_matches(
         self,
@@ -272,6 +284,12 @@ class _FakeKB:
         )
         return self._results
 
+    async def aget_retrieved_runbook_ids(
+        self, question, user_id, *, team_ids=None, top_k=3
+    ):
+        self.retrieved_calls.append({"question": question, "top_k": top_k})
+        return list(self._retrieved_ids[:top_k])
+
 
 def _result(runbook_id, verdict, *, record=None, letter="A"):
     selected = (
@@ -289,6 +307,16 @@ def _result(runbook_id, verdict, *, record=None, letter="A"):
 
 async def _noop_resolver(item_id):
     return None
+
+
+def _v4_resolver(*v4_ids):
+    """A resolve_causes stub: returns a non-empty cause list (v4-matchable) for the
+    named ids, None otherwise — so the matcher's v4-filter seeds only the named ids."""
+
+    async def _resolve(item_id):
+        return [{"cause_letter": "A"}] if item_id in v4_ids else None
+
+    return _resolve
 
 
 class TestApply:
@@ -346,6 +374,178 @@ class TestApply:
         )
         assert chosen is None
         assert case.causal_nodes == {}
+
+    @pytest.mark.asyncio
+    async def test_none_verdict_seeds_differential_from_retrieval(self):
+        # Part A / RC-1 fix: on a 'none' verdict the T2 path instantiates nothing, but
+        # the differential is now seeded from RETRIEVAL (all v4-matchable top-K ids), so
+        # the deterministic intake loop still has candidates to validate against.
+        case = _case()
+        kb = _FakeKB(
+            [_result("kb_rb1", "none")], retrieved_ids=["kb_rb1", "kb_rb2", "kb_rb3"]
+        )
+        chosen = await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_v4_resolver("kb_rb1", "kb_rb2", "kb_rb3"),
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert chosen is None  # graph prior unchanged: nothing instantiated
+        assert case.causal_nodes == {}
+        # ...but the differential is seeded from retrieval, and the marker is set.
+        assert differential_runbook_ids(case) == ["kb_rb1", "kb_rb2", "kb_rb3"]
+        assert case.runbook_retrieved is True
+
+    @pytest.mark.asyncio
+    async def test_retrieval_seed_v4_filters_non_v4_runbooks(self):
+        # A retrieved runbook with no resolvable v4 causes (upload-path / pre-v4) is
+        # dropped from the seed — only groundable candidates enter the differential.
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "multiple")], retrieved_ids=["kb_rb1", "kb_v3"])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_v4_resolver("kb_rb1"),  # kb_v3 resolves to None → dropped
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert differential_runbook_ids(case) == ["kb_rb1"]
+        assert case.runbook_retrieved is True
+
+    @pytest.mark.asyncio
+    async def test_marker_not_set_when_no_v4_runbook_seeded(self):
+        # Retrieval returned ids but none are v4-matchable → nothing seeded, and the
+        # denominator marker stays False (an all-non-v4 case can never ground).
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "none")], retrieved_ids=["kb_v3a", "kb_v3b"])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_v4_resolver(),  # nothing is v4
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert differential_runbook_ids(case) == []
+        assert case.runbook_retrieved is False
+
+    @pytest.mark.asyncio
+    async def test_single_winner_included_in_retrieval_seed(self):
+        # The 'single' winner is seeded via retrieval (and the defensive tail re-seed is
+        # a dedup no-op): the differential holds the whole v4 retrieved set, winner first.
+        case = _case()
+        record = _linear_cause("A")
+        kb = _FakeKB(
+            [_result("kb_rb1", "single", record=record)],
+            retrieved_ids=["kb_rb1", "kb_rb2"],
+        )
+        chosen = await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_v4_resolver("kb_rb1", "kb_rb2"),
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert chosen is not None and chosen.runbook_id == "kb_rb1"
+        # winner's chain instantiated (graph prior), differential = full v4 retrieved set
+        roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+        assert len(roots) == 1
+        assert differential_runbook_ids(case) == ["kb_rb1", "kb_rb2"]  # no duplicate
+
+    @pytest.mark.asyncio
+    async def test_seed_passes_differential_top_k(self):
+        # The seeding path requests exactly differential_top_k runbooks from retrieval.
+        case = _case()
+        kb = _FakeKB([_result("kb_rb1", "none")], retrieved_ids=["kb_rb1"])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_v4_resolver("kb_rb1"),
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+            differential_top_k=5,
+        )
+        assert kb.retrieved_calls[0]["top_k"] == 5
+
+    @pytest.mark.asyncio
+    async def test_seed_is_once_per_case_not_per_call(self):
+        # Seed-once: a second matcher pass on the same case (none verdict, so nothing
+        # instantiated and the engine skip-guard wouldn't block re-entry) does NOT
+        # re-seed — even with drifted retrieval — and short-circuits before retrieval.
+        case = _case()
+        kb1 = _FakeKB([_result("kb_a", "none")], retrieved_ids=["kb_a"])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb1,
+            resolve_causes=_v4_resolver("kb_a"),
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert differential_runbook_ids(case) == ["kb_a"]
+
+        kb2 = _FakeKB([_result("kb_b", "none")], retrieved_ids=["kb_b", "kb_c"])
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb2,
+            resolve_causes=_v4_resolver("kb_b", "kb_c"),
+            evaluator=object(),
+            question="q-drifted",
+            user_id="u1",
+        )
+        assert differential_runbook_ids(case) == ["kb_a"]  # unchanged — seeded once
+        assert kb2.retrieved_calls == []  # retrieval not even attempted on re-entry
+
+    @pytest.mark.asyncio
+    async def test_retrieval_seed_drops_unbuildable_causes(self):
+        # v4-filter uses build_cause_records, not merely "resolve_causes non-empty":
+        # a runbook whose raw causes build NO CauseRecord (non-dict / malformed) is
+        # dropped from the seed, matching aget_cause_matches's own gate.
+        case = _case()
+        kb = _FakeKB([_result("kb_ok", "none")], retrieved_ids=["kb_ok", "kb_bad"])
+
+        async def _resolve(item_id):
+            if item_id == "kb_ok":
+                return [{"cause_letter": "A"}]
+            return ["not-a-dict-entry"]  # non-empty but unbuildable → dropped
+
+        await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_resolve,
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert differential_runbook_ids(case) == ["kb_ok"]
+
+    @pytest.mark.asyncio
+    async def test_tail_seed_marks_denominator_when_seed_block_empty(self):
+        # Regression: if the retrieval-seed yields nothing this turn (e.g. a transient
+        # retrieval miss → aget_retrieved_runbook_ids returns []) but the T2 path finds a
+        # 'single' winner, the differential is populated only by the tail. The
+        # runbook_retrieved denominator marker must still be set — otherwise the seed-once
+        # guard blocks it from ever running again and the grounded case is silently
+        # excluded from the R3 denominator for life.
+        case = _case()
+        record = _linear_cause("A")
+        kb = _FakeKB([_result("kb_win", "single", record=record)], retrieved_ids=[])
+        chosen = await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_v4_resolver("kb_win"),
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert chosen is not None and chosen.runbook_id == "kb_win"
+        assert differential_runbook_ids(case) == ["kb_win"]  # populated via the tail
+        assert case.runbook_retrieved is True  # marker set after the tail, not skipped
 
     @pytest.mark.asyncio
     async def test_single_without_record_is_skipped(self):
@@ -777,6 +977,9 @@ class TestEngineIntegration:
         class _BoomKB:
             def __init__(self):
                 self.called = False
+
+            async def aget_retrieved_runbook_ids(self, *a, **k):
+                return []  # benign: the boom under test is aget_cause_matches
 
             async def aget_cause_matches(self, *a, **k):
                 self.called = True
