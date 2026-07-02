@@ -525,6 +525,29 @@ class TestApply:
         assert differential_runbook_ids(case) == ["kb_ok"]
 
     @pytest.mark.asyncio
+    async def test_tail_seed_marks_denominator_when_seed_block_empty(self):
+        # Regression: if the retrieval-seed yields nothing this turn (e.g. a transient
+        # retrieval miss → aget_retrieved_runbook_ids returns []) but the T2 path finds a
+        # 'single' winner, the differential is populated only by the tail. The
+        # runbook_retrieved denominator marker must still be set — otherwise the seed-once
+        # guard blocks it from ever running again and the grounded case is silently
+        # excluded from the R3 denominator for life.
+        case = _case()
+        record = _linear_cause("A")
+        kb = _FakeKB([_result("kb_win", "single", record=record)], retrieved_ids=[])
+        chosen = await apply_runbook_cause_matcher(
+            case,
+            kb_tool=kb,
+            resolve_causes=_v4_resolver("kb_win"),
+            evaluator=object(),
+            question="q",
+            user_id="u1",
+        )
+        assert chosen is not None and chosen.runbook_id == "kb_win"
+        assert differential_runbook_ids(case) == ["kb_win"]  # populated via the tail
+        assert case.runbook_retrieved is True  # marker set after the tail, not skipped
+
+    @pytest.mark.asyncio
     async def test_single_without_record_is_skipped(self):
         # Defensive: a 'single' verdict that somehow lacks selected_record must
         # not be chosen (nothing to instantiate).
