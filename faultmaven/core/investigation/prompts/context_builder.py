@@ -2259,8 +2259,10 @@ def _allocate_sections(
         user_cap = pb.user_message_max_tokens
         feedback_cap = pb.system_feedback_max_tokens
         journal_cap = pb.journal_max_tokens
+        conversation_cap = pb.conversation_history_max_tokens
     except Exception:
         user_cap, feedback_cap, journal_cap = 4000, 1500, 1500
+        conversation_cap = 8000
 
     try:
         evidence_fraction = (
@@ -2328,7 +2330,14 @@ def _allocate_sections(
             graduated_history,
             graduated_tokens,
             min(compact_tokens, section_budget),
-            section_budget,
+            # Bounded cap (§5.1): must not default to the whole section_budget or
+            # verbose history starves the journal/KB/hypotheses below it. Kept at
+            # least as large as the continuity floor so the compact-history floor
+            # is never capped below itself.
+            max(
+                min(compact_tokens, section_budget),
+                min(section_budget, conversation_cap),
+            ),
         ),
         (
             "investigation_journal",
@@ -2394,7 +2403,14 @@ def _allocate_sections(
         elif size <= alloc:
             rendered = text
         else:
-            rendered = budget._truncate_to(text, alloc)
+            # The journal is recency-ordered (oldest anchors first, newest last)
+            # and is anti-amnesia memory: under hard truncation keep the TAIL so
+            # the most-recent decisions/findings/blockers survive — dropping the
+            # newest (the default keep="head") is exactly wrong here. The other
+            # variable sections (KB, hypotheses) are rank-ordered best-first, so
+            # keep="head" is correct for them.
+            keep = "tail" if key == "investigation_journal" else "head"
+            rendered = budget._truncate_to(text, alloc, keep=keep)
 
         ctx[key] = rendered
         # Reuse the known size when the section was admitted whole (no recount).

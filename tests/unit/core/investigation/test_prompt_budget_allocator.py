@@ -259,6 +259,90 @@ def test_allocator_conversation_keeps_latest_turn_under_pressure():
     assert "latest question" in conv or "RECENT_MARKER_XYZ" in conv
 
 
+def test_allocator_journal_truncation_keeps_newest_not_oldest():
+    """A journal too large for its cap is truncated keeping the TAIL (newest),
+    not the head — dropping the newest anti-amnesia entries is exactly wrong."""
+    case = _case_with_current_turn_upload()
+    # All high-signal so the entry-level middle-out keeps every entry; enough of
+    # them (with long content) that the rendered journal still exceeds its cap,
+    # forcing the allocator's section-level truncation to fire.
+    # content is schema-capped at 200 chars; ~60 high-signal entries render to
+    # ~2100 tokens, comfortably over the ~1500-token journal cap so the
+    # allocator's section-level truncation fires.
+    case.investigation_journal = [
+        JournalEntry(
+            turn=i,
+            entry_type="finding",
+            content=f"finding number {i} " + ("detail " * 25),
+        )
+        for i in range(1, 61)
+    ]
+    ctx = build_investigation_context(
+        case,
+        "continue the investigation",
+        max_tokens=24000,
+        provider_name=PROVIDER,
+        model_name=MODEL,
+        use_allocator=True,
+    )
+    journal = ctx["investigation_journal"]
+    assert journal, "journal must survive"
+    assert "truncated" in journal.lower(), "expected the section to be truncated"
+    # The newest entry (60) survives (keep='tail'); the oldest (1) is dropped —
+    # the OLD keep='head' bug would invert this (keep 1, drop 60).
+    assert "finding number 60" in journal
+    assert "finding number 1 " not in journal
+
+
+def test_allocator_conversation_cap_does_not_starve_journal():
+    """Verbose conversation (priority #2) must not consume the whole section
+    budget and starve the journal (#3): conversation is bounded by its cap."""
+    from faultmaven.config.settings import get_settings
+
+    conv_cap = get_settings().prompt_budget.conversation_history_max_tokens
+    case = _case_with_current_turn_upload()
+    case.investigation_journal = [
+        JournalEntry(turn=1, entry_type="decision", content="focus on connection pool"),
+    ]
+
+    # Verbose history: the recent (verbatim) user turns carry large, token-dense
+    # pastes so the rendered conversation far exceeds the cap. (Older user turns
+    # are summarized; recent user content renders verbatim and uncapped — that is
+    # the section the cap must bound.)
+    def _dense(prefix, n):
+        return prefix + " " + " ".join(f"tok{prefix}{k}" for k in range(n))
+
+    case.messages = []
+    for i in range(1, 25):
+        case.messages.append(
+            {"turn_number": i, "role": "user", "content": _dense(f"u{i}", 2000)}
+        )
+        case.messages.append(
+            {"turn_number": i, "role": "assistant", "content": f"agent reply {i}"}
+        )
+    case.current_turn = 25
+    # Sanity: the raw conversation genuinely exceeds the cap, so the assertion
+    # below actually exercises the cap (guards against a no-op test).
+    from faultmaven.core.investigation.prompts.context_builder import (
+        _build_graduated_history,
+    )
+
+    assert _count(_build_graduated_history(case)) > conv_cap
+    ctx = build_investigation_context(
+        case,
+        "continue",
+        max_tokens=24000,
+        provider_name=PROVIDER,
+        model_name=MODEL,
+        use_allocator=True,
+    )
+    # Conversation is bounded by its cap (+ small marker/estimate tolerance)...
+    assert _count(ctx["conversation_history"]) <= conv_cap + 80
+    # ...and the journal below it survives rather than being starved to empty.
+    assert ctx["investigation_journal"], "journal must not be starved by history"
+    assert "connection pool" in ctx["investigation_journal"]
+
+
 # ---------------------------------------------------------------------------
 # Legacy path unchanged when the flag is off (default)
 # ---------------------------------------------------------------------------

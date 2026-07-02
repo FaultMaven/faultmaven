@@ -1895,6 +1895,19 @@ class PromptBudgetSettings(BaseSettings):
         validation_alias="PROMPT_SYSTEM_FEEDBACK_MAX_TOKENS",
         description="Cap on the reserved last-turn system feedback block.",
     )
+    conversation_history_max_tokens: int = Field(
+        default=8000,
+        ge=200,
+        le=100_000,
+        validation_alias="PROMPT_CONVERSATION_HISTORY_MAX_TOKENS",
+        description=(
+            "Cap on the (priority #2) conversation-history section. Without it "
+            "the section's cap defaults to the whole section_budget, so verbose "
+            "old turns can starve the lower-priority journal / KB / hypotheses "
+            "(§5.1: every variable section must be capped). The continuity floor "
+            "(latest turn via compact history) is still honored below this cap."
+        ),
+    )
 
     # --- Backstop (§7) ---
     min_viable_tokens: int = Field(
