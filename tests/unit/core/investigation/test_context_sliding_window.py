@@ -1811,22 +1811,38 @@ def test_da_index_only_elides_historical_extract_keeps_current_turn(monkeypatch)
         processing_mode="directed_analysis",
         provider_name=PROVIDER,
         model_name=MODEL,
+        tools_available=True,
     )
     assert "HISTORICAL_EXTRACT_BODY" in off
 
-    # Flag ON: historical extract elided (but marked + addressable); current-turn
-    # extract kept.
+    # Flag ON + tools available: historical extract elided (but marked +
+    # addressable); current-turn extract kept.
     monkeypatch.setattr(ic, "da_evidence_index_only", True)
     on = _build_evidence_context(
         case,
         processing_mode="directed_analysis",
         provider_name=PROVIDER,
         model_name=MODEL,
+        tools_available=True,
     )
     assert "HISTORICAL_EXTRACT_BODY" not in on, "historical extract body must be elided"
     assert 'elided="directed_analysis"' in on, "elision must be marked (INV-4)"
     assert HIST_ID in on, "historical file must stay addressable"
     assert "CURRENTTURN_EXTRACT_BODY" in on, "current-turn extract must be kept"
+
+    # Flag ON but tools NOT available (tool-less / tool-incapable turn): the
+    # extract must NOT be elided — the agent has no search_file to recover it, so
+    # eliding would strand it (NO INCORRECT CONCLUSION).
+    toolless = _build_evidence_context(
+        case,
+        processing_mode="directed_analysis",
+        provider_name=PROVIDER,
+        model_name=MODEL,
+        tools_available=False,
+    )
+    assert (
+        "HISTORICAL_EXTRACT_BODY" in toolless
+    ), "extract must be kept when search_file is unavailable"
 
 
 def test_da_index_only_off_in_triage_mode(monkeypatch):
@@ -1849,3 +1865,23 @@ def test_da_index_only_off_in_triage_mode(monkeypatch):
         case, processing_mode="triage", provider_name="openai", model_name="gpt-4"
     )
     assert "TRIAGE_EXTRACT_BODY" in out
+
+
+def test_evidence_omitted_marker_when_budget_drops_items():
+    """INV-4: when evidence items are skipped for budget, an <evidence_omitted>
+    marker is emitted so the omission is never silent."""
+    evs = [
+        _make_evidence(
+            summary="summary " + "x" * 200,
+            extract="idx",
+            source_file_id=f"file_{i:012x}",
+            collected_at_turn=1,
+        )
+        for i in range(10)
+    ]
+    case = _make_case_with_evidence(evs)
+    case.current_turn = 5
+    # Tight char budget → most items can't fit → some are skipped.
+    out = _build_evidence_context(case, char_budget_override=600)
+    assert "<evidence_omitted" in out, "omitted evidence must be marked (INV-4)"
+    assert 'reason="prompt_budget"' in out

@@ -2909,6 +2909,7 @@ class MilestoneEngine:
                 model_name=model_name,
                 processing_mode=classification.mode.value,
                 entity_highlights=entity_highlights_block,
+                tools_available=self._tools_effectively_available(),
             )
 
             # Determine schema based on status/stage
@@ -3544,22 +3545,29 @@ class MilestoneEngine:
             )
 
         force_schema_next = False
+        # Sticky: once the per-turn token ceiling is crossed we must wrap up on
+        # every subsequent iteration. Unlike force_schema_next (reset to False on
+        # each successful tool response, ~line "Reset the flag on successful tool
+        # usage"), this is NEVER cleared — otherwise the ceiling would be a no-op
+        # exactly when it matters (the crossing response usually contains tool
+        # calls, which would immediately reset force_schema_next).
+        ceiling_reached = False
 
         for iteration in range(self.MAX_TOOL_ITERATIONS + 1):
             is_final = iteration == self.MAX_TOOL_ITERATIONS
 
             # Tool availability per iteration:
             # - Iteration 0..N-1: all tools (investigation + schema)
-            # - Final iteration / force_schema: schema tools ONLY
-            if is_final or force_schema_next:
+            # - Final iteration / force_schema / ceiling reached: schema tools ONLY
+            if is_final or force_schema_next or ceiling_reached:
                 tools_for_call = schema_tools
             else:
                 tools_for_call = all_tools
 
             # DA turns: "required" — LLM must search evidence before answering
             # Other turns: "auto" — LLM decides whether to use tools
-            # Final/force-schema iterations always use "required" (schema tool only)
-            if is_final or force_schema_next:
+            # Final/force-schema/ceiling iterations always use "required" (schema only)
+            if is_final or force_schema_next or ceiling_reached:
                 choice = "required"
             elif force_tool_use:
                 choice = "required"
@@ -3639,13 +3647,17 @@ class MilestoneEngine:
                     if (
                         _turn_tracker.total_tokens > _turn_ceiling
                         and not is_final
-                        and not force_schema_next
+                        and not ceiling_reached
                     ):
                         logger.warning(
                             f"Turn token spend ({_turn_tracker.total_tokens}) exceeded "
                             f"ceiling ({_turn_ceiling}). Forcing the tool loop to wrap up."
                         )
-                        force_schema_next = True
+                        # Sticky (never reset) so the next iteration forces the
+                        # schema even though the current response's tool calls will
+                        # clear force_schema_next below. We already spent this
+                        # generation; the ceiling stops the NEXT round of tools.
+                        ceiling_reached = True
             except Exception as e:
                 # Any iteration failure (timeout, provider error, transient
                 # issue) raises ToolCallingUnsupportedError so the caller
@@ -4245,6 +4257,32 @@ class MilestoneEngine:
                 },
             )
         return result_text
+
+    def _tools_effectively_available(self) -> bool:
+        """True when investigation tools are registered AND the resolved
+        provider/model can actually do tool calling.
+
+        This is the real precondition behind the directed-analysis evidence
+        index+stub elision: the inline extract may only be dropped (telling the
+        agent to ``search_file`` for specifics) when ``search_file`` will actually
+        run this turn. A tool-less / tool-incapable turn that dropped the extract
+        would be stranded with neither the data nor a working tool — the
+        premature-conclusion failure FaultMaven guards against. Mirrors the
+        pre-check in ``_generate_structured_output_inner`` (provider +
+        ``supports_tool_calling``); absent capability info → assume capable, as
+        that path does.
+        """
+        if not self.investigation_tools:
+            return False
+        provider = self.da_provider or self.llm_provider
+        model = self.da_model if self.da_provider else None
+        supports = getattr(provider, "supports_tool_calling", None)
+        if supports is None:
+            return True
+        try:
+            return bool(supports(model))
+        except Exception:
+            return False
 
     def _build_da_tool_schemas(self) -> list[dict]:
         """Build OpenAI-format tool definitions for DA investigation tools."""

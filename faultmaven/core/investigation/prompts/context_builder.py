@@ -598,13 +598,14 @@ def get_token_budget_for_provider(
 
     Reference: Prompt Engineering Guide Section 11.3 - Provider-Specific Limits
 
-    This is the budget used by the **legacy (default) assembly path** and is
-    intentionally the original conservative per-provider table — so the
-    default, allocator-OFF behavior is unchanged. The priority-greedy allocator
-    does NOT use this function: it sizes against
+    A conservative per-provider budget table. The main prompt-assembly path does
+    NOT size against this — it uses
     ``model_context.resolve_model_budget(...).prompt_target`` (the flat
-    ``PROMPT_TARGET_TOKENS``) directly. Keeping the two separate is what makes
-    "allocator flags default OFF ⇒ production prompt assembly unchanged" true.
+    ``PROMPT_TARGET_TOKENS``) directly. This function survives as a fallback for
+    the two spots that need a per-provider number without a resolved budget: the
+    evidence char-cap in ``_effective_evidence_char_budget`` when no explicit
+    override is passed, and the ``max_tokens is None`` default in
+    ``build_investigation_context`` (direct callers / tests that omit a budget).
 
     Args:
         provider_name: Provider name (e.g., "anthropic", "openai", "fireworks")
@@ -700,13 +701,6 @@ class TokenBudget:
         return estimate_tokens(
             text, provider=self._provider or "local", model=self._model
         )
-
-    @property
-    def remaining_tokens(self) -> int:
-        return max(0, self._limit_units - self.used_tokens)
-
-    def has_budget(self, text: str) -> bool:
-        return self.used_tokens + self.count(text) <= self._limit_units
 
     def _truncate_to(self, text: str, token_limit: int, keep: str = "head") -> str:
         """Truncate *text* to ~``token_limit`` tokens with a marker.
@@ -1296,6 +1290,7 @@ def _build_evidence_context(
     provider_name: Optional[str] = None,
     model_name: Optional[str] = None,
     char_budget_override: Optional[int] = None,
+    tools_available: bool = False,
 ) -> str:
     """
     Build the evidence context section using a three-tier sliding window.
@@ -1469,19 +1464,33 @@ def _build_evidence_context(
         int(effective_total_chars * _current_turn_reserve_fraction()),
     )
 
-    # Directed-analysis index+stub lever (flag-gated, default off): in DA turns,
-    # historical evidence carries only its addressable stub + search_map, not the
-    # large <file_extract> body — the agent fetches specifics via search_file.
+    # Directed-analysis index+stub lever: in DA turns, historical evidence carries
+    # only its addressable stub + search_map, not the large <file_extract> body —
+    # the agent fetches specifics via search_file. Gated on THREE conditions,
+    # all required:
+    #   1. the lever is enabled (validation switch, default off — collapses to
+    #      always-on once the A/B + eval confirm no conclusion regression),
+    #   2. this is a directed_analysis turn,
+    #   3. tools_available — search_file will ACTUALLY run this turn. Without (3)
+    #      a tool-less / tool-incapable turn would be stranded with a stub that
+    #      points at a tool it cannot call (NO INCORRECT CONCLUSION). "directed_
+    #      analysis" is the classifier's ambiguous default and does NOT by itself
+    #      imply tool calling works, so tool-availability must be checked here.
     try:
         from faultmaven.config.settings import get_settings
 
         _da_index_only = get_settings().investigation_context.da_evidence_index_only
     except Exception:
         _da_index_only = False
-    da_index_only = _da_index_only and processing_mode == "directed_analysis"
+    da_index_only = (
+        _da_index_only and processing_mode == "directed_analysis" and tools_available
+    )
 
     result = "<evidence_collected>\n"
     total_chars = 0
+    # INV-4: count evidence items skipped for budget (Tiers B/C/D) so their
+    # omission is never silent — a marker is emitted before the closing tag.
+    n_omitted = 0
 
     # File ids already backed by an Evidence row — computed once and reused by
     # both the current-turn floor and the historical Tier-D fill (they used to
@@ -1670,6 +1679,7 @@ def _build_evidence_context(
         # Skip (not break) over-budget summaries so a single large item never
         # drops every lower-ranked item behind it (INV-EC-2).
         if total_chars + len(entry) > effective_total_chars:
+            n_omitted += 1
             continue
         result += entry
         total_chars += len(entry)
@@ -1691,6 +1701,7 @@ def _build_evidence_context(
             f"<summary>{ev.summary}</summary>{quote_block}</evidence>\n"
         )
         if total_chars + len(entry) > effective_total_chars:
+            n_omitted += 1
             continue
         result += entry
         total_chars += len(entry)
@@ -1727,16 +1738,33 @@ def _build_evidence_context(
             reverse=True,
         )
         for uf in orphan_files:
-            entry = _render_orphan_file_block(uf, hash_first_seen, current_turn)
+            # DA index-only elides HISTORICAL evidence extracts (these orphans are
+            # all historical — current-turn ones went through the floor above), so
+            # a not-yet-promoted file is treated the same as an Evidence-backed one
+            # (stub only, addressable via search_file) instead of dumped in full.
+            entry = _render_orphan_file_block(
+                uf, hash_first_seen, current_turn, summary_only=da_index_only
+            )
             # Greedy newest-first fill with skip-not-break (INV-EC-2): one large
             # orphan never drops every smaller orphan behind it. Note this is a
             # greedy fit, not a strict newest-wins policy — a large newer orphan
             # may be skipped while a smaller older one fits. Current-turn files
             # are never affected (handled by the floor above).
             if total_chars + len(entry) > effective_total_chars:
+                n_omitted += 1
                 continue
             result += entry
             total_chars += len(entry)
+
+    # INV-4: never drop evidence silently. If any item was skipped for budget,
+    # say so — the agent can then ask for it or search_file rather than assume
+    # the shown set is exhaustive.
+    if n_omitted:
+        result += (
+            f'  <evidence_omitted count="{n_omitted}" '
+            f'reason="prompt_budget" note="More evidence exists but did not fit '
+            f'this turn; use search_file / list_evidence to reach it." />\n'
+        )
 
     result += "</evidence_collected>"
     return result
@@ -2594,6 +2622,7 @@ def build_investigation_context(
     enable_stage_specific_loading: bool = True,
     processing_mode: Optional[str] = None,
     entity_highlights: Optional[str] = None,
+    tools_available: bool = False,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
@@ -2728,6 +2757,7 @@ def build_investigation_context(
         provider_name=provider_name,
         model_name=model_name,
         char_budget_override=evidence_char_override,
+        tools_available=tools_available,
     )
 
     # 5. Causal graph (hypotheses ARE chains, methodology M3).

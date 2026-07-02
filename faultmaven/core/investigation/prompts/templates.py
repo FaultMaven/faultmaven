@@ -2666,6 +2666,7 @@ def get_prompt_for_case(
     use_state_summary: Optional[bool] = None,
     processing_mode: Optional[str] = None,
     entity_highlights: Optional[str] = None,
+    tools_available: bool = False,
 ) -> str:
     """Build the final prompt based on case state and stage.
 
@@ -2683,6 +2684,11 @@ def get_prompt_for_case(
             Milestone engine fetches via ``fetch_entity_highlights`` when
             the feature flag is on; ``None`` / ``""`` degrades to an
             empty section in the INVESTIGATING template.
+        tools_available: True when the investigation tools are registered AND the
+            resolved model can do tool calling. Gates the directed-analysis
+            evidence index+stub elision — the extract is only dropped (telling the
+            agent to search_file) when search_file will actually run. Conservative
+            default False: no elision unless the caller confirms tools work.
 
     Returns:
         Formatted prompt for the LLM
@@ -2709,6 +2715,7 @@ def get_prompt_for_case(
             use_state_summary=use_state_summary,
             processing_mode=processing_mode,
             entity_highlights=entity_highlights,
+            tools_available=tools_available,
         )
 
     def _render(ctx: dict) -> str:
