@@ -356,10 +356,10 @@ def select_surfaced_causal_needs(case: "Case") -> "list[EvidenceNeed]":
         return causal
     shared = Counter(n.request_text for n in causal)  # carrier count per datum
     ranked = sorted(causal, key=lambda n: (shared[n.request_text], n.need_id))
-    n = len(ranked)
-    stuck = getattr(case, "turns_without_progress", 0) or 0
-    offset = (stuck // _ROTATE_EVERY_K) % n
-    return [ranked[(offset + i) % n] for i in range(_SURFACED_CAUSAL_CAP)]
+    pool_size = len(ranked)
+    stuck = case.turns_without_progress
+    offset = (stuck // _ROTATE_EVERY_K) % pool_size
+    return [ranked[(offset + i) % pool_size] for i in range(_SURFACED_CAUSAL_CAP)]
 
 
 def _regen_differential_evidence_needs(

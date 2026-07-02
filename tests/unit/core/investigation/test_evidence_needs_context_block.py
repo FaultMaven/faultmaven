@@ -658,3 +658,18 @@ class TestCausalSurfaceCap:
             assert need.request_text in out
         shown_causal = sum(f"causal datum {i}" in out for i in range(6))
         assert shown_causal == _SURFACED_CAUSAL_CAP
+
+    def test_overflow_notice_counts_surface_capped_causal_needs(self):
+        # The "…and N more not shown" notice must count causal needs the SURFACE cap
+        # held back, not just render-cap remainder — otherwise the LLM is told the ask
+        # list is near-complete while live discriminators are withheld (anti-anchoring).
+        case = _make_case(stage=InvestigationStage.DIAGNOSIS)
+        for i in range(6):  # 6 causal, only _SURFACED_CAUSAL_CAP shown, 0 symptom
+            _make_need(
+                case,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text=f"causal datum {i}",
+            )
+        out = _build_evidence_needs_block(case)
+        hidden = 6 - _SURFACED_CAUSAL_CAP
+        assert f"{hidden} more" in out  # hidden causal asks are reported, not silent
