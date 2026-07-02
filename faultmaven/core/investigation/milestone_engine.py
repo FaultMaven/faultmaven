@@ -3750,13 +3750,14 @@ class MilestoneEngine:
                     except Exception:
                         _turn_ceiling = 150000
                     if (
-                        _turn_tracker.total_tokens > _turn_ceiling
+                        _turn_tracker.spend_weighted_tokens > _turn_ceiling
                         and not is_final
                         and not ceiling_reached
                     ):
                         logger.warning(
-                            f"Turn token spend ({_turn_tracker.total_tokens}) exceeded "
-                            f"ceiling ({_turn_ceiling}). Forcing the tool loop to wrap up."
+                            f"Turn spend ({_turn_tracker.spend_weighted_tokens} "
+                            f"cost-weighted tokens) exceeded ceiling ({_turn_ceiling}). "
+                            f"Forcing the tool loop to wrap up."
                         )
                         # Sticky (never reset) so the next iteration forces the
                         # schema even though the current response's tool calls will
