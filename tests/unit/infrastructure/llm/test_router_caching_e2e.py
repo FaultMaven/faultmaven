@@ -116,14 +116,12 @@ class TestCachePromptEndToEnd:
             with patch("aiohttp.ClientSession", return_value=mock_session):
                 # prompt=None keeps the SemanticCache (and its embedder) out of
                 # the path; messages route straight through to the provider.
-                # tools=[] mirrors the real cache_prompt caller (the DA tool
-                # loop always passes tools) and sidesteps a pre-existing
-                # AnthropicProvider crash on tools=None (unrelated to caching).
+                # tools is left at the router default (None) — the full chain
+                # must handle that without crashing.
                 await router.route(
                     prompt=None,
                     messages=_MESSAGES,
                     model="claude-sonnet-4-6",
-                    tools=[],
                     cache_prompt=True,
                 )
 
@@ -154,7 +152,6 @@ class TestCachePromptEndToEnd:
                     prompt=None,
                     messages=_MESSAGES,
                     model="claude-sonnet-4-6",
-                    tools=[],
                 )
 
         body = _request_body(mock_session)

@@ -154,6 +154,20 @@ class TestAnthropicExtractionAndCaching:
         body = _request_body(mock_session)
         assert body["system"] == "Be helpful."
 
+    async def test_tools_none_kwarg_does_not_crash(self, anthropic_provider):
+        # The router always forwards tools as a kwarg (tools=None for non-tool
+        # calls). generate() must not iterate None; it should just omit tools.
+        response_data = {
+            "content": [{"type": "text", "text": "hi"}],
+            "usage": {"input_tokens": 5, "output_tokens": 5},
+        }
+        mock_session = _mock_aiohttp_session(response_data)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = await anthropic_provider.generate("hi", tools=None)
+
+        assert result.content == "hi"
+        assert "tools" not in _request_body(mock_session)
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio

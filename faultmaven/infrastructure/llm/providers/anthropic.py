@@ -144,8 +144,11 @@ class AnthropicProvider(BaseLLMProvider):
         if "stop_sequences" in kwargs:
             request_body["stop_sequences"] = kwargs["stop_sequences"]
 
-        # Handle tool/function calling (for structured output)
-        if "tools" in kwargs:
+        # Handle tool/function calling (for structured output). Guard on a truthy
+        # value, not mere presence: the router always forwards ``tools`` as a
+        # kwarg (``tools=None`` for non-tool calls), and a bare ``"tools" in
+        # kwargs`` check would then iterate ``None`` and raise TypeError.
+        if kwargs.get("tools"):
             # Convert OpenAI-style tools to Anthropic format
             openai_tools = kwargs["tools"]
             anthropic_tools = []
