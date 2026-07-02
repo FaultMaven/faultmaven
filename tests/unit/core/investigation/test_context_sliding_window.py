@@ -1774,16 +1774,14 @@ class TestCurrentTurnFloor:
 
 
 # ============================================================
-# Directed-analysis index+stub lever (DA_EVIDENCE_INDEX_ONLY)
+# Directed-analysis index+stub (tool-gated; historical extract elided)
 # ============================================================
 
 
-def test_da_index_only_elides_historical_extract_keeps_current_turn(monkeypatch):
-    """With DA_EVIDENCE_INDEX_ONLY on, historical evidence in a directed-analysis
-    turn renders stub + search_map only (no file_extract body), while the
-    current-turn upload keeps its extract and every file stays addressable."""
-    from faultmaven.config.settings import get_settings
-
+def test_da_index_stub_elides_historical_extract_keeps_current_turn():
+    """In a directed-analysis turn WITH tools available, historical evidence
+    renders stub + search_map only (no file_extract body), while the current-turn
+    upload keeps its extract and every file stays addressable."""
     PROVIDER, MODEL = "openai", "gpt-4"
     HIST_ID = "file_aaaa11112222"
     CUR_ID = "file_bbbb33334444"
@@ -1802,22 +1800,8 @@ def test_da_index_only_elides_historical_extract_keeps_current_turn(monkeypatch)
     case = _make_case_with_evidence([hist, cur])
     case.current_turn = 5
 
-    ic = get_settings().investigation_context
-
-    # Flag OFF (baseline): DA mode still renders the historical extract body.
-    monkeypatch.setattr(ic, "da_evidence_index_only", False)
-    off = _build_evidence_context(
-        case,
-        processing_mode="directed_analysis",
-        provider_name=PROVIDER,
-        model_name=MODEL,
-        tools_available=True,
-    )
-    assert "HISTORICAL_EXTRACT_BODY" in off
-
-    # Flag ON + tools available: historical extract elided (but marked +
-    # addressable); current-turn extract kept.
-    monkeypatch.setattr(ic, "da_evidence_index_only", True)
+    # DA turn + tools available: historical extract elided (marked + addressable);
+    # current-turn extract kept.
     on = _build_evidence_context(
         case,
         processing_mode="directed_analysis",
@@ -1830,9 +1814,9 @@ def test_da_index_only_elides_historical_extract_keeps_current_turn(monkeypatch)
     assert HIST_ID in on, "historical file must stay addressable"
     assert "CURRENTTURN_EXTRACT_BODY" in on, "current-turn extract must be kept"
 
-    # Flag ON but tools NOT available (tool-less / tool-incapable turn): the
-    # extract must NOT be elided — the agent has no search_file to recover it, so
-    # eliding would strand it (NO INCORRECT CONCLUSION).
+    # Tools NOT available (tool-less / tool-incapable turn): the extract must NOT
+    # be elided — the agent has no search_file to recover it, so eliding would
+    # strand it (NO INCORRECT CONCLUSION).
     toolless = _build_evidence_context(
         case,
         processing_mode="directed_analysis",
@@ -1845,11 +1829,9 @@ def test_da_index_only_elides_historical_extract_keeps_current_turn(monkeypatch)
     ), "extract must be kept when search_file is unavailable"
 
 
-def test_da_index_only_off_in_triage_mode(monkeypatch):
-    """The lever only fires in directed_analysis; TRIAGE keeps the extract so
-    triage can answer from the structural index."""
-    from faultmaven.config.settings import get_settings
-
+def test_da_index_stub_off_in_triage_mode():
+    """Index+stub only fires in directed_analysis; TRIAGE keeps the extract so
+    triage can answer from the structural index (even with tools available)."""
     ev = _make_evidence(
         summary="historical log",
         extract="TRIAGE_EXTRACT_BODY " * 40,
@@ -1858,11 +1840,12 @@ def test_da_index_only_off_in_triage_mode(monkeypatch):
     )
     case = _make_case_with_evidence([ev])
     case.current_turn = 5
-    monkeypatch.setattr(
-        get_settings().investigation_context, "da_evidence_index_only", True
-    )
     out = _build_evidence_context(
-        case, processing_mode="triage", provider_name="openai", model_name="gpt-4"
+        case,
+        processing_mode="triage",
+        provider_name="openai",
+        model_name="gpt-4",
+        tools_available=True,
     )
     assert "TRIAGE_EXTRACT_BODY" in out
 

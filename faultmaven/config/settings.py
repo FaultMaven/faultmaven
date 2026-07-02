@@ -1719,21 +1719,6 @@ class InvestigationContextSettings(BaseSettings):
         description="How many most-recent data evidence items get full file_extract (Tier A).",
     )
 
-    da_evidence_index_only: bool = Field(
-        default=False,
-        validation_alias="DA_EVIDENCE_INDEX_ONLY",
-        description=(
-            "Directed-analysis prompt-sizing lever (default OFF — validate via "
-            "A/B + eval before enabling). When on, HISTORICAL evidence in "
-            "directed_analysis turns renders as its addressable stub + search_map "
-            "only, dropping the large <file_extract> body — the agent fetches "
-            "specifics via search_file instead of carrying the full extract every "
-            "turn. The current-turn upload keeps its extract (freshness / "
-            "INV-EC-1). Targets the single largest prompt-bloat source (the ~19K "
-            "evidence dump measured on a single log file)."
-        ),
-    )
-
     max_chars_per_item: int = Field(
         default=4000,
         ge=500,

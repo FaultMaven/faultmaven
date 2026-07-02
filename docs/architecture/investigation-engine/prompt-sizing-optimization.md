@@ -57,10 +57,10 @@ tiny tool-call (~180 output tokens) — carries a ~22K prompt.
    tool-loop base cached / not-re-sent across **all** providers (§4.3).
 
 **Non-goal / guardrail:** none of these may cause a wrong or collapsed
-investigation. Per [soundness guarantees](../../../SOUNDNESS_ANALYSIS.md), the
-still-validating behavioral lever (goal 2, `DA_EVIDENCE_INDEX_ONLY`) ships **off
-by default** behind a sim/playbook eval for conclusion regressions before it
-becomes the default (§5).
+investigation. Per [soundness guarantees](../../../SOUNDNESS_ANALYSIS.md), goal 2
+was validated by a sim/playbook eval (no conclusion regression) and is safe by
+construction via its tool-availability gate (§4.2) before becoming the standing
+behavior.
 
 ## 4. Strategy
 
@@ -88,24 +88,29 @@ Both are covered by bite-verified regression tests.
 
 ### 4.2 DA-turn evidence = index + stub (goal 2) — the biggest single lever
 
-The render already exists: `_render_orphan_file_block(..., summary_only=True)`
-emits the addressable stub (id, filename, data_type, `searchable`) **without** the
-`file_extract` body, and the structural index is already split into
-`file_extract` / `search_map` / `file_meta`. The change is to *select* that render
-in Directed-Analysis turns:
+**Status: implemented, validated, standing behavior (no flag).** In a
+directed-analysis turn *with tools available*, historical evidence renders as its
+addressable stub + `search_map` only (`_render_orphan_file_block(summary_only=…)`
+and the Tier-A elision), dropping the `file_extract` body with a marked
+`elided="directed_analysis"` note (INV-4). The current-turn upload always keeps its
+full extract (freshness / INV-EC-1), and TRIAGE turns are unchanged (triage answers
+*from* the structural index).
 
-- In DA turns, historical evidence renders as stub + `search_map` only (no
-  `file_extract`). The current-turn upload keeps its INV-EC-1 floor (a fresh
-  upload is never dropped) but at a **tightened** DA extract cap.
-- TRIAGE turns are unchanged — triage answers *from* the structural index, so it
-  must stay in the prompt.
-- Mechanically: gate the evidence extract on `processing_mode` (already threaded
-  into `build_investigation_context` / `get_prompt_for_case`), and lower the DA
-  effective extract budget.
+**Gated on tool-availability, not a flag.** The elision is only sound when
+`search_file` will actually run — otherwise a tool-less / tool-incapable turn is
+stranded with a stub pointing at an uncallable tool. So the condition is
+`processing_mode == "directed_analysis" AND tools_available`, where
+`tools_available` (investigation tools registered AND `supports_tool_calling`) is
+computed by `milestone_engine._tools_effectively_available()` and threaded through
+`get_prompt_for_case` → `build_investigation_context` → `_build_evidence_context`.
 
-The prompt already instructs the agent to prefer `search_file` in DA mode
-(templates.py §DA guidance), so removing the redundant inline extract aligns the
-context with the instructions rather than contradicting them.
+**Measured effect (offline A/B, deterministic):** the historical evidence block
+drops **87–93%** — e.g. ~1,655 → 118 tokens for one file, and the whole block from
+its ~5K budget cap to ~0.5K when several historical files are present (the saving
+plateaus at ~4.6K tokens because OFF is already capped by the evidence budget). A
+tool-less build keeps the full extract (safety verified). A playbook-S9 eval showed
+**no conclusion regression**: search turns stay grounded because the agent uses
+`search_file` to recover specifics.
 
 ### 4.3 Per-turn budget + cross-provider base caching (goal 3)
 
@@ -117,14 +122,18 @@ context with the instructions rather than contradicting them.
   total spend exceeds it, an end-of-turn WARNING (`turn_token_budget_exceeded`)
   logs the call breakdown. Observational only — no behavior change — so
   high-spend turns are surfaced without truncating a legitimately deep turn.
-- **Cross-provider base caching (deferred).** The tool loop re-sends the stable
-  prefix each iteration with `cache_prompt=True`, which only Anthropic honors.
-  Making other providers honor it is provider-layer work (each provider must
-  translate the flag to its own caching API, and support varies — some don't
-  cache at all). It belongs with the LLM-provider workstream, and its value is
-  largely absorbed by §4.2: the DA base shrinks from ~22K to a stub, so the
-  re-sent tool-loop base is small regardless of caching. Deferred; not on this
-  branch.
+- **Tool-loop re-send is the dominant cost — NOT absorbed by §4.2 (course
+  correction).** An earlier draft deferred tool-loop work assuming the DA base
+  shrink would absorb it. The A/B measurement refutes that: on playbook S9,
+  per-turn spend was **115K–240K tokens** while the assembled base is only ~5–35K
+  — the tool loop re-sends the *growing* message history (base + accumulated tool
+  calls/results) on every iteration, so per-turn cost scales with iteration count,
+  not base size. The §4.2 base shrink (~4.6K/turn) is real but ~10% of a tool-heavy
+  turn. **The tool-loop re-send / cross-provider prefix caching is therefore the
+  single biggest remaining lever and should be the next workstream, not a
+  deferral.** `cache_prompt=True` is only honored by Anthropic today; making other
+  providers honor it (or restructuring the loop so the stable prefix isn't re-sent
+  full-price) is where the large win is.
 
 ### 4.4 Instrument-gap fixes (found during measurement — tracked separately)
 
@@ -140,29 +149,32 @@ yet on `main`; they are *not* part of this prompt-sizing branch:
   Fold the key fields into the message (or route through the structured logger).
 
 This branch's measurement instrument is the per-turn `turn_token_spend` tracker
-plus the A/B run described in §5.
+plus the deterministic offline A/B on the evidence block.
 
-## 5. Rollout & acceptance
+## 5. Rollout & acceptance — outcome
 
-The allocator is the single assembly path (§4.1) and is covered by the full
-investigation unit + integration suite. The remaining, still-validating levers
-(§4.2 `DA_EVIDENCE_INDEX_ONLY`, §4.3 `PROMPT_TURN_TOKEN_BUDGET`) ship **off by
-default** and are adopted only after:
+The allocator is the single assembly path (§4.1), covered by the full investigation
+unit + integration suite. The DA index+stub (§4.2) was validated and is now the
+standing tool-gated behavior (flag removed):
 
-1. **A/B measurement.** Drive the playbook (e.g. S9) with the lever off vs on and
-   read `turn_token_spend`: confirm the projected per-turn reduction (the ~19K
-   historical evidence dump collapsing to a stub on directed-analysis turns).
-2. **Eval.** Run the sim / playbook suite and confirm no conclusion regression
-   (INV-1 current-turn floor holds, no wrong/collapsed investigations) with the
-   lever on.
-3. Default the lever on only after 1 + 2 pass; once a lever is the settled
-   behavior, collapse its flag too (same no-dead-flags principle that retired the
-   allocator gate).
+1. **A/B measurement (done).** The per-turn LLM A/B was confounded by tool-loop
+   call-count variance, so the evidence-block delta was measured *offline* and
+   deterministically: 87–93% reduction, plateauing at ~4.6K tokens (OFF is capped
+   by the evidence budget). Tool-less builds keep the full extract.
+2. **Eval (done).** Playbook S9 with the elision on showed no conclusion
+   regression — search turns stay grounded (the agent recovers specifics via
+   `search_file`); the current-turn floor (INV-1) holds.
+3. **Flag collapsed.** With 1 + 2 passing and the tool-availability gate making it
+   safe-by-construction, `DA_EVIDENCE_INDEX_ONLY` was removed — the elision is the
+   behavior, not an option (same no-dead-flags principle that retired the allocator
+   gate). `PROMPT_TURN_TOKEN_BUDGET` remains an operator-tunable observability knob,
+   not a behavior gate.
 
-## 6. Projected effect
+## 6. Effect — measured, and where the real prize is
 
-With §4.2 (evidence ~19K → a stub) the directed-analysis base drops sharply, and
-with the base no longer re-sent large across tool-loop iterations, per-turn prompt
-tokens project from ~66K into the ~15–25K range (dominated by the one full
-reasoning call under the 32K jar), a ~60–75% reduction — to be **confirmed by the
-§5 A/B**, not assumed.
+The §4.2 evidence shrink is real and safe but **modest relative to per-turn spend**:
+~4.6K tokens off a base that, on tool-heavy turns, is re-sent 3–4× and swamped by
+accumulated tool results (per-turn totals 115K–240K on S9). The measurement’s main
+lesson is the §4.3 course correction: **the tool-loop re-send is the dominant cost
+and the next lever.** Do not treat §4.2 as the finish line — it is one contributor;
+the large win is in not re-paying for the stable prefix every tool iteration.

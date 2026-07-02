@@ -1464,27 +1464,19 @@ def _build_evidence_context(
         int(effective_total_chars * _current_turn_reserve_fraction()),
     )
 
-    # Directed-analysis index+stub lever: in DA turns, historical evidence carries
-    # only its addressable stub + search_map, not the large <file_extract> body —
-    # the agent fetches specifics via search_file. Gated on THREE conditions,
-    # all required:
-    #   1. the lever is enabled (validation switch, default off — collapses to
-    #      always-on once the A/B + eval confirm no conclusion regression),
-    #   2. this is a directed_analysis turn,
-    #   3. tools_available — search_file will ACTUALLY run this turn. Without (3)
+    # Directed-analysis index+stub: in DA turns, historical evidence carries only
+    # its addressable stub + search_map, not the large <file_extract> body — the
+    # agent fetches specifics via search_file. Validated (A/B + eval, no conclusion
+    # regression), so it is the standing behavior rather than a flag. Gated on TWO
+    # conditions, both required:
+    #   1. this is a directed_analysis turn, AND
+    #   2. tools_available — search_file will ACTUALLY run this turn. Without (2)
     #      a tool-less / tool-incapable turn would be stranded with a stub that
     #      points at a tool it cannot call (NO INCORRECT CONCLUSION). "directed_
     #      analysis" is the classifier's ambiguous default and does NOT by itself
     #      imply tool calling works, so tool-availability must be checked here.
-    try:
-        from faultmaven.config.settings import get_settings
-
-        _da_index_only = get_settings().investigation_context.da_evidence_index_only
-    except Exception:
-        _da_index_only = False
-    da_index_only = (
-        _da_index_only and processing_mode == "directed_analysis" and tools_available
-    )
+    # The current-turn upload always keeps its full extract (freshness / INV-EC-1).
+    da_index_only = processing_mode == "directed_analysis" and tools_available
 
     result = "<evidence_collected>\n"
     total_chars = 0
