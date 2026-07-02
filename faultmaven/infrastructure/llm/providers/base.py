@@ -62,6 +62,11 @@ class NormalizedResponse:
     response_time_ms: int = 0
     cached: bool = False
     raw_response: Any = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
+    prompt_cache_hit: bool = False
 
     def __post_init__(self):
         if self.tool_calls is None:
@@ -179,6 +184,20 @@ class LLMResponse:
     # thoughtSignature, and skipping any one of them produces an HTTP 400 on
     # the next turn. Stays `None` for providers that don't need this.
     provider_metadata: Optional[Dict[str, Any]] = None
+    # Fine-grained token accounting. Buckets are DISJOINT so they can be summed
+    # for cost: input_tokens is the *uncached* prompt tokens only; cached prompt
+    # tokens are reported separately in cache_read_tokens. Providers whose API
+    # reports an inclusive prompt count (OpenAI-family: prompt_tokens already
+    # contains cached_tokens) must subtract before populating input_tokens.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
+    # True when the provider served part of the prompt from ITS OWN prompt cache
+    # (a real, reduced-rate billed read). Distinct from `cached`, which means the
+    # response was served from FaultMaven's local SemanticCache (zero provider
+    # spend). Never conflate the two — doing so mislabels billed calls as free.
+    prompt_cache_hit: bool = False
 
 
 @dataclass

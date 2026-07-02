@@ -98,6 +98,10 @@ class AnthropicProvider(BaseLLMProvider):
 
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)
+        # Ephemeral prompt caching (5-min TTL). Applied as a post-processing step
+        # below so it works regardless of where `system` came from. Transparent
+        # to the model output — only affects billing of the stable prefix.
+        cache_prompt = bool(kwargs.pop("cache_prompt", False))
         if messages:
             converted = self._convert_messages_to_anthropic(messages)
             request_body["messages"] = converted["messages"]
@@ -109,6 +113,33 @@ class AnthropicProvider(BaseLLMProvider):
         # Add any additional parameters (system kwarg overrides messages-extracted system)
         if "system" in kwargs:
             request_body["system"] = kwargs["system"]
+
+        # Apply the cache breakpoint once, after `system` is finalized. Caching
+        # the system block also caches the tool definitions (the large, stable
+        # prefix). When there is no system prompt, cache the sole user turn.
+        if cache_prompt:
+            system_text = request_body.get("system")
+            if isinstance(system_text, str) and system_text:
+                request_body["system"] = [
+                    {
+                        "type": "text",
+                        "text": system_text,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            elif not messages and isinstance(prompt, str) and prompt:
+                request_body["messages"] = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    }
+                ]
 
         if "stop_sequences" in kwargs:
             request_body["stop_sequences"] = kwargs["stop_sequences"]
@@ -210,9 +241,17 @@ class AnthropicProvider(BaseLLMProvider):
                         )
                     )
 
-        # Calculate metrics
+        # Calculate metrics. Anthropic reports disjoint token buckets:
+        # input_tokens is the UNCACHED prompt; cache_read/creation are separate.
         response_time_ms = int((time.time() - start_time) * 1000)
-        tokens_used = response_data.get("usage", {}).get("output_tokens", 0)
+        usage_data = response_data.get("usage") or {}
+        input_tokens = usage_data.get("input_tokens") or 0
+        output_tokens = usage_data.get("output_tokens") or 0
+        cache_write_tokens = usage_data.get("cache_creation_input_tokens") or 0
+        cache_read_tokens = usage_data.get("cache_read_input_tokens") or 0
+        tokens_used = (
+            input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+        )
 
         # Calculate confidence based on model and response quality
         # For structured output (tool calls), content may be empty - that's expected
@@ -230,6 +269,11 @@ class AnthropicProvider(BaseLLMProvider):
             response_time_ms=response_time_ms,
             cached=False,
             tool_calls=tool_calls,  # Add tool_calls for function calling support
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cache_read_tokens=cache_read_tokens,
+            prompt_cache_hit=bool(cache_read_tokens > 0),
         )
 
     def _calculate_confidence(

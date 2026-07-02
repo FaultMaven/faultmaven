@@ -473,6 +473,47 @@ llm_tokens = Counter(
     labelnames=["provider", "model"],
 )
 
+# --- Fine-grained LLM spend metrics ---------------------------------------
+# These are emitted at the registry chokepoint, once per REAL provider API call
+# — including fallback / low-confidence attempts that the caller discards. That
+# is deliberately a different basis from llm_tokens_total above (winner per
+# route): sum(llm_call_tokens_total) >= llm_tokens_total whenever the fallback
+# chain fans out, and the gap IS the fallback waste you want to see.
+llm_call_tokens = Counter(
+    "llm_call_tokens_total",
+    "LLM tokens per provider API call, split by token type. Counts every "
+    "billed call including discarded fallback attempts.",
+    labelnames=[
+        "provider",
+        "model",
+        "token_type",
+    ],  # input|output|cache_read|cache_write
+)
+
+llm_cost_usd = Counter(
+    "llm_cost_usd_total",
+    "Estimated LLM spend in USD per provider API call (from the operator-"
+    "maintained price table). Excludes unpriced models — see "
+    "llm_unpriced_calls_total.",
+    labelnames=["provider", "model"],
+)
+
+llm_provider_calls = Counter(
+    "llm_provider_calls_total",
+    "Provider API calls at the routing chokepoint, by disposition. "
+    "outcome=kept: returned to caller; low_confidence: billed then discarded "
+    "by the fallback chain (pure waste).",
+    labelnames=["provider", "model", "outcome"],  # kept|low_confidence
+)
+
+llm_unpriced_calls = Counter(
+    "llm_unpriced_calls_total",
+    "Provider API calls whose (provider, model) had no price entry, so their "
+    "spend is NOT included in llm_cost_usd_total. Non-zero => cost is under-"
+    "reported; add the model to the price table or LLM_PRICING_OVERRIDES.",
+    labelnames=["provider", "model"],
+)
+
 # SLA gauges — exported from the SLA tracker at /metrics scrape time so the
 # values behind /health/sla become alertable. Status mapping: 3=meeting,
 # 2=at_risk, 1=breached, 0=unknown (alert on `sla_status < 3`).

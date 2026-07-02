@@ -140,6 +140,8 @@ class FireworksProvider(BaseLLMProvider):
         # Extract routing-level timeout override before payload update so it
         # is not forwarded to the Fireworks API as an unknown request field.
         effective_timeout = kwargs.pop("timeout", None) or self.config.timeout
+        # Anthropic-only caching hint; drop before payload.update(kwargs).
+        kwargs.pop("cache_prompt", None)
 
         # Add any additional kwargs, filtering out None values to avoid
         # overwriting constructed payload fields
@@ -177,9 +179,17 @@ class FireworksProvider(BaseLLMProvider):
                     # Extract tool calls if present
                     tool_calls = self._extract_tool_calls_from_message(message)
 
-                    # Extract token usage
-                    usage = data.get("usage", {})
-                    tokens_used = usage.get("total_tokens", 0)
+                    # Extract token usage (OpenAI-compatible; prompt_tokens is
+                    # inclusive of cached tokens, so subtract for disjoint buckets).
+                    usage = data.get("usage") or {}
+                    prompt_tokens = usage.get("prompt_tokens") or 0
+                    output_tokens = usage.get("completion_tokens") or 0
+                    tokens_used = usage.get("total_tokens") or (
+                        prompt_tokens + output_tokens
+                    )
+                    prompt_details = usage.get("prompt_tokens_details") or {}
+                    cache_read_tokens = prompt_details.get("cached_tokens") or 0
+                    input_tokens = max(prompt_tokens - cache_read_tokens, 0)
 
                     response_time = self._get_response_time_ms()
 
@@ -191,6 +201,10 @@ class FireworksProvider(BaseLLMProvider):
                         tokens_used=tokens_used,
                         response_time_ms=response_time,
                         tool_calls=tool_calls,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        prompt_cache_hit=bool(cache_read_tokens > 0),
                     )
         except asyncio.TimeoutError:
             raise LLMException(

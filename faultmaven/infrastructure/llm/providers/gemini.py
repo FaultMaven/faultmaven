@@ -305,6 +305,9 @@ class GeminiProvider(BaseLLMProvider):
         content = ""
         tool_calls = None
         tokens_used = 0
+        input_tokens = 0
+        output_tokens = 0
+        cache_read_tokens = 0
         raw_assistant_parts: list | None = None
 
         if "candidates" in response_data and response_data["candidates"]:
@@ -340,11 +343,15 @@ class GeminiProvider(BaseLLMProvider):
                             )
                         )
 
-            # Extract token usage if available
+            # Extract token usage if available. promptTokenCount is inclusive of
+            # cached content, so subtract to keep buckets disjoint for cost.
             if response_data.get("usageMetadata"):
-                tokens_used = response_data["usageMetadata"].get(
-                    "candidatesTokenCount", 0
-                )
+                _usage = response_data["usageMetadata"]
+                output_tokens = _usage.get("candidatesTokenCount") or 0
+                cache_read_tokens = _usage.get("cachedContentTokenCount") or 0
+                _prompt = _usage.get("promptTokenCount") or 0
+                input_tokens = max(_prompt - cache_read_tokens, 0)
+                tokens_used = _usage.get("totalTokenCount") or (_prompt + output_tokens)
 
         # Handle potential safety blocks or other issues
         if not content and "candidates" in response_data:
@@ -411,6 +418,10 @@ class GeminiProvider(BaseLLMProvider):
             cached=False,
             tool_calls=tool_calls,
             provider_metadata=provider_metadata,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            prompt_cache_hit=bool(cache_read_tokens > 0),
         )
 
     def _calculate_confidence(
