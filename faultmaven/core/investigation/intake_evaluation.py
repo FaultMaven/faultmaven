@@ -372,6 +372,17 @@ def _regen_differential_evidence_needs(
     cause Y" asks. Emission is therefore capped at ``_DIFFERENTIAL_NEED_BUDGET`` OPEN
     needs at a time, refilled as needs resolve — coverage is preserved, rate-limited.
 
+    Scope of the cap (known limitations, tracked for a follow-up): it bounds the OPEN
+    pool of the CURRENT differential's needs. It does NOT (a) evict a lower-ranked open
+    need in favour of a higher-ranked one that appears later, nor (b) supersede/GC a need
+    whose cause has silently dropped out of the differential (only REFUTED / deductively
+    VALIDATED causes are superseded here). (b) is hard to do safely without an explicit
+    differential-origin marker on ``EvidenceNeed`` — the ``eneed_`` id prefix is shared
+    with symptom/LLM needs, so departed-cause needs can't be told apart by scanning. In a
+    stable-differential case (the common path — ``differential_runbook_ids`` is fixed and
+    ``resolve_causes`` is deterministic) neither fires; both matter only under differential
+    churn and are deferred to the origin-field refinement.
+
     Both supersessions close a demand↔validate inconsistency, and both are sound
     only because the state is terminal. REFUTED: ``run_intake_evaluation`` skips
     re-supporting a refuted root, so a predicate that keeps firing on it never
@@ -410,7 +421,7 @@ def _regen_differential_evidence_needs(
     # dropped out of the differential must not hold a slot hostage.
     open_differential = 0
     pending: list[tuple[int, str, "ActiveCauseLike", dict]] = []
-    seen_pending: set[str] = set()
+    seen_need_ids: set[str] = set()  # dedup a repeated (cause, predicate) across both
     for ac in active_causes:
         cause_refuted = ac.candidate_id in refuted_cause_ids
         cause_validated = ac.candidate_id in validated_cause_ids
@@ -457,17 +468,19 @@ def _regen_differential_evidence_needs(
                         "validated (deductively)",
                     )
                 continue
-            # Live cause, unsatisfied predicate.
+            # Live cause, unsatisfied predicate. Dedup the WHOLE branch by need_id:
+            # match_predicates is free-form and may repeat a predicate, and the two
+            # duplicates share a deterministic need_id. Guarding both the count and the
+            # create path (not just create) keeps a repeated predicate from counting its
+            # one open need twice (which would under-compute ``slots`` and starve other
+            # causes) and from being emitted twice (a need_id primary-key collision).
+            if need_id in seen_need_ids:
+                continue
+            seen_need_ids.add(need_id)
             if existing is not None:
                 if existing.is_outstanding:  # PENDING or PARTIALLY_MET — holds a slot
                     open_differential += 1
                 continue
-            if need_id in seen_pending:
-                # Same (cause, predicate) appearing twice in match_predicates — one
-                # need only (deterministic need_id would otherwise be created twice,
-                # colliding on the need_id primary key).
-                continue
-            seen_pending.add(need_id)
             pending.append((spread.get(sig, 1), need_id, ac, predicate))
 
     # Pass 2 — budgeted emission. Keep at most ``_DIFFERENTIAL_NEED_BUDGET`` OPEN

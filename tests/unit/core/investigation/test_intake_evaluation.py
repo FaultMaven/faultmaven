@@ -17,6 +17,8 @@ import pytest
 from faultmaven.core.investigation.differential_intake import StanceVerdict
 from faultmaven.core.investigation.intake_evaluation import (
     _DIFFERENTIAL_NEED_BUDGET,
+    _differential_need_id,
+    _predicate_signature,
     _regen_differential_evidence_needs,
     run_differential_intake_turn,
     run_intake_evaluation,
@@ -889,6 +891,36 @@ def test_duplicate_predicate_creates_single_need():
     pend = _pending(case)
     assert len(pend) == 1
     assert len({n.need_id for n in pend}) == 1  # no duplicate need_id
+
+
+def test_duplicate_predicate_over_existing_need_counts_once():
+    # A predicate repeated in match_predicates that ALREADY has an open need (turn 2+)
+    # must count ONCE toward the budget, not once per duplicate — else slots is
+    # under-computed and other live causes are starved of asks.
+    case = _case()
+    # Pre-existing open need for cause A's (about-to-be-duplicated) predicate P.
+    dup_id = _differential_need_id("rb1:A", _predicate_signature(_pred("P")))
+    case.evidence_needs.append(
+        EvidenceNeed(
+            need_id=dup_id,
+            case_id=case.case_id,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            request_text="telemetry showing 'P'",
+            rationale="pre-existing",
+            state=NeedState.PENDING,
+            created_at_turn=1,
+        )
+    )
+    acs = [
+        _ac_preds("rb1:A", ["P", "P"]),  # duplicate predicate, need already open
+        _ac_preds("rb2:B", ["q1", "q2"]),  # two fresh discriminating predicates
+    ]
+    _regen_differential_evidence_needs(case, acs, [], case.current_turn, set(), set())
+    # A's one open need counts once → 2 slots remain → BOTH q1 and q2 emit (total 3).
+    pend = _pending(case)
+    assert len(pend) == _DIFFERENTIAL_NEED_BUDGET
+    texts = " ".join(n.request_text for n in pend)
+    assert "q1" in texts and "q2" in texts  # neither starved by a double-count
 
 
 def test_partially_met_differential_need_holds_a_slot():
