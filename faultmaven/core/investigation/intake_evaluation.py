@@ -372,7 +372,8 @@ def _regen_differential_evidence_needs(
     cause Y" asks. Emission is therefore capped at ``_DIFFERENTIAL_NEED_BUDGET`` OPEN
     needs at a time, refilled as needs resolve — coverage is preserved, rate-limited.
 
-    Scope of the cap (known limitations, tracked for a follow-up): it bounds the OPEN
+    Scope of the cap (known limitations, tracked in issue #604 — a HARD gate on
+    enabling ``enable_runbook_cause_matcher``): it bounds the OPEN
     pool of the CURRENT differential's needs. It does NOT (a) evict a lower-ranked open
     need in favour of a higher-ranked one that appears later, nor (b) supersede/GC a need
     whose cause has silently dropped out of the differential (only REFUTED / deductively
