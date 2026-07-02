@@ -29,6 +29,9 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any, Dict, List, Optional
 
+from faultmaven.core.investigation.intake_evaluation import (
+    select_surfaced_causal_needs,
+)
 from faultmaven.core.preprocessing.evidence_metadata import (
     LOW_CONFIDENCE_THRESHOLD,
     EvidenceMetadata,
@@ -2056,6 +2059,18 @@ def _build_evidence_needs_block(case: Case) -> str:
     )
 
     outstanding = [n for n in case.evidence_needs if n.is_outstanding]
+    # Surface-cap the causal asks (engine-differential + LLM-emitted causal) to the
+    # rotating top-≤N (select_surfaced_causal_needs) so a broad Part-A differential can't
+    # flood the user; SYMPTOM needs are unaffected. All needs stay PENDING — this only
+    # bounds what is SHOWN, and rotates under non-progress so no answerable ask is
+    # permanently hidden (#604).
+    _surfaced_causal_ids = {n.need_id for n in select_surfaced_causal_needs(case)}
+    outstanding = [
+        n
+        for n in outstanding
+        if n.purpose != NeedPurpose.CAUSAL_VERIFICATION
+        or n.need_id in _surfaced_causal_ids
+    ]
     # Re-verification checklist is anchored on confirmed presence-evidence
     # rows (symptom/causal), NOT FULFILLED needs. Evidence rows exist for
     # every confirmed finding; FULFILLED needs are gap-conditional and
