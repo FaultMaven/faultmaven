@@ -1868,3 +1868,22 @@ def test_evidence_omitted_marker_when_budget_drops_items():
     out = _build_evidence_context(case, char_budget_override=600)
     assert "<evidence_omitted" in out, "omitted evidence must be marked (INV-4)"
     assert 'reason="prompt_budget"' in out
+
+
+def test_tier_c_chat_cap_marks_omitted():
+    """The Tier-C 5-most-recent cap on chat-extracted evidence now feeds the
+    <evidence_omitted> marker (INV-4) — these have no source_file_id, so a silent
+    drop would be unrecoverable."""
+    evs = [
+        _make_evidence(
+            summary=f"chat evidence {i}",
+            source_file_id=None,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_at_turn=1,
+        )
+        for i in range(8)  # > 5 → 3 omitted
+    ]
+    case = _make_case_with_evidence(evs)
+    out = _build_evidence_context(case)
+    assert "<evidence_omitted" in out, "the >5 chat-evidence cap must be marked"
+    assert 'reason="prompt_budget"' in out

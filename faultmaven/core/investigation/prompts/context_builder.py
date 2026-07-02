@@ -1224,7 +1224,11 @@ def _current_turn_reserve_fraction() -> float:
 
 
 def _render_orphan_file_block(
-    uf, hash_first_seen: dict, current_turn: int, summary_only: bool = False
+    uf,
+    hash_first_seen: dict,
+    current_turn: int,
+    summary_only: bool = False,
+    elide_extract: bool = False,
 ) -> str:
     """Render one orphan ``UploadedFile`` as an ``<uploaded_file>`` block.
 
@@ -1239,6 +1243,11 @@ def _render_orphan_file_block(
     full structural index within the reserve. The file stays present and
     addressable (the LLM can still ``search_file`` it by ``file_id``) instead of
     vanishing (INV-EC-1 / INV-EC-3).
+
+    ``elide_extract=True`` (directed-analysis index+stub) drops only the
+    ``file_extract`` body but KEEPS ``search_map`` + ``file_meta`` — the same
+    render Evidence-backed Tier-A items get in that mode, so a not-yet-promoted
+    orphan gets identical navigation hints (search_map), not a bare stub.
     """
     file_extract, search_map, file_meta = _parse_extract(uf.structural_index or "")
     file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
@@ -1259,7 +1268,17 @@ def _render_orphan_file_block(
         )
         entry += "  </uploaded_file>\n"
         return entry
-    if file_extract.strip():
+    if elide_extract and file_extract.strip():
+        # DA index+stub: drop the extract body, keep search_map (below). Same
+        # marker Evidence-backed items get, so navigation parity holds.
+        entry += (
+            '    <file_extract role="orientation" elided="directed_analysis">\n'
+            "[Structural index elided in directed-analysis mode — call "
+            "search_file with the file_id above to read specifics from the "
+            "raw file.]\n"
+            "    </file_extract>\n"
+        )
+    elif file_extract.strip():
         truncation_note = ""
         if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
             remaining_chars = len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
@@ -1681,6 +1700,11 @@ def _build_evidence_context(
     # Include the verbatim_quote when present: for chat-extracted
     # evidence it carries the actual system-output slice the user typed
     # in (the summary alone would lose that detail).
+    # INV-4: the 5-most-recent cap drops OLDER chat evidence — count it so the
+    # <evidence_omitted> marker reflects the omission (these have no
+    # source_file_id, so the marker signals it, since search_file can't reach
+    # them).
+    n_omitted += max(0, len(text_evidence) - 5)
     for ev in text_evidence[-5:]:  # Cap at 5 most recent items
         label = _evidence_label(ev, file_lookup, case)
         label_attr = f' label="{label}"'
@@ -1735,7 +1759,7 @@ def _build_evidence_context(
             # a not-yet-promoted file is treated the same as an Evidence-backed one
             # (stub only, addressable via search_file) instead of dumped in full.
             entry = _render_orphan_file_block(
-                uf, hash_first_seen, current_turn, summary_only=da_index_only
+                uf, hash_first_seen, current_turn, elide_extract=da_index_only
             )
             # Greedy newest-first fill with skip-not-break (INV-EC-2): one large
             # orphan never drops every smaller orphan behind it. Note this is a

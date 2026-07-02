@@ -413,3 +413,69 @@ def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
     assert (
         MilestoneEngine._bound_tool_loop_messages(fake, under, 10**6, "openai") is under
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-turn spend tracking + tool-capability gate (code-review coverage)
+# ---------------------------------------------------------------------------
+def test_spend_weighted_tokens_downweights_cache_reads():
+    """The cost-weighted total down-weights cache-read tokens (0.25x) so a
+    heavily-cached turn isn't charged full byte count against the spend guards."""
+    from faultmaven.infrastructure.llm.metering import TurnTokenTracker
+
+    tr = TurnTokenTracker()
+    tr.input_tokens = 1000
+    tr.output_tokens = 200
+    tr.cache_write_tokens = 400
+    tr.cache_read_tokens = 10000
+    assert tr.total_tokens == 11600
+    # 1000 + 200 + 400 + 0.25*10000 = 4100
+    assert tr.spend_weighted_tokens == 4100
+    assert tr.spend_weighted_tokens < tr.total_tokens
+
+
+def test_tools_effectively_available_gates_on_capability():
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    def eng(tools, provider):
+        ns = SimpleNamespace(
+            investigation_tools=tools,
+            da_provider=None,
+            llm_provider=provider,
+            da_model=None,
+        )
+        # _tools_effectively_available delegates to this method on self.
+        ns._da_provider_supports_tools = (
+            lambda: MilestoneEngine._da_provider_supports_tools(ns)
+        )
+        return ns
+
+    capable = SimpleNamespace(supports_tool_calling=lambda m: True)
+    incapable = SimpleNamespace(supports_tool_calling=lambda m: False)
+    no_attr = SimpleNamespace()  # missing capability info → assume capable
+
+    f = MilestoneEngine._tools_effectively_available
+    assert f(eng(object(), capable)) is True
+    assert f(eng(None, capable)) is False  # no tools registered
+    assert f(eng(object(), incapable)) is False  # tools present but incapable
+    assert f(eng(object(), no_attr)) is True  # unknown capability → capable
+    # The shared helper agrees with the gate's capability half.
+    g = MilestoneEngine._da_provider_supports_tools
+    assert g(eng(object(), incapable)) is False
+    assert g(eng(object(), capable)) is True
+
+
+def test_resolve_tool_loop_budget_is_bounded():
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    b = MilestoneEngine._resolve_tool_loop_budget(
+        SimpleNamespace(da_model=MODEL), PROVIDER
+    )
+    # prompt_target (32K default) + observation allowance (16K default), clamped
+    # down to the model ceiling. Always a positive int, never above target+obs.
+    assert isinstance(b, int) and b >= 2000
+    assert b <= 32000 + 16000
