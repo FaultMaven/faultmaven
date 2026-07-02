@@ -1453,6 +1453,12 @@ class FeatureSettings(BaseSettings):
     # current case, instantiate it into the case's causal graph as a CANDIDATE
     # prior (per-turn, before LLM chain emission). Off until validated (the
     # matcher's deterministic + semantic resolvers are wired in a later increment).
+    #
+    # TRIPWIRE — do NOT flip to True until the differential evidence-need budget's
+    # anti-stall liveness (cross-turn rotation) ships (issue #604). Part A's broad
+    # differential + the N=3 demand cap can otherwise deadlock the demand side
+    # (unanswerable asks lock the slots, hiding an answerable discriminator) — a
+    # NO-COLLAPSE regression. Bounded emission is in; rotation is not yet.
     enable_runbook_cause_matcher: bool = Field(default=False)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
