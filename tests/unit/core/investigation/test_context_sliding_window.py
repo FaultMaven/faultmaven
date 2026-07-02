@@ -1771,3 +1771,81 @@ class TestCurrentTurnFloor:
         # But all 5 are still present (degraded to summary, not dropped).
         for ev in evidence:
             assert f'id="{ev.evidence_id}"' in result
+
+
+# ============================================================
+# Directed-analysis index+stub lever (DA_EVIDENCE_INDEX_ONLY)
+# ============================================================
+
+
+def test_da_index_only_elides_historical_extract_keeps_current_turn(monkeypatch):
+    """With DA_EVIDENCE_INDEX_ONLY on, historical evidence in a directed-analysis
+    turn renders stub + search_map only (no file_extract body), while the
+    current-turn upload keeps its extract and every file stays addressable."""
+    from faultmaven.config.settings import get_settings
+
+    PROVIDER, MODEL = "openai", "gpt-4"
+    HIST_ID = "file_aaaa11112222"
+    CUR_ID = "file_bbbb33334444"
+    hist = _make_evidence(
+        summary="historical log",
+        extract="HISTORICAL_EXTRACT_BODY " * 40,
+        source_file_id=HIST_ID,
+        collected_at_turn=1,
+    )
+    cur = _make_evidence(
+        summary="fresh log",
+        extract="CURRENTTURN_EXTRACT_BODY " * 40,
+        source_file_id=CUR_ID,
+        collected_at_turn=5,
+    )
+    case = _make_case_with_evidence([hist, cur])
+    case.current_turn = 5
+
+    ic = get_settings().investigation_context
+
+    # Flag OFF (baseline): DA mode still renders the historical extract body.
+    monkeypatch.setattr(ic, "da_evidence_index_only", False)
+    off = _build_evidence_context(
+        case,
+        processing_mode="directed_analysis",
+        provider_name=PROVIDER,
+        model_name=MODEL,
+    )
+    assert "HISTORICAL_EXTRACT_BODY" in off
+
+    # Flag ON: historical extract elided (but marked + addressable); current-turn
+    # extract kept.
+    monkeypatch.setattr(ic, "da_evidence_index_only", True)
+    on = _build_evidence_context(
+        case,
+        processing_mode="directed_analysis",
+        provider_name=PROVIDER,
+        model_name=MODEL,
+    )
+    assert "HISTORICAL_EXTRACT_BODY" not in on, "historical extract body must be elided"
+    assert 'elided="directed_analysis"' in on, "elision must be marked (INV-4)"
+    assert HIST_ID in on, "historical file must stay addressable"
+    assert "CURRENTTURN_EXTRACT_BODY" in on, "current-turn extract must be kept"
+
+
+def test_da_index_only_off_in_triage_mode(monkeypatch):
+    """The lever only fires in directed_analysis; TRIAGE keeps the extract so
+    triage can answer from the structural index."""
+    from faultmaven.config.settings import get_settings
+
+    ev = _make_evidence(
+        summary="historical log",
+        extract="TRIAGE_EXTRACT_BODY " * 40,
+        source_file_id="file_cccc55556666",
+        collected_at_turn=1,
+    )
+    case = _make_case_with_evidence([ev])
+    case.current_turn = 5
+    monkeypatch.setattr(
+        get_settings().investigation_context, "da_evidence_index_only", True
+    )
+    out = _build_evidence_context(
+        case, processing_mode="triage", provider_name="openai", model_name="gpt-4"
+    )
+    assert "TRIAGE_EXTRACT_BODY" in out

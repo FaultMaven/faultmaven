@@ -1719,6 +1719,21 @@ class InvestigationContextSettings(BaseSettings):
         description="How many most-recent data evidence items get full file_extract (Tier A).",
     )
 
+    da_evidence_index_only: bool = Field(
+        default=False,
+        validation_alias="DA_EVIDENCE_INDEX_ONLY",
+        description=(
+            "Directed-analysis prompt-sizing lever (default OFF — validate via "
+            "A/B + eval before enabling). When on, HISTORICAL evidence in "
+            "directed_analysis turns renders as its addressable stub + search_map "
+            "only, dropping the large <file_extract> body — the agent fetches "
+            "specifics via search_file instead of carrying the full extract every "
+            "turn. The current-turn upload keeps its extract (freshness / "
+            "INV-EC-1). Targets the single largest prompt-bloat source (the ~19K "
+            "evidence dump measured on a single log file)."
+        ),
+    )
+
     max_chars_per_item: int = Field(
         default=4000,
         ge=500,
@@ -1929,6 +1944,33 @@ class PromptBudgetSettings(BaseSettings):
         description=(
             "Safety buffer subtracted from section_budget to absorb token-"
             "estimate error (matters mainly when target ≈ hard limit)."
+        ),
+    )
+
+    # --- Per-turn spend (sum across the tool-loop calls) ---
+    turn_token_ceiling: int = Field(
+        default=150_000,
+        ge=10_000,
+        le=2_000_000,
+        validation_alias="PROMPT_TURN_TOKEN_CEILING",
+        description=(
+            "Hard per-turn spend ceiling: once a turn's cumulative token spend "
+            "(across all tool-loop calls) crosses this, the tool loop is forced "
+            "to wrap up on the next iteration (schema-only) instead of running "
+            "more expensive tool calls. A safety abort, not the normal budget."
+        ),
+    )
+    turn_token_budget: int = Field(
+        default=100_000,
+        ge=0,
+        le=2_000_000,
+        validation_alias="PROMPT_TURN_TOKEN_BUDGET",
+        description=(
+            "Soft per-turn spend budget for observability. When > 0 and a turn's "
+            "total token spend exceeds it, a WARNING (turn_token_budget_exceeded) "
+            "is logged with the call breakdown — surfacing high-spend turns "
+            "(measured normal is ~66K/turn) without changing behavior. Set 0 to "
+            "disable the alert."
         ),
     )
 

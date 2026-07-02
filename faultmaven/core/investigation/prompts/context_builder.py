@@ -1495,6 +1495,17 @@ def _build_evidence_context(
         int(effective_total_chars * _current_turn_reserve_fraction()),
     )
 
+    # Directed-analysis index+stub lever (flag-gated, default off): in DA turns,
+    # historical evidence carries only its addressable stub + search_map, not the
+    # large <file_extract> body — the agent fetches specifics via search_file.
+    try:
+        from faultmaven.config.settings import get_settings
+
+        _da_index_only = get_settings().investigation_context.da_evidence_index_only
+    except Exception:
+        _da_index_only = False
+    da_index_only = _da_index_only and processing_mode == "directed_analysis"
+
     result = "<evidence_collected>\n"
     total_chars = 0
 
@@ -1567,8 +1578,16 @@ def _build_evidence_context(
 
         truncated = False
 
+        is_current_turn_ev = current_turn > 0 and ev.collected_at_turn == current_turn
+        # In DA index-only mode, HISTORICAL evidence drops its file_extract body
+        # (stub + search_map only). The current-turn upload keeps its extract.
+        suppress_extract = da_index_only and not is_current_turn_ev
+
         # Per-item cap applies to file_extract (the orientation content)
-        if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
+        if (
+            not suppress_extract
+            and len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
+        ):
             remaining_chars = len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
             file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
             truncated = True
@@ -1579,10 +1598,13 @@ def _build_evidence_context(
         # otherwise N current-turn evidence rows could each render in full with
         # no cap and blow the whole evidence budget. Once the reserve is spent,
         # current-turn evidence degrades to a Tier-B summary like everything else.
+        # A suppressed extract contributes no extract bytes to the estimate.
         entry_estimate = (
-            len(file_extract) + len(ev.summary or "") + len(ev.extract or "") + 200
+            (0 if suppress_extract else len(file_extract))
+            + len(ev.summary or "")
+            + len(ev.extract or "")
+            + 200
         )  # overhead for XML tags
-        is_current_turn_ev = current_turn > 0 and ev.collected_at_turn == current_turn
         within_reserve = total_chars < current_turn_floor_chars
         exempt_from_downgrade = is_current_turn_ev and within_reserve
         if (
@@ -1613,7 +1635,19 @@ def _build_evidence_context(
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
         result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{duplicate_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
-        if file_extract.strip():
+        if file_extract.strip() and suppress_extract:
+            # DA index-only: elide the extract body, keep the file addressable.
+            # The <search_map> below and the evidence id/file_id on the tag give
+            # the agent everything it needs to search_file for specifics (INV-4:
+            # the elision is marked, never silent).
+            result += (
+                '    <file_extract role="orientation" elided="directed_analysis">\n'
+                "[Structural index elided in directed-analysis mode — call "
+                "search_file with the evidence id above to read specifics from "
+                "the raw file.]\n"
+                "    </file_extract>\n"
+            )
+        elif file_extract.strip():
             role_attr = (
                 ' role="orientation"' if processing_mode == "directed_analysis" else ""
             )

@@ -2148,6 +2148,21 @@ class MilestoneEngine:
                             "unpriced_calls": tracker.unpriced_calls,
                         },
                     )
+                    # Soft per-turn budget alert (observability only; no behavior
+                    # change) — surfaces high-spend turns for the prompt-sizing work.
+                    from faultmaven.config.settings import get_settings
+
+                    _turn_budget = get_settings().prompt_budget.turn_token_budget
+                    if _turn_budget and tracker.total_tokens > _turn_budget:
+                        logger.warning(
+                            "turn_token_budget_exceeded",
+                            extra={
+                                "case_id": getattr(case, "case_id", None),
+                                "total_tokens": tracker.total_tokens,
+                                "total_calls": tracker.total_calls,
+                                "turn_token_budget": _turn_budget,
+                            },
+                        )
                 except Exception:
                     pass
             return result
@@ -3609,6 +3624,28 @@ class MilestoneEngine:
                         response,
                         getattr(response, "response_time_ms", 0),
                     )
+                # Per-turn ceiling: the call is now metered into the active turn
+                # tracker (record_provider_call above for a dedicated DA provider,
+                # or the registry chokepoint for the router), so its running total
+                # reflects this call — force the loop to wrap up if it is over.
+                _turn_tracker = active_token_tracker.get()
+                if _turn_tracker is not None:
+                    try:
+                        from faultmaven.config.settings import get_settings
+
+                        _turn_ceiling = get_settings().prompt_budget.turn_token_ceiling
+                    except Exception:
+                        _turn_ceiling = 150000
+                    if (
+                        _turn_tracker.total_tokens > _turn_ceiling
+                        and not is_final
+                        and not force_schema_next
+                    ):
+                        logger.warning(
+                            f"Turn token spend ({_turn_tracker.total_tokens}) exceeded "
+                            f"ceiling ({_turn_ceiling}). Forcing the tool loop to wrap up."
+                        )
+                        force_schema_next = True
             except Exception as e:
                 # Any iteration failure (timeout, provider error, transient
                 # issue) raises ToolCallingUnsupportedError so the caller
