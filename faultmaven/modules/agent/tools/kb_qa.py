@@ -165,10 +165,9 @@ global documentation, your personal runbooks, and your team's shared procedures.
         Returns:
             List of ``CauseMatchResult`` (possibly empty), best runbook first.
         """
-        retrieval_k = k if k is not None else max_runbooks * _RETRIEVAL_FANOUT
-        filters = self._build_scope_filter(user_id, team_ids or [])
-        chunks = await self._retrieve_chunks(question, k=retrieval_k, filters=filters)
-        item_ids = self._rank_runbook_ids(chunks, max_runbooks)
+        item_ids = await self._retrieve_ranked_runbook_ids(
+            question, user_id, team_ids, max_runbooks, k=k
+        )
 
         results: List[CauseMatchResult] = []
         for item_id in item_ids:
@@ -224,7 +223,28 @@ global documentation, your personal runbooks, and your team's shared procedures.
         retrieval-rank order (best first); ``[]`` on a retrieval miss or error (a prior
         must never break the turn — ``_retrieve_chunks`` already degrades to ``[]``).
         """
-        retrieval_k = top_k * _RETRIEVAL_FANOUT
+        return await self._retrieve_ranked_runbook_ids(
+            question, user_id, team_ids, top_k
+        )
+
+    async def _retrieve_ranked_runbook_ids(
+        self,
+        question: str,
+        user_id: str,
+        team_ids: Optional[List[str]],
+        top_k: int,
+        *,
+        k: Optional[int] = None,
+    ) -> List[str]:
+        """Retrieve + rank distinct runbook ``item_id``s for ``question``, best-first,
+        capped at ``top_k``. The single retrieval-ranking preamble that BOTH the T2
+        path (``aget_cause_matches``) and the Part-A seed (``aget_retrieved_runbook_ids``)
+        build on — one ranking definition, so the seeded differential and the T2 winner
+        (its top-1) cannot drift apart. ``k`` overrides the retrieval fan-out (chunks to
+        rank over); it defaults to ``top_k * _RETRIEVAL_FANOUT`` so one multi-chunk
+        runbook can't starve the others. ``[]`` on a retrieval miss/error (a prior must
+        never break the turn — ``_retrieve_chunks`` degrades to ``[]``)."""
+        retrieval_k = k if k is not None else top_k * _RETRIEVAL_FANOUT
         filters = self._build_scope_filter(user_id, team_ids or [])
         chunks = await self._retrieve_chunks(question, k=retrieval_k, filters=filters)
         return self._rank_runbook_ids(chunks, top_k)

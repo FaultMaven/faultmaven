@@ -46,6 +46,7 @@ from faultmaven.core.investigation.causal_graph import (
 from faultmaven.core.investigation.cause_schemas import (
     CauseMatchResult,
     CauseRecord,
+    build_cause_records,
     is_problem_node,
 )
 from faultmaven.core.investigation.schemas import CausalEdgeToAdd, CausalNodeToAdd
@@ -583,19 +584,34 @@ async def apply_runbook_cause_matcher(
     # so the grounding-baseline denominator equals the seeded set exactly — every
     # groundable case is in-population, and a case grounding on a rank-2/3 runbook whose
     # top-1 is non-v4 is not silently excluded.
-    retrieved_ids = await kb_tool.aget_retrieved_runbook_ids(
-        question, user_id, team_ids=team_ids, top_k=differential_top_k
-    )
-    for runbook_id in retrieved_ids:
-        try:
-            causes_raw = await resolve_causes(runbook_id)
-        except Exception:  # noqa: BLE001 — a prior must never break the turn
-            continue
-        if not causes_raw:
-            continue  # pre-v4 / upload-path runbook — no chain to validate against
-        _record_differential_runbook(case, runbook_id)
-    if differential_runbook_ids(case):
-        _record_runbook_retrieval_hit(case)
+    # SEED ONCE, verdict-independent. The engine skip-guard only trips on a
+    # 'single'-verdict hypothesis, so on 'none'/'multiple' this matcher re-runs every
+    # turn; without this guard the seed loop would re-seed per turn and accumulate
+    # runbooks as the retrieval query drifts. Guarding on an already-seeded differential
+    # makes seeding one-shot for ALL verdicts — consistent with the matcher's one-shot
+    # prior contract — so retrieval is paid once per case and the differential can't grow.
+    if not differential_runbook_ids(case):
+        retrieved_ids = await kb_tool.aget_retrieved_runbook_ids(
+            question, user_id, team_ids=team_ids, top_k=differential_top_k
+        )
+        for runbook_id in retrieved_ids:
+            try:
+                causes_raw = await resolve_causes(runbook_id)
+                # v4-filter via build_cause_records, NOT merely "resolve_causes
+                # non-empty": this is the SAME gate aget_cause_matches applies before
+                # evaluating (a runbook with raw-but-malformed causes builds no records
+                # and is skipped there too), so the seeded set and the T2-matchable set
+                # share one "v4-matchable" definition — no divergence.
+                records = (
+                    build_cause_records(runbook_id, causes_raw) if causes_raw else []
+                )
+            except Exception:  # noqa: BLE001 — a prior must never break the turn
+                continue
+            if not records:
+                continue  # pre-v4 / upload-path / malformed — no chain to validate
+            _record_differential_runbook(case, runbook_id)
+        if differential_runbook_ids(case):
+            _record_runbook_retrieval_hit(case)
 
     # --- Graph prior (unchanged): the T2 verdict gates chain instantiation on the
     # top-1 only. 'none'/'multiple' instantiate nothing (conservative by construction);
