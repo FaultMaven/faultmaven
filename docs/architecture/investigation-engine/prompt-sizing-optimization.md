@@ -110,16 +110,22 @@ context with the instructions rather than contradicting them.
 
 ### 4.3 Per-turn budget + cross-provider base caching (goal 3)
 
-- **Cached / no-resend base.** The tool loop's stable prefix (system template +
-  evidence stub + tool schemas) should be sent once and referenced, not re-sent
-  full-price each iteration. Where a provider supports prompt caching, mark the
-  prefix cacheable for that provider (not only Anthropic); where it does not,
-  the §4.2 shrink already cuts the re-sent base from ~22K to ~4K.
-- **Per-turn ceiling + alert.** The `TurnTokenTracker` already accumulates per-turn
-  spend. Add a configurable per-turn ceiling; when exceeded, log a WARNING
-  (`turn_token_budget_exceeded`) with the call breakdown. Enforcement stays
-  observational first (alert), not a hard cut, to avoid truncating a legitimate
-  deep turn.
+- **Per-turn ceiling + alert (implemented).** The tool loop already had a
+  hard-coded 150K per-turn abort; it is now the configurable
+  `PROMPT_TURN_TOKEN_CEILING` (same 150K default — a safety abort that forces the
+  loop to wrap up, not the normal budget). Added a *soft* budget
+  `PROMPT_TURN_TOKEN_BUDGET` (default 100K, ~1.5× measured normal): when a turn's
+  total spend exceeds it, an end-of-turn WARNING (`turn_token_budget_exceeded`)
+  logs the call breakdown. Observational only — no behavior change — so
+  high-spend turns are surfaced without truncating a legitimately deep turn.
+- **Cross-provider base caching (deferred).** The tool loop re-sends the stable
+  prefix each iteration with `cache_prompt=True`, which only Anthropic honors.
+  Making other providers honor it is provider-layer work (each provider must
+  translate the flag to its own caching API, and support varies — some don't
+  cache at all). It belongs with the LLM-provider workstream, and its value is
+  largely absorbed by §4.2: the DA base shrinks from ~22K to a stub, so the
+  re-sent tool-loop base is small regardless of caching. Deferred; not on this
+  branch.
 
 ### 4.4 Instrument-gap fixes (found during measurement — tracked separately)
 
