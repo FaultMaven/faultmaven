@@ -438,7 +438,14 @@ async def test_firing_predicate_fulfills_its_need():
         ],
     )
     assert len(case.evidence_needs) == 1
-    assert case.evidence_needs[0].state == NeedState.FULFILLED
+    need = case.evidence_needs[0]
+    assert need.state == NeedState.FULFILLED
+    # The firing datum is recorded as the fulfilling evidence. Without this the model
+    # rejects a FULFILLED need (>=1 fulfilling id required) and the whole Case fails to
+    # save — the turn 500s and the grounding link is rolled back (the prod bug the first
+    # sim run caught). Re-validating the need reproduces that exact save-time check.
+    assert need.fulfilling_evidence_ids == ["ev_000000000002"]
+    EvidenceNeed.model_validate(need.model_dump())
 
 
 @pytest.mark.asyncio
