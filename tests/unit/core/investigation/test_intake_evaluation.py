@@ -442,9 +442,48 @@ async def test_firing_predicate_fulfills_its_need():
     assert need.state == NeedState.FULFILLED
     # The firing datum is recorded as the fulfilling evidence. Without this the model
     # rejects a FULFILLED need (>=1 fulfilling id required) and the whole Case fails to
-    # save — the turn 500s and the grounding link is rolled back (the prod bug the first
-    # sim run caught). Re-validating the need reproduces that exact save-time check.
+    # save — the turn 500s and the grounding link is rolled back. Re-validating the need
+    # reproduces that exact save-time check.
     assert need.fulfilling_evidence_ids == ["ev_000000000002"]
+    EvidenceNeed.model_validate(need.model_dump())
+
+
+@pytest.mark.asyncio
+async def test_multiple_data_fulfilling_one_predicate_record_all_ids():
+    # Two distinct datums fire the SAME predicate in one turn → the need records BOTH
+    # fulfilling ids (dedup-merged), not just the last, so the audit trail is complete.
+    node = _root()
+    case = _case(node)
+    common = dict(
+        runbook_ids=["rb1"],
+        resolve_causes=_causes_for,
+        build_records=_build_with_predicate,
+        resolve_root=_always(node.node_id),
+    )
+    # Turn 1: predicate unsatisfied → PENDING need.
+    await run_differential_intake_turn(
+        case, [_evidence()], case.current_turn, evaluate=lambda **_: [], **common
+    )
+    assert case.evidence_needs[0].state == NeedState.PENDING
+
+    # Turn 2: two distinct datums each fire the same predicate (evaluate is called
+    # per-datum; the process layer stamps each verdict with its own evidence id).
+    verdict = StanceVerdict(
+        cause_id="rb1:A",
+        stance=EvidenceStance.SUPPORTS,
+        provenance="runbook",
+        predicate={"predicate": "contains", "target": "OOMKilled"},
+    )
+    await run_differential_intake_turn(
+        case,
+        [_evidence("ev_000000000002"), _evidence("ev_000000000003")],
+        case.current_turn,
+        evaluate=lambda **_: [verdict],
+        **common,
+    )
+    need = case.evidence_needs[0]
+    assert need.state == NeedState.FULFILLED
+    assert need.fulfilling_evidence_ids == ["ev_000000000002", "ev_000000000003"]
     EvidenceNeed.model_validate(need.model_dump())
 
 

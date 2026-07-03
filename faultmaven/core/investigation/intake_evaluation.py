@@ -440,13 +440,17 @@ def _regen_differential_evidence_needs(
     the fired branch runs BEFORE the validated branch, a predicate that DID fire
     this turn is recorded as FULFILLED rather than retired.
     """
-    # (cause_id, predicate_sig) -> the datum that fired it, so a need marked FULFILLED
-    # can record which evidence satisfied it (the FULFILLED state requires ≥1 id).
-    fired: dict[tuple[str, str], str | None] = {
-        (v.cause_id, _predicate_signature(v.predicate)): v.evidence_id
-        for v in recorded
-        if v.stance == EvidenceStance.SUPPORTS
-    }
+    # (cause_id, predicate_sig) -> the datum(s) that fired it, so a need marked FULFILLED
+    # records which evidence satisfied it (the state requires ≥1 well-formed id). Every
+    # recorded SUPPORTS verdict is stamped with its datum id at the recording site
+    # (run_intake_evaluation); collecting only truthy ids keeps a fired key always mapped
+    # to ≥1 valid id (Evidence.evidence_id is a pattern-constrained non-empty str).
+    fired: dict[tuple[str, str], list[str]] = {}
+    for v in recorded:
+        if v.stance == EvidenceStance.SUPPORTS and v.evidence_id:
+            fired.setdefault(
+                (v.cause_id, _predicate_signature(v.predicate)), []
+            ).append(v.evidence_id)
     by_id = {n.need_id: n for n in case.evidence_needs}
     # Reconcile every current (cause, predicate), then create ONE PENDING need per
     # still-unsatisfied predicate. Emission is UNCAPPED — the ≤N user-facing cap is a
@@ -475,27 +479,19 @@ def _regen_differential_evidence_needs(
                         "the runbook cause this need discriminated is refuted",
                     )
                 continue
-            fired_key = (ac.candidate_id, sig)
-            if fired_key in fired:
-                fired_evidence_id = fired[fired_key]
-                # Mark the need FULFILLED, recording the datum that satisfied it. The
-                # model rejects a FULFILLED need with no fulfilling evidence id (the
-                # whole Case would fail to save), so if — defensively — the fired
-                # verdict carries no id, leave the need PENDING rather than build an
-                # unsaveable Case; every recorded SUPPORTS verdict is stamped upstream.
-                if (
-                    existing is not None
-                    and fired_evidence_id is not None
-                    and existing.state
-                    not in (NeedState.FULFILLED, NeedState.SUPERSEDED)
+            fired_ids = fired.get((ac.candidate_id, sig))
+            if fired_ids:
+                # The predicate fired this turn → mark its need FULFILLED, dedup-merging
+                # the datum(s) that satisfied it onto any already recorded. A fired key
+                # always carries ≥1 well-formed id, so the FULFILLED need satisfies the
+                # model's "≥1 fulfilling id" rule and the Case saves.
+                if existing is not None and existing.state not in (
+                    NeedState.FULFILLED,
+                    NeedState.SUPERSEDED,
                 ):
-                    if fired_evidence_id not in (
-                        existing.fulfilling_evidence_ids or []
-                    ):
-                        existing.fulfilling_evidence_ids = [
-                            *(existing.fulfilling_evidence_ids or []),
-                            fired_evidence_id,
-                        ]
+                    existing.fulfilling_evidence_ids = list(
+                        dict.fromkeys([*existing.fulfilling_evidence_ids, *fired_ids])
+                    )
                     existing.state = NeedState.FULFILLED
                     existing.updated_at = datetime.now(UTC)
                 continue
