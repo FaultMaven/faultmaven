@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
@@ -142,7 +143,12 @@ def run_intake_evaluation(
                 # differential, so its other (untested) causes remain testable.
                 continue
             if _attach_verdict_link(node, evidence, verdict, current_turn):
-                recorded.append(verdict)
+                # Stamp the fulfilling datum onto the recorded verdict: the demand-side
+                # reconcile marks a fired predicate's Evidence Need FULFILLED, which the
+                # model requires a fulfilling evidence id for. The evaluator judges one
+                # datum at a time but doesn't carry its id, so we thread it here — the
+                # only site that pairs a recorded verdict with the datum that produced it.
+                recorded.append(replace(verdict, evidence_id=evidence.evidence_id))
 
     return recorded
 
@@ -434,11 +440,17 @@ def _regen_differential_evidence_needs(
     the fired branch runs BEFORE the validated branch, a predicate that DID fire
     this turn is recorded as FULFILLED rather than retired.
     """
-    fired = {
-        (v.cause_id, _predicate_signature(v.predicate))
-        for v in recorded
-        if v.stance == EvidenceStance.SUPPORTS
-    }
+    # (cause_id, predicate_sig) -> the datum(s) that fired it, so a need marked FULFILLED
+    # records which evidence satisfied it (the state requires ≥1 well-formed id). Every
+    # recorded SUPPORTS verdict is stamped with its datum id at the recording site
+    # (run_intake_evaluation); collecting only truthy ids keeps a fired key always mapped
+    # to ≥1 valid id (Evidence.evidence_id is a pattern-constrained non-empty str).
+    fired: dict[tuple[str, str], list[str]] = {}
+    for v in recorded:
+        if v.stance == EvidenceStance.SUPPORTS and v.evidence_id:
+            fired.setdefault(
+                (v.cause_id, _predicate_signature(v.predicate)), []
+            ).append(v.evidence_id)
     by_id = {n.need_id: n for n in case.evidence_needs}
     # Reconcile every current (cause, predicate), then create ONE PENDING need per
     # still-unsatisfied predicate. Emission is UNCAPPED — the ≤N user-facing cap is a
@@ -467,11 +479,19 @@ def _regen_differential_evidence_needs(
                         "the runbook cause this need discriminated is refuted",
                     )
                 continue
-            if (ac.candidate_id, sig) in fired:
+            fired_ids = fired.get((ac.candidate_id, sig))
+            if fired_ids:
+                # The predicate fired this turn → mark its need FULFILLED, dedup-merging
+                # the datum(s) that satisfied it onto any already recorded. A fired key
+                # always carries ≥1 well-formed id, so the FULFILLED need satisfies the
+                # model's "≥1 fulfilling id" rule and the Case saves.
                 if existing is not None and existing.state not in (
                     NeedState.FULFILLED,
                     NeedState.SUPERSEDED,
                 ):
+                    existing.fulfilling_evidence_ids = list(
+                        dict.fromkeys([*existing.fulfilling_evidence_ids, *fired_ids])
+                    )
                     existing.state = NeedState.FULFILLED
                     existing.updated_at = datetime.now(UTC)
                 continue

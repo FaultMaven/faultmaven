@@ -121,6 +121,13 @@ class StanceVerdict:
     "op"?: ..., "value"?: ..., "data_type"?: ...}`` — re-runnable for audit/repro,
     not a free-text description."""
 
+    evidence_id: str | None = None
+    """The datum that produced this verdict, stamped by the process layer when the
+    verdict is recorded (the evaluator judges one datum at a time but does not carry
+    its id). Threads the fulfilling evidence to the demand-side reconcile: a fired
+    predicate marks its Evidence Need FULFILLED, and the model requires ≥1 fulfilling
+    evidence id for that state. ``None`` only on an un-recorded verdict."""
+
 
 @dataclass(frozen=True)
 class ActiveCause:
