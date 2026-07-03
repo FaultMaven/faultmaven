@@ -35,9 +35,12 @@ llm_tokens_total`, and the gap is the fallback overhead.
   `estimated_cost_usd`, `cost_priced`, `latency_ms`. Per-call forensics —
   logged at DEBUG (it fires on every call); enable DEBUG to see it.
 - **`turn_token_spend`** — one per investigation turn: `case_id`, per-bucket
-  totals, `total_tokens`, `total_calls`, `estimated_cost_usd`, `unpriced_calls`.
-  This is the per-turn amplification signal — a turn making 40 calls stands out
-  immediately.
+  totals, `total_tokens`, `spend_weighted_tokens`, `total_calls`,
+  `estimated_cost_usd`, `unpriced_calls`. This is the per-turn amplification
+  signal — a turn making 40 calls stands out immediately. `spend_weighted_tokens`
+  is the cost-weighted measure (cache reads down-weighted 0.25×) that the
+  soft-budget alert and hard per-turn ceiling compare against — prefer it over
+  raw `total_tokens` when judging how close a turn ran to the budget.
 
 ### Opik spans
 
@@ -84,8 +87,10 @@ landing.
    chain is paying for discarded attempts — tune `confidence_threshold` or the
    chain order.
 3. **Which turns?** Sort `turn_token_spend` logs by `total_calls` /
-   `estimated_cost_usd`. A turn with an outlier `total_calls` points at a
-   per-turn amplifier (tool-loop iterations, per-cause fan-out, retries).
+   `spend_weighted_tokens` (the cost-faithful measure — a heavily-cached turn
+   with a large `total_tokens` may be cheap). A turn with an outlier
+   `total_calls` points at a per-turn amplifier (tool-loop iterations, per-cause
+   fan-out, retries); an outlier `spend_weighted_tokens` points at prompt bloat.
 4. **Is caching working?** Check `prompt_cache_hit` in `llm_call` logs (DEBUG) and the
    `cache_read` series. Zero cache reads on Anthropic tool-loop turns means the
    prefix isn't being reused (e.g. turns > 5 min apart, so the ephemeral cache
