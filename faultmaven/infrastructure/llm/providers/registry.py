@@ -128,8 +128,9 @@ PROVIDER_SCHEMA = {
         "model_var": "OPENAI_MODEL",
         "base_url_var": "OPENAI_API_BASE",
         "default_base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-5.4-mini",
+        "default_model": "gpt-4.1-mini",
         "available_models": [
+            "gpt-4.1-mini",
             "gpt-5.4-mini",
             "gpt-4o",
             "gpt-4o-mini",
