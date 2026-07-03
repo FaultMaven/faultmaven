@@ -69,9 +69,20 @@ class FaultMavenLogger:
     log structure across all application components.
     """
 
-    def __init__(self):
-        """Initialize the logger configuration."""
-        self.config = LoggingConfig()
+    # Marker attribute stamped on the root handler we install, so a repeat
+    # configure() removes only OUR handler by identity and leaves foreign
+    # handlers (pytest's caplog, a server-installed root handler) untouched.
+    _ROOT_HANDLER_MARKER = "_faultmaven_root_handler"
+
+    def __init__(self, config: Optional["LoggingConfig"] = None):
+        """Initialize the logger configuration.
+
+        Args:
+            config: Optional pre-built config; defaults to reading unified
+                settings. Injectable so tests can pin format/level without
+                mutating the process-wide settings singleton.
+        """
+        self.config = config or LoggingConfig()
         self.configure_structlog()
 
     def configure_structlog(self) -> None:
@@ -88,57 +99,90 @@ class FaultMavenLogger:
         - OpenTelemetry trace context
         - JSON output formatting
         """
-        # Configure standard library logging with environment-based level
-        logging.basicConfig(
-            format="%(message)s",
-            level=self.config.get_log_level(),
-        )
-
-        # Build processor list based on configuration
-        processors = [
+        # Processors that BUILD the event dict, shared by native structlog logs
+        # AND foreign stdlib LogRecords, so both render identically with their
+        # fields. Rendering itself happens once, in the ProcessorFormatter below.
+        shared_processors = [
             # Merge structlog contextvars (e.g. request_id bound by
-            # RequestIdMiddleware) into every event — must run first so
-            # later processors can see/override the merged keys.
+            # RequestIdMiddleware) — first so later processors can override.
             structlog.contextvars.merge_contextvars,
-            # Standard processors
-            structlog.stdlib.filter_by_level,
             structlog.stdlib.add_logger_name,
             structlog.stdlib.add_log_level,
+            # Interpolate %-style positional args into the event message so
+            # ``logger.info("env=%s", env)`` renders "env=prod", not a raw
+            # "env=%s" plus a dangling positional_args field. No-ops when a log
+            # has no positional args.
+            structlog.stdlib.PositionalArgumentsFormatter(),
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            # Always add request context
             self.add_request_context,
+            self.add_trace_context,
         ]
-
-        # Add deduplication processor if enabled
         if self.config.LOG_DEDUPE:
-            processors.append(self.deduplicate_fields)
+            shared_processors.append(self.deduplicate_fields)
 
-        # Always add trace context
-        processors.append(self.add_trace_context)
-
-        # Add appropriate renderer based on format
-        if self.config.LOG_FORMAT == "json":
-            processors.append(structlog.processors.JSONRenderer())
-        elif self.config.LOG_FORMAT == "console":
-            processors.append(structlog.dev.ConsoleRenderer())
+        # Renderer: JSON for production, human-readable console for dev.
+        if self.config.LOG_FORMAT == "console" or (
+            self.config.LOG_FORMAT != "json" and self.config.LOG_HUMAN_READABLE
+        ):
+            renderer = structlog.dev.ConsoleRenderer()
         else:
-            # Default to JSON for production, but allow human-readable for development
-            if self.config.LOG_HUMAN_READABLE:
-                processors.append(structlog.dev.ConsoleRenderer())
-            else:
-                processors.append(structlog.processors.JSONRenderer())
+            renderer = structlog.processors.JSONRenderer()
 
-        # Configure structlog with dynamic processor list
+        # Native structlog loggers: filter + shared processors, then hand the
+        # event to the stdlib ProcessorFormatter instead of rendering here.
         structlog.configure(
-            processors=processors,
+            processors=[
+                structlog.stdlib.filter_by_level,
+                *shared_processors,
+                structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+            ],
             context_class=dict,
             logger_factory=structlog.stdlib.LoggerFactory(),
             wrapper_class=structlog.stdlib.BoundLogger,
             cache_logger_on_first_use=True,
         )
+
+        # One formatter renders BOTH structlog events and plain stdlib records.
+        # For FOREIGN (stdlib) records — including third-party libs and every
+        # ``logger.info(msg, extra={...})`` call in this codebase — the pre-chain
+        # runs the shared processors PLUS ExtraAdder, so the ``extra`` fields are
+        # merged onto the event dict and actually render (previously they were
+        # silently dropped by ``basicConfig(format="%(message)s")``).
+        formatter = structlog.stdlib.ProcessorFormatter(
+            foreign_pre_chain=[
+                *shared_processors,
+                structlog.stdlib.ExtraAdder(),
+            ],
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.StackInfoRenderer(),
+                structlog.processors.format_exc_info,
+                structlog.processors.UnicodeDecoder(),
+                renderer,
+            ],
+        )
+
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+        setattr(handler, self._ROOT_HANDLER_MARKER, True)
+
+        root_logger = logging.getLogger()
+        # Remove only a handler WE previously installed, by identity — never a
+        # blanket handlers.clear(). Clearing would drop foreign root handlers,
+        # most importantly pytest's caplog handler, silently breaking log
+        # capture if this runs mid-test (the singleton can be re-initialized).
+        for existing in list(root_logger.handlers):
+            if getattr(existing, self._ROOT_HANDLER_MARKER, False):
+                root_logger.removeHandler(existing)
+        root_logger.addHandler(handler)
+
+        # Lower the root level to our configured verbosity, but never RAISE it
+        # above a level something else (e.g. pytest's caplog.at_level) has
+        # already lowered it to — otherwise reconfiguration would suppress
+        # records a caller explicitly asked to capture.
+        configured_level = self.config.get_log_level()
+        if root_logger.level == logging.NOTSET or root_logger.level > configured_level:
+            root_logger.setLevel(configured_level)
 
     @staticmethod
     def add_request_context(
