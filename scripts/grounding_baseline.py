@@ -48,12 +48,17 @@ _PAGE = 200
 async def _load_all_cases(session) -> list:
     """Page every case id out of the store, then FULLY hydrate each via ``get``.
 
-    ``list`` returns a SUMMARY projection with an empty causal graph, so counting
-    grounded roots over it reads a false zero — the counter is drift-locked and
-    correct, it was just being fed under-hydrated cases. ``get`` hydrates the full
-    causal graph (nodes + evidence links), which is what ``count_grounded_roots``
-    needs. Re-fetching here (rather than teaching ``list`` to hydrate graphs) keeps
-    the listing view a listing view.
+    ``list`` returns a projection WITHOUT the causal graph (``case.causal_nodes ==
+    {}``), so counting grounded roots over it reads a false zero — the counter is
+    drift-locked and correct, it was just being fed under-hydrated cases. ``get``
+    hydrates the full causal graph (nodes + evidence links), which is what
+    ``count_grounded_roots`` needs.
+
+    Re-fetching per case is an N+1 fan-out, accepted here because this is an
+    occasional offline diagnostic at baseline scale. If it ever needs to scale, the
+    efficient path is a bulk causal-graph loader (mirroring the repo's
+    ``_load_evidence_for_cases_bulk``) that hydrates the ``list`` projection in
+    place — NOT bloating ``list`` itself, which must stay a listing view.
     """
     repo = SQLiteCaseRepository(session)
     case_ids: list[str] = []
@@ -61,9 +66,18 @@ async def _load_all_cases(session) -> list:
     while True:
         page, total = await repo.list(limit=_PAGE, offset=offset)
         case_ids.extend(c.case_id for c in page)
-        offset += len(page)
-        if not page or offset >= total:
+        # Advance by the WINDOW, not len(page): ``list`` drops an undeserializable
+        # row while ``total`` (COUNT(*)) still counts it, so a len-based step would
+        # re-page that window's tail (duplicate ids) and never stop on an
+        # all-dropped-but-not-final page. Stepping by _PAGE over [0, total) visits
+        # every row position exactly once.
+        offset += _PAGE
+        if offset >= total:
             break
+    # Dedup defensively: ``list`` orders by updated_at with no stable tiebreaker, so
+    # a tie straddling a page boundary could repeat an id — which must not
+    # double-count the baseline.
+    case_ids = list(dict.fromkeys(case_ids))
     cases: list = []
     for case_id in case_ids:
         # A listed id should always resolve; skip a race-deleted one defensively.
