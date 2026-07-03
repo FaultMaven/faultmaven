@@ -46,16 +46,30 @@ _PAGE = 200
 
 
 async def _load_all_cases(session) -> list:
-    """Page every case out of the store as hydrated Case domain objects."""
+    """Page every case id out of the store, then FULLY hydrate each via ``get``.
+
+    ``list`` returns a SUMMARY projection with an empty causal graph, so counting
+    grounded roots over it reads a false zero — the counter is drift-locked and
+    correct, it was just being fed under-hydrated cases. ``get`` hydrates the full
+    causal graph (nodes + evidence links), which is what ``count_grounded_roots``
+    needs. Re-fetching here (rather than teaching ``list`` to hydrate graphs) keeps
+    the listing view a listing view.
+    """
     repo = SQLiteCaseRepository(session)
-    cases: list = []
+    case_ids: list[str] = []
     offset = 0
     while True:
         page, total = await repo.list(limit=_PAGE, offset=offset)
-        cases.extend(page)
+        case_ids.extend(c.case_id for c in page)
         offset += len(page)
         if not page or offset >= total:
             break
+    cases: list = []
+    for case_id in case_ids:
+        # A listed id should always resolve; skip a race-deleted one defensively.
+        case = await repo.get(case_id)
+        if case is not None:
+            cases.append(case)
     return cases
 
 
