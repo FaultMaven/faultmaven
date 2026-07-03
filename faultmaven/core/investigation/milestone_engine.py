@@ -2143,6 +2143,11 @@ class MilestoneEngine:
                             "cache_read_tokens": tracker.cache_read_tokens,
                             "cache_write_tokens": tracker.cache_write_tokens,
                             "total_tokens": tracker.total_tokens,
+                            # Cost-weighted spend (cache reads down-weighted) —
+                            # the SAME measure the soft-budget alert and hard
+                            # ceiling compare against, emitted every turn so
+                            # budget headroom is visible without recomputation.
+                            "spend_weighted_tokens": tracker.spend_weighted_tokens,
                             "total_calls": tracker.total_calls,
                             "estimated_cost_usd": round(tracker.cost_usd, 6),
                             "unpriced_calls": tracker.unpriced_calls,

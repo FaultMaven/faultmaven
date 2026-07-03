@@ -64,8 +64,10 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "claude-haiku": TokenRates(0.80, 4.0, 0.08, 1.0),
     },
     "openai": {
-        # gpt-4.1-mini is FaultMaven's default OpenAI model (non-reasoning); add
-        # its rate here once confirmed. gpt-5.4-mini stays a pinnable reasoning option.
+        # gpt-4.1-mini is FaultMaven's default OpenAI model (non-reasoning).
+        # Public rates: $0.40 input / $1.60 output per 1M, cached input $0.10/1M.
+        "gpt-4.1-mini": TokenRates(0.40, 1.60, 0.10, 0.0),
+        # gpt-5.4-mini stays a pinnable reasoning option.
         "gpt-5.4-mini": TokenRates(0.15, 0.60, 0.075, 0.0),
         "gpt-4o-mini": TokenRates(0.15, 0.60, 0.075, 0.0),
         "gpt-4o": TokenRates(2.50, 10.0, 1.25, 0.0),

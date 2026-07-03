@@ -41,6 +41,25 @@ class TestTurnTokenTracker:
         assert t.total_tokens == 175
         assert t.total_calls == 1
 
+    def test_spend_weighted_downweights_cache_reads(self):
+        # Cache reads are real bytes in the window but billed at a fraction, so
+        # the cost-weighted measure the budget guards compare against counts
+        # them at 0.25x; input/output/cache_write count in full.
+        t = TurnTokenTracker()
+        t.add(
+            _FakeResponse(
+                input_tokens=1000,
+                output_tokens=200,
+                cache_read_tokens=4000,
+                cache_write_tokens=100,
+            )
+        )
+        assert t.total_tokens == 5300
+        # 1000 + 200 + 100 + 0.25 * 4000 = 2300
+        assert t.spend_weighted_tokens == 2300
+        # Cost-weighted is strictly below the raw byte count when caching is hot.
+        assert t.spend_weighted_tokens < t.total_tokens
+
     def test_multiple_calls_accumulate(self):
         t = TurnTokenTracker()
         t.add(_FakeResponse(input_tokens=100, output_tokens=50), cost_usd=0.10)

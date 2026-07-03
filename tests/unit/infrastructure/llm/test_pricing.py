@@ -87,6 +87,26 @@ class TestEstimateCostUsd:
         # 0.15 (input) + 0.075 (cache_read)
         assert cost == pytest.approx(0.225)
 
+    def test_default_openai_model_gpt_4_1_mini_is_priced(self):
+        # gpt-4.1-mini is the default OpenAI model; it must be priced so real
+        # runs don't report 100% unpriced calls (cost silently ~$0).
+        cost, priced = estimate_cost_usd(
+            "openai",
+            "gpt-4.1-mini",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+        )
+        assert priced is True
+        # 0.40 (input) + 1.60 (output) + 0.10 (cache_read)
+        assert cost == pytest.approx(2.10)
+
+    def test_dated_gpt_4_1_mini_snapshot_matches(self):
+        # Dated snapshot ids (e.g. gpt-4.1-mini-2025-04-14) must substring-match.
+        rates = lookup_rates("openai", "gpt-4.1-mini-2025-04-14")
+        assert rates is not None
+        assert rates.input == 0.40
+
 
 @pytest.mark.unit
 class TestPricingOverrides:
