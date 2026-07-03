@@ -306,7 +306,7 @@ class LLMSettings(BaseSettings):
     # Defaults are performance-weighted (token-usage billing → quality drives UX),
     # all tool-calling + large-context capable. HuggingFace is the exception: its
     # Inference API can't do tool calling, so it is kept but not recommended.
-    openai_model: str = Field(default="gpt-5.4-mini")
+    openai_model: str = Field(default="gpt-4.1-mini")
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     fireworks_model: str = Field(
         default="accounts/fireworks/models/deepseek-v3",
@@ -1834,30 +1834,8 @@ class PromptBudgetSettings(BaseSettings):
     the resolved budget (``PROMPT_TARGET_TOKENS`` clamped to the model window) is
     poured into a single jar — reserve first, then variable sections by
     strict-priority greedy fill up to per-section caps, each compacted to fit.
-
-    The allocator is gated for safe rollout (shadow → enable), per the doc's
-    acceptance/rollout section.
+    This is the only prompt-assembly path.
     """
-
-    # --- Rollout flags (§14) ---
-    allocator_enabled: bool = Field(
-        default=False,
-        validation_alias="PROMPT_ALLOCATOR_ENABLED",
-        description=(
-            "Use the priority-greedy budget allocator for prompt assembly. "
-            "Default OFF — the legacy assembly path is used until validated."
-        ),
-    )
-    allocator_shadow: bool = Field(
-        default=False,
-        validation_alias="PROMPT_ALLOCATOR_SHADOW",
-        description=(
-            "Shadow mode: assemble BOTH the legacy and allocator prompts, log "
-            "the size/section deltas, but SEND the legacy one. For validating "
-            "the allocator on real traffic before enabling it. Ignored when "
-            "allocator_enabled is true."
-        ),
-    )
 
     # --- Reserve bounds (§6) — keep the never-trimmed reserve bounded ---
     user_message_max_tokens: int = Field(
@@ -1895,6 +1873,19 @@ class PromptBudgetSettings(BaseSettings):
         validation_alias="PROMPT_SYSTEM_FEEDBACK_MAX_TOKENS",
         description="Cap on the reserved last-turn system feedback block.",
     )
+    conversation_history_max_tokens: int = Field(
+        default=8000,
+        ge=200,
+        le=100_000,
+        validation_alias="PROMPT_CONVERSATION_HISTORY_MAX_TOKENS",
+        description=(
+            "Cap on the (priority #2) conversation-history section. Without it "
+            "the section's cap defaults to the whole section_budget, so verbose "
+            "old turns can starve the lower-priority journal / KB / hypotheses "
+            "(§5.1: every variable section must be capped). The continuity floor "
+            "(latest turn via compact history) is still honored below this cap."
+        ),
+    )
 
     # --- Backstop (§7) ---
     min_viable_tokens: int = Field(
@@ -1916,6 +1907,47 @@ class PromptBudgetSettings(BaseSettings):
         description=(
             "Safety buffer subtracted from section_budget to absorb token-"
             "estimate error (matters mainly when target ≈ hard limit)."
+        ),
+    )
+
+    # --- Per-turn spend (sum across the tool-loop calls) ---
+    turn_token_ceiling: int = Field(
+        default=150_000,
+        ge=10_000,
+        le=2_000_000,
+        validation_alias="PROMPT_TURN_TOKEN_CEILING",
+        description=(
+            "Hard per-turn spend ceiling: once a turn's cumulative token spend "
+            "(across all tool-loop calls) crosses this, the tool loop is forced "
+            "to wrap up on the next iteration (schema-only) instead of running "
+            "more expensive tool calls. A safety abort, not the normal budget."
+        ),
+    )
+    turn_token_budget: int = Field(
+        default=100_000,
+        ge=0,
+        le=2_000_000,
+        validation_alias="PROMPT_TURN_TOKEN_BUDGET",
+        description=(
+            "Soft per-turn spend budget for observability. When > 0 and a turn's "
+            "total token spend exceeds it, a WARNING (turn_token_budget_exceeded) "
+            "is logged with the call breakdown — surfacing high-spend turns "
+            "(measured normal is ~66K/turn) without changing behavior. Set 0 to "
+            "disable the alert."
+        ),
+    )
+    tool_observation_max_tokens: int = Field(
+        default=16_000,
+        ge=1_000,
+        le=500_000,
+        validation_alias="PROMPT_TOOL_OBSERVATION_MAX_TOKENS",
+        description=(
+            "Bounded scratchpad allowance for accumulated tool-loop observations "
+            "(tool calls + results). Each tool-loop LLM call is hard-bounded to "
+            "min(model_ceiling, prompt_target + this) — so no continuation call "
+            "grows unbounded past the jar. When the accumulated tool exchanges "
+            "would exceed it, the OLDEST are elided (with a marker; the agent can "
+            "re-search), keeping the base task + newest observations."
         ),
     )
 

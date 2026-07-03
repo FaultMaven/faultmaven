@@ -9,7 +9,11 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 import structlog
 
-from faultmaven.infrastructure.logging.config import FaultMavenLogger, get_logger
+from faultmaven.infrastructure.logging.config import (
+    FaultMavenLogger,
+    LoggingConfig,
+    get_logger,
+)
 
 
 class TestFaultMavenLogger:
@@ -19,11 +23,31 @@ class TestFaultMavenLogger:
         """Setup for each test method."""
         # Reset structlog configuration
         structlog.reset_defaults()
+        # Snapshot the root logger so constructing FaultMavenLogger (which
+        # installs a handler and sets the root level) cannot leak state into
+        # later tests.
+        root = logging.getLogger()
+        self._saved_root_handlers = root.handlers[:]
+        self._saved_root_level = root.level
 
     def teardown_method(self):
         """Cleanup after each test method."""
         # Reset structlog configuration
         structlog.reset_defaults()
+        # Restore the root logger exactly as it was before this test.
+        root = logging.getLogger()
+        root.handlers[:] = self._saved_root_handlers
+        root.setLevel(self._saved_root_level)
+
+    @staticmethod
+    def _json_config():
+        """A LoggingConfig pinned to JSON/INFO so tests that json.loads the
+        captured output are independent of the ambient .env / settings."""
+        config = LoggingConfig()
+        config.LOG_FORMAT = "json"
+        config.LOG_LEVEL = "INFO"
+        config.LOG_HUMAN_READABLE = False
+        return config
 
     def test_fault_maven_logger_creation(self):
         """Test FaultMavenLogger initialization."""
@@ -33,25 +57,16 @@ class TestFaultMavenLogger:
             # Should call configure_structlog during init
             mock_configure.assert_called_once()
 
-    @patch("logging.basicConfig")
     @patch("structlog.configure")
-    def test_configure_structlog_setup(self, mock_configure, mock_basic_config):
-        """Test configure_structlog sets up proper configuration."""
+    def test_configure_structlog_setup(self, mock_configure):
+        """Test configure_structlog wires structlog through the stdlib root handler."""
         logger_config = FaultMavenLogger()
-
-        # Check that basic logging was configured with format and the config's log level
-        # (log level comes from settings/env, so don't hardcode a specific level)
-        mock_basic_config.assert_called_once()
-        call_kwargs = mock_basic_config.call_args[1]
-        assert call_kwargs["format"] == "%(message)s"
-        assert call_kwargs["level"] == logger_config.config.get_log_level()
 
         # Check that structlog was configured
         mock_configure.assert_called_once()
 
         # Examine the structlog configuration call
-        call_args = mock_configure.call_args
-        kwargs = call_args[1]
+        kwargs = mock_configure.call_args[1]
 
         assert "processors" in kwargs
         assert "context_class" in kwargs
@@ -59,20 +74,111 @@ class TestFaultMavenLogger:
         assert "wrapper_class" in kwargs
         assert "cache_logger_on_first_use" in kwargs
 
-        # Check processors
         processors = kwargs["processors"]
         assert len(processors) > 0
 
-        # Should have our custom processors
-        processor_names = [
-            proc.__name__ if hasattr(proc, "__name__") else str(proc)
-            for proc in processors
-        ]
-
-        # Custom processors should be included
+        # Custom processors should be included (built into the shared chain).
         assert any("add_request_context" in str(proc) for proc in processors)
-        assert any("deduplicate_fields" in str(proc) for proc in processors)
         assert any("add_trace_context" in str(proc) for proc in processors)
+
+        # Native structlog logs are handed to the stdlib ProcessorFormatter,
+        # not rendered inline — the chain must end in wrap_for_formatter.
+        assert processors[-1] is structlog.stdlib.ProcessorFormatter.wrap_for_formatter
+
+        # Exactly one FaultMaven-owned root handler carries a ProcessorFormatter
+        # so stdlib and structlog logs render identically. Other (foreign) root
+        # handlers, if any, are left intact — we don't clear them.
+        root = logging.getLogger()
+        fm_handlers = [
+            h
+            for h in root.handlers
+            if getattr(h, FaultMavenLogger._ROOT_HANDLER_MARKER, False)
+        ]
+        assert len(fm_handlers) == 1
+        assert isinstance(fm_handlers[0].formatter, structlog.stdlib.ProcessorFormatter)
+        # Root level is lowered to at least our configured verbosity.
+        assert root.level != logging.NOTSET
+        assert root.level <= logger_config.config.get_log_level()
+
+    def test_stdlib_extra_fields_render(self):
+        """A plain stdlib ``logger.info(msg, extra={...})`` must render its extra
+        fields (regression: ``basicConfig(format="%(message)s")`` dropped them,
+        making per-turn token-spend forensics invisible)."""
+        import io
+        import json
+
+        FaultMavenLogger(config=self._json_config())  # pin JSON/INFO
+        handler = self._fm_root_handler()
+        buf = io.StringIO()
+        orig_stream = handler.stream
+        handler.stream = buf
+        try:
+            logging.getLogger("faultmaven.core.investigation.milestone_engine").info(
+                "turn_token_spend",
+                extra={"input_tokens": 46600, "total_calls": 3},
+            )
+        finally:
+            handler.stream = orig_stream
+
+        record = json.loads(buf.getvalue().strip())
+        assert record["event"] == "turn_token_spend"
+        assert record["input_tokens"] == 46600
+        assert record["total_calls"] == 3
+        assert record["logger"] == "faultmaven.core.investigation.milestone_engine"
+        assert record["level"] == "info"
+
+    def test_stdlib_positional_args_interpolated(self):
+        """A stdlib ``logger.info("env=%s", value)`` must interpolate the arg
+        into the event message rather than emitting a raw "%s" plus a dangling
+        positional_args field."""
+        import io
+        import json
+
+        FaultMavenLogger(config=self._json_config())  # pin JSON/INFO
+        handler = self._fm_root_handler()
+        buf = io.StringIO()
+        orig_stream = handler.stream
+        handler.stream = buf
+        try:
+            logging.getLogger("x").info("environment=%s ready", "development")
+        finally:
+            handler.stream = orig_stream
+
+        record = json.loads(buf.getvalue().strip())
+        assert record["event"] == "environment=development ready"
+        assert "positional_args" not in record
+
+    def test_reconfigure_preserves_foreign_root_handlers(self, caplog):
+        """Re-running configuration mid-process must NOT drop foreign root
+        handlers (regression: a blanket handlers.clear() removed pytest's
+        caplog handler, silently breaking log capture)."""
+        import faultmaven.infrastructure.logging.config as config_module
+
+        # Simulate the singleton being rebuilt mid-test, exactly as several
+        # tests in this suite do via `_logger_config = None`.
+        config_module._logger_config = None
+        try:
+            with caplog.at_level(logging.INFO, logger="faultmaven.reconfig_probe"):
+                # Triggers configure_structlog() while caplog's handler is on root.
+                get_logger("faultmaven.reconfig_probe")
+                logging.getLogger("faultmaven.reconfig_probe").info("still_captured")
+
+            assert any(
+                "still_captured" in r.getMessage() for r in caplog.records
+            ), "caplog lost records after logging reconfiguration"
+        finally:
+            config_module._logger_config = None
+
+    @staticmethod
+    def _fm_root_handler():
+        """Return the single FaultMaven-owned handler on the root logger."""
+        fm_handlers = [
+            h
+            for h in logging.getLogger().handlers
+            if getattr(h, FaultMavenLogger._ROOT_HANDLER_MARKER, False)
+        ]
+        assert len(fm_handlers) == 1, f"expected 1 FM handler, got {len(fm_handlers)}"
+        return fm_handlers[0]
 
     def test_add_request_context_no_context(self):
         """Test add_request_context when no request context exists."""

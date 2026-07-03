@@ -28,7 +28,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 # Module initialization
@@ -2143,11 +2143,35 @@ class MilestoneEngine:
                             "cache_read_tokens": tracker.cache_read_tokens,
                             "cache_write_tokens": tracker.cache_write_tokens,
                             "total_tokens": tracker.total_tokens,
+                            # Cost-weighted spend (cache reads down-weighted) —
+                            # the SAME measure the soft-budget alert and hard
+                            # ceiling compare against, emitted every turn so
+                            # budget headroom is visible without recomputation.
+                            "spend_weighted_tokens": tracker.spend_weighted_tokens,
                             "total_calls": tracker.total_calls,
                             "estimated_cost_usd": round(tracker.cost_usd, 6),
                             "unpriced_calls": tracker.unpriced_calls,
                         },
                     )
+                    # Soft per-turn budget alert (observability only; no behavior
+                    # change) — surfaces high-spend turns for the prompt-sizing work.
+                    from faultmaven.config.settings import get_settings
+
+                    _turn_budget = get_settings().prompt_budget.turn_token_budget
+                    # Compare on the same cost-weighted measure as the hard
+                    # ceiling (cache reads down-weighted) so the two spend guards
+                    # are directly comparable; report the raw total too.
+                    if _turn_budget and tracker.spend_weighted_tokens > _turn_budget:
+                        logger.warning(
+                            "turn_token_budget_exceeded",
+                            extra={
+                                "case_id": getattr(case, "case_id", None),
+                                "spend_weighted_tokens": tracker.spend_weighted_tokens,
+                                "total_tokens": tracker.total_tokens,
+                                "total_calls": tracker.total_calls,
+                                "turn_token_budget": _turn_budget,
+                            },
+                        )
                 except Exception:
                     pass
             return result
@@ -2886,15 +2910,27 @@ class MilestoneEngine:
                     exc,
                 )
 
-            prompt = get_prompt_for_case(
-                case,
-                user_message,
-                kb_results=None,
-                provider_name=provider_name,
-                model_name=model_name,
-                processing_mode=classification.mode.value,
-                entity_highlights=entity_highlights_block,
-            )
+            # Build the prompt. In directed-analysis turns with tools available,
+            # historical evidence is rendered as index+stub (the agent will
+            # search_file). If tools then fail at RUNTIME and we fall through to
+            # the non-tool path, that elided prompt would strand the agent (no
+            # tool to recover the evidence), so keep a builder that reconstructs
+            # the full-evidence prompt for that fallback.
+            _tools_avail = self._tools_effectively_available()
+
+            def _build_prompt(tools_available: bool) -> str:
+                return get_prompt_for_case(
+                    case,
+                    user_message,
+                    kb_results=None,
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    processing_mode=classification.mode.value,
+                    entity_highlights=entity_highlights_block,
+                    tools_available=tools_available,
+                )
+
+            prompt = _build_prompt(_tools_avail)
 
             # Determine schema based on status/stage
             if case.state == CaseState.INQUIRY:
@@ -2953,6 +2989,11 @@ class MilestoneEngine:
                     redaction_ctx=redaction_ctx,
                     case=case,
                     user_message=user_message,
+                    # Only meaningful when elision happened (tools available);
+                    # the non-tool fallback rebuilds with full evidence.
+                    fallback_prompt_builder=(
+                        (lambda: _build_prompt(False)) if _tools_avail else None
+                    ),
                 )
             else:
                 response_obj = await self._generate_structured_output(
@@ -3431,6 +3472,118 @@ class MilestoneEngine:
     TOOL_RESULT_MAX_CHARS = 8000
     MAX_DEEP_ANALYSIS = 1
 
+    def _resolve_tool_loop_budget(self, provider_name: str) -> int:
+        """Per-call token budget for the tool loop: min(model hard ceiling,
+        prompt_target + a bounded observation scratchpad). Best-known method for
+        an agent working context — the base task fits the jar, the accumulated
+        tool observations get a bounded allowance, and no call may exceed the
+        model's hard limit."""
+        from faultmaven.config.settings import get_settings
+        from faultmaven.utils.model_context import resolve_model_budget
+
+        try:
+            obs = get_settings().prompt_budget.tool_observation_max_tokens
+        except Exception:
+            obs = 16_000
+        try:
+            pn = provider_name if isinstance(provider_name, str) else None
+            resolved = resolve_model_budget(pn, self.da_model)
+            budget = resolved.prompt_target + obs
+            if resolved.prompt_budget is not None:  # known window → hard ceiling
+                budget = min(budget, resolved.prompt_budget)
+            return budget
+        except Exception:
+            # Best-effort — never let budget resolution break a turn.
+            return 32_000 + obs
+
+    def _bound_tool_loop_messages(
+        self,
+        messages: list[dict],
+        budget_tokens: int,
+        provider_name: str,
+        token_cache: Optional[dict] = None,
+    ) -> list[dict]:
+        """Keep the tool-loop ``messages`` within ``budget_tokens`` by eliding the
+        OLDEST tool-exchange groups (an assistant tool-call message plus its tool
+        results), preserving the system + base task messages and the most-recent
+        exchanges. This bounds the ACCUMULATED tool observations so the request
+        cannot grow unbounded across iterations.
+
+        Scope: the head (system + base task) is sized upstream by the assembling
+        model and is never trimmed here, and the ``tools=`` schema payload is not
+        counted — so on a dedicated DA provider whose window is smaller than the
+        base's target, or with a very large tool schema, the sent request can
+        still exceed the budget; the §7.1 runtime context-length recovery is the
+        net for that (see #614).
+
+        Invariants: the elided span is replaced by a single marker (INV-4 — never
+        a silent drop; the agent can re-run a search), and whole assistant/tool
+        groups are elided together so tool_call ↔ tool_result pairing stays valid
+        (providers reject an orphan tool result).
+        """
+        from faultmaven.utils.token_estimation import estimate_tokens
+
+        _prov = provider_name if isinstance(provider_name, str) else "local"
+        _model = self.da_model if isinstance(self.da_model, str) else None
+
+        def _tok(m: dict) -> int:
+            # Memoize by object identity — `messages` is append-only within a
+            # turn and every dict is held alive in it, so ids are stable and the
+            # large, unchanging head is tokenized once, not once per iteration.
+            key = id(m)
+            if token_cache is not None and key in token_cache:
+                return token_cache[key]
+            parts = [str(m.get("content") or "")]
+            if m.get("tool_calls"):
+                parts.append(str(m.get("tool_calls")))
+            val = estimate_tokens(" ".join(parts), provider=_prov, model=_model)
+            if token_cache is not None:
+                token_cache[key] = val
+            return val
+
+        if sum(_tok(m) for m in messages) <= budget_tokens:
+            return messages
+
+        head = messages[:2]  # system + base task (always kept)
+        rest = messages[2:]
+        groups: list[list[dict]] = []
+        for m in rest:
+            if m.get("role") == "assistant" or not groups:
+                groups.append([m])
+            else:
+                groups[-1].append(m)
+
+        marker = {
+            "role": "user",
+            "content": (
+                "[Earlier tool calls and their results were elided to stay within "
+                "the context budget. Re-run a search if you need those specifics.]"
+            ),
+        }
+        avail = budget_tokens - sum(_tok(m) for m in head) - _tok(marker)
+        kept: list[list[dict]] = []
+        for g in reversed(groups):
+            gt = sum(_tok(m) for m in g)
+            if gt <= avail:
+                kept.insert(0, g)
+                avail -= gt
+            else:
+                break
+        if len(kept) == len(groups):
+            return messages  # nothing to elide (head already near budget)
+
+        logger.warning(
+            "tool_loop_context_bounded: elided %d of %d tool-exchange group(s) to "
+            "fit the %d-token budget",
+            len(groups) - len(kept),
+            len(groups),
+            budget_tokens,
+        )
+        out = list(head) + [marker]
+        for g in kept:
+            out.extend(g)
+        return out
+
     async def _tool_augmented_generate(
         self,
         prompt: str,
@@ -3483,6 +3636,14 @@ class MilestoneEngine:
         logger.info(
             f"Tool-augmented generate using provider: {provider_name}{model_info}"
         )
+        # Per-call size budget: every tool-loop call is bounded to this so an
+        # oversized prompt can never be sent (accumulated observations compact to
+        # fit — see _bound_tool_loop_messages / _resolve_tool_loop_budget).
+        tool_loop_budget = self._resolve_tool_loop_budget(provider_name)
+        # Per-message token-count cache (by id) reused across iterations so the
+        # large stable head isn't re-tokenized every loop — see
+        # _bound_tool_loop_messages.
+        _msg_token_cache: dict = {}
 
         # Build schema tool (same pattern used by single-shot path)
         schema_tools = pydantic_to_openai_tools(schema_model)
@@ -3529,22 +3690,29 @@ class MilestoneEngine:
             )
 
         force_schema_next = False
+        # Sticky: once the per-turn token ceiling is crossed we must wrap up on
+        # every subsequent iteration. Unlike force_schema_next (reset to False on
+        # each successful tool response, ~line "Reset the flag on successful tool
+        # usage"), this is NEVER cleared — otherwise the ceiling would be a no-op
+        # exactly when it matters (the crossing response usually contains tool
+        # calls, which would immediately reset force_schema_next).
+        ceiling_reached = False
 
         for iteration in range(self.MAX_TOOL_ITERATIONS + 1):
             is_final = iteration == self.MAX_TOOL_ITERATIONS
 
             # Tool availability per iteration:
             # - Iteration 0..N-1: all tools (investigation + schema)
-            # - Final iteration / force_schema: schema tools ONLY
-            if is_final or force_schema_next:
+            # - Final iteration / force_schema / ceiling reached: schema tools ONLY
+            if is_final or force_schema_next or ceiling_reached:
                 tools_for_call = schema_tools
             else:
                 tools_for_call = all_tools
 
             # DA turns: "required" — LLM must search evidence before answering
             # Other turns: "auto" — LLM decides whether to use tools
-            # Final/force-schema iterations always use "required" (schema tool only)
-            if is_final or force_schema_next:
+            # Final/force-schema/ceiling iterations always use "required" (schema only)
+            if is_final or force_schema_next or ceiling_reached:
                 choice = "required"
             elif force_tool_use:
                 choice = "required"
@@ -3557,9 +3725,16 @@ class MilestoneEngine:
             )
 
             # Pass da_model when using dedicated provider
+            # Hard-bound EVERY tool-loop call: the accumulated observations can
+            # never grow the sent prompt past the budget. The full `messages`
+            # history is kept for accumulation; only a bounded, most-recent view
+            # is sent.
+            bounded_messages = self._bound_tool_loop_messages(
+                messages, tool_loop_budget, provider_name, token_cache=_msg_token_cache
+            )
             generate_kwargs = dict(
                 prompt="",
-                messages=messages,
+                messages=bounded_messages,
                 tools=tools_for_call,
                 tool_choice=choice,
                 max_tokens=max_tokens,
@@ -3609,6 +3784,33 @@ class MilestoneEngine:
                         response,
                         getattr(response, "response_time_ms", 0),
                     )
+                # Per-turn ceiling: the call is now metered into the active turn
+                # tracker (record_provider_call above for a dedicated DA provider,
+                # or the registry chokepoint for the router), so its running total
+                # reflects this call — force the loop to wrap up if it is over.
+                _turn_tracker = active_token_tracker.get()
+                if _turn_tracker is not None:
+                    try:
+                        from faultmaven.config.settings import get_settings
+
+                        _turn_ceiling = get_settings().prompt_budget.turn_token_ceiling
+                    except Exception:
+                        _turn_ceiling = 150000
+                    if (
+                        _turn_tracker.spend_weighted_tokens > _turn_ceiling
+                        and not is_final
+                        and not ceiling_reached
+                    ):
+                        logger.warning(
+                            f"Turn spend ({_turn_tracker.spend_weighted_tokens} "
+                            f"cost-weighted tokens) exceeded ceiling ({_turn_ceiling}). "
+                            f"Forcing the tool loop to wrap up."
+                        )
+                        # Sticky (never reset) so the next iteration forces the
+                        # schema even though the current response's tool calls will
+                        # clear force_schema_next below. We already spent this
+                        # generation; the ceiling stops the NEXT round of tools.
+                        ceiling_reached = True
             except Exception as e:
                 # Any iteration failure (timeout, provider error, transient
                 # issue) raises ToolCallingUnsupportedError so the caller
@@ -4208,6 +4410,38 @@ class MilestoneEngine:
                 },
             )
         return result_text
+
+    def _da_provider_supports_tools(self) -> bool:
+        """Whether the resolved DA/chat provider+model can do tool calling.
+
+        Single source of truth for the tool-calling capability check, shared by
+        ``_tools_effectively_available`` (the directed-analysis elision gate) and
+        the Layer-1 pre-check in ``_generate_structured_output_inner`` so the two
+        cannot drift. Absent capability info → assume capable (the runtime path
+        then catches an actual failure and falls back).
+        """
+        provider = self.da_provider or self.llm_provider
+        model = self.da_model if self.da_provider else None
+        supports = getattr(provider, "supports_tool_calling", None)
+        if supports is None:
+            return True
+        try:
+            return bool(supports(model))
+        except Exception:
+            return False
+
+    def _tools_effectively_available(self) -> bool:
+        """True when investigation tools are registered AND the resolved
+        provider/model can actually do tool calling.
+
+        This is the real precondition behind the directed-analysis evidence
+        index+stub elision: the inline extract may only be dropped (telling the
+        agent to ``search_file`` for specifics) when ``search_file`` will actually
+        run this turn. A tool-less / tool-incapable turn that dropped the extract
+        would be stranded with neither the data nor a working tool — the
+        premature-conclusion failure FaultMaven guards against.
+        """
+        return bool(self.investigation_tools) and self._da_provider_supports_tools()
 
     def _build_da_tool_schemas(self) -> list[dict]:
         """Build OpenAI-format tool definitions for DA investigation tools."""
@@ -5003,6 +5237,7 @@ class MilestoneEngine:
         redaction_ctx: Any | None = None,
         case: Any | None = None,
         user_message: Optional[str] = None,
+        fallback_prompt_builder: Optional[Callable[[], str]] = None,
     ) -> BaseInteractionResponse:
         """Structured-output generation with runtime context-length recovery.
 
@@ -5023,6 +5258,7 @@ class MilestoneEngine:
                 force_tool_use=force_tool_use,
                 redaction_ctx=redaction_ctx,
                 case=case,
+                fallback_prompt_builder=fallback_prompt_builder,
             )
         except Exception as exc:
             if (
@@ -5063,6 +5299,7 @@ class MilestoneEngine:
         force_tool_use: bool = False,
         redaction_ctx: Any | None = None,
         case: Any | None = None,
+        fallback_prompt_builder: Optional[Callable[[], str]] = None,
     ) -> BaseInteractionResponse:
         """
         Generate structured output from LLM using provider-agnostic capability system.
@@ -5102,11 +5339,11 @@ class MilestoneEngine:
             from faultmaven.exceptions import ToolCallingUnsupportedError
 
             # Layer 1: Pre-check for known-incompatible providers/models
-            provider = self.da_provider or self.llm_provider
-            model = self.da_model if self.da_provider else None
-            if hasattr(
-                provider, "supports_tool_calling"
-            ) and not provider.supports_tool_calling(model):
+            # (shared capability check with the elision gate — see
+            # _da_provider_supports_tools).
+            if not self._da_provider_supports_tools():
+                provider = self.da_provider or self.llm_provider
+                model = self.da_model if self.da_provider else None
                 logger.warning(
                     "Provider %s (model: %s) does not support tool calling. "
                     "Falling back to non-tool structured output path.",
@@ -5131,6 +5368,19 @@ class MilestoneEngine:
                         "Falling back to non-tool structured output path.",
                         e,
                     )
+                    # The prompt may have elided historical evidence on the
+                    # assumption search_file would run (directed-analysis
+                    # index+stub). On the non-tool path there is no search_file,
+                    # so rebuild with full evidence — otherwise the agent would
+                    # be stranded (elided evidence + no tool to recover it).
+                    if fallback_prompt_builder is not None:
+                        try:
+                            prompt = fallback_prompt_builder()
+                        except Exception as rebuild_exc:  # never break the fallback
+                            logger.warning(
+                                "fallback_prompt_builder failed (non-fatal): %s",
+                                rebuild_exc,
+                            )
 
         # Get provider-specific structured output strategy
         schema = schema_model.model_json_schema()

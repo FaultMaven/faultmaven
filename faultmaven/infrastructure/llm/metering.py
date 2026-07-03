@@ -92,6 +92,22 @@ class TurnTokenTracker:
             + self.cache_write_tokens
         )
 
+    @property
+    def spend_weighted_tokens(self) -> int:
+        """Cost-equivalent token count: cache-read tokens are real bytes in the
+        window but billed at a fraction (~0.1x Anthropic, ~0.5x OpenAI), so they
+        are down-weighted for the per-turn SPEND guards (per-CALL size is enforced
+        separately). A conservative 0.25 weight so the ceiling tracks cost, not
+        raw byte count — otherwise a cheap, heavily-cached tool loop would trip a
+        cost-motivated abort. cache_write (~1.25x) is counted in full.
+        """
+        return int(
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_write_tokens
+            + 0.25 * self.cache_read_tokens
+        )
+
 
 def record_provider_call(
     provider: str,

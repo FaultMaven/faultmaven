@@ -63,7 +63,6 @@ def test_allocator_fits_budget_and_keeps_reserve_and_current_turn(budget):
         max_tokens=budget,
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     total = sum(_count(v) for v in ctx.values() if v)
     # Fits within budget (+ small tolerance for the truncation marker / estimate)
@@ -87,7 +86,6 @@ def test_allocator_bounds_huge_user_message(monkeypatch):
         max_tokens=24000,
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     # user_message present but capped well below its raw size.
     assert ctx["user_message"]
@@ -112,7 +110,6 @@ def test_allocator_keeps_journal_above_kb_under_pressure():
         max_tokens=1600,
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     # Journal (priority #3) survives; KB (lower) is the one squeezed.
     assert ctx["investigation_journal"], "journal must survive under pressure"
@@ -167,12 +164,11 @@ def test_fallback_formats_without_current_turn_upload():
 # Starvation backstop: tiny budget → minimal fallback (not a near-empty prompt)
 # ---------------------------------------------------------------------------
 def test_starvation_routes_to_fallback(monkeypatch):
-    # Enable the allocator and set a target below the (~14K-token) template
-    # overhead by mutating the cached settings singleton (auto-restored).
+    # Set a target below the (~14K-token) template overhead by mutating the
+    # cached settings singleton (auto-restored).
     from faultmaven.config.settings import get_settings
 
     s = get_settings()
-    monkeypatch.setattr(s.prompt_budget, "allocator_enabled", True)
     monkeypatch.setattr(s.model_context, "prompt_target_tokens", 2500)
 
     case = _case_with_current_turn_upload()
@@ -252,22 +248,234 @@ def test_allocator_conversation_keeps_latest_turn_under_pressure():
         max_tokens=1500,  # tight: evidence will pressure conversation
         provider_name=PROVIDER,
         model_name=MODEL,
-        use_allocator=True,
     )
     conv = ctx["conversation_history"]
     # The latest content must survive — never front-truncated away.
     assert "latest question" in conv or "RECENT_MARKER_XYZ" in conv
 
 
+def test_allocator_journal_truncation_keeps_newest_not_oldest():
+    """A journal too large for its cap is truncated keeping the TAIL (newest),
+    not the head — dropping the newest anti-amnesia entries is exactly wrong."""
+    case = _case_with_current_turn_upload()
+    # All high-signal so the entry-level middle-out keeps every entry; enough of
+    # them (with long content) that the rendered journal still exceeds its cap,
+    # forcing the allocator's section-level truncation to fire.
+    # content is schema-capped at 200 chars; ~60 high-signal entries render to
+    # ~2100 tokens, comfortably over the ~1500-token journal cap so the
+    # allocator's section-level truncation fires.
+    case.investigation_journal = [
+        JournalEntry(
+            turn=i,
+            entry_type="finding",
+            content=f"finding number {i} " + ("detail " * 25),
+        )
+        for i in range(1, 61)
+    ]
+    ctx = build_investigation_context(
+        case,
+        "continue the investigation",
+        max_tokens=24000,
+        provider_name=PROVIDER,
+        model_name=MODEL,
+    )
+    journal = ctx["investigation_journal"]
+    assert journal, "journal must survive"
+    assert "truncated" in journal.lower(), "expected the section to be truncated"
+    # The newest entry (60) survives (keep='tail'); the oldest (1) is dropped —
+    # the OLD keep='head' bug would invert this (keep 1, drop 60).
+    assert "finding number 60" in journal
+    assert "finding number 1 " not in journal
+
+
+def test_allocator_conversation_cap_does_not_starve_journal():
+    """Verbose conversation (priority #2) must not consume the whole section
+    budget and starve the journal (#3): conversation is bounded by its cap."""
+    from faultmaven.config.settings import get_settings
+
+    conv_cap = get_settings().prompt_budget.conversation_history_max_tokens
+    case = _case_with_current_turn_upload()
+    case.investigation_journal = [
+        JournalEntry(turn=1, entry_type="decision", content="focus on connection pool"),
+    ]
+
+    # Verbose history: the recent (verbatim) user turns carry large, token-dense
+    # pastes so the rendered conversation far exceeds the cap. (Older user turns
+    # are summarized; recent user content renders verbatim and uncapped — that is
+    # the section the cap must bound.)
+    def _dense(prefix, n):
+        return prefix + " " + " ".join(f"tok{prefix}{k}" for k in range(n))
+
+    case.messages = []
+    for i in range(1, 25):
+        case.messages.append(
+            {"turn_number": i, "role": "user", "content": _dense(f"u{i}", 2000)}
+        )
+        case.messages.append(
+            {"turn_number": i, "role": "assistant", "content": f"agent reply {i}"}
+        )
+    case.current_turn = 25
+    # Sanity: the raw conversation genuinely exceeds the cap, so the assertion
+    # below actually exercises the cap (guards against a no-op test).
+    from faultmaven.core.investigation.prompts.context_builder import (
+        _build_graduated_history,
+    )
+
+    assert _count(_build_graduated_history(case)) > conv_cap
+    ctx = build_investigation_context(
+        case,
+        "continue",
+        max_tokens=24000,
+        provider_name=PROVIDER,
+        model_name=MODEL,
+    )
+    # Conversation is bounded by its cap (+ small marker/estimate tolerance)...
+    assert _count(ctx["conversation_history"]) <= conv_cap + 80
+    # ...and the journal below it survives rather than being starved to empty.
+    assert ctx["investigation_journal"], "journal must not be starved by history"
+    assert "connection pool" in ctx["investigation_journal"]
+
+
 # ---------------------------------------------------------------------------
-# Legacy path unchanged when the flag is off (default)
+# The allocator is the only assembly path — get_prompt_for_case always uses it.
 # ---------------------------------------------------------------------------
-def test_legacy_default_does_not_use_allocator():
-    """With the flag off, get_prompt_for_case uses the legacy assembly."""
+def test_get_prompt_for_case_assembles_via_allocator():
+    """A normal turn renders the full template + current-turn upload through the
+    (only) allocator path."""
     case = _case_with_current_turn_upload()
     prompt = get_prompt_for_case(
         case, "why slow?", provider_name=PROVIDER, model_name=MODEL
     )
-    # Legacy path still renders the full template + current-turn upload.
     assert FILE_ID in prompt
     assert "STATE: INVESTIGATING" in prompt or "INVESTIGATING" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Tool-loop per-call size enforcement (no oversized prompt may be sent)
+# ---------------------------------------------------------------------------
+def test_tool_loop_messages_bounded_elides_oldest_keeps_recent():
+    """Every tool-loop call is bounded: accumulated tool exchanges compact
+    (oldest-first, with a marker) so the sent prompt never exceeds the budget,
+    while the system+base task and the newest observations are preserved and
+    assistant/tool pairing stays valid."""
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    fake = SimpleNamespace(da_model=None)
+    msgs = [
+        {"role": "system", "content": "SYS " + "s" * 200},
+        {"role": "user", "content": "BASE " + "x" * 400},
+    ]
+    for i in range(6):
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"c{i}",
+                        "function": {"name": "search_file", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        msgs.append(
+            {
+                "role": "tool",
+                "tool_call_id": f"c{i}",
+                "name": "search_file",
+                "content": f"RESULT_{i} " + "y" * 400,
+            }
+        )
+    budget = 400
+    out = MilestoneEngine._bound_tool_loop_messages(fake, msgs, budget, "openai")
+
+    total = sum(
+        _count(str(m.get("content") or "") + str(m.get("tool_calls") or ""))
+        for m in out
+    )
+    joined = " ".join(str(m.get("content")) for m in out)
+    assert total <= budget, "bounded: sent prompt must fit the budget"
+    assert out[0]["role"] == "system" and out[1]["content"].startswith("BASE")
+    assert any(
+        "elided to stay within" in (m.get("content") or "") for m in out
+    ), "INV-4 marker"
+    assert "RESULT_5" in joined, "newest observation kept"
+    assert "RESULT_0" not in joined, "oldest observation elided"
+    # Pairing valid: every tool result is immediately preceded by an assistant.
+    for idx, m in enumerate(out):
+        if m.get("role") == "tool":
+            assert out[idx - 1].get("role") == "assistant"
+
+    # No-op (returns the SAME list object) when already under budget.
+    under = msgs[:4]
+    assert (
+        MilestoneEngine._bound_tool_loop_messages(fake, under, 10**6, "openai") is under
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-turn spend tracking + tool-capability gate (code-review coverage)
+# ---------------------------------------------------------------------------
+def test_spend_weighted_tokens_downweights_cache_reads():
+    """The cost-weighted total down-weights cache-read tokens (0.25x) so a
+    heavily-cached turn isn't charged full byte count against the spend guards."""
+    from faultmaven.infrastructure.llm.metering import TurnTokenTracker
+
+    tr = TurnTokenTracker()
+    tr.input_tokens = 1000
+    tr.output_tokens = 200
+    tr.cache_write_tokens = 400
+    tr.cache_read_tokens = 10000
+    assert tr.total_tokens == 11600
+    # 1000 + 200 + 400 + 0.25*10000 = 4100
+    assert tr.spend_weighted_tokens == 4100
+    assert tr.spend_weighted_tokens < tr.total_tokens
+
+
+def test_tools_effectively_available_gates_on_capability():
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    def eng(tools, provider):
+        ns = SimpleNamespace(
+            investigation_tools=tools,
+            da_provider=None,
+            llm_provider=provider,
+            da_model=None,
+        )
+        # _tools_effectively_available delegates to this method on self.
+        ns._da_provider_supports_tools = (
+            lambda: MilestoneEngine._da_provider_supports_tools(ns)
+        )
+        return ns
+
+    capable = SimpleNamespace(supports_tool_calling=lambda m: True)
+    incapable = SimpleNamespace(supports_tool_calling=lambda m: False)
+    no_attr = SimpleNamespace()  # missing capability info → assume capable
+
+    f = MilestoneEngine._tools_effectively_available
+    assert f(eng(object(), capable)) is True
+    assert f(eng(None, capable)) is False  # no tools registered
+    assert f(eng(object(), incapable)) is False  # tools present but incapable
+    assert f(eng(object(), no_attr)) is True  # unknown capability → capable
+    # The shared helper agrees with the gate's capability half.
+    g = MilestoneEngine._da_provider_supports_tools
+    assert g(eng(object(), incapable)) is False
+    assert g(eng(object(), capable)) is True
+
+
+def test_resolve_tool_loop_budget_is_bounded():
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    b = MilestoneEngine._resolve_tool_loop_budget(
+        SimpleNamespace(da_model=MODEL), PROVIDER
+    )
+    # prompt_target (32K default) + observation allowance (16K default), clamped
+    # down to the model ceiling. Always a positive int, never above target+obs.
+    assert isinstance(b, int) and b >= 2000
+    assert b <= 32000 + 16000
