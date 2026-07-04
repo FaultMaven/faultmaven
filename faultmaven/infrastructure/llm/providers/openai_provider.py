@@ -66,6 +66,18 @@ class OpenAIProvider(BaseLLMProvider):
         r"(?:^|/)(?:" + "|".join(_COMPLETION_TOKENS_MODEL_FAMILIES) + r")(?:[-.]|$)"
     )
 
+    # Reasoning effort applied to reasoning-family models on structured/tool
+    # calls. These models bill hidden reasoning tokens against the output
+    # budget; on a deep structured turn the reasoning can exhaust the reserve
+    # and truncate the schema JSON (``MAX_TOKENS`` → 500) — the same starvation
+    # the Gemini ``thinkingLevel: "low"`` cap prevents. ``"low"`` is the
+    # broadly-valid floor across the gpt-5 and o-series families (gpt-5 also
+    # accepts ``"minimal"``, but o-series may not — ``"low"`` is the safe common
+    # denominator, mirroring the Gemini choice). The reasoning families coincide
+    # with ``_COMPLETION_TOKENS_MODEL_FAMILIES``; non-reasoning models
+    # (gpt-4.1/gpt-4o) reject the param and must never receive it.
+    _STRUCTURED_REASONING_EFFORT = "low"
+
     @classmethod
     def _uses_completion_tokens_param(cls, model_name: str) -> bool:
         """Whether the model takes ``max_completion_tokens`` over ``max_tokens``.
@@ -77,6 +89,27 @@ class OpenAIProvider(BaseLLMProvider):
         normalizes the legacy parameter itself) can opt out.
         """
         return bool(cls._COMPLETION_TOKENS_MODEL_RE.search(model_name.lower()))
+
+    # o1 variants that DON'T accept ``reasoning_effort`` (o1-preview / o1-mini
+    # shipped before the param existed and 400 on it), even though they DO
+    # require ``max_completion_tokens`` — so the two axes diverge here and the
+    # reasoning-effort detection can't simply reuse the completion-tokens regex.
+    _REASONING_EFFORT_UNSUPPORTED = ("o1-mini", "o1-preview")
+
+    @classmethod
+    def _caps_reasoning_effort(cls, model_name: str) -> bool:
+        """Whether ``reasoning_effort`` should be capped for this model.
+
+        True for the reasoning families that accept the param (gpt-5.x, o1 GA,
+        o3/o4) — they starve the output budget without a cap. False for
+        non-reasoning models (gpt-4.1/gpt-4o), which reject the param, and for
+        the ``o1-preview``/``o1-mini`` variants, which predate ``reasoning_effort``
+        and 400 on it. Overridable so a gateway subclass can opt out.
+        """
+        name = model_name.lower()
+        if any(u in name for u in cls._REASONING_EFFORT_UNSUPPORTED):
+            return False
+        return bool(cls._COMPLETION_TOKENS_MODEL_RE.search(name))
 
     @classmethod
     def _capability_for_model_name(cls, model_name: str) -> StructuredOutputCapability:
@@ -188,6 +221,13 @@ class OpenAIProvider(BaseLLMProvider):
         response_format = kwargs.pop("response_format", None)
         if response_format:
             payload["response_format"] = response_format
+
+        # Cap reasoning effort on structured/tool calls for reasoning-family
+        # models, so hidden reasoning can't starve the output reserve and
+        # truncate the schema JSON. Set BEFORE the kwargs merge so an explicit
+        # caller-supplied ``reasoning_effort`` still wins.
+        if (tools or response_format) and self._caps_reasoning_effort(effective_model):
+            payload["reasoning_effort"] = self._STRUCTURED_REASONING_EFFORT
 
         # Add any additional kwargs, filtering out None values
         payload.update({k: v for k, v in kwargs.items() if v is not None})
