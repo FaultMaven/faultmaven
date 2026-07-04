@@ -659,3 +659,52 @@ async def test_check_automatic_transitions_no_override_when_no_proposal():
     assert case.pending_transition is None
     assert "override_suggestions" not in metadata
     assert metadata.get("transition_proposed") is not True
+
+
+# ============================================================
+# derive_closure_reason — Phase 3 insufficient-evidence capture
+# ============================================================
+
+
+class TestDeriveClosureReasonInsufficientEvidence:
+    """``derive_closure_reason`` reads the persisted verification status so a
+    case closed from the INSUFFICIENT_EVIDENCE cell is captured distinctly.
+
+    Capture-on-close only: the engine never nudges toward this close; it just
+    labels it honestly when the user closes such a case (§5.4 / D4).
+    """
+
+    def test_insufficient_evidence_cell_yields_distinct_reason(self):
+        from faultmaven.core.investigation.terminal_transitions import (
+            derive_closure_reason,
+        )
+        from faultmaven.modules.case.domain.models import VerificationStatus
+
+        case = _make_investigating_case()
+        case.progress.verification_status = VerificationStatus.INSUFFICIENT_EVIDENCE
+
+        assert derive_closure_reason(case) == "closed_insufficient_evidence"
+
+    def test_other_investigating_status_yields_after_investigation(self):
+        from faultmaven.core.investigation.terminal_transitions import (
+            derive_closure_reason,
+        )
+        from faultmaven.modules.case.domain.models import VerificationStatus
+
+        case = _make_investigating_case()
+        # Any non-insufficient status closes as the generic investigated reason.
+        case.progress.verification_status = VerificationStatus.OPEN
+        assert derive_closure_reason(case) == "closed_after_investigation"
+
+    def test_inquiry_still_wins_over_status(self):
+        from faultmaven.core.investigation.terminal_transitions import (
+            derive_closure_reason,
+        )
+        from faultmaven.modules.case.domain.models import VerificationStatus
+
+        case = _make_inquiry_case()
+        case.progress = InvestigationProgress(
+            verification_status=VerificationStatus.INSUFFICIENT_EVIDENCE
+        )
+        # INQUIRY has no investigation — the state gate takes precedence.
+        assert derive_closure_reason(case) == "inquiry_only"

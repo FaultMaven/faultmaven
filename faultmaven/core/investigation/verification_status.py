@@ -3,19 +3,21 @@ reachable, and if not, why.
 
 See ``docs/architecture/investigation-engine/insufficient-evidence-handling.md``.
 
-Phase 0 (this module): a pure, compute-only **join of the two existing layers** —
-the causal-graph grounding grade (``grade_cause_assurance``) and the
-hypothesis-layer stall signals. It is NOT yet wired into the turn pipeline and
-has no consumers; it changes no behavior. Later phases drive the structured
-handoff from it (Phase 1), add the model-declared obtainability refinement
-(Phase 2), and persist it + hook the terminal boundary (Phase 3). By reading the
-existing signals rather than re-deriving them, this stays a coordinating read
-over one source of truth per axis — not a third parallel signal.
+This module is a pure, compute-only **join of the two existing layers** — the
+causal-graph grounding grade (``grade_cause_assurance``) and the hypothesis-layer
+stall signals. By reading the existing signals rather than re-deriving them, it
+stays a coordinating read over one source of truth per axis — not a third
+parallel signal. Its output is consumed by the turn pipeline
+(``milestone_engine._recompute_assessment_state`` writes it onto
+``case.progress.verification_status`` each turn, and ``engine_owned_affordances``
+drives the code-guarded structured handoff from it) and by the terminal
+capture-on-close hook. The ``VerificationStatus`` enum lives in the domain layer
+(``modules.case.contracts``) so it can be a persisted field; this module imports
+and re-exports it.
 """
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.cause_assurance import (
@@ -40,42 +42,24 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     NeedObtainability,
     NeedPurpose,
+    VerificationStatus,
 )
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
-
-class VerificationStatus(str, Enum):
-    """The join of two orthogonal axes — grounding (is a cause grounded?) ×
-    progress (has progress stalled?) — plus the below-the-work-gate state
-    (§5.1/§5.2). NOT a terminal disposition (RESOLVED/CLOSED); an assessment
-    variable recomputed each turn."""
-
-    HEALTHY = "healthy"
-    """Grounded × progressing — a cause is grounded and work is advancing."""
-
-    TREATMENT_BLOCKED = "treatment_blocked"
-    """Grounded × stalled — have a cause but can't reach a *verified fix*
-    (failed fix, no access, change window, waiting on another team) → escalate.
-    ``FIX_FAILURE_CYCLE`` is one pattern that lands here, not the cell."""
-
-    OPEN = "open"
-    """Not grounded × progressing, with real diagnostic work underway — keep
-    working, nothing special surfaced."""
-
-    NOT_YET_PRODUCTIVE = "not_yet_productive"
-    """Not grounded and the work gate has NOT been crossed — too little
-    diagnostic work to judge. Separates 'the reasoner produced nothing' (a
-    provider-health fact) from a genuine data wall; never a per-case
-    'insufficient data' verdict."""
-
-    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
-    """Not grounded × stalled, after real diagnostic work — the (not-grounded ×
-    stalled) cell. No cause can be grounded from currently available data →
-    structured handoff. Phase 2 lets a model-declared obtainability judgment
-    refine this *within* the gate; the judgment can never bypass the work gate,
-    and its absence defaults to keep-engaging."""
+# ``VerificationStatus`` is defined in the domain layer (``modules.case``) and
+# imported here — the same direction as ``CauseState`` / ``NeedObtainability`` —
+# so it can be a persisted field on ``InvestigationProgress`` without inverting
+# the module dependency. Re-exported so existing ``from
+# ...verification_status import VerificationStatus`` call sites keep working.
+__all__ = [
+    "VerificationStatus",
+    "assess_verification_status",
+    "work_gate_passed",
+    "is_stalled",
+    "is_progress_stalled",
+]
 
 
 def work_gate_passed(case: "Case") -> bool:

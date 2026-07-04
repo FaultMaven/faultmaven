@@ -862,6 +862,12 @@ def _recompute_assessment_state(
     - ``solution_state``: ``SELECTED`` once a permanent SOLUTION has been
       proposed (or a Solution record exists). ``CANDIDATES`` (multi-solution
       deliberation) is reserved for a follow-on and not produced here.
+    - ``verification_status``: the grounding × progress join
+      (``assess_verification_status``), computed LAST so it reads the grade the
+      cause_state recompute (including its deductive-exclusion stamp) just
+      settled — the #593 recompute-after-stamp ordering. Persisted in the
+      progress blob so the model-declared obtainability signal it reads survives
+      across turns (Phase 3).
     """
     p = case.progress
 
@@ -870,6 +876,11 @@ def _recompute_assessment_state(
     if p.solution_state != SolutionState.SELECTED:
         if p.solution_proposed or bool(case.solutions):
             p.solution_state = SolutionState.SELECTED
+
+    # Verification status LAST — after the cause_state recompute above has run
+    # derive_node_states + the deductive-exclusion stamp, so the grounding-first
+    # disposition reads a fresh grade rather than pre-empting the deductive arm.
+    p.verification_status = assess_verification_status(case)
 
 
 def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
@@ -1268,6 +1279,12 @@ def _terminal_confirmation_response(case) -> str:
     closure_reason = getattr(case, "closure_reason", "") or ""
     if closure_reason == "inquiry_only":
         return "Case closed without investigation."
+    if closure_reason == "closed_insufficient_evidence":
+        return (
+            "Case closed — insufficient evidence to ground a cause. "
+            "Residual candidates and the missing data are preserved in the "
+            "closure summary."
+        )
     if closure_reason == "closed_after_investigation":
         return "Case closed without resolution. Investigation history preserved."
     return "Case closed."

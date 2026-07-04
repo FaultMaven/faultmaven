@@ -408,9 +408,16 @@ class TestTransformInvestigating:
     def test_progress_transparency_when_stalled(self):
         from datetime import datetime, timezone
 
-        from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+        from faultmaven.modules.case.domain.models import (
+            TurnOutcome,
+            TurnProgress,
+            VerificationStatus,
+        )
 
         case = _make_investigating_case()
+        # Phase 3: the persisted verification status is surfaced alongside the
+        # stalled-milestone info so the frontend can show the honest partial.
+        case.progress.verification_status = VerificationStatus.INSUFFICIENT_EVIDENCE
         # Add 5+ investigative turns without milestones to trigger transparency
         case.turn_history = [
             TurnProgress(
@@ -438,6 +445,9 @@ class TestTransformInvestigating:
         assert result.progress_transparency is not None
         assert result.progress_transparency.active is True
         assert result.progress_transparency.pending_milestone is not None
+        assert (
+            result.progress_transparency.verification_status == "insufficient_evidence"
+        )
 
 
 # ============================================================

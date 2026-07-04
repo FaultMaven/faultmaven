@@ -57,6 +57,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     InvestigationProgress,
     InvestigationStrategy,
+    NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -796,7 +797,8 @@ class SQLiteCaseRepository(CaseRepository):
                     priority, state,
                     motivating_hypothesis_ids,
                     superseded_reason,
-                    created_at_turn, created_at, updated_at
+                    created_at_turn, created_at, updated_at,
+                    obtainability
                 FROM evidence_needs
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC, need_id ASC
@@ -857,7 +859,8 @@ class SQLiteCaseRepository(CaseRepository):
 
         Column order: ``need_id, purpose, request_text, rationale,
         priority, state, motivating_hypothesis_ids (JSON),
-        superseded_reason, created_at_turn, created_at, updated_at``.
+        superseded_reason, created_at_turn, created_at, updated_at,
+        obtainability``.
         ``case_id`` and ``fulfilling_evidence_ids`` are passed in by
         the caller (the row doesn't carry case_id explicitly because
         the WHERE clause already filtered by case).
@@ -896,6 +899,11 @@ class SQLiteCaseRepository(CaseRepository):
                 created_at_turn=row[8],
                 created_at=_parse_dt(row[9]),
                 updated_at=_parse_dt(row[10]),
+                obtainability=(
+                    NeedObtainability(row[11])
+                    if len(row) > 11 and row[11]
+                    else NeedObtainability.UNKNOWN
+                ),
             )
         except Exception as need_err:  # noqa: BLE001
             logging.getLogger(__name__).warning(
@@ -2503,14 +2511,16 @@ class SQLiteCaseRepository(CaseRepository):
                     priority, state,
                     motivating_hypothesis_ids,
                     superseded_reason,
-                    created_at_turn, created_at, updated_at
+                    created_at_turn, created_at, updated_at,
+                    obtainability
                 ) VALUES (
                     :need_id, :case_id, :organization_id,
                     :purpose, :request_text, :rationale,
                     :priority, :state,
                     :motivating_hypothesis_ids,
                     :superseded_reason,
-                    :created_at_turn, :created_at, :updated_at
+                    :created_at_turn, :created_at, :updated_at,
+                    :obtainability
                 )
                 ON CONFLICT (need_id) DO UPDATE SET
                     purpose = EXCLUDED.purpose,
@@ -2520,7 +2530,8 @@ class SQLiteCaseRepository(CaseRepository):
                     state = EXCLUDED.state,
                     motivating_hypothesis_ids = EXCLUDED.motivating_hypothesis_ids,
                     superseded_reason = EXCLUDED.superseded_reason,
-                    updated_at = EXCLUDED.updated_at
+                    updated_at = EXCLUDED.updated_at,
+                    obtainability = EXCLUDED.obtainability
             """)
 
             now = datetime.now(UTC)
@@ -2542,6 +2553,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "created_at_turn": need.created_at_turn,
                     "created_at": need.created_at or now,
                     "updated_at": now,
+                    "obtainability": need.obtainability.value,
                 },
             )
 

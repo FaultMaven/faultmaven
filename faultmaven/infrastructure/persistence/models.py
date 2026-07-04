@@ -982,6 +982,14 @@ class EvidenceNeedModel(Base):
     priority = Column(String(10), nullable=False, server_default="medium")
     state = Column(String(20), nullable=False, server_default="pending", index=True)
 
+    # Model-declared obtainability of the discriminating data this need asks for
+    # (mirrors NeedObtainability: unknown | obtainable | unobtainable). Scoped to
+    # causal_verification needs in practice; UNKNOWN default is fail-safe (keeps
+    # the case engaging). Persisting it is what makes the declared-data-wall arm of
+    # the verification-status handoff durable across turns. Auto-revoked to
+    # 'unknown' on FULFILLED/SUPERSEDED by the domain model before save.
+    obtainability = Column(String(20), nullable=False, server_default="unknown")
+
     # JSON list of hypothesis IDs that motivate this need. Empty list
     # means the need is motivated by the problem statement (symptom
     # needs). Stored as a blob — the list is small, never indexed, and

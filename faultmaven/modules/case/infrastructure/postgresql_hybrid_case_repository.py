@@ -51,6 +51,7 @@ from faultmaven.modules.case.domain.models import (
     InquiryData,
     InvestigationProgress,
     InvestigationStrategy,
+    NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -666,7 +667,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     priority, state,
                     motivating_hypothesis_ids,
                     superseded_reason,
-                    created_at_turn, created_at, updated_at
+                    created_at_turn, created_at, updated_at,
+                    obtainability
                 FROM evidence_needs
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC, need_id ASC
@@ -719,7 +721,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         Column order: ``need_id, purpose, request_text, rationale,
         priority, state, motivating_hypothesis_ids (JSONB),
-        superseded_reason, created_at_turn, created_at, updated_at``.
+        superseded_reason, created_at_turn, created_at, updated_at,
+        obtainability``.
         On PG, JSONB is returned as a Python list directly (asyncpg);
         on dialect-compatibility paths a JSON string is also tolerated.
         """
@@ -749,6 +752,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 created_at_turn=row[8],
                 created_at=row[9] if row[9] else datetime.now(timezone.utc),
                 updated_at=row[10] if row[10] else datetime.now(timezone.utc),
+                obtainability=(
+                    NeedObtainability(row[11])
+                    if len(row) > 11 and row[11]
+                    else NeedObtainability.UNKNOWN
+                ),
             )
         except Exception as need_err:  # noqa: BLE001
             logger.warning("Failed to load evidence_need %s: %s", row[0], need_err)
@@ -2181,14 +2189,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     priority, state,
                     motivating_hypothesis_ids,
                     superseded_reason,
-                    created_at_turn, created_at, updated_at
+                    created_at_turn, created_at, updated_at,
+                    obtainability
                 ) VALUES (
                     :need_id, :case_id, :organization_id,
                     :purpose, :request_text, :rationale,
                     :priority, :state,
                     {self._cast('motivating_hypothesis_ids')},
                     :superseded_reason,
-                    :created_at_turn, :created_at, :updated_at
+                    :created_at_turn, :created_at, :updated_at,
+                    :obtainability
                 )
                 ON CONFLICT (need_id) DO UPDATE SET
                     purpose = EXCLUDED.purpose,
@@ -2198,7 +2208,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     state = EXCLUDED.state,
                     motivating_hypothesis_ids = EXCLUDED.motivating_hypothesis_ids,
                     superseded_reason = EXCLUDED.superseded_reason,
-                    updated_at = EXCLUDED.updated_at
+                    updated_at = EXCLUDED.updated_at,
+                    obtainability = EXCLUDED.obtainability
             """)
 
             now = datetime.now(timezone.utc)
@@ -2220,6 +2231,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "created_at_turn": need.created_at_turn,
                     "created_at": need.created_at or now,
                     "updated_at": now,
+                    "obtainability": need.obtainability.value,
                 },
             )
 

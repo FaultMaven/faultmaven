@@ -794,7 +794,7 @@ class InvestigationService:
                 ],
                 suggested_actions=suggested_actions,
                 progress_transparency=self._build_progress_transparency(
-                    result.get("metadata", {})
+                    result.get("metadata", {}), updated_case
                 ),
             )
 
@@ -1218,20 +1218,29 @@ class InvestigationService:
         return result
 
     def _build_progress_transparency(
-        self, metadata: Dict[str, Any]
+        self, metadata: Dict[str, Any], case: "Case"
     ) -> Optional[ProgressTransparencyInfo]:
         """Build ProgressTransparencyInfo from turn metadata.
 
         Returns None if progress transparency is not active (silent mode).
+        ``verification_status`` carries the engine's persisted assessment for
+        the turn (the grounding × progress join) so the frontend can surface the
+        honest partial outcome — e.g. ``insufficient_evidence`` — alongside the
+        stalled-milestone info.
         """
         if not metadata.get("progress_transparent"):
             return None
+
+        verification_status = None
+        if case.progress and case.progress.verification_status:
+            verification_status = case.progress.verification_status.value
 
         return ProgressTransparencyInfo(
             active=True,
             pending_milestone=metadata.get("pending_milestone"),
             milestone_description=metadata.get("milestone_description"),
             repair_type=metadata.get("stagnation_type"),
+            verification_status=verification_status,
         )
 
     async def _handle_greeting(self, case: "Case") -> Dict[str, Any]:

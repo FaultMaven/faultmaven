@@ -2756,3 +2756,27 @@ class TestVerificationStatusRecordedOnTurn:
         result = await engine.process_turn(base_case, "Hello")
 
         assert result["metadata"]["verification_status"] is None
+
+    @pytest.mark.asyncio
+    async def test_status_persisted_on_case_each_turn_regardless_of_flag(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Phase 3: verification_status is written onto ``case.progress`` every
+        INVESTIGATING turn (like ``cause_state``), independent of the handoff
+        flag — the flag gates only the affordance, not the persisted assessment.
+        Persisting it is what carries the model-declared obtainability signal
+        across turns.
+        """
+        from faultmaven.modules.case.contracts import VerificationStatus
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
+
+        # Flag left at its default (OFF). The persisted field must still update.
+        case = self._stalled_insufficient_case(base_case)
+        await engine.process_turn(case, "Any ideas?")
+
+        assert (
+            case.progress.verification_status
+            == VerificationStatus.INSUFFICIENT_EVIDENCE
+        )

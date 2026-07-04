@@ -494,6 +494,14 @@ class ProgressTransparencyInfo(BaseModel):
         "hypothesis_anchoring, hypothesis_deadlock, exhausted, "
         "fix_failure_cycle, action_loop",
     )
+    verification_status: Optional[str] = Field(
+        default=None,
+        description="Engine-derived verification status this turn — the "
+        "grounding × progress join (healthy | treatment_blocked | open | "
+        "not_yet_productive | insufficient_evidence). Lets the frontend show the "
+        "honest partial outcome (e.g. insufficient_evidence) alongside the "
+        "stalled-milestone surfacing.",
+    )
 
 
 class TurnResponse(BaseModel):
