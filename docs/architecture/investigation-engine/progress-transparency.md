@@ -4,6 +4,7 @@ This document specifies the progress transparency feature for the FaultMaven inv
 
 **Related Documents**:
 
+- [Insufficient-Evidence Handling](./insufficient-evidence-handling.md) — How the stall signals and repair patterns below combine with the causal-graph assurance grade into the engine's handling of "no cause can be grounded from available data", and the direction toward a single computed *verification status*
 - [Agent Behavioral Rules](./agent-behavioral-rules.md) — The 8 rules governing agent behavior (output, resilience, and input reading)
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) — Stage transitions and milestones
 - [Prompt Assembly Architecture](./prompt-assembly-architecture.md) — Where progress transparency is injected
