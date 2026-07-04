@@ -75,28 +75,42 @@ jobs:
         if: github.event_name != 'pull_request'
         run: echo "Published Docker images with digest ${{ steps.meta.outputs.digest }}"
 
+      # Cross-repo queue update authenticates via the faultmaven-infra-queue-bot
+      # GitHub App (org INFRA_BOT_APP_ID / INFRA_BOT_PRIVATE_KEY), minting a
+      # short-lived token scoped to faultmaven-enterprise-infra. Runs only on the
+      # canonical repo's main; forks lack the org creds and skip.
+      - name: Mint infra token (GitHub App)
+        id: infra-token
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.INFRA_BOT_APP_ID }}
+          private-key: ${{ secrets.INFRA_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: faultmaven-enterprise-infra
+
       # Checkout enterprise-infra repository
       - name: Checkout enterprise-infra
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
         uses: actions/checkout@v6
         with:
           repository: FaultMaven/faultmaven-enterprise-infra
           ref: main
-          token: ${{ secrets.PAT_CROSS_REPO_ACCESS }}  # Design docs call this INFRA_REPO_TOKEN
+          token: ${{ steps.infra-token.outputs.token }}
           path: enterprise-infra
 
       - name: Install yq
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
         run: |
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
       - name: Update image queue
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
         run: |
           cd enterprise-infra
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "faultmaven-infra-queue-bot[bot]"
+          git config user.email "faultmaven-infra-queue-bot[bot]@users.noreply.github.com"
 
           QUEUE_FILE="available-images/staging/faultmaven.yaml"
           SHA_SHORT="${GITHUB_SHA:0:7}"
