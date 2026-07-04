@@ -381,3 +381,45 @@ def test_wall_does_not_flip_a_grounded_case():
         assess_verification_status(grounded_stalled)
         == VerificationStatus.TREATMENT_BLOCKED
     )
+
+
+# --- Known false positive: slow-but-live via the TIME arm --------------------
+# The time arm (current_turn ≥ N ∧ turns_without_progress ≥ N) cannot tell "the
+# investigation is walled" from "the user was just slow to respond." A case whose
+# discriminating data is explicitly OBTAINABLE — so it is NOT a declared wall —
+# still trips INSUFFICIENT_EVIDENCE on the time thresholds alone. This is an
+# ACCEPTED false positive (design §5.5 / no-collapse rule 4), not a bug:
+#   - it is indistinguishable from a real wall in pure case state, so no work-gate
+#     tightening removes it without breaking the declared-wall arm (whose residual
+#     candidates are un-refuted by definition — tightening to ≥2-refuted would
+#     make the handoff never fire on the canonical unobservable-cause archetype);
+#   - it is non-terminal and self-dissolves the moment progress resumes
+#     (fail-forward), so it never traps a live case;
+#   - its *rate* is the property the live/simulator calibration tier must bound
+#     before the ``enable_insufficient_evidence_handoff`` flag is flipped on. This
+#     deterministic tier can only pin that the arm fires and that it self-heals;
+#     it cannot measure how often a real trajectory is genuinely still-live.
+
+
+def test_slow_but_live_is_a_known_time_arm_false_positive():
+    case = _work_done(current_turn=9, turns_without_progress=5)
+    # Data IS obtainable — this is NOT a wall; the user was merely slow.
+    _declare(case, {h: NeedObtainability.OBTAINABLE for h in case.hypotheses.keys()})
+    # The time arm fires regardless → the accepted false positive.
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    # Prove the verdict rode the TIME arm, not a (non-existent) declared wall:
+    # clear only the time thresholds and it drops straight back to OPEN.
+    case.turns_without_progress = 2
+    assert assess_verification_status(case) == VerificationStatus.OPEN
+
+
+def test_time_arm_false_positive_self_dissolves_on_progress():
+    # The no-collapse safety net: the mislabel is transient. The instant progress
+    # resumes (data arrives / a milestone lands → the engine resets the stall
+    # counter), the status fail-forwards out of INSUFFICIENT_EVIDENCE, so a
+    # mislabeled live case is never trapped in the terminal-looking cell.
+    case = _work_done(current_turn=20, turns_without_progress=8)
+    _declare(case, {h: NeedObtainability.OBTAINABLE for h in case.hypotheses.keys()})
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    case.turns_without_progress = 0  # progress resumed this turn
+    assert assess_verification_status(case) == VerificationStatus.OPEN
