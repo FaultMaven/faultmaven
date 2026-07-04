@@ -45,7 +45,7 @@ from faultmaven.models.api_models import (
 )
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import Case, CaseState
+from faultmaven.modules.case.contracts import Case, CaseState, VerificationStatus
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models import (
     Evidence,
@@ -1222,21 +1222,32 @@ class InvestigationService:
     ) -> Optional[ProgressTransparencyInfo]:
         """Build ProgressTransparencyInfo from turn metadata.
 
-        Returns None if progress transparency is not active (silent mode).
         ``verification_status`` carries the engine's persisted assessment for
         the turn (the grounding × progress join) so the frontend can surface the
         honest partial outcome — e.g. ``insufficient_evidence`` — alongside the
         stalled-milestone info.
-        """
-        if not metadata.get("progress_transparent"):
-            return None
 
+        Emitted when transparent mode is active (stalled-milestone surfacing)
+        **or** when the status is the honest-partial ``INSUFFICIENT_EVIDENCE``.
+        The latter is decoupled from ``progress_transparent`` on purpose: a
+        declared data wall reaches ``INSUFFICIENT_EVIDENCE`` *before* the
+        time-stall thresholds that drive transparent mode, so gating the status
+        on that flag would hide the very outcome the frontend needs to show.
+        ``active`` still reflects transparent mode only.
+        """
         verification_status = None
         if case.progress and case.progress.verification_status:
             verification_status = case.progress.verification_status.value
 
+        transparent = bool(metadata.get("progress_transparent"))
+        surface_insufficient = (
+            verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE.value
+        )
+        if not transparent and not surface_insufficient:
+            return None
+
         return ProgressTransparencyInfo(
-            active=True,
+            active=transparent,
             pending_milestone=metadata.get("pending_milestone"),
             milestone_description=metadata.get("milestone_description"),
             repair_type=metadata.get("stagnation_type"),

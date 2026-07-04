@@ -869,3 +869,60 @@ class TestInvestigationServiceCloseCase:
 
         assert updated_case.closed_at is not None
         assert isinstance(updated_case.closed_at, datetime)
+
+
+class TestBuildProgressTransparencyVerificationStatus:
+    """Phase 3: the honest-partial verification_status must reach the live
+    TurnResponse even when transparent mode (the time-stall detector) is not
+    active — a declared data wall reaches INSUFFICIENT_EVIDENCE first."""
+
+    def _service(self):
+        from unittest.mock import MagicMock
+
+        return InvestigationService(
+            milestone_engine=MagicMock(),
+            case_repository=MagicMock(),
+        )
+
+    def _case(self, status):
+        from faultmaven.modules.case.domain.models import (
+            InvestigationProgress,
+            VerificationStatus,
+        )
+
+        case = create_sample_case()
+        case.progress = InvestigationProgress(
+            verification_status=getattr(VerificationStatus, status)
+        )
+        return case
+
+    def test_insufficient_evidence_surfaced_without_transparent_mode(self):
+        svc = self._service()
+        case = self._case("INSUFFICIENT_EVIDENCE")
+        # No progress_transparent flag → previously returned None, hiding the
+        # honest partial. Now it must surface with active reflecting the stall.
+        info = svc._build_progress_transparency({}, case)
+        assert info is not None
+        assert info.active is False
+        assert info.verification_status == "insufficient_evidence"
+
+    def test_non_insufficient_status_stays_silent_without_transparent_mode(self):
+        svc = self._service()
+        case = self._case("OPEN")
+        # OPEN is not the honest-partial; without transparent mode, stay silent.
+        assert svc._build_progress_transparency({}, case) is None
+
+    def test_transparent_mode_still_active_and_carries_status(self):
+        svc = self._service()
+        case = self._case("INSUFFICIENT_EVIDENCE")
+        info = svc._build_progress_transparency(
+            {
+                "progress_transparent": True,
+                "pending_milestone": "root_cause_identified",
+            },
+            case,
+        )
+        assert info is not None
+        assert info.active is True
+        assert info.verification_status == "insufficient_evidence"
+        assert info.pending_milestone == "root_cause_identified"

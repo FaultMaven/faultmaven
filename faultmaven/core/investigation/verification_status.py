@@ -155,7 +155,10 @@ def assess_verification_status(case: "Case") -> VerificationStatus:
     """Compute the verification status as the grounding × progress join.
 
     Reads the grounding grade × the progress axis (``is_progress_stalled`` —
-    time thresholds OR a model-declared data wall). No persistence yet (Phase 3).
+    time thresholds OR a model-declared data wall). The result is persisted onto
+    ``case.progress.verification_status`` each turn by the caller
+    (``milestone_engine._recompute_assessment_state``); the model-declared
+    obtainability it reads is likewise durable (the ``evidence_needs`` column).
     The caller must run this AFTER any deductive-validation stamp in the turn
     pipeline (mirroring the #593 recompute), so the grounding-first disposition
     reads a fresh grade rather than pre-empting the deductive arm.

@@ -297,8 +297,7 @@ class ReportGenerationService:
             "Closed after investigation — root cause not confirmed"
         ),
         "closed_insufficient_evidence": (
-            "Closed — insufficient evidence to ground a cause "
-            "(discriminating data unavailable)"
+            "Closed — insufficient evidence to ground a cause"
         ),
     }
 
@@ -325,12 +324,35 @@ class ReportGenerationService:
 
         Empty-safe: if either list is empty the corresponding line is omitted;
         the header still records that the case hit a data boundary.
+
+        The wording distinguishes the two ways the case reached
+        INSUFFICIENT_EVIDENCE: a **declared data wall** (some discriminator was
+        declared unobtainable) vs a **time-stall** (the investigation stalled
+        with data that was never declared unavailable). Overstating a wall that
+        was never asserted would be a false honesty claim.
         """
-        block: List[str] = ["## Data Boundary — Why This Remains Unresolved\n"]
-        block.append(
-            "The investigation did enough work to rule things out but could not "
-            "ground a single cause from the available data.\n"
+        outstanding = [
+            n
+            for n in (case.evidence_needs or [])
+            if n.purpose == NeedPurpose.CAUSAL_VERIFICATION and n.is_outstanding
+        ]
+        has_declared_wall = any(
+            n.obtainability == NeedObtainability.UNOBTAINABLE for n in outstanding
         )
+
+        block: List[str] = ["## Data Boundary — Why This Remains Unresolved\n"]
+        if has_declared_wall:
+            block.append(
+                "The investigation did enough work to rule things out but could "
+                "not ground a single cause: the discriminating data needed to "
+                "decide between the remaining candidates could not be obtained.\n"
+            )
+        else:
+            block.append(
+                "The investigation did enough work to rule things out but "
+                "stalled before a single cause could be grounded from the data "
+                "gathered so far.\n"
+            )
 
         residual = [
             h
@@ -347,13 +369,8 @@ class ReportGenerationService:
                 )
             block.append("")
 
-        outstanding = [
-            n
-            for n in (case.evidence_needs or [])
-            if n.purpose == NeedPurpose.CAUSAL_VERIFICATION and n.is_outstanding
-        ]
         if outstanding:
-            block.append("**Missing discriminating data:**")
+            block.append("**Outstanding discriminating data:**")
             for n in outstanding:
                 wall = (
                     " — declared unobtainable"
@@ -363,10 +380,16 @@ class ReportGenerationService:
                 block.append(f"- {n.request_text}{wall}")
             block.append("")
 
-        block.append(
-            "_If the missing data later becomes available, reopening or a fresh "
-            "investigation can resolve this._\n"
-        )
+        if has_declared_wall:
+            block.append(
+                "_If the missing data later becomes available, reopening or a "
+                "fresh investigation can resolve this._\n"
+            )
+        else:
+            block.append(
+                "_Resuming the investigation with additional data or a fresh "
+                "angle can resolve this._\n"
+            )
         return block
 
     def _list_hypotheses(self, case: Case) -> List[Any]:

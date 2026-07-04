@@ -109,6 +109,26 @@ async def test_closure_summary_renders_data_boundary_section():
 
 
 @pytest.mark.asyncio
+async def test_time_stall_close_does_not_overstate_a_data_wall():
+    """An insufficient-evidence close reached by pure time-stall (no need
+    declared unobtainable) must NOT claim the data was unavailable."""
+    case = _closed_insufficient_case()
+    # Flip the only need back to UNKNOWN obtainability → no declared wall.
+    case.evidence_needs[0].obtainability = NeedObtainability.UNKNOWN
+
+    service = ReportGenerationService()
+    summary = await service._generate_closure_summary(case, {"duration": "2h"})
+
+    boundary = summary.split("## Data Boundary")[1].split("## ")[0]
+    # No wall was declared → wording must not assert the data was unavailable.
+    assert "could not be obtained" not in boundary
+    assert "declared unobtainable" not in boundary
+    assert "stalled before a single cause could be grounded" in boundary
+    # The outstanding need is still surfaced, just not flagged as a wall.
+    assert "connection-pool saturation metrics" in boundary
+
+
+@pytest.mark.asyncio
 async def test_refuted_candidate_excluded_from_residual_list():
     service = ReportGenerationService()
     summary = await service._generate_closure_summary(
