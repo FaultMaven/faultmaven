@@ -90,17 +90,26 @@ class OpenAIProvider(BaseLLMProvider):
         """
         return bool(cls._COMPLETION_TOKENS_MODEL_RE.search(model_name.lower()))
 
+    # o1 variants that DON'T accept ``reasoning_effort`` (o1-preview / o1-mini
+    # shipped before the param existed and 400 on it), even though they DO
+    # require ``max_completion_tokens`` — so the two axes diverge here and the
+    # reasoning-effort detection can't simply reuse the completion-tokens regex.
+    _REASONING_EFFORT_UNSUPPORTED = ("o1-mini", "o1-preview")
+
     @classmethod
     def _caps_reasoning_effort(cls, model_name: str) -> bool:
         """Whether ``reasoning_effort`` should be capped for this model.
 
-        True for the reasoning families (gpt-5.x, o1/o3/o4) — they accept
-        ``reasoning_effort`` and starve the output budget without a cap. False
-        for non-reasoning models (gpt-4.1/gpt-4o), which reject the param.
-        Reuses the reasoning-family detection (same families as the
-        completion-tokens axis); overridable so a gateway subclass can opt out.
+        True for the reasoning families that accept the param (gpt-5.x, o1 GA,
+        o3/o4) — they starve the output budget without a cap. False for
+        non-reasoning models (gpt-4.1/gpt-4o), which reject the param, and for
+        the ``o1-preview``/``o1-mini`` variants, which predate ``reasoning_effort``
+        and 400 on it. Overridable so a gateway subclass can opt out.
         """
-        return bool(cls._COMPLETION_TOKENS_MODEL_RE.search(model_name.lower()))
+        name = model_name.lower()
+        if any(u in name for u in cls._REASONING_EFFORT_UNSUPPORTED):
+            return False
+        return bool(cls._COMPLETION_TOKENS_MODEL_RE.search(name))
 
     @classmethod
     def _capability_for_model_name(cls, model_name: str) -> StructuredOutputCapability:

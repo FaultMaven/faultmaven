@@ -38,6 +38,16 @@ class OpenRouterProvider(OpenAIProvider):
         GPT-5 / o-series models reject ``max_tokens``."""
         return False
 
+    @classmethod
+    def _caps_reasoning_effort(cls, model_name: str) -> bool:
+        """OpenRouter controls reasoning through its own gateway-normalized
+        ``reasoning`` object, not the top-level OpenAI ``reasoning_effort`` field
+        — passing the latter for a routed model (e.g. ``openai/gpt-5``) is at
+        best ignored and at worst rejected. Opt out, mirroring
+        ``_uses_completion_tokens_param``; a reasoning cap for OpenRouter routes
+        belongs in the gateway's own knob, not this OpenAI-specific param."""
+        return False
+
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:

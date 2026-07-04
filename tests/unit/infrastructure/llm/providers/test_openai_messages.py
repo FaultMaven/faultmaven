@@ -337,17 +337,57 @@ class TestOpenAIReasoningEffortCap:
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["reasoning_effort"] == "high"
 
+    @pytest.mark.parametrize("model", ["o1-mini", "o1-preview"])
+    async def test_o1_pre_effort_variants_never_get_effort(self, model):
+        """``o1-mini``/``o1-preview`` predate ``reasoning_effort`` and 400 on it,
+        even though they require ``max_completion_tokens`` — the two axes diverge,
+        so the cap must NOT be applied to them."""
+        provider = OpenAIProvider(_config_for(model))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi", response_format={"type": "json_object"})
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert "reasoning_effort" not in request_body
+
+    async def test_openrouter_never_injects_reasoning_effort(self):
+        """OpenRouter normalizes reasoning via its own gateway object; a routed
+        reasoning model (``openai/gpt-5``) must not receive the top-level OpenAI
+        ``reasoning_effort`` (mirrors the ``max_completion_tokens`` opt-out)."""
+        provider = OpenRouterProvider(
+            _config_for(
+                "openai/gpt-5",
+                name="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        )
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi", response_format={"type": "json_object"})
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert "reasoning_effort" not in request_body
+
 
 @pytest.mark.unit
 def test_reasoning_effort_classifier_matches_reasoning_families_only():
     caps = OpenAIProvider._caps_reasoning_effort
     assert caps("gpt-5.4") is True
+    assert caps("o1") is True  # o1 GA accepts reasoning_effort
     assert caps("o4-mini") is True
     assert caps("openai/o3-mini") is True
     # Non-reasoning models must never receive the param (they 400 on it).
     assert caps("gpt-4.1-mini") is False
     assert caps("gpt-4o") is False
     assert caps("my-gpt-4-o1-test") is False  # mid-name token must not match
+    # o1-preview / o1-mini predate the param and reject it (axes diverge).
+    assert caps("o1-mini") is False
+    assert caps("o1-preview") is False
+    assert caps("o1-mini-2024-09-12") is False  # dated variant still excluded
+    # OpenRouter opts out entirely (gateway normalizes reasoning itself).
+    assert OpenRouterProvider._caps_reasoning_effort("openai/gpt-5") is False
 
 
 @pytest.mark.unit
