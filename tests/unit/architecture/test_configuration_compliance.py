@@ -512,7 +512,6 @@ class TestConfigurationArchitectureCompliance:
         assert hasattr(settings.logging, "level")
         assert hasattr(settings.upload, "max_upload_size_mb")
         assert hasattr(settings.knowledge, "enable_web_search")
-        assert hasattr(settings.features, "use_di_container")
 
 
 if __name__ == "__main__":

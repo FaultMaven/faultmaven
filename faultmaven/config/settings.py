@@ -1429,10 +1429,6 @@ class EmbeddingSettings(BaseSettings):
 class FeatureSettings(BaseSettings):
     """Feature flags and toggles"""
 
-    use_di_container: bool = Field(default=True)
-    use_refactored_services: bool = Field(default=True)
-    use_refactored_api: bool = Field(default=True)
-
     # Token-Aware Context Management
     enable_token_aware_context: bool = Field(default=True)
     enable_conversation_summarization: bool = Field(default=True)

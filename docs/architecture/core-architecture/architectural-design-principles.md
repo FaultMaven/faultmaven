@@ -466,8 +466,8 @@ This is the **most critical principle**. Services must be pure—they receive de
 # WRONG: Service pulls its own dependencies (hidden global state)
 class CaseService:
     def __init__(self):
-        self.auth = ServiceContainer.get(IAuthService)  # Hidden dependency!
-        self.repo = ServiceContainer.get(ICaseRepository)
+        self.auth = ServiceLocator.get(IAuthService)  # Hidden dependency!
+        self.repo = ServiceLocator.get(ICaseRepository)
 ```
 
 **Problems**:
