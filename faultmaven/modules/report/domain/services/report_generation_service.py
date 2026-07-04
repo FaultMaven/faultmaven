@@ -33,7 +33,10 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseReport,
     CaseState,
+    HypothesisState,
     ICaseRepository,
+    NeedObtainability,
+    NeedPurpose,
     ReportGenerationRequest,
     ReportGenerationResponse,
     ReportStatus,
@@ -293,6 +296,9 @@ class ReportGenerationService:
         "closed_after_investigation": (
             "Closed after investigation — root cause not confirmed"
         ),
+        "closed_insufficient_evidence": (
+            "Closed — insufficient evidence to ground a cause"
+        ),
     }
 
     def _format_closure_reason_label(self, reason: Optional[str]) -> str:
@@ -300,6 +306,91 @@ class ReportGenerationService:
         if not reason:
             return "Not specified"
         return self._CLOSURE_REASON_LABELS.get(reason, reason)
+
+    def _insufficient_evidence_boundary_block(
+        self, case: Case, hypotheses: List[Any]
+    ) -> List[str]:
+        """Render the data-boundary capture for an insufficient-evidence close.
+
+        The two durable signals — surfaced from persisted case state:
+
+        - **Residual candidates** — hypotheses still in play (state not REFUTED
+          or RETIRED): the causes that remain plausible but could not be
+          distinguished.
+        - **Unmet discriminating data** — the outstanding ``causal_verification``
+          evidence needs, flagging any the model declared *unobtainable* (the
+          data wall). This is the "why" — the specific data whose absence
+          blocked grounding.
+
+        Empty-safe: if either list is empty the corresponding line is omitted;
+        the header still records that the case hit a data boundary.
+
+        The wording distinguishes the two ways the case reached
+        INSUFFICIENT_EVIDENCE: a **declared data wall** (some discriminator was
+        declared unobtainable) vs a **time-stall** (the investigation stalled
+        with data that was never declared unavailable). Overstating a wall that
+        was never asserted would be a false honesty claim.
+        """
+        outstanding = [
+            n
+            for n in (case.evidence_needs or [])
+            if n.purpose == NeedPurpose.CAUSAL_VERIFICATION and n.is_outstanding
+        ]
+        has_declared_wall = any(
+            n.obtainability == NeedObtainability.UNOBTAINABLE for n in outstanding
+        )
+
+        block: List[str] = ["## Data Boundary — Why This Remains Unresolved\n"]
+        if has_declared_wall:
+            block.append(
+                "The investigation did enough work to rule things out but could "
+                "not ground a single cause: the discriminating data needed to "
+                "decide between the remaining candidates could not be obtained.\n"
+            )
+        else:
+            block.append(
+                "The investigation did enough work to rule things out but "
+                "stalled before a single cause could be grounded from the data "
+                "gathered so far.\n"
+            )
+
+        residual = [
+            h
+            for h in hypotheses
+            if getattr(h, "state", None)
+            not in (HypothesisState.REFUTED, HypothesisState.RETIRED)
+        ]
+        if residual:
+            residual.sort(key=lambda h: getattr(h, "likelihood", 0), reverse=True)
+            block.append("**Candidates still in play:**")
+            for h in residual[:5]:
+                block.append(
+                    f"- {h.statement} (confidence: {getattr(h, 'likelihood', 0):.0%})"
+                )
+            block.append("")
+
+        if outstanding:
+            block.append("**Outstanding discriminating data:**")
+            for n in outstanding:
+                wall = (
+                    " — declared unobtainable"
+                    if n.obtainability == NeedObtainability.UNOBTAINABLE
+                    else ""
+                )
+                block.append(f"- {n.request_text}{wall}")
+            block.append("")
+
+        if has_declared_wall:
+            block.append(
+                "_If the missing data later becomes available, reopening or a "
+                "fresh investigation can resolve this._\n"
+            )
+        else:
+            block.append(
+                "_Resuming the investigation with additional data or a fresh "
+                "angle can resolve this._\n"
+            )
+        return block
 
     def _list_hypotheses(self, case: Case) -> List[Any]:
         """case.hypotheses is Dict[str, Hypothesis] — iterate values, not keys."""
@@ -573,6 +664,14 @@ class ReportGenerationService:
         # Closure Reason — human label, not raw enum
         parts.append("## Closure Reason\n")
         parts.append(f"{self._format_closure_reason_label(closure_reason_raw)}\n")
+
+        # Data Boundary — the durable capture for insufficient-evidence closes.
+        # The residual candidates + the specific unmet (unobtainable) need are the
+        # honest partial: what could NOT be resolved, and why. This is the
+        # flywheel/calibration signal (§5.4); it is rendered from persisted case
+        # state, so no separate snapshot column is needed.
+        if closure_reason_raw == "closed_insufficient_evidence":
+            parts.extend(self._insufficient_evidence_boundary_block(case, hypotheses))
 
         # Leading Hypotheses — top hypotheses at time of closure
         if hypotheses:

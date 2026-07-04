@@ -437,6 +437,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     UploadedFile,
     UrgencyLevel,
     ValidationMethod,
+    VerificationStatus,
     WorkingConclusion,
 )
 
@@ -531,5 +532,6 @@ __all__ = [
     "TurnProgress",
     "UploadedFile",
     "UrgencyLevel",
+    "VerificationStatus",
     "WorkingConclusion",
 ]

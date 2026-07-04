@@ -37,6 +37,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CauseState,
     EvidenceCategory,
+    VerificationStatus,
 )
 
 # Likelihood at or above which a ``working_conclusion`` counts as a known cause
@@ -134,20 +135,39 @@ logger = logging.getLogger(__name__)
 def derive_closure_reason(case: "Case") -> str:
     """Engine-only derivation of closure_reason from case state.
 
-    Post-redesign (unified opportunistic flow, no path fork) there are two
-    outcomes, keyed only on the state the case was closed from:
+    Three outcomes, keyed on the state the case was closed from and its
+    verification status:
 
-    - ``inquiry_only`` — case is still in INQUIRY (no investigation started)
-    - ``closed_after_investigation`` — closed from INVESTIGATING. This folds
-      in the former ``mitigation_sufficient`` reason: a case stabilized and
-      then closed is simply an investigation that closed. The documented
-      mitigation / solution is preserved on the closed case.
+    - ``inquiry_only`` — case is still in INQUIRY (no investigation started).
+    - ``closed_insufficient_evidence`` — closed from INVESTIGATING while in the
+      INSUFFICIENT_EVIDENCE verification-status cell (not grounded, work-gated,
+      stalled — often a declared data wall). Capture-on-close: the honest
+      partial is recorded for calibration and the flywheel. The residual
+      candidates (non-refuted/retired hypotheses) and the specific unmet
+      (unobtainable) need are already persisted on the case and are surfaced by
+      the closure report — no separate snapshot is stored. This reads the
+      engine's own last persisted assessment (``progress.verification_status``,
+      fresh at propose time) rather than re-deriving grounding at the terminal
+      boundary. It is capture-ONLY: the engine never nudges toward this close
+      (no ``SUGGEST_CLOSE``); the structured handoff already lists pause/close as
+      a user option (insufficient-evidence-handling.md §5.4 / D4).
+    - ``closed_after_investigation`` — any other close from INVESTIGATING. Folds
+      in the former ``mitigation_sufficient`` reason: a case stabilized and then
+      closed is simply an investigation that closed. The documented mitigation /
+      solution is preserved on the closed case.
 
     The LLM never authors closure_reason; it's purely engine-derived from
     structured case state.
     """
     if case.state == CaseState.INQUIRY:
         return "inquiry_only"
+
+    if (
+        case.progress
+        and case.progress.verification_status
+        == VerificationStatus.INSUFFICIENT_EVIDENCE
+    ):
+        return "closed_insufficient_evidence"
 
     return "closed_after_investigation"
 

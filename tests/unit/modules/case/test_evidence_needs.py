@@ -35,6 +35,7 @@ from faultmaven.modules.case.domain.models import (
     EvidenceNeed,
     EvidenceSourceType,
     InquiryData,
+    NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -91,6 +92,7 @@ def _make_need(
     fulfilling_evidence_ids: list[str] | None = None,
     superseded_reason: str | None = None,
     priority: NeedPriority = NeedPriority.MEDIUM,
+    obtainability: NeedObtainability = NeedObtainability.UNKNOWN,
 ) -> EvidenceNeed:
     return EvidenceNeed(
         case_id=case_id,
@@ -103,6 +105,7 @@ def _make_need(
         fulfilling_evidence_ids=fulfilling_evidence_ids or [],
         superseded_reason=superseded_reason,
         created_at_turn=1,
+        obtainability=obtainability,
     )
 
 
@@ -336,6 +339,45 @@ class TestRepositoryRoundTrip:
         loaded = retrieved.evidence_needs[0]
         assert loaded.state == NeedState.SUPERSEDED
         assert loaded.superseded_reason == "all motivating hypotheses retired"
+
+    @pytest.mark.asyncio
+    async def test_obtainability_round_trips(self, repository):
+        """A model-declared UNOBTAINABLE survives save/reload (Phase 3).
+
+        Before persistence, obtainability was dropped on save and reloaded as
+        UNKNOWN — so the declared-data-wall arm of the verification-status
+        handoff could only fire within one turn. This is the regression guard
+        that it now persists.
+        """
+        case = _make_case()
+        need = _make_need(
+            case_id=case.case_id,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            obtainability=NeedObtainability.UNOBTAINABLE,
+        )
+        case.evidence_needs.append(need)
+
+        await repository.save(case)
+        retrieved = await repository.get(case.case_id)
+
+        assert (
+            retrieved.evidence_needs[0].obtainability == NeedObtainability.UNOBTAINABLE
+        )
+
+    @pytest.mark.asyncio
+    async def test_obtainability_defaults_unknown_on_reload(self, repository):
+        """A need with no declaration reloads as UNKNOWN (fail-safe default)."""
+        case = _make_case()
+        need = _make_need(
+            case_id=case.case_id,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+        )
+        case.evidence_needs.append(need)
+
+        await repository.save(case)
+        retrieved = await repository.get(case.case_id)
+
+        assert retrieved.evidence_needs[0].obtainability == NeedObtainability.UNKNOWN
 
     @pytest.mark.asyncio
     async def test_multiple_needs_preserve_creation_order(self, repository):

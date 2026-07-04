@@ -47,6 +47,15 @@ class TestNormalizeCounts:
         assert out[("resolved", "none")] == 0
         assert out[("closed", "inquiry_only")] == 0
         assert out[("closed", "closed_after_investigation")] == 0
+        assert out[("closed", "closed_insufficient_evidence")] == 0
+        assert out[("closed", "unknown")] == 0
+
+    def test_insufficient_evidence_close_gets_its_own_bucket(self):
+        # Regression guard: the Phase-3 closure reason must be counted on its own
+        # series, NOT collapsed into "unknown" (which would make data-wall closes
+        # indistinguishable from the D4 integrity gap).
+        out = self.c._normalize_counts([("closed", "closed_insufficient_evidence", 3)])
+        assert out[("closed", "closed_insufficient_evidence")] == 3
         assert out[("closed", "unknown")] == 0
 
     def test_closed_reasons_and_open_states(self):
@@ -76,7 +85,7 @@ class TestNormalizeCounts:
 
 @pytest.mark.unit
 class TestSetQuantiles:
-    def test_splits_resolved_and_closed_after_investigation(self):
+    def test_splits_effort_states_by_closure_reason(self):
         c = FunnelMetricsCollector()
         with patch.object(funnel_metrics, "resolution_turns_quantile") as g:
             c._set_quantiles(
@@ -84,16 +93,21 @@ class TestSetQuantiles:
                     ("resolved", None, 4),
                     ("resolved", None, 8),
                     ("closed", "closed_after_investigation", 2),
+                    ("closed", "closed_insufficient_evidence", 6),
                 ]
             )
-        # Two to_states x two quantiles = 4 label/set calls.
-        assert g.labels.call_count == 4
+        # Three effort to_states x two quantiles = 6 label/set calls.
+        assert g.labels.call_count == 6
         labelled = {
             (kw["to_state"], kw["quantile"]) for _, kw in g.labels.call_args_list
         }
         assert ("resolved", "0.5") in labelled
         assert ("resolved", "0.95") in labelled
         assert ("closed_after_investigation", "0.5") in labelled
+        # Insufficient-evidence closes are a distinct effort series, not folded
+        # into closed_after_investigation.
+        assert ("closed_insufficient_evidence", "0.5") in labelled
+        assert ("closed_insufficient_evidence", "0.95") in labelled
 
 
 @pytest.mark.unit

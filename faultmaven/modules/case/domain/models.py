@@ -325,6 +325,13 @@ class InvestigationStrategy(str, Enum):
 #   - closed_after_investigation: INVESTIGATING → CLOSED. Folds in the former
 #     `mitigation_sufficient`: a case stabilized then closed is simply an
 #     investigation that closed; the documented mitigation is preserved.
+#   - closed_insufficient_evidence: INVESTIGATING → CLOSED from the
+#     INSUFFICIENT_EVIDENCE verification-status cell (not grounded, work-gated,
+#     stalled — often a declared data wall). Capture-on-close only: the honest
+#     partial (residual candidates + the specific unmet/unobtainable need,
+#     already persisted on the case) is signal for calibration and the flywheel.
+#     The engine never nudges toward this close (no SUGGEST_CLOSE); see
+#     insufficient-evidence-handling.md §5.4.
 #
 # The LLM does NOT emit closure_reason; user-motivation context (e.g., "we're
 # escalating") lives in the LLM-authored persistent Report's free-form summary.
@@ -332,6 +339,7 @@ class InvestigationStrategy(str, Enum):
 VALID_CLOSURE_REASONS: set[str] = {
     "inquiry_only",
     "closed_after_investigation",
+    "closed_insufficient_evidence",
 }
 
 
@@ -358,6 +366,46 @@ class CauseState(str, Enum):
 
     IDENTIFIED = "identified"
     """Single cause known with grounded confidence. Diagnostic machinery skipped."""
+
+
+class VerificationStatus(str, Enum):
+    """The join of two orthogonal axes — grounding (is a cause grounded?) ×
+    progress (has progress stalled?) — plus the below-the-work-gate state
+    (assessment variable).
+
+    Recomputed each turn from case state and persisted in the progress blob;
+    NOT a terminal disposition (RESOLVED/CLOSED). The engine's honest reading of
+    whether a grounded cause is reachable and, if not, why. Computed by
+    ``core.investigation.verification_status.assess_verification_status`` (which
+    imports this enum from contracts, the same direction as ``NeedObtainability``
+    and ``CauseState``). See
+    insufficient-evidence-handling.md §5.1 / §5.4.
+    """
+
+    HEALTHY = "healthy"
+    """Grounded × progressing — a cause is grounded and work is advancing."""
+
+    TREATMENT_BLOCKED = "treatment_blocked"
+    """Grounded × stalled — have a cause but can't reach a *verified fix*
+    (failed fix, no access, change window, waiting on another team) → escalate.
+    ``FIX_FAILURE_CYCLE`` is one pattern that lands here, not the cell."""
+
+    OPEN = "open"
+    """Not grounded × progressing, with real diagnostic work underway — keep
+    working, nothing special surfaced."""
+
+    NOT_YET_PRODUCTIVE = "not_yet_productive"
+    """Not grounded and the work gate has NOT been crossed — too little
+    diagnostic work to judge. Separates 'the reasoner produced nothing' (a
+    provider-health fact) from a genuine data wall; never a per-case
+    'insufficient data' verdict."""
+
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    """Not grounded × stalled, after real diagnostic work — the (not-grounded ×
+    stalled) cell. No cause can be grounded from currently available data →
+    structured handoff. A model-declared obtainability judgment can refine into
+    this *within* the gate; the judgment can never bypass the work gate, and its
+    absence defaults to keep-engaging."""
 
 
 class SolutionState(str, Enum):
@@ -505,6 +553,20 @@ class InvestigationProgress(BaseModel):
             "signal; CANDIDATES is derived from >=2 ACTIVE hypotheses. Drives "
             "whether the diagnostic machinery runs. Recomputed each turn by the "
             "engine; never path-stripped."
+        ),
+    )
+
+    verification_status: VerificationStatus = Field(
+        default=VerificationStatus.NOT_YET_PRODUCTIVE,
+        description=(
+            "Engine-derived verification status — the grounding × progress join "
+            "(HEALTHY | TREATMENT_BLOCKED | OPEN | NOT_YET_PRODUCTIVE | "
+            "INSUFFICIENT_EVIDENCE). Recomputed each turn from case state "
+            "alongside cause_state (never path-stripped) and persisted in the "
+            "progress blob, so the model-declared obtainability signal it reads "
+            "survives across turns. Drives the code-guarded insufficient-evidence "
+            "handoff and the terminal capture-on-close. Default NOT_YET_PRODUCTIVE "
+            "(too little work to judge). See insufficient-evidence-handling.md §5.4."
         ),
     )
 

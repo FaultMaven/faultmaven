@@ -224,6 +224,12 @@ def _compute_progress_transparency(
         "TREATMENT": ["solution_verified"],
     }
 
+    verification_status = (
+        case.progress.verification_status.value
+        if case.progress.verification_status
+        else None
+    )
+
     milestones = stage_milestones.get(stage_name, [])
     for milestone_name in milestones:
         if not getattr(case.progress, milestone_name, False):
@@ -231,6 +237,7 @@ def _compute_progress_transparency(
                 active=True,
                 pending_milestone=milestone_name,
                 milestone_description=_MILESTONE_DESCRIPTIONS.get(milestone_name),
+                verification_status=verification_status,
             )
 
     return None

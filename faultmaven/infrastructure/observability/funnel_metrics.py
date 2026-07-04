@@ -12,12 +12,15 @@ Gauges (no-ops unless ``ENABLE_METRICS=true``; see ``shims/metrics.py``):
 
 - ``faultmaven_cases{state, closure_reason}`` -- the funnel: count of ONLINE
   cases by workflow state. ``closure_reason`` sub-classifies CLOSED
-  (``inquiry_only`` vs ``closed_after_investigation`` vs ``unknown`` for closes
-  that reached terminal without a classified reason -- the integrity gap D4
-  closes). ``none`` for non-closed states.
+  (``inquiry_only`` / ``closed_after_investigation`` / ``closed_insufficient_evidence``
+  / ``unknown`` for closes that reached terminal without a classified reason --
+  the integrity gap D4 closes). ``none`` for non-closed states.
 - ``faultmaven_case_resolution_turns_quantile{to_state, quantile}`` -- p50/p95
   of turns-to-terminal over the investigation population (resolved +
-  closed_after_investigation; inquiry_only is excluded). Effort, not wall-clock.
+  closed_after_investigation + closed_insufficient_evidence; inquiry_only is
+  excluded -- it did no investigation). Effort, not wall-clock. Insufficient-
+  evidence closes are included because they crossed the work gate (real
+  diagnostic effort) before hitting the data wall.
 
 All cases are ONLINE today (no archive tier exists yet -- see the Case Data
 Archival & Retention problem statement). When archival lands, scope the queries
@@ -40,21 +43,35 @@ REFRESH_INTERVAL_SECONDS = 30
 # Bounded label domains, enumerated each refresh so a combination that drops to
 # zero is reset (a gauge otherwise retains its last value for vanished series).
 _OPEN_OR_RESOLVED = ("inquiry", "investigating", "resolved")
-_CLOSED_REASONS = ("inquiry_only", "closed_after_investigation", "unknown")
+_CLOSED_REASONS = (
+    "inquiry_only",
+    "closed_after_investigation",
+    "closed_insufficient_evidence",
+    "unknown",
+)
 _QUANTILES = (("0.5", 0.50), ("0.95", 0.95))
-_EFFORT_TO_STATES = ("resolved", "closed_after_investigation")
+# Terminal outcomes that represent real diagnostic effort (turns-to-terminal).
+# inquiry_only is excluded (no investigation); insufficient-evidence closes are
+# included (they crossed the work gate before hitting the data wall).
+_EFFORT_TO_STATES = (
+    "resolved",
+    "closed_after_investigation",
+    "closed_insufficient_evidence",
+)
 
 cases_gauge = Gauge(
     "faultmaven_cases",
     "Online cases by workflow state; closure_reason sub-classifies CLOSED "
-    "(inquiry_only / closed_after_investigation / unknown).",
+    "(inquiry_only / closed_after_investigation / closed_insufficient_evidence "
+    "/ unknown).",
     labelnames=["state", "closure_reason"],
 )
 
 resolution_turns_quantile = Gauge(
     "faultmaven_case_resolution_turns_quantile",
-    "Turns-to-terminal quantiles over the investigation population "
-    "(resolved + closed_after_investigation). Effort, not wall-clock.",
+    "Turns-to-terminal quantiles over the investigation population (resolved + "
+    "closed_after_investigation + closed_insufficient_evidence). Effort, not "
+    "wall-clock.",
     labelnames=["to_state", "quantile"],
 )
 
@@ -92,7 +109,8 @@ class FunnelMetricsCollector:
                     text(
                         "SELECT state, closure_reason, current_turn FROM cases "
                         "WHERE state = 'resolved' OR (state = 'closed' AND "
-                        "closure_reason = 'closed_after_investigation')"
+                        "closure_reason IN ('closed_after_investigation', "
+                        "'closed_insufficient_evidence'))"
                     )
                 )
             ).all()
@@ -117,10 +135,12 @@ class FunnelMetricsCollector:
 
     def _set_quantiles(self, rows: Sequence) -> None:
         buckets: dict = {to_state: [] for to_state in _EFFORT_TO_STATES}
-        for state, _reason, turn in rows:
-            to_state = (
-                "resolved" if state == "resolved" else "closed_after_investigation"
-            )
+        for state, reason, turn in rows:
+            # Resolved keys on state; closes key on their closure_reason (the
+            # effort query admits only the two effort-bearing close reasons).
+            to_state = "resolved" if state == "resolved" else reason
+            if to_state not in buckets:
+                continue
             buckets[to_state].append(int(turn or 0))
         for to_state in _EFFORT_TO_STATES:
             for qlabel, q in _QUANTILES:
