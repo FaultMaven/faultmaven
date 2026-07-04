@@ -2044,6 +2044,30 @@ class NeedPriority(str, Enum):
     LOW = "low"
 
 
+class NeedObtainability(str, Enum):
+    """Whether the discriminating data a causal_verification need requests can
+    be gathered at all — the one judgment the engine cannot compute, so it is
+    model-declared (verification-status handling, insufficient-evidence §5.3).
+
+    UNKNOWN      — default; the model has not declared. Fail-safe: treated as
+                   still-obtainable (keep-engaging), never contributes to a wall.
+    OBTAINABLE   — the data can be gathered; the need stays a live ask.
+    UNOBTAINABLE — the data cannot be gathered (never collected, rotated away,
+                   too costly, no access). A causal_verification need declared
+                   UNOBTAINABLE is a *declared discriminator wall* for its
+                   candidate; it yields its surface slot and stops rotating, and
+                   is retained in the insufficient-evidence record as the
+                   specific unmet need.
+
+    Monotonic in effect: only UNOBTAINABLE moves the reading toward
+    INSUFFICIENT_EVIDENCE, never back toward safety.
+    """
+
+    UNKNOWN = "unknown"
+    OBTAINABLE = "obtainable"
+    UNOBTAINABLE = "unobtainable"
+
+
 class EvidenceNeed(BaseModel):
     """A verification requirement on a case.
 
@@ -2119,6 +2143,19 @@ class EvidenceNeed(BaseModel):
     state: NeedState = Field(
         default=NeedState.PENDING,
         description="Lifecycle state — see NeedState.",
+    )
+
+    obtainability: NeedObtainability = Field(
+        default=NeedObtainability.UNKNOWN,
+        description=(
+            "Whether the discriminating data can be gathered at all — the one "
+            "judgment the engine cannot compute (insufficient-evidence §5.3). "
+            "Model-declared, opt-in; UNKNOWN default is fail-safe (keep-"
+            "engaging). Scoped to causal_verification needs; auto-revoked to "
+            "UNKNOWN once the need is FULFILLED or SUPERSEDED (the question is "
+            "moot). Only UNOBTAINABLE moves the case toward INSUFFICIENT_"
+            "EVIDENCE — never back toward safety."
+        ),
     )
 
     motivating_hypothesis_ids: List[str] = Field(
@@ -2250,6 +2287,18 @@ class EvidenceNeed(BaseModel):
                 "EvidenceNeed.state=FULFILLED requires at least one "
                 "fulfilling_evidence_id"
             )
+
+        # Obtainability (§5.3) is a still-outstanding, causal_verification-only
+        # judgment. Auto-revoke it to UNKNOWN when the need is terminal (data
+        # arrived or need is moot) or is a symptom need (out of scope), so a
+        # stale UNOBTAINABLE can never linger on a resolved/irrelevant need or
+        # be read for a symptom ask. Coerce rather than reject — a mis-scoped
+        # declaration is fail-safe, not a turn-breaking error.
+        if (
+            self.purpose != NeedPurpose.CAUSAL_VERIFICATION
+            or self.state in (NeedState.FULFILLED, NeedState.SUPERSEDED)
+        ) and self.obtainability != NeedObtainability.UNKNOWN:
+            object.__setattr__(self, "obtainability", NeedObtainability.UNKNOWN)
 
         return self
 

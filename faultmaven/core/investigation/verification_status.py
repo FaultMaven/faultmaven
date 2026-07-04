@@ -36,6 +36,11 @@ from faultmaven.core.investigation.exhaustion_thresholds import (
     WORK_GATE_MIN_EVIDENCE,
     WORK_GATE_MIN_HYPOTHESES,
 )
+from faultmaven.modules.case.contracts import (
+    HypothesisState,
+    NeedObtainability,
+    NeedPurpose,
+)
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
@@ -96,33 +101,84 @@ def _is_grounded(case: "Case") -> bool:
 
 
 def is_stalled(case: "Case") -> bool:
-    """Progress axis: ``EXHAUSTED``'s stall thresholds ONLY — deliberately NOT
-    its ≥2 preconditions (those are the work gate).
+    """Time-threshold arm of the progress axis: ``EXHAUSTED``'s stall thresholds
+    ONLY — deliberately NOT its ≥2 preconditions (those are the work gate).
 
-    Public because callers gate the (relatively expensive) full
-    ``assess_verification_status`` on it: a non-stalled case can never be
-    ``INSUFFICIENT_EVIDENCE``/``TREATMENT_BLOCKED``, so this cheap two-int check
-    short-circuits the grounding-grade computation. Single definition of *stalled*
-    (shared thresholds), so no drift from reusing it as a pre-check."""
+    The full progress axis is ``is_progress_stalled`` (this OR a declared data
+    wall); this cheap two-int check is the fast arm, evaluated first."""
     return (
         case.current_turn >= EXHAUSTION_MIN_TURNS
         and case.turns_without_progress >= EXHAUSTION_STALL_THRESHOLD
     )
 
 
+def _residual_candidates(case: "Case") -> list:
+    """Candidates still in play (design §2 *residual candidate*): hypotheses
+    whose state is NOT ``REFUTED`` or ``RETIRED``."""
+    return [
+        h
+        for h in case.hypotheses.values()
+        if h.state not in (HypothesisState.REFUTED, HypothesisState.RETIRED)
+    ]
+
+
+def _candidate_unresolvable(case: "Case", hypothesis_id: str) -> bool:
+    """Whether a candidate is *unresolvable* (D1): it has **≥1** outstanding
+    ``causal_verification`` discriminator **and all** of them are declared
+    ``UNOBTAINABLE``. A candidate with **zero** discriminators is *unknown*, not
+    unresolvable — the guard against a vacuous ∀-over-the-empty-set."""
+    discriminators = [
+        n
+        for n in case.evidence_needs
+        if n.purpose == NeedPurpose.CAUSAL_VERIFICATION
+        and n.is_outstanding
+        and hypothesis_id in n.motivating_hypothesis_ids
+    ]
+    if not discriminators:
+        return False
+    return all(
+        n.obtainability == NeedObtainability.UNOBTAINABLE for n in discriminators
+    )
+
+
+def _declared_wall(case: "Case") -> bool:
+    """Declared-data-wall arm of the progress axis (§5.3): **every** residual
+    candidate is unresolvable. A stall the model's obtainability declarations
+    *establish* — so a fully-declared wall reaches the handoff immediately rather
+    than waiting out the time thresholds. Requires ≥1 residual candidate (an
+    empty differential is not a wall)."""
+    residual = _residual_candidates(case)
+    if not residual:
+        return False
+    return all(_candidate_unresolvable(case, h.hypothesis_id) for h in residual)
+
+
+def is_progress_stalled(case: "Case") -> bool:
+    """Progress axis (§5.1/§5.3): stalled by the time thresholds **or** by a
+    declared data wall. One definition of *stalled*, shared by
+    ``assess_verification_status`` and the handoff trigger.
+
+    Monotonic: the declared wall can only add stalls (move the reading toward
+    ``INSUFFICIENT_EVIDENCE``), never remove one. Callers gate the (relatively
+    expensive) grounding grade on this — a not-stalled case can never be
+    ``INSUFFICIENT_EVIDENCE``/``TREATMENT_BLOCKED`` — and the cheap time check is
+    evaluated first via short-circuit."""
+    return is_stalled(case) or _declared_wall(case)
+
+
 def assess_verification_status(case: "Case") -> VerificationStatus:
     """Compute the verification status as the grounding × progress join.
 
-    Phase 0: reads only the two existing layers (grade + stall) — no model
-    obtainability input (Phase 2), no persistence (Phase 3). The caller must run
-    this AFTER any deductive-validation stamp in the turn pipeline (mirroring the
-    #593 recompute), so the grounding-first disposition reads a fresh grade
-    rather than pre-empting the deductive arm.
+    Reads the grounding grade × the progress axis (``is_progress_stalled`` —
+    time thresholds OR a model-declared data wall). No persistence yet (Phase 3).
+    The caller must run this AFTER any deductive-validation stamp in the turn
+    pipeline (mirroring the #593 recompute), so the grounding-first disposition
+    reads a fresh grade rather than pre-empting the deductive arm.
     """
     if _is_grounded(case):
         return (
             VerificationStatus.TREATMENT_BLOCKED
-            if is_stalled(case)
+            if is_progress_stalled(case)
             else VerificationStatus.HEALTHY
         )
     # Not grounded. Separate "no real work yet" from a genuine wall (§5.2) so a
@@ -131,6 +187,6 @@ def assess_verification_status(case: "Case") -> VerificationStatus:
         return VerificationStatus.NOT_YET_PRODUCTIVE
     return (
         VerificationStatus.INSUFFICIENT_EVIDENCE
-        if is_stalled(case)
+        if is_progress_stalled(case)
         else VerificationStatus.OPEN
     )
