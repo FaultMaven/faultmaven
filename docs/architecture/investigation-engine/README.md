@@ -23,6 +23,7 @@ For understanding the investigation system, read in this order:
 - **[Choice-Response Resolution](./choice-response-resolution.md)** — Resolving a user's response (clicked or typed) to an agent-offered choice: bounded choice classifier, hypothesis-action routing, resolution-readiness gate. *(Formerly "Intent Resolution".)*
 - **[Investigation Journal](./investigation-journal.md)** — Append-only long-term memory for key findings
 - **[Progress Transparency](./progress-transparency.md)** — Progress monitoring, repair patterns, milestone dependencies
+- **[Insufficient-Evidence Handling](./insufficient-evidence-handling.md)** — What the engine does when no cause can be grounded from available data: the advisor / structured-handoff posture, the two layers (hypothesis-layer stall signals + causal-graph-layer assurance) that currently carry it, and the direction toward a single computed *verification status*. Standardizes terminology (assessment variable vs disposition, hypothesis layer vs causal-graph layer, enforcement tier).
 - **[Orchestration Capabilities](./orchestration-capabilities.md)** — Checkpointing, streaming, DA tool loop
 - **[Error Handling and Recovery](./error-handling-and-recovery.md)** — Error patterns, recovery strategies, diagnostic reasoning validation
 

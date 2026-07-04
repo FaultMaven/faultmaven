@@ -1,0 +1,254 @@
+"""Calibration eval for the verification-status join (Phase 0b).
+
+Beyond the clean archetypes, the set includes the three **confusable pairs**
+(§5.5) — where identification quality actually lives:
+  - data-wall vs model-produced-nothing  (INSUFFICIENT_EVIDENCE vs NOT_YET_PRODUCTIVE)
+  - still-working vs walled               (OPEN vs INSUFFICIENT_EVIDENCE)
+  - grounded-but-stalled vs not-grounded-stalled (TREATMENT_BLOCKED vs INSUFFICIENT_EVIDENCE)
+
+Deterministic unit tier over ``assess_verification_status`` — model-independent,
+which is the whole point: the design disposes any model's output correctly.
+"""
+
+import hashlib
+from datetime import datetime, timezone
+from uuid import uuid4
+
+import pytest
+
+from faultmaven.core.investigation.verification_status import (
+    VerificationStatus,
+    assess_verification_status,
+    work_gate_passed,
+)
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseSeverity,
+    CaseState,
+    CausalEdge,
+    CausalNode,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
+    HypothesisState,
+    InquiryData,
+    NodeState,
+    NodeType,
+    ProblemVerification,
+    ValidationMethod,
+)
+
+pytestmark = pytest.mark.unit
+
+
+def _eid(label: str) -> str:
+    return "ev_" + hashlib.md5(label.encode()).hexdigest()[:12]
+
+
+def _nid(seed: int) -> str:
+    return f"cn_{seed:012x}"
+
+
+def _ev(label: str) -> Evidence:
+    return Evidence(
+        evidence_id=_eid(label),
+        summary="an observed fact",
+        primary_purpose="diagnosis",
+        category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_by="llm",
+        collected_at_turn=2,
+        collected_at=datetime.now(timezone.utc),
+    )
+
+
+def _hyp(category: HypothesisCategory, seed: int) -> Hypothesis:
+    return Hypothesis(
+        hypothesis_id=f"hyp_{seed:012x}",
+        statement=f"hypothesis {seed}",
+        category=category,
+        state=HypothesisState.CAPTURED,
+        rationale="a reason",
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        generated_at_turn=1,
+    )
+
+
+def _problem() -> CausalNode:
+    return CausalNode(
+        node_id=_nid(0xD),
+        statement="D: intermittent latency",
+        node_type=NodeType.PROBLEM,
+        generated_at_turn=1,
+    )
+
+
+def _grounded_root() -> CausalNode:
+    """A VALIDATED ROOT grounded via the deductive arm (validation_method =
+    DEDUCTIVE) → ``grade_cause_assurance`` == GROUNDED, no evidence link needed."""
+    return CausalNode(
+        node_id=_nid(1),
+        statement="root cause",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.DEDUCTIVE,
+        actionable=True,
+        generated_at_turn=1,
+    )
+
+
+def _case(
+    *,
+    grounded: bool,
+    n_hypotheses: int,
+    n_categories: int,
+    n_evidence: int,
+    current_turn: int,
+    turns_without_progress: int,
+) -> Case:
+    case = Case(
+        case_id=f"case_{uuid4().hex[:12]}",
+        user_id="u",
+        organization_id="o",
+        title="t",
+        description="d",
+        state=CaseState.INVESTIGATING,
+        current_turn=current_turn,
+        inquiry=InquiryData(
+            proposed_problem_statement="intermittent latency",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
+        problem_verification=ProblemVerification(
+            symptom_statement="intermittent latency", severity=CaseSeverity.HIGH
+        ),
+    )
+    case.turns_without_progress = turns_without_progress
+    case.evidence = [_ev(f"e{i}") for i in range(n_evidence)]
+
+    cats = list(HypothesisCategory)[:n_categories]
+    hyps = [_hyp(cats[i % max(len(cats), 1)], i) for i in range(n_hypotheses)]
+    case.hypotheses = {h.hypothesis_id: h for h in hyps}
+
+    if grounded:
+        d, root = _problem(), _grounded_root()
+        case.causal_nodes = {d.node_id: d, root.node_id: root}
+        case.causal_edges = [
+            CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+        ]
+    return case
+
+
+# --- work-done shorthand: crosses the ≥2/≥2/≥2 gate --------------------------
+def _work_done(**overrides):
+    base = dict(
+        grounded=False,
+        n_hypotheses=3,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=3,
+        turns_without_progress=0,
+    )
+    base.update(overrides)
+    return _case(**base)
+
+
+# --- Archetypes --------------------------------------------------------------
+
+
+def test_grounded_and_progressing_is_healthy():
+    case = _case(
+        grounded=True,
+        n_hypotheses=2,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=3,
+        turns_without_progress=0,
+    )
+    assert assess_verification_status(case) == VerificationStatus.HEALTHY
+
+
+def test_work_done_progressing_not_grounded_is_open():
+    assert assess_verification_status(_work_done()) == VerificationStatus.OPEN
+
+
+def test_work_done_stalled_not_grounded_is_insufficient_evidence():
+    case = _work_done(current_turn=9, turns_without_progress=5)
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+
+
+# --- Confusable pair 1: data-wall vs model-produced-nothing ------------------
+# Both look "stuck". The work gate is the discriminator: a stalled case with no
+# real diagnostic work is a provider problem (NOT_YET_PRODUCTIVE), never a
+# case-blaming INSUFFICIENT_EVIDENCE verdict.
+
+
+def test_stalled_but_no_work_is_not_yet_productive_not_insufficient():
+    # Silent/empty model: stalled thresholds met, but < the ≥2 work gate.
+    empty = _case(
+        grounded=False,
+        n_hypotheses=0,
+        n_categories=0,
+        n_evidence=0,
+        current_turn=12,
+        turns_without_progress=7,
+    )
+    assert not work_gate_passed(empty)
+    assert assess_verification_status(empty) == VerificationStatus.NOT_YET_PRODUCTIVE
+    # Its data-wall twin: identical stall, but real work happened.
+    walled = _work_done(current_turn=12, turns_without_progress=7)
+    assert work_gate_passed(walled)
+    assert (
+        assess_verification_status(walled) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    )
+
+
+# --- Confusable pair 2: still-working vs walled ------------------------------
+# Same work done, same not-grounded — only the progress axis differs.
+
+
+def test_still_working_vs_walled_split_on_progress_axis():
+    still_working = _work_done(current_turn=9, turns_without_progress=2)  # not stalled
+    walled = _work_done(current_turn=9, turns_without_progress=5)  # stalled
+    assert assess_verification_status(still_working) == VerificationStatus.OPEN
+    assert (
+        assess_verification_status(walled) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    )
+
+
+# --- Confusable pair 3: grounded-but-stalled vs not-grounded-stalled ---------
+# Same stall; the grounding axis splits treatment-blocked from insufficient.
+
+
+def test_grounded_but_stalled_vs_not_grounded_stalled_split_on_grounding():
+    grounded_stalled = _case(
+        grounded=True,
+        n_hypotheses=2,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    not_grounded_stalled = _work_done(current_turn=9, turns_without_progress=5)
+    assert (
+        assess_verification_status(grounded_stalled)
+        == VerificationStatus.TREATMENT_BLOCKED
+    )
+    assert (
+        assess_verification_status(not_grounded_stalled)
+        == VerificationStatus.INSUFFICIENT_EVIDENCE
+    )
+
+
+# --- Work-gate boundary (fast-exhaustion must not need an arbitrary turn floor
+#     beyond the stall thresholds; below-gate is never insufficient) ----------
+
+
+def test_work_gate_requires_all_three_dimensions():
+    assert not work_gate_passed(_work_done(n_hypotheses=1))  # too few hypotheses
+    assert not work_gate_passed(_work_done(n_categories=1))  # single category
+    assert not work_gate_passed(_work_done(n_evidence=1))  # too little evidence
+    assert work_gate_passed(_work_done())  # 3 hyps / 2 cats / 2 evidence
