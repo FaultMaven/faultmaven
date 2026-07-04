@@ -45,6 +45,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     InvestigationStage,
     MitigationRecord,
+    NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -673,3 +674,45 @@ class TestCausalSurfaceCap:
         out = _build_evidence_needs_block(case)
         hidden = 6 - _SURFACED_CAUSAL_CAP
         assert f"{hidden} more" in out  # hidden causal asks are reported, not silent
+
+
+@pytest.mark.unit
+class TestObtainabilityOverflowNotice:
+    """A need declared UNOBTAINABLE yields its surface slot (Phase 2) and must
+    NOT then be counted in the '…and N more not shown' overflow notice —
+    counting it would re-nag the model to chase data it declared un-gettable."""
+
+    def test_unobtainable_needs_do_not_inflate_overflow(self):
+        case = _make_case()  # INVESTIGATING / DIAGNOSIS
+        # One gettable causal need (surfaces) + three declared UNOBTAINABLE
+        # (yield their slots). No other overflow source.
+        _make_need(
+            case,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            request_text="gettable datum",
+        )
+        for i in range(3):
+            n = _make_need(
+                case,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text=f"walled datum {i}",
+            )
+            n.obtainability = NeedObtainability.UNOBTAINABLE
+
+        out = _build_evidence_needs_block(case)
+        # The walled needs are not surfaced AND not counted as hidden demand, so
+        # there is no "…N more not shown" overflow notice.
+        assert "not shown" not in out
+
+    def test_obtainable_hidden_needs_still_counted(self):
+        # Control: gettable needs beyond the cap DO still drive the overflow
+        # notice, so the fix only suppresses the UNOBTAINABLE ones.
+        case = _make_case()
+        for i in range(_SURFACED_CAUSAL_CAP + 2):
+            _make_need(
+                case,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text=f"gettable datum {i}",
+            )
+        out = _build_evidence_needs_block(case)
+        assert "not shown" in out

@@ -53,6 +53,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisState,
     InvestigationStage,
+    NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -761,6 +762,20 @@ class EvidenceNeedUpdate(BaseModel):
         default=None,
         max_length=500,
         description=("Required when ``state=SUPERSEDED``; must be None " "otherwise."),
+    )
+    obtainability: Optional[NeedObtainability] = Field(
+        default=None,
+        description=(
+            "Declare whether the discriminating data this "
+            "``causal_verification`` need requests is obtainable at all — the "
+            "one judgment the engine cannot compute. OMIT (None) to leave it "
+            "unchanged (default UNKNOWN = still-obtainable, keep-engaging). "
+            "Set ``unobtainable`` ONLY when the data genuinely cannot be "
+            "gathered (never collected, rotated away, no access, too costly) — "
+            "it is durable and moves the case toward an honest "
+            "'insufficient evidence' handoff. Ignored for "
+            "``symptom_verification`` needs (out of scope)."
+        ),
     )
 
     @field_validator(

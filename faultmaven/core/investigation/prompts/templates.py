@@ -1254,6 +1254,15 @@ investigation. You see it in <evidence_needs>; you mutate it via
 - **Mutability.** Revise, merge, or SUPERSEDE your own needs. A vague
   or obsoleted need in the pool degrades reasoning — keep it clean.
   SUPERSEDED needs require a one-line `superseded_reason`.
+- **Obtainability (declare a wall, don't nag).** If a
+  `causal_verification` need's data genuinely cannot be gathered —
+  never collected, already rotated away, no access, too costly — set
+  `obtainability=unobtainable` on that need instead of repeating the
+  ask (e.g. a race that left no trace, or a log that has already aged
+  out). It is durable and revocable: clear it if the data later
+  becomes available. This stops the futile re-ask and lets the engine
+  state an honest boundary. Set it ONLY for a genuine wall — never as a
+  shortcut to stop investigating.
 - **Mention decay (anti-nagging).** When surfacing a PENDING need as
   an EVIDENCE-type SuggestedFollowUp, populate `evidence_need_id`
   with the need's ID. Count mentions by scanning your prior turns in

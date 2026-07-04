@@ -82,7 +82,7 @@ from faultmaven.core.investigation.state_validator import (
 from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
     assess_verification_status,
-    is_stalled,
+    is_progress_stalled,
 )
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
@@ -118,6 +118,7 @@ from faultmaven.modules.case.contracts import (
     KnowledgeMatch,
     KnowledgeResolution,
     MitigationRecord,
+    NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -979,6 +980,7 @@ def _supersede_needs_on_hypothesis_retirement(
         need.motivating_hypothesis_ids = new_motivators
         need.state = new_status
         need.superseded_reason = new_reason
+        need.revoke_obtainability_if_terminal()
         need.updated_at = datetime.now(UTC)
 
         if new_status == NeedState.SUPERSEDED and prior_status != NeedState.SUPERSEDED:
@@ -1090,9 +1092,10 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     # Cheap short-circuit before the (relatively expensive) grounding-grade
     # computation: INSUFFICIENT_EVIDENCE requires a stall, so a not-yet-stalled
     # case — the large majority of INVESTIGATING turns — can never reach the
-    # handoff. ``is_stalled`` is two int comparisons against the same shared
-    # thresholds ``assess_verification_status`` uses, so this cannot disagree.
-    if not is_stalled(case):
+    # handoff. Uses the full progress axis (time thresholds OR a declared data
+    # wall), the same predicate ``assess_verification_status`` uses, so it cannot
+    # disagree and a fully-declared wall fires the handoff immediately.
+    if not is_progress_stalled(case):
         return False
     return assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
 
@@ -7397,6 +7400,10 @@ class MilestoneEngine:
                     motivating_hypothesis_ids=valid_motivators,
                     fulfilling_evidence_ids=valid_fulfillments,
                     superseded_reason=effective_superseded_reason,
+                    # Opt-in obtainability (§5.3); the model validator coerces it
+                    # to UNKNOWN for symptom needs or terminal states.
+                    obtainability=getattr(update, "obtainability", None)
+                    or NeedObtainability.UNKNOWN,
                     created_at_turn=current_turn,
                 )
                 case.evidence_needs.append(new_need)
@@ -7518,6 +7525,21 @@ class MilestoneEngine:
             ):
                 # Clearing superseded_reason on non-SUPERSEDED transition
                 target.superseded_reason = None
+            # Obtainability (§5.3): opt-in model declaration, scoped to
+            # causal_verification (symptom declarations are out of scope).
+            # ``validate_assignment`` is off on EvidenceNeed, so the model
+            # validator's auto-revoke does not fire on in-place mutation —
+            # apply the same rule here: reset to UNKNOWN when the need reaches a
+            # terminal state (the question is moot). The rollup only reads
+            # outstanding causal needs, so this is belt-and-suspenders for a
+            # clean record rather than the correctness guarantee.
+            _declared_obtainability = getattr(update, "obtainability", None)
+            if _declared_obtainability is not None and (
+                target.purpose == NeedPurpose.CAUSAL_VERIFICATION
+            ):
+                target.obtainability = _declared_obtainability
+            # Auto-revoke on terminal state (§5.3) — centralized invariant.
+            target.revoke_obtainability_if_terminal()
             target.updated_at = datetime.now(UTC)
             if target.need_id not in metadata["evidence_needs_updated"]:
                 metadata["evidence_needs_updated"].append(target.need_id)

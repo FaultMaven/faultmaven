@@ -42,6 +42,7 @@ from faultmaven.modules.case.contracts import (
     EntityType,
     EvidenceCategory,
     InvestigationStage,
+    NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -2121,11 +2122,15 @@ def _build_evidence_needs_block(case: Case) -> str:
     # notice below so the "…and N more not shown" signal reflects the TRUE hidden
     # demand — otherwise these vanish from `outstanding` and the LLM is told the ask
     # list is near-complete while live discriminators are withheld (anti-anchoring §6.1).
+    # UNOBTAINABLE needs are excluded: they were deliberately dropped from the
+    # surfaced set (declared un-gettable), so counting them as "more not shown"
+    # would nudge the model to chase data it already declared a wall on.
     hidden_causal = sum(
         1
         for n in outstanding_all
         if n.purpose == NeedPurpose.CAUSAL_VERIFICATION
         and n.need_id not in _surfaced_causal_ids
+        and n.obtainability != NeedObtainability.UNOBTAINABLE
     )
     outstanding = [
         n
