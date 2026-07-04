@@ -370,7 +370,7 @@ def create_user_service(
     """Create user service for user management.
 
     Follows Composition Root principle: UserService receives its auth_service
-    dependency via constructor injection, not via ServiceContainer.get().
+    dependency via constructor injection, not a service-locator lookup.
 
     Args:
         auth_service: Auth service for JWT token operations (REQUIRED)

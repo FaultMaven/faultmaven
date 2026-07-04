@@ -1985,7 +1985,7 @@ class DIContainer(BaseDIContainer):
         """Get the user service for user management operations.
 
         Returns UserService with auth_service injected via Composition Root pattern
-        (not via ServiceContainer.get() anti-pattern).
+        (constructor injection, not a service-locator lookup).
         """
         if not self._initialized:
             logger = logging.getLogger(__name__)
