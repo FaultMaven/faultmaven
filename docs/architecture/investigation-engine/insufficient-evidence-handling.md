@@ -132,7 +132,8 @@ Because a model output is as often absent as a hypothesis with no evidence, the 
 
 - The engine floor is always **keep-engaging / still-reachable**.
 - The model's obtainability judgment can only move the reading *toward* "insufficient-with-a-stated-need" — never back toward safety, and never past the work gate (§5.2).
-- A **missing** judgment defaults to keep-engaging (no collapse). The engine never depends on the model's presence to stay safe; the model can only *add* the "and it is likely unobtainable" refinement to an already-gated blocked state.
+- A **missing** judgment defaults to keep-engaging (no collapse). The engine never depends on the model's presence to stay safe.
+- **A declared data wall *is* a stall.** The progress axis (§5.1) is stalled by the time-thresholds **or** by every residual candidate being declared unresolvable (all its discriminators unobtainable). So obtainability can *establish* the stall — a fully-declared wall reaches the handoff immediately rather than waiting out the turn thresholds — rather than only refining a time-stall it could not itself cause. All of §5.1, §5.3, and the counting rule share this one definition of *stalled*.
 
 ### 5.4 A first-class status that survives the terminal boundary
 
