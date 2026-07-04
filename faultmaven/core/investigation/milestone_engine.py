@@ -79,6 +79,11 @@ from faultmaven.core.investigation.state_validator import (
     StateValidator,
     ValidationSeverity,
 )
+from faultmaven.core.investigation.verification_status import (
+    VerificationStatus,
+    assess_verification_status,
+    is_progress_stalled,
+)
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
     generate_working_conclusion,
@@ -113,6 +118,7 @@ from faultmaven.modules.case.contracts import (
     KnowledgeMatch,
     KnowledgeResolution,
     MitigationRecord,
+    NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -974,6 +980,7 @@ def _supersede_needs_on_hypothesis_retirement(
         need.motivating_hypothesis_ids = new_motivators
         need.state = new_status
         need.superseded_reason = new_reason
+        need.revoke_obtainability_if_terminal()
         need.updated_at = datetime.now(UTC)
 
         if new_status == NeedState.SUPERSEDED and prior_status != NeedState.SUPERSEDED:
@@ -1020,6 +1027,79 @@ def _gate1_is_pending(case: "Case") -> bool:
     return not inq.problem_statement_confirmed
 
 
+def _insufficient_evidence_handoff_suggestions() -> list:
+    """Deterministic structured-handoff affordances for an insufficient-evidence
+    case (verification-status Phase 1).
+
+    These are the code-guaranteed *options* half of the structured handoff (the
+    boundary statement — *what specifically* is needed — stays model-authored in
+    the prose). The moves are keep-engaging by construction: they invite the
+    discriminating data or a fresh angle so the case never collapses into a
+    fabricated cause or a silent spin — the two failure modes the handoff exists
+    to prevent. They deliberately do **not** steer toward close: pausing/closing
+    is the user's call (the prompt's handoff already names it as an option), and
+    the engine nudging abandonment would be soft-collapse (D4). Non-clickable
+    FREE_SPEECH — the user supplies the content.
+    """
+    return [
+        {
+            "label": "Share data that would distinguish the causes",
+            "action_type": "FREE_SPEECH",
+            "body": (
+                "The investigation has narrowed the problem but can't ground a "
+                "single cause from the current evidence. New discriminating data "
+                "would let it resume."
+            ),
+        },
+        {
+            "label": "Suggest a diagnostic angle not yet tried",
+            "action_type": "FREE_SPEECH",
+            "body": (
+                "Point the investigation at an angle the differential hasn't "
+                "covered — a different subsystem, timeframe, or signal."
+            ),
+        },
+    ]
+
+
+def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
+    """Whether the engine should drive the insufficient-evidence structured
+    handoff this turn (verification-status Phase 1).
+
+    Code-guarded promotion of the §5.3 direction: the engine computes the
+    objective, work-gated stall (``INSUFFICIENT_EVIDENCE`` — not grounded, work
+    gate passed, stalled) and *drives* the handoff, rather than depending on the
+    LLM to state the boundary. Flag-gated until the calibration eval validates
+    firing precision on a weak model.
+
+    Scoped to ``INVESTIGATING``: the reading is only meaningful mid-investigation
+    (a stall in INQUIRY or a terminal case is a different concern), and this
+    keeps the handoff from colliding with the Gate-1 / disposition affordances,
+    which own their own states.
+
+    Must be evaluated AFTER the deductive-validation stamp in the turn pipeline
+    (``_recompute_assessment_state``) so ``assess_verification_status`` reads a
+    fresh grounding grade and never pre-empts the deductive arm (the #593
+    re-derive-after-stamp ordering). The single call site in ``process_turn``
+    satisfies this — it runs well after ``_apply_investigation_updates``.
+    """
+    from faultmaven.config.settings import get_settings
+
+    if not get_settings().features.enable_insufficient_evidence_handoff:
+        return False
+    if case.state != CaseState.INVESTIGATING:
+        return False
+    # Cheap short-circuit before the (relatively expensive) grounding-grade
+    # computation: INSUFFICIENT_EVIDENCE requires a stall, so a not-yet-stalled
+    # case — the large majority of INVESTIGATING turns — can never reach the
+    # handoff. Uses the full progress axis (time thresholds OR a declared data
+    # wall), the same predicate ``assess_verification_status`` uses, so it cannot
+    # disagree and a fully-declared wall fires the handoff immediately.
+    if not is_progress_stalled(case):
+        return False
+    return assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+
+
 def engine_owned_affordances(
     case: "Case", metadata: dict[str, Any] | None = None
 ) -> tuple[str, list] | None:
@@ -1041,9 +1121,13 @@ def engine_owned_affordances(
     Gate identifiers (telemetry-stable labels):
       - ``"disposition"`` — pending_transition / propose_transition override
       - ``"gate1"`` — problem-statement confirmation
+      - ``"insufficient_evidence"`` — work-gated stall with no grounded cause
+        (verification-status Phase 1; flag-gated)
 
     The disposition branch sits above gate1 because pending_transition can
-    fire while gate1 is technically open.
+    fire while gate1 is technically open. The insufficient-evidence handoff sits
+    LAST — it is an INVESTIGATING-state reading, so any pending state-machine
+    handshake (disposition, gate1) takes precedence over it.
     """
     md = metadata or {}
 
@@ -1052,6 +1136,9 @@ def engine_owned_affordances(
 
     if _gate1_is_pending(case):
         return ("gate1", _investigation_confirmation_suggestions())
+
+    if _insufficient_evidence_handoff_pending(case):
+        return ("insufficient_evidence", _insufficient_evidence_handoff_suggestions())
 
     return None
 
@@ -3263,6 +3350,13 @@ class MilestoneEngine:
             # architectural completion that makes Gate 1 symmetric with
             # Gate 2 and Gate 3, and removes LLM compliance from the
             # correctness path. See INV-01, INV-19, INV-21.
+            #
+            # It also drives the insufficient-evidence structured handoff
+            # (verification-status Phase 1, flag-gated): a work-gated stall with
+            # no grounded cause. This reads a FRESH grounding grade because it
+            # runs after ``_apply_investigation_updates`` recomputed cause_state
+            # this turn (the #593 re-derive-after-stamp ordering the plan
+            # requires).
             gate_result = engine_owned_affordances(case_updated, metadata)
             if gate_result is not None:
                 gate_name, gate_affordances = gate_result
@@ -3290,6 +3384,13 @@ class MilestoneEngine:
                 # question on a gate turn is answered in the agent's PROSE, not
                 # via suggestions; the next-move affordances stay confirm/refine.
                 #
+                # The insufficient-evidence handoff replaces for a parallel
+                # reason: on a work-gated stall the LLM's own suggestions are the
+                # least trustworthy (this is exactly the turn a weak model
+                # fabricates a cause or spins), so the engine overrides them with
+                # honest keep-engaging moves. The model's *content* — what
+                # specifically would decide it — still lands in the PROSE.
+                #
                 # We do NOT augment (append the LLM's suggestions). The LLM,
                 # asked to confirm, naturally emits its OWN confirm/decline
                 # suggestions ("Yes, that's correct. Let's investigate." / "No,
@@ -3310,6 +3411,15 @@ class MilestoneEngine:
                         "affordance_count": len(gate_affordances),
                     },
                 )
+                # Record the verification status on the turn when the handoff
+                # fired (verification-status Phase 1). Transient metadata for now
+                # — the eval reads it and Phase 3 promotes it to a persisted
+                # assessment variable on the case. The affordance-served metric
+                # above already carries the firing count per gate.
+                if gate_name == "insufficient_evidence":
+                    metadata["verification_status"] = (
+                        VerificationStatus.INSUFFICIENT_EVIDENCE.value
+                    )
 
             # Closure-ack turn (LLM-driven path): when generation
             # succeeded, suggestions stay minimal — the rendered summary
@@ -3433,6 +3543,12 @@ class MilestoneEngine:
                     "outcome": metadata.get("outcome", TurnOutcome.CONVERSATION),
                     "momentum": metadata.get("momentum"),
                     "next_steps": metadata.get("next_steps", []),
+                    # Verification-status Phase 1: the insufficient-evidence
+                    # handoff records the status on the internal working dict;
+                    # surface it here so it crosses the return boundary (the
+                    # calibration eval / Phase-3 persistence read it). Absent
+                    # (None) on turns the handoff did not fire.
+                    "verification_status": metadata.get("verification_status"),
                     "timestamp": datetime.now(UTC).isoformat(),
                 },
             }
@@ -7284,6 +7400,10 @@ class MilestoneEngine:
                     motivating_hypothesis_ids=valid_motivators,
                     fulfilling_evidence_ids=valid_fulfillments,
                     superseded_reason=effective_superseded_reason,
+                    # Opt-in obtainability (§5.3); the model validator coerces it
+                    # to UNKNOWN for symptom needs or terminal states.
+                    obtainability=getattr(update, "obtainability", None)
+                    or NeedObtainability.UNKNOWN,
                     created_at_turn=current_turn,
                 )
                 case.evidence_needs.append(new_need)
@@ -7405,6 +7525,21 @@ class MilestoneEngine:
             ):
                 # Clearing superseded_reason on non-SUPERSEDED transition
                 target.superseded_reason = None
+            # Obtainability (§5.3): opt-in model declaration, scoped to
+            # causal_verification (symptom declarations are out of scope).
+            # ``validate_assignment`` is off on EvidenceNeed, so the model
+            # validator's auto-revoke does not fire on in-place mutation —
+            # apply the same rule here: reset to UNKNOWN when the need reaches a
+            # terminal state (the question is moot). The rollup only reads
+            # outstanding causal needs, so this is belt-and-suspenders for a
+            # clean record rather than the correctness guarantee.
+            _declared_obtainability = getattr(update, "obtainability", None)
+            if _declared_obtainability is not None and (
+                target.purpose == NeedPurpose.CAUSAL_VERIFICATION
+            ):
+                target.obtainability = _declared_obtainability
+            # Auto-revoke on terminal state (§5.3) — centralized invariant.
+            target.revoke_obtainability_if_terminal()
             target.updated_at = datetime.now(UTC)
             if target.need_id not in metadata["evidence_needs_updated"]:
                 metadata["evidence_needs_updated"].append(target.need_id)

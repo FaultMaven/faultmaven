@@ -18,6 +18,7 @@ from faultmaven.core.investigation.differential_intake import StanceVerdict
 from faultmaven.core.investigation.intake_evaluation import (
     _SURFACED_CAUSAL_CAP,
     _regen_differential_evidence_needs,
+    _supersede_open_need,
     run_differential_intake_turn,
     run_intake_evaluation,
     select_surfaced_causal_needs,
@@ -33,6 +34,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     EvidenceStance,
     InquiryData,
+    NeedObtainability,
     NeedPurpose,
     NeedState,
     NodeState,
@@ -909,6 +911,33 @@ def test_surfaced_caps_the_shown_set():
     _seed_causal(case, [f"tok{i}" for i in range(6)])
     assert len(select_surfaced_causal_needs(case)) == _SURFACED_CAUSAL_CAP
     assert len(_pending(case)) == 6  # all still PENDING — cap is a view, not existence
+
+
+def test_surfaced_excludes_unobtainable_but_keeps_it_pending():
+    # A need declared UNOBTAINABLE yields its surface slot (no futile re-ask) but
+    # stays PENDING in the pool, so the verification-status rollup still counts it
+    # toward the declared wall and the close record can name it.
+    case = _case()
+    _seed_causal(case, ["tokA", "tokB"])
+    needs = _pending(case)
+    assert len(needs) == 2
+    needs[0].obtainability = NeedObtainability.UNOBTAINABLE
+    surfaced_ids = {n.need_id for n in select_surfaced_causal_needs(case)}
+    assert needs[0].need_id not in surfaced_ids  # yielded its slot
+    assert needs[1].need_id in surfaced_ids  # the gettable one still shown
+    assert needs[0].state == NeedState.PENDING  # retained in the pool
+
+
+def test_supersede_resets_obtainability():
+    # A need declared UNOBTAINABLE that is superseded in place is auto-revoked to
+    # UNKNOWN, so a stale wall declaration can't linger on a moot need.
+    case = _case()
+    _seed_causal(case, ["tok"])
+    need = _pending(case)[0]
+    need.obtainability = NeedObtainability.UNOBTAINABLE
+    _supersede_open_need(need, "no longer relevant")
+    assert need.state == NeedState.SUPERSEDED
+    assert need.obtainability == NeedObtainability.UNKNOWN
 
 
 def test_surfaced_prefers_discriminating():

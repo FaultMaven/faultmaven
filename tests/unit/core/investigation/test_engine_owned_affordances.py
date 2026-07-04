@@ -17,9 +17,19 @@ Gate 1 (problem-statement confirmation) and the disposition override remain.
 
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime, timezone
+
+import pytest
+
 from faultmaven.core.investigation.milestone_engine import (
     _gate1_is_pending,
+    _insufficient_evidence_handoff_pending,
     engine_owned_affordances,
+)
+from faultmaven.core.investigation.verification_status import (
+    VerificationStatus,
+    assess_verification_status,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -185,6 +195,186 @@ class TestEngineOwnedAffordances:
         assert engine_owned_affordances(case) is None
         # Gate 1 is closed (case is INVESTIGATING, not INQUIRY).
         assert _gate1_is_pending(case) is False
+
+
+# ---------------------------------------------------------------------------
+# Insufficient-evidence structured handoff
+# ---------------------------------------------------------------------------
+
+
+def _insufficient_evidence_case() -> Case:
+    """An INVESTIGATING case that ``assess_verification_status`` reads as
+    ``INSUFFICIENT_EVIDENCE``: real diagnostic work done (crosses the ≥2/≥2/≥2
+    work gate), no grounded cause, and stalled (past the turn/stall thresholds).
+
+    Mirrors the ``INSUFFICIENT_EVIDENCE`` fixture in the verification-status
+    calibration eval — the discriminating cell the handoff fires on.
+    """
+    from faultmaven.modules.case.contracts import (
+        CaseSeverity,
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+        Hypothesis,
+        HypothesisCategory,
+        HypothesisGenerationMode,
+        HypothesisState,
+        ProblemVerification,
+    )
+
+    case = Case(
+        user_id="u1",
+        organization_id="o1",
+        title="Test",
+        description="intermittent latency",
+        state=CaseState.INVESTIGATING,
+        current_turn=9,
+        inquiry=InquiryData(
+            proposed_problem_statement="intermittent latency",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
+        problem_verification=ProblemVerification(
+            symptom_statement="intermittent latency", severity=CaseSeverity.HIGH
+        ),
+    )
+    case.turns_without_progress = 5
+    case.evidence = [
+        Evidence(
+            evidence_id="ev_" + hashlib.md5(f"e{i}".encode()).hexdigest()[:12],
+            summary="an observed fact",
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="llm",
+            collected_at_turn=2,
+            collected_at=datetime.now(timezone.utc),
+        )
+        for i in range(2)
+    ]
+    cats = list(HypothesisCategory)[:2]
+    case.hypotheses = {
+        f"hyp_{i:012x}": Hypothesis(
+            hypothesis_id=f"hyp_{i:012x}",
+            statement=f"hypothesis {i}",
+            category=cats[i % 2],
+            state=HypothesisState.CAPTURED,
+            rationale="a reason",
+            generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+            generated_at_turn=1,
+        )
+        for i in range(3)
+    }
+    return case
+
+
+@pytest.fixture
+def handoff_enabled(monkeypatch):
+    """Turn the flag-gated insufficient-evidence handoff ON for the test."""
+    from faultmaven.config.settings import get_settings
+
+    monkeypatch.setattr(
+        get_settings().features, "enable_insufficient_evidence_handoff", True
+    )
+
+
+class TestInsufficientEvidenceHandoff:
+    """The engine drives the structured handoff deterministically (code-guarded)
+    when a case is a work-gated stall with no grounded cause — regardless of LLM
+    compliance. Flag-gated, INVESTIGATING-scoped, and lowest precedence among the
+    engine-owned affordances (any pending state-machine handshake wins).
+    """
+
+    def test_fixture_reads_as_insufficient_evidence(self):
+        # Guards the test's own premise: without this the negatives below could
+        # pass vacuously (the case never being INSUFFICIENT_EVIDENCE at all).
+        case = _insufficient_evidence_case()
+        assert (
+            assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+        )
+
+    def test_handoff_fires_when_enabled(self, handoff_enabled):
+        case = _insufficient_evidence_case()
+        result = engine_owned_affordances(case)
+        assert result is not None
+        gate, affordances = result
+        assert gate == "insufficient_evidence"
+        assert len(affordances) == 2
+
+    def test_no_handoff_when_flag_off(self, monkeypatch):
+        from faultmaven.config.settings import get_settings
+
+        monkeypatch.setattr(
+            get_settings().features, "enable_insufficient_evidence_handoff", False
+        )
+        case = _insufficient_evidence_case()
+        # The status still reads INSUFFICIENT_EVIDENCE, but the flag gates the
+        # affordance: no code-guarded handoff until the eval validates firing.
+        assert (
+            assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+        )
+        assert engine_owned_affordances(case) is None
+
+    def test_no_handoff_outside_investigating(self, handoff_enabled):
+        # A stall in a non-investigating state is a different concern; the
+        # reading is only meaningful mid-investigation. (Statement stays
+        # confirmed so gate1 doesn't fire — this isolates the state guard.)
+        case = _insufficient_evidence_case()
+        case.state = CaseState.INQUIRY
+        assert _gate1_is_pending(case) is False
+        assert _insufficient_evidence_handoff_pending(case) is False
+        assert engine_owned_affordances(case) is None
+
+    def test_disposition_override_takes_precedence(self, handoff_enabled):
+        # A pending state-machine handshake outranks the insufficient-evidence
+        # reading — the handoff sits LAST in the consolidator.
+        case = _insufficient_evidence_case()
+        custom = [{"label": "Confirm close", "action_type": "DECIDE", "payload": "x"}]
+        result = engine_owned_affordances(case, {"override_suggestions": custom})
+        assert result is not None
+        gate, affordances = result
+        assert gate == "disposition"
+        assert affordances == custom
+
+    def test_handoff_affordances_keep_engaging_and_do_not_steer_to_close(
+        self, handoff_enabled
+    ):
+        # The handoff invites discriminating data or a fresh angle (keep-engaging,
+        # NO-COLLAPSE) — it never nudges abandonment (D4: steering toward close
+        # would be soft-collapse). Non-clickable content moves, no engine intent.
+        _, affordances = engine_owned_affordances(_insufficient_evidence_case())
+        assert all(a["action_type"] == "FREE_SPEECH" for a in affordances)
+        assert all("intent" not in a for a in affordances)
+        joined = " ".join(a["label"].lower() for a in affordances)
+        assert (
+            "close" not in joined
+            and "resolve" not in joined
+            and "give up" not in joined
+        )
+
+    # Firing precision — the handoff must fire ONLY on the INSUFFICIENT_EVIDENCE
+    # cell, never on an adjacent join corner (the Phase 1 plan's "fires exactly
+    # when it should"). These promote the §5.5 confusable pairs from the
+    # assess_verification_status layer up to the affordance wiring: with the flag
+    # ON, a case one axis off the cell yields None, not a handoff.
+
+    def test_no_handoff_while_still_progressing(self, handoff_enabled):
+        # Same work done, not grounded — but not stalled → OPEN, keep the LLM's
+        # own suggestions. (Confusable pair 2: still-working vs walled.)
+        case = _insufficient_evidence_case()
+        case.turns_without_progress = 1
+        assert assess_verification_status(case) == VerificationStatus.OPEN
+        assert engine_owned_affordances(case) is None
+
+    def test_no_handoff_below_the_work_gate(self, handoff_enabled):
+        # Stalled but no real diagnostic work → NOT_YET_PRODUCTIVE (a provider-
+        # health fact), never a case-blaming handoff. (Confusable pair 1:
+        # data-wall vs model-produced-nothing.)
+        case = _insufficient_evidence_case()
+        case.hypotheses = {}
+        case.evidence = []
+        assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+        assert engine_owned_affordances(case) is None
 
 
 class TestLLMContract:

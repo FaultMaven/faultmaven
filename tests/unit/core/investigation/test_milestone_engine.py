@@ -2655,3 +2655,104 @@ class TestCreateTurnRecordSystemFeedbackTruncation:
             system_feedback=None,
         )
         assert record.system_feedback is None
+
+
+class TestVerificationStatusRecordedOnTurn:
+    """Verification-status Phase 1: when the insufficient-evidence handoff fires,
+    ``process_turn`` must surface the recorded status in the RETURNED metadata —
+    not just on the internal working dict. Exercises the full turn, because the
+    return dict is rebuilt from a fixed key set and a status written only to the
+    working dict would silently never cross the return boundary.
+    """
+
+    # A no-op LLM turn: no milestones, evidence, or hypotheses added → no
+    # progress → turns_without_progress increments (the case stays stalled).
+    _NO_PROGRESS_RESPONSE = json.dumps(
+        {
+            "agent_response": "Still looking into it.",
+            "state_updates": {"outcome": "conversation"},
+        }
+    )
+
+    def _stalled_insufficient_case(self, base_case):
+        """Turn base_case into one ``assess_verification_status`` reads as
+        INSUFFICIENT_EVIDENCE: work gate passed (3 hyps / 2 categories / 2
+        evidence), not grounded (no causal chain), stalled (past turn/stall
+        thresholds)."""
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+            Hypothesis,
+            HypothesisCategory,
+            HypothesisGenerationMode,
+            HypothesisState,
+        )
+
+        base_case.current_turn = 9
+        base_case.turns_without_progress = 5
+        base_case.evidence = [
+            Evidence(
+                evidence_id=f"ev_0000000000{i:02x}",
+                summary="an observed fact",
+                primary_purpose="diagnosis",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                collected_by="user_123",
+                collected_at_turn=2,
+                collected_at=datetime.now(UTC),
+            )
+            for i in range(2)
+        ]
+        cats = list(HypothesisCategory)[:2]
+        base_case.hypotheses = {
+            f"hyp_0000000000{i:02x}": Hypothesis(
+                hypothesis_id=f"hyp_0000000000{i:02x}",
+                statement=f"hypothesis {i}",
+                category=cats[i % 2],
+                state=HypothesisState.CAPTURED,
+                rationale="a reason",
+                generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+                generated_at_turn=1,
+            )
+            for i in range(3)
+        }
+        return base_case
+
+    @pytest.mark.asyncio
+    async def test_status_crosses_return_boundary_when_handoff_fires(
+        self, mock_llm, mock_repo, base_case, monkeypatch
+    ):
+        from faultmaven.config.settings import get_settings
+
+        monkeypatch.setattr(
+            get_settings().features, "enable_insufficient_evidence_handoff", True
+        )
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
+
+        case = self._stalled_insufficient_case(base_case)
+        result = await engine.process_turn(case, "Any ideas?")
+
+        # The handoff fired (still stalled + not grounded after the no-op turn),
+        # and the recorded status is present in the RETURNED metadata — the write
+        # that previously died inside _process_turn_impl.
+        assert result["metadata"]["verification_status"] == "insufficient_evidence"
+
+    @pytest.mark.asyncio
+    async def test_status_key_present_but_none_when_handoff_does_not_fire(
+        self, mock_llm, mock_repo, base_case, monkeypatch
+    ):
+        from faultmaven.config.settings import get_settings
+
+        monkeypatch.setattr(
+            get_settings().features, "enable_insufficient_evidence_handoff", True
+        )
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
+
+        # base_case as-is: no hypotheses/evidence, turn 0 → NOT_YET_PRODUCTIVE, not
+        # INSUFFICIENT_EVIDENCE. The key is still threaded, valued None (no fire).
+        result = await engine.process_turn(base_case, "Hello")
+
+        assert result["metadata"]["verification_status"] is None

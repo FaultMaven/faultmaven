@@ -1457,6 +1457,14 @@ class FeatureSettings(BaseSettings):
     # NO-COLLAPSE regression. Bounded emission is in; rotation is not yet.
     enable_runbook_cause_matcher: bool = Field(default=False)
 
+    # Insufficient-evidence structured handoff (verification-status Phase 1).
+    # When ON, a case that ``assess_verification_status`` reads as
+    # INSUFFICIENT_EVIDENCE (not grounded, work gate passed, stalled) gets a
+    # deterministic engine-owned structured-handoff affordance regardless of LLM
+    # compliance — promoting the handoff from Prompt-only to Code-guarded. Off
+    # until the calibration eval validates firing precision on a weak model.
+    enable_insufficient_evidence_handoff: bool = Field(default=False)
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

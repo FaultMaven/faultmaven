@@ -29,12 +29,16 @@ from faultmaven.modules.case.contracts import (
     CausalNode,
     Evidence,
     EvidenceCategory,
+    EvidenceNeed,
     EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
+    NeedObtainability,
+    NeedPurpose,
+    NeedState,
     NodeState,
     NodeType,
     ProblemVerification,
@@ -252,3 +256,128 @@ def test_work_gate_requires_all_three_dimensions():
     assert not work_gate_passed(_work_done(n_categories=1))  # single category
     assert not work_gate_passed(_work_done(n_evidence=1))  # too little evidence
     assert work_gate_passed(_work_done())  # 3 hyps / 2 cats / 2 evidence
+
+
+# --- Declared data wall (model-declared obtainability) -----------------------
+# The progress axis is stalled by the time thresholds OR by a declared wall:
+# every residual candidate's discriminators declared UNOBTAINABLE. A fully
+# declared wall reaches INSUFFICIENT_EVIDENCE immediately, without a time-stall.
+
+
+def _causal_need(case, hyp_id: str, obtainability: NeedObtainability, seed: int):
+    return EvidenceNeed(
+        need_id=f"eneed_{seed:012x}",
+        case_id=case.case_id,
+        purpose=NeedPurpose.CAUSAL_VERIFICATION,
+        request_text="the discriminating datum",
+        rationale="would distinguish the remaining candidates",
+        state=NeedState.PENDING,
+        obtainability=obtainability,
+        motivating_hypothesis_ids=[hyp_id],
+        created_at_turn=2,
+    )
+
+
+def _declare(case, per_hyp: dict) -> None:
+    """Attach one causal_verification need per hypothesis id → obtainability."""
+    case.evidence_needs = [
+        _causal_need(case, hyp_id, ob, i)
+        for i, (hyp_id, ob) in enumerate(per_hyp.items())
+    ]
+
+
+def test_declared_wall_establishes_stall_without_time_threshold():
+    # Not time-stalled (turn 3, twp 0), work-gated, not grounded → OPEN...
+    case = _work_done()
+    assert assess_verification_status(case) == VerificationStatus.OPEN
+    # ...until every residual candidate's discriminator is declared UNOBTAINABLE.
+    _declare(case, {h: NeedObtainability.UNOBTAINABLE for h in case.hypotheses.keys()})
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_candidate_with_no_discriminator_is_not_a_wall():
+    # Guard the vacuous ∀-over-empty: a residual candidate with ZERO discriminators
+    # is *unknown*, not unresolvable — so leaving one undeclared breaks the wall.
+    case = _work_done()
+    hyps = list(case.hypotheses.keys())
+    _declare(case, {h: NeedObtainability.UNOBTAINABLE for h in hyps[:-1]})
+    # hyps[-1] has no need at all → not unresolvable → no wall → still OPEN.
+    assert assess_verification_status(case) == VerificationStatus.OPEN
+
+
+def test_one_obtainable_discriminator_breaks_the_wall():
+    case = _work_done()
+    hyps = list(case.hypotheses.keys())
+    per = {h: NeedObtainability.UNOBTAINABLE for h in hyps}
+    per[hyps[0]] = NeedObtainability.OBTAINABLE  # one datum still gettable
+    _declare(case, per)
+    assert assess_verification_status(case) == VerificationStatus.OPEN
+
+
+def test_unknown_obtainability_is_fail_safe():
+    # The default (no declaration) never establishes a wall.
+    case = _work_done()
+    _declare(case, {h: NeedObtainability.UNKNOWN for h in case.hypotheses.keys()})
+    assert assess_verification_status(case) == VerificationStatus.OPEN
+
+
+def test_declared_wall_never_bypasses_work_gate():
+    # Below the work gate, even a fully-declared wall cannot reach insufficient —
+    # it is a provider-health fact, not a case verdict.
+    case = _case(
+        grounded=False,
+        n_hypotheses=1,
+        n_categories=1,
+        n_evidence=1,
+        current_turn=3,
+        turns_without_progress=0,
+    )
+    hyp_id = next(iter(case.hypotheses.keys()))
+    _declare(case, {hyp_id: NeedObtainability.UNOBTAINABLE})
+    assert not work_gate_passed(case)
+    assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+
+
+def test_refuted_candidates_excluded_from_the_wall():
+    # A REFUTED candidate is not residual; only live candidates' walls count. With
+    # the refuted one excluded, the remaining residual candidates are all walled.
+    case = _work_done()
+    hyps = list(case.hypotheses.values())
+    object.__setattr__(hyps[0], "state", HypothesisState.REFUTED)
+    _declare(
+        case,
+        {h.hypothesis_id: NeedObtainability.UNOBTAINABLE for h in hyps[1:]},
+    )
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_wall_does_not_flip_a_grounded_case():
+    # The declared wall is about GROUNDING, not fix-reachability. On a grounded
+    # case it must NOT flip HEALTHY → TREATMENT_BLOCKED — the wall arm is scoped
+    # to the not-grounded branch.
+    grounded = _case(
+        grounded=True,
+        n_hypotheses=3,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=3,  # not time-stalled
+        turns_without_progress=0,
+    )
+    _declare(
+        grounded,
+        {h: NeedObtainability.UNOBTAINABLE for h in grounded.hypotheses.keys()},
+    )
+    assert assess_verification_status(grounded) == VerificationStatus.HEALTHY
+    # Grounded + TIME-stalled is still TREATMENT_BLOCKED (fix-reachability stall).
+    grounded_stalled = _case(
+        grounded=True,
+        n_hypotheses=3,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    assert (
+        assess_verification_status(grounded_stalled)
+        == VerificationStatus.TREATMENT_BLOCKED
+    )

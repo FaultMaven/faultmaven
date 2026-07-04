@@ -47,6 +47,7 @@ from faultmaven.core.investigation.differential_intake import (
 from faultmaven.modules.case.contracts import (
     EvidenceNeed,
     EvidenceStance,
+    NeedObtainability,
     NeedPurpose,
     NeedState,
     NodeEvidenceLink,
@@ -272,6 +273,7 @@ def _supersede_open_need(need: EvidenceNeed, reason: str) -> None:
     if need.state in (NeedState.PENDING, NeedState.PARTIALLY_MET):
         need.state = NeedState.SUPERSEDED
         need.superseded_reason = reason
+        need.revoke_obtainability_if_terminal()
         need.updated_at = datetime.now(UTC)
 
 
@@ -364,10 +366,17 @@ def select_surfaced_causal_needs(case: "Case") -> "list[EvidenceNeed]":
         resets and the window returns to page 0 — correct, because a progressing case is
         not deadlocked (rotation is the safety net for a genuinely stuck one).
     """
+    # A need the model declared UNOBTAINABLE yields its surface slot and stops
+    # rotating back in — re-asking for data already declared ungettable is futile
+    # churn. It stays outstanding in the pool (so the verification-status rollup
+    # still counts it toward the declared wall, and the close record can name it
+    # as the unmet need), it just isn't surfaced.
     causal = [
         n
         for n in case.evidence_needs
-        if n.is_outstanding and n.purpose == NeedPurpose.CAUSAL_VERIFICATION
+        if n.is_outstanding
+        and n.purpose == NeedPurpose.CAUSAL_VERIFICATION
+        and n.obtainability != NeedObtainability.UNOBTAINABLE
     ]
     if len(causal) <= _SURFACED_CAUSAL_CAP:
         return causal
@@ -493,6 +502,7 @@ def _regen_differential_evidence_needs(
                         dict.fromkeys([*existing.fulfilling_evidence_ids, *fired_ids])
                     )
                     existing.state = NeedState.FULFILLED
+                    existing.revoke_obtainability_if_terminal()
                     existing.updated_at = datetime.now(UTC)
                 continue
             if cause_validated:
