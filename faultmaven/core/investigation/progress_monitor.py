@@ -42,6 +42,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
 
+from faultmaven.core.investigation.exhaustion_thresholds import (
+    EXHAUSTION_MIN_REFUTED,
+    EXHAUSTION_MIN_TURNS,
+    EXHAUSTION_STALL_THRESHOLD,
+    WORK_GATE_MIN_CATEGORIES,
+    WORK_GATE_MIN_EVIDENCE,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -172,8 +179,8 @@ class ProgressMonitor:
         transparency_threshold: int = 5,
         category_anchoring_threshold: int = 4,
         action_loop_threshold: int = 5,
-        exhaustion_min_turns: int = 8,
-        exhaustion_stall_threshold: int = 5,
+        exhaustion_min_turns: int = EXHAUSTION_MIN_TURNS,
+        exhaustion_stall_threshold: int = EXHAUSTION_STALL_THRESHOLD,
         fix_failure_threshold: int = 2,
     ):
         """
@@ -590,9 +597,9 @@ class ProgressMonitor:
         evidence_count = len(case.evidence)
 
         if (
-            len(categories_explored) >= 2
-            and refuted_count >= 2
-            and evidence_count >= 2
+            len(categories_explored) >= WORK_GATE_MIN_CATEGORIES
+            and refuted_count >= EXHAUSTION_MIN_REFUTED
+            and evidence_count >= WORK_GATE_MIN_EVIDENCE
             and not any(
                 h.state == HypothesisState.VALIDATED for h in case.hypotheses.values()
             )

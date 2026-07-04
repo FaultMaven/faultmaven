@@ -23,23 +23,22 @@ from faultmaven.core.investigation.cause_assurance import (
     grade_cause_assurance,
 )
 
+# Thresholds come from the neutral ``exhaustion_thresholds`` module — the same
+# definition ``_detect_exhaustion`` reads — so the dimensions the two readers
+# measure identically cannot drift (turn/stall thresholds; category/evidence
+# breadth). The hypothesis dimension is deliberately NOT shared (see that module):
+# ``WORK_GATE_MIN_HYPOTHESES`` here gates *generation depth*, while the exhaustion
+# detector gates *elimination depth* via its own ``EXHAUSTION_MIN_REFUTED``.
+from faultmaven.core.investigation.exhaustion_thresholds import (
+    EXHAUSTION_MIN_TURNS,
+    EXHAUSTION_STALL_THRESHOLD,
+    WORK_GATE_MIN_CATEGORIES,
+    WORK_GATE_MIN_EVIDENCE,
+    WORK_GATE_MIN_HYPOTHESES,
+)
+
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
-
-
-# Work-gate + stall thresholds. These MIRROR ``ProgressMonitor``'s ``EXHAUSTED``
-# thresholds (``progress_monitor.py``) via the design decomposition: the ≥2
-# preconditions are the WORK GATE (did real diagnostic work happen?), while the
-# turn/stall thresholds are the PROGRESS AXIS (has progress stalled?). Wiring the
-# turn thresholds into the work gate would re-break the fast-exhaustion case.
-# Kept as module constants for the compute-only Phase 0; Phase 1 wiring should
-# source them from the same place ``ProgressMonitor`` reads, so the two never
-# drift (the composition-seam closure this whole effort exists to make).
-_WORK_GATE_MIN_CATEGORIES = 2
-_WORK_GATE_MIN_HYPOTHESES = 2
-_WORK_GATE_MIN_EVIDENCE = 2
-_STALL_MIN_TURN = 8
-_STALL_MIN_TURNS_WITHOUT_PROGRESS = 5
 
 
 class VerificationStatus(str, Enum):
@@ -84,9 +83,9 @@ def work_gate_passed(case: "Case") -> bool:
     """
     categories = {h.category for h in case.hypotheses.values()}
     return (
-        len(case.hypotheses) >= _WORK_GATE_MIN_HYPOTHESES
-        and len(categories) >= _WORK_GATE_MIN_CATEGORIES
-        and len(case.evidence) >= _WORK_GATE_MIN_EVIDENCE
+        len(case.hypotheses) >= WORK_GATE_MIN_HYPOTHESES
+        and len(categories) >= WORK_GATE_MIN_CATEGORIES
+        and len(case.evidence) >= WORK_GATE_MIN_EVIDENCE
     )
 
 
@@ -96,12 +95,18 @@ def _is_grounded(case: "Case") -> bool:
     return grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
 
 
-def _is_stalled(case: "Case") -> bool:
+def is_stalled(case: "Case") -> bool:
     """Progress axis: ``EXHAUSTED``'s stall thresholds ONLY — deliberately NOT
-    its ≥2 preconditions (those are the work gate)."""
+    its ≥2 preconditions (those are the work gate).
+
+    Public because callers gate the (relatively expensive) full
+    ``assess_verification_status`` on it: a non-stalled case can never be
+    ``INSUFFICIENT_EVIDENCE``/``TREATMENT_BLOCKED``, so this cheap two-int check
+    short-circuits the grounding-grade computation. Single definition of *stalled*
+    (shared thresholds), so no drift from reusing it as a pre-check."""
     return (
-        case.current_turn >= _STALL_MIN_TURN
-        and case.turns_without_progress >= _STALL_MIN_TURNS_WITHOUT_PROGRESS
+        case.current_turn >= EXHAUSTION_MIN_TURNS
+        and case.turns_without_progress >= EXHAUSTION_STALL_THRESHOLD
     )
 
 
@@ -117,7 +122,7 @@ def assess_verification_status(case: "Case") -> VerificationStatus:
     if _is_grounded(case):
         return (
             VerificationStatus.TREATMENT_BLOCKED
-            if _is_stalled(case)
+            if is_stalled(case)
             else VerificationStatus.HEALTHY
         )
     # Not grounded. Separate "no real work yet" from a genuine wall (§5.2) so a
@@ -126,6 +131,6 @@ def assess_verification_status(case: "Case") -> VerificationStatus:
         return VerificationStatus.NOT_YET_PRODUCTIVE
     return (
         VerificationStatus.INSUFFICIENT_EVIDENCE
-        if _is_stalled(case)
+        if is_stalled(case)
         else VerificationStatus.OPEN
     )
