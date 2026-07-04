@@ -18,6 +18,7 @@ from faultmaven.core.investigation.differential_intake import StanceVerdict
 from faultmaven.core.investigation.intake_evaluation import (
     _SURFACED_CAUSAL_CAP,
     _regen_differential_evidence_needs,
+    _supersede_open_need,
     run_differential_intake_turn,
     run_intake_evaluation,
     select_surfaced_causal_needs,
@@ -925,6 +926,18 @@ def test_surfaced_excludes_unobtainable_but_keeps_it_pending():
     assert needs[0].need_id not in surfaced_ids  # yielded its slot
     assert needs[1].need_id in surfaced_ids  # the gettable one still shown
     assert needs[0].state == NeedState.PENDING  # retained in the pool
+
+
+def test_supersede_resets_obtainability():
+    # A need declared UNOBTAINABLE that is superseded in place is auto-revoked to
+    # UNKNOWN, so a stale wall declaration can't linger on a moot need.
+    case = _case()
+    _seed_causal(case, ["tok"])
+    need = _pending(case)[0]
+    need.obtainability = NeedObtainability.UNOBTAINABLE
+    _supersede_open_need(need, "no longer relevant")
+    assert need.state == NeedState.SUPERSEDED
+    assert need.obtainability == NeedObtainability.UNKNOWN
 
 
 def test_surfaced_prefers_discriminating():

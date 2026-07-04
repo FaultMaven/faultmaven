@@ -349,3 +349,35 @@ def test_refuted_candidates_excluded_from_the_wall():
         {h.hypothesis_id: NeedObtainability.UNOBTAINABLE for h in hyps[1:]},
     )
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_wall_does_not_flip_a_grounded_case():
+    # The declared wall is about GROUNDING, not fix-reachability. On a grounded
+    # case it must NOT flip HEALTHY → TREATMENT_BLOCKED — the wall arm is scoped
+    # to the not-grounded branch.
+    grounded = _case(
+        grounded=True,
+        n_hypotheses=3,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=3,  # not time-stalled
+        turns_without_progress=0,
+    )
+    _declare(
+        grounded,
+        {h: NeedObtainability.UNOBTAINABLE for h in grounded.hypotheses.keys()},
+    )
+    assert assess_verification_status(grounded) == VerificationStatus.HEALTHY
+    # Grounded + TIME-stalled is still TREATMENT_BLOCKED (fix-reachability stall).
+    grounded_stalled = _case(
+        grounded=True,
+        n_hypotheses=3,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    assert (
+        assess_verification_status(grounded_stalled)
+        == VerificationStatus.TREATMENT_BLOCKED
+    )

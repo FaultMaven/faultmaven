@@ -2218,6 +2218,20 @@ class EvidenceNeed(BaseModel):
         """
         return self.state in (NeedState.PENDING, NeedState.PARTIALLY_MET)
 
+    def revoke_obtainability_if_terminal(self) -> None:
+        """Reset ``obtainability`` to UNKNOWN once the need is terminal
+        (FULFILLED/SUPERSEDED) — the §5.3 auto-revoke ("the question is moot").
+
+        The construction validator enforces this, but ``EvidenceNeed`` runs with
+        ``validate_assignment`` off (the apply layer mutates fields in place and
+        relies on the validator NOT re-firing mid-update), so every site that
+        flips ``state`` to a terminal value in place must call this to keep a
+        stale UNOBTAINABLE from lingering on a resolved/moot need. One method so
+        the invariant lives in a single place rather than per call-site.
+        """
+        if self.state in (NeedState.FULFILLED, NeedState.SUPERSEDED):
+            self.obtainability = NeedObtainability.UNKNOWN
+
     @field_validator("request_text", "rationale", mode="after")
     @classmethod
     def _text_not_whitespace_only(cls, v: str) -> str:

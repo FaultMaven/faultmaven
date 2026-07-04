@@ -273,6 +273,7 @@ def _supersede_open_need(need: EvidenceNeed, reason: str) -> None:
     if need.state in (NeedState.PENDING, NeedState.PARTIALLY_MET):
         need.state = NeedState.SUPERSEDED
         need.superseded_reason = reason
+        need.revoke_obtainability_if_terminal()
         need.updated_at = datetime.now(UTC)
 
 
@@ -501,6 +502,7 @@ def _regen_differential_evidence_needs(
                         dict.fromkeys([*existing.fulfilling_evidence_ids, *fired_ids])
                     )
                     existing.state = NeedState.FULFILLED
+                    existing.revoke_obtainability_if_terminal()
                     existing.updated_at = datetime.now(UTC)
                 continue
             if cause_validated:

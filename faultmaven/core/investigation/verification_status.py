@@ -154,15 +154,16 @@ def _declared_wall(case: "Case") -> bool:
 
 
 def is_progress_stalled(case: "Case") -> bool:
-    """Progress axis (§5.1/§5.3): stalled by the time thresholds **or** by a
-    declared data wall. One definition of *stalled*, shared by
-    ``assess_verification_status`` and the handoff trigger.
+    """Progress axis for the NOT-grounded disposition (§5.3): stalled by the time
+    thresholds **or** by a declared data wall. Used for the
+    ``OPEN``→``INSUFFICIENT_EVIDENCE`` decision and the handoff trigger.
 
-    Monotonic: the declared wall can only add stalls (move the reading toward
-    ``INSUFFICIENT_EVIDENCE``), never remove one. Callers gate the (relatively
-    expensive) grounding grade on this — a not-stalled case can never be
-    ``INSUFFICIENT_EVIDENCE``/``TREATMENT_BLOCKED`` — and the cheap time check is
-    evaluated first via short-circuit."""
+    The wall arm is scoped to the not-grounded branch on purpose — it is about
+    not being able to *ground* a cause, so it must not touch the grounded
+    ``TREATMENT_BLOCKED`` (fix-reachability) disposition, which reads the plain
+    time-``is_stalled``. Monotonic: the wall can only move a not-grounded case
+    toward ``INSUFFICIENT_EVIDENCE``. The cheap time check is evaluated first via
+    short-circuit, before the (relatively expensive) ``_declared_wall`` walk."""
     return is_stalled(case) or _declared_wall(case)
 
 
@@ -176,9 +177,15 @@ def assess_verification_status(case: "Case") -> VerificationStatus:
     reads a fresh grade rather than pre-empting the deductive arm.
     """
     if _is_grounded(case):
+        # Grounded × stalled = TREATMENT_BLOCKED, meaning "have a cause but can't
+        # reach a *verified fix*". That is a fix-reachability stall — the time
+        # thresholds only. The declared data wall is about not being able to
+        # *ground* a cause (discriminator obtainability); on an already-grounded
+        # case it is moot, so it must NOT flip HEALTHY → TREATMENT_BLOCKED. The
+        # wall arm therefore belongs only to the not-grounded branch below.
         return (
             VerificationStatus.TREATMENT_BLOCKED
-            if is_progress_stalled(case)
+            if is_stalled(case)
             else VerificationStatus.HEALTHY
         )
     # Not grounded. Separate "no real work yet" from a genuine wall (§5.2) so a

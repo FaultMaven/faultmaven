@@ -43,6 +43,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
+    NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -1184,3 +1185,157 @@ class TestFulfillUpdateOmittedCreateOnlyFields:
             updated.rationale
             == "confirm the unindexed Seq Scan is holding pool connections"
         )
+
+
+# ============================================================
+# Obtainability (verification-status Phase 2)
+# ============================================================
+
+
+def _causal_need(case, **overrides) -> EvidenceNeed:
+    defaults = dict(
+        case_id=case.case_id,
+        purpose=NeedPurpose.CAUSAL_VERIFICATION,
+        request_text="the discriminating datum",
+        rationale="distinguishes the candidates",
+        created_at_turn=case.current_turn,
+    )
+    defaults.update(overrides)
+    need = EvidenceNeed(**defaults)
+    case.evidence_needs.append(need)
+    return need
+
+
+@pytest.mark.unit
+class TestObtainability:
+    """Model-validator coercion + apply-layer wiring for the opt-in
+    obtainability declaration (§5.3)."""
+
+    # --- model-level coercion + centralized revoke method ---
+
+    def test_validator_coerces_symptom_and_terminal_to_unknown(self):
+        base = dict(
+            case_id="case_1234567890ab",
+            request_text="x",
+            rationale="y",
+            created_at_turn=1,
+        )
+        # symptom need → out of scope, coerced to UNKNOWN
+        s = EvidenceNeed(
+            purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+            obtainability=NeedObtainability.UNOBTAINABLE,
+            **base,
+        )
+        assert s.obtainability == NeedObtainability.UNKNOWN
+        # causal + PENDING → retained
+        p = EvidenceNeed(
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            obtainability=NeedObtainability.UNOBTAINABLE,
+            **base,
+        )
+        assert p.obtainability == NeedObtainability.UNOBTAINABLE
+        # causal + terminal (SUPERSEDED) → auto-revoked to UNKNOWN
+        sup = EvidenceNeed(
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            obtainability=NeedObtainability.UNOBTAINABLE,
+            state=NeedState.SUPERSEDED,
+            superseded_reason="moot",
+            **base,
+        )
+        assert sup.obtainability == NeedObtainability.UNKNOWN
+
+    def test_revoke_obtainability_if_terminal_method(self):
+        need = EvidenceNeed(
+            case_id="case_1234567890ab",
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            request_text="x",
+            rationale="y",
+            created_at_turn=1,
+            obtainability=NeedObtainability.UNOBTAINABLE,
+        )
+        # In-place terminal transition (validate_assignment off → validator does
+        # not re-run) then the centralized revoke.
+        need.state = NeedState.SUPERSEDED
+        need.superseded_reason = "moot"
+        assert need.obtainability == NeedObtainability.UNOBTAINABLE  # not yet revoked
+        need.revoke_obtainability_if_terminal()
+        assert need.obtainability == NeedObtainability.UNKNOWN
+
+    # --- apply-layer wiring ---
+
+    def test_create_plumbs_obtainability(self):
+        case = _make_case()
+        engine = _make_engine()
+        # A causal-purpose create requires a valid motivating hypothesis (the
+        # apply layer rejects an orphan causal need — the LLM-need vs engine-need
+        # distinction; see issue #630).
+        h = _make_hypothesis(case)
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    request_text="the DB slow-query log",
+                    rationale="distinguishes the DB candidate",
+                    motivating_hypothesis_ids=[h.hypothesis_id],
+                    obtainability=NeedObtainability.UNOBTAINABLE,
+                )
+            ],
+            metadata=_empty_metadata(),
+            current_turn=case.current_turn,
+        )
+        assert case.evidence_needs[-1].obtainability == NeedObtainability.UNOBTAINABLE
+
+    def test_update_sets_obtainability_on_causal_need(self):
+        case = _make_case()
+        engine = _make_engine()
+        need = _causal_need(case)
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    need_id=need.need_id,
+                    purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                    obtainability=NeedObtainability.UNOBTAINABLE,
+                )
+            ],
+            metadata=_empty_metadata(),
+            current_turn=case.current_turn,
+        )
+        assert need.obtainability == NeedObtainability.UNOBTAINABLE
+
+    def test_update_ignores_obtainability_on_symptom_need(self):
+        case = _make_case()
+        engine = _make_engine()
+        need = _causal_need(case, purpose=NeedPurpose.SYMPTOM_VERIFICATION)
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    need_id=need.need_id,
+                    obtainability=NeedObtainability.UNOBTAINABLE,
+                )
+            ],
+            metadata=_empty_metadata(),
+            current_turn=case.current_turn,
+        )
+        assert need.obtainability == NeedObtainability.UNKNOWN
+
+    def test_update_to_terminal_auto_revokes_obtainability(self):
+        case = _make_case()
+        engine = _make_engine()
+        need = _causal_need(case, obtainability=NeedObtainability.UNOBTAINABLE)
+        engine._apply_evidence_need_updates(
+            case=case,
+            updates_list=[
+                _make_update(
+                    need_id=need.need_id,
+                    state=NeedState.SUPERSEDED,
+                    superseded_reason="no longer relevant",
+                )
+            ],
+            metadata=_empty_metadata(),
+            current_turn=case.current_turn,
+        )
+        assert need.state == NeedState.SUPERSEDED
+        assert need.obtainability == NeedObtainability.UNKNOWN

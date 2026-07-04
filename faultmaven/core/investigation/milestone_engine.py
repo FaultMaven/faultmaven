@@ -980,6 +980,7 @@ def _supersede_needs_on_hypothesis_retirement(
         need.motivating_hypothesis_ids = new_motivators
         need.state = new_status
         need.superseded_reason = new_reason
+        need.revoke_obtainability_if_terminal()
         need.updated_at = datetime.now(UTC)
 
         if new_status == NeedState.SUPERSEDED and prior_status != NeedState.SUPERSEDED:
@@ -7537,8 +7538,8 @@ class MilestoneEngine:
                 target.purpose == NeedPurpose.CAUSAL_VERIFICATION
             ):
                 target.obtainability = _declared_obtainability
-            if target.state in (NeedState.FULFILLED, NeedState.SUPERSEDED):
-                target.obtainability = NeedObtainability.UNKNOWN
+            # Auto-revoke on terminal state (§5.3) — centralized invariant.
+            target.revoke_obtainability_if_terminal()
             target.updated_at = datetime.now(UTC)
             if target.need_id not in metadata["evidence_needs_updated"]:
                 metadata["evidence_needs_updated"].append(target.need_id)
