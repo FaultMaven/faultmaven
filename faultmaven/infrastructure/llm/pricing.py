@@ -59,6 +59,8 @@ class TokenRates:
 # OpenAI-family cached input is ~0.5x input; write is not separately billed.
 DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
     "anthropic": {
+        # Sonnet tier: $3 input / $15 output per 1M, cache write ~1.25x, read ~0.1x.
+        "claude-sonnet-4-5": TokenRates(3.0, 15.0, 0.30, 3.75),
         "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
         "claude-opus-4": TokenRates(15.0, 75.0, 1.50, 18.75),
         "claude-haiku": TokenRates(0.80, 4.0, 0.08, 1.0),
@@ -90,7 +92,8 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "command-r": TokenRates(0.15, 0.60, 0.0, 0.0),
     },
     "openrouter": {
-        # OpenRouter passes provider rates through; keep the common routed model.
+        # OpenRouter passes provider rates through; keep the common routed models.
+        "claude-sonnet-4-5": TokenRates(3.0, 15.0, 0.30, 3.75),
         "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
     },
 }
