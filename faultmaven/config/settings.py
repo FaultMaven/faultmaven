@@ -306,10 +306,10 @@ class LLMSettings(BaseSettings):
     # Defaults are performance-weighted (token-usage billing → quality drives UX),
     # all tool-calling + large-context capable. HuggingFace is the exception: its
     # Inference API can't do tool calling, so it is kept but not recommended.
-    openai_model: str = Field(default="gpt-4.1-mini")
+    openai_model: str = Field(default="gpt-5.4-mini")
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     fireworks_model: str = Field(
-        default="accounts/fireworks/models/deepseek-v3",
+        default="accounts/fireworks/models/deepseek-v4-flash",
     )
     groq_model: str = Field(default="llama-3.3-70b-versatile")
     cohere_model: str = Field(default="command-r-plus")

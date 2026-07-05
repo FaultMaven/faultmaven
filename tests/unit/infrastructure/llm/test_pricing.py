@@ -103,9 +103,20 @@ class TestEstimateCostUsd:
         assert priced is True
         assert cost == pytest.approx(3.0 + 15.0 + 0.30 + 3.75)
 
-    def test_default_openai_model_gpt_4_1_mini_is_priced(self):
-        # gpt-4.1-mini is the default OpenAI model; it must be priced so real
+    def test_default_openai_model_gpt_5_4_mini_is_priced(self):
+        # gpt-5.4-mini is the default OpenAI model; it must be priced so real
         # runs don't report 100% unpriced calls (cost silently ~$0).
+        _, priced = estimate_cost_usd(
+            "openai",
+            "gpt-5.4-mini",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+        )
+        assert priced is True
+
+    def test_supported_openai_model_gpt_4_1_mini_is_priced(self):
+        # gpt-4.1-mini remains a supported (non-default) OpenAI model and must
+        # stay priced so runs that select it don't report ~$0 cost.
         cost, priced = estimate_cost_usd(
             "openai",
             "gpt-4.1-mini",
