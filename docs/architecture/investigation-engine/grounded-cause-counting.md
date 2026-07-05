@@ -12,6 +12,8 @@ being silently masked by LLM-carried correctness.
 The metric and the §7 harvest gate ([`grade_cause_assurance`](../../../faultmaven/core/investigation/cause_assurance.py))
 must always agree on "grounded"; the three requirements below are what keep them from drifting apart.
 
+> **Scope note — grade vs. disposition grounding.** This grade is the *harvest* definition (is a cause reusable knowledge?). The verification-status **disposition** layer reuses it but adds a further gate: its grounding axis (`verification_status._is_grounded`) requires `grade == GROUNDED` **and** a verified symptom, so an authority-grounded root with no verified symptom does not read as a healthy/grounded *disposition* (it would otherwise mask a stuck case). The grade itself is unchanged and keeps its drift-lock; the harvest/conversion consumers are RESOLVED-gated (symptom already verified), so they see no difference. See `insufficient-evidence-handling.md` §3.5 (grounding-anchor bullet).
+
 ## R1 — Drift-lock to the harvest grade
 
 `grade_cause_assurance(case)` is the single source of truth for the `GROUNDED` grade. The counter
