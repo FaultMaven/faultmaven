@@ -113,12 +113,13 @@ PROVIDER_SCHEMA = {
         "model_var": "FIREWORKS_MODEL",
         "base_url_var": "FIREWORKS_API_BASE",
         "default_base_url": "https://api.fireworks.ai/inference/v1",
-        "default_model": "accounts/fireworks/models/deepseek-v3",
+        "default_model": "accounts/fireworks/models/deepseek-v4-flash",
         "available_models": [
             "accounts/fireworks/models/llama-v3p1-8b-instruct",
             "accounts/fireworks/models/llama-v3p1-70b-instruct",
             "accounts/fireworks/models/qwen2p5-coder-32b-instruct",
             "accounts/fireworks/models/deepseek-v3",
+            "accounts/fireworks/models/deepseek-v4-flash",
         ],
         "provider_class": FireworksProvider,
         "confidence_score": 0.9,
@@ -128,7 +129,7 @@ PROVIDER_SCHEMA = {
         "model_var": "OPENAI_MODEL",
         "base_url_var": "OPENAI_API_BASE",
         "default_base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4.1-mini",
+        "default_model": "gpt-5.4-mini",
         "available_models": [
             "gpt-4.1-mini",
             "gpt-5.4-mini",

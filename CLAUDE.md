@@ -291,9 +291,9 @@ modules/auth/
 | Provider | Environment Variable | Models | Structured output | Notes |
 |----------|---------------------|--------|-------------------|-------|
 | Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema enforced via forced tool use; recommended for logic |
-| OpenAI | `OPENAI_API_KEY` | gpt-4.1-mini | **STRICT** (gpt-4o+) | Non-reasoning; recommended default |
+| OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | **STRICT** (gpt-4o+) | Reasoning model; `reasoning_effort` capped to `low` on structured calls (starvation guard); recommended default |
 | Google Gemini | `GEMINI_API_KEY` | gemini-3.5-flash | **STRICT** (1.5+) | Fast multimodal; baseline |
-| Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v3 | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
+| Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v4-flash | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
 | Groq | `GROQ_API_KEY` | llama-3.3-70b-versatile | BEST_EFFORT (STRICT on gpt-oss) | Ultra-fast inference |
 | HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | BEST_EFFORT | Open models — NOT recommended (no tool calling) |
 | Cohere | `COHERE_API_KEY` | command-r-plus | BEST_EFFORT | Enterprise RAG (json_object only; not schema-enforced) |
