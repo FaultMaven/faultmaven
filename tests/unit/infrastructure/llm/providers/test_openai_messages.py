@@ -13,6 +13,7 @@ import pytest
 from faultmaven.infrastructure.llm.providers.base import (
     LLMResponse,
     ProviderConfig,
+    StructuredOutputCapability,
     ToolCall,
 )
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
@@ -289,7 +290,9 @@ class TestOpenAIReasoningEffortCap:
     and tool calls emit small arguments where starvation isn't a risk.
     Non-reasoning models (gpt-4.1/gpt-4o) reject the param entirely."""
 
-    @pytest.mark.parametrize("model", ["gpt-5", "gpt-5.4-mini", "o1", "o3-mini"])
+    @pytest.mark.parametrize(
+        "model", ["gpt-5", "gpt-5.4-mini", "o1", "o3-mini", "o4-mini"]
+    )
     async def test_reasoning_model_structured_call_caps_effort(self, model):
         provider = OpenAIProvider(_config_for(model))
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
@@ -362,6 +365,22 @@ class TestOpenAIReasoningEffortCap:
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["reasoning_effort"] == "high"
+
+    @pytest.mark.parametrize(
+        "model", ["gpt-5", "gpt-5.4-mini", "o1", "o3-mini", "o4-mini"]
+    )
+    def test_reasoning_families_are_strict(self, model):
+        """The cap is scoped to ``response_format`` calls; a reasoning model does
+        its structured extraction there ONLY if it classifies STRICT. So every
+        reasoning family (incl. ``o4``) MUST be STRICT — otherwise it routes
+        structured output through FUNCTION_CALLING (``tools``), where the cap no
+        longer applies, and its schema JSON starves (the #625 truncation). This
+        pins the invariant that the cap's ``not tools`` scoping relies on."""
+        provider = OpenAIProvider(_config_for(model))
+        assert (
+            provider.get_structured_output_capability(model)
+            == StructuredOutputCapability.STRICT
+        )
 
     @pytest.mark.parametrize("model", ["o1-mini", "o1-preview"])
     async def test_o1_pre_effort_variants_never_get_effort(self, model):
