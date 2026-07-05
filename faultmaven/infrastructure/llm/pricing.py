@@ -75,11 +75,17 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "gpt-4o": TokenRates(2.50, 10.0, 1.25, 0.0),
     },
     "gemini": {
+        "gemini-3.1-flash-lite": TokenRates(0.25, 1.50, 0.025, 0.0),
         "gemini-3.5-flash": TokenRates(0.15, 0.60, 0.0375, 0.0),
         "gemini-1.5-flash": TokenRates(0.075, 0.30, 0.01875, 0.0),
         "gemini-1.5-pro": TokenRates(1.25, 5.0, 0.3125, 0.0),
     },
     "fireworks": {
+        # Order matters: the specific deepseek-v4-flash key must precede the
+        # generic "deepseek" fallback, or the substring match returns the v3
+        # rate for the served model id "…/deepseek-v4-flash". Standard serverless
+        # tier ($0.14 in / $0.28 out / $0.03 cached in per 1M; Priority is higher).
+        "deepseek-v4-flash": TokenRates(0.14, 0.28, 0.03, 0.0),
         "deepseek-v3": TokenRates(0.90, 0.90, 0.0, 0.0),
         "deepseek": TokenRates(0.90, 0.90, 0.0, 0.0),
     },
