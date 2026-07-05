@@ -381,3 +381,53 @@ def test_wall_does_not_flip_a_grounded_case():
         assess_verification_status(grounded_stalled)
         == VerificationStatus.TREATMENT_BLOCKED
     )
+
+
+# --- Known false positive: slow-but-live via the TIME arm --------------------
+# The time arm (current_turn ≥ N ∧ turns_without_progress ≥ N) cannot tell "the
+# investigation is walled" from "the user was just slow to respond." A case whose
+# discriminating data is explicitly OBTAINABLE — so it is NOT a declared wall —
+# still trips INSUFFICIENT_EVIDENCE on the time thresholds alone. This is an
+# ACCEPTED false positive (design §5.5 / no-collapse rule 4), not a bug:
+#   - it is indistinguishable from a real wall in pure case state, so no work-gate
+#     tightening removes it without breaking the declared-wall arm (whose residual
+#     candidates are un-refuted by definition — tightening to ≥2-refuted would
+#     make the handoff never fire on the canonical unobservable-cause archetype);
+#   - it is non-terminal and self-dissolves the moment progress resumes
+#     (fail-forward), so it never traps a live case;
+#   - its *rate* is the property the live/simulator calibration tier measures on
+#     real trajectories (the handoff ships as a soundness fix, validated by
+#     simulation rather than a flag). This deterministic tier can only pin that
+#     the arm fires and that it self-heals; it cannot measure how often a real
+#     trajectory is genuinely still-live.
+
+
+def test_slow_but_live_is_a_known_time_arm_false_positive():
+    case = _work_done(current_turn=9, turns_without_progress=5)
+    # Data IS obtainable — this is NOT a wall; the user was merely slow.
+    _declare(case, {h: NeedObtainability.OBTAINABLE for h in case.hypotheses.keys()})
+    # The time arm fires regardless → the accepted false positive.
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    # Prove the verdict rode the TIME arm, not a (non-existent) declared wall:
+    # clear only the time thresholds and it drops straight back to OPEN.
+    case.turns_without_progress = 2
+    assert assess_verification_status(case) == VerificationStatus.OPEN
+
+
+def test_time_arm_false_positive_fails_forward_when_the_cause_is_grounded():
+    # The other no-collapse path: the mislabel never blocks a later success. Test
+    # 1 shows it dissolving to OPEN when the user simply resumes; here the cause is
+    # actually grounded on a later turn (and progress resumes), and the status
+    # fail-forwards straight out of INSUFFICIENT_EVIDENCE to HEALTHY. A slow-but-
+    # live FP is never a dead end for a case that then gets solved.
+    case = _work_done(current_turn=20, turns_without_progress=8)
+    _declare(case, {h: NeedObtainability.OBTAINABLE for h in case.hypotheses.keys()})
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    # A validated ROOT lands (grade → GROUNDED) and progress resumes.
+    d, root = _problem(), _grounded_root()
+    case.causal_nodes = {d.node_id: d, root.node_id: root}
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    case.turns_without_progress = 0
+    assert assess_verification_status(case) == VerificationStatus.HEALTHY

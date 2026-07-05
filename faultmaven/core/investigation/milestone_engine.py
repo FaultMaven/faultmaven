@@ -1080,8 +1080,9 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     Code-guarded promotion of the §5.3 direction: the engine computes the
     objective, work-gated stall (``INSUFFICIENT_EVIDENCE`` — not grounded, work
     gate passed, stalled) and *drives* the handoff, rather than depending on the
-    LLM to state the boundary. Flag-gated until the calibration eval validates
-    firing precision on a weak model.
+    LLM to state the boundary. This is a soundness fix (the engine must not spin
+    silently or fabricate a cause on a walled case), always on — not a flag-gated
+    enhancement; it is validated by simulation, not toggled.
 
     Scoped to ``INVESTIGATING``: the reading is only meaningful mid-investigation
     (a stall in INQUIRY or a terminal case is a different concern), and this
@@ -1094,10 +1095,6 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     re-derive-after-stamp ordering). The single call site in ``process_turn``
     satisfies this — it runs well after ``_apply_investigation_updates``.
     """
-    from faultmaven.config.settings import get_settings
-
-    if not get_settings().features.enable_insufficient_evidence_handoff:
-        return False
     if case.state != CaseState.INVESTIGATING:
         return False
     # Cheap short-circuit before the (relatively expensive) grounding-grade
@@ -1133,7 +1130,7 @@ def engine_owned_affordances(
       - ``"disposition"`` — pending_transition / propose_transition override
       - ``"gate1"`` — problem-statement confirmation
       - ``"insufficient_evidence"`` — work-gated stall with no grounded cause
-        (verification-status Phase 1; flag-gated)
+        (code-guarded, always on)
 
     The disposition branch sits above gate1 because pending_transition can
     fire while gate1 is technically open. The insufficient-evidence handoff sits
@@ -3369,7 +3366,7 @@ class MilestoneEngine:
             # correctness path. See INV-01, INV-19, INV-21.
             #
             # It also drives the insufficient-evidence structured handoff
-            # (verification-status Phase 1, flag-gated): a work-gated stall with
+            # (code-guarded, always on): a work-gated stall with
             # no grounded cause. This reads a FRESH grounding grade because it
             # runs after ``_apply_investigation_updates`` recomputed cause_state
             # this turn (the #593 re-derive-after-stamp ordering the plan
@@ -3429,10 +3426,10 @@ class MilestoneEngine:
                     },
                 )
                 # Record the verification status on the turn when the handoff
-                # fired (verification-status Phase 1). Transient metadata for now
-                # — the eval reads it and Phase 3 promotes it to a persisted
-                # assessment variable on the case. The affordance-served metric
-                # above already carries the firing count per gate.
+                # fired. This turn-metadata copy is the return-boundary signal;
+                # the durable reading lives on ``case.progress.verification_status``
+                # (persisted each turn). The affordance-served metric above
+                # already carries the firing count per gate.
                 if gate_name == "insufficient_evidence":
                     metadata["verification_status"] = (
                         VerificationStatus.INSUFFICIENT_EVIDENCE.value
