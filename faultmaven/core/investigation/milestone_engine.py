@@ -1080,8 +1080,9 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     Code-guarded promotion of the §5.3 direction: the engine computes the
     objective, work-gated stall (``INSUFFICIENT_EVIDENCE`` — not grounded, work
     gate passed, stalled) and *drives* the handoff, rather than depending on the
-    LLM to state the boundary. Flag-gated until the calibration eval validates
-    firing precision on a weak model.
+    LLM to state the boundary. This is a soundness fix (the engine must not spin
+    silently or fabricate a cause on a walled case), always on — not a flag-gated
+    enhancement; it is validated by simulation, not toggled.
 
     Scoped to ``INVESTIGATING``: the reading is only meaningful mid-investigation
     (a stall in INQUIRY or a terminal case is a different concern), and this
@@ -1094,10 +1095,6 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     re-derive-after-stamp ordering). The single call site in ``process_turn``
     satisfies this — it runs well after ``_apply_investigation_updates``.
     """
-    from faultmaven.config.settings import get_settings
-
-    if not get_settings().features.enable_insufficient_evidence_handoff:
-        return False
     if case.state != CaseState.INVESTIGATING:
         return False
     # Cheap short-circuit before the (relatively expensive) grounding-grade

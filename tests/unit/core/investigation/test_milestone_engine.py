@@ -2721,13 +2721,8 @@ class TestVerificationStatusRecordedOnTurn:
 
     @pytest.mark.asyncio
     async def test_status_crosses_return_boundary_when_handoff_fires(
-        self, mock_llm, mock_repo, base_case, monkeypatch
+        self, mock_llm, mock_repo, base_case
     ):
-        from faultmaven.config.settings import get_settings
-
-        monkeypatch.setattr(
-            get_settings().features, "enable_insufficient_evidence_handoff", True
-        )
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
 
@@ -2741,13 +2736,8 @@ class TestVerificationStatusRecordedOnTurn:
 
     @pytest.mark.asyncio
     async def test_status_key_present_but_none_when_handoff_does_not_fire(
-        self, mock_llm, mock_repo, base_case, monkeypatch
+        self, mock_llm, mock_repo, base_case
     ):
-        from faultmaven.config.settings import get_settings
-
-        monkeypatch.setattr(
-            get_settings().features, "enable_insufficient_evidence_handoff", True
-        )
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
 
@@ -2758,12 +2748,12 @@ class TestVerificationStatusRecordedOnTurn:
         assert result["metadata"]["verification_status"] is None
 
     @pytest.mark.asyncio
-    async def test_status_persisted_on_case_each_turn_regardless_of_flag(
+    async def test_status_persisted_on_case_each_turn(
         self, mock_llm, mock_repo, base_case
     ):
-        """Phase 3: verification_status is written onto ``case.progress`` every
-        INVESTIGATING turn (like ``cause_state``), independent of the handoff
-        flag — the flag gates only the affordance, not the persisted assessment.
+        """verification_status is written onto ``case.progress`` every
+        INVESTIGATING turn (like ``cause_state``) — it is the persisted
+        assessment, independent of whether the handoff affordance fires.
         Persisting it is what carries the model-declared obtainability signal
         across turns.
         """
@@ -2772,7 +2762,6 @@ class TestVerificationStatusRecordedOnTurn:
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         mock_llm.generate.return_value = self._NO_PROGRESS_RESPONSE
 
-        # Flag left at its default (OFF). The persisted field must still update.
         case = self._stalled_insufficient_case(base_case)
         await engine.process_turn(case, "Any ideas?")
 

@@ -395,10 +395,11 @@ def test_wall_does_not_flip_a_grounded_case():
 #     make the handoff never fire on the canonical unobservable-cause archetype);
 #   - it is non-terminal and self-dissolves the moment progress resumes
 #     (fail-forward), so it never traps a live case;
-#   - its *rate* is the property the live/simulator calibration tier must bound
-#     before the ``enable_insufficient_evidence_handoff`` flag is flipped on. This
-#     deterministic tier can only pin that the arm fires and that it self-heals;
-#     it cannot measure how often a real trajectory is genuinely still-live.
+#   - its *rate* is the property the live/simulator calibration tier measures on
+#     real trajectories (the handoff ships as a soundness fix, validated by
+#     simulation rather than a flag). This deterministic tier can only pin that
+#     the arm fires and that it self-heals; it cannot measure how often a real
+#     trajectory is genuinely still-live.
 
 
 def test_slow_but_live_is_a_known_time_arm_false_positive():
