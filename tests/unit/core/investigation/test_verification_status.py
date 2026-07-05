@@ -143,6 +143,10 @@ def _case(
         case.causal_edges = [
             CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
         ]
+        # A legitimate grounding is symptom-anchored (the grounding axis requires
+        # a verified symptom — see _is_grounded). The seam tests below override
+        # this to False to model the composition-seam pathology.
+        case.progress.symptom_verified = True
     return case
 
 
@@ -423,12 +427,14 @@ def test_time_arm_false_positive_fails_forward_when_the_cause_is_grounded():
     case = _work_done(current_turn=20, turns_without_progress=8)
     _declare(case, {h: NeedObtainability.OBTAINABLE for h in case.hypotheses.keys()})
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
-    # A validated ROOT lands (grade → GROUNDED) and progress resumes.
+    # A validated ROOT lands (grade → GROUNDED), the symptom is verified (the
+    # grounding anchor), and progress resumes.
     d, root = _problem(), _grounded_root()
     case.causal_nodes = {d.node_id: d, root.node_id: root}
     case.causal_edges = [
         CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
     ]
+    case.progress.symptom_verified = True
     case.turns_without_progress = 0
     assert assess_verification_status(case) == VerificationStatus.HEALTHY
 
@@ -509,3 +515,51 @@ def test_grounding_trace_silent_above_debug(caplog):
     assert not [
         r for r in caplog.records if getattr(r, "event", None) == "grounding_assessment"
     ]
+
+
+# --- The composition-seam fix: grounding requires the verified-symptom anchor -
+# A weak model can materialize a validated causal root with no backing hypothesis
+# and no verified symptom. The §7 grade reads GROUNDED, but the disposition join
+# must NOT: without the anchor, verification_status read HEALTHY over an empty
+# hypothesis layer and masked a stuck case (the observed spin). The grounding axis
+# now requires symptom_verified — the same anchor cause_state requires.
+
+
+def test_validated_root_without_verified_symptom_is_not_grounded():
+    from faultmaven.core.investigation.cause_assurance import (
+        CauseAssuranceGrade,
+        grade_cause_assurance,
+    )
+
+    # The run-2 pathology: validated root, 0 hypotheses, symptom NOT verified.
+    case = _case(
+        grounded=True,
+        n_hypotheses=0,
+        n_categories=0,
+        n_evidence=2,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    case.progress.symptom_verified = False
+    # The raw §7 grade still reads GROUNDED — its drift-lock is untouched...
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+    # ...but the disposition join must NOT read HEALTHY: no verified symptom means
+    # not grounded, and no work done → NOT_YET_PRODUCTIVE, not a masking HEALTHY.
+    assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+
+
+def test_grounding_requires_the_verified_symptom_anchor():
+    # A legitimate grounding (validated root + verified symptom) still reads HEALTHY.
+    case = _case(
+        grounded=True,
+        n_hypotheses=2,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=3,
+        turns_without_progress=0,
+    )
+    assert case.progress.symptom_verified is True  # set by the grounded helper
+    assert assess_verification_status(case) == VerificationStatus.HEALTHY
+    # Flip only the anchor off → no longer grounded (work gate still passed → OPEN).
+    case.progress.symptom_verified = False
+    assert assess_verification_status(case) == VerificationStatus.OPEN
