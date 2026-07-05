@@ -222,11 +222,24 @@ class OpenAIProvider(BaseLLMProvider):
         if response_format:
             payload["response_format"] = response_format
 
-        # Cap reasoning effort on structured/tool calls for reasoning-family
-        # models, so hidden reasoning can't starve the output reserve and
-        # truncate the schema JSON. Set BEFORE the kwargs merge so an explicit
-        # caller-supplied ``reasoning_effort`` still wins.
-        if (tools or response_format) and self._caps_reasoning_effort(effective_model):
+        # Cap reasoning effort on structured JSON (``response_format``) calls for
+        # reasoning-family models, so hidden reasoning can't starve the output
+        # reserve and truncate the schema JSON. Set BEFORE the kwargs merge so an
+        # explicit caller-supplied ``reasoning_effort`` still wins.
+        #
+        # Scoped to ``response_format`` WITHOUT ``tools``: newer GPT-5.x models
+        # (e.g. gpt-5.4-mini) 400 when ``reasoning_effort`` is combined with
+        # FUNCTION TOOLS on /v1/chat/completions ("... use /v1/responses instead"),
+        # which would break every tool-calling investigation turn. Capping is also
+        # unnecessary on tool calls: they emit small tool arguments, not a large
+        # schema body, so reasoning cannot starve them. STRICT models take the
+        # structured extraction via ``response_format`` (json_schema), so the call
+        # that actually needs the cap still gets it.
+        if (
+            response_format
+            and not tools
+            and self._caps_reasoning_effort(effective_model)
+        ):
             payload["reasoning_effort"] = self._STRUCTURED_REASONING_EFFORT
 
         # Add any additional kwargs, filtering out None values
