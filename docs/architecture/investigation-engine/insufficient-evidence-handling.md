@@ -172,6 +172,10 @@ The clean archetypes (observable → grounded, unobservable → insufficient-wit
 
 The calibration set must include these, run as an **offline signal, never a runtime gate** (consistent with the eval-as-signal discipline).
 
+**Target the sim at work-gate-crossing (capable) models.** The handoff can only fire *above* the work gate, so an empty-graph model (one that produces no hypotheses) lands in `NOT_YET_PRODUCTIVE`, never `INSUFFICIENT_EVIDENCE` — it cannot exercise either the intended fire or the time-arm false positive. Both live only on **capable models that cross the work gate and then stall at a genuine wall**; the live/simulator tier must drive those trajectories (a weak-model run measures the provider floor, not firing precision).
+
+**Remediation if the measured time-arm FP rate is too high.** Because the handoff ships as a soundness fix rather than a toggle, a surprisingly high false-positive rate on real trajectories is remedied by **raising the *time* thresholds** (`EXHAUSTION_MIN_TURNS` / `EXHAUSTION_STALL_THRESHOLD` in `exhaustion_thresholds.py`) — trading a little handoff latency for precision. It is **not** remedied by re-gating the handoff off (that restores the silent-spin / fabricated-cause failure the fix exists to prevent) nor by tightening the *work* gate (that breaks the declared-wall arm, whose residual candidates are un-refuted by definition — §5.2 / rule 1). The time thresholds are the correct lever precisely because the declared-data-wall arm is independent of them: raising them dampens the time arm without weakening the wall arm.
+
 **Rejected alternatives:**
 
 - *Auto-close on exhaustion* — rejected: disposition is user-owned; the engine must not conclude a case because it gave up (that is collapse, not resolution).
