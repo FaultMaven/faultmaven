@@ -414,13 +414,20 @@ def test_slow_but_live_is_a_known_time_arm_false_positive():
     assert assess_verification_status(case) == VerificationStatus.OPEN
 
 
-def test_time_arm_false_positive_self_dissolves_on_progress():
-    # The no-collapse safety net: the mislabel is transient. The instant progress
-    # resumes (data arrives / a milestone lands → the engine resets the stall
-    # counter), the status fail-forwards out of INSUFFICIENT_EVIDENCE, so a
-    # mislabeled live case is never trapped in the terminal-looking cell.
+def test_time_arm_false_positive_fails_forward_when_the_cause_is_grounded():
+    # The other no-collapse path: the mislabel never blocks a later success. Test
+    # 1 shows it dissolving to OPEN when the user simply resumes; here the cause is
+    # actually grounded on a later turn (and progress resumes), and the status
+    # fail-forwards straight out of INSUFFICIENT_EVIDENCE to HEALTHY. A slow-but-
+    # live FP is never a dead end for a case that then gets solved.
     case = _work_done(current_turn=20, turns_without_progress=8)
     _declare(case, {h: NeedObtainability.OBTAINABLE for h in case.hypotheses.keys()})
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
-    case.turns_without_progress = 0  # progress resumed this turn
-    assert assess_verification_status(case) == VerificationStatus.OPEN
+    # A validated ROOT lands (grade → GROUNDED) and progress resumes.
+    d, root = _problem(), _grounded_root()
+    case.causal_nodes = {d.node_id: d, root.node_id: root}
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    case.turns_without_progress = 0
+    assert assess_verification_status(case) == VerificationStatus.HEALTHY

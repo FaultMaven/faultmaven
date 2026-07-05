@@ -1130,7 +1130,7 @@ def engine_owned_affordances(
       - ``"disposition"`` — pending_transition / propose_transition override
       - ``"gate1"`` — problem-statement confirmation
       - ``"insufficient_evidence"`` — work-gated stall with no grounded cause
-        (verification-status Phase 1; flag-gated)
+        (code-guarded, always on)
 
     The disposition branch sits above gate1 because pending_transition can
     fire while gate1 is technically open. The insufficient-evidence handoff sits
@@ -3366,7 +3366,7 @@ class MilestoneEngine:
             # correctness path. See INV-01, INV-19, INV-21.
             #
             # It also drives the insufficient-evidence structured handoff
-            # (verification-status Phase 1, flag-gated): a work-gated stall with
+            # (code-guarded, always on): a work-gated stall with
             # no grounded cause. This reads a FRESH grounding grade because it
             # runs after ``_apply_investigation_updates`` recomputed cause_state
             # this turn (the #593 re-derive-after-stamp ordering the plan
@@ -3426,10 +3426,10 @@ class MilestoneEngine:
                     },
                 )
                 # Record the verification status on the turn when the handoff
-                # fired (verification-status Phase 1). Transient metadata for now
-                # — the eval reads it and Phase 3 promotes it to a persisted
-                # assessment variable on the case. The affordance-served metric
-                # above already carries the firing count per gate.
+                # fired. This turn-metadata copy is the return-boundary signal;
+                # the durable reading lives on ``case.progress.verification_status``
+                # (persisted each turn). The affordance-served metric above
+                # already carries the firing count per gate.
                 if gate_name == "insufficient_evidence":
                     metadata["verification_status"] = (
                         VerificationStatus.INSUFFICIENT_EVIDENCE.value
