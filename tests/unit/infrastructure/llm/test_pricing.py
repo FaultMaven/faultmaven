@@ -87,6 +87,22 @@ class TestEstimateCostUsd:
         # 0.15 (input) + 0.075 (cache_read)
         assert cost == pytest.approx(0.225)
 
+    def test_default_anthropic_model_claude_sonnet_4_5_is_priced(self):
+        # claude-sonnet-4-5 is the default Anthropic model (CHAT_PROVIDER=anthropic);
+        # it must be priced so real runs don't report 100% unpriced calls. Feed 1M
+        # of each bucket so cost equals the summed Sonnet-tier rates, and confirm
+        # Anthropic cache WRITES (nonzero on Anthropic explicit caching) are billed.
+        cost, priced = estimate_cost_usd(
+            "anthropic",
+            "claude-sonnet-4-5",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+            cache_write_tokens=1_000_000,
+        )
+        assert priced is True
+        assert cost == pytest.approx(3.0 + 15.0 + 0.30 + 3.75)
+
     def test_default_openai_model_gpt_4_1_mini_is_priced(self):
         # gpt-4.1-mini is the default OpenAI model; it must be priced so real
         # runs don't report 100% unpriced calls (cost silently ~$0).
