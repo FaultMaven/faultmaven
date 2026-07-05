@@ -79,8 +79,43 @@ def work_gate_passed(case: "Case") -> bool:
 
 
 def _is_grounded(case: "Case") -> bool:
-    """Grounding axis. Reuses the drift-locked harvest grade so this reading can
-    never diverge from §7 ``GROUNDED``."""
+    """Grounding axis for the disposition join: an authority-grounded root
+    (drift-locked §7 ``GROUNDED``) **anchored on a verified symptom**.
+
+    The symptom-verified anchor closes the composition seam (§4 limitation 1):
+    the §7 grade walks the causal graph and can read ``GROUNDED`` off a validated
+    root that has **no backing hypothesis and no verified symptom** — a shape a
+    weak model can materialize (a chain without a hypothesis layer). Without the
+    anchor, ``verification_status`` reads ``HEALTHY`` over an empty hypothesis
+    layer and masks a stuck investigation (observed: a validated root, 0
+    hypotheses, ``symptom_verified=False`` → HEALTHY while the case spins).
+
+    Requiring ``symptom_verified`` here aligns the join's grounding axis with the
+    *same* anchor ``cause_state`` already requires for ``IDENTIFIED`` (and that
+    ``terminal_transitions._cause_identified`` enforces): cause identification is
+    anchored on evidence that the problem exists. It does **not** touch
+    ``grade_cause_assurance`` itself — the §7 harvest grade keeps its drift-lock,
+    and its RESOLVED-case consumers (KB harvest, conversion) already run with a
+    verified symptom, so they are unaffected. The residual desync (grade
+    ``GROUNDED`` × ``symptom_verified`` but ``cause_state`` not IDENTIFIED) is not
+    silenced — ``_log_grounding_assessment``'s ``seam_divergence`` still surfaces
+    it for monitoring.
+
+    COUPLING (keep in sync): this makes the join's grounding axis intentionally
+    diverge from the raw ``grade_cause_assurance`` readers —
+    ``terminal_transitions.assess_runbook_readiness`` (KB harvest gate) and
+    ``knowledge/api/conversion_routes`` (convert-from-case) — for the
+    ``GROUNDED × symptom_verified=False`` state. That divergence is safe **only**
+    because both of those readers are gated behind RESOLVED, which requires
+    ``_cause_identified`` → ``symptom_verified`` (so the divergent state is
+    unreachable there). If a **pre-resolution** harvest/convert path is ever
+    added, it must apply this same symptom anchor — otherwise it would harvest a
+    cause the disposition layer calls ungrounded (mirrors the note in
+    ``_cause_identified``: "if a non-terminal RCC harvest is ever added, enforce
+    the anchor at RCC production").
+    """
+    if not (case.progress and case.progress.symptom_verified):
+        return False
     return grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
 
 

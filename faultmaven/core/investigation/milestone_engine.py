@@ -48,6 +48,10 @@ from faultmaven.core.investigation.causal_graph import (
     synthesize_rcc_from_validated_root,
     validate_by_exclusion,
 )
+from faultmaven.core.investigation.cause_assurance import (
+    CauseAssuranceGrade,
+    grade_cause_assurance,
+)
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
     create_hypothesis_manager,
@@ -83,6 +87,7 @@ from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
     assess_verification_status,
     is_progress_stalled,
+    work_gate_passed,
 )
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
@@ -881,6 +886,78 @@ def _recompute_assessment_state(
     # derive_node_states + the deductive-exclusion stamp, so the grounding-first
     # disposition reads a fresh grade rather than pre-empting the deductive arm.
     p.verification_status = assess_verification_status(case)
+
+    _log_grounding_assessment(case)
+
+
+def _log_grounding_assessment(case: "Case") -> None:
+    """Debug-level structured trace of the grounding assessment, emitted at the
+    one point where the grade × progress join is computed each turn.
+
+    Permanent observability (not throwaway): it traces the join AND its inputs so
+    a **grade ↔ cause_state divergence** — the composition-seam drift the design
+    flags in §4.1 — is visible per turn in any case, not only in a debugger. The
+    canonical failure it surfaces: a validated causal root with no verified
+    symptom / no backing hypothesis grades GROUNDED, so ``verification_status``
+    reads HEALTHY while ``cause_state`` stays UNKNOWN, masking a stuck
+    investigation. ``seam_divergence`` flags exactly that shape for grep/alerting.
+
+    Guarded by the level check so the payload construction (a fresh grade
+    computation + the node/hypothesis summaries) costs nothing above DEBUG, and
+    the whole body is failure-isolated: a diagnostic trace must never break the
+    turn pipeline it runs inside, whatever shape the case is in.
+    """
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+
+    try:
+        p = case.progress
+        grade = grade_cause_assurance(case)
+        hyp_states: dict[str, int] = {}
+        for h in case.hypotheses.values():
+            hyp_states[h.state.value] = hyp_states.get(h.state.value, 0) + 1
+        nodes = [
+            {
+                "type": n.node_type.value,
+                "state": n.node_state.value,
+                "method": (n.validation_method.value if n.validation_method else None),
+            }
+            for n in case.causal_nodes.values()
+        ]
+        seam_divergence = grade == CauseAssuranceGrade.GROUNDED and (
+            p.cause_state != CauseState.IDENTIFIED or not p.symptom_verified
+        )
+        logger.debug(
+            "grounding-assessment case=%s turn=%s verification_status=%s grade=%s "
+            "cause_state=%s symptom_verified=%s hyps=%s nodes=%s seam_divergence=%s",
+            case.case_id,
+            case.current_turn,
+            p.verification_status.value,
+            grade.value,
+            p.cause_state.value,
+            p.symptom_verified,
+            len(case.hypotheses),
+            len(nodes),
+            seam_divergence,
+            extra={
+                "event": "grounding_assessment",
+                "case_id": case.case_id,
+                "turn": case.current_turn,
+                "verification_status": p.verification_status.value,
+                "grade": grade.value,
+                "cause_state": p.cause_state.value,
+                "symptom_verified": p.symptom_verified,
+                "work_gate_passed": work_gate_passed(case),
+                "is_progress_stalled": is_progress_stalled(case),
+                "turns_without_progress": case.turns_without_progress,
+                "hypothesis_count": len(case.hypotheses),
+                "hypothesis_states": hyp_states,
+                "causal_nodes": nodes,
+                "seam_divergence": seam_divergence,
+            },
+        )
+    except Exception:  # noqa: BLE001 - observability must never break the turn
+        logger.debug("grounding-assessment trace failed", exc_info=True)
 
 
 def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:

@@ -143,6 +143,10 @@ def _case(
         case.causal_edges = [
             CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
         ]
+        # A legitimate grounding is symptom-anchored (the grounding axis requires
+        # a verified symptom — see _is_grounded). The seam tests below override
+        # this to False to model the composition-seam pathology.
+        case.progress.symptom_verified = True
     return case
 
 
@@ -423,11 +427,169 @@ def test_time_arm_false_positive_fails_forward_when_the_cause_is_grounded():
     case = _work_done(current_turn=20, turns_without_progress=8)
     _declare(case, {h: NeedObtainability.OBTAINABLE for h in case.hypotheses.keys()})
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
-    # A validated ROOT lands (grade → GROUNDED) and progress resumes.
+    # A validated ROOT lands (grade → GROUNDED), the symptom is verified (the
+    # grounding anchor), and progress resumes.
     d, root = _problem(), _grounded_root()
     case.causal_nodes = {d.node_id: d, root.node_id: root}
     case.causal_edges = [
         CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
     ]
+    case.progress.symptom_verified = True
     case.turns_without_progress = 0
     assert assess_verification_status(case) == VerificationStatus.HEALTHY
+
+
+# --- Grounding-assessment observability: seam-divergence detection -----------
+# The permanent debug trace (_log_grounding_assessment) flags the composition
+# seam: a causal-graph grade of GROUNDED co-occurring with a hypothesis layer
+# that is NOT grounded (cause_state != IDENTIFIED or symptom not verified). This
+# is the exact shape that let a HEALTHY reading mask a stuck investigation.
+
+
+def test_grounding_trace_flags_seam_divergence(caplog):
+    import logging as _logging
+
+    from faultmaven.core.investigation.milestone_engine import (
+        _log_grounding_assessment,
+    )
+
+    # Validated root (→ grade GROUNDED) but symptom NOT verified and no
+    # hypotheses — the divergence: grounded grade over an empty hypothesis layer.
+    case = _case(
+        grounded=True,
+        n_hypotheses=0,
+        n_categories=0,
+        n_evidence=2,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    case.progress.symptom_verified = False
+    case.progress.verification_status = assess_verification_status(case)
+
+    with caplog.at_level(
+        _logging.DEBUG, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _log_grounding_assessment(case)
+
+    recs = [
+        r for r in caplog.records if getattr(r, "event", None) == "grounding_assessment"
+    ]
+    assert recs, "grounding-assessment trace not emitted at DEBUG"
+    assert recs[-1].grade == "grounded"
+    assert recs[-1].seam_divergence is True
+    assert recs[-1].hypothesis_count == 0
+
+
+def test_grounding_trace_no_divergence_on_clean_not_grounded(caplog):
+    import logging as _logging
+
+    from faultmaven.core.investigation.milestone_engine import (
+        _log_grounding_assessment,
+    )
+
+    # Not grounded → grade is not GROUNDED → no seam divergence (the layers agree).
+    case = _work_done(current_turn=9, turns_without_progress=5)
+    case.progress.verification_status = assess_verification_status(case)
+    with caplog.at_level(
+        _logging.DEBUG, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _log_grounding_assessment(case)
+    recs = [
+        r for r in caplog.records if getattr(r, "event", None) == "grounding_assessment"
+    ]
+    assert recs and recs[-1].seam_divergence is False
+
+
+def test_grounding_trace_silent_above_debug(caplog):
+    import logging as _logging
+
+    from faultmaven.core.investigation.milestone_engine import (
+        _log_grounding_assessment,
+    )
+
+    case = _work_done()
+    with caplog.at_level(
+        _logging.INFO, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _log_grounding_assessment(case)
+    assert not [
+        r for r in caplog.records if getattr(r, "event", None) == "grounding_assessment"
+    ]
+
+
+# --- The composition-seam fix: grounding requires the verified-symptom anchor -
+# A weak model can materialize a validated causal root with no backing hypothesis
+# and no verified symptom. The §7 grade reads GROUNDED, but the disposition join
+# must NOT: without the anchor, verification_status read HEALTHY over an empty
+# hypothesis layer and masked a stuck case (the observed spin). The grounding axis
+# now requires symptom_verified — the same anchor cause_state requires.
+
+
+def test_validated_root_without_verified_symptom_is_not_grounded():
+    from faultmaven.core.investigation.cause_assurance import (
+        CauseAssuranceGrade,
+        grade_cause_assurance,
+    )
+
+    # The run-2 pathology: validated root, 0 hypotheses, symptom NOT verified.
+    case = _case(
+        grounded=True,
+        n_hypotheses=0,
+        n_categories=0,
+        n_evidence=2,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    case.progress.symptom_verified = False
+    # The raw §7 grade still reads GROUNDED — its drift-lock is untouched...
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+    # ...but the disposition join must NOT read HEALTHY: no verified symptom means
+    # not grounded, and no work done → NOT_YET_PRODUCTIVE, not a masking HEALTHY.
+    assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+
+
+def test_grounding_requires_the_verified_symptom_anchor():
+    # A legitimate grounding (validated root + verified symptom) still reads HEALTHY.
+    case = _case(
+        grounded=True,
+        n_hypotheses=2,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=3,
+        turns_without_progress=0,
+    )
+    assert case.progress.symptom_verified is True  # set by the grounded helper
+    assert assess_verification_status(case) == VerificationStatus.HEALTHY
+    # Flip only the anchor off → no longer grounded (work gate still passed → OPEN).
+    case.progress.symptom_verified = False
+    assert assess_verification_status(case) == VerificationStatus.OPEN
+
+
+def test_grounded_but_symptom_unverified_stalled_is_insufficient_not_treatment_blocked():
+    # Conscious signoff (code-review C1): a root can grade GROUNDED (empirical /
+    # deductive by exclusion) BEFORE the symptom is verified. Under the symptom
+    # anchor, such a stalled case is no longer TREATMENT_BLOCKED ("have a cause,
+    # blocked on the fix") — the cause is unanchored, so it disposes to
+    # INSUFFICIENT_EVIDENCE and the handoff surfaces the real gap (verify the
+    # symptom). This is the deliberate disposition shift the anchor introduces vs.
+    # the pre-fix TREATMENT_BLOCKED/HEALTHY masking; pinned so it stays intentional.
+    from faultmaven.core.investigation.cause_assurance import (
+        CauseAssuranceGrade,
+        grade_cause_assurance,
+    )
+
+    case = _case(
+        grounded=True,
+        n_hypotheses=3,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    case.progress.symptom_verified = False
+    # The §7 grade is unchanged (still GROUNDED) — only the join's axis moved.
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    # With the symptom verified, the SAME stalled grounded case is TREATMENT_BLOCKED.
+    case.progress.symptom_verified = True
+    assert assess_verification_status(case) == VerificationStatus.TREATMENT_BLOCKED
