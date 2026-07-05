@@ -47,6 +47,18 @@ llm_tokens_total`, and the gap is the fallback overhead.
   soft-budget alert and hard per-turn ceiling compare against — prefer it over
   raw `total_tokens` when judging how close a turn ran to the budget.
 
+**Watch it without any infra.** `token_spend_watch.py` (in `faultmaven-doc-internal`
+at `operations/scripts/token_spend_watch.py`) reads the `turn_token_spend` lines
+straight from a log, groups them by run (`case_id`), and prints a per-turn table
+plus aggregates — cost-weighted spend vs the soft budget / hard ceiling, cache
+usage, unpriced-call flagging, and cost. Stdlib only.
+
+```bash
+./token_spend_watch.py /tmp/faultmaven-dev.log         # latest run
+./faultmaven.sh logs api | ./token_spend_watch.py -    # pipe live logs
+./token_spend_watch.py --follow                        # live watch during a run
+```
+
 ### Opik spans
 
 Each LLM span carries `usage` (`prompt_tokens` / `completion_tokens` /
