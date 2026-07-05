@@ -87,6 +87,40 @@ class TestEstimateCostUsd:
         # 0.15 (input) + 0.075 (cache_read)
         assert cost == pytest.approx(0.225)
 
+    def test_gemini_3_1_flash_lite_is_priced(self):
+        cost, priced = estimate_cost_usd(
+            "gemini",
+            "gemini-3.1-flash-lite",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+        )
+        assert priced is True
+        # 0.25 (input) + 1.50 (output) + 0.025 (cache_read)
+        assert cost == pytest.approx(1.775)
+
+    def test_deepseek_v4_flash_full_path_uses_specific_rate_not_generic(self):
+        # The served id is a full path; the specific deepseek-v4-flash rate must
+        # win over the generic "deepseek" ($0.90) substring fallback.
+        rates = lookup_rates("fireworks", "accounts/fireworks/models/deepseek-v4-flash")
+        assert rates is not None
+        assert rates.input == 0.14 and rates.output == 0.28
+        cost, priced = estimate_cost_usd(
+            "fireworks",
+            "accounts/fireworks/models/deepseek-v4-flash",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+        )
+        assert priced is True
+        # 0.14 + 0.28 + 0.03 — NOT the generic 0.90/0.90
+        assert cost == pytest.approx(0.45)
+
+    def test_generic_deepseek_still_falls_back(self):
+        # An unknown deepseek variant still resolves to the generic rate.
+        rates = lookup_rates("fireworks", "accounts/fireworks/models/deepseek-v9")
+        assert rates is not None and rates.input == 0.90
+
     def test_default_anthropic_model_claude_sonnet_4_5_is_priced(self):
         # claude-sonnet-4-5 is the default Anthropic model (CHAT_PROVIDER=anthropic);
         # it must be priced so real runs don't report 100% unpriced calls. Feed 1M
