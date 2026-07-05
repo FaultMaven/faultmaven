@@ -431,3 +431,81 @@ def test_time_arm_false_positive_fails_forward_when_the_cause_is_grounded():
     ]
     case.turns_without_progress = 0
     assert assess_verification_status(case) == VerificationStatus.HEALTHY
+
+
+# --- Grounding-assessment observability: seam-divergence detection -----------
+# The permanent debug trace (_log_grounding_assessment) flags the composition
+# seam: a causal-graph grade of GROUNDED co-occurring with a hypothesis layer
+# that is NOT grounded (cause_state != IDENTIFIED or symptom not verified). This
+# is the exact shape that let a HEALTHY reading mask a stuck investigation.
+
+
+def test_grounding_trace_flags_seam_divergence(caplog):
+    import logging as _logging
+
+    from faultmaven.core.investigation.milestone_engine import (
+        _log_grounding_assessment,
+    )
+
+    # Validated root (→ grade GROUNDED) but symptom NOT verified and no
+    # hypotheses — the divergence: grounded grade over an empty hypothesis layer.
+    case = _case(
+        grounded=True,
+        n_hypotheses=0,
+        n_categories=0,
+        n_evidence=2,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    case.progress.symptom_verified = False
+    case.progress.verification_status = assess_verification_status(case)
+
+    with caplog.at_level(
+        _logging.DEBUG, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _log_grounding_assessment(case)
+
+    recs = [
+        r for r in caplog.records if getattr(r, "event", None) == "grounding_assessment"
+    ]
+    assert recs, "grounding-assessment trace not emitted at DEBUG"
+    assert recs[-1].grade == "grounded"
+    assert recs[-1].seam_divergence is True
+    assert recs[-1].hypothesis_count == 0
+
+
+def test_grounding_trace_no_divergence_on_clean_not_grounded(caplog):
+    import logging as _logging
+
+    from faultmaven.core.investigation.milestone_engine import (
+        _log_grounding_assessment,
+    )
+
+    # Not grounded → grade is not GROUNDED → no seam divergence (the layers agree).
+    case = _work_done(current_turn=9, turns_without_progress=5)
+    case.progress.verification_status = assess_verification_status(case)
+    with caplog.at_level(
+        _logging.DEBUG, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _log_grounding_assessment(case)
+    recs = [
+        r for r in caplog.records if getattr(r, "event", None) == "grounding_assessment"
+    ]
+    assert recs and recs[-1].seam_divergence is False
+
+
+def test_grounding_trace_silent_above_debug(caplog):
+    import logging as _logging
+
+    from faultmaven.core.investigation.milestone_engine import (
+        _log_grounding_assessment,
+    )
+
+    case = _work_done()
+    with caplog.at_level(
+        _logging.INFO, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _log_grounding_assessment(case)
+    assert not [
+        r for r in caplog.records if getattr(r, "event", None) == "grounding_assessment"
+    ]
