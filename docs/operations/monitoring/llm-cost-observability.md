@@ -8,7 +8,12 @@ which are the most common cause of a runaway bill.
 
 ## What is emitted
 
-### Prometheus metrics (`GET /metrics`, requires `ENABLE_METRICS=true`)
+### Prometheus metrics (`GET /metrics`)
+
+> Requires **both** `ENABLE_METRICS=true` (collect — off by default, in
+> `shims/metrics.py`) **and** `METRICS_EXPORTER=prometheus_http` (expose the
+> `/metrics` endpoint, in `main.py`). With only the first, metrics are recorded
+> but not scrapeable; with only the second, the endpoint serves no LLM series.
 
 | Metric | Labels | Meaning |
 |---|---|---|
@@ -41,6 +46,18 @@ llm_tokens_total`, and the gap is the fallback overhead.
   is the cost-weighted measure (cache reads down-weighted 0.25×) that the
   soft-budget alert and hard per-turn ceiling compare against — prefer it over
   raw `total_tokens` when judging how close a turn ran to the budget.
+
+**Watch it without any infra.** `token_spend_watch.py` (in `faultmaven-doc-internal`
+at `operations/scripts/token_spend_watch.py`) reads the `turn_token_spend` lines
+straight from a log, groups them by run (`case_id`), and prints a per-turn table
+plus aggregates — cost-weighted spend vs the soft budget / hard ceiling, cache
+usage, unpriced-call flagging, and cost. Stdlib only.
+
+```bash
+./token_spend_watch.py /tmp/faultmaven-dev.log         # latest run
+./faultmaven.sh logs api | ./token_spend_watch.py -    # pipe live logs
+./token_spend_watch.py --follow                        # live watch during a run
+```
 
 ### Opik spans
 
