@@ -1,6 +1,11 @@
 # Prompt-Sizing Optimization
 
-> **Status: PROPOSED — design under review (pre-implementation).**
+> **Status: IMPLEMENTED — on `main`.** Prompt-sizing enforcement and the
+> allocator single-path landed in #612; the observability that makes it
+> measurable landed alongside — logging render (#617), `spend_weighted_tokens`
+> emission + `gpt-4.1-mini` pricing (#618), and `claude-sonnet-4-5` pricing
+> (#636). The remaining durable/ephemeral prefix segregation (§4.3) is deferred
+> to issue #613.
 >
 > Umbrella design for cutting per-turn prompt token consumption. It sits above
 > two existing detail docs and does not duplicate them:
@@ -116,40 +121,54 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
 
 - **Per-turn ceiling + alert (implemented).** The tool loop already had a
   hard-coded 150K per-turn abort; it is now the configurable
-  `PROMPT_TURN_TOKEN_CEILING` (same 150K default — a safety abort that forces the
-  loop to wrap up, not the normal budget). Added a *soft* budget
-  `PROMPT_TURN_TOKEN_BUDGET` (default 100K, ~1.5× measured normal): when a turn's
-  total spend exceeds it, an end-of-turn WARNING (`turn_token_budget_exceeded`)
+  `PROMPT_TURN_TOKEN_CEILING` (150K default — a safety abort that forces the loop
+  to wrap up schema-only on the next iteration, not the normal budget). Added a
+  *soft* budget `PROMPT_TURN_TOKEN_BUDGET` (default 100K, ~1.5× measured normal):
+  when a turn crosses it an end-of-turn WARNING (`turn_token_budget_exceeded`)
   logs the call breakdown. Observational only — no behavior change — so
   high-spend turns are surfaced without truncating a legitimately deep turn.
-- **Tool-loop re-send is the dominant cost — NOT absorbed by §4.2 (course
-  correction).** An earlier draft deferred tool-loop work assuming the DA base
-  shrink would absorb it. The A/B measurement refutes that: on playbook S9,
-  per-turn spend was **115K–240K tokens** while the assembled base is only ~5–35K
-  — the tool loop re-sends the *growing* message history (base + accumulated tool
-  calls/results) on every iteration, so per-turn cost scales with iteration count,
-  not base size. The §4.2 base shrink (~4.6K/turn) is real but ~10% of a tool-heavy
-  turn. **The tool-loop re-send / cross-provider prefix caching is therefore the
-  single biggest remaining lever and should be the next workstream, not a
-  deferral.** `cache_prompt=True` is only honored by Anthropic today; making other
-  providers honor it (or restructuring the loop so the stable prefix isn't re-sent
-  full-price) is where the large win is.
+  - **Both guards compare a *cost-weighted* spend, not raw tokens.** The measure
+    is `spend_weighted_tokens = input + output + cache_write + 0.25 × cache_read`:
+    cache reads are real bytes in the window but billed at a fraction (~0.1× on
+    Anthropic, ~0.25–0.5× on OpenAI), so they are down-weighted. Weighting on raw
+    bytes would trip a cheap, heavily-cached tool loop; weighting on cost keeps
+    the abort motivated by spend. `cache_write` (~1.25×) is counted in full. The
+    per-call size ceiling (32K jar, §4.1) still bounds each individual call on
+    raw bytes.
+- **Tool-loop re-send is the dominant cost, and prefix caching is now the lever
+  in play.** On playbook S9 the tool loop re-sends the *growing* message history
+  (base + accumulated tool calls/results) on every iteration, so per-turn cost
+  scales with iteration count, not base size (the §4.2 base shrink is real but
+  ~10% of a tool-heavy turn). Provider **prompt caching** now absorbs most of that
+  re-send and is observed live: OpenAI automatic prefix caching (nonzero
+  `cache_read`, no separate `cache_write`) and Anthropic explicit `cache_control`
+  (a `cache_write` on the prefix write, then `cache_read` on reuse). The
+  cost-weighting above exists precisely so these cached re-sends register at their
+  true (discounted) cost. A further architectural win — segregating the durable
+  prefix from the ephemeral scratchpad so the stable prefix is never re-sent
+  full-price (strategy 1) — is deferred to issue #613.
 
-### 4.4 Instrument-gap fixes (found during measurement — tracked separately)
+### 4.4 Instrument-gap fixes (found during measurement — now resolved)
 
-Two gaps surfaced while measuring, but both belong to the **per-call metering
-PR** (`feat/llm-cost-observability`: `metering.py` / `pricing.py`), which is not
-yet on `main`; they are *not* part of this prompt-sizing branch:
+Two gaps surfaced while measuring the per-turn `turn_token_spend` tracker; both
+are now fixed on `main`:
 
-- `pricing.py` has no entry for the fireworks models actually served
-  (`minimax-m3`, and `deepseek-v3` billing) → `cost_usd=0`, all calls flagged
-  unpriced. Add them so cost is real.
-- `turn_token_spend` logs via `logger.info("turn_token_spend", extra={...})` but
-  the active handler prints only `%(message)s`, so the token fields never render.
-  Fold the key fields into the message (or route through the structured logger).
+- **Extra fields never rendered.** `turn_token_spend` logs via
+  `logger.info("turn_token_spend", extra={...})`, but the stdlib logging path
+  rendered only `%(message)s`, dropping every `extra` field. Fixed by routing all
+  logs through a single `structlog.stdlib.ProcessorFormatter` with `ExtraAdder`
+  (+ `PositionalArgumentsFormatter`), so stdlib `extra={...}` fields render as
+  JSON facility-wide, not just for the token log. `turn_token_spend` now also
+  emits `spend_weighted_tokens` (the guard measure) alongside the raw buckets.
+- **Models served were unpriced.** `pricing.py` had no entry for the models
+  actually served, so `estimated_cost_usd = 0` and every call was flagged
+  `unpriced`. The default models are now priced — `gpt-4.1-mini` (OpenAI) and
+  `claude-sonnet-4-5` (Anthropic); any remaining unpriced `(provider, model)`
+  (e.g. a fireworks `minimax-m3`) is still surfaced via `unpriced_calls` rather
+  than silently counted as free, so cost under-reporting stays visible.
 
-This branch's measurement instrument is the per-turn `turn_token_spend` tracker
-plus the deterministic offline A/B on the evidence block.
+See [`../../operations/monitoring/llm-cost-observability.md`](../../operations/monitoring/llm-cost-observability.md)
+for the full metering surface (Prometheus counters, structured logs, Opik spans).
 
 ## 5. Rollout & acceptance — outcome
 

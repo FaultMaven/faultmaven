@@ -8,7 +8,12 @@ which are the most common cause of a runaway bill.
 
 ## What is emitted
 
-### Prometheus metrics (`GET /metrics`, requires `ENABLE_METRICS=true`)
+### Prometheus metrics (`GET /metrics`)
+
+> Requires **both** `ENABLE_METRICS=true` (collect — off by default, in
+> `shims/metrics.py`) **and** `METRICS_EXPORTER=prometheus_http` (expose the
+> `/metrics` endpoint, in `main.py`). With only the first, metrics are recorded
+> but not scrapeable; with only the second, the endpoint serves no LLM series.
 
 | Metric | Labels | Meaning |
 |---|---|---|
