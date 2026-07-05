@@ -563,3 +563,33 @@ def test_grounding_requires_the_verified_symptom_anchor():
     # Flip only the anchor off → no longer grounded (work gate still passed → OPEN).
     case.progress.symptom_verified = False
     assert assess_verification_status(case) == VerificationStatus.OPEN
+
+
+def test_grounded_but_symptom_unverified_stalled_is_insufficient_not_treatment_blocked():
+    # Conscious signoff (code-review C1): a root can grade GROUNDED (empirical /
+    # deductive by exclusion) BEFORE the symptom is verified. Under the symptom
+    # anchor, such a stalled case is no longer TREATMENT_BLOCKED ("have a cause,
+    # blocked on the fix") — the cause is unanchored, so it disposes to
+    # INSUFFICIENT_EVIDENCE and the handoff surfaces the real gap (verify the
+    # symptom). This is the deliberate disposition shift the anchor introduces vs.
+    # the pre-fix TREATMENT_BLOCKED/HEALTHY masking; pinned so it stays intentional.
+    from faultmaven.core.investigation.cause_assurance import (
+        CauseAssuranceGrade,
+        grade_cause_assurance,
+    )
+
+    case = _case(
+        grounded=True,
+        n_hypotheses=3,
+        n_categories=2,
+        n_evidence=2,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    case.progress.symptom_verified = False
+    # The §7 grade is unchanged (still GROUNDED) — only the join's axis moved.
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    # With the symptom verified, the SAME stalled grounded case is TREATMENT_BLOCKED.
+    case.progress.symptom_verified = True
+    assert assess_verification_status(case) == VerificationStatus.TREATMENT_BLOCKED

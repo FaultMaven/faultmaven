@@ -100,6 +100,19 @@ def _is_grounded(case: "Case") -> bool:
     ``GROUNDED`` × ``symptom_verified`` but ``cause_state`` not IDENTIFIED) is not
     silenced — ``_log_grounding_assessment``'s ``seam_divergence`` still surfaces
     it for monitoring.
+
+    COUPLING (keep in sync): this makes the join's grounding axis intentionally
+    diverge from the raw ``grade_cause_assurance`` readers —
+    ``terminal_transitions.assess_runbook_readiness`` (KB harvest gate) and
+    ``knowledge/api/conversion_routes`` (convert-from-case) — for the
+    ``GROUNDED × symptom_verified=False`` state. That divergence is safe **only**
+    because both of those readers are gated behind RESOLVED, which requires
+    ``_cause_identified`` → ``symptom_verified`` (so the divergent state is
+    unreachable there). If a **pre-resolution** harvest/convert path is ever
+    added, it must apply this same symptom anchor — otherwise it would harvest a
+    cause the disposition layer calls ungrounded (mirrors the note in
+    ``_cause_identified``: "if a non-terminal RCC harvest is ever added, enforce
+    the anchor at RCC production").
     """
     if not (case.progress and case.progress.symptom_verified):
         return False
