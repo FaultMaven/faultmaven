@@ -48,7 +48,14 @@ class OpenAIProvider(BaseLLMProvider):
         "chatgpt-4o",  # chatgpt-4o-latest
         "o1",  # OpenAI o1 reasoning models
         "o3",  # OpenAI o3 reasoning models
+        "o4",  # OpenAI o4 reasoning models
     )
+    # INVARIANT: every reasoning family in ``_COMPLETION_TOKENS_MODEL_FAMILIES``
+    # (gpt-5, o1, o3, o4) MUST also appear above as STRICT. Otherwise it routes
+    # structured extraction through FUNCTION_CALLING (``tools``) instead of
+    # ``response_format``, and the reasoning-effort cap below — scoped to
+    # ``response_format`` — would silently miss the call that needs it, starving
+    # the schema JSON on that model (the #625 truncation).
 
     # OpenAI model families that REQUIRE ``max_completion_tokens`` and reject the
     # legacy ``max_tokens`` with a 400 ``unsupported_parameter`` error (the
@@ -222,11 +229,22 @@ class OpenAIProvider(BaseLLMProvider):
         if response_format:
             payload["response_format"] = response_format
 
-        # Cap reasoning effort on structured/tool calls for reasoning-family
-        # models, so hidden reasoning can't starve the output reserve and
-        # truncate the schema JSON. Set BEFORE the kwargs merge so an explicit
-        # caller-supplied ``reasoning_effort`` still wins.
-        if (tools or response_format) and self._caps_reasoning_effort(effective_model):
+        # Cap reasoning effort on structured JSON (``response_format``) calls for
+        # reasoning-family models, so hidden reasoning can't starve the output
+        # reserve and truncate the schema (#625). Set BEFORE the kwargs merge.
+        #
+        # Scoped to ``response_format`` WITHOUT ``tools``: newer GPT-5.x (e.g.
+        # gpt-5.4-mini) 400 on ``reasoning_effort`` + FUNCTION TOOLS on
+        # /v1/chat/completions ("use /v1/responses instead"), and tool calls emit
+        # small arguments — not a schema body — so the cap isn't load-bearing
+        # there. This relies on the STRICT invariant above: every reasoning family
+        # takes structured extraction via ``response_format`` (where the cap
+        # lands), never through ``tools``.
+        if (
+            response_format
+            and not tools
+            and self._caps_reasoning_effort(effective_model)
+        ):
             payload["reasoning_effort"] = self._STRUCTURED_REASONING_EFFORT
 
         # Add any additional kwargs, filtering out None values

@@ -13,6 +13,7 @@ import pytest
 from faultmaven.infrastructure.llm.providers.base import (
     LLMResponse,
     ProviderConfig,
+    StructuredOutputCapability,
     ToolCall,
 )
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
@@ -281,12 +282,17 @@ class TestOpenAITokenLimitParam:
 @pytest.mark.asyncio
 class TestOpenAIReasoningEffortCap:
     """Reasoning-family models (gpt-5.x, o-series) bill hidden reasoning against
-    the output budget; on a structured/tool call that can starve the schema JSON
-    and truncate (MAX_TOKENS → 500). The provider caps ``reasoning_effort`` on
-    structured/tool calls for those families only — mirroring the Gemini
-    thinking cap. Non-reasoning models (gpt-4.1/gpt-4o) reject the param."""
+    the output budget; on a structured JSON call that can starve the schema and
+    truncate (MAX_TOKENS → 500). The provider caps ``reasoning_effort`` on
+    ``response_format`` (structured) calls WITHOUT tools for those families only —
+    mirroring the Gemini thinking cap. It is NOT applied to tool calls: newer
+    GPT-5.x reject ``reasoning_effort`` + function tools on /v1/chat/completions,
+    and tool calls emit small arguments where starvation isn't a risk.
+    Non-reasoning models (gpt-4.1/gpt-4o) reject the param entirely."""
 
-    @pytest.mark.parametrize("model", ["gpt-5", "gpt-5.4-mini", "o1", "o3-mini"])
+    @pytest.mark.parametrize(
+        "model", ["gpt-5", "gpt-5.4-mini", "o1", "o3-mini", "o4-mini"]
+    )
     async def test_reasoning_model_structured_call_caps_effort(self, model):
         provider = OpenAIProvider(_config_for(model))
         mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
@@ -321,6 +327,29 @@ class TestOpenAIReasoningEffortCap:
             request_body = mock_session.post.call_args.kwargs["json"]
             assert "reasoning_effort" not in request_body
 
+    @pytest.mark.parametrize("model", ["gpt-5", "gpt-5.4-mini", "o3-mini"])
+    async def test_tool_call_does_not_get_reasoning_effort(self, model):
+        """A TOOL call on a reasoning model must NOT carry ``reasoning_effort``:
+        newer GPT-5.x (e.g. gpt-5.4-mini) 400 on ``reasoning_effort`` + function
+        tools on /v1/chat/completions ('use /v1/responses instead'), which would
+        break every tool-calling investigation turn. The structured extraction
+        (response_format) still gets the cap; tool calls do not."""
+        provider = OpenAIProvider(_config_for(model))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate(
+                "hi",
+                tools=[
+                    {"type": "function", "function": {"name": "f", "parameters": {}}}
+                ],
+                tool_choice="required",
+            )
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert "reasoning_effort" not in request_body
+            assert "tools" in request_body  # the tool call itself is intact
+
     async def test_explicit_caller_effort_wins(self):
         """An explicit ``reasoning_effort`` forwarded via kwargs overrides the
         cap default (set before the kwargs merge)."""
@@ -336,6 +365,22 @@ class TestOpenAIReasoningEffortCap:
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["reasoning_effort"] == "high"
+
+    @pytest.mark.parametrize(
+        "model", ["gpt-5", "gpt-5.4-mini", "o1", "o3-mini", "o4-mini"]
+    )
+    def test_reasoning_families_are_strict(self, model):
+        """The cap is scoped to ``response_format`` calls; a reasoning model does
+        its structured extraction there ONLY if it classifies STRICT. So every
+        reasoning family (incl. ``o4``) MUST be STRICT — otherwise it routes
+        structured output through FUNCTION_CALLING (``tools``), where the cap no
+        longer applies, and its schema JSON starves (the #625 truncation). This
+        pins the invariant that the cap's ``not tools`` scoping relies on."""
+        provider = OpenAIProvider(_config_for(model))
+        assert (
+            provider.get_structured_output_capability(model)
+            == StructuredOutputCapability.STRICT
+        )
 
     @pytest.mark.parametrize("model", ["o1-mini", "o1-preview"])
     async def test_o1_pre_effort_variants_never_get_effort(self, model):
