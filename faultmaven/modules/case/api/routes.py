@@ -842,6 +842,44 @@ async def list_cases(
         )
 
 
+# Health and status endpoints
+
+
+@router.get("/health", response_model=Dict[str, Any])
+@trace("api_case_health")
+async def get_case_service_health(
+    case_service: ICaseService = Depends(_di_get_case_service_dependency),
+) -> Dict[str, Any]:
+    """
+    Get case service health status
+
+    Returns health information about the case persistence system,
+    including connectivity and performance metrics.
+    """
+    try:
+        # Try to get basic health information
+        # This would typically call a health method on the case service
+        return {
+            "service": "case_management",
+            "status": "healthy",
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "features": {
+                "case_persistence": True,
+                "case_sharing": True,
+                "session_integration": True,
+                "conversation_history": True,
+            },
+        }
+
+    except Exception as e:
+        return {
+            "service": "case_management",
+            "status": "unhealthy",
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "error": str(e),
+        }
+
+
 @router.get("/{case_id}", response_model=CaseDetail)
 @trace("api_get_case")
 async def get_case(
@@ -2532,44 +2570,6 @@ async def submit_case_query_gone(case_id: str):
         status_code=410,
         detail="This endpoint has been removed. Use POST /cases/{case_id}/turns instead.",
     )
-
-
-# Health and status endpoints
-
-
-@router.get("/health", response_model=Dict[str, Any])
-@trace("api_case_health")
-async def get_case_service_health(
-    case_service: ICaseService = Depends(_di_get_case_service_dependency),
-) -> Dict[str, Any]:
-    """
-    Get case service health status
-
-    Returns health information about the case persistence system,
-    including connectivity and performance metrics.
-    """
-    try:
-        # Try to get basic health information
-        # This would typically call a health method on the case service
-        return {
-            "service": "case_management",
-            "status": "healthy",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "features": {
-                "case_persistence": True,
-                "case_sharing": True,
-                "session_integration": True,
-                "conversation_history": True,
-            },
-        }
-
-    except Exception as e:
-        return {
-            "service": "case_management",
-            "status": "unhealthy",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "error": str(e),
-        }
 
 
 # Phase 1.5 — Evidence reclassification endpoint
