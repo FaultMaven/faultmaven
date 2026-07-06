@@ -6434,7 +6434,8 @@ class MilestoneEngine:
         metadata: dict[str, Any],
     ) -> None:
         """Ingest the LLM's emitted causal chain and link new hypotheses to their
-        roots (the flag-gated source of the causal graph; the bridge is removed).
+        roots (the emitted chain is the sole source of the causal graph; the
+        transitional flag and flat->chain bridge were removed).
 
         Lazy backward expansion (methodology §5/S3): build the graph from the
         emitted nodes/edges/node-evidence, then set ``root_node_id``/``path`` on
