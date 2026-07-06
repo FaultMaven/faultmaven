@@ -774,3 +774,41 @@ class TestCloseCase:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "already closed" in response.json()["detail"].lower()
         mock_case_service.update_case_status.assert_not_called()
+
+
+# ============================================================
+# GET /api/v1/cases/health Tests
+# ============================================================
+
+
+class TestCaseHealth:
+    """Tests for GET /api/v1/cases/health endpoint."""
+
+    async def test_get_case_health_success(self, client):
+        """Test case health endpoint returns 200 and is healthy."""
+        response = await client.get("/api/v1/cases/health")
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["service"] == "case_management"
+        assert data["status"] == "healthy"
+        assert "timestamp" in data
+        assert data["features"]["case_persistence"] is True
+
+    async def test_get_case_health_unauthenticated(self, app):
+        """Test case health endpoint is public and does not require JWT authentication."""
+        from faultmaven.api.v1.auth_dependencies import require_authentication
+
+        # Temporarily remove auth override to simulate unauthenticated request
+        auth_override = app.dependency_overrides.pop(require_authentication, None)
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as unauth_client:
+                response = await unauth_client.get("/api/v1/cases/health")
+        finally:
+            if auth_override is not None:
+                app.dependency_overrides[require_authentication] = auth_override
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["status"] == "healthy"
