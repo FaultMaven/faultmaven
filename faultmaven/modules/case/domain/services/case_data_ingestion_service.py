@@ -240,7 +240,7 @@ class CaseDataIngestionService:
         logger.info("Business event: data_ingestion_started")
 
         # Sanitize content using interface
-        sanitized_content = self._sanitizer.sanitize(content)
+        sanitized_content = await self._sanitizer.asanitize(content)
 
         # Classify data type using interface (unless overridden) with tracing
         with self._tracer.trace("data_classification"):
@@ -448,7 +448,7 @@ class CaseDataIngestionService:
             logger.info("Business event: enhanced_data_ingestion_started")
 
             # Sanitize content
-            sanitized_content = self._sanitizer.sanitize(content)
+            sanitized_content = await self._sanitizer.asanitize(content)
 
             # Enhanced classification with memory context
             classification_result = (
@@ -668,7 +668,7 @@ class CaseDataIngestionService:
         logger.info("Metric: data_analysis_processing_time")
 
         # Sanitize insights
-        sanitized_insights = self._sanitizer.sanitize(insights)
+        sanitized_insights = await self._sanitizer.asanitize(insights)
 
         # Ensure insights is a dictionary
         if not isinstance(sanitized_insights, dict):
@@ -1222,7 +1222,7 @@ class CaseDataIngestionService:
         try:
             if self._sanitizer and hasattr(self._sanitizer, "sanitize"):
                 # Test sanitization
-                test_result = self._sanitizer.sanitize("test data")
+                test_result = await self._sanitizer.asanitize("test data")
                 components["sanitizer"] = "healthy"
             else:
                 components["sanitizer"] = "unavailable"

@@ -86,7 +86,7 @@ async def test_knowledge_service_search_uses_real_signature():
 
     service = KnowledgeService(
         knowledge_ingester=MagicMock(),
-        sanitizer=MagicMock(sanitize=lambda q: q),
+        sanitizer=MagicMock(asanitize=AsyncMock(side_effect=lambda q: q)),
         tracer=tracer,
         vector_store=store,
     )
