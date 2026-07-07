@@ -86,12 +86,29 @@ if TYPE_CHECKING:
     from faultmaven.core.investigation.cause_schemas import CauseRecord
     from faultmaven.modules.case.contracts import Case, Evidence
 
-# Predicate verdict → the stance it implies. ``untested`` maps to nothing (the
-# predicate is silent on this datum), so it is deliberately absent from the table.
-_VERDICT_STANCE = {
-    "matched": EvidenceStance.SUPPORTS,
-    "refuted": EvidenceStance.REFUTES,
-}
+
+def _resolve_stance(verdict: str, predicate: dict) -> "Optional[EvidenceStance]":
+    """Map a predicate's tri-state verdict to the EvidenceStance it implies for the
+    cause, honoring the predicate's optional ``stance`` key (T2 / M-A).
+
+    - ``stance="supports"`` (default): a HOLDING predicate (``matched``) SUPPORTS the
+      cause; a contradicted one (``refuted``) REFUTES it — the original mapping.
+    - ``stance="refutes"``: inverted — a HOLDING predicate ELIMINATES the cause
+      (REFUTES), letting a positive token that belongs to a *sibling* rule this cause
+      out; a contradicted one SUPPORTS it.
+    - ``untested`` → ``None`` (the predicate is silent on this datum).
+
+    **Sibling-elimination only.** The REFUTES this yields is an ordinary typed link
+    (``provenance`` set by the caller) that drives ``node_state=REFUTED`` — it is NOT
+    routed to ``counterfactual_refutes`` / ``belief→0`` / proof-by-exclusion (that is
+    M-D, deferred). Default ``"supports"`` reproduces the prior fixed mapping exactly,
+    so no existing predicate changes meaning.
+    """
+    if verdict not in ("matched", "refuted"):
+        return None
+    stance = str(predicate.get("stance", "supports")).strip().lower()
+    supports = (verdict == "matched") == (stance != "refutes")
+    return EvidenceStance.SUPPORTS if supports else EvidenceStance.REFUTES
 
 
 @dataclass(frozen=True)
@@ -242,9 +259,10 @@ def _aggregate_predicates(
 ) -> "tuple[Optional[EvidenceStance], Optional[dict]]":
     """Collapse a cause's predicates (vs one datum's digest) into ONE stance.
 
-    Each predicate is evaluated under subset-trust (``complete=False``):
-    ``matched`` → SUPPORTS, ``refuted`` → REFUTES, untested/unknown is silent.
-    The outcome enforces the one-verdict-per-(datum, cause) invariant:
+    Each predicate is evaluated under subset-trust (``complete=False``) and mapped
+    to a stance via ``_resolve_stance`` (honoring the predicate's optional ``stance``:
+    a firing ``stance="refutes"`` predicate ELIMINATES the cause); untested/unknown is
+    silent. The outcome enforces the one-verdict-per-(datum, cause) invariant:
 
       - exactly one stance fired → that stance, plus the FIRST predicate that
         produced it (a real, re-runnable spec for ``StanceVerdict.predicate``),
@@ -261,7 +279,7 @@ def _aggregate_predicates(
             verdict = evaluate_predicate_against_text(pred, text, complete=False)
         except ValueError:
             continue  # unknown predicate name → treat as untested
-        stance = _VERDICT_STANCE.get(verdict)
+        stance = _resolve_stance(verdict, pred)
         if stance is not None:
             fired.setdefault(stance, pred)
     if len(fired) == 1:
@@ -300,7 +318,7 @@ def recheck_proposed_predicate(
         )
     except ValueError:
         return None
-    stance = _VERDICT_STANCE.get(verdict)
+    stance = _resolve_stance(verdict, proposed_predicate)
     if stance is None:
         return None
     return StanceVerdict(

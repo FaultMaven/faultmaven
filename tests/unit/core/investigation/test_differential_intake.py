@@ -14,6 +14,7 @@ import pytest
 from faultmaven.core.investigation.cause_schemas import CauseRecord
 from faultmaven.core.investigation.differential_intake import (
     ActiveCause,
+    _resolve_stance,
     assemble_active_causes,
     evaluate_datum_against_differential,
     recheck_proposed_predicate,
@@ -233,6 +234,55 @@ class TestEvaluateDatum:
         )
         # A fires (present); B is untested (subset-trust miss) → only A.
         assert [v.cause_id for v in verdicts] == ["rb1:A"]
+
+    def test_refutes_stance_predicate_eliminates_cause_on_present_token(self):
+        # M-A / T2: a firing stance="refutes" predicate (a sibling's signature is
+        # present) ELIMINATES the cause → REFUTES, not SUPPORTS.
+        case, ev = _case_with_datum("cgroup medium: Memory (tmpfs) mount")
+        cands = [
+            _candidate(
+                "A",
+                [
+                    {
+                        "predicate": "contains",
+                        "target": "medium: Memory",
+                        "stance": "refutes",
+                    }
+                ],
+            )
+        ]
+        verdicts = evaluate_datum_against_differential(
+            evidence=ev, active_causes=cands, case=case
+        )
+        assert [v.stance for v in verdicts] == [EvidenceStance.REFUTES]
+
+    def test_default_stance_still_supports_on_present_token(self):
+        # A predicate with no stance behaves exactly as before (SUPPORTS on match).
+        case, ev = _case_with_datum("pod OOMKilled")
+        cands = [_candidate("A", [{"predicate": "contains", "target": "OOMKilled"}])]
+        verdicts = evaluate_datum_against_differential(
+            evidence=ev, active_causes=cands, case=case
+        )
+        assert [v.stance for v in verdicts] == [EvidenceStance.SUPPORTS]
+
+
+class TestResolveStance:
+    """M-A: stance-aware verdict→EvidenceStance mapping (default 'supports')."""
+
+    def test_truth_table(self):
+        supports = {"predicate": "contains", "target": "x"}  # default stance
+        refutes = {"predicate": "contains", "target": "x", "stance": "refutes"}
+        assert _resolve_stance("matched", supports) == EvidenceStance.SUPPORTS
+        assert _resolve_stance("refuted", supports) == EvidenceStance.REFUTES
+        assert _resolve_stance("matched", refutes) == EvidenceStance.REFUTES
+        assert _resolve_stance("refuted", refutes) == EvidenceStance.SUPPORTS
+
+    def test_untested_is_silent(self):
+        assert _resolve_stance("untested", {"predicate": "contains"}) is None
+
+    def test_unknown_stance_value_defaults_to_supports(self):
+        p = {"predicate": "contains", "stance": "bogus"}
+        assert _resolve_stance("matched", p) == EvidenceStance.SUPPORTS
 
 
 # ---------------------------------------------------------------------------
