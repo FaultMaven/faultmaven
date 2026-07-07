@@ -89,17 +89,18 @@ A retrieved `Cause` (`CauseRecord`, `cause_schemas.py:43`) does four jobs on **t
 - **Corpus satisfies it.** 640/640 causes carry a Statement; sample Statements are symptom/mechanism-level
   prose, and siblings are MECE at the Statement layer (pg-slow-queries A–F, redis-oom A–H, nginx-high-latency
   A–H are cleanly separable).
-- **Enforcement gap (structural — VERIFIED directly).** The Statement invariants that give MECE teeth —
-  block `[Step N]` in a Statement, block empty non-fallback Statement, block exact-duplicate siblings, warn on
-  Jaccard≥0.6 near-dupes — are enforced **only in the backend** `runbook_validator.py:98-187,475-524`. The
-  module claims this block is "mirrored BYTE-IDENTICAL" into `kb_toolkit/core/validator.py`
-  (`runbook_validator.py:109-114`). **Confirmed stale by direct grep:** `kb_toolkit/core/` contains no
-  `check_cause_statement_invariants`, no `_norm_statement`, no Jaccard/near-dup logic; the toolkit validator's
-  only Statement check is the ≤300 char limit (`kb_toolkit/core/validator.py:334-338`). So the *generation
-  path* (kb-init / kb-researcher / pack) does **not** enforce MECE at all — MECE enforcement is *missing on the
-  path that produces the corpus*, not merely relocated. (Symmetrically, the ≤300 limit is enforced only in the
-  toolkit, not the backend.) → **Verdict: the match surface is well-specified; the drift is in *which mirror
-  enforces it*, and the mirror that authors the corpus is the one that doesn't.**
+- **Enforcement (RE-VERIFIED on `origin/main` — CORRECTS an earlier stale-checkout claim).** The Statement
+  invariants that give MECE teeth — block `[Step N]` in a Statement, block empty non-fallback Statement, block
+  exact-duplicate siblings, warn on Jaccard≥0.6 near-dupes — live in `check_cause_statement_invariants`, and the
+  module comment says it is "mirrored BYTE-IDENTICAL" into `kb_toolkit/core/validator.py`. **An earlier draft of
+  this audit reported that claim as stale** (that the toolkit lacked the block) — **that was wrong**: it came
+  from an exploration agent reading a kb-toolkit checkout 14 commits behind `origin/main`. Re-verified on
+  `origin/main`: `kb_toolkit/core/validator.py:107-192` carries the block, `diff` against the backend's copy is
+  **empty (byte-identical)**, and the toolkit calls it (`_validate_causes`, ~line 531). So the *generation path*
+  **does** enforce MECE, and the mirror claim is accurate. (Independently, the ≤300 Statement limit and the
+  per-cause required-subfield **ERROR** are enforced in the toolkit but NOT the backend — a real backend gap,
+  see §2.6.) → **Verdict: the match surface is well-specified and MECE-enforced on both mirrors; the residual
+  drift is backend-only (≤300 + per-cause ERROR parity).**
 
 ### 2.2 Causal chain — `chain_nodes` / `chain_edges` — **FIT**
 
@@ -196,7 +197,7 @@ adversarial eval (§3, M-D).**
 | Human fill-in template is **still v3** | v4 grammar (`Statement`/`Chain`/`Indicators`/`Interventions`) | `docs/operations/runbooks/template.md` uses v3 `Statement`/`Mechanism`/`Indicator`/`Mitigation`/`Resolution`/`Verification`; kb-toolkit `TEMPLATE.md:8-9` **points authors at it** | Dead doc → authors produce v4-invalid runbooks |
 | Backend has **no predicate concept**; conversion prompt never emits `<!-- match -->` | predicates are the validation surface | `conversion_service.py` `CONVERSION_SYSTEM_PROMPT` — LLM-converted runbooks carry **zero** predicates | Whole validation layer unreachable via conversion path |
 | Statement ≤300 enforced only in toolkit | both should enforce | backend `runbook_validator.py` has no `cause_statement_max_chars` | Divergent gate |
-| MECE Statement invariants enforced only in backend | generation path should enforce | `kb_toolkit/core/validator.py` lacks `check_cause_statement_invariants`/Jaccard despite the "byte-identical mirror" claim | **Stale mirror claim; generation path unguarded for MECE** |
+| ~~MECE Statement invariants only in backend~~ | *(RETRACTED)* | *(RETRACTED — a stale-checkout artifact; `origin/main` `kb_toolkit/core/validator.py:107-192` has the byte-identical block and calls it. The mirror is real.)* | *No drift* |
 | Required sub-fields: **ERROR (per-cause)** vs **WARNING (document-level)** | per-cause ERROR | backend `runbook_validator.py:453-459` only checks a field appears *somewhere* in the file | A cause missing `Interventions` passes the backend |
 | Chunker field names (`cause_chain`/`cause_indicators`, raw) vs pack (`chain_nodes`/`chain_edges`/`rung_indicators`, parsed) | one vocabulary | chunker metadata layer vs pack_builder | Naming/shape divergence (arguably by-layer, but undocumented) |
 | `create_runbook_from_template` enforces almost nothing | full grammar | `conversion_service.py:1616-1651` is a 6-H2 skeleton only | Weak manual path |
@@ -301,9 +302,10 @@ that indicator prose drives matching.
 2. **`kb_toolkit/core/runbook_grammar.py` + `config.py` + `validator.py` (mirror 1):** (a) make `step`
    optional in the predicate grammar; (b) add the T1 target lint (≥2-space run, ≤3-char/stop-word) and the T2
    `stance` key to the predicate vocab; (c) add the T2 "≥1 discriminating predicate per non-fallback cause"
-   warning; (d) **port the MECE Statement invariants** (`check_cause_statement_invariants`, `_norm_statement`,
-   Jaccard≥0.6) from the backend so the *generation path* enforces MECE — resolving the stale "byte-identical
-   mirror" claim; (e) add the Statement ≤300 check parity note (already present here).
+   warning; (d) ~~port the MECE Statement invariants~~ **— NOT NEEDED (RETRACTED):** re-verified on `origin/main`,
+   `kb_toolkit/core/validator.py:107-192` already carries the byte-identical `check_cause_statement_invariants`
+   and calls it, so the generation path already enforces MECE; (e) the Statement ≤300 check is already present
+   here — the parity gap is backend-only (mirror 3).
 3. **`kb_toolkit/core/pack_builder.py` (mirror 2):** carry `stance` through `_extract_causes` into the emitted
    `match_predicates` (it already passes predicate bodies through verbatim — verify `stance` survives). No
    field-name change.
@@ -429,8 +431,17 @@ dead-predicate" class is confirmed and split cleanly by bucket: the **literal `t
 MATCHER defect (M-B); the **step-output-shaped targets** half is a CORPUS/TEMPLATE defect (T1 + regeneration).
 RC-1 is confirmed **fixed** in-tree (M-C). The `absent`-only-cannot-ground finding (38 causes) is subsumed by
 T2 (authored `refutes` predicates give exclusion a positive-firing path). New (not previously tracked) findings:
-the **v3 human fill-in template**, the **backend predicate-blindness of the conversion path**, and the **stale
-"byte-identical" MECE mirror claim** (the generation path does not enforce MECE).
+the **v3 human fill-in template** and the **backend predicate-blindness of the conversion path**.
+
+**RETRACTED finding (stale-checkout artifact).** An earlier draft listed a third new finding — a "stale
+byte-identical MECE mirror claim" (that the generation path did not enforce MECE). **That was wrong**: the
+exploration agent read a kb-toolkit checkout 14 commits behind `origin/main`. Re-verified on `origin/main`, the
+MECE block is present and byte-identical in `kb_toolkit/core/validator.py:107-192`, so the mirror is real and
+the generation path DOES enforce MECE. **Lesson:** the kb-toolkit shared checkout is routinely stale; all
+kb-toolkit-side findings in this audit (chunker field-naming, pack_builder field set, etc.) were read from that
+same stale checkout and should be re-confirmed on `origin/main` before anyone acts on them. The corpus sample
+(§4) was likewise read from the stale checkout — re-confirm the exact predicate/collision counts on
+`origin/main` before Phase 2.
 
 ---
 
