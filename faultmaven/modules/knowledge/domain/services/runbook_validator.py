@@ -291,6 +291,26 @@ MAX_CAUSE_STATEMENT_LENGTH = 300
 
 _CAUSE_HEADING_RE = re.compile(r"^#{3,}\s+Cause\s+([A-Za-z0-9]+)\s*:", re.MULTILINE)
 
+# The ``## Causes`` H2 section body — everything up to the next H2 (``## Prevention``)
+# or EOF. ``^##[ \t]`` matches only an H2 boundary; a ``### Cause`` (H3) does not
+# terminate it (its 3rd char is ``#``, not whitespace).
+_CAUSES_SECTION_RE = re.compile(
+    r"^##[ \t]+Causes[ \t]*$(.*?)(?=^##[ \t]|\Z)", re.MULTILINE | re.DOTALL
+)
+
+
+def _causes_section_body(content: str) -> str:
+    """Body of the ``## Causes`` H2 section (up to the next H2 or EOF), or "".
+
+    Scoping cause parsing to this body — mirroring the kb-toolkit validator's
+    section-scoped parse — keeps a ``### Cause``-style heading in ANOTHER section
+    out of cause validation, and stops the LAST cause's block from bleeding into
+    ``## Prevention`` / ``## Sources`` (which would let a whole-body sub-field scan
+    find a required label in a trailing section and mask a genuinely-missing one).
+    """
+    m = _CAUSES_SECTION_RE.search(content)
+    return m.group(1) if m else ""
+
 
 def _cause_field(name: str, body: str) -> str:
     """Value of a ``**Name:**`` sub-field within one Cause block ("" if absent OR
@@ -313,12 +333,15 @@ def _has_cause_field(name: str, body: str) -> bool:
 
 
 def _iter_cause_blocks(content: str):
-    """Yield ``(letter, body)`` for each ``### Cause X:`` block (coarse,
-    document-level split — this validator does not build the full cause graph)."""
-    heads = list(_CAUSE_HEADING_RE.finditer(content))
+    """Yield ``(letter, body)`` for each ``### Cause X:`` block WITHIN the
+    ``## Causes`` section. Each block ends at the next ``### Cause`` heading or the
+    section end — so a block never absorbs a later ``##`` section, and a
+    ``### Cause``-style heading outside ``## Causes`` is not treated as a cause."""
+    body = _causes_section_body(content)
+    heads = list(_CAUSE_HEADING_RE.finditer(body))
     for i, h in enumerate(heads):
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(content)
-        yield h.group(1), content[h.end() : end]
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
+        yield h.group(1), body[h.end() : end]
 
 
 def _is_fallback_cause(letter: str, body: str) -> bool:
@@ -540,14 +563,15 @@ class RunbookValidator:
             for sub in REQUIRED_CAUSE_SUBFIELDS:
                 if not _has_cause_field(sub, body):
                     errors.append(f"{label}: missing required **{sub}:** sub-field")
-                elif not _cause_field(sub, body):
+                    continue
+                value = _cause_field(sub, body)
+                if not value:
                     errors.append(f"{label}: **{sub}:** sub-field is empty")
-            stmt = _cause_field("Statement", body)
-            if stmt and len(stmt) > MAX_CAUSE_STATEMENT_LENGTH:
-                errors.append(
-                    f"{label}: Statement is {len(stmt)} chars "
-                    f"(>{MAX_CAUSE_STATEMENT_LENGTH})"
-                )
+                elif sub == "Statement" and len(value) > MAX_CAUSE_STATEMENT_LENGTH:
+                    errors.append(
+                        f"{label}: Statement is {len(value)} chars "
+                        f"(>{MAX_CAUSE_STATEMENT_LENGTH})"
+                    )
 
     def _validate_cause_statements(
         self, content: str, errors: List[str], warnings: List[str]

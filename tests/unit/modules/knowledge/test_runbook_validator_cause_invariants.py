@@ -160,6 +160,22 @@ class TestBackendCauseStatementParsing:
         errors, _ = self._check(content)
         assert any("operator-step marker" in e for e in errors)
 
+    def test_out_of_section_cause_not_collected_for_invariants(self):
+        # A ### Cause heading outside ## Causes must NOT feed the duplicate/MECE
+        # check — otherwise an illustrative example reusing a real cause's Statement
+        # would spuriously trip "identical Statements".
+        content = (
+            "## Diagnostic Steps\n\n"
+            "### Cause A: example\n"
+            "**Statement:** Idle transactions exhaust the pool.\n\n"
+            "## Causes\n\n"
+            "### Cause A: Real\n"
+            "**Statement:** Idle transactions exhaust the pool.\n"
+            "**Indicators:**\n- [Step 1] x\n"
+        )
+        errors, _ = self._check(content)
+        assert not any("identical Statements" in e for e in errors)
+
 
 class TestBackendCauseSubfields:
     """Per-Cause required sub-fields + Statement length (Gate 2a — per-cause ERROR,
@@ -248,3 +264,35 @@ class TestBackendCauseSubfields:
         )
         errors, _ = self._check(content)
         assert any("missing required **Interventions:**" in e for e in errors)
+
+    def test_missing_subfield_not_masked_by_later_section(self):
+        # Regression: the last cause's block must NOT bleed into ## Prevention /
+        # ## Sources. A required label appearing in a trailing section must not mask
+        # a genuinely-missing sub-field on the final (fallback) cause.
+        content = (
+            "## Causes\n\n"
+            "### Cause Z: Unidentified\n"
+            "**Statement:** None of the documented causes match.\n"
+            "**Indicators:**\n- [Default]\n\n"
+            "## Prevention\n"
+            "Review pool sizing. **Interventions:** monitor pool weekly.\n\n"
+            "## Sources\n- vendor docs\n"
+        )
+        errors, _ = self._check(content)
+        assert any("missing required **Interventions:**" in e for e in errors)
+
+    def test_cause_heading_outside_causes_section_ignored(self):
+        # A ### Cause-style heading in another section (e.g. an example under
+        # ## Diagnostic Steps) is NOT a real cause and must not be validated.
+        content = (
+            "## Diagnostic Steps\n\n"
+            "### Cause A: (example) pool exhaustion\n"
+            "An illustrative example with no sub-fields.\n\n"
+            "## Causes\n\n"
+            "### Cause A: Real cause\n"
+            "**Statement:** Idle transactions exhaust the pool.\n"
+            "**Indicators:**\n- [Step 1] x\n"
+            "**Interventions:**\n- **remediation** (root): fix.\n"
+        )
+        errors, _ = self._check(content)
+        assert errors == []
