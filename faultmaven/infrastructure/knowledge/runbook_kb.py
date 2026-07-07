@@ -12,6 +12,7 @@ Architecture Reference: docs/architecture/document-generation-and-closure-design
 Section 5.4.5: Dual-Source Runbook Architecture
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -270,12 +271,16 @@ class RunbookKnowledgeBase(BaseExternalClient):
             # Generate BGE-M3 embedding explicitly to match collection dimensions
             from faultmaven.infrastructure.model_cache import model_cache
 
-            bge_model = model_cache.get_bge_m3_model()
+            # Model load (lazy) and encode are CPU-bound + synchronous; run them
+            # on a worker thread so they don't block the async event loop.
+            bge_model = await asyncio.to_thread(model_cache.get_bge_m3_model)
             if bge_model is None:
                 logger.error("BGE-M3 model unavailable, skipping runbook indexing")
                 return
 
-            embedding = bge_model.encode(runbook.content).tolist()
+            embedding = await asyncio.to_thread(
+                lambda: bge_model.encode(runbook.content).tolist()
+            )
 
             documents = [
                 {
