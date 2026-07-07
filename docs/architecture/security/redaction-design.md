@@ -54,14 +54,26 @@ the event loop via the async boundary (`CaseRedactionContext.asanitize` /
 liveness probe — the same failure class as inline embedding. Presidio calls do
 not add blocking retry sleeps on the loop.
 
-## Invariant 3 — Fail closed on the privacy-critical path
+## Invariant 3 — Fail closed on a runtime Presidio failure
 
-If the Presidio analyzer errors or times out, the default is **fail-closed**:
-the un-analyzed text is not passed through as if clean. `PROTECTION_FAIL_OPEN`
-(default `false`) controls this; operators may opt into fail-open. Regex
-patterns still apply regardless (they are local and cannot fail-open). Presidio
-availability is gated on the **analyzer** only (the anonymizer service is not
-used — replacement is done in-process for stable placeholders).
+If the Presidio analyzer was available and then **errors or times out during a
+call**, the default is **fail-closed**: the un-analyzed text is not passed
+through as if clean (a `RedactionUnavailableError` is raised).
+`PROTECTION_FAIL_OPEN` (default `false`) controls this; operators may opt into
+fail-open.
+
+This is scoped to *runtime* failures, not to the analyzer never being
+established. When Presidio is **not configured, its health check is skipped
+(tests/dev), or it is down at startup**, `analyzer_available` is False and the
+sanitizer runs **regex-only without raising** — otherwise every call would fail
+whenever Presidio simply isn't wired up. A transient runtime error does **not**
+latch `analyzer_available` off; the `BaseExternalClient` circuit breaker backs
+off and recovers, so a momentary blip self-heals rather than permanently failing
+every call.
+
+Regex patterns always apply regardless (they are local and cannot fail-open).
+Presidio is gated on the **analyzer** only (the anonymizer service is not used —
+replacement is done in-process for stable placeholders).
 
 ## Placeholders
 

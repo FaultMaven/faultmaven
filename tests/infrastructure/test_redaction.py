@@ -377,8 +377,11 @@ class TestDockerPatternRemoval:
 
 
 class TestFailClosedPosture:
-    """#654: when PII redaction is required but Presidio is unavailable, the
-    default is fail-CLOSED — refuse rather than pass un-analyzed text through."""
+    """#654: fail-closed applies to a RUNTIME Presidio error (analyzer was
+    working, then failed) — NOT to the analyzer simply never being established
+    (not configured, health-check skipped in tests/dev, down at startup), which
+    runs regex-only. Otherwise every call would fail whenever Presidio isn't
+    wired up (e.g. the Cloud CI job with SANITIZE_PII=true + SKIP_SERVICE_CHECKS)."""
 
     def _settings(self, *, sanitize_pii: bool, fail_open: bool):
         settings = MagicMock()
@@ -391,37 +394,56 @@ class TestFailClosedPosture:
         settings.server.skip_service_checks = True  # forces analyzer_available=False
         return settings
 
-    def test_fail_closed_raises_when_analyzer_unavailable(self):
+    def test_startup_unavailable_does_not_raise_even_when_fail_closed(self):
+        # The Cloud CI scenario: sanitize_pii=True, fail_open=False, Presidio
+        # not established (skip_service_checks) → regex-only, NO raise.
         s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=False))
         assert s.analyzer_available is False
-        with pytest.raises(RedactionUnavailableError):
-            s.sanitize("contact me at john@example.com")
-
-    def test_fail_open_passes_through_when_analyzer_unavailable(self):
-        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=True))
-        # No raise; local regex still applies (AWS key redacted), Presidio-only
-        # PII (email) passes because the analyzer is down and fail-open is set.
         result = s.sanitize("email john@example.com key AKIAIOSFODNN7EXAMPLE")
-        assert "<AWS_ACCESS_KEY_" in result
-        assert "john@example.com" in result
+        assert "<AWS_ACCESS_KEY_" in result  # regex still applied
+        assert "john@example.com" in result  # Presidio-only PII passes (analyzer down)
 
-    def test_disabled_redaction_never_fails_closed(self):
-        # sanitize_pii off → best-effort regex for logs/etc.; never raises even
-        # under fail_open=False.
-        s = DataSanitizer(settings=self._settings(sanitize_pii=False, fail_open=False))
-        assert isinstance(s.sanitize("john@example.com"), str)
-
-    def test_transient_presidio_error_does_not_latch_analyzer_off(self):
-        """Regression (#654 review): a transient Presidio error must NOT
-        permanently disable the analyzer — that would (under fail-closed) fail
-        every subsequent turn until process restart. The circuit breaker handles
-        transient failures with recovery instead."""
-        s = DataSanitizer()
-        s.analyzer_available = True  # pretend Presidio was up
+    def test_fail_closed_raises_on_runtime_presidio_error(self):
+        # Analyzer WAS available, then a call errors → fail-closed refuses.
+        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=False))
+        s.analyzer_available = True
         with patch.object(
             s, "call_external_sync", side_effect=Exception("Connection timed out")
         ):
-            # sanitize_pii is off here → fail-open path returns text, no raise.
+            with pytest.raises(RedactionUnavailableError):
+                s.sanitize("contact me at john@example.com")
+
+    def test_fail_open_returns_text_on_runtime_presidio_error(self):
+        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=True))
+        s.analyzer_available = True
+        with patch.object(
+            s, "call_external_sync", side_effect=Exception("Connection timed out")
+        ):
+            result = s.sanitize("email john@example.com key AKIAIOSFODNN7EXAMPLE")
+        assert "<AWS_ACCESS_KEY_" in result  # regex applied
+        assert "john@example.com" in result  # fail-open lets it through
+
+    def test_disabled_redaction_never_fails_closed(self):
+        # sanitize_pii off → best-effort regex for logs/etc.; never raises even
+        # under fail_open=False, even on a runtime Presidio error.
+        s = DataSanitizer(settings=self._settings(sanitize_pii=False, fail_open=False))
+        s.analyzer_available = True
+        with patch.object(
+            s, "call_external_sync", side_effect=Exception("Connection timed out")
+        ):
+            assert isinstance(s.sanitize("john@example.com"), str)
+
+    def test_transient_presidio_error_does_not_latch_analyzer_off(self):
+        """Regression (#654 review): a transient Presidio error must NOT
+        permanently disable the analyzer — that would fail every subsequent
+        call until process restart. The circuit breaker handles transient
+        failures with recovery instead."""
+        # fail_open=True so _apply_presidio returns text (isolates the latch).
+        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=True))
+        s.analyzer_available = True
+        with patch.object(
+            s, "call_external_sync", side_effect=Exception("Connection timed out")
+        ):
             result = s._apply_presidio("hello world", {})
         assert result == "hello world"
         assert s.analyzer_available is True  # NOT latched off

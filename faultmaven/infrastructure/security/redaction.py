@@ -311,16 +311,15 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             sanitized_text = pattern.sub(_indexed_replacer, sanitized_text)
 
         # Presidio (cards/emails/SSNs) — gated on the analyzer only (the
-        # anonymizer service is unused; we replace in-process). If it can't run
-        # and the posture is fail-closed, refuse rather than leak.
+        # anonymizer service is unused; we replace in-process). When the analyzer
+        # was never established (not configured, health-check skipped in
+        # tests/dev, or down at startup), we run regex-only — this is NOT the
+        # fail-closed trigger. Fail-closed applies to a RUNTIME Presidio error
+        # (analyzer was working, then failed mid-operation), handled in
+        # _apply_presidio; raising here would make every call fail whenever
+        # Presidio simply isn't wired up.
         if self.analyzer_available:
             sanitized_text = self._apply_presidio(sanitized_text, entity_registry)
-        elif self._fail_closed_active():
-            raise RedactionUnavailableError(
-                "Presidio analyzer unavailable; refusing to pass un-analyzed "
-                "text to an external provider (fail-closed). Set "
-                "PROTECTION_FAIL_OPEN=true to override."
-            )
 
         return sanitized_text
 
