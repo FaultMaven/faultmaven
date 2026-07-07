@@ -24,6 +24,7 @@ Run locally:
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -148,6 +149,12 @@ async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
             summary="timeouts",
             structural_index="ERROR: timeout",
             data_type="logs",
+            # tz-aware coverage window — the exact shape that 500'd the cluster
+            # case-save. uploaded_files.coverage_*_ts is TIMESTAMPTZ (migration 022
+            # widens the naive TIMESTAMP that migration 010 created); a naive column
+            # makes asyncpg's naive codec reject the offset-aware datetime on PG.
+            coverage_start_ts=datetime(2026, 6, 13, 10, 0, 0, tzinfo=timezone.utc),
+            coverage_end_ts=datetime(2026, 6, 13, 10, 30, 0, tzinfo=timezone.utc),
         )
     )
     case.evidence.append(
@@ -161,6 +168,11 @@ async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
             source_file_id=file_id,
             collected_by=user_id,
             collected_at_turn=1,
+            # TagsArray binds a Python list on PG, so advances_milestones is
+            # VARCHAR(50)[] (migration 022 widens the TEXT that migration 009
+            # created); a TEXT column makes asyncpg reject the bound list. Exercises
+            # that bind.
+            advances_milestones=["symptom_verified"],
         )
     )
 
@@ -192,6 +204,19 @@ async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
     )
     assert len(fetched.evidence) == 1
     assert fetched.evidence[0].source_file_id == file_id
+    # advances_milestones (TagsArray -> varchar[] on PG) round-trips; a non-empty
+    # list bound to a TEXT column would raise asyncpg DataError (column is
+    # VARCHAR(50)[] per migration 022).
+    assert fetched.evidence[0].advances_milestones == ["symptom_verified"]
+    # The tz-aware coverage window round-tripped (columns are TIMESTAMPTZ, not
+    # the naive TIMESTAMP that raised asyncpg DataError on the cluster save).
+    saved_file = next(f for f in fetched.uploaded_files if f.file_id == file_id)
+    assert saved_file.coverage_start_ts == datetime(
+        2026, 6, 13, 10, 0, 0, tzinfo=timezone.utc
+    )
+    assert saved_file.coverage_end_ts == datetime(
+        2026, 6, 13, 10, 30, 0, tzinfo=timezone.utc
+    )
     # The string-timestamped message persisted (timestamptz coercion worked).
     persisted = await pg_repo.get_messages(case.case_id)
     assert any(m.get("content") == "how to fix the timeout?" for m in persisted)
