@@ -122,10 +122,11 @@ class TestBackendCauseStatementParsing:
         errors, warnings = self._check(content)
         assert errors == [] and warnings == []
 
-    def test_empty_statement_blocks_cleanly_not_as_step_marker(self):
+    def test_empty_statement_not_miscaptured_as_step_marker(self):
         # Regression: an empty Statement followed by Indicators with [Step N] must
-        # report the EMPTY statement, not mis-capture Indicators as the Statement
-        # and falsely cry "operator-step marker".
+        # NOT mis-capture Indicators as the Statement and falsely cry "operator-step
+        # marker". The invariants method skips the empty Statement; the EMPTY report
+        # itself is owned by _validate_cause_subfields (see TestBackendCauseSubfields).
         content = (
             "## Causes\n\n"
             "### Cause A: x\n"
@@ -133,7 +134,6 @@ class TestBackendCauseStatementParsing:
             "**Indicators:**\n- [Step 1] foo\n"
         )
         errors, _ = self._check(content)
-        assert any("is empty" in e for e in errors)
         assert not any("operator-step marker" in e for e in errors)
 
     def test_fallback_detected_via_indicators_not_prose(self):
@@ -159,3 +159,92 @@ class TestBackendCauseStatementParsing:
         )
         errors, _ = self._check(content)
         assert any("operator-step marker" in e for e in errors)
+
+
+class TestBackendCauseSubfields:
+    """Per-Cause required sub-fields + Statement length (Gate 2a — per-cause ERROR,
+    parity with the kb-toolkit generator/validator)."""
+
+    def _check(self, content):
+        v = RunbookValidator()
+        errors, warnings = [], []
+        v._validate_cause_subfields(content, errors, warnings)
+        return errors, warnings
+
+    def _cause(self, extra_fields: str, letter: str = "A", name: str = "x") -> str:
+        return f"## Causes\n\n### Cause {letter}: {name}\n{extra_fields}"
+
+    def test_clean_cause_with_all_fields_passes(self):
+        content = self._cause(
+            "**Statement:** Idle transactions exhaust the pool.\n"
+            "**Indicators:**\n- [Step 1] x\n"
+            "**Interventions:**\n- **remediation** (root): raise the pool size.\n"
+        )
+        errors, _ = self._check(content)
+        assert errors == []
+
+    def test_missing_interventions_blocks_per_cause(self):
+        content = self._cause(
+            "**Statement:** Idle transactions exhaust the pool.\n"
+            "**Indicators:**\n- [Step 1] x\n"
+        )
+        errors, _ = self._check(content)
+        assert any("missing required **Interventions:**" in e for e in errors)
+
+    def test_missing_indicators_blocks(self):
+        content = self._cause(
+            "**Statement:** Idle transactions exhaust the pool.\n"
+            "**Interventions:**\n- **remediation** (root): fix.\n"
+        )
+        errors, _ = self._check(content)
+        assert any("missing required **Indicators:**" in e for e in errors)
+
+    def test_empty_statement_reported_as_empty(self):
+        content = self._cause(
+            "**Statement:**\n"
+            "**Indicators:**\n- [Step 1] x\n"
+            "**Interventions:**\n- **mitigation** (D): escalate.\n"
+        )
+        errors, _ = self._check(content)
+        assert any("**Statement:** sub-field is empty" in e for e in errors)
+
+    def test_overlong_statement_blocks(self):
+        long_stmt = "x" * 301
+        content = self._cause(
+            f"**Statement:** {long_stmt}\n"
+            "**Indicators:**\n- [Step 1] x\n"
+            "**Interventions:**\n- **remediation** (root): fix.\n"
+        )
+        errors, _ = self._check(content)
+        assert any("Statement is 301 chars" in e for e in errors)
+
+    def test_statement_at_limit_passes(self):
+        content = self._cause(
+            f"**Statement:** {'x' * 300}\n"
+            "**Indicators:**\n- [Step 1] x\n"
+            "**Interventions:**\n- **remediation** (root): fix.\n"
+        )
+        errors, _ = self._check(content)
+        assert not any("chars (>300)" in e for e in errors)
+
+    def test_chain_is_optional(self):
+        # No **Chain:** — a degenerate root->D cause is valid, no error.
+        content = self._cause(
+            "**Statement:** A single-step failure.\n"
+            "**Indicators:**\n- [Step 1] x\n"
+            "**Interventions:**\n- **remediation** (root): fix.\n"
+        )
+        errors, _ = self._check(content)
+        assert not any("Chain" in e for e in errors)
+
+    def test_fallback_cause_also_requires_interventions(self):
+        # The fallback Cause Z is not a match surface, but it still must carry the
+        # required sub-fields (its Interventions is the safe escalation path).
+        content = (
+            "## Causes\n\n"
+            "### Cause Z: Unidentified\n"
+            "**Statement:** None of the documented causes match.\n"
+            "**Indicators:**\n- [Default]\n"
+        )
+        errors, _ = self._check(content)
+        assert any("missing required **Interventions:**" in e for e in errors)

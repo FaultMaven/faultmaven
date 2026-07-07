@@ -277,6 +277,57 @@ VALID_STATUSES = ["draft", "in-review", "verified", "stale", "deprecated"]
 MAX_TITLE_LENGTH = 100
 MIN_CONTENT_LENGTH = 500
 MAX_TAG_COUNT = 10
+# Hard limit on a Cause **Statement** (the match surface). Mirrors the kb-toolkit
+# generator/validator (``config.validation.cause_statement_max_chars``) and the
+# Template Compliance Rules (runbook-content-architecture.md §3, rule 5). Kept a
+# local literal here — it is a scalar limit, NOT part of the cross-repo authoring
+# VOCABULARY guarded by ``cause_grammar``/``check_vocab_cross_repo.py``.
+MAX_CAUSE_STATEMENT_LENGTH = 300
+
+
+# =============================================================================
+# Cause-block parsing (shared by the per-Cause structural + Statement checks)
+# =============================================================================
+
+_CAUSE_HEADING_RE = re.compile(r"^#{3,}\s+Cause\s+([A-Za-z0-9]+)\s*:", re.MULTILINE)
+
+
+def _cause_field(name: str, body: str) -> str:
+    """Value of a ``**Name:**`` sub-field within one Cause block ("" if absent OR
+    present-but-empty). The value runs up to the next bold ``**Label:**`` (the
+    colon is required, so an inline ``**bold**`` doesn't terminate it), the next
+    ``##``+ heading, or end. ``[ \\t]*`` (not ``\\s*``) so an empty field captures
+    "" rather than swallowing the field that follows it."""
+    m = re.search(
+        rf"\*\*{re.escape(name)}:\*\*[ \t]*(.*?)(?=\n\s*\*\*[\w ]+:\*\*|\n#{{2,}}\s|\Z)",
+        body,
+        re.DOTALL,
+    )
+    return m.group(1).strip() if m else ""
+
+
+def _has_cause_field(name: str, body: str) -> bool:
+    """True if the ``**Name:**`` label is present — distinguishes a MISSING
+    sub-field from a present-but-empty one (which ``_cause_field`` both return "")."""
+    return bool(re.search(rf"\*\*{re.escape(name)}:\*\*", body))
+
+
+def _iter_cause_blocks(content: str):
+    """Yield ``(letter, body)`` for each ``### Cause X:`` block (coarse,
+    document-level split — this validator does not build the full cause graph)."""
+    heads = list(_CAUSE_HEADING_RE.finditer(content))
+    for i, h in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(content)
+        yield h.group(1), content[h.end() : end]
+
+
+def _is_fallback_cause(letter: str, body: str) -> bool:
+    """The fallback Cause carries ``[Default]`` in its Indicators or the reserved
+    letter Z — the same scoping the matcher's fallback detection uses."""
+    return (
+        FALLBACK_INDICATOR_TOKEN in _cause_field("Indicators", body)
+        or letter.upper() == FALLBACK_CAUSE_LETTER
+    )
 
 
 # =============================================================================
@@ -310,6 +361,10 @@ class RunbookValidator:
 
         # Gate 2: Structural linting
         self._validate_structure(content, errors, warnings)
+
+        # Gate 2a: per-Cause required sub-fields + Statement length (per-cause
+        # ERROR — parity with the kb-toolkit generator/validator)
+        self._validate_cause_subfields(content, errors, warnings)
 
         # Gate 2b: per-Cause Statement invariants (the match surface; #545)
         self._validate_cause_statements(content, errors, warnings)
@@ -448,15 +503,9 @@ class RunbookValidator:
                     f"with {FALLBACK_INDICATOR_TOKEN} indicator"
                 )
             # v4: each ### Cause carries Statement / Indicators / Interventions
-            # (Chain optional); interventions are quadrant-tagged. Coarse,
-            # document-level checks (drafts get human review before activation).
-            _required = " / ".join(REQUIRED_CAUSE_SUBFIELDS)
-            for sub in REQUIRED_CAUSE_SUBFIELDS:
-                if not re.search(rf"\*\*{sub}:\*\*", content):
-                    warnings.append(
-                        f"No `**{sub}:**` sub-field found anywhere in the runbook "
-                        f"(v4 Causes use {_required})"
-                    )
+            # (Chain optional); interventions are quadrant-tagged. Per-Cause
+            # presence/emptiness is enforced (as ERRORs) in _validate_cause_subfields
+            # (Gate 2a); here only the document-level quadrant + legacy-v3 tells.
             if re.search(r"\*\*Interventions:\*\*", content) and not re.search(
                 rf"\*\*({QUADRANT_ALTERNATION})\*\*", content
             ):
@@ -472,53 +521,53 @@ class RunbookValidator:
                     "v4 uses Statement / Chain / Indicators / quadrant-tagged Interventions"
                 )
 
+    def _validate_cause_subfields(
+        self, content: str, errors: List[str], warnings: List[str]
+    ) -> None:
+        """Per-Cause required sub-fields + Statement length (per-cause **ERROR**).
+
+        Parity with the kb-toolkit generator/validator: every ``### Cause`` — the
+        fallback included — must carry a non-empty ``**Statement:**`` /
+        ``**Indicators:**`` / ``**Interventions:**`` (``**Chain:**`` is optional),
+        and the Statement must be within the hard char limit. A missing sub-field
+        and a present-but-empty one are distinguished. Coarse, document-level parse.
+        Previously these were a single document-level WARNING (a Cause missing
+        ``Interventions`` passed if any *other* Cause had one) — now blocked per
+        Cause, matching the generation path that authors the corpus.
+        """
+        for letter, body in _iter_cause_blocks(content):
+            label = f"Cause {letter}"
+            for sub in REQUIRED_CAUSE_SUBFIELDS:
+                if not _has_cause_field(sub, body):
+                    errors.append(f"{label}: missing required **{sub}:** sub-field")
+                elif not _cause_field(sub, body):
+                    errors.append(f"{label}: **{sub}:** sub-field is empty")
+            stmt = _cause_field("Statement", body)
+            if stmt and len(stmt) > MAX_CAUSE_STATEMENT_LENGTH:
+                errors.append(
+                    f"{label}: Statement is {len(stmt)} chars "
+                    f"(>{MAX_CAUSE_STATEMENT_LENGTH})"
+                )
+
     def _validate_cause_statements(
         self, content: str, errors: List[str], warnings: List[str]
     ) -> None:
-        """Parse per-Cause Statements and apply the match-surface invariants (#545).
+        """Match-surface invariants (#545) on NON-FALLBACK Cause Statements.
 
-        Coarse markdown parse (this validator is document-level): split on
-        ``### Cause X:`` headings, pull each block's ``**Statement:**``, drop the
-        fallback Cause (``[Default]`` in its *Indicators* field, or letter Z — the
-        same scoping kb-toolkit's parser uses), block an empty non-fallback
-        Statement (now the load-bearing match surface), and run the shared
-        ``check_cause_statement_invariants`` on the rest.
+        Drop the fallback Cause (``[Default]`` in its *Indicators*, or letter Z —
+        it is not a match surface), collect each remaining Cause's non-empty
+        ``**Statement:**``, and run the shared ``check_cause_statement_invariants``
+        (no ``[Step N]`` leak; siblings mutually discriminative). Missing/empty
+        Statements are owned by ``_validate_cause_subfields`` (Gate 2a); an empty
+        one is simply skipped here (a non-empty Statement is needed for the check).
         """
-        heading_re = re.compile(r"^#{3,}\s+Cause\s+([A-Za-z0-9]+)\s*:", re.MULTILINE)
-
-        # A sub-field's value runs up to the NEXT bold field label (``**Word:**``
-        # — the colon is required, so an inline ``**bold**`` doesn't terminate it),
-        # the next markdown heading (``##``+, NOT a single ``#`` comment/tag line),
-        # or end. ``[ \t]*`` (not ``\s*``) so an empty field captures "" rather than
-        # swallowing the field that follows it.
-        def _field(name: str, body: str) -> str:
-            m = re.search(
-                rf"\*\*{name}:\*\*[ \t]*(.*?)(?=\n\s*\*\*[\w ]+:\*\*|\n#{{2,}}\s|\Z)",
-                body,
-                re.DOTALL,
-            )
-            return m.group(1).strip() if m else ""
-
-        heads = list(heading_re.finditer(content))
         statements: List[tuple] = []
-        for i, h in enumerate(heads):
-            letter = h.group(1)
-            end = heads[i + 1].start() if i + 1 < len(heads) else len(content)
-            body = content[h.end() : end]
-            if (
-                FALLBACK_INDICATOR_TOKEN in _field("Indicators", body)
-                or letter.upper() == FALLBACK_CAUSE_LETTER
-            ):
+        for letter, body in _iter_cause_blocks(content):
+            if _is_fallback_cause(letter, body):
                 continue  # fallback Cause — not a match surface
-            stmt = _field("Statement", body)
-            if not stmt:
-                errors.append(
-                    f"Cause {letter}: **Statement:** is empty — the Statement is the "
-                    f"symptom-level match surface and must describe the observable "
-                    f"condition."
-                )
-                continue
-            statements.append((letter, stmt))
+            stmt = _cause_field("Statement", body)
+            if stmt:
+                statements.append((letter, stmt))
         errs, warns = check_cause_statement_invariants(statements)
         errors.extend(errs)
         warnings.extend(warns)
