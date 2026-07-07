@@ -112,6 +112,19 @@ Respond with JSON matching this schema:
   }
 }"""
 
+# DESIGN DECISION (predicate-less conversion — intentional, not a gap).
+# The conversion path (document -> runbook, case -> runbook) authors the v4 match
+# surface + topology: Statement / optional Chain / Indicators / quadrant-tagged
+# Interventions. It deliberately does NOT author ``<!-- match -->`` predicates (the
+# deterministic validation surface). Predicate authoring is a separate, Phase-0-gated
+# enrichment owned by the kb-toolkit generation path (kb-init / kb-researcher; Slice 6
+# / #584) — its symptom-telemetry ``target`` contract and ``stance`` counterfactual are
+# not yet ratified, so emitting predicates here would produce ill-formed ones. A
+# conversion-produced runbook is therefore predicate-less by design; it still MATCHES
+# and instantiates (the Statement + Chain do that) and grounds via the LLM tier. When
+# the predicate contract lands, predicates are added by re-running the toolkit
+# enrichment over these runbooks, not by expanding this prompt.
+# See docs/working/AUDIT-runbook-template.md §3 (mirror 5) + PLAN 1a.
 CONVERSION_SYSTEM_PROMPT = """You are a technical writer converting source material into a FaultMaven v4
 causal-chain runbook. You MUST produce output that exactly matches the template below.
 Every section and sub-field is required. Do not add sections. Do not rename sections.
