@@ -46,7 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration Chain** (linear; current head is `0a1b2c3d4e5f`):
+**Migration Chain** (linear; current head is `f5a6b7c8d9e0`):
 
 | # | Revision | Description |
 | --- | --- | --- |
@@ -63,6 +63,9 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | 011–014 | … | (rows omitted — see alembic/versions for evidence-needs and related migrations) |
 | 015 | `f015a7b2c3d4` | Rename case-lifecycle `status`→`state`: `cases`/`hypotheses`/`solutions`/`evidence_needs`/`investigation_sessions` columns + CHECK constraints + indexes; `case_actions.from_status`/`to_status`→`from_state`/`to_state`. Projection columns (`agent_executions.status`, `reports.generation_status`, etc.) intentionally keep `status`. |
 | 016 | `0a1b2c3d4e5f` | Investigation-flow redesign: drop the `cases.path_selection` column (the `InvestigationPath` / `PathSelection` fork is removed). The unified opportunistic flow stores the new assessment variables (`cause_state`, `solution_state`, `solution_feasible`) and the `stabilization` record inside the existing `progress` JSON — no new columns. |
+| 017–021 | … | (rows omitted — see alembic/versions: config-override source/category (017), RLS tenant isolation (018), causal-graph chain model (019), node-evidence provenance (020), evidence-need obtainability (021)) |
+| 022 | `d3e4f5a6b7c8` | PostgreSQL type-divergence fixes (forward ALTERs; PG-only, no-op on SQLite): `uploaded_files.coverage_start_ts`/`coverage_end_ts` → `TIMESTAMPTZ` (were naive `TIMESTAMP` from 010; the model is `DateTime(timezone=True)` and the app binds tz-aware datetimes, which asyncpg's naive codec rejected); `evidence.advances_milestones` → `VARCHAR(50)[]` (was `TEXT` from 009; the model's `TagsArray` binds a Python list on PG). Both were invisible on SQLite (loosely typed) and 500'd only on real PostgreSQL. |
+| 023 | `f5a6b7c8d9e0` | Enrol the causal-graph tables (`causal_nodes`, `causal_edges`, `causal_node_evidence`) in RLS tenant isolation — they carry `organization_id` but were added after migration 018 and never enrolled. Applies the identical `<table>_tenant_isolation` policy. PostgreSQL-only. |
 
 **Active Implementations**:
 
@@ -552,8 +555,10 @@ CREATE TABLE evidence (
     -- Processing mode used to extract: triage | directed_analysis | semantic_search.
     processing_mode     VARCHAR(50),
     -- Which milestones this evidence helped complete. TagsArray shape:
-    -- TEXT[] on PG, comma-encoded TEXT on SQLite (same TypeDecorator as ``tags``).
-    advances_milestones TEXT,
+    -- VARCHAR(50)[] on PG, comma-encoded TEXT on SQLite (same TypeDecorator as
+    -- ``tags``). PG type set by migration 022 (009 created it TEXT — a bug that
+    -- rejected the bound list on real PostgreSQL).
+    advances_milestones VARCHAR(50)[],
     -- Who collected: user UUID or sentinel ('system' for automated). Free-form
     -- VARCHAR per the case_actions.triggered_by precedent — the value space is
     -- heterogeneous, FK to users would force inventing sentinel users rows.
@@ -1707,7 +1712,9 @@ All tenanted case-domain tables get RLS policies in PostgreSQL deployments. SQLi
 
 **Tenanted case-domain tables** covered by RLS:
 
-`cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `reports`, `conversion_jobs`, `conversion_drafts`
+`cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `reports`, `conversion_jobs`, `conversion_drafts`, `causal_nodes`, `causal_edges`, `causal_node_evidence`
+
+> `causal_nodes` / `causal_edges` / `causal_node_evidence` were added after the original RLS migration (018) and enrolled later by migration **023**. New tenanted case-domain tables must be added to the RLS policy set in the migration that creates them (or a follow-up), or they silently escape tenant isolation.
 
 **Policy pattern (Tier 2 — PostgreSQL-only)**:
 
@@ -1744,7 +1751,7 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply migrations via alembic (chain head: 0a1b2c3d4e5f)
+# Apply migrations via alembic (chain head: f5a6b7c8d9e0)
 alembic upgrade head
 
 # Verify all tables created

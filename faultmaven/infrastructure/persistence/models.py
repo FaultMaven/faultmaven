@@ -198,6 +198,8 @@ class _TagsArrayType(TypeDecorator):
 
     def load_dialect_impl(self, dialect):
         if dialect.name == "postgresql":
+            # NOTE: migration 022 hard-codes the same VARCHAR(50)[] width for
+            # evidence.advances_milestones. Keep the two in sync if it changes.
             return dialect.type_descriptor(ARRAY(String(50)))
         return dialect.type_descriptor(Text())
 
