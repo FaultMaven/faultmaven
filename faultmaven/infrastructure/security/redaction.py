@@ -356,24 +356,40 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             sanitized[sanitized_key] = sanitized_value
         return sanitized
 
-    # Secret-naming key segments → the placeholder for their value. Matched only
-    # as whole tokens (bounded by start/end or a separator), so "monkey" /
-    # "tokenizer" / "secretary" are NOT flagged while "api_key" / "auth_token"
-    # still are (#654). Order = first match wins.
-    _SENSITIVE_KEY_SEGMENTS = (
-        ("password", "[PASSWORD_REDACTED]"),
-        ("passwd", "[PASSWORD_REDACTED]"),
-        ("secret", "[SECRET_REDACTED]"),
-        ("token", "[TOKEN_REDACTED]"),
-        ("key", "[KEY_REDACTED]"),
+    # Secret-naming key words → the placeholder for their value. Ordered:
+    # first category with a matching word wins. The base words are matched as
+    # whole tokens (split on separators AND camelCase, see _key_tokens), so
+    # "monkey"/"tokenizer"/"secretary"/"keyboard" are NOT flagged while
+    # "apiKey"/"access_token"/"SecretAccessKey" are. The extra all-lowercase
+    # concatenations catch common forms that don't split (e.g. "apikey") without
+    # matching benign words like "monkey"/"turnkey" (#654).
+    _SENSITIVE_KEY_CATEGORIES = (
+        ("[PASSWORD_REDACTED]", frozenset({"password", "passwd", "pwd"})),
+        (
+            "[SECRET_REDACTED]",
+            frozenset({"secret", "apisecret", "secretkey", "secretaccesskey"}),
+        ),
+        ("[TOKEN_REDACTED]", frozenset({"token", "accesstoken", "authtoken"})),
+        (
+            "[KEY_REDACTED]",
+            frozenset({"key", "apikey", "accesskey", "privatekey"}),
+        ),
     )
+
+    @staticmethod
+    def _key_tokens(key: str) -> set:
+        """Lowercased word tokens of a key, split on separators AND camelCase
+        boundaries: 'apiKey' → {'api','key'}, 'SecretAccessKey' → {'secret',
+        'access','key'}, 'api_key' → {'api','key'}, 'monkey' → {'monkey'}."""
+        spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", key)
+        return {t.lower() for t in re.split(r"[^A-Za-z0-9]+", spaced) if t}
 
     @classmethod
     def _sensitive_key_redaction(cls, key: Any) -> Optional[str]:
         """Return the placeholder for a secret-naming dict key, else None."""
-        key_lower = str(key).lower()
-        for segment, placeholder in cls._SENSITIVE_KEY_SEGMENTS:
-            if re.search(rf"(?:^|[^a-z0-9]){segment}(?:$|[^a-z0-9])", key_lower):
+        tokens = cls._key_tokens(str(key))
+        for placeholder, words in cls._SENSITIVE_KEY_CATEGORIES:
+            if tokens & words:
                 return placeholder
         return None
 
@@ -487,15 +503,17 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
             return result
 
-        except RedactionUnavailableError:
-            raise
         except Exception as e:
             self.logger.warning(f"Presidio K8s service error: {e}")
-            if "Connection" in str(e) or "Timeout" in str(e):
-                self.analyzer_available = False
-                self.anonymizer_available = False
+            # NB: do NOT latch self.analyzer_available=False here. That flag is
+            # only ever set True at startup, so latching it off on a transient
+            # blip would permanently disable Presidio (and, under fail-closed,
+            # permanently fail every turn) until process restart. The
+            # BaseExternalClient circuit breaker already backs off on repeated
+            # failures and recovers automatically, so transient errors self-heal.
+            #
             # Fail-closed: if redaction is required, refuse rather than pass
-            # un-analyzed text through. Regex redaction already applied upstream.
+            # un-analyzed text through (regex redaction already applied upstream).
             if self._fail_closed_active():
                 raise RedactionUnavailableError(
                     "Presidio analyzer errored; refusing to pass un-analyzed text "

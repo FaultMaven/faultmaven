@@ -1,7 +1,7 @@
 import asyncio
 import threading
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -322,6 +322,27 @@ class TestDictKeySensitivity:
         assert out["auth_token"] == "[TOKEN_REDACTED]"
         assert out["secret_key"] == "[SECRET_REDACTED]"
 
+    def test_camelcase_and_concatenated_keys_redact_value(self):
+        """Regression (#654 review): camelCase / concatenated secret keys must
+        redact — an earlier segment-anchored matcher leaked them verbatim."""
+        sanitizer = DataSanitizer()
+        out = sanitizer.sanitize(
+            {
+                "apiKey": "SECRETVAL",
+                "apikey": "SECRETVAL",
+                "accessToken": "TOKVAL",
+                "accesstoken": "TOKVAL",
+                "privateKey": "PK",
+                "SecretAccessKey": "AWSSECRET",
+            }
+        )
+        assert out["apiKey"] == "[KEY_REDACTED]"
+        assert out["apikey"] == "[KEY_REDACTED]"
+        assert out["accessToken"] == "[TOKEN_REDACTED]"
+        assert out["accesstoken"] == "[TOKEN_REDACTED]"
+        assert out["privateKey"] == "[KEY_REDACTED]"
+        assert out["SecretAccessKey"] == "[SECRET_REDACTED]"
+
     def test_benign_keys_not_flagged(self):
         sanitizer = DataSanitizer()
         out = sanitizer.sanitize(
@@ -330,6 +351,8 @@ class TestDictKeySensitivity:
                 "tokenizer": "bge-m3",
                 "secretary": "alice",
                 "keyboard": "mechanical",
+                "turnkey": "solution",
+                "donkey": "eeyore",
             }
         )
         # Values preserved — none of these keys name a secret.
@@ -337,6 +360,8 @@ class TestDictKeySensitivity:
         assert out["tokenizer"] == "bge-m3"
         assert out["secretary"] == "alice"
         assert out["keyboard"] == "mechanical"
+        assert out["turnkey"] == "solution"
+        assert out["donkey"] == "eeyore"
 
 
 class TestDockerPatternRemoval:
@@ -385,6 +410,21 @@ class TestFailClosedPosture:
         # under fail_open=False.
         s = DataSanitizer(settings=self._settings(sanitize_pii=False, fail_open=False))
         assert isinstance(s.sanitize("john@example.com"), str)
+
+    def test_transient_presidio_error_does_not_latch_analyzer_off(self):
+        """Regression (#654 review): a transient Presidio error must NOT
+        permanently disable the analyzer — that would (under fail-closed) fail
+        every subsequent turn until process restart. The circuit breaker handles
+        transient failures with recovery instead."""
+        s = DataSanitizer()
+        s.analyzer_available = True  # pretend Presidio was up
+        with patch.object(
+            s, "call_external_sync", side_effect=Exception("Connection timed out")
+        ):
+            # sanitize_pii is off here → fail-open path returns text, no raise.
+            result = s._apply_presidio("hello world", {})
+        assert result == "hello world"
+        assert s.analyzer_available is True  # NOT latched off
 
 
 class TestPasswordRegexWordBoundary:
