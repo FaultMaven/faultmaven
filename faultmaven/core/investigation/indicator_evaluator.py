@@ -333,6 +333,21 @@ class IndicatorEvaluator:
         return evaluate_predicate_against_text(predicate, output, complete=True)
 
 
+def _normalize_predicate_text(s: str) -> str:
+    """Case-fold + collapse every whitespace run to a single space (M-B).
+
+    Neutralizes the diagnostic-command formatting artifacts — double-space column
+    alignment (``MemoryPressure       True``), case differences (``OOMKilled`` vs
+    ``oomkilled``) — that make an authored ``contains`` / ``absent`` target miss the
+    same token in real uploaded telemetry. Bounded to **case + whitespace only**:
+    NO fuzzy / semantic matching, so evaluation stays deterministic and the
+    ``complete=False`` subset-trust soundness is unchanged (a normalized miss is
+    still ``untested``, never a false refute; a normalized present-hit is a real
+    verbatim-modulo-whitespace/case match, so a refute is still decisive).
+    """
+    return re.sub(r"\s+", " ", s).strip().casefold()
+
+
 def evaluate_predicate_against_text(
     predicate: dict, text: str, *, complete: bool
 ) -> PredicateVerdict:
@@ -355,11 +370,14 @@ def evaluate_predicate_against_text(
     or false ``matched`` (``absent``) inferred from the digest's gaps. This is the
     subset-trust rule that preserves NO-INCORRECT-CONCLUSION on lossy input.
 
+    ``contains`` / ``absent`` compare under case-fold + whitespace-collapse
+    (``_normalize_predicate_text``, M-B) so a target authored from a diagnostic
+    command's output format still matches the same token in raw telemetry;
     ``exit_code`` / ``threshold`` are presence-only either way — a parsed value is
     verbatim wherever it appears, and no parse → ``untested`` — so ``complete``
-    does not change them. ``untested`` for any unparseable/malformed value; a
-    ValueError only for an unknown predicate name (the caller treats it as
-    ``untested``).
+    does not change them, and they are NOT normalized (raw numeric parse).
+    ``untested`` for any unparseable/malformed value; a ValueError only for an
+    unknown predicate name (the caller treats it as ``untested``).
     """
     name = predicate.get("predicate")
 
@@ -367,7 +385,10 @@ def evaluate_predicate_against_text(
         target = predicate.get("target", "")
         if not isinstance(target, str):
             return "untested"
-        if target in text:
+        # Case + whitespace normalized (M-B): a `contains` target authored from a
+        # diagnostic command's output format still matches the same token in raw
+        # telemetry. `exit_code`/`threshold` below stay raw (numeric parse).
+        if _normalize_predicate_text(target) in _normalize_predicate_text(text):
             return "matched"
         return "refuted" if complete else "untested"
 
@@ -375,7 +396,7 @@ def evaluate_predicate_against_text(
         target = predicate.get("target", "")
         if not isinstance(target, str):
             return "untested"
-        if target in text:
+        if _normalize_predicate_text(target) in _normalize_predicate_text(text):
             return "refuted"  # present → the 'absent' assertion is contradicted
         return "matched" if complete else "untested"
 
