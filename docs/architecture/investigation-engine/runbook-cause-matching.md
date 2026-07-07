@@ -159,6 +159,27 @@ quotes, trailing commas, JSON5/YAML-flow, and embedded comments all fail Gate 2.
 registered test case, and a documented worked example. Predicates are not added
 per-runbook. Avoid `regex` — it composes poorly and tempts fragile hints.
 
+**Optional `stance` (counterfactual, T2).** A hint may carry
+`"stance": "supports" | "refutes"` (default `"supports"`). A `supports` predicate
+firing (`matched`) adds a SUPPORTS link; a `refutes` predicate is a **disqualifier**
+— firing ELIMINATES the cause (REFUTES) and is silent otherwise (it never yields
+SUPPORTS). Use `refutes` for a token that categorically belongs to a *sibling*
+cause; author it more conservatively than `supports` (a wrong `refutes`
+mis-eliminates a competitor). This is **sibling-elimination only** — the REFUTES is
+an ordinary typed link, not routed to proof-by-exclusion. The kb-toolkit validator
+errors on an invalid `stance`; the engine resolver (`differential_intake._resolve_stance`)
+treats an unknown/invalid value as silent (never guesses the direction).
+
+**Target contract (symptom-telemetry, T1).** A `contains`/`absent` `target` must be
+a token that appears **verbatim in raw uploaded telemetry**, not as a diagnostic
+command formats it (no column-alignment double-spaces, no tool-specific JSON
+re-quoting). `contains`/`absent` are compared under **case-fold + intra-line
+whitespace collapse** (`indicator_evaluator._normalize_predicate_text`; newlines stay
+boundaries), so a same-line formatting/case variant still matches while a cross-line
+coincidence does not. The `step` key is **optional provenance** — the
+content-addressed evaluator ignores it. The kb-toolkit validator warns on over-broad
+/ command-shaped targets (`≥2`-space run, `≤3` chars, stop-word).
+
 ---
 
 ## 4. Chain-Level Verdict (graceful degradation)
@@ -189,12 +210,16 @@ rigidity trap the governing principle warns against.
   them" is the right guidance even though they carry no *matching* weight — see
   runbook-content-architecture.md § "Match surface vs validation surface" for the
   authoring discipline.
-  > **Current limitation (2026-07-01):** this loop is implemented but effectively
-  > **inert in practice** — it produces ~0 `provenance="runbook"` links because its
-  > candidate source (`differential_runbook_ids`) is seeded **only** on a `single`
-  > verdict (§4 below), and predicates authored at step-output level rarely match
-  > symptom-first telemetry. So the differential does not yet drive `cause_state` on
-  > real cases. Root cause + fix plan:
+  > **Status (updated):** **RC-1 is fixed** — the differential is now seeded from the
+  > top-K *retrieved* runbooks regardless of the T2 verdict (`apply_runbook_cause_matcher`),
+  > so the predicate loop runs on `none`/`multiple`, not only the rare `single`. **RC-2**
+  > (step-output-shaped targets) is addressed by the predicate contract: **M-B**
+  > case + intra-line-whitespace normalization (revives formatting-variant targets),
+  > the **T1** symptom-telemetry target contract + dead-target lint, and the corpus
+  > **validation-layer regeneration**. The loop stays flag-gated
+  > (`enable_runbook_cause_matcher`, default off) until BOTH the flag's tripwire
+  > preconditions hold (see `settings.py`): #604 anti-stall liveness AND
+  > (T1 lint + Phase-0 GO + regeneration). Root-cause history:
   > [runbook-cause-matcher-implementation.md § Live validation](./runbook-cause-matcher-implementation.md#live-validation-2026-07-01-the-matcher-fires-but-grounding-is-inert).
 - **Refutation prunes.** A rung whose indicator is *contradicted* (REFUTES
   evidence) drops the chain hard. (M7 AND-member pruning applies only to

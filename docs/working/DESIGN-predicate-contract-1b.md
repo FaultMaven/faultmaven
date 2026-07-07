@@ -84,6 +84,14 @@ Phase-0 adversarial gate sits **after** this contract lands, **before** regenera
 - `runbook-cause-matching.md:192-198` "Current limitation (2026-07-01)" + the impl-doc: RC-1 is fixed in tree
   (differential seeded from retrieval); note it. Add the `stance` predicate + normalization to §3 vocab.
 
+### Scope note — backend `runbook_validator` predicate-awareness DEFERRED
+The audit's mirror-4 listed adding `<!-- match -->` / `stance` / dead-target awareness to the **backend**
+`runbook_validator.py`. Deferred: the backend validates the **conversion** path, which is **predicate-less by
+design** (1a decision — conversion authors Statement/Chain/Interventions only; predicates are a toolkit-only
+enrichment). With no predicates produced there, the backend has nothing to lint. The kb-toolkit generation path
+(where predicates ARE authored) carries the full T1/T2 validation. Revisit only if a manual API-authoring path
+that emits predicates becomes real.
+
 ---
 
 ## Ordered implementation (each its own reviewable commit; ★ = matcher-owned engine)

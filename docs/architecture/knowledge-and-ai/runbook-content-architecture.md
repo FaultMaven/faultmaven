@@ -255,6 +255,22 @@ authoring discipline (see the Predicate-Coverage Authoring campaign).
   gaps. Bias predicates toward symptom/error content that lands in the digest. As
   with `Statement`s, a predicate that fires for Cause A should **not** fire for a
   sibling Cause B — non-discriminating predicates dilute the validation signal.
+- **Targets are symptom-telemetry, not command-output (T1).** A `contains`/`absent`
+  `target` must be a token that appears **verbatim in the raw telemetry a user
+  pastes** — not as a diagnostic command formats it (no column-alignment
+  double-spaces, no tool-specific JSON re-quoting of text logs, no `field=value`
+  shapes that only a `jsonpath`/`awk` produces). Matching normalizes case +
+  *intra-line* whitespace (newlines stay boundaries), so a same-line formatting/case
+  variant still fires. The `step` key is **optional provenance** (the
+  content-addressed evaluator ignores it). The validator warns on over-broad /
+  command-shaped targets (`≥2`-space run, `≤3` chars, stop-word).
+- **Optional `stance` counterfactual (T2).** A predicate may carry
+  `"stance": "supports" | "refutes"` (default `"supports"`). A `refutes` predicate is
+  a **disqualifier**: firing (its token — categorically a *sibling*'s signature — is
+  present) ELIMINATES the cause; it is silent otherwise and never SUPPORTS. Author
+  `refutes` **more conservatively** than `supports` (a wrong `refutes` mis-eliminates
+  a competitor). Sibling-elimination only — not proof-by-exclusion. An invalid
+  `stance` value is a validator error.
 
 > **Planned (not yet authored):** an optional `data_type` key on a predicate —
 > scoping it to a datum type (`logs` / `metrics` / `configuration` / …) so it only
@@ -387,7 +403,7 @@ This section explains WHY each template section is structured the way it is. Thi
 5. **Hard character limits.** `Statement` ≤300 chars; each `Chain` rung ≤300 chars (soft warning). Validator hard error on `Statement` overflow; generation pipeline re-prompts on overflow.
 6. **Indicator format.** Each `**Indicators:**` entry carries a rung ref and must contain at least one of `[Step N]` (N must resolve to an existing numbered Diagnostic Step), `[Symptom]` (free-form reference back to Symptom Recognition), or `[Default]` (reserved for the fallback Cause). Validator hard error on missing token.
 7. **Interventions are quadrant-tagged.** Each `**Interventions:**` entry must lead with a valid quadrant — `remediation`, `defensive_fix`, `mitigation`, or `loop_break`. Validator hard error on a missing or unknown quadrant. Soft warnings: a `mitigation` should declare **Risk** + **Duration**; interventions should carry a **Verification**; command-based fixes should include a fenced code block.
-8. **Match-hint comments are optional but must be strict JSON when present.** The body of any `<!-- match: ... -->` block must be `json.loads()`-parseable (quoted keys, double quotes, no trailing commas, no JSON5/YAML-flow syntax) and must use a predicate from the controlled vocabulary (see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary)). Validator hard error on malformed JSON or unregistered predicate.
+8. **Match-hint comments are optional but must be strict JSON when present.** The body of any `<!-- match: ... -->` block must be `json.loads()`-parseable (quoted keys, double quotes, no trailing commas, no JSON5/YAML-flow syntax) and must use a predicate from the controlled vocabulary (see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary)). The `step` key is optional (provenance only). An optional `stance` must be `"supports"` or `"refutes"`. Validator hard error on malformed JSON, an unregistered predicate, or an invalid `stance`; validator **warning** on an over-broad / command-shaped `contains`/`absent` target (`≥2`-space run, `≤3` chars, stop-word) or a real Cause with no predicate.
 9. **Section titles must match exactly.** The quality gate linter checks for these headers. Variant names (e.g., "Troubleshooting" instead of "Diagnostic Steps") will fail validation.
 10. **`Chain` is optional and tolerant.** Omitting `Chain` yields a degenerate `root → D` chain (no error). When present it must be a linear `<ref>:` ladder; `converges: <Cause>.<ref>` is the only cross-chain construct. There is **no** AND grammar in authored runbooks.
 
