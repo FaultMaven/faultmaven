@@ -83,3 +83,33 @@ Keep the sound, satisfied layers — **Statements, Chains, Interventions** (audi
 - [ ] `kb-build-pack` → rebuild the vendored pack (`faultmaven/resources/knowledge/pack`).
 - [ ] Flip `enable_runbook_cause_matcher` on (behind the campaign's normal validation).
 - [ ] Re-run the grounded-link metric (0b) — confirm `runbook_arm` off 0 on matching-runbook cases.
+
+---
+
+## Execution log
+
+**2026-07-07 — Step 1a COMPLETE** (worktrees off `origin/main`: `fm-tmpl-wt` + `kbtk-tmpl-wt`, branch
+`feat/runbook-template-guardrails`). Docs recovered + force-committed first (`docs/working` is gitignored;
+untracked copies had been wiped by a concurrent workstream).
+
+- [x] **1a-1 v3 fill-in template** — deleted `docs/operations/runbooks/template.md`; re-pointed kb-toolkit
+  `docs/TEMPLATE.md` at canonical §3 (which carries a copy-pasteable v4 example). Commits: fm `c2f2eab8`,
+  kbtk `75e606d`. Chose delete+re-point over replace (fewer drift-prone mirrors).
+- [x] **1a-2 backend validator parity** — required sub-fields now per-Cause **ERROR** (was document-level
+  WARNING) + Statement≤300 ERROR; shared cause-block parser extracted. Verified **0 false failures across all
+  91 shipped runbooks**; +8 tests, 305 knowledge unit tests green. Commit fm `3609f8c1`.
+- [x] **1a-3 port MECE to kb-toolkit — DROPPED (already done).** CORRECTION: the audit's "generation path
+  unguarded for MECE / stale byte-identical claim" was itself a **stale-checkout artifact** (mirror agent read
+  the kb-toolkit checkout 14 behind `origin/main`). On `origin/main`, `kb_toolkit/core/validator.py:107-192`
+  has `check_cause_statement_invariants` **byte-identical** to the backend (`diff` empty) and calls it — the
+  mirror is real. Audit + memory corrected. Commit fm `afdbae5d`.
+- [x] **1a-4 conversion predicate-less decision** — documented as intentional (comment at the prompt def, not
+  in the prompt string); the "enforce per-Cause grammar in `create_runbook_from_template`" half is satisfied by
+  1a-2 (that path calls `validate_content`, now strict). Commit fm `4a6a8e3f`.
+
+**Caveat carried forward:** all kb-toolkit-side audit findings + the corpus sample were read from the stale
+kb-toolkit checkout — **re-confirm on `origin/main`** before Steps 1b/2 (esp. the predicate/collision counts).
+
+**NOT STARTED (correctly gated):** Step 1b (predicate contract T1/T2/M-A/M-B), the Phase-0 gate, Step 2/3.
+1a shipped as guardrail/correctness only; the predicate program stays behind the Phase-0 adversarial gate and
+belongs in the harvest-grounding campaign (Slice 6 / #584).
