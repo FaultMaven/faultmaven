@@ -265,6 +265,24 @@ class TestEvaluateDatum:
         )
         assert [v.stance for v in verdicts] == [EvidenceStance.SUPPORTS]
 
+    def test_absent_refutes_double_negative_is_silent_not_wrong_supports(self):
+        # absent+refutes with the token PRESENT → absent verdict is 'refuted';
+        # a refutes-predicate is silent on a non-firing verdict, so NO verdict is
+        # emitted (never a wrong SUPPORTS-on-presence).
+        case, ev = _case_with_datum("pod OOMKilled here")
+        cands = [
+            _candidate(
+                "A",
+                [{"predicate": "absent", "target": "OOMKilled", "stance": "refutes"}],
+            )
+        ]
+        assert (
+            evaluate_datum_against_differential(
+                evidence=ev, active_causes=cands, case=case
+            )
+            == []
+        )
+
 
 class TestResolveStance:
     """M-A: stance-aware verdict→EvidenceStance mapping (default 'supports')."""
@@ -274,15 +292,26 @@ class TestResolveStance:
         refutes = {"predicate": "contains", "target": "x", "stance": "refutes"}
         assert _resolve_stance("matched", supports) == EvidenceStance.SUPPORTS
         assert _resolve_stance("refuted", supports) == EvidenceStance.REFUTES
+        # A refutes-predicate is a disqualifier: eliminate on a firing, silent
+        # otherwise (never SUPPORTS — that would be the double-negative footgun).
         assert _resolve_stance("matched", refutes) == EvidenceStance.REFUTES
-        assert _resolve_stance("refuted", refutes) == EvidenceStance.SUPPORTS
+        assert _resolve_stance("refuted", refutes) is None
 
     def test_untested_is_silent(self):
         assert _resolve_stance("untested", {"predicate": "contains"}) is None
 
-    def test_unknown_stance_value_defaults_to_supports(self):
-        p = {"predicate": "contains", "stance": "bogus"}
-        assert _resolve_stance("matched", p) == EvidenceStance.SUPPORTS
+    def test_unknown_stance_value_is_silent_not_supports(self):
+        # A typo'd/invalid stance must NOT silently default to the belief-raising
+        # SUPPORTS direction — it yields no verdict.
+        for bad in ("bogus", "refute", "reject", None):
+            p = {"predicate": "contains", "stance": bad}
+            assert _resolve_stance("matched", p) is None
+
+    def test_absent_stance_key_defaults_to_supports(self):
+        assert (
+            _resolve_stance("matched", {"predicate": "contains"})
+            == EvidenceStance.SUPPORTS
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -93,22 +93,32 @@ def _resolve_stance(verdict: str, predicate: dict) -> "Optional[EvidenceStance]"
 
     - ``stance="supports"`` (default): a HOLDING predicate (``matched``) SUPPORTS the
       cause; a contradicted one (``refuted``) REFUTES it — the original mapping.
-    - ``stance="refutes"``: inverted — a HOLDING predicate ELIMINATES the cause
-      (REFUTES), letting a positive token that belongs to a *sibling* rule this cause
-      out; a contradicted one SUPPORTS it.
-    - ``untested`` → ``None`` (the predicate is silent on this datum).
+    - ``stance="refutes"``: a disqualifier — it ELIMINATES the cause (REFUTES) when
+      it FIRES (``matched``: a token that belongs to a *sibling* is present), and is
+      **silent otherwise**. It never yields SUPPORTS: "absence of a disqualifier" is
+      not positive support, and it avoids the ``absent``+``refutes`` double-negative
+      (which on the content tier can only ever produce a ``refuted`` verdict → would
+      otherwise become a wrong SUPPORTS-on-presence).
+    - ``untested`` → ``None``; an unknown/invalid ``stance`` value → ``None`` (never
+      guess the belief-raising direction — a mis-authored ``"refute"``/``null`` must
+      not silently become SUPPORTS).
 
     **Sibling-elimination only.** The REFUTES this yields is an ordinary typed link
     (``provenance`` set by the caller) that drives ``node_state=REFUTED`` — it is NOT
     routed to ``counterfactual_refutes`` / ``belief→0`` / proof-by-exclusion (that is
-    M-D, deferred). Default ``"supports"`` reproduces the prior fixed mapping exactly,
-    so no existing predicate changes meaning.
+    M-D, deferred). An absent ``stance`` key defaults to ``"supports"`` and
+    reproduces the prior fixed mapping exactly, so no existing predicate changes
+    meaning.
     """
     if verdict not in ("matched", "refuted"):
         return None
     stance = str(predicate.get("stance", "supports")).strip().lower()
-    supports = (verdict == "matched") == (stance != "refutes")
-    return EvidenceStance.SUPPORTS if supports else EvidenceStance.REFUTES
+    if stance == "refutes":
+        # Disqualifier: eliminate on a firing, silent otherwise.
+        return EvidenceStance.REFUTES if verdict == "matched" else None
+    if stance != "supports":
+        return None  # unknown/invalid stance → never guess the direction
+    return EvidenceStance.SUPPORTS if verdict == "matched" else EvidenceStance.REFUTES
 
 
 @dataclass(frozen=True)

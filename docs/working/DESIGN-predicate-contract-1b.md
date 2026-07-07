@@ -25,8 +25,10 @@ Phase-0 adversarial gate sits **after** this contract lands, **before** regenera
 
 ### M-B — predicate normalization (engine; `indicator_evaluator.evaluate_predicate_against_text`)
 - For `contains` and `absent` ONLY: before the `target in text` test, normalize **both** sides with
-  `_normalize_predicate_text(s) = re.sub(r"\s+", " ", s).strip().casefold()`. This case-folds and collapses any
-  run of whitespace (incl. the double-space / column-alignment artifacts) to a single space.
+  `_normalize_predicate_text(s) = re.sub(r"[ \t]+", " ", s).strip().casefold()`. This case-folds and collapses
+  **horizontal** whitespace runs (the double-space / column-alignment artifacts) to a single space.
+  **Newlines are preserved as boundaries** (`[ \t]+`, not `\s+`): collapsing line breaks would let a multi-word
+  target match two tokens on adjacent, unrelated lines → a false SUPPORTS on a phrase that never occurred.
 - `exit_code` / `threshold` are numeric-parse — **unchanged** (normalization does not apply).
 - Applies on BOTH tiers (`complete=True` step-addressed and `complete=False` content-addressed) since it is the
   same function — the `complete` subset-trust logic is untouched (a normalized miss under `complete=False` is
@@ -61,11 +63,15 @@ Phase-0 adversarial gate sits **after** this contract lands, **before** regenera
   | predicate verdict | `stance="supports"` (default) | `stance="refutes"` |
   |---|---|---|
   | `matched` (condition holds) | **SUPPORTS** | **REFUTES** |
-  | `refuted` (condition contradicted) | **REFUTES** | **SUPPORTS** |
+  | `refuted` (condition contradicted) | **REFUTES** | **— (silent)** |
   | `untested` | — (silent) | — (silent) |
 
-  i.e. `SUPPORTS iff (verdict == "matched") == (stance == "supports")`. Default `"supports"` reproduces today's
-  mapping exactly, so **no existing predicate changes meaning**.
+  A `refutes` predicate is a **disqualifier**: it eliminates the cause only when it FIRES (`matched`) and is
+  silent otherwise — it **never yields SUPPORTS** (that would be a double-negative footgun, and on the content
+  tier `absent`+`refutes` can only ever produce a `refuted` verdict → it would wrongly SUPPORT on presence). An
+  absent `stance` key defaults to `"supports"` and reproduces today's mapping exactly (no existing predicate
+  changes meaning). **An unknown/invalid `stance` value (typo `"refute"`, `null`, …) → silent (no verdict)** —
+  never guess the belief-raising direction.
 - **Sibling-elimination ONLY (the ratified scope):** the produced `REFUTES` is an **ordinary** typed evidence
   link (`provenance="runbook"`). It drives `node_state=REFUTED` via `refutes > supports` in `derive_node_states`
   — a competitor is eliminated. It is **NOT** routed to `counterfactual_refutes` / `belief→0` (that is **M-D**,

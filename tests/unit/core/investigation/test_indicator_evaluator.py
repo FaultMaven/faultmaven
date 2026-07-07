@@ -134,6 +134,25 @@ class TestEvaluatePredicateAgainstText:
             evaluate_predicate_against_text(p, "cpu=95", complete=False) == "untested"
         )
 
+    def test_multiword_target_does_not_match_across_a_newline(self):
+        # Only HORIZONTAL whitespace is collapsed — newlines stay boundaries — so a
+        # multi-word target does NOT match two tokens on adjacent, unrelated lines
+        # (which would be a false SUPPORTS on a phrase that never occurred).
+        p = {"predicate": "contains", "target": "failed login"}
+        assert (
+            evaluate_predicate_against_text(
+                p, "connection FAILED\nLOGIN attempt from 10.0.0.5", complete=False
+            )
+            == "untested"
+        )
+        # ... but a same-line double-space/case variant still matches.
+        assert (
+            evaluate_predicate_against_text(
+                p, "auth: FAILED  LOGIN on line 1", complete=False
+            )
+            == "matched"
+        )
+
     def test_unparseable_value_is_untested_not_refuted(self):
         # A malformed target/value yields untested — never a refutation.
         assert (

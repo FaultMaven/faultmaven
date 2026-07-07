@@ -334,18 +334,27 @@ class IndicatorEvaluator:
 
 
 def _normalize_predicate_text(s: str) -> str:
-    """Case-fold + collapse every whitespace run to a single space (M-B).
+    """Case-fold + collapse HORIZONTAL whitespace runs to a single space (M-B).
 
     Neutralizes the diagnostic-command formatting artifacts — double-space column
     alignment (``MemoryPressure       True``), case differences (``OOMKilled`` vs
     ``oomkilled``) — that make an authored ``contains`` / ``absent`` target miss the
-    same token in real uploaded telemetry. Bounded to **case + whitespace only**:
-    NO fuzzy / semantic matching, so evaluation stays deterministic and the
-    ``complete=False`` subset-trust soundness is unchanged (a normalized miss is
-    still ``untested``, never a false refute; a normalized present-hit is a real
-    verbatim-modulo-whitespace/case match, so a refute is still decisive).
+    same token in real uploaded telemetry. Bounded to **case + intra-line
+    whitespace only**.
+
+    NEWLINES ARE PRESERVED as boundaries (``[ \\t]+``, not ``\\s+``): collapsing
+    line breaks would let a multi-word target match two tokens that merely land on
+    *adjacent, unrelated* lines (``"failed login"`` vs ``"...FAILED\\nLOGIN..."``) —
+    a false SUPPORTS on a phrase that never occurred. Keeping newlines as
+    boundaries preserves the ``complete=False`` subset-trust soundness (a normalized
+    miss is still ``untested``, never a false refute; a present-hit is a real
+    verbatim-modulo-case/intra-line-whitespace match, so a refute stays decisive).
+
+    Distinct from ``causal_graph._normalize_statement`` (which caps at 500 chars —
+    it would truncate a full datum digest — and uses ``.lower()``); this needs the
+    whole text and caseless-correct ``.casefold()``, so it is a separate helper.
     """
-    return re.sub(r"\s+", " ", s).strip().casefold()
+    return re.sub(r"[ \t]+", " ", s).strip().casefold()
 
 
 def evaluate_predicate_against_text(
