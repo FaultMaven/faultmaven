@@ -144,14 +144,9 @@ class TestDataSanitizer:
         text = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ"
         result = sanitizer.sanitize(text)
 
-        # Should redact something in the JWT token (either JWT or AWS secret)
-        assert any(
-            prefix in result
-            for prefix in [
-                "<JWT_TOKEN_",
-                "<AWS_SECRET_KEY_",
-            ]
-        )
+        # The JWT is caught by the JWT pattern specifically. (It is NOT caught
+        # by the AWS-secret pattern any more — that is now context-anchored, #654.)
+        assert "<JWT_TOKEN_" in result
 
     def test_ip_address_redaction(self):
         """Test internal IP address redaction."""
@@ -172,6 +167,91 @@ class TestDataSanitizer:
         # Should redact MAC address with indexed pseudonym
         assert "<MAC_ADDRESS_" in result
         assert "00:1B:44:11:3A:B7" not in result
+
+
+class TestAwsSecretContextGating:
+    """#654: the AWS-secret pattern must be context-anchored, not a bare
+    40-char-base64 match (which corrupts hashes / base64 blobs)."""
+
+    def test_bare_40char_base64_not_redacted(self):
+        sanitizer = DataSanitizer()
+        # A 40-char base64 run (e.g. a slice of an opaque reasoning signature).
+        blob = "EsUWCsIWARFNMg8jby27u6zpclKJYV3HOly3IpA7"
+        assert len(blob) == 40
+        result = sanitizer.sanitize(f"signature: {blob}")
+        assert blob in result
+        assert "AWS_SECRET_KEY" not in result
+
+    def test_bare_sha1_and_git_sha_not_redacted(self):
+        sanitizer = DataSanitizer()
+        sha1 = "356a192b7913b04c54574d18c28d46e6395428ab"  # 40 hex chars
+        result = sanitizer.sanitize(f"commit {sha1}")
+        assert sha1 in result
+        assert "AWS_SECRET_KEY" not in result
+
+    def test_context_anchored_aws_secret_is_redacted(self):
+        sanitizer = DataSanitizer()
+        secret = (
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"  # canonical 40-char AWS example
+        )
+        assert len(secret) == 40
+        text = f"aws_secret_access_key = {secret}"
+        result = sanitizer.sanitize(text)
+        assert secret not in result
+        assert "<AWS_SECRET_KEY_" in result
+
+
+class TestOpaqueArtifactPassthrough:
+    """#654: opaque provider/model artifacts (reasoning signatures, provider
+    round-trip metadata) must pass through the sanitizer VERBATIM — redacting
+    them corrupts the bytes and breaks the provider's decode on the next call."""
+
+    def _thought_signature(self) -> str:
+        # Contains a 40-char base64 run that the old entropy pattern mangled.
+        return "EsUWCsIWARFNMg8jby27u6zpclKJYV3HOly3IpA7vQFM8pmM14M5a008vApMFg"
+
+    def test_top_level_provider_metadata_verbatim(self):
+        sanitizer = DataSanitizer()
+        sig = self._thought_signature()
+        message = {
+            "role": "assistant",
+            "content": "Server 192.168.1.5 is down",  # should still be redacted
+            "provider_metadata": {
+                "assistant_parts": [{"functionCall": {"thoughtSignature": sig}}]
+            },
+        }
+        out = sanitizer.sanitize(message)
+        # Opaque artifact preserved byte-for-byte...
+        assert (
+            out["provider_metadata"]["assistant_parts"][0]["functionCall"][
+                "thoughtSignature"
+            ]
+            == sig
+        )
+        # ...but real PII in content is still redacted.
+        assert "192.168.1.5" not in out["content"]
+
+    def test_per_tool_call_provider_metadata_verbatim(self):
+        sanitizer = DataSanitizer()
+        sig = self._thought_signature()
+        message = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {"name": "kb_qa", "arguments": "{}"},
+                    "provider_metadata": {"thought_signature": sig},
+                }
+            ],
+        }
+        out = sanitizer.sanitize(message)
+        assert out["tool_calls"][0]["provider_metadata"]["thought_signature"] == sig
+
+    def test_direct_thought_signature_key_verbatim(self):
+        sanitizer = DataSanitizer()
+        sig = self._thought_signature()
+        out = sanitizer.sanitize({"thoughtSignature": sig})
+        assert out["thoughtSignature"] == sig
 
 
 class TestPasswordRegexWordBoundary:

@@ -163,9 +163,30 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             ),
             # MAC addresses
             (r"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})", "[MAC_ADDRESS_REDACTED]"),
-            # AWS Secret Access Keys (very generic - put last to avoid conflicts)
-            (r"\b[0-9a-zA-Z/+]{40}\b", "[AWS_SECRET_KEY_REDACTED]"),
+            # AWS Secret Access Keys — CONTEXT-ANCHORED. An AWS secret is 40
+            # base64 chars, indistinguishable from any hash/SHA/base64 blob, so
+            # it MUST be gated on an adjacent `aws...secret...key =` context.
+            # A bare `[0-9a-zA-Z/+]{40}` pattern here previously corrupted opaque
+            # data (e.g. Gemini thought_signature base64) — see #654.
+            (
+                r"(?i)aws[_-]?secret[_-]?access[_-]?key['\"]?\s*[=:]\s*"
+                r"['\"]?[0-9a-zA-Z/+]{40}",
+                "[AWS_SECRET_KEY_REDACTED]",
+            ),
         ]
+
+        # Dict keys whose values are opaque model/provider artifacts (base64
+        # reasoning signatures, provider round-trip metadata). They carry no
+        # user data and MUST pass through verbatim — redacting them corrupts the
+        # bytes and breaks the provider's decode on the next call (#654).
+        self._opaque_artifact_keys = frozenset(
+            {
+                "provider_metadata",
+                "assistant_parts",
+                "thoughtsignature",
+                "thought_signature",
+            }
+        )
 
     def sanitize(self, data: Any) -> Any:
         """
@@ -323,6 +344,12 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
         sanitized = {}
         for key, value in data.items():
+            # Opaque model/provider artifacts pass through verbatim — never walk
+            # them (redacting reasoning signatures corrupts them, #654).
+            if isinstance(key, str) and key.lower() in self._opaque_artifact_keys:
+                sanitized[key] = value
+                continue
+
             # Sanitize the key itself
             sanitized_key = self.sanitize(key)
 
