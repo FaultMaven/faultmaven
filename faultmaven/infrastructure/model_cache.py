@@ -19,6 +19,7 @@ Configuration:
 - PRELOAD_MODELS=['BAAI/bge-m3']: Specific models to pre-load
 """
 
+import asyncio
 import logging
 import math
 import os
@@ -26,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # Import with graceful fallback
 try:
@@ -227,6 +228,45 @@ class ModelCache:
                 )
                 self.logger.error(f"Failed to load BGE-M3 model: {e}")
                 return None
+
+    async def aembed_texts(self, texts: List[str]) -> Optional[List[List[float]]]:
+        """Embed a LIST of texts with BGE-M3 → one 1024-dim vector per text.
+
+        THE async boundary for embedding: both the (lazy, cached) model load and
+        the CPU-bound ``encode`` run on a worker thread via ``asyncio.to_thread``,
+        so callers NEVER block the event loop. Batched — a single ``encode`` over
+        the list is far cheaper than N per-text passes (sentence-transformers
+        vectorizes). Returns ``None`` if the model is unavailable, so the caller
+        decides its fallback (ChromaDB default embedding, or skip).
+
+        Prefer this / ``aembed_query`` over open-coding
+        ``await asyncio.to_thread(bge_model.encode, ...)`` at call sites: a bare
+        synchronous ``model.encode(...)`` on an async path silently blocks the
+        loop and, on k8s, trips the liveness probe.
+        """
+
+        def _run() -> Optional[List[List[float]]]:
+            model = self.get_bge_m3_model()
+            if model is None:
+                return None
+            return model.encode(texts).tolist()
+
+        return await asyncio.to_thread(_run)
+
+    async def aembed_query(self, text: str) -> Optional[List[float]]:
+        """Embed a SINGLE text (e.g. a search query) → one 1024-dim vector.
+
+        Same off-the-event-loop guarantees as :meth:`aembed_texts`; returns
+        ``None`` if BGE-M3 is unavailable.
+        """
+
+        def _run() -> Optional[List[float]]:
+            model = self.get_bge_m3_model()
+            if model is None:
+                return None
+            return model.encode(text).tolist()
+
+        return await asyncio.to_thread(_run)
 
     def is_model_loaded(self, model_key: str = "BAAI/bge-m3") -> bool:
         """Check if a model is already loaded in cache."""

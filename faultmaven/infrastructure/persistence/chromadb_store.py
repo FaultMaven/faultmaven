@@ -5,7 +5,6 @@ Global KB vector store — operates on a single named collection.
 Receives a shared ChromaDB client via constructor injection (Principle 5).
 """
 
-import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -120,16 +119,11 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         async def _search_wrapper():
             from faultmaven.infrastructure.model_cache import model_cache
 
-            # Model lookup may lazy-load on cold start; encode() is CPU-bound.
-            # Offload both to a worker thread so the event loop stays free.
-            bge_model = await asyncio.to_thread(model_cache.get_bge_m3_model)
-            if bge_model is None:
+            # Embed off the event loop via the model_cache async boundary.
+            query_embedding = await model_cache.aembed_query(query)
+            if query_embedding is None:
                 self.logger.error("BGE-M3 model unavailable for search")
                 return []
-
-            query_embedding = await asyncio.to_thread(
-                lambda: bge_model.encode(query).tolist()
-            )
 
             query_params = {
                 "query_embeddings": [query_embedding],

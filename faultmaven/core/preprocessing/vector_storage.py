@@ -12,7 +12,6 @@ Design Reference:
     docs/architecture/data-processing/data-preprocessing-design-specification.md Section 5
 """
 
-import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -249,17 +248,12 @@ async def store_in_vector_db_background(
                 }
             )
 
-        # 3. Generate BGE-M3 embeddings for all chunks.
-        # Both the model lookup (which may trigger a lazy load on cold start)
-        # and encode() are CPU-bound and synchronous; run them on a worker
-        # thread so we don't block the event loop.
-        embeddings = None
-        bge_model = await asyncio.to_thread(model_cache.get_bge_m3_model)
-        if bge_model is not None:
-            texts = [doc["content"] for doc in documents]
-            embeddings = await asyncio.to_thread(
-                lambda: bge_model.encode(texts).tolist()
-            )
+        # 3. Generate BGE-M3 embeddings for all chunks (off the event loop via
+        # the model_cache async boundary). None → BGE unavailable, fall back to
+        # ChromaDB's default embedding.
+        texts = [doc["content"] for doc in documents]
+        embeddings = await model_cache.aembed_texts(texts)
+        if embeddings is not None:
             logger.debug(
                 f"Generated BGE-M3 embeddings for {len(texts)} chunks "
                 f"({evidence_id})"

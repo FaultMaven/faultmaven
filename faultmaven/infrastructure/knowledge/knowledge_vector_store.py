@@ -22,7 +22,6 @@ Hybrid search: Two-stage retrieval + reranking pipeline:
     - Scope preference (personal > team > global tiebreaking)
 """
 
-import asyncio
 import logging
 import math
 import re
@@ -260,17 +259,12 @@ class KnowledgeVectorStore(BaseExternalClient):
 
             collection = self._get_or_create_collection(collection_name)
 
-            # Use explicit BGE-M3 embedding (1024 dims) to match stored vectors.
-            # Model lookup may lazy-load; encode() is CPU-bound. Offload to a
-            # worker thread so the event loop stays responsive.
-            bge_model = await asyncio.to_thread(model_cache.get_bge_m3_model)
-            if bge_model is None:
+            # Explicit BGE-M3 embedding (1024 dims) to match stored vectors,
+            # off the event loop via the model_cache async boundary.
+            query_embedding = await model_cache.aembed_query(query)
+            if query_embedding is None:
                 self.logger.error("BGE-M3 model unavailable for search")
                 return []
-
-            query_embedding = await asyncio.to_thread(
-                lambda: bge_model.encode(query).tolist()
-            )
 
             query_params = {
                 "query_embeddings": [query_embedding],
@@ -505,14 +499,10 @@ class KnowledgeVectorStore(BaseExternalClient):
 
             collection = self._get_or_create_collection(collection_name)
 
-            bge_model = await asyncio.to_thread(model_cache.get_bge_m3_model)
-            if bge_model is None:
+            query_embedding = await model_cache.aembed_query(query)
+            if query_embedding is None:
                 self.logger.error("BGE-M3 model unavailable for keyword search")
                 return []
-
-            query_embedding = await asyncio.to_thread(
-                lambda: bge_model.encode(query).tolist()
-            )
 
             query_params = {
                 "query_embeddings": [query_embedding],

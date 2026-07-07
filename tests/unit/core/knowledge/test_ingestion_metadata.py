@@ -287,3 +287,49 @@ Section three content.
         assert len(normalized) > 1
         for chunk in normalized:
             assert len(chunk) <= chunker.MAX_CHUNK_CHARS
+
+
+class TestEmptyDocumentGuard:
+    """A document that produces zero chunks (empty or whitespace-only content)
+    must be skipped before embedding — otherwise aembed_texts([]) returns []
+    (not None) and collection.add(embeddings=[], ...) errors on an empty add.
+
+    (Frontmatter-only content is NOT a zero-chunk case: `_split_content` keeps
+    the raw content as a single chunk when frontmatter-stripping empties it.)"""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content", ["", "   \n\t  \n"])
+    async def test_empty_document_skips_indexing(self, content):
+        import logging
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from faultmaven.models import KnowledgeBaseDocument
+        from faultmaven.modules.knowledge.domain.services.ingestion import (
+            KnowledgeIngester,
+        )
+
+        # Bypass the heavy __init__ (ChromaDB connect + model load); we only
+        # exercise _process_and_store's chunk-guard branch.
+        ingester = KnowledgeIngester.__new__(KnowledgeIngester)
+        ingester.logger = logging.getLogger("test.ingestion")
+        ingester._collection = MagicMock()  # `collection` is a read-only property
+
+        now = "2026-07-07T00:00:00Z"
+        document = KnowledgeBaseDocument(
+            document_id="doc_empty",
+            title="Empty",
+            content=content,
+            document_type="runbook",
+            created_at=now,
+            updated_at=now,
+        )
+
+        with patch(
+            "faultmaven.modules.knowledge.domain.services.ingestion.model_cache"
+        ) as mock_cache:
+            mock_cache.aembed_texts = AsyncMock()
+            await ingester._process_and_store(document)
+
+        # Never embedded, never wrote an empty add.
+        mock_cache.aembed_texts.assert_not_called()
+        ingester._collection.add.assert_not_called()
