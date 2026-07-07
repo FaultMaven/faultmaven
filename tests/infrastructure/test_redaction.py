@@ -1,3 +1,6 @@
+import asyncio
+import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -252,6 +255,49 @@ class TestOpaqueArtifactPassthrough:
         sig = self._thought_signature()
         out = sanitizer.sanitize({"thoughtSignature": sig})
         assert out["thoughtSignature"] == sig
+
+
+class TestAsyncSanitizeBoundary:
+    """#654: redaction (CPU-bound regex + blocking Presidio round-trip) MUST run
+    off the event loop. `asanitize()` is the boundary; a synchronous `sanitize()`
+    on an async path stalls the loop and starves the k8s liveness probe."""
+
+    @pytest.mark.asyncio
+    async def test_asanitize_matches_sanitize(self):
+        sanitizer = DataSanitizer()
+        text = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE on 192.168.1.9"
+        assert await sanitizer.asanitize(text) == sanitizer.sanitize(text)
+
+    @pytest.mark.asyncio
+    async def test_asanitize_runs_off_the_event_loop(self):
+        sanitizer = DataSanitizer()
+        loop_thread_id = threading.get_ident()
+        sanitize_thread = {}
+
+        def slow_sanitize(_text, *_a, **_k):
+            sanitize_thread["id"] = threading.get_ident()
+            time.sleep(0.05)
+            return "redacted"
+
+        # Patch the sync worker the boundary offloads.
+        sanitizer.sanitize = slow_sanitize  # type: ignore[method-assign]
+
+        concurrent_tick = {"ran": False}
+
+        async def concurrent_work():
+            await asyncio.sleep(0)
+            concurrent_tick["ran"] = True
+
+        result, _ = await asyncio.gather(
+            sanitizer.asanitize("some text"), concurrent_work()
+        )
+
+        assert result == "redacted"
+        assert concurrent_tick["ran"] is True
+        assert sanitize_thread["id"] != loop_thread_id, (
+            "sanitize ran on the event loop thread — asyncio.to_thread offload "
+            "regressed."
+        )
 
 
 class TestPasswordRegexWordBoundary:

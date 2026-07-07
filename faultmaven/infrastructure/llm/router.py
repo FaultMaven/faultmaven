@@ -159,9 +159,12 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         if prompt is None and not messages:
             raise TypeError("Either prompt or messages must be provided")
 
-        # Sanitize before sending to external providers (conditional)
-        sanitized_prompt = self._sanitize_if_needed(prompt) if prompt else None
-        sanitized_messages = self._sanitize_if_needed(messages) if messages else None
+        # Sanitize before sending to external providers (conditional).
+        # Off the event loop via the sanitizer's async boundary (#654).
+        sanitized_prompt = await self._sanitize_if_needed(prompt) if prompt else None
+        sanitized_messages = (
+            await self._sanitize_if_needed(messages) if messages else None
+        )
 
         # Check cache first (skip for multi-turn conversations — not cacheable)
         # The cache will be stored with the effective model used
@@ -390,16 +393,19 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Return the full LLMResponse (milestone_engine expects this)
         return response
 
-    def _sanitize_if_needed(self, data: Any) -> Any:
+    async def _sanitize_if_needed(self, data: Any) -> Any:
         """
         Conditionally sanitize data based on SANITIZE_PII setting.
+
+        Runs off the event loop via the sanitizer's async boundary so a large
+        prompt / message history never blocks the loop (#654).
 
         Returns:
             Sanitized or original data
         """
         if self.settings.protection.sanitize_pii:
             self.logger.debug("🔒 LLM Router: Applying PII sanitization")
-            return self.sanitizer.sanitize(data)
+            return await self.sanitizer.asanitize(data)
         else:
             self.logger.debug("🔓 LLM Router: Skipping PII sanitization")
             return data

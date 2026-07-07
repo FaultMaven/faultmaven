@@ -26,12 +26,10 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
+import asyncio
 import hashlib
-import json
-import logging
-import os
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -215,6 +213,19 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         else:
             # For other types, convert to string, sanitize, and return as string
             return self._sanitize_text(str(data))
+
+    async def asanitize(self, data: Any) -> Any:
+        """Async boundary for :meth:`sanitize`.
+
+        Runs the CPU-bound regex passes AND the blocking Presidio HTTP round-trip
+        on a worker thread via ``asyncio.to_thread``, so the event loop is NEVER
+        blocked. Any ``async`` caller MUST use this instead of ``sanitize()`` —
+        a synchronous ``sanitize()`` on the loop stalls it and, on k8s, starves
+        the liveness probe (the same class as inline embedding, #654).
+        """
+        if data is None:
+            return data
+        return await asyncio.to_thread(self.sanitize, data)
 
     def _sanitize_text(self, text: str) -> str:
         """
