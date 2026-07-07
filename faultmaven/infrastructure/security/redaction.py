@@ -152,11 +152,10 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 r"-----BEGIN RSA PRIVATE KEY-----[^-]+-----END RSA PRIVATE KEY-----",
                 "[PRIVATE_KEY_REDACTED]",
             ),
-            # Docker registry credentials
-            (
-                r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}:[a-zA-Z0-9._%+-]+",
-                "[CREDENTIALS_REDACTED]",
-            ),
+            # (A former "docker registry credentials" pattern
+            # `email@host.tld:token` was removed in #654 — it false-matched any
+            # `user@host.tld:port` in logs/connection strings. Real registry
+            # creds are caught by the API-key / database-URL patterns.)
             # Kubernetes secrets
             (r"k8s[_-]?secret[_-]?[0-9a-fA-F]{32,}", "[K8S_SECRET_REDACTED]"),
             # Password patterns
@@ -258,6 +257,14 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         prot = self._settings.protection
         return bool(prot.sanitize_pii) and not bool(prot.fail_open)
 
+    @staticmethod
+    def _hashed_placeholder(entity_type: str, value: str) -> str:
+        """Stable ``<TYPE_hash>`` placeholder for a value. 48-bit digest keeps
+        distinct values from colliding onto one placeholder (which would make
+        the reverse mapping ambiguous)."""
+        digest = hashlib.md5(value.encode("utf-8")).hexdigest()[:12]
+        return f"<{entity_type}_{digest}>"
+
     def _sanitize_text(self, text: str) -> str:
         """Sanitize text with a fresh, call-local entity registry.
 
@@ -292,8 +299,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 entity_registry[entity_type] = {}
             type_map = entity_registry[entity_type]
             if value not in type_map:
-                hash_val = hashlib.md5(value.encode("utf-8")).hexdigest()[:6]
-                type_map[value] = f"<{entity_type}_{hash_val}>"
+                type_map[value] = self._hashed_placeholder(entity_type, value)
             return type_map[value]
 
         # Regex patterns are local and cannot fail-open — always applied.
@@ -328,20 +334,6 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         Returns:
             Sanitized dictionary
         """
-        # Sensitive key patterns - if key matches these, sanitize the value
-        sensitive_key_patterns = [
-            r"password",
-            r"passwd",
-            r"secret",
-            r"token",
-            r"key",
-            r"api[_-]?key",
-            r"access[_-]?key",
-            r"secret[_-]?key",
-            r"private[_-]?key",
-            r"auth[_-]?token",
-        ]
-
         sanitized = {}
         for key, value in data.items():
             # Opaque model/provider artifacts pass through verbatim — never walk
@@ -353,32 +345,37 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             # Sanitize the key itself
             sanitized_key = self.sanitize(key)
 
-            # Check if key indicates sensitive data
-            key_is_sensitive = False
-            key_lower = str(key).lower()
-            for pattern in sensitive_key_patterns:
-                if re.search(pattern, key_lower, re.IGNORECASE):
-                    key_is_sensitive = True
-                    break
-
-            if key_is_sensitive and isinstance(value, str):
-                # For sensitive keys, replace the value with appropriate redaction
-                if "password" in key_lower or "passwd" in key_lower:
-                    sanitized_value = "[PASSWORD_REDACTED]"
-                elif "token" in key_lower:
-                    sanitized_value = "[TOKEN_REDACTED]"
-                elif "key" in key_lower:
-                    sanitized_value = "[KEY_REDACTED]"
-                elif "secret" in key_lower:
-                    sanitized_value = "[SECRET_REDACTED]"
-                else:
-                    sanitized_value = "[SENSITIVE_VALUE_REDACTED]"
+            # If the key names a secret, redact its whole value.
+            key_redaction = self._sensitive_key_redaction(key)
+            if key_redaction is not None and isinstance(value, str):
+                sanitized_value = key_redaction
             else:
                 # Normal sanitization for non-sensitive keys
                 sanitized_value = self.sanitize(value)
 
             sanitized[sanitized_key] = sanitized_value
         return sanitized
+
+    # Secret-naming key segments → the placeholder for their value. Matched only
+    # as whole tokens (bounded by start/end or a separator), so "monkey" /
+    # "tokenizer" / "secretary" are NOT flagged while "api_key" / "auth_token"
+    # still are (#654). Order = first match wins.
+    _SENSITIVE_KEY_SEGMENTS = (
+        ("password", "[PASSWORD_REDACTED]"),
+        ("passwd", "[PASSWORD_REDACTED]"),
+        ("secret", "[SECRET_REDACTED]"),
+        ("token", "[TOKEN_REDACTED]"),
+        ("key", "[KEY_REDACTED]"),
+    )
+
+    @classmethod
+    def _sensitive_key_redaction(cls, key: Any) -> Optional[str]:
+        """Return the placeholder for a secret-naming dict key, else None."""
+        key_lower = str(key).lower()
+        for segment, placeholder in cls._SENSITIVE_KEY_SEGMENTS:
+            if re.search(rf"(?:^|[^a-z0-9]){segment}(?:$|[^a-z0-9])", key_lower):
+                return placeholder
+        return None
 
     def _sanitize_list(self, data: List[Any]) -> List[Any]:
         """
@@ -482,10 +479,9 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                     entity_registry[entity_type] = {}
                 type_map = entity_registry[entity_type]
                 if original_value not in type_map:
-                    hash_val = hashlib.md5(original_value.encode("utf-8")).hexdigest()[
-                        :6
-                    ]
-                    type_map[original_value] = f"<{entity_type}_{hash_val}>"
+                    type_map[original_value] = self._hashed_placeholder(
+                        entity_type, original_value
+                    )
 
                 result = result[:start] + type_map[original_value] + result[end:]
 

@@ -303,6 +303,54 @@ class TestAsyncSanitizeBoundary:
         )
 
 
+class TestDictKeySensitivity:
+    """#654: sensitive-key detection matches whole segments only — benign keys
+    that merely contain 'key'/'token'/'secret' as substrings are not flagged."""
+
+    def test_secret_naming_keys_redact_value(self):
+        sanitizer = DataSanitizer()
+        out = sanitizer.sanitize(
+            {
+                "password": "hunter2",
+                "api_key": "abc123",
+                "auth_token": "tok_xyz",
+                "secret_key": "s3cr3t",
+            }
+        )
+        assert out["password"] == "[PASSWORD_REDACTED]"
+        assert out["api_key"] == "[KEY_REDACTED]"
+        assert out["auth_token"] == "[TOKEN_REDACTED]"
+        assert out["secret_key"] == "[SECRET_REDACTED]"
+
+    def test_benign_keys_not_flagged(self):
+        sanitizer = DataSanitizer()
+        out = sanitizer.sanitize(
+            {
+                "monkey": "curious george",
+                "tokenizer": "bge-m3",
+                "secretary": "alice",
+                "keyboard": "mechanical",
+            }
+        )
+        # Values preserved — none of these keys name a secret.
+        assert out["monkey"] == "curious george"
+        assert out["tokenizer"] == "bge-m3"
+        assert out["secretary"] == "alice"
+        assert out["keyboard"] == "mechanical"
+
+
+class TestDockerPatternRemoval:
+    """#654: the over-broad `email@host.tld:token` pattern was removed — it
+    false-matched ordinary `user@host:port` in logs / connection strings."""
+
+    def test_email_host_port_not_redacted(self):
+        sanitizer = DataSanitizer()
+        text = "connecting as admin@db.example.com:5432"
+        result = sanitizer.sanitize(text)
+        assert "admin@db.example.com:5432" in result
+        assert "CREDENTIALS_REDACTED" not in result
+
+
 class TestFailClosedPosture:
     """#654: when PII redaction is required but Presidio is unavailable, the
     default is fail-CLOSED — refuse rather than pass un-analyzed text through."""
