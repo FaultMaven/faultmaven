@@ -26,6 +26,7 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -405,11 +406,12 @@ class KnowledgeIngester:
         # Split content into chunks
         chunks = self._split_content(document.content)
 
-        # Generate embeddings for chunks
-        embeddings = []
-        for chunk in chunks:
-            embedding = self.embedding_model.encode(chunk)
-            embeddings.append(embedding.tolist())
+        # Batch-embed all chunks in ONE encode call (sentence-transformers
+        # vectorizes a list far cheaper than N per-chunk passes), on a worker
+        # thread so the CPU-bound encode doesn't block the async event loop.
+        embeddings = (
+            await asyncio.to_thread(self.embedding_model.encode, chunks)
+        ).tolist()
 
         # Prepare metadata for each chunk
         metadatas = []
@@ -618,8 +620,10 @@ class KnowledgeIngester:
             List of search results with documents and metadata
         """
         try:
-            # Generate query embedding
-            query_embedding = self.embedding_model.encode(query).tolist()
+            # Generate query embedding off the event loop (encode is CPU-bound).
+            query_embedding = (
+                await asyncio.to_thread(self.embedding_model.encode, query)
+            ).tolist()
 
             # Prepare where clause for filtering
             where_clause = None

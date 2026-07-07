@@ -108,6 +108,12 @@ class CaseVectorStore(BaseExternalClient):
             )
             if embeddings is not None:
                 add_kwargs["embeddings"] = embeddings
+            # Kept on the loop thread: every other ChromaDB collection op in the
+            # codebase runs on the loop, and the local PersistentClient (SQLite)
+            # is not safe to use from a different thread than it was created on.
+            # The heavy per-turn embedding is already offloaded upstream
+            # (vector_storage.py pre-computes and passes `embeddings`), so add()
+            # here just stores vectors.
             collection.add(**add_kwargs)
 
             self.logger.info(
