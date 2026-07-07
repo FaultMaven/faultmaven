@@ -8,9 +8,10 @@ holistically *per cause* whether the case is explained by it, then seeds the
 chain topology into the case graph as a capped CANDIDATE prior.
 ``match_predicates`` carry **no matching weight** but are the **load-bearing
 validation surface** — the content-addressed differential-intake loop evaluates
-submitted telemetry against them (``rung_indicators`` are inert in the live path,
-read only by the step-addressed T1 tier, and FM executes no runbook steps).
-Authoring contract:
+submitted telemetry against them (when the runbook matcher is enabled;
+``enable_runbook_cause_matcher``, default off). ``rung_indicators`` are inert in
+the live path (read only by the step-addressed T1 tier, and FM executes no runbook
+steps). Authoring contract:
 docs/architecture/knowledge-and-ai/runbook-content-architecture.md (§ "Match
 surface"); matching mechanism: runbook-cause-matching.md.
 
