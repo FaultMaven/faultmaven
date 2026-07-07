@@ -404,6 +404,16 @@ class KnowledgeIngester:
 
         # Split content into chunks
         chunks = self._split_content(document.content)
+        if not chunks:
+            # Empty / whitespace-only document → nothing to index. Skip before
+            # embedding: aembed_texts([]) returns [] (not None), and
+            # collection.add(embeddings=[], ...) errors on an empty add. Mirrors
+            # the guards in vector_storage / knowledge_service.
+            self.logger.warning(
+                f"No chunks produced for document {document.document_id}, "
+                "skipping vector indexing"
+            )
+            return
 
         # Batch-embed all chunks off the event loop via the model_cache async
         # boundary (availability is guaranteed by the startup check).
