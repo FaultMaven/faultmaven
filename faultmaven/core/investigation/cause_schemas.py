@@ -5,9 +5,13 @@ docstring. A retrieved runbook Cause is a CAUSAL CHAIN: one ROOT and a
 ``root → … → D`` ladder. Its **symptom-level ``cause_statement`` is the
 load-bearing match surface**: the matcher (``indicator_evaluator``) judges
 holistically *per cause* whether the case is explained by it, then seeds the
-chain topology into the case graph as a capped CANDIDATE prior. Per-rung
-indicators / ``match_predicates`` are optional annotations, inert for matching in
-evidence-only FaultMaven. Authoring contract:
+chain topology into the case graph as a capped CANDIDATE prior.
+``match_predicates`` carry **no matching weight** but are the **load-bearing
+validation surface** — the content-addressed differential-intake loop evaluates
+submitted telemetry against them (when the runbook matcher is enabled;
+``enable_runbook_cause_matcher``, default off). ``rung_indicators`` are inert in
+the live path (read only by the step-addressed T1 tier, and FM executes no runbook
+steps). Authoring contract:
 docs/architecture/knowledge-and-ai/runbook-content-architecture.md (§ "Match
 surface"); matching mechanism: runbook-cause-matching.md.
 
@@ -55,9 +59,15 @@ class CauseRecord(BaseModel):
         Causes (MECE).
       - ``chain_nodes`` / ``chain_edges`` — chain **topology**, instantiated into
         the case graph as a capped CANDIDATE prior (never VALIDATED w/o evidence).
-      - ``rung_indicators`` / ``match_predicates`` — **optional annotations,
-        inert for matching** in evidence-only FM (operator/tool-output level).
-        Human diagnostic notes / opportunistic fast-path only.
+      - ``match_predicates`` — **no matching weight** (matching is holistic over
+        the symptom-level ``cause_statement``), but the **load-bearing validation
+        surface**: the content-addressed differential-intake loop deterministically
+        evaluates submitted telemetry against them → SUPPORTS/REFUTES with
+        ``provenance="runbook"``. Each predicate may carry an optional
+        ``stance: "supports" | "refutes"`` (default ``"supports"``; a firing
+        ``refutes`` eliminates the cause — sibling-elimination only, not
+        proof-by-exclusion). ``rung_indicators`` are inert in the live path (only
+        the step-addressed T1 tier reads them, and FM runs no runbook steps).
 
     This is the *reference shape*; the definitions below describe the same cause
     record independently and must stay aligned with it (they live in a separate
@@ -90,11 +100,11 @@ class CauseRecord(BaseModel):
     chain_edges: List[Dict[str, Any]] = Field(default_factory=list)
     rung_indicators: Dict[str, List[str]] = Field(
         default_factory=dict,
-        description="Optional; inert for matching in evidence-only FM. rung ref → [indicator prose]",
+        description="Optional; inert in the live path (step-addressed T1 only). rung ref → [indicator prose]",
     )
     match_predicates: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Optional; inert for matching in evidence-only FM. Predicates from <!-- match --> hints",
+        description="No matching weight; the validation surface (differential-intake). From <!-- match --> hints; each may carry optional stance: supports|refutes",
     )
     interventions: List[Dict[str, Any]] = Field(default_factory=list)
     is_fallback_cause: bool = False

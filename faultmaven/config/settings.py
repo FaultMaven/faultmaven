@@ -1450,11 +1450,20 @@ class FeatureSettings(BaseSettings):
     # prior (per-turn, before LLM chain emission). Off until validated (the
     # matcher's deterministic + semantic resolvers are wired in a later increment).
     #
-    # TRIPWIRE — do NOT flip to True until the differential evidence-need budget's
-    # anti-stall liveness (cross-turn rotation) ships (issue #604). Part A's broad
-    # differential + the N=3 demand cap can otherwise deadlock the demand side
-    # (unanswerable asks lock the slots, hiding an answerable discriminator) — a
-    # NO-COLLAPSE regression. Bounded emission is in; rotation is not yet.
+    # TRIPWIRE — TWO independent preconditions; do NOT flip to True until BOTH hold.
+    #  (1) Differential evidence-need anti-stall liveness (cross-turn rotation)
+    #      ships (issue #604). Part A's broad differential + the N=3 demand cap can
+    #      otherwise deadlock the demand side (unanswerable asks lock the slots,
+    #      hiding an answerable discriminator) — a NO-COLLAPSE regression. Bounded
+    #      emission is in; rotation is not yet.
+    #  (2) The predicate-contract chain lands: the T1 dead-target lint (kb-toolkit)
+    #      + Phase-0 adversarial GO + the validation-layer regeneration. The M-B
+    #      normalization (case + intra-line whitespace) makes predicate matching
+    #      MORE permissive; on the `absent`/REFUTES elimination side an over-broad or
+    #      command-shaped target (the RC-2 defects the T1 lint catches) could then
+    #      wrongly eliminate a true cause on the un-regenerated corpus. Flipping
+    #      after (1) but before (2) exposes exactly that. See
+    #      docs/working/DESIGN-predicate-contract-1b.md (Phase-0 gate).
     enable_runbook_cause_matcher: bool = Field(default=False)
 
     model_config = {"env_prefix": "", "extra": "ignore"}

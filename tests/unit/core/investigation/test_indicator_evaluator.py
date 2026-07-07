@@ -88,6 +88,71 @@ class TestEvaluatePredicateAgainstText:
             evaluate_predicate_against_text(p, "mem=50", complete=False) == "untested"
         )
 
+    # --- M-B: case + whitespace normalization for contains/absent ---------------
+
+    def test_contains_matches_across_case_difference(self):
+        # Was a miss under literal substring: target case != telemetry case.
+        p = {"predicate": "contains", "target": "OOMKilled"}
+        assert (
+            evaluate_predicate_against_text(p, "reason: oomkilled", complete=False)
+            == "matched"
+        )
+
+    def test_contains_matches_across_whitespace_run(self):
+        # The double-space / column-alignment artifact from a diagnostic command's
+        # output must still match the single-spaced authored target (and vice versa).
+        p = {"predicate": "contains", "target": "exitCode=0 reason=Completed"}
+        assert (
+            evaluate_predicate_against_text(
+                p, "State: exitCode=0  reason=Completed", complete=False
+            )
+            == "matched"
+        )
+
+    def test_absent_refutes_across_case_on_subset(self):
+        # Presence modulo case is still a decisive contradiction of an 'absent'.
+        p = {"predicate": "absent", "target": "keepalive"}
+        assert (
+            evaluate_predicate_against_text(p, "KeepAlive 65;", complete=False)
+            == "refuted"
+        )
+
+    def test_normalization_preserves_subset_trust(self):
+        # A genuinely-absent target (even after normalization) is still untested on
+        # a subset — normalization must not manufacture a false refute.
+        p = {"predicate": "contains", "target": "OOMKilled"}
+        assert (
+            evaluate_predicate_against_text(p, "all clean", complete=False)
+            == "untested"
+        )
+
+    def test_threshold_target_not_normalized(self):
+        # exit_code/threshold parse raw numerics — M-B does NOT case-fold their
+        # target, so a case-mismatched metric name still does not match.
+        p = {"predicate": "threshold", "target": "CPU", "op": ">", "value": 90}
+        assert (
+            evaluate_predicate_against_text(p, "cpu=95", complete=False) == "untested"
+        )
+
+    def test_multiword_target_does_not_match_across_a_newline(self):
+        # Only HORIZONTAL whitespace is collapsed — newlines stay boundaries — so a
+        # multi-word target does NOT match two tokens on adjacent, unrelated lines
+        # (which would be a false SUPPORTS on a phrase that never occurred).
+        p = {"predicate": "contains", "target": "failed login"}
+        assert (
+            evaluate_predicate_against_text(
+                p, "connection FAILED\nLOGIN attempt from 10.0.0.5", complete=False
+            )
+            == "untested"
+        )
+        # ... but a same-line double-space/case variant still matches.
+        assert (
+            evaluate_predicate_against_text(
+                p, "auth: FAILED  LOGIN on line 1", complete=False
+            )
+            == "matched"
+        )
+
     def test_unparseable_value_is_untested_not_refuted(self):
         # A malformed target/value yields untested — never a refutation.
         assert (
