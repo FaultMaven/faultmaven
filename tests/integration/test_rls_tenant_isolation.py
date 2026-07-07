@@ -165,7 +165,16 @@ async def test_rls_enabled_and_policy_present(superuser_engine):
     representative sample of tenanted tables."""
     maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
     async with maker() as session:
-        for table in ("cases", "organizations", "evidence", "knowledge_items"):
+        for table in (
+            "cases",
+            "organizations",
+            "evidence",
+            "knowledge_items",
+            # causal-graph tables enrolled by migration 023 (added after 018)
+            "causal_nodes",
+            "causal_edges",
+            "causal_node_evidence",
+        ):
             enabled = (
                 await session.execute(
                     text("SELECT relrowsecurity FROM pg_class WHERE relname = :t"),
