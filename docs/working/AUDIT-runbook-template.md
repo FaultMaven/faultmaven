@@ -438,10 +438,16 @@ byte-identical MECE mirror claim" (that the generation path did not enforce MECE
 exploration agent read a kb-toolkit checkout 14 commits behind `origin/main`. Re-verified on `origin/main`, the
 MECE block is present and byte-identical in `kb_toolkit/core/validator.py:107-192`, so the mirror is real and
 the generation path DOES enforce MECE. **Lesson:** the kb-toolkit shared checkout is routinely stale; all
-kb-toolkit-side findings in this audit (chunker field-naming, pack_builder field set, etc.) were read from that
-same stale checkout and should be re-confirmed on `origin/main` before anyone acts on them. The corpus sample
-(§4) was likewise read from the stale checkout — re-confirm the exact predicate/collision counts on
-`origin/main` before Phase 2.
+kb-toolkit-side findings were read from that same stale checkout, so they were re-confirmed on `origin/main`.
+
+**RE-CONFIRMED on `origin/main` (2026-07-07).** `git diff 2c8a03e..origin/main` (the 14 missing commits) touched
+**only** `validator.py` (+245 — the MECE addition, i.e. exactly this retracted finding) and `pack_builder.py`
+(+8 — did **not** touch the emitted field set). `data/runbooks-v4/`, `chunker.py`, `runbook_grammar.py`, and
+`config.py` were **unchanged**. Verified directly: the shipped `pack.json` on `origin/main` gives exactly the
+§4 headline numbers (91 runbooks / 640 causes / 756 predicates; ops `contains 580 / threshold 108 / absent 56 /
+exit_code 12`; `data_type` = 0), and `pack_builder._extract_causes` emits exactly the 9 `CauseRecord` fields. So
+**every other kb-toolkit-side finding and the entire corpus sample are valid as written** — the MECE-mirror
+claim was the sole casualty of the stale checkout.
 
 ---
 
