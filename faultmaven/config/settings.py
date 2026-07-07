@@ -1105,7 +1105,11 @@ class ProtectionSettings(BaseSettings):
     # Basic Protection Control
     # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio)
     protection_enabled: bool = Field(default=False)
-    fail_open: bool = Field(default=True, validation_alias="PROTECTION_FAIL_OPEN")
+    # Fail-CLOSED by default (#654): when PII redaction is enabled but Presidio
+    # is unavailable, refuse to pass un-analyzed text to an external provider
+    # rather than leak it. Operators who prefer availability over the privacy
+    # guarantee can set PROTECTION_FAIL_OPEN=true.
+    fail_open: bool = Field(default=False, validation_alias="PROTECTION_FAIL_OPEN")
     basic_protection_enabled: bool = Field(default=False)
     intelligent_protection_enabled: bool = Field(default=False)
 

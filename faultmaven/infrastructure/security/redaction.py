@@ -37,6 +37,14 @@ from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.models.interfaces import ISanitizer
 
 
+class RedactionUnavailableError(RuntimeError):
+    """Raised when PII redaction is required (``sanitize_pii=True``) but the
+    Presidio analyzer is unavailable and the posture is fail-closed
+    (``PROTECTION_FAIL_OPEN=false``). Refusing to pass un-analyzed text to an
+    external provider is the privacy-preserving default (#654).
+    """
+
+
 class DataSanitizer(BaseExternalClient, ISanitizer):
     """Sanitizes sensitive information from text data
 
@@ -173,6 +181,17 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             ),
         ]
 
+        # Precompile once (patterns are applied on every hot-path sanitize).
+        # Each entry: (compiled pattern, entity_type derived from the template,
+        # e.g. "[IP_ADDRESS_REDACTED]" → "IP_ADDRESS").
+        self._compiled_patterns = [
+            (
+                re.compile(pattern_str, re.IGNORECASE | re.DOTALL),
+                replacement_template.strip("[]").replace("_REDACTED", ""),
+            )
+            for pattern_str, replacement_template in self.pattern_replacements
+        ]
+
         # Dict keys whose values are opaque model/provider artifacts (base64
         # reasoning signatures, provider round-trip metadata). They carry no
         # user data and MUST pass through verbatim — redacting them corrupts the
@@ -227,58 +246,25 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             return data
         return await asyncio.to_thread(self.sanitize, data)
 
+    def _fail_closed_active(self) -> bool:
+        """True when PII redaction is required but must not silently degrade.
+
+        Redaction is only enforced when the operator turned it on
+        (``sanitize_pii``); when on, ``fail_open=False`` (the default) means a
+        Presidio outage must raise rather than pass un-analyzed text through.
+        Standalone / log-only sanitize calls (``sanitize_pii=False``) are never
+        affected.
+        """
+        prot = self._settings.protection
+        return bool(prot.sanitize_pii) and not bool(prot.fail_open)
+
     def _sanitize_text(self, text: str) -> str:
+        """Sanitize text with a fresh, call-local entity registry.
+
+        Thin wrapper over :meth:`sanitize_text_with_registry` — the single
+        detection path (regex patterns + Presidio) — with a throwaway registry.
         """
-        Sanitize sensitive information from text using consistent pseudonymization.
-
-        Each unique sensitive value gets a stable indexed placeholder (e.g.,
-        ``<IP_ADDRESS_1>``, ``<IP_ADDRESS_2>``), so the same value always maps to
-        the same placeholder within a single sanitize() call. This preserves
-        analytical relationships (the LLM can distinguish entities) while
-        protecting privacy.
-
-        Args:
-            text: Input text to sanitize
-
-        Returns:
-            Sanitized text with sensitive information replaced
-        """
-        if not text or not isinstance(text, str):
-            return text
-
-        sanitized_text = text
-
-        # Entity registry: tracks unique values → indexed placeholder per type.
-        # Shared across regex and Presidio to ensure consistent numbering.
-        entity_registry: Dict[str, Dict[str, str]] = {}  # type → {value → placeholder}
-
-        def _get_placeholder(entity_type: str, value: str) -> str:
-            """Return a consistent hashed placeholder for a given entity value."""
-            if entity_type not in entity_registry:
-                entity_registry[entity_type] = {}
-            type_map = entity_registry[entity_type]
-            if value not in type_map:
-                hash_val = hashlib.md5(value.encode("utf-8")).hexdigest()[:6]
-                type_map[value] = f"<{entity_type}_{hash_val}>"
-            return type_map[value]
-
-        # Apply pattern replacements with consistent indexing
-        for pattern_str, replacement_template in self.pattern_replacements:
-            pattern = re.compile(pattern_str, re.IGNORECASE | re.DOTALL)
-            # Derive entity type from the replacement template, e.g.
-            # "[IP_ADDRESS_REDACTED]" → "IP_ADDRESS"
-            entity_type = replacement_template.strip("[]").replace("_REDACTED", "")
-
-            def _indexed_replacer(match: re.Match, _type: str = entity_type) -> str:
-                return _get_placeholder(_type, match.group(0))
-
-            sanitized_text = pattern.sub(_indexed_replacer, sanitized_text)
-
-        # Apply K8s Presidio PII detection if available
-        if self.analyzer_available and self.anonymizer_available:
-            sanitized_text = self._apply_presidio(sanitized_text, entity_registry)
-
-        return sanitized_text
+        return self.sanitize_text_with_registry(text, {})
 
     def sanitize_text_with_registry(
         self,
@@ -287,19 +273,14 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
     ) -> str:
         """Sanitize text using an externally-provided entity registry.
 
-        Same detection logic as _sanitize_text() (regex patterns + Presidio)
-        but uses the shared registry for cross-call placeholder consistency.
-        The registry is mutated in place — new entries are added as PII is
-        discovered.
+        THE single text-detection path: regex patterns first, then the Presidio
+        analyzer. Each unique sensitive value maps to a stable ``<TYPE_hash>``
+        placeholder via the shared registry, so the same value is consistent
+        across calls (the registry is mutated in place).
 
-        Args:
-            text: Input text to sanitize.
-            entity_registry: External registry mapping
-                {entity_type: {original_value: placeholder}}. Will be
-                mutated with new entries.
-
-        Returns:
-            Sanitized text with consistent placeholders.
+        Raises:
+            RedactionUnavailableError: when redaction is required and the
+                Presidio analyzer is unavailable under a fail-closed posture.
         """
         if not text or not isinstance(text, str):
             return text
@@ -315,17 +296,25 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 type_map[value] = f"<{entity_type}_{hash_val}>"
             return type_map[value]
 
-        for pattern_str, replacement_template in self.pattern_replacements:
-            pattern = re.compile(pattern_str, re.IGNORECASE | re.DOTALL)
-            entity_type = replacement_template.strip("[]").replace("_REDACTED", "")
+        # Regex patterns are local and cannot fail-open — always applied.
+        for pattern, entity_type in self._compiled_patterns:
 
             def _indexed_replacer(match: re.Match, _type: str = entity_type) -> str:
                 return _get_placeholder(_type, match.group(0))
 
             sanitized_text = pattern.sub(_indexed_replacer, sanitized_text)
 
-        if self.analyzer_available and self.anonymizer_available:
+        # Presidio (cards/emails/SSNs) — gated on the analyzer only (the
+        # anonymizer service is unused; we replace in-process). If it can't run
+        # and the posture is fail-closed, refuse rather than leak.
+        if self.analyzer_available:
             sanitized_text = self._apply_presidio(sanitized_text, entity_registry)
+        elif self._fail_closed_active():
+            raise RedactionUnavailableError(
+                "Presidio analyzer unavailable; refusing to pass un-analyzed "
+                "text to an external provider (fail-closed). Set "
+                "PROTECTION_FAIL_OPEN=true to override."
+            )
 
         return sanitized_text
 
@@ -434,8 +423,8 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         indexed replacement (skipping the Presidio anonymizer) so that each
         unique entity value gets a distinct, stable placeholder.
         """
-        if not (self.analyzer_available and self.anonymizer_available):
-            self.logger.debug("Presidio services not available, skipping PII detection")
+        if not self.analyzer_available:
+            self.logger.debug("Presidio analyzer not available, skipping PII detection")
             return text
 
         if entity_registry is None:
@@ -502,11 +491,21 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
             return result
 
+        except RedactionUnavailableError:
+            raise
         except Exception as e:
             self.logger.warning(f"Presidio K8s service error: {e}")
             if "Connection" in str(e) or "Timeout" in str(e):
                 self.analyzer_available = False
                 self.anonymizer_available = False
+            # Fail-closed: if redaction is required, refuse rather than pass
+            # un-analyzed text through. Regex redaction already applied upstream.
+            if self._fail_closed_active():
+                raise RedactionUnavailableError(
+                    "Presidio analyzer errored; refusing to pass un-analyzed text "
+                    "to an external provider (fail-closed). Set "
+                    "PROTECTION_FAIL_OPEN=true to override."
+                ) from e
             return text
 
     def is_sensitive(self, data: Any) -> bool:
@@ -551,9 +550,8 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         if not text:
             return False
 
-        # Check custom patterns
-        for pattern_str, _ in self.pattern_replacements:
-            pattern = re.compile(pattern_str, re.IGNORECASE | re.DOTALL)
+        # Check custom patterns (precompiled)
+        for pattern, _entity_type in self._compiled_patterns:
             if pattern.search(text):
                 return True
 

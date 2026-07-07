@@ -5,7 +5,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.infrastructure.security.redaction import (
+    DataSanitizer,
+    RedactionUnavailableError,
+)
 
 
 class TestDataSanitizer:
@@ -298,6 +301,42 @@ class TestAsyncSanitizeBoundary:
             "sanitize ran on the event loop thread — asyncio.to_thread offload "
             "regressed."
         )
+
+
+class TestFailClosedPosture:
+    """#654: when PII redaction is required but Presidio is unavailable, the
+    default is fail-CLOSED — refuse rather than pass un-analyzed text through."""
+
+    def _settings(self, *, sanitize_pii: bool, fail_open: bool):
+        settings = MagicMock()
+        settings.protection.entities_to_protect = ["EMAIL_ADDRESS"]
+        settings.protection.min_score_threshold = 0.9
+        settings.protection.presidio_analyzer_url = "http://fake:8080"
+        settings.protection.presidio_anonymizer_url = "http://fake:8081"
+        settings.protection.sanitize_pii = sanitize_pii
+        settings.protection.fail_open = fail_open
+        settings.server.skip_service_checks = True  # forces analyzer_available=False
+        return settings
+
+    def test_fail_closed_raises_when_analyzer_unavailable(self):
+        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=False))
+        assert s.analyzer_available is False
+        with pytest.raises(RedactionUnavailableError):
+            s.sanitize("contact me at john@example.com")
+
+    def test_fail_open_passes_through_when_analyzer_unavailable(self):
+        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=True))
+        # No raise; local regex still applies (AWS key redacted), Presidio-only
+        # PII (email) passes because the analyzer is down and fail-open is set.
+        result = s.sanitize("email john@example.com key AKIAIOSFODNN7EXAMPLE")
+        assert "<AWS_ACCESS_KEY_" in result
+        assert "john@example.com" in result
+
+    def test_disabled_redaction_never_fails_closed(self):
+        # sanitize_pii off → best-effort regex for logs/etc.; never raises even
+        # under fail_open=False.
+        s = DataSanitizer(settings=self._settings(sanitize_pii=False, fail_open=False))
+        assert isinstance(s.sanitize("john@example.com"), str)
 
 
 class TestPasswordRegexWordBoundary:
