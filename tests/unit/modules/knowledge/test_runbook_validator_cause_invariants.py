@@ -296,3 +296,38 @@ class TestBackendCauseSubfields:
         )
         errors, _ = self._check(content)
         assert errors == []
+
+
+class TestSectionHeaderAnchoring:
+    """The required-section gate is exact-anchored so a non-canonical header
+    (``## Causes (RCA)``, ``### Causes``) cannot pass presence-checking yet be
+    skipped by the exact-anchored per-Cause section parse — the silent-skip the
+    per-Cause ERRORs exist to avoid (parity with kb-toolkit)."""
+
+    def _structure_errors(self, content):
+        v = RunbookValidator()
+        errors, warnings = [], []
+        v._validate_structure(content, errors, warnings)
+        return errors
+
+    def _full_runbook(self, causes_header: str) -> str:
+        return (
+            "## Symptom Recognition\nx\n## Applicability\nx\n"
+            "## Diagnostic Steps\nx\n"
+            f"{causes_header}\n### Cause A: x\n**Statement:** A cause.\n"
+            "## Prevention\nx\n## Sources\n- x\n"
+        )
+
+    def test_suffixed_causes_header_flagged_not_silently_skipped(self):
+        # '## Causes (RCA)' used to pass the loose presence gate while the
+        # exact-anchored per-Cause parse found nothing → per-Cause ERRORs skipped.
+        errors = self._structure_errors(self._full_runbook("## Causes (RCA)"))
+        assert any("Missing required section: Causes" in e for e in errors)
+
+    def test_h3_causes_header_flagged(self):
+        errors = self._structure_errors(self._full_runbook("### Causes"))
+        assert any("Missing required section: Causes" in e for e in errors)
+
+    def test_exact_causes_header_accepted(self):
+        errors = self._structure_errors(self._full_runbook("## Causes"))
+        assert not any("Missing required section" in e for e in errors)

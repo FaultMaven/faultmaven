@@ -507,12 +507,18 @@ class RunbookValidator:
         self, content: str, errors: List[str], warnings: List[str]
     ) -> None:
         for section in REQUIRED_SECTIONS:
-            pattern = rf"^##+ {re.escape(section)}"
+            # Exact-anchored (``^## Section$``), matching kb-toolkit and the
+            # ``_CAUSES_SECTION_RE`` used for per-Cause scoping. A prefix match
+            # (``## Causes (RCA)``, ``### Causes``) would otherwise pass this gate
+            # yet be skipped by the exact-anchored section-body parse — silently
+            # dropping every per-Cause sub-field ERROR for that runbook.
+            pattern = rf"^##[ \t]+{re.escape(section)}[ \t]*$"
             if not re.search(pattern, content, re.MULTILINE):
                 errors.append(f"Missing required section: {section}")
 
-        # ## Causes must have at least one ### Cause subsection
-        if re.search(r"^##+ Causes", content, re.MULTILINE):
+        # ## Causes must have at least one ### Cause subsection (anchor consistent
+        # with the required-section gate + _CAUSES_SECTION_RE).
+        if re.search(r"^##[ \t]+Causes[ \t]*$", content, re.MULTILINE):
             cause_subsections = re.findall(r"^###+ Cause\s+\w", content, re.MULTILINE)
             if not cause_subsections:
                 errors.append(
