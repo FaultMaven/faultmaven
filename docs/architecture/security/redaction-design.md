@@ -65,6 +65,11 @@ used — replacement is done in-process for stable placeholders).
 
 ## Placeholders
 
-Each unique value maps to a stable placeholder `<TYPE_hash>` within its scope
-(case registry for cross-file consistency). Placeholders are reversible via the
-case registry. One format only.
+Detected values in **text** map to a stable, reversible pseudonym
+`<TYPE_hash>` within their scope (the case registry gives cross-file
+consistency; the hash is wide enough that distinct values don't collide onto one
+placeholder). Values of **dict keys that name a secret** (`password`, `api_key`,
+`auth_token`, …) are fully redacted to a fixed `[TYPE_REDACTED]` marker instead
+— the value is discarded, not pseudonymized, because it should never be
+recoverable. Secret-key names are matched as whole segments, so `monkey` /
+`tokenizer` are not mistaken for secrets.
