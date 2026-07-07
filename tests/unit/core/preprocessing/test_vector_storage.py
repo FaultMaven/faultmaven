@@ -151,10 +151,10 @@ class TestStoreInVectorDbBackground:
     @pytest.mark.asyncio
     @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
     async def test_successful_storage_with_bge_m3(self, mock_model_cache):
-        # Mock BGE-M3 model that returns 1024-dim embeddings
-        mock_model = MagicMock()
-        mock_model.encode.return_value = np.random.rand(2, 1024)
-        mock_model_cache.get_bge_m3_model.return_value = mock_model
+        # Mock the async embed boundary → two 1024-dim vectors, one per chunk.
+        mock_model_cache.aembed_texts = AsyncMock(
+            return_value=np.random.rand(2, 1024).tolist()
+        )
 
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock()
@@ -189,12 +189,12 @@ class TestStoreInVectorDbBackground:
         assert embeddings is not None
         assert len(embeddings) == 2
         assert len(embeddings[0]) == 1024
-        mock_model.encode.assert_called_once()
+        mock_model_cache.aembed_texts.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
     async def test_fallback_when_bge_m3_unavailable(self, mock_model_cache):
-        mock_model_cache.get_bge_m3_model.return_value = None
+        mock_model_cache.aembed_texts = AsyncMock(return_value=None)
 
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock()
@@ -232,9 +232,9 @@ class TestStoreInVectorDbBackground:
     @pytest.mark.asyncio
     @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
     async def test_scalar_metadata_filtered(self, mock_model_cache):
-        mock_model = MagicMock()
-        mock_model.encode.return_value = np.random.rand(1, 1024)
-        mock_model_cache.get_bge_m3_model.return_value = mock_model
+        mock_model_cache.aembed_texts = AsyncMock(
+            return_value=np.random.rand(1, 1024).tolist()
+        )
 
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock()
@@ -269,7 +269,7 @@ class TestStoreInVectorDbBackground:
     @pytest.mark.asyncio
     @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
     async def test_error_handled_silently(self, mock_model_cache):
-        mock_model_cache.get_bge_m3_model.return_value = None
+        mock_model_cache.aembed_texts = AsyncMock(return_value=None)
 
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock(side_effect=RuntimeError("DB down"))
@@ -286,65 +286,10 @@ class TestStoreInVectorDbBackground:
 
     @pytest.mark.asyncio
     @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
-    async def test_bge_encode_does_not_block_event_loop(self, mock_model_cache):
-        """BGE-M3 encode() is CPU-bound; the storage path must offload it so
-        the event loop can service concurrent requests while embedding runs.
-
-        This regression guards against the cold-start timeout incident where
-        a synchronous SentenceTransformer.encode() froze the request loop,
-        preventing asyncio.wait_for's timeout from firing until encode returned.
-        """
-        encode_thread = {}
-
-        def slow_encode(_texts):
-            # Record the thread encode ran on — must NOT be the loop thread.
-            encode_thread["id"] = threading.get_ident()
-            time.sleep(0.05)
-            return np.random.rand(1, 1024)
-
-        mock_model = MagicMock()
-        mock_model.encode.side_effect = slow_encode
-        mock_model_cache.get_bge_m3_model.return_value = mock_model
-
-        mock_store = AsyncMock()
-        mock_store.add_documents = AsyncMock()
-
-        loop_thread_id = threading.get_ident()
-        concurrent_tick = {"ran": False}
-
-        async def concurrent_work():
-            # Yields control to the loop — should run while encode sleeps
-            # if encode is correctly offloaded.
-            await asyncio.sleep(0)
-            concurrent_tick["ran"] = True
-
-        # Run storage and the concurrent tick together; neither should
-        # starve the other.
-        await asyncio.gather(
-            store_in_vector_db_background(
-                case_id="c",
-                evidence_id="e",
-                structural_index="=== S ===\ncontent",
-                data_type=UnifiedDataType.LOGS,
-                metadata={},
-                case_vector_store=mock_store,
-            ),
-            concurrent_work(),
-        )
-
-        assert concurrent_tick["ran"] is True
-        assert encode_thread["id"] != loop_thread_id, (
-            "encode() ran on the event loop thread — asyncio.to_thread offload "
-            "regressed. See docs/architecture/data-processing/"
-            "data-preprocessing-design-specification.md §5.7."
-        )
-
-    @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
     async def test_chunk_index_and_total_in_metadata(self, mock_model_cache):
-        mock_model = MagicMock()
-        mock_model.encode.return_value = np.random.rand(2, 1024)
-        mock_model_cache.get_bge_m3_model.return_value = mock_model
+        mock_model_cache.aembed_texts = AsyncMock(
+            return_value=np.random.rand(2, 1024).tolist()
+        )
 
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock()

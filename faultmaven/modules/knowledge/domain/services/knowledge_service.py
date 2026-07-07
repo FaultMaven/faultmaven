@@ -21,7 +21,6 @@ Key Improvements over Original:
 - Standardized tracing and logging patterns
 """
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -1135,18 +1134,12 @@ class KnowledgeService:
                         f"No chunks produced for document {document.document_id}"
                     )
                     return 0
-                # Model load (lazy, ~cold start) and encode are CPU-bound and
-                # synchronous — run them on a worker thread so they don't block
-                # the async event loop.
-                bge_model = await asyncio.to_thread(model_cache.get_bge_m3_model)
-                if bge_model is None:
+                # Batch-embed all chunks off the event loop via the model_cache
+                # async boundary. None → BGE unavailable, skip vector indexing.
+                embeddings = await model_cache.aembed_texts(chunks)
+                if embeddings is None:
                     logger.error("BGE-M3 model unavailable, skipping vector indexing")
                     return 0
-                # Batch-embed the whole list in one encode (vectorized, cheaper
-                # than N per-chunk passes) on a worker thread.
-                embeddings = await asyncio.to_thread(
-                    lambda: bge_model.encode(chunks).tolist()
-                )
 
             # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)

@@ -7,10 +7,12 @@ Tests cover:
 - Thread safety
 """
 
+import asyncio
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 
@@ -146,6 +148,104 @@ class TestModelCacheLazyLoading:
         # Verify load info is cleared
         assert cache.get_model_load_info("BAAI/bge-m3") is None
         assert cache.get_cache_info()["cache_size"] == 0
+
+
+class TestAsyncEmbedBoundary:
+    """The `aembed_texts`/`aembed_query` async boundary — the single place that
+    runs CPU-bound BGE-M3 `encode()` off the event loop via `asyncio.to_thread`.
+
+    This is where the cold-start timeout regression is guarded now: a synchronous
+    `encode()` on the loop thread froze the request loop and starved the k8s
+    liveness probe. Every embed call site funnels through this boundary, so
+    testing it here covers all of them.
+    """
+
+    @pytest.mark.asyncio
+    async def test_aembed_texts_returns_one_vector_per_text(self):
+        from faultmaven.infrastructure.model_cache import ModelCache
+
+        cache = ModelCache()
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.random.rand(3, 1024)
+        cache._models["BAAI/bge-m3"] = mock_model
+
+        result = await cache.aembed_texts(["a", "b", "c"])
+
+        assert result is not None
+        assert len(result) == 3
+        assert len(result[0]) == 1024
+        mock_model.encode.assert_called_once_with(["a", "b", "c"])
+
+    @pytest.mark.asyncio
+    async def test_aembed_query_returns_single_vector(self):
+        from faultmaven.infrastructure.model_cache import ModelCache
+
+        cache = ModelCache()
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.random.rand(1024)
+        cache._models["BAAI/bge-m3"] = mock_model
+
+        result = await cache.aembed_query("query")
+
+        assert result is not None
+        assert len(result) == 1024
+        mock_model.encode.assert_called_once_with("query")
+
+    @pytest.mark.asyncio
+    async def test_aembed_returns_none_when_model_unavailable(self):
+        """When BGE-M3 can't load, the boundary returns None so callers can fall
+        back to ChromaDB's default embedding instead of crashing."""
+        from faultmaven.infrastructure.model_cache import ModelCache
+
+        cache = ModelCache()
+        with patch(
+            "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
+            False,
+        ):
+            assert await cache.aembed_texts(["a"]) is None
+            assert await cache.aembed_query("a") is None
+
+    @pytest.mark.asyncio
+    async def test_encode_runs_off_the_event_loop(self):
+        """BGE-M3 `encode()` is CPU-bound; the boundary must offload it so the
+        event loop can service concurrent requests (e.g. the liveness probe)
+        while embedding runs.
+
+        Regression guard for the cold-start timeout incident where a synchronous
+        `encode()` froze the request loop. See docs/architecture/data-processing/
+        data-preprocessing-design-specification.md §5.7.
+        """
+        from faultmaven.infrastructure.model_cache import ModelCache
+
+        cache = ModelCache()
+        loop_thread_id = threading.get_ident()
+        encode_thread = {}
+
+        def slow_encode(_texts):
+            # Record the thread encode ran on — must NOT be the loop thread.
+            encode_thread["id"] = threading.get_ident()
+            time.sleep(0.05)
+            return np.random.rand(1, 1024)
+
+        mock_model = MagicMock()
+        mock_model.encode.side_effect = slow_encode
+        cache._models["BAAI/bge-m3"] = mock_model
+
+        concurrent_tick = {"ran": False}
+
+        async def concurrent_work():
+            # Yields to the loop — should run while encode sleeps if encode is
+            # correctly offloaded.
+            await asyncio.sleep(0)
+            concurrent_tick["ran"] = True
+
+        await asyncio.gather(cache.aembed_texts(["content"]), concurrent_work())
+
+        assert concurrent_tick["ran"] is True
+        assert encode_thread["id"] != loop_thread_id, (
+            "encode() ran on the event loop thread — asyncio.to_thread offload "
+            "regressed."
+        )
 
 
 class TestLazyLoadingConfiguration:

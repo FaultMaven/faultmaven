@@ -26,7 +26,6 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
-import asyncio
 import logging
 import os
 import re
@@ -194,15 +193,15 @@ class KnowledgeIngester:
                 metadata={"description": "FaultMaven Knowledge Base"},
             )
 
-        # Initialize sentence transformer for embeddings using cached model
-        self.embedding_model = model_cache.get_bge_m3_model()
-        if self.embedding_model is None:
+        # Fail fast at startup if BGE-M3 can't load (also warms the lazy cache).
+        # Embedding itself goes through model_cache.aembed_* at the call sites
+        # below, which run the encode off the event loop.
+        if model_cache.get_bge_m3_model() is None:
             self.logger.error("Failed to load BGE-M3 embedding model from cache")
             raise RuntimeError(
                 "BGE-M3 model unavailable - knowledge ingestion cannot proceed"
             )
-        else:
-            self.logger.debug("Using cached BGE-M3 embedding model")
+        self.logger.debug("Cached BGE-M3 embedding model available")
 
         # Supported file extensions
         self.supported_extensions = {
@@ -406,12 +405,11 @@ class KnowledgeIngester:
         # Split content into chunks
         chunks = self._split_content(document.content)
 
-        # Batch-embed all chunks in ONE encode call (sentence-transformers
-        # vectorizes a list far cheaper than N per-chunk passes), on a worker
-        # thread so the CPU-bound encode doesn't block the async event loop.
-        embeddings = (
-            await asyncio.to_thread(self.embedding_model.encode, chunks)
-        ).tolist()
+        # Batch-embed all chunks off the event loop via the model_cache async
+        # boundary (availability is guaranteed by the startup check).
+        embeddings = await model_cache.aembed_texts(chunks)
+        if embeddings is None:
+            raise RuntimeError("BGE-M3 model unavailable during ingestion")
 
         # Prepare metadata for each chunk
         metadatas = []
@@ -620,10 +618,11 @@ class KnowledgeIngester:
             List of search results with documents and metadata
         """
         try:
-            # Generate query embedding off the event loop (encode is CPU-bound).
-            query_embedding = (
-                await asyncio.to_thread(self.embedding_model.encode, query)
-            ).tolist()
+            # Generate query embedding off the event loop via the async boundary.
+            query_embedding = await model_cache.aembed_query(query)
+            if query_embedding is None:
+                self.logger.error("BGE-M3 unavailable for query embedding")
+                return []
 
             # Prepare where clause for filtering
             where_clause = None

@@ -137,11 +137,8 @@ class TestChromaDBVectorStore:
             "distances": [[0.1, 0.3]],
         }
 
-        mock_model = MagicMock()
-        mock_model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 1024)
-
         with patch("faultmaven.infrastructure.model_cache.model_cache") as mock_cache:
-            mock_cache.get_bge_m3_model.return_value = mock_model
+            mock_cache.aembed_query = AsyncMock(return_value=[0.1] * 1024)
             results = await store.search("test query", k=2)
 
         collection.query.assert_called_once_with(
@@ -168,11 +165,8 @@ class TestChromaDBVectorStore:
             "distances": [[]],
         }
 
-        mock_model = MagicMock()
-        mock_model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 1024)
-
         with patch("faultmaven.infrastructure.model_cache.model_cache") as mock_cache:
-            mock_cache.get_bge_m3_model.return_value = mock_model
+            mock_cache.aembed_query = AsyncMock(return_value=[0.1] * 1024)
             await store.search("query", filters={"type": "runbook"})
 
         collection.query.assert_called_once_with(

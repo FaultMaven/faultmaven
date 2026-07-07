@@ -8,7 +8,6 @@ demand, deleted when the case closes.
 Receives a shared ChromaDB client via constructor injection (Principle 5).
 """
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -166,15 +165,10 @@ class CaseVectorStore(BaseExternalClient):
 
             collection = self._get_or_create_collection(case_id)
 
-            # Use explicit BGE-M3 embedding to match stored vectors.
-            # Both the model lookup (may lazy-load on cold start) and encode()
-            # are synchronous/CPU-bound — run on a worker thread so the event
-            # loop keeps servicing other requests while embedding.
-            bge_model = await asyncio.to_thread(model_cache.get_bge_m3_model)
-            if bge_model is not None:
-                query_embedding = await asyncio.to_thread(
-                    lambda: bge_model.encode(query).tolist()
-                )
+            # Explicit BGE-M3 embedding to match stored vectors, off the event
+            # loop via the model_cache async boundary.
+            query_embedding = await model_cache.aembed_query(query)
+            if query_embedding is not None:
                 query_params = {
                     "query_embeddings": [query_embedding],
                     "n_results": k,
