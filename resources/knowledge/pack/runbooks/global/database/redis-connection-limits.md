@@ -93,7 +93,6 @@ Expected output: slow log entries with execution times in microseconds. Commands
 **Indicators:**
 - root: [Step 2] multiple source IPs each holding large connection counts (50+) with no single dominant host
 - s2: [Step 1] `connected_clients` at or near `maxclients` with `rejected_connections` incrementing
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "connected_clients_pct", "op": ">", "value": 0.9} -->
 
 **Interventions:**
 - **remediation** (root): right-size pools so `pool_size × instance_count < 0.8 × maxclients`, then roll out.
@@ -135,7 +134,6 @@ Expected output: slow log entries with execution times in microseconds. Commands
 **Indicators:**
 - s2: [Step 2] a single host holding a very large count (hundreds to thousands) of connections
 - s2: [Step 3] many connections from that host with idle times in the thousands of seconds
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "idle_seconds", "op": ">", "value": 3600} -->
 
 **Interventions:**
 - **remediation** (root): guarantee connection return via context managers, or release in `finally`.
@@ -180,7 +178,6 @@ Expected output: slow log entries with execution times in microseconds. Commands
 
 **Indicators:**
 - s2: [Step 4] `pubsub_clients` value in INFO clients is disproportionately high relative to expected subscriber count
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "pubsub_clients", "op": ">", "value": 100} -->
 - s2: [Step 4] `PUBSUB NUMSUB` shows subscriber counts far exceeding known application instances
 
 **Interventions:**
@@ -221,7 +218,6 @@ Expected output: slow log entries with execution times in microseconds. Commands
 
 **Indicators:**
 - s2: [Step 5] soft or hard fd limit in `/proc/<pid>/limits` is less than `maxclients + 32`
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "fd_limit", "op": "<", "value": 10032} -->
 - s3: [Step 5] current fd usage is at or near the OS limit
 
 **Interventions:**

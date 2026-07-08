@@ -114,7 +114,6 @@ Expected output: any slot with `active = f` and large `retained_wal` is pinning 
 - D: instance enters storage-full (Symptom Recognition)
 **Indicators:**
 - root: [Step 1] `MaxAlloc` is empty/null or equal to `Allocated`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "storage-full"} -->
 - s1: [Step 2] `FreeStorageSpace` declines steadily over hours without a step-up
 - s2: [Symptom] `RDS-EVENT-0089` low-storage notification fired
 **Interventions:**
@@ -144,7 +143,6 @@ Expected output: any slot with `active = f` and large `retained_wal` is pinning 
 - D: instance reaches storage-full (Symptom Recognition)
 **Indicators:**
 - root: [Step 4] `SHOW BINARY LOGS` returns many large files spanning a long time window
-  <!-- match: {"step": 4, "predicate": "contains", "target": "mysql-bin"} -->
 - s1: [Step 2] `FreeStorageSpace` steps down in regular increments tracking log rotation
 **Interventions:**
 - **remediation** (root): reduce the retention window (or set NULL to purge as soon as possible) via the RDS stored procedure.
@@ -173,7 +171,6 @@ Expected output: any slot with `active = f` and large `retained_wal` is pinning 
 **Indicators:**
 - root: [Step 2] `FreeStorageSpace` drops sharply during query bursts then plateaus (no recovery)
 - s1: [Step 4] `information_schema.files` shows a large `ibtmp1` `size_gb`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "ibtmp1"} -->
 **Interventions:**
 - **remediation** (root): reduce temp spill at the source — add covering indexes / rewrite the offending queries so they no longer build large on-disk temp tables (identify via the slow query log and `EXPLAIN`).
 
@@ -200,7 +197,6 @@ Expected output: any slot with `active = f` and large `retained_wal` is pinning 
 - D: DiskFull / storage-full (Symptom Recognition)
 **Indicators:**
 - root: [Step 5] `pg_replication_slots` shows a slot with `active = f` and large `retained_wal`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "f"} -->
 - s1: [Step 2] `FreeStorageSpace` declines continuously even with no data growth
 **Interventions:**
 - **remediation** (root): drop the orphaned inactive slot so PostgreSQL can recycle the retained WAL.

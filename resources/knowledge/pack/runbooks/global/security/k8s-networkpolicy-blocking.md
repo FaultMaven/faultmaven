@@ -88,10 +88,8 @@ Expected output: at least one running CNI policy-enforcement pod per node. No ma
 - D: client connection times out (Symptom Recognition)
 **Indicators:**
 - root: [Step 3] `describe` shows `PolicyTypes: Ingress` with `from` selectors that do not include the client's pod/namespace labels
-  <!-- match: {"step": 3, "predicate": "contains", "target": "PolicyTypes: Ingress"} -->
 - s1: [Step 4] client pod/namespace labels do not match the policy's `podSelector`/`namespaceSelector`
 - s2: [Step 1] `nc -zv` returns `Operation timed out` (dropped, not refused)
-  <!-- match: {"step": 1, "predicate": "contains", "target": "timed out"} -->
 - D: [Symptom] `wget: download timed out`
 **Interventions:**
 - **remediation** (root): add an ingress rule whose `from` matches the client. Label the client and allow that label.
@@ -121,7 +119,6 @@ Expected output: at least one running CNI policy-enforcement pod per node. No ma
 - D: client connection times out (Symptom Recognition)
 **Indicators:**
 - root: [Step 3] `describe` of the client-namespace policy shows `PolicyTypes: Egress` whose `to` does not cover the destination CIDR/selector
-  <!-- match: {"step": 3, "predicate": "contains", "target": "PolicyTypes: Egress"} -->
 - s1: [Step 2] a policy in the CLIENT namespace selects the client pod
 - s2: [Step 1] dropped outbound connection shows `Operation timed out`
 - D: [Symptom] application log `dial tcp <ip>:<port>: i/o timeout`
@@ -152,7 +149,6 @@ Expected output: at least one running CNI policy-enforcement pod per node. No ma
 - D: connection times out (Symptom Recognition)
 **Indicators:**
 - root: [Step 3] `describe` shows `from`/`to` with `namespaceSelector` and `podSelector` as two separate bullet entries instead of one combined entry
-  <!-- match: {"step": 3, "predicate": "contains", "target": "NamespaceSelector"} -->
 - s1: [Step 4] no pod simultaneously satisfies both selectors as the author intended
 - D: [Symptom] `wget: download timed out`
 **Interventions:**
@@ -180,7 +176,6 @@ Expected output: at least one running CNI policy-enforcement pod per node. No ma
 - D: connection times out while NetworkPolicy edits change nothing (Symptom Recognition)
 **Indicators:**
 - root: [Step 5] no `calico`/`cilium`/`antrea`/`weave` enforcement pod is running in `kube-system`
-  <!-- match: {"step": 5, "predicate": "absent", "target": "Running"} -->
 - s1: [Step 1] connectivity is unchanged after adding/deleting policies (still `Operation timed out`)
 - D: [Symptom] `nc -zv` reports `Operation timed out` regardless of policy edits
 **Interventions:**

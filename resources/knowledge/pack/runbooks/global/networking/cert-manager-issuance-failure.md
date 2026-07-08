@@ -194,9 +194,7 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 
 **Indicators:**
 - root: [Step 4] `kubectl describe clusterissuer` shows `Ready: False` and Message contains `urn:ietf:params:acme:error:invalidEmail` (or `:badPublicKey`, `:agreementRequired`)
-  <!-- match: {"step": 4, "predicate": "contains", "target": "urn:ietf:params:acme:error:invalidEmail"} -->
 - s1: [Step 3] controller logs contain `Failed to register ACME account`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Failed to register ACME account"} -->
 - s2: [Step 4] `status.acme.uri` is empty on the (Cluster)Issuer
 
 **Interventions:**
@@ -234,9 +232,7 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 
 **Indicators:**
 - s1: [Step 3] controller log contains `failed to perform self check GET request`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "failed to perform self check GET request"} -->
 - s2: [Step 2] Challenge `status.reason` contains `Waiting for HTTP-01 challenge propagation`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Waiting for HTTP-01 challenge propagation"} -->
 - root: [Step 5] `curl -v http://<domain>/.well-known/acme-challenge/<token>` returns `connection refused`, a TCP timeout, a 404 body, or redirects to HTTPS before serving the token
 - root: [Step 5] `dig +short A <domain>` returns an address that is not the cluster's ingress external IP
 
@@ -286,9 +282,7 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 **Indicators:**
 - root: [Step 5] solver Ingress is present (`acme.cert-manager.io/http01-solver=true`) but its `ingressClassName` is empty or names an IngressClass that does not exist in `kubectl get ingressclass`
 - s1: [Step 5] `curl -v http://<domain>/.well-known/acme-challenge/<token>` returns `HTTP/1.1 404 Not Found` from the cluster ingress controller
-  <!-- match: {"step": 5, "predicate": "contains", "target": "404 Not Found"} -->
 - s2: [Step 3] controller log contains `unexpected HTTP status: 404`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "unexpected HTTP status: 404"} -->
 
 **Interventions:**
 - **remediation** (root): Set the solver `ingressClassName` to the actual in-cluster ingress controller (optionally edit-in-place), then re-issue.
@@ -328,7 +322,6 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 
 **Indicators:**
 - s2: [Step 3] controller log contains `urn:ietf:params:acme:error:unauthorized :: Invalid response from http://`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "urn:ietf:params:acme:error:unauthorized"} -->
 - root: [Step 5] `dig +short A <domain>` returns an address that is not the cluster ingress external IP
 - root: [Step 5] `curl -sI http://<domain>/.well-known/acme-challenge/test` returns a `server:` header that does not match the cluster's ingress controller (e.g., `server: cloudflare`, `server: AmazonS3`)
 
@@ -369,7 +362,6 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 **Indicators:**
 - s1: [Step 6] `status.presented` is `false` or `status.reason` contains `Failed to create TXT record` / `Access Denied` / `Unauthorized`
 - s2: [Step 3] controller log contains `propagation check failed` or `NS <ns> returned REFUSED`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "propagation check failed"} -->
 - s2: [Step 6] `dig +short TXT _acme-challenge.<domain> @8.8.8.8` returns empty when `dig +short TXT _acme-challenge.<domain>` (authoritative) returns the published value
 - s2: [Step 6] `dig +short TXT _acme-challenge.<domain>` is empty against every public resolver and `status.presented` claims `true`
 
@@ -417,9 +409,7 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 
 **Indicators:**
 - s1: [Step 3] controller log contains `urn:ietf:params:acme:error:rateLimited`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "urn:ietf:params:acme:error:rateLimited"} -->
 - s1: [Step 3] controller log contains `too many certificates already issued`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "too many certificates already issued"} -->
 - root: [Step 7] CT-log query against `https://crt.sh/?q=<registered-domain>` returns more than 50 certs in the last 7 days (per-RegisteredDomain limit) or more than 5 for an identical SAN set (duplicate limit)
 
 **Interventions:**
@@ -462,7 +452,6 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 
 **Indicators:**
 - s1: [Step 3] controller log contains `too many failed authorizations recently`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "too many failed authorizations recently"} -->
 - root: [Step 3] controller log contains `urn:ietf:params:acme:error:rateLimited` together with at least 5 `invalid` Challenges for the same `dnsNames` in the last hour
 - root: [Step 7] `kubectl get challenges -A` shows 5+ `invalid` entries for the same identifier within a 60-minute window
 
@@ -506,11 +495,8 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 **Indicators:**
 - root: [Step 8] `kubectl get pods -n cert-manager` shows one of the cert-manager Pods in `CrashLoopBackOff`, `Pending`, `OOMKilled`, or not Ready
 - s1: [Step 8] `kubectl get endpoints -n cert-manager cert-manager-webhook` returns no `<ip>:<port>` pair
-  <!-- match: {"step": 8, "predicate": "contains", "target": "<none>"} -->
 - s1: [Step 8] `kubectl apply -f <cert-manifest>.yaml` returns `failed calling webhook "webhook.cert-manager.io"`
-  <!-- match: {"step": 8, "predicate": "contains", "target": "failed calling webhook \"webhook.cert-manager.io\""} -->
 - s1: [Step 8] `kubectl apply` returns `x509: certificate signed by unknown authority`
-  <!-- match: {"step": 8, "predicate": "contains", "target": "x509: certificate signed by unknown authority"} -->
 
 **Interventions:**
 - **remediation** (root): Restore the failed component — raise memory limits if OOMKilled, open the webhook port in private clusters, or force cainjector to re-inject the CA bundle.
@@ -557,9 +543,7 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 **Indicators:**
 - root: [Step 4] `spec.acme.server` does not match the intended environment (staging URL in production issuer or vice versa)
 - s1: [Step 2] CertificateRequest / Order condition contains `no configured challenge solvers can be used`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "no configured challenge solvers can be used"} -->
 - s2: [Step 9] `openssl x509 ... -issuer` prints `(STAGING) Pretend Pear X1` when production was intended
-  <!-- match: {"step": 9, "predicate": "contains", "target": "(STAGING) Pretend Pear X1"} -->
 
 **Interventions:**
 - **remediation** (root): Point the issuer at the correct ACME server with a fresh account-key Secret and widen the solver selector to match the failing Certificate, then re-issue.

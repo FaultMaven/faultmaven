@@ -92,9 +92,7 @@ Expected output: a `Host tags` list and, per container, the resolved tag set (`e
 - D: no metrics reach Datadog
 **Indicators:**
 - root: [Step 2] API Keys section prints `API Key invalid` for the configured key
-  <!-- match: {"step": 2, "predicate": "contains", "target": "API Key invalid"} -->
 - s1: [Step 1] agent.log / status shows `API Key invalid, dropping transaction`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "API Key invalid"} -->
 - s2: [Step 1] Forwarder `Errors` is greater than 0
 - D: [Symptom] host absent from Infrastructure List
 **Interventions:**
@@ -116,7 +114,6 @@ Expected output: a `Host tags` list and, per container, the resolved tag set (`e
 - D: no metrics reach Datadog
 **Indicators:**
 - root: [Step 2] `site:` value differs from the org's site (e.g. `datadoghq.com` for an EU `datadoghq.eu` org)
-  <!-- match: {"step": 2, "predicate": "contains", "target": "site: datadoghq.com"} -->
 - s1: [Step 3] connectivity diagnose targets `api.<wrong-site>` and the key fails there
 - D: [Symptom] no data in Metrics Explorer
 **Interventions:**
@@ -138,10 +135,8 @@ Expected output: a `Host tags` list and, per container, the resolved tag set (`e
 - D: no metrics reach Datadog
 **Indicators:**
 - root: [Step 3] connectivity test prints a `FAIL` / connection-refused / timeout for the intake endpoint
-  <!-- match: {"step": 3, "predicate": "contains", "target": "FAIL"} -->
 - s1: [Step 1] Forwarder `RetryQueueSize` greater than 0 and `Retried` climbing
 - s2: [Step 1] status/log contains `the forwarder dropped transactions`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "dropped transactions"} -->
 - D: [Symptom] host shown grey in Infrastructure List
 **Interventions:**
 - **remediation** (root): open egress / configure the Agent proxy so the intake is reachable, then restart.
@@ -171,7 +166,6 @@ Expected output: a `Host tags` list and, per container, the resolved tag set (`e
 - D: that integration's metrics never appear in Datadog
 **Indicators:**
 - root: [Step 4] `datadog-agent check <CHECK_NAME>` prints a Python traceback or `[ERROR]`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "[ERROR]"} -->
 - s1: [Step 1] status `Running Checks` shows the check with `Errors: 1` / a warning
 - s2: [Step 4] check output reports `Metrics: 0` / no series collected
 - D: [Symptom] integration's metrics missing while system metrics still report
@@ -194,7 +188,6 @@ Expected output: a `Host tags` list and, per container, the resolved tag set (`e
 - D: tag-scoped dashboards and monitors show no data
 **Indicators:**
 - root: [Step 2] `datadog.yaml` has no `tags:`/`DD_TAGS` and no `*_labels_as_tags` mapping
-  <!-- match: {"step": 2, "predicate": "absent", "target": "tags:"} -->
 - s1: [Step 5] `tagger-list` / `Host tags` shows an empty or short tag set for the entity
 - D: [Symptom] monitors/dashboards filtered by `env`/`service` return no series
 **Interventions:**

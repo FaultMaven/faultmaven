@@ -166,7 +166,6 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
 
 **Indicators:**
 - root: [Step 1] `notAfter` date is in the past
-  <!-- match: {"step": 1, "predicate": "contains", "target": "notAfter"} -->
 - s2: [Symptom] `certificate has expired` in client or server logs
 
 **Interventions:**
@@ -208,7 +207,6 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
 
 **Indicators:**
 - s2: [Step 6] serial numbers differ — on-disk cert has a future `notAfter`, live endpoint serves a past `notAfter`
-  <!-- match: {"step": 6, "predicate": "contains", "target": "Serial Number"} -->
 
 **Interventions:**
 - **remediation** (root): add a deploy hook so future renewals automatically reload the web server.
@@ -251,7 +249,6 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
 
 **Indicators:**
 - s2: [Step 5] `kubectl get certificates -A` shows `READY=False`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "Ready=False"} -->
 - s2: [Step 5] `kubectl describe certificate` shows a challenge failure reason or `Waiting for DNS-01 challenge propagation`
 - root: [Step 7] port 80 connection refused or DNS TXT record absent
 
@@ -295,7 +292,6 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
 **Indicators:**
 - s1: [Step 1] `notAfter` on the leaf cert is in the future
 - root: [Step 2] one of the intermediate certs shows a past `notAfter`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "notAfter"} -->
 
 **Interventions:**
 - **remediation** (root): replace the expired intermediate with the CA's current one and reload; ensure certbot/cert-manager always bundle the full chain (default for both).
@@ -323,7 +319,6 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
 **Indicators:**
 - s2: [Step 1] `notAfter` appears in the past from the affected host, but a remote check confirms the certificate is valid
 - root: [Step 4] `timedatectl status` shows `NTP synchronized: no` or a significant offset
-  <!-- match: {"step": 4, "predicate": "contains", "target": "NTP synchronized: no"} -->
 
 **Interventions:**
 - **remediation** (root): permanently enable NTP and confirm chrony is synchronized.
@@ -360,7 +355,6 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
 
 **Indicators:**
 - s2: [Step 5] `RenewalStatus=FAILED` in ACM describe output
-  <!-- match: {"step": 5, "predicate": "contains", "target": "FAILED"} -->
 - s2: [Step 5] ACM console or CLI shows `PENDING_VALIDATION` on a certificate that was previously `ISSUED`
 
 **Interventions:**
@@ -403,7 +397,6 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
 **Indicators:**
 - s1: [Step 5] `kubectl get certificates -A` shows `READY=True` with a recent `notAfter`
 - s2: [Step 6] the Secret contains a valid cert but the live endpoint serves an expired cert (differing serials)
-  <!-- match: {"step": 6, "predicate": "contains", "target": "Serial Number"} -->
 
 **Interventions:**
 - **remediation** (root): force cert-manager to rewrite a fresh Secret so the controller's watch fires.

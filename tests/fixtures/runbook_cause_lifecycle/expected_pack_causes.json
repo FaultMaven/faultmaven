@@ -52,15 +52,6 @@
       }
     ],
     "is_fallback_cause": false,
-    "match_predicates": [
-      {
-        "op": ">",
-        "predicate": "threshold",
-        "step": 2,
-        "target": "pool_checked_out_pct",
-        "value": 0.95
-      }
-    ],
     "rung_indicators": {
       "root": [
         "[Step 3] the pool size was lowered (or demand grew) without a corresponding pool increase"
@@ -87,7 +78,6 @@
       }
     ],
     "is_fallback_cause": true,
-    "match_predicates": [],
     "rung_indicators": {}
   }
 ]

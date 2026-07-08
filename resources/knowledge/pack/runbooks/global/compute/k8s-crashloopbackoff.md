@@ -145,7 +145,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 **Indicators:**
 - root: [Step 3] previous-container logs show a stack trace, parse error, or "fatal" log line just before termination.
 - s1: [Step 4] container status reports `exitCode=1` (or any non-zero, non-137 code) with `reason=Error`.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "reason=Error"} -->
 - D: [Symptom] restart count climbs in lockstep with backoff intervals; container never reaches its normal "ready" log line.
 
 **Interventions:**
@@ -183,7 +182,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 - root: [Step 7] `kubectl top` shows the container's memory at or above its configured `limits.memory`.
 - s2: [Step 10] node `dmesg` contains `Memory cgroup out of memory: Killed process ...` naming the container's main process.
 - s3: [Step 4] container status reports `exitCode=137` and `reason=OOMKilled`.
-  <!-- match: {"step": 4, "predicate": "exit_code", "target": 137} -->
 
 **Interventions:**
 - **remediation** (root): Right-size `limits.memory` from observed peak over 7 days plus 25-30% headroom; for managed runtimes (JVM/V8) also set container-aware heap flags.
@@ -219,7 +217,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 - root: [Step 6] `livenessProbe.initialDelaySeconds * livenessProbe.failureThreshold` is less than the application's documented startup time and no `startupProbe` is configured.
 - s1: [Step 3] previous-container logs show the application mid-initialization (loading config, opening DB pool) with no fatal error before termination.
 - s2: [Step 2] events table contains `Liveness probe failed` immediately followed by `Killing container` and `Container failed liveness probe, will be restarted`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Liveness probe failed"} -->
 
 **Interventions:**
 - **defensive_fix** (root): Add a `startupProbe` that gates liveness/readiness while the application boots; its `failureThreshold * periodSeconds` must exceed worst-case cold start.
@@ -265,7 +262,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 - root: [Step 3] previous-container logs are empty or show `exec: "<binary>": executable file not found in $PATH`.
 - s1: [Step 4] container status reports `exitCode=127` with `reason=ContainerCannotRun` or `StartError`.
 - s1: [Step 2] events table contains `Failed to pull image` or `ErrImagePull` or `manifest unknown` or `not found`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Failed to pull image"} -->
 
 **Interventions:**
 - **remediation** (root): Confirm the tag exists, fix the Dockerfile entrypoint / push the missing tag / correct the spec, then roll out the correct image.
@@ -302,7 +298,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 **Indicators:**
 - root: [Step 5] one or more referenced ConfigMap/Secret names from the pod spec are absent from the `kubectl get configmap,secret` output.
 - s1: [Step 2] events table contains `configmap "<name>" not found`, `secret "<name>" not found`, or `couldn't find key "<key>" in ConfigMap`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "not found"} -->
 - s2: [Step 3] previous-container logs (if any) show "config file not found", "missing required environment variable", or empty config values.
 
 **Interventions:**
@@ -340,7 +335,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 - root: [Step 8] one or more entries in `initContainerStatuses` show `exitCode!=0`.
 - root: [Step 8] init-container previous-instance logs show the specific failure (connection refused, migration error, permission denied).
 - D: [Step 1] pod status string is `Init:CrashLoopBackOff` or `Init:Error`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Init:CrashLoopBackOff"} -->
 
 **Interventions:**
 - **remediation** (root): Fix the dependency the init container waits on (start the DB, fix the migration, correct the wait script), then trigger a rollout to retry the init chain.
@@ -375,7 +369,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 **Indicators:**
 - root: [Step 2] pod has two or more containers in `spec.containers` whose declared `containerPort` values overlap.
 - s1: [Step 3] previous-container logs contain `bind: address already in use`, `EADDRINUSE`, or `listen tcp :<port>: bind: address already in use`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "address already in use"} -->
 - D: [Symptom] restart loop sometimes resolves on its own after 1-2 minutes (kernel TIME_WAIT expiry) but recurs on every redeploy.
 
 **Interventions:**
@@ -412,7 +405,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 **Indicators:**
 - root: [Step 2] `Mounts` block lists a volume at a path that overlaps the image's expected runtime data directory.
 - s1: [Step 3] previous-container logs contain `permission denied`, `read-only file system`, or `no such file or directory` referencing a path declared in `volumeMounts`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "permission denied"} -->
 - s2: [Step 3] previous-container logs show the application starting but exiting immediately after touching its data path.
 
 **Interventions:**
@@ -449,7 +441,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 **Indicators:**
 - root: [Step 9] image manifest architectures do not include the node's `nodeInfo.architecture`.
 - s1: [Step 3] previous-container logs contain `exec format error` or `exec /<binary>: exec format error`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "exec format error"} -->
 - D: [Symptom] same pod template runs on some nodes but CrashLoopBackOffs on others.
 
 **Interventions:**
@@ -486,7 +477,6 @@ Expected output: kernel lines such as `Memory cgroup out of memory: Killed proce
 - root: [Step 2] workload kind is `Deployment`, `StatefulSet`, or `DaemonSet` (which force `restartPolicy: Always`) but the entrypoint is short-lived.
 - s1: [Step 3] previous-container logs show the process completing successfully (no errors, no stack traces).
 - s1: [Step 4] container status reports `exitCode=0` with `reason=Completed`.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "exitCode=0  reason=Completed"} -->
 
 **Interventions:**
 - **remediation** (root): Fix the entrypoint so it stays in the foreground (`exec <daemon>` without `&`), or convert the workload to a Job if it is meant to run once.

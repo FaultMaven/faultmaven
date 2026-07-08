@@ -161,7 +161,6 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 **Indicators:**
 - root: [Step 2] `Principal` in the trust policy does not contain the caller's ARN or account returned by Step 1
 - s1: [Step 5] `errorMessage` contains `is not authorized to perform: sts:AssumeRole`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "is not authorized to perform: sts:AssumeRole"} -->
 
 **Interventions:**
 - **remediation** (root): add the specific caller principal to the trust policy.
@@ -204,7 +203,6 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 
 **Indicators:**
 - root: [Step 2] Trust policy `Condition` block contains `"sts:ExternalId"` key
-  <!-- match: {"step": 2, "predicate": "contains", "target": "sts:ExternalId"} -->
 - s1: [Step 5] `errorMessage` contains `is not authorized to perform: sts:AssumeRole` while Step 2 confirms the `sts:ExternalId` condition is present
 
 **Interventions:**
@@ -246,7 +244,6 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 **Indicators:**
 - root: [Step 3] `MaxSessionDuration` value is less than the `DurationSeconds` the caller requests
 - s1: [Step 5] `errorMessage` contains `DurationSeconds exceeds the MaxSessionDuration`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "DurationSeconds exceeds the MaxSessionDuration"} -->
 
 **Interventions:**
 - **remediation** (root): raise the role's `MaxSessionDuration` to cover the required duration (max 43200 s = 12 h).
@@ -279,7 +276,6 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 **Indicators:**
 - root: [Step 6] No attached or inline policy grants `sts:AssumeRole` on the target role ARN
 - s1: [Step 4] `EvalDecision` is `implicitDeny`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "implicitDeny"} -->
 
 **Interventions:**
 - **remediation** (root): attach a scoped identity policy granting `sts:AssumeRole` on the target role ARN.
@@ -312,7 +308,6 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 **Indicators:**
 - root: [Step 4] `EvalDecision` is `explicitDeny`
 - s1: [Step 5] `errorMessage` contains `explicit deny in a service control policy`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "explicit deny in a service control policy"} -->
 
 **Interventions:**
 - **remediation** (root): have the Organizations admin add an exception to the SCP or move the target account to a less restrictive OU.
@@ -345,7 +340,6 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 
 **Indicators:**
 - root: [Step 5] `errorCode` is `RegionDisabled` or error message contains `STS is not activated in the requested region`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "STS is not activated in the requested region"} -->
 - s1: [Symptom] Error class is `RegionDisabled` (HTTP 403), not `AccessDenied`
 
 **Interventions:**
@@ -380,7 +374,6 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 
 **Indicators:**
 - root: [Step 8] `URL` in the OIDC provider does not match the token issuer, or `ClientIDList` does not include `sts.amazonaws.com`
-  <!-- match: {"step": 8, "predicate": "absent", "target": "sts.amazonaws.com"} -->
 - s1: [Step 2] Trust policy `Condition` `StringEquals` subject/audience values differ from what the provider token contains
 
 **Interventions:**
@@ -423,7 +416,6 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 
 **Indicators:**
 - root: [Step 1] Caller `Arn` contains `assumed-role` (i.e., already a temporary credential session)
-  <!-- match: {"step": 1, "predicate": "contains", "target": "assumed-role"} -->
 - s1: [Step 5] `errorMessage` contains `DurationSeconds exceeds the MaxSessionDuration` while Step 3 shows `MaxSessionDuration` >= the requested duration
 
 **Interventions:**

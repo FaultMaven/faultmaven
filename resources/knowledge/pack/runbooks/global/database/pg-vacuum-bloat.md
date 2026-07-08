@@ -152,9 +152,7 @@ Expected output: Cross-reference total size against `n_live_tup`. A table with 5
 
 **Indicators:**
 - root: [Step 5] `autovacuum_vacuum_scale_factor` is 0.2 (default) and `autovacuum_vacuum_threshold` is 50 (default)
-  <!-- match: {"step": 5, "predicate": "contains", "target": "autovacuum_vacuum_scale_factor"} -->
 - s2: [Step 1] `dead_pct` above 20% on tables with many millions of live rows
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "dead_pct", "op": ">", "value": 20} -->
 
 **Interventions:**
 - **remediation** (root): lower the per-table scale factor so vacuum triggers early, then clear existing bloat.
@@ -199,7 +197,6 @@ Expected output: Cross-reference total size against `n_live_tup`. A table with 5
 
 **Indicators:**
 - root: [Step 3] one or more rows with `state = 'idle in transaction'` and `xact_duration` exceeding several minutes
-  <!-- match: {"step": 3, "predicate": "contains", "target": "idle in transaction"} -->
 - s2: [Step 1] many tables showing rising `dead_pct` simultaneously (global horizon block, not a per-table tuning issue)
 
 **Interventions:**
@@ -237,9 +234,7 @@ Expected output: Cross-reference total size against `n_live_tup`. A table with 5
 
 **Indicators:**
 - root: [Step 5] `autovacuum_max_workers` equals 3 (default)
-  <!-- match: {"step": 5, "predicate": "contains", "target": "autovacuum_max_workers"} -->
 - s1: [Step 2] all three (or configured maximum) vacuum worker slots are occupied for extended periods
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "active_workers", "op": ">=", "value": 3} -->
 - s2: [Step 1] multiple tables simultaneously showing high `dead_pct` without a single obvious large-volume offender
 
 **Interventions:**
@@ -266,7 +261,6 @@ Expected output: Cross-reference total size against `n_live_tup`. A table with 5
 
 **Indicators:**
 - root: [Step 5] `autovacuum_vacuum_cost_delay` is 2 or higher and `autovacuum_vacuum_cost_limit` is -1
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "autovacuum_vacuum_cost_delay", "op": ">=", "value": 2} -->
 - s1: [Step 2] autovacuum worker for a table shows `heap_blks_scanned` advancing very slowly relative to `heap_blks_total`
 - s2: [Step 1] `last_autovacuum` is recent (autovacuum runs often) but `dead_pct` remains high
 
@@ -312,7 +306,6 @@ Expected output: Cross-reference total size against `n_live_tup`. A table with 5
 
 **Indicators:**
 - root: [Step 3] the blocking `backend_xmin` belongs to a `walsender` process (application_name matches a replica name)
-  <!-- match: {"step": 3, "predicate": "contains", "target": "walsender"} -->
 - D: [Symptom] bloat grows despite healthy autovacuum configuration and no idle-in-transaction sessions
 
 **Interventions:**
@@ -357,7 +350,6 @@ Expected output: Cross-reference total size against `n_live_tup`. A table with 5
 
 **Indicators:**
 - root: [Step 4] `pct_to_wraparound` above 90% for any database
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "pct_to_wraparound", "op": ">", "value": 90} -->
 - D: [Symptom] PostgreSQL log shows `ERROR: database is not accepting commands that assign new XIDs`
 
 **Interventions:**

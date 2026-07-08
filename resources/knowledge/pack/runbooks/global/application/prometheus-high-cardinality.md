@@ -161,7 +161,6 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
 **Indicators:**
 - root: [Step 3] the same label name (`user_id`, `request_id`, `trace_id`, `email`) tops `labelValueCountByLabelName` with thousands of distinct values.
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "label_value_count", "op": ">", "value": 10000} -->
 - s1: [Step 2] one application metric is at the top of `seriesCountByMetricName` with hundreds of thousands of series.
 - s1: [Step 5] `count(count by (<label>) (<metric>))` for that metric returns a value above 10,000.
 
@@ -207,7 +206,6 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
 **Indicators:**
 - root: [Step 5] a path/uri/url label on the HTTP metric has thousands of distinct values, many embedding numeric or UUID segments.
-  <!-- match: {"step": 5, "predicate": "contains", "target": "path"} -->
 - s1: [Step 2] an HTTP-related metric (`http_requests_total`, `http_request_duration_seconds_count`, `http_server_requests_seconds_count`) dominates `seriesCountByMetricName`.
 - s1: [Symptom] the cardinality spike correlates with traffic to a parameterised API route rather than with a deployment.
 
@@ -260,7 +258,6 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
 **Indicators:**
 - root: [Step 3] `pod`, `pod_name`, `pod_uid`, or `container_id` is near the top of `labelValueCountByLabelName` with thousands of distinct values.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "pod"} -->
 - s1: [Step 8] head series shows step changes at deployment times, not at traffic peaks.
 - s2: [Symptom] series count grows on a daily or per-deploy cadence with no traffic correlation.
 
@@ -309,7 +306,6 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
 **Indicators:**
 - root: [Step 3] the `le` label has more than 15 distinct values.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "_bucket"} -->
 - s1: [Step 5] series count for the histogram equals roughly (bucket count + 2) × distinct combinations of other labels.
 - s2: [Step 2] a metric ending in `_bucket` dominates `seriesCountByMetricName`.
 
@@ -359,7 +355,6 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
 **Indicators:**
 - root: [Step 2] metrics named `kube_pod_*`, `container_*`, or `node_*` occupy multiple of the top slots in `seriesCountByMetricName`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "kube_"} -->
 - s1: [Step 4] the `kube-state-metrics`, `cadvisor`, or `node-exporter` job tops `scrape_samples_post_metric_relabeling`.
 - s2: [Step 9] `mimirtool analyze` reports many of those metrics as unused.
 
@@ -414,7 +409,6 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
 **Indicators:**
 - root: [Step 6] `sample_limit` / `target_limit` / `label_limit` are absent from the active config.
-  <!-- match: {"step": 6, "predicate": "contains", "target": "NO LIMITS CONFIGURED"} -->
 - s1: [Step 4] one scrape job is responsible for the majority of samples and shows rapid growth in `scrape_series_added`.
 - s2: [Step 8] head series shows a step change coinciding with `prometheus_config_last_reload_success_timestamp_seconds` updates or new targets appearing in `prometheus_sd_*` metrics.
 
@@ -467,7 +461,6 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
 **Indicators:**
 - root: [Symptom] dashboards driven by raw high-cardinality metrics time out while alert evaluation lags (`rule_group_iterations_missed_total` increments).
-  <!-- match: {"step": 1, "predicate": "contains", "target": "too many samples"} -->
 - s1: [Symptom] PromQL queries fail with `query processing would load too many samples into memory`.
 - s2: [Symptom] `prometheus_engine_query_duration_seconds` p99 climbs even when `prometheus_tsdb_head_series` is flat.
 
@@ -527,7 +520,6 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
 **Indicators:**
 - root: [Step 3] `instance` and `pod` labels are near the top of `labelValueCountByLabelName` and grow continuously.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "instance"} -->
 - s1: [Step 4] `scrape_series_added` rate is high relative to `scrape_samples_post_metric_relabeling`, indicating new series per scrape.
 - s2: [Step 8] head series shows a sawtooth pattern aligned to deployment or batch-job cycles.
 

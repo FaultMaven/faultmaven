@@ -93,7 +93,6 @@ Expected output: the service account / user email appears in the list of members
 **Indicators:**
 - root: [Step 1] the `authorizedNetworks` values do not contain the client's egress IP/CIDR.
 - s2: [Step 2] `telnet PUBLIC_IP 5432` hangs then times out rather than connecting.
-  <!-- match: {"step": 2, "predicate": "absent", "target": "Connected to"} -->
 **Interventions:**
 - **remediation** (root): add the client's egress CIDR to the authorized networks. Use valid CIDR notation; existing RFC 1918 ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) are implicit. NOTE: `--authorized-networks` REPLACES the full list, so include all current entries.
 
@@ -120,9 +119,7 @@ Expected output: the service account / user email appears in the list of members
 - D: proxy exits / client connection refused (Symptom Recognition)
 **Indicators:**
 - root: [Step 5] the caller's email is absent from the `roles/cloudsql.client` members list.
-  <!-- match: {"step": 5, "predicate": "absent", "target": "@"} -->
 - s2: [Step 3] proxy stderr shows `failed to dial` / `dial tcp ...:3307` or `terminal error: unable to start`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "terminal error"} -->
 **Interventions:**
 - **remediation** (root): enable the Admin API and grant the client role to the proxy's service account.
 
@@ -152,7 +149,6 @@ Expected output: the service account / user email appears in the list of members
 **Indicators:**
 - root: [Step 1] `ipv4Enabled` is false / instance only exposes a private IP, yet the client is on a peered VPC.
 - s2: [Step 2] `telnet PRIVATE_IP 5432` (or the proxy dialing 3307) times out with no response.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "timed out"} -->
 **Interventions:**
 - **remediation** (root): re-export the subnet routes (including public-IP routes) over the Service Networking peering so the private path resolves.
 
@@ -182,9 +178,7 @@ Expected output: the service account / user email appears in the list of members
 - D: new client connections refused (Symptom Recognition)
 **Indicators:**
 - root: [Step 4] `active` count is at or near `max_conn`.
-  <!-- match: {"step": 4, "predicate": "threshold", "field": "active", "op": ">=", "value": 100} -->
 - s1: [Symptom] logs show `FATAL: remaining connection slots are reserved` (PG) or `ERROR 1040 (HY000): Too many connections` (MySQL).
-  <!-- match: {"step": 4, "predicate": "contains", "target": "too many"} -->
 **Interventions:**
 - **remediation** (root): raise the `max_connections` flag (sized to instance memory) and front the DB with a pooler to cap real connections.
 

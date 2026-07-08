@@ -65,7 +65,7 @@ GOLDEN_CAUSES = (
 # drift between the two vendored copies). Regenerate via kb-toolkit
 # ``regen_golden.py``, copy here, update this constant AND the kb-toolkit one.
 EXPECTED_GOLDEN_SHA256 = (
-    "7f1a083dd95830079ac095d63526c52f818cbdf86086923033886a03cfe1b1be"
+    "59a183bd40dfaaae5b65529790b5a4ea502a8c5dda2b77eed47147faeb08432d"
 )
 
 # The per-Cause record's exact field set — the producer<->consumer contract.

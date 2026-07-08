@@ -155,9 +155,7 @@ Expected output: empty (no pre-binding — the PVC is using dynamic provisioning
 **Indicators:**
 - root: [Step 2] `storageClassName` is empty AND [Step 3] no StorageClass carries the `storageclass.kubernetes.io/is-default-class: "true"` annotation.
 - s1: [Step 1] event message contains `storageclass.storage.k8s.io` and `not found`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "not found"} -->
 - s1: [Step 3] `kubectl get storageclass <class-name>` returns `Error from server (NotFound)`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "NotFound"} -->
 
 **Interventions:**
 - **remediation** (root): create the missing StorageClass, mark an existing class as default, or recreate the PVC pointing at an existing class.
@@ -212,10 +210,8 @@ Expected output: empty (no pre-binding — the PVC is using dynamic provisioning
 
 **Indicators:**
 - root: [Step 4] one or more CSI controller/node pods are in `CrashLoopBackOff`, `ImagePullBackOff`, `Pending`, or `Error` state.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "CrashLoopBackOff"} -->
 - root: [Step 4] `kubectl get csidrivers` does not list the provisioner named in the StorageClass.
 - s1: [Step 1] PVC event reason is `ExternalProvisioning` with message `waiting for a volume to be created, either by external provisioner`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "ExternalProvisioning"} -->
 
 **Interventions:**
 - **remediation** (root): install the driver if missing, fix the crashing controller's root failure, or wire the IRSA role so the controller becomes Ready.
@@ -261,9 +257,7 @@ Expected output: empty (no pre-binding — the PVC is using dynamic provisioning
 
 **Indicators:**
 - root: [Step 3] `volumeBindingMode` is `WaitForFirstConsumer`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "WaitForFirstConsumer"} -->
 - s1: [Step 1] PVC event reason is `WaitForPodScheduled` or `WaitForFirstConsumer` with message `waiting for first consumer to be created before binding`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "waiting for first consumer to be created before binding"} -->
 - s1: [Step 8] no pod references the PVC, or every referencing pod is `Pending` with `reason: Unschedulable` / `SchedulingGated`.
 
 **Interventions:**
@@ -308,9 +302,7 @@ Expected output: empty (no pre-binding — the PVC is using dynamic provisioning
 **Indicators:**
 - root: [Step 4] the controller ServiceAccount is missing the cloud-identity annotation (e.g. `eks.amazonaws.com/role-arn` on EKS, `iam.gke.io/gcp-service-account` on GKE).
 - s1: [Step 5] controller logs contain `is not authorized to perform: ec2:CreateVolume` or `googleapi: Error 403: Required '<permission>' permission`.
-  <!-- match: {"step": 5, "predicate": "contains", "target": "is not authorized to perform"} -->
 - s2: [Step 1] event message contains `UnauthorizedOperation`, `AccessDenied`, or `PERMISSION_DENIED`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "UnauthorizedOperation"} -->
 
 **Interventions:**
 - **remediation** (root): grant the CSI controller identity the scoped volume permissions and confirm the identity annotation, then restart so it picks up credentials.
@@ -357,9 +349,7 @@ Expected output: empty (no pre-binding — the PVC is using dynamic provisioning
 **Indicators:**
 - root: [Step 6] current volume count is at or above the configured service quota.
 - s1: [Step 1] event message contains `VolumeLimitExceeded`, `RequestLimitExceeded`, `QUOTA_EXCEEDED`, or `InsufficientResourceCapacity`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "VolumeLimitExceeded"} -->
 - s2: [Step 5] controller logs contain `You have reached the maximum number of EBS volumes` or `Quota '<resource>' exceeded` from the cloud API.
-  <!-- match: {"step": 5, "predicate": "contains", "target": "maximum number"} -->
 
 **Interventions:**
 - **remediation** (root): request a quota increase for the volume class in the region (and reduce demand by deleting orphaned `Released` PVs).
@@ -407,7 +397,6 @@ Expected output: empty (no pre-binding — the PVC is using dynamic provisioning
 **Indicators:**
 - root: [Step 2] `accessModes` contains `ReadWriteMany` AND [Step 3] provisioner is a block-storage driver (`ebs.csi.aws.com`, `disk.csi.azure.com`, `pd.csi.storage.gke.io`, `driver.longhorn.io` without RWX add-on).
 - s1: [Step 1] event message contains `multi-attach`, `not supported`, or `INVALID_ARGUMENT`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "INVALID_ARGUMENT"} -->
 - s1: [Step 5] controller logs contain `accessMode <mode> not supported by driver`.
 
 **Interventions:**
@@ -458,7 +447,6 @@ Expected output: empty (no pre-binding — the PVC is using dynamic provisioning
 - root: [Step 2] `requestedStorage` is below the provisioner-class minimum (1 GiB EBS gp3, 10 GiB GCE pd-standard, etc.).
 - root: [Step 7] StorageClass `allowedTopologies` excludes every zone where a candidate consumer node lives.
 - s1: [Step 1] event message contains `InvalidVolumeSize`, `requested size`, `InvalidParameterValue`, `topology`, or `accessibility requirements`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "InvalidParameterValue"} -->
 
 **Interventions:**
 - **remediation** (root): recreate the PVC with a valid size/type, widen the StorageClass topology, or constrain the consumer pod to an allowed zone.
@@ -498,7 +486,6 @@ Expected output: empty (no pre-binding — the PVC is using dynamic provisioning
 
 **Indicators:**
 - root: [Step 2] `volumeName` is set to a non-empty value.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "volumeName="} -->
 - s1: [Step 10] the named PV does not exist (NotFound) OR its `phase` is `Released` OR its `storageClassName`/`accessModes`/`capacity` differs from the PVC.
 - s1: [Step 1] PVC events show no `ProvisioningFailed` and no `Provisioning` activity — only the implicit Pending state.
 

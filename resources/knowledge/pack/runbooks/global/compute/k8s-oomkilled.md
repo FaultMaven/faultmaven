@@ -137,7 +137,6 @@ Expected output: a working-set time series. A monotonic upward slope across hour
 
 **Indicators:**
 - s2: [Step 3] `kubectl top` shows the killed container running at or above the configured `limits.memory` during normal load
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "memory_pct", "op": ">", "value": 0.95} -->
 - root: [Step 6] application logs show no allocation-burst pattern preceding the kill — usage is flat at the ceiling
 - s4: [Symptom] restart counter climbs steadily without correlation to traffic spikes
 
@@ -175,7 +174,6 @@ Expected output: a working-set time series. A monotonic upward slope across hour
 **Indicators:**
 - s2: [Step 9] working-set memory shows a monotonic upward slope over hours or days, not correlated with traffic
 - s1: [Step 6] application logs show GC overhead warnings (`GC overhead limit exceeded`, `Mark-sweep ... allocation failed`) or `OutOfMemoryError` shortly before termination
-  <!-- match: {"step": 6, "predicate": "contains", "target": "OutOfMemoryError"} -->
 - s4: [Symptom] restart interval is roughly constant for a constant workload (each restart takes the same time to climb back to the limit)
 
 **Interventions:**
@@ -261,7 +259,6 @@ Expected output: a working-set time series. A monotonic upward slope across hour
 
 **Indicators:**
 - root: [Step 8] pod spec contains an `emptyDir` volume with `medium: Memory` and no `sizeLimit`
-  <!-- match: {"step": 8, "predicate": "contains", "target": "medium=Memory"} -->
 - s1: [Step 6] application logs show no allocation pressure (heap is healthy) yet the container was OOMKilled
 - s2: [Step 7] kernel `oom-kill` log identifies the application process with anon-rss far below the cgroup limit, indicating other accounted pages (page cache from tmpfs) consumed the budget
 
@@ -302,7 +299,6 @@ Expected output: a working-set time series. A monotonic upward slope across hour
 
 **Indicators:**
 - root: [Step 4] one or more containers in the pod (typically `istio-proxy`, `fluent-bit`, `vault-agent`) have no `limits.memory` set
-  <!-- match: {"step": 4, "predicate": "absent", "target": "spec.containers[].resources.limits.memory"} -->
 - s3: [Step 2] `kubectl describe pod` shows multiple containers and the killed container is not the highest memory consumer
 - s1: [Step 3] sidecar working-set is non-trivial (>100Mi) relative to the application
 
@@ -340,7 +336,6 @@ Expected output: a working-set time series. A monotonic upward slope across hour
 
 **Indicators:**
 - s1: [Step 5] `MemoryPressure` node condition is `Status: True` at or near the time of termination
-  <!-- match: {"step": 5, "predicate": "contains", "target": "MemoryPressure       True"} -->
 - s2: [Step 2] pod-level `Reason: Evicted` with message `The node was low on resource: memory`
 - root: [Step 3] container's own working-set is well below its configured limit at the time of the kill
 

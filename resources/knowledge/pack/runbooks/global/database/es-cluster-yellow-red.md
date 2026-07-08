@@ -114,11 +114,8 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 **Indicators:**
 - root: [Step 4] `disk.percent` >= 85 on one or more nodes
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "disk.percent", "op": ">=", "value": 85} -->
 - s1: [Step 3] `node_allocation_decisions` references `DiskThresholdDecider` with verdict `NO`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "DiskThresholdDecider"} -->
 - s2: [Step 7] `"index.blocks.read_only_allow_delete": "true"` present on one or more indices
-  <!-- match: {"step": 7, "predicate": "contains", "target": "read_only_allow_delete"} -->
 
 **Interventions:**
 - **remediation** (root): implement an ILM delete phase to auto-expire old indices and keep disk below the watermark.
@@ -167,9 +164,7 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 **Indicators:**
 - s1: [Step 2] `unassigned.reason` = `NODE_LEFT` on multiple shards
-  <!-- match: {"step": 2, "predicate": "contains", "target": "NODE_LEFT"} -->
 - root: [Step 1] `number_of_nodes` lower than expected
-  <!-- match: {"step": 1, "predicate": "contains", "target": "number_of_nodes"} -->
 - root: [Step 6] expected node name absent from output
 
 **Interventions:**
@@ -224,9 +219,7 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 **Indicators:**
 - s2: [Step 2] `unassigned.reason` = `INDEX_CREATED` on replica shards (`prirep=r`) for all indices
-  <!-- match: {"step": 2, "predicate": "contains", "target": "INDEX_CREATED"} -->
 - s1: [Step 3] `node_allocation_decisions` references `SameShardAllocationDecider` with verdict `NO`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "SameShardAllocationDecider"} -->
 - root: [Step 6] node count equals 1 or fewer than `number_of_replicas + 1`
 
 **Interventions:**
@@ -260,9 +253,7 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 **Indicators:**
 - root: [Step 5] `cluster.routing.allocation.enable` = `none` or `primaries`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "allocation.enable"} -->
 - s1: [Step 3] `allocate_explanation` contains `allocation is disabled` with no disk/hardware reason
-  <!-- match: {"step": 3, "predicate": "contains", "target": "allocation is disabled"} -->
 
 **Interventions:**
 - **remediation** (root): re-enable allocation by clearing the override (returns to default `all`).
@@ -287,7 +278,6 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 **Indicators:**
 - s1: [Step 3] `node_allocation_decisions` references `FilterAllocationDecider` with verdict `NO` on every node
-  <!-- match: {"step": 3, "predicate": "contains", "target": "FilterAllocationDecider"} -->
 - root: [Step 3] `allocate_explanation` names a node attribute value absent from `_cat/nodes` output
 
 **Interventions:**
@@ -323,9 +313,7 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 **Indicators:**
 - s1: [Step 3] `allocate_explanation` contains `too many allocation attempts` or `MaxRetryAllocationDecider`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "MaxRetryAllocationDecider"} -->
 - root: [Step 2] `unassigned.reason` = `ALLOCATION_FAILED`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "ALLOCATION_FAILED"} -->
 
 **Interventions:**
 - **remediation** (root): investigate the original allocation failure in the logs to prevent recurrence, then reset the retry counter.
@@ -356,8 +344,6 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 **Indicators:**
 - root: [Step 8] `cluster.max_shards_per_node` at or near total shard count divided by node count
 - s1: [Step 3] `allocate_explanation` contains `too many shards` or `ShardsLimitAllocationDecider`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "too many shards"} -->
-  <!-- match: {"step": 3, "predicate": "contains", "target": "ShardsLimitAllocationDecider"} -->
 
 **Interventions:**
 - **remediation** (root): delete old, unneeded time-based indices to reduce total shard count, then reset the limit to default.
@@ -394,8 +380,6 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 **Indicators:**
 - s1: [Step 3] `allocate_explanation` contains `shard corruption` or `failed shard on allocating node`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "shard corruption"} -->
-  <!-- match: {"step": 3, "predicate": "contains", "target": "failed shard on allocating node"} -->
 - s3: [Step 2] `unassigned.reason` = `ALLOCATION_FAILED` on a primary shard with no corresponding healthy replica
 
 **Interventions:**

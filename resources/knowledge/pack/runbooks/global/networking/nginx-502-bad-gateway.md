@@ -158,9 +158,7 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s2: [Step 1] error log contains `connect() failed (111: Connection refused) while connecting to upstream`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "connect() failed (111: Connection refused) while connecting to upstream"} -->
 - s1: [Step 3] `nc -zv` to the upstream `host:port` prints `Connection refused` or returns non-zero
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Connection refused"} -->
 - root: [Step 4] `ss -tlnp` on the upstream host has no `LISTEN` line for the expected port
 
 **Interventions:**
@@ -194,7 +192,6 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s2: [Step 1] error log contains `upstream timed out (110: Connection timed out) while connecting to upstream`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "upstream timed out (110: Connection timed out) while connecting to upstream"} -->
 - s1: [Step 3] `nc -zv` hangs until its own `-w` timeout, then exits non-zero (no `refused` text in output)
 - root: [Step 4] the upstream's `ss -tlnp` does show a `LISTEN` socket on the expected port (process is healthy; the path is broken)
 
@@ -230,7 +227,6 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s2: [Step 1] error log contains `upstream prematurely closed connection while reading response header from upstream`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "upstream prematurely closed connection while reading response header from upstream"} -->
 - root: [Step 4] upstream status shows recent restarts, OOM kills (`dmesg | grep -i killed`), or `pm.max_children`/`pm.max_requests` recycling warnings in its log
 - root: [Step 7] 502 spikes coincide with upstream deploy/restart events or memory-pressure alerts on the upstream tier
 
@@ -283,7 +279,6 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s2: [Step 1] error log contains `upstream timed out` followed by `while reading response header from upstream` or `while reading upstream`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "upstream timed out (110: Connection timed out) while reading"} -->
 - root: [Step 7] access-log entries for affected routes show `$upstream_response_time` near or equal to the configured `proxy_read_timeout` value
 - root: [Step 4] upstream service is healthy (`active (running)`) and listening; CPU is high or single requests take >30 s in upstream-side traces
 
@@ -336,7 +331,6 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s2: [Step 1] error log contains `SSL_do_handshake() failed` referencing the upstream
-  <!-- match: {"step": 1, "predicate": "contains", "target": "SSL_do_handshake() failed"} -->
 - s1: [Step 6] `openssl s_client` to the upstream prints `Verify return code: <non-zero>` or an `alert handshake failure`
 - root: [Step 6] certificate `subject=` does not match the hostname NGINX uses (mismatch between `proxy_pass`/`proxy_ssl_name` and the certificate SAN)
 
@@ -385,7 +379,6 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s1: [Step 1] error log contains `no resolver defined to resolve` or `could not be resolved (3: Host not found)`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "could not be resolved"} -->
 - root: [Step 5] `dig +short <upstream-host>` returns empty or `NXDOMAIN`
 - root: [Step 5] `grep "resolver " /etc/nginx/nginx.conf /etc/nginx/conf.d/*.conf` returns no matches even though `proxy_pass` uses a variable
 
@@ -437,9 +430,7 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s2: [Step 1] error log contains `upstream sent too big header while reading response header from upstream`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "upstream sent too big header while reading response header from upstream"} -->
 - root: [Step 10] `curl -sI` to the upstream returns header payload >4 KB or >20 distinct header fields
-  <!-- match: {"step": 10, "predicate": "threshold", "target": "header_bytes", "op": ">", "value": 4096} -->
 
 **Interventions:**
 - **defensive_fix** (s1): raise the proxy/fastcgi header buffers so large but legitimate headers fit.
@@ -499,7 +490,6 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s2: [Step 1] error log contains `no live upstreams while connecting to upstream`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "no live upstreams while connecting to upstream"} -->
 - root: [Step 7] the 502 burst is broad (all routes sharing the upstream group return 502) and time-correlated with an upstream-tier event
 - s1: [Step 4] every upstream server is in fact healthy now (`LISTEN` socket present, `nc -zv` succeeds), but NGINX has not yet retried them
 
@@ -542,7 +532,6 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s2: [Step 1] error log contains `socket() failed (24: Too many open files)` or `accept4() failed (24: Too many open files)`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Too many open files"} -->
 - root: [Step 9] `cat /proc/<pid>/limits | grep "Max open files"` returns a soft limit below `worker_connections * 2`
 - s1: [Step 9] `ss -s` shows TCP socket count near the per-process limit
 
@@ -590,9 +579,7 @@ Expected output: total response-header bytes and number of header fields. Header
 
 **Indicators:**
 - s2: [Step 1] error log contains `connect() failed (13: Permission denied) while connecting to upstream`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "connect() failed (13: Permission denied) while connecting to upstream"} -->
 - s1: [Step 8] `ausearch -m AVC -ts recent | grep nginx` returns at least one `denied { name_connect }` line
-  <!-- match: {"step": 8, "predicate": "contains", "target": "denied  { name_connect }"} -->
 - root: [Step 8] `getenforce` returns `Enforcing`
 
 **Interventions:**
