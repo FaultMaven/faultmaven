@@ -446,3 +446,33 @@ def test_single_pass_without_rederive_leaves_and_gate_pending():
     assert case.causal_nodes[s_id].validation_method == ValidationMethod.DEDUCTIVE
     # Without the re-derive, E never re-evaluates its AND-gate this turn.
     assert case.causal_nodes[e_id].node_state == NodeState.INCONCLUSIVE
+
+
+def test_exclusion_refuses_a_restating_survivor():
+    """§7.1 restatement guard in the deductive lane: a survivor whose statement
+    restates the problem anchor has excluded its alternatives without stating a
+    mechanism — stamping it would conclude 'the problem causes itself'. The
+    survivor stays un-stamped (graceful denial), so no lane can validate a
+    restatement and the IDENTIFIED-without-conclusion split state is
+    unreachable for fresh cases."""
+    case, survivor_id, _ = _two_root_differential(sibling_belief=0.0)
+    survivor = case.causal_nodes[survivor_id]
+    # Restate the PROBLEM anchor ("D: intermittent latency").
+    object.__setattr__(survivor, "statement", "intermittent latency on D")
+    changed = validate_by_exclusion(case, {survivor_id})
+    assert changed is False
+    assert survivor.node_state == NodeState.CANDIDATE
+    assert grade_cause_assurance(case) != CauseAssuranceGrade.GROUNDED
+
+
+def test_exclusion_stamps_a_mechanism_survivor_control():
+    """Control: the identical differential with a mechanism-stating survivor
+    stamps DEDUCTIVE exactly as before."""
+    case, survivor_id, _ = _two_root_differential(sibling_belief=0.0)
+    survivor = case.causal_nodes[survivor_id]
+    object.__setattr__(
+        survivor, "statement", "kernel conntrack table saturation drops packets"
+    )
+    assert validate_by_exclusion(case, {survivor_id}) is True
+    assert survivor.node_state == NodeState.VALIDATED
+    assert survivor.validation_method == ValidationMethod.DEDUCTIVE

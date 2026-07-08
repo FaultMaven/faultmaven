@@ -758,3 +758,44 @@ def test_synthesize_rcc_mints_from_a_mechanism_root():
     assert synthesize_rcc_from_validated_root(case) is True
     assert case.root_cause_conclusion is not None
     assert case.root_cause_conclusion.root_cause == root.statement
+
+
+def test_stale_engine_rcc_cleared_when_root_demotes_and_nothing_validates():
+    """Engine-mirror coherence on the demotion path: an ENGINE-authored RCC
+    whose grounding root demotes out of VALIDATED (e.g. the restatement guard
+    on a pre-guard persisted case) is CLEARED by the recompute — the mirror
+    must not outlive its chain, or readiness/report readers (which key on RCC
+    presence) keep asserting a conclusion nothing grounds."""
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    engine_rcc = case.root_cause_conclusion
+    assert engine_rcc is not None  # engine mirror minted
+
+    # The pre-guard persisted shape: the root's statement turns out to restate
+    # the problem anchor, so the next derive demotes it (VALIDATED ->
+    # INCONCLUSIVE via the restatement guard).
+    object.__setattr__(root, "statement", "orders are failing")
+    _recompute_cause_state_from_chain(case)
+
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert case.progress.cause_state == CauseState.CANDIDATES  # soft floor
+    assert case.root_cause_conclusion is None  # mirror cleared with its chain
+
+
+def test_llm_rcc_survives_root_demotion():
+    """The engine-mirror reconcile never touches an LLM-authored conclusion —
+    its retraction lifecycle is a separate concern (#656)."""
+    case, root, hyp = _chain_case()
+    own = RootCauseConclusion(
+        root_cause="the LLM's own worded conclusion",
+        mechanism="as the LLM described it",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+    )
+    case.root_cause_conclusion = own
+    _recompute_cause_state_from_chain(case)
+    object.__setattr__(root, "statement", "orders are failing")
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert case.root_cause_conclusion is own  # untouched

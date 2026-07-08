@@ -264,27 +264,66 @@ def _problem_anchor_statements(case: Case) -> list[str]:
     return anchors
 
 
+def _restates_tokens(statement_tokens: set, anchor_tokens: set) -> bool:
+    """Token-set core of the §7.1 restatement guard: max of Jaccard and the two
+    containments (same shape as ``restatement_score``) against the guard's OWN
+    threshold, plus a shared-token floor so a 1–2 token containment artifact
+    cannot trip it. Operates on pre-tokenized sets so callers tokenize each
+    string exactly once."""
+    inter = len(statement_tokens & anchor_tokens)
+    if inter < _RESTATEMENT_MIN_SHARED_TOKENS:
+        return False
+    score = max(
+        inter / len(statement_tokens | anchor_tokens),
+        inter / len(statement_tokens),
+        inter / len(anchor_tokens),
+    )
+    return score >= ROOT_RESTATEMENT_BLOCK_THRESHOLD
+
+
 def root_restates_problem(node: "CausalNode", anchors: list[str]) -> bool:
-    """The §7.1 restatement guard: a ROOT whose statement restates the problem
-    anchor is the symptom dressed up as a cause — it offers no explanatory
-    depth, so no amount of self-labeled causal support may VALIDATE it (the #656
-    turn-6 failure: a disjunction root restating the symptom validated off ONE
-    LLM-labeled link and minted a 0.9 "verified" conclusion).
+    """§7.1 restatement guard predicate: a ROOT whose statement restates the
+    problem anchor is the symptom dressed up as a cause — no explanatory depth
+    — so no validation lane may conclude on it (see §7.1 for the full rule and
+    its known limits: the check is lexical, one layer of a layered defense).
 
     ROOT-only by design: the rung(s) adjacent to ``D`` legitimately paraphrase
     the failure mode (the ladder converges on the problem); only the ROOT is
-    claimed as the CAUSE. Uses the shared ``restatement_score`` +
-    ``RESTATEMENT_STRONG`` threshold (one definition of "restates", engine and
-    sim analyzer agree) plus the substantive-overlap floor so a 1-token
-    containment artifact cannot trip it.
+    claimed as the CAUSE.
     """
-    if node.node_type != NodeType.ROOT:
+    if node.node_type != NodeType.ROOT or not node.statement:
+        return False
+    statement_tokens = _content_tokens(node.statement)
+    if not statement_tokens:
         return False
     return any(
-        restatement_score(node.statement, anchor) >= RESTATEMENT_STRONG
-        and _substantive_overlap(node.statement, anchor)
-        for anchor in anchors
+        _restates_tokens(statement_tokens, anchor_tokens)
+        for anchor_tokens in (_content_tokens(a) for a in anchors)
+        if anchor_tokens
     )
+
+
+def _restating_root_ids(case: Case) -> set:
+    """Precompute the ROOT node ids whose statements restate the problem anchor.
+    Statements and anchors are immutable within one derive call, so this runs
+    ONCE per derive (each string tokenized once) and the fixpoint loop tests set
+    membership instead of re-scoring per pass."""
+    anchors = _problem_anchor_statements(case)
+    if not anchors:
+        return set()
+    anchor_token_sets = [t for t in (_content_tokens(a) for a in anchors) if t]
+    if not anchor_token_sets:
+        return set()
+    restating: set = set()
+    for node in case.causal_nodes.values():
+        if node.node_type != NodeType.ROOT or not node.statement:
+            continue
+        statement_tokens = _content_tokens(node.statement)
+        if not statement_tokens:
+            continue
+        if any(_restates_tokens(statement_tokens, at) for at in anchor_token_sets):
+            restating.add(node.node_id)
+    return restating
 
 
 def derive_node_states(case: Case) -> bool:
@@ -341,7 +380,7 @@ def derive_node_states(case: Case) -> bool:
     evidence_by_id: dict[str, EvidenceCategory | None] = {
         e.evidence_id: e.category for e in case.evidence
     }
-    anchors = _problem_anchor_statements(case)
+    restating_roots = _restating_root_ids(case)
 
     changed_any = False
     # Fixpoint: a validated parent can unlock a child's AND-gate. Bound the loop
@@ -358,30 +397,29 @@ def derive_node_states(case: Case) -> bool:
                 node.node_state == NodeState.VALIDATED
                 and node.validation_method == ValidationMethod.DEDUCTIVE
             )
+            # Everything the empirical bar requires EXCEPT the restatement
+            # guard; computed once so the guard branch below is provably "would
+            # have validated but for restatement" (AND-gate blocks stay
+            # attributed to the AND-gate, not the guard).
+            would_validate = (
+                causal_supports >= 1
+                and supports > refutes
+                and and_constraints_satisfied(node.node_id, nodes, edges)
+            )
             # A counterfactual disconfirmation (§7.2/§7.3) refutes decisively; a
             # correlational tie/majority is the lesser ``refutes > supports`` bar.
             if counterfactual_refutes >= 1 or refutes > supports:
                 target_state = NodeState.REFUTED
             elif deductively_valid:
                 continue  # owned by the deductive lane — never demote here
-            elif (
-                causal_supports >= 1
-                and supports > refutes
-                and and_constraints_satisfied(node.node_id, nodes, edges)
-                and not root_restates_problem(node, anchors)
-            ):
+            elif would_validate and node.node_id not in restating_roots:
                 target_state = NodeState.VALIDATED
-            elif (
-                causal_supports >= 1
-                and supports > refutes
-                and root_restates_problem(node, anchors)
-            ):
-                # §7.1 restatement guard: supported, but the "cause" restates the
-                # problem — hold at INCONCLUSIVE (a live candidate needing a real
-                # mechanism, never a validated conclusion). Counted for
-                # calibration; the LLM refines the statement, the engine never
+            elif would_validate:
+                # §7.1 restatement guard: supported and gate-satisfied, but the
+                # "cause" restates the problem — hold at INCONCLUSIVE (a live
+                # candidate needing a real mechanism, never a validated
+                # conclusion). The LLM refines the statement; the engine never
                 # validates the symptom as its own cause.
-                root_validation_blocked_restatement_total.inc()
                 target_state = NodeState.INCONCLUSIVE
             elif supports or refutes:
                 target_state = NodeState.INCONCLUSIVE
@@ -403,6 +441,20 @@ def derive_node_states(case: Case) -> bool:
 
             if target_state == node.node_state:
                 continue
+
+            # Calibration counter: ONE increment per BLOCK EVENT — the state
+            # transition where a root that would otherwise have validated is
+            # held by the restatement guard — never per fixpoint pass or per
+            # re-derive of an already-held node. (A root already INCONCLUSIVE
+            # from generic evidence whose AND-gate later unlocks is a slight
+            # undercount; preferred over the unbounded overcount of counting
+            # evaluations.)
+            if (
+                target_state == NodeState.INCONCLUSIVE
+                and would_validate
+                and node.node_id in restating_roots
+            ):
+                root_validation_blocked_restatement_total.inc()
 
             # Keep the FINAL field combination invariant-valid (the model
             # validators run on reload via CausalNode(**...)): M4 validated ⇒
@@ -478,11 +530,18 @@ def validate_by_exclusion(case: Case, asserted_survivor_ids: set[str]) -> bool:
     mechanistic grade only (§7.2): it validates the ROOT (unlocking treatment) but
     the case still needs a counterfactual confirmation to resolve, and harvest is
     RESOLVED-only — so the exhaustiveness assertion is backstopped downstream.
+
+    The §7.1 restatement guard applies here too (graceful denial): a surviving
+    "cause" whose statement restates the problem has excluded its alternatives
+    without ever stating a mechanism — stamping it would conclude "the problem
+    causes itself". The survivor stays un-stamped and the investigation stays
+    open until the LLM states what the surviving cause actually IS.
     """
     if not asserted_survivor_ids:
         return False
     nodes = case.causal_nodes
     edges = case.causal_edges
+    restating_roots = _restating_root_ids(case)
     changed = False
     for sid in asserted_survivor_ids:
         node = nodes.get(sid)
@@ -490,6 +549,8 @@ def validate_by_exclusion(case: Case, asserted_survivor_ids: set[str]) -> bool:
             continue  # only a ROOT cause is validated by exclusion
         if node.node_state in (NodeState.VALIDATED, NodeState.REFUTED):
             continue  # already settled — assertion does not re-open it
+        if sid in restating_roots:
+            continue  # §7.1 restatement guard — no lane validates a restatement
         for or_set in _survivor_or_sets(sid, edges):
             if deductively_validated(sid, or_set, nodes, exhaustive=True):
                 node.node_state = NodeState.VALIDATED
@@ -1018,6 +1079,30 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     return True
 
 
+def retract_stale_engine_rcc(case: Case) -> bool:
+    """Clear an ENGINE-authored RootCauseConclusion whose named grounding root no
+    longer stands validated — the mirror exists only to reflect a validated
+    chain, so when the chain's root demotes (e.g. the §7.1 restatement guard on
+    a pre-guard persisted case, or an evidence tie) the mirror must not outlive
+    it: readiness/report readers key on the RCC's presence and would otherwise
+    keep asserting a conclusion nothing grounds. LLM-authored conclusions are
+    NEVER touched here (their retraction lifecycle is a separate concern —
+    tracked on #656). Returns True if it cleared one.
+    """
+    rcc = case.root_cause_conclusion
+    if rcc is None or getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR:
+        return False
+    prior = case.hypotheses.get(getattr(rcc, "validated_hypothesis_id", None) or "")
+    if (
+        prior
+        and prior.state in _STANDING_HYP_STATES
+        and is_chain_root_validated(prior, case.causal_nodes)
+    ):
+        return False  # still faithfully mirrors a standing validated root
+    case.root_cause_conclusion = None
+    return True
+
+
 def any_chain_root_inconclusive(case: Case) -> bool:
     """Does some STANDING hypothesis's chain ROOT node read INCONCLUSIVE — i.e.
     a cause we have gathered bearing-but-indecisive evidence on (neither validated
@@ -1137,6 +1222,20 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
 # agree on what "restates" means — keep them reconciled when either moves.
 RESTATEMENT_STRONG = 0.6
 RESTATEMENT_AMBIGUOUS = 0.4
+
+# §7.1 restatement guard's OWN validation-blocking bar. Deliberately a separate
+# knob from RESTATEMENT_STRONG (T1 orphan re-attach): the two have opposite
+# error economics — a wrong re-attach is recoverable via the LLM nudge, a wrong
+# validation mints a false conclusion — so tuning one must never silently move
+# the other. Initialized equal; the #656 incident root scores exactly 0.60
+# against the plain symptom anchor (zero margin), so calibration sweeps this
+# constant, not the re-attach one.
+ROOT_RESTATEMENT_BLOCK_THRESHOLD = 0.6
+
+# Shared-token floor for the guard (mirrors the re-attach floor's rationale —
+# a 1–2 token containment artifact must not trip a validation block — but is
+# its own knob for the same economics reason as the threshold above).
+_RESTATEMENT_MIN_SHARED_TOKENS = 2
 
 # Function/filler words dropped before comparing two statements. This is the
 # GENERAL base list; the sim analyzer may EXTEND it with scenario-specific noise

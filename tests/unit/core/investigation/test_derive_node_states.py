@@ -529,3 +529,39 @@ def test_restating_root_vs_symptom_statement_anchor():
     )
     derive_node_states(case)
     assert root.node_state == NodeState.INCONCLUSIVE
+
+
+def test_restatement_block_counted_once_per_event():
+    # The calibration counter counts BLOCK EVENTS (state transitions), never
+    # fixpoint passes or repeat derives of an already-held node: one stuck
+    # symptom-as-cause root across many derives = ONE increment.
+    from unittest.mock import patch
+
+    case, root = _anchored_case(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors"
+    )
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "root_validation_blocked_restatement_total"
+    ) as counter:
+        derive_node_states(case)  # blocks: CANDIDATE -> INCONCLUSIVE (1 event)
+        derive_node_states(case)  # already held: no new event
+        derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert counter.inc.call_count == 1
+
+
+def test_non_restating_validation_never_touches_the_counter():
+    from unittest.mock import patch
+
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "root_validation_blocked_restatement_total"
+    ) as counter:
+        derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+    assert counter.inc.call_count == 0

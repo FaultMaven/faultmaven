@@ -144,15 +144,19 @@ evidence_need_id_dropped_total = Counter(
 )
 
 
-# §7.1 restatement guard (#656 turn-6 class): a supported ROOT whose statement
-# restates the problem anchor was held at INCONCLUSIVE instead of VALIDATED —
-# the symptom dressed as a cause must never validate off its own restatement.
-# Healthy systems sit near zero; a sustained rate means the model keeps
-# emitting symptom-as-cause roots (an elicitation problem, not a truth one —
-# the guard is holding).
+# §7.1 restatement guard (#656 turn-6 class): counts BLOCK EVENTS — the state
+# transition where a ROOT that would otherwise have validated (supported,
+# net-positive, AND-gate satisfied) is held at INCONCLUSIVE because its
+# statement restates the problem anchor. One increment per event, never per
+# fixpoint pass or per re-derive of an already-held node, and an AND-gate
+# block is never misattributed here. Healthy systems sit near zero; a
+# sustained rate means the model keeps emitting NEW symptom-as-cause roots
+# (an elicitation problem, not a truth one — the guard is holding). NOTE the
+# check is lexical: a near-zero counter does not prove the #656 class closed
+# (synonym paraphrases score 0) — the layered defenses are tracked on #656.
 root_validation_blocked_restatement_total = Counter(
     "faultmaven_root_validation_blocked_restatement_total",
-    "A causally-supported ROOT node was held at INCONCLUSIVE because its "
-    "statement restates the problem anchor (no explanatory depth) — the "
-    "restatement guard refused to validate the symptom as its own cause.",
+    "A ROOT that would otherwise have validated was held at INCONCLUSIVE "
+    "because its statement restates the problem anchor (no explanatory "
+    "depth) — one increment per block event.",
 )

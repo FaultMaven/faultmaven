@@ -361,22 +361,38 @@ categorized `CAUSAL_EVIDENCE` — a direct observable fact matching the node's
 predicted state. Links backed by weaker categories (e.g. `SYMPTOM_EVIDENCE`)
 inform the narrative but never validate a node.
 
-**Restatement guard (ROOT-only).** However well supported, a ROOT whose
-statement *restates the problem anchor* (the PROBLEM node's statement or the
-verified symptom statement, `restatement_score ≥ RESTATEMENT_STRONG` with a
-substantive token overlap) never reaches VALIDATED through this lane — it holds
-at INCONCLUSIVE, a live candidate whose statement still lacks a mechanism. The
-symptom dressed up as a cause carries no explanatory depth, and the LLM labels
-its own evidence, so a restating root + one self-labeled `CAUSAL_EVIDENCE` link
-is exactly the shape of a false conclusion (#656 turn 6: a disjunction of two
-untested hypotheses restating the symptom validated off one link and minted a
-0.9 "verified" conclusion). The guard is deliberately ROOT-scoped — the rung(s)
-adjacent to `D` legitimately paraphrase the failure mode as the ladder
-converges. `synthesize_rcc_from_validated_root` applies the same check before
-minting an engine conclusion (defense-in-depth for roots validated by other
-lanes), and each blocked validation increments
-`root_validation_blocked_restatement_total` (a sustained rate = the model keeps
-emitting symptom-as-cause roots — an elicitation signal, the guard holding).
+**Restatement guard (ROOT-only, all validation lanes).** However well
+supported, a ROOT whose statement *restates the problem anchor* (the PROBLEM
+node's statement or the verified symptom statement, scored against the guard's
+own `ROOT_RESTATEMENT_BLOCK_THRESHOLD` with a shared-token floor) never
+becomes a validated conclusion. The symptom dressed up as a cause carries no
+explanatory depth, and the LLM labels its own evidence, so a restating root +
+one self-labeled `CAUSAL_EVIDENCE` link is exactly the shape of a false
+conclusion (#656 turn 6: a disjunction of two untested hypotheses restating
+the symptom validated off one link and minted a 0.9 "verified" conclusion).
+The guard has one predicate and three enforcement points:
+
+- **Empirical lane** (`derive_node_states`): a restating ROOT that would
+  otherwise validate holds at INCONCLUSIVE — a live candidate whose statement
+  still lacks a mechanism. Each such *block event* (the state transition, not
+  re-checks) increments `root_validation_blocked_restatement_total`.
+- **Deductive lane** (`validate_by_exclusion`): a restating survivor is not
+  stamped (graceful denial) — excluding the alternatives without stating a
+  mechanism would conclude "the problem causes itself".
+- **Conclusion minting** (`synthesize_rcc_from_validated_root`): never mints
+  from a restating root (backstop for roots validated before the guard
+  shipped), and the engine-mirror reconcile (`retract_stale_engine_rcc`)
+  clears an engine-authored conclusion whose root subsequently demotes.
+
+The guard is deliberately ROOT-scoped — the rung(s) adjacent to `D`
+legitimately paraphrase the failure mode as the ladder converges. Its
+threshold is deliberately NOT the orphan-reattach `RESTATEMENT_STRONG` knob:
+the two checks have opposite error economics, so each is tuned independently.
+
+*Known limit (by design):* the check is lexical — a synonym paraphrase of the
+symptom scores ~0 and passes. The guard is one layer; the semantic layers
+(multi-support validation, assurance-grade caps) are tracked on #656. A
+near-zero counter therefore does not prove the failure class closed.
 
 *Rejected alternative:* a second grounding arm — SUPPORTS links stamped
 `runbook` provenance by a deterministic runbook-cause-matcher evaluating
