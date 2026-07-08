@@ -132,12 +132,114 @@ async def test_short_ambiguous_reply_re_presents_once_without_llm():
     engine = _engine()
     case = _investigating_case_with_pending_close()
 
-    result = await engine.process_turn(case=case, user_message="why?")
+    result = await engine.process_turn(case=case, user_message="hmm maybe")
 
     assert "Please select one of the options above" in result["agent_response"]
     assert case.pending_transition is not None
     assert case.pending_transition.get("re_presented") is True
     assert not engine._generate_structured_output.called
+
+
+@pytest.mark.asyncio
+async def test_short_question_is_substantive_and_reaches_llm_first_time():
+    """A question is never a gate answer, regardless of length — 'what is
+    the rca?' must reach the LLM immediately, not get a canned bounce."""
+    engine = _engine()
+    case = _investigating_case_with_pending_close()
+    await _run_expecting_fall_through(engine, case, "what is the rca?")
+
+
+@pytest.mark.asyncio
+async def test_confirm_prefixed_question_does_not_execute_transition():
+    """Review finding: 'ok but what is the root cause?' starts with a
+    confirm token but is substantive input, not consent — it must NOT
+    execute the terminal transition; it reaches the LLM instead."""
+    engine = _engine()
+    case = _investigating_case_with_pending_close()
+
+    await _run_expecting_fall_through(engine, case, "ok but what is the root cause?")
+    assert case.state.value != "closed"
+
+
+@pytest.mark.asyncio
+async def test_confirm_word_prefix_does_not_confirm():
+    """'yesterday...' must not read as 'yes' (word-boundary matching):
+    it is a non-answer, so it gets the one re-present, not a close."""
+    engine = _engine()
+    case = _investigating_case_with_pending_close()
+
+    result = await engine.process_turn(
+        case=case, user_message="yesterday the pod restarted"
+    )
+
+    assert case.state.value != "closed"
+    assert case.pending_transition is not None
+    assert "Please select one of the options above" in result["agent_response"]
+
+
+@pytest.mark.asyncio
+async def test_decline_word_prefix_is_not_swallowed_as_bare_decline():
+    """Review finding: 'note db latency spiked to 5s' must not read as a
+    bare 'no' decline (canned ack, evidence dropped). It is a non-answer:
+    re-presented once, then processed normally."""
+    engine = _engine()
+    case = _investigating_case_with_pending_close()
+
+    result = await engine.process_turn(
+        case=case, user_message="note db latency spiked to 5s"
+    )
+
+    assert "remains open" not in result["agent_response"]
+    assert case.pending_transition is not None  # not cancelled by a fake decline
+    assert case.pending_transition.get("re_presented") is True
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_message_never_reaches_llm():
+    """Blank input (whitespace-only slips past the route's empty-payload
+    guard) re-presents deterministically even after the re-present
+    allowance is spent — it is never worth an LLM turn."""
+    engine = _engine()
+    case = _investigating_case_with_pending_close(re_presented=True)
+
+    result = await engine.process_turn(case=case, user_message="   ")
+
+    assert not engine._generate_structured_output.called
+    assert case.pending_transition is not None
+    assert "Please select one of the options above" in result["agent_response"]
+
+
+class TestGateAnswerMatchers:
+    """Word-boundary + bare-confirmation contracts on the typed matchers."""
+
+    def test_confirm_matcher_accepts_bare_confirmations(self):
+        engine = _engine()
+        for msg in ("yes", "ok", "yes, it's resolved, the error is gone"):
+            assert engine._user_confirms_transition(msg), msg
+
+    def test_confirm_matcher_rejects_substantive_or_prefix_matches(self):
+        engine = _engine()
+        for msg in (
+            "ok but what is the root cause?",
+            "yes, but first can you check the etcd disk latency?",
+            "yesterday the pod restarted",
+            "yes?",
+        ):
+            assert not engine._user_confirms_transition(msg), msg
+
+    def test_decline_matcher_accepts_bare_declines(self):
+        engine = _engine()
+        for msg in ("no", "no.", "no way", "not yet", "nope!"):
+            assert engine._user_declines_transition(msg), msg
+
+    def test_decline_matcher_rejects_prefix_sharing_words(self):
+        engine = _engine()
+        for msg in (
+            "note db latency spiked to 5s",
+            "nothing in the logs",
+            "stopped the pod",
+        ):
+            assert not engine._user_declines_transition(msg), msg
 
 
 @pytest.mark.asyncio

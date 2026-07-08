@@ -4195,8 +4195,17 @@ class Case(BaseModel):
         - evidence_ids: Supporting evidence (List[str])
         - proposed_at: When transition was proposed (str ISO datetime)
         - proposed_by: Who proposed it ("agent" | "user" | user_id)
+        - closure_reason: Derived closure categorization for CLOSED
+          proposals (str, set by propose_transition)
+        - needs_info: RESOLVED proposal parked while the readiness ask is
+          outstanding (bool; resolution NEEDS_INFO flow)
+        - re_presented: The confirmation was already re-presented once for
+          an ambiguous typed reply; the next non-answer withdraws the
+          proposal instead of re-asking (bool; pending-gate escape lane)
 
-        Cleared after transition executes or is cancelled.
+        Cleared after transition executes or is cancelled. propose_transition
+        rebuilds the dict from scratch, so the per-proposal flags
+        (needs_info / re_presented) reset on every new proposal.
         """,
     )
 

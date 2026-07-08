@@ -178,6 +178,20 @@ _ANTI_ANCHORING_COOLDOWN_TURNS = 2
 # gate answers.)
 _PENDING_GATE_SUBSTANTIVE_LEN = 40
 
+
+def _matches_gate_token(msg: str, tokens: list[str]) -> bool:
+    """Word-boundary prefix match for typed gate answers.
+
+    Bare ``startswith`` also matched words that merely share the prefix —
+    "note db latency spiked…" read as "no", "yesterday the pod restarted…"
+    as "yes" — turning evidence-bearing messages into gate answers.
+    Requiring a word boundary after the token keeps the intended matches
+    ("no", "no.", "nope!", "yes, it's resolved") while rejecting the
+    prefix-sharing words. ``msg`` must already be stripped/lowercased.
+    """
+    return any(re.match(rf"{re.escape(t)}\b", msg) for t in tokens)
+
+
 CATEGORY_MILESTONE_MAP = {
     EvidenceCategory.SYMPTOM_EVIDENCE: [
         "symptom_verified",  # Confirms problem exists
@@ -2475,6 +2489,20 @@ class MilestoneEngine:
             #    intent_type="confirmation" + confirmation_value — deterministic
             # 2. Pattern-based: fallback for users who type instead of clicking
             if hasattr(case, "pending_transition") and case.pending_transition:
+                from faultmaven.core.investigation.terminal_transitions import (
+                    cancel_pending_transition,
+                )
+
+                # Shared gate-reply classification: a question is never a
+                # gate answer regardless of length; otherwise length is the
+                # substance proxy. Computed once so the decline and
+                # non-answer branches below cannot drift apart.
+                stripped_message = (user_message or "").strip()
+                message_is_substantive = bool(stripped_message) and (
+                    len(stripped_message) > _PENDING_GATE_SUBSTANTIVE_LEN
+                    or "?" in stripped_message
+                )
+
                 # Contradicting status_transition intent cancels the pending
                 # transition. Example: user clicked "Close" (pending), then
                 # clicked "Investigating" — cancel the close and process the
@@ -2485,10 +2513,6 @@ class MilestoneEngine:
                     and intent_data.get("to_state")
                     != case.pending_transition.get("to_state")
                 ):
-                    from faultmaven.core.investigation.terminal_transitions import (
-                        cancel_pending_transition,
-                    )
-
                     old_target = case.pending_transition.get("to_state")
                     new_target = intent_data.get("to_state")
                     cancel_pending_transition(case)
@@ -2593,16 +2617,9 @@ class MilestoneEngine:
                             },
                         }
                     elif user_declines:
-                        from faultmaven.core.investigation.terminal_transitions import (
-                            cancel_pending_transition,
-                        )
-
                         cancel_pending_transition(case)
 
-                        if (
-                            len((user_message or "").strip())
-                            > _PENDING_GATE_SUBSTANTIVE_LEN
-                        ):
+                        if message_is_substantive:
                             # The decline carries substance beyond a bare
                             # "no" — new data, a question, a redirection
                             # ("no, we did not do anything yet — did you
@@ -2636,41 +2653,42 @@ class MilestoneEngine:
                             }
                     else:
                         # User said something that isn't a clear yes/no.
-                        # A SHORT reply is treated as an ambiguous answer
-                        # to the confirmation and re-presented ONCE (don't
-                        # send a bare "hm?" through the LLM tool loop). A
-                        # substantive message — or any second non-answer —
-                        # is not an answer to the gate at all: holding the
-                        # gate against those swallowed every typed turn
-                        # with no LLM call and bricked the case (#656,
-                        # turns 12-13). The proposal is withdrawn instead
-                        # and the message processed as a normal turn; the
-                        # engine can always re-propose later from fresher
-                        # state.
-                        is_substantive = (
-                            len((user_message or "").strip())
-                            > _PENDING_GATE_SUBSTANTIVE_LEN
-                        )
+                        # A SHORT question-free reply is treated as an
+                        # ambiguous answer to the confirmation and
+                        # re-presented ONCE (don't send a bare "hmm"
+                        # through the LLM tool loop). A substantive message
+                        # (long, or carrying a question) — or any second
+                        # non-answer — is not an answer to the gate at all:
+                        # holding the gate against those swallowed every
+                        # typed turn with no LLM call and bricked the case
+                        # (#656, turns 12-13). The proposal is withdrawn
+                        # instead and the message processed as a normal
+                        # turn; the engine can always re-propose later from
+                        # fresher state.
                         already_re_presented = case.pending_transition.get(
                             "re_presented", False
                         )
-                        if is_substantive or already_re_presented:
-                            from faultmaven.core.investigation.terminal_transitions import (
-                                cancel_pending_transition,
-                            )
-
+                        # Blank input (whitespace-only slips past the route's
+                        # empty-payload guard) is never worth an LLM turn —
+                        # it re-presents deterministically without consuming
+                        # the one re-present allowance.
+                        if stripped_message and (
+                            message_is_substantive or already_re_presented
+                        ):
                             cancel_pending_transition(case)
                             logger.info(
                                 f"Pending transition withdrawn for case "
                                 f"{case.case_id}: message is not a gate "
-                                f"answer (substantive={is_substantive}, "
+                                f"answer (substantive="
+                                f"{message_is_substantive}, "
                                 f"already_re_presented="
                                 f"{already_re_presented}) — processing "
                                 f"message normally"
                             )
                             # Fall through to normal processing (section 0c)
                         else:
-                            case.pending_transition["re_presented"] = True
+                            if stripped_message:
+                                case.pending_transition["re_presented"] = True
                             to_state = case.pending_transition.get(
                                 "to_state", "resolved"
                             )
@@ -8311,11 +8329,20 @@ class MilestoneEngine:
         Uses a 100-char length guard: short messages are direct responses
         to the confirmation prompt; longer messages likely contain context
         that should go through normal LLM processing.
+
+        A match here executes a TERMINAL transition, so it must be a BARE
+        confirmation: tokens match on word boundaries ("yesterday…" is not
+        "yes"), and a message carrying a question or a contrastive
+        continuation ("ok but what is the root cause?") is substantive
+        input, not consent — it falls to the pending-gate escape lane
+        instead (INV-26: the gate never consumes substantive input).
         """
         if not user_message:
             return False
         msg = user_message.strip().lower()
         if len(msg) > 100:
+            return False
+        if "?" in msg or " but " in msg or msg.endswith(" but"):
             return False
         confirm_patterns = [
             "yes",
@@ -8346,10 +8373,16 @@ class MilestoneEngine:
             "looks good",
             "lgtm",
         ]
-        return any(msg.startswith(p) or msg == p for p in confirm_patterns)
+        return _matches_gate_token(msg, confirm_patterns)
 
     def _user_declines_transition(self, user_message: str) -> bool:
-        """Check if user message declines a pending transition."""
+        """Check if user message declines a pending transition.
+
+        Tokens match on word boundaries — "note db latency spiked" must not
+        read as "no", nor "stopped the pod" as "stop" (the old bare
+        ``startswith`` swallowed such evidence-bearing messages with a
+        canned acknowledgment).
+        """
         if not user_message:
             return False
         msg = user_message.strip().lower()
@@ -8364,7 +8397,7 @@ class MilestoneEngine:
             "hold on",
             "stop",
         ]
-        return any(msg.startswith(p) or msg == p for p in decline_patterns)
+        return _matches_gate_token(msg, decline_patterns)
 
     # v3: `_check_fast_track_resolution` and `KB_FAST_TRACK_THRESHOLD` removed.
     # KB-driven cases route through INVESTIGATING via same-turn milestone

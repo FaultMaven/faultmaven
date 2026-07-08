@@ -22,6 +22,7 @@ Contract pinned here:
 """
 
 import inspect
+import re
 
 from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.milestone_engine import (
@@ -80,15 +81,17 @@ class TestOverrideBranchesUseComposer:
             "an override branch stopped composing prose with the LLM reply "
             "— that re-hides the model's analysis on gate turns (#656)"
         )
-        # No branch may assign the canned message directly any more.
-        for banned in (
-            'agent_response_text = metadata["resolution_readiness_message"]',
-            'agent_response_text = metadata["resolution_needs_info_message"]',
-            'agent_response_text = metadata["rca_infeasible_closure_message"]',
-        ):
-            assert (
-                banned not in src
-            ), f"gate branch replaced prose wholesale again: {banned}"
+        # INVARIANT (not a denylist): NO branch — present or future — may
+        # assign an engine-authored metadata message directly to the
+        # user-visible prose. A new prose-replacement key added without
+        # the composer must fail here, not slip through because it wasn't
+        # enumerated.
+        direct_assignments = re.findall(r"agent_response_text\s*=\s*metadata\[", src)
+        assert not direct_assignments, (
+            "a gate branch replaces prose wholesale from metadata — route "
+            "it through _prose_with_gate_notice so the LLM's analysis "
+            "stays visible (#656)"
+        )
 
     def test_gate_suggestions_remain_engine_owned_replacements(self):
         """The #430 boundary: prose composes, suggestions REPLACE.

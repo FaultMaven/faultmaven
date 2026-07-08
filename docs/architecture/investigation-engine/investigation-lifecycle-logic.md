@@ -374,28 +374,42 @@ deliberately unchanged.
 else:** When a `pending_transition` exists (not `needs_info`), the user's response is
 classified before any LLM call:
 
-- **Clear yes** (pattern match or intent metadata) → execute transition
-- **Clear no**, bare (pattern match or intent metadata, at or below the
-  substantive-length bound) → cancel transition, acknowledge deterministically
-- **Clear no carrying substance** (decline token followed by data, a question, a
+- **Bare yes** (word-boundary token match or intent metadata) → execute transition.
+  A typed confirmation must be *bare*: tokens match on word boundaries
+  ("yesterday…" is not "yes"), and a message carrying a question mark or a
+  contrastive " but " ("ok but what is the root cause?") is substantive input, not
+  consent — it takes the escape lane below instead of executing a terminal
+  transition
+- **Bare no** (word-boundary token match or intent metadata, below the substantive
+  bound) → cancel transition, acknowledge deterministically ("note…"/"stopped…" do
+  not read as "no"/"stop")
+- **Decline carrying substance** (decline token followed by data, a question, a
   redirection) → cancel transition, then process the message as a normal turn so
   its content is not lost
-- **Short ambiguous reply** ("why?", "hm") → re-present the confirmation with DECIDE
-  suggestions (clickable Yes/No with intent metadata), **at most once** per proposal
-  (`pending_transition["re_presented"]`)
-- **Anything else — a substantive message, or any second non-answer** → the message
-  is *not an answer to the gate*: the proposal is **withdrawn**
-  (`cancel_pending_transition`) and the message processed as a normal investigation
-  turn. The engine can always re-propose later from fresher state.
+- **Short question-free ambiguous reply** ("hmm maybe") → re-present the
+  confirmation with DECIDE suggestions (clickable Yes/No with intent metadata),
+  **at most once** per proposal (`pending_transition["re_presented"]`)
+- **Blank input** (whitespace-only slips past the route's empty-payload guard) →
+  re-present deterministically; never withdrawn to an LLM turn, and it does not
+  consume the re-present allowance
+- **Anything else — a substantive message (long, or containing a question), or any
+  second non-answer** → the message is *not an answer to the gate*: the proposal is
+  **withdrawn** (`cancel_pending_transition`) and the message processed as a normal
+  investigation turn. The engine can always re-propose later from fresher state.
 
 The escape lane is load-bearing for NO-COLLAPSE: the earlier "re-present on anything
 else" rule held the gate against substantive typed input indefinitely — no LLM call, no
 state change, identical canned reply every turn (#656, `case_5db5417fe445` turns 12-13:
 "I refuse to do that. you must continue to investigate" and "what is the root cause?"
-were both swallowed). Only short, first-time mumbles are still answered with the cheap
-re-present; nothing substantive is ever consumed by the gate. The short-message
-re-present also preserves the original motivation of the deterministic path — not
-sending a bare "hm?" through the LLM tool loop.
+were both swallowed). And the bare-confirmation rule is its confirm-side mirror: without
+it, a confirm-prefixed substantive message ("ok but what is the root cause?") did not
+merely swallow the input — it *executed* the terminal transition on it. Only short,
+question-free, first-time mumbles are still answered with the cheap re-present; nothing
+substantive is ever consumed by the gate. The short-message re-present also preserves
+the original motivation of the deterministic path — not sending a bare "hmm" through
+the LLM tool loop. Residual seam (Phase-1 scope): the IntentResolver's LLM classifier
+tier can map typed text to the Yes suggestion without a substance guard; the
+deterministic tiers and pattern matchers above carry the guarantee today.
 
 **Repeated status_transition intent:** If a user clicks the same dropdown option again
 after the agent already proposed the transition, this is treated as an implicit
