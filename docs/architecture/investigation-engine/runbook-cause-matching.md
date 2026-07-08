@@ -2,12 +2,18 @@
 
 **Document Type:** Component Specification
 **Version:** 2.0
-**Status:** Implemented behind a flag. The matcher (predicates, rung/holistic
-evaluator, retrieval, lazy instantiation, per-turn wiring) is built and wired but
-the `enable_runbook_cause_matcher` flag defaults **off**, so on the default path a
-v4 runbook still behaves like a v3 runbook until the flag is flipped (gated on the
-evidence-vectorization fix in issue #543 + a demonstrated live firing). See
-[§7](#7-implementation-status).
+**Status:** ⛔ **NOT ADOPTED — NO-GO 2026-07-08 (human sign-off).** The matcher was
+built behind `enable_runbook_cause_matcher` (default off) and is now **retired**, not
+flipped. Rationale: necessity was already settled — the soundness guarantees are held
+by the LLM+RAG path + insufficient-evidence handoff (verification-status §5b); the
+live isolated-instance sim showed no collapse the arm uniquely prevents; and issue
+**#656** showed the arm is directionally *harmful* — it adds a second auto-firing
+causal-support path into the same over-validation gate that produced a live
+NO-INCORRECT-CONCLUSION violation. This spec is retained as historical record; the
+matcher module, flag, differential-intake grounding, and `<!-- match -->` grammar are
+scheduled for decommission (`docs/working/PLAN-runbook-template-execution.md`).
+Runbooks remain in use as RAG context; only the deterministic predicate-grounding arm
+is removed.
 
 ## Purpose
 
