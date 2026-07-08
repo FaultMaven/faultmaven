@@ -129,3 +129,21 @@ def test_verbatim_symptom_as_cause_is_blocked():
     case = _case("Kafka consumer group lag keeps increasing")
     root = _root("Kafka consumer group lag increasing")
     assert root_restates_case_frame(root, case) is True
+
+
+def test_known_boundary_cause_contaminated_anchor_blocks_prenamed_cause():
+    """KNOWN BOUNDARY (documented, not endorsed — #661 gate, pg-postmortem run):
+    when the PROBLEM framing itself embeds the cause (a postmortem user opens
+    with 'the audit_events table is missing an index, causing ...'), the case
+    frame contains the true cause's tokens, so a root restating that
+    user-pre-named cause has ~zero novelty and the guard holds it INCONCLUSIVE
+    even when real evidence supports it. This pins the CURRENT behavior so any
+    future change is conscious. If live runs show this shape actually reaching
+    would-validate and being blocked, the anchor definition (symptom-shaped
+    text only) is the tuning lever — tracked on #656/#661."""
+    case = _case(
+        "The audit_events table is missing an index on created_at, causing "
+        "pool exhaustion and request timeouts"
+    )
+    root = _root("audit_events table missing index on created_at")
+    assert root_restates_case_frame(root, case) is True  # blocked — the boundary
