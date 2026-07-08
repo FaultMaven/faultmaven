@@ -17,6 +17,7 @@ from faultmaven.core.investigation.causal_graph import (
     any_chain_root_validated,
     demote_disconfirmed_cause_via_evidence,
     seed_problem_node,
+    synthesize_rcc_from_validated_root,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import (
@@ -730,3 +731,30 @@ def test_retract_disconfirmed_rcc_ignores_unlinked_rcc():
     case.root_cause_conclusion = rcc
     assert retract_disconfirmed_rcc(case) is False
     assert case.root_cause_conclusion is rcc
+
+
+def test_synthesize_rcc_refuses_a_restating_root():
+    """§7.1 restatement guard, RCC side (defense-in-depth with derive): a root
+    validated via a lane derive doesn't own (deductive) whose statement restates
+    the problem anchor must never be minted into a conclusion — the symptom
+    dressed as a cause must not become RCC text."""
+    case, root, hyp = _chain_case()
+    object.__setattr__(root, "statement", "customer orders are failing")
+    object.__setattr__(root, "node_state", NodeState.VALIDATED)
+    object.__setattr__(root, "validation_method", ValidationMethod.DEDUCTIVE)
+    assert synthesize_rcc_from_validated_root(case) is False
+    assert case.root_cause_conclusion is None
+
+
+def test_synthesize_rcc_mints_from_a_mechanism_root():
+    """Control for the guard: the same deductively validated root with a real
+    mechanism statement mints the engine RCC."""
+    case, root, hyp = _chain_case()
+    object.__setattr__(
+        root, "statement", "checkout service DB pool sized below peak demand"
+    )
+    object.__setattr__(root, "node_state", NodeState.VALIDATED)
+    object.__setattr__(root, "validation_method", ValidationMethod.DEDUCTIVE)
+    assert synthesize_rcc_from_validated_root(case) is True
+    assert case.root_cause_conclusion is not None
+    assert case.root_cause_conclusion.root_cause == root.statement

@@ -361,6 +361,23 @@ categorized `CAUSAL_EVIDENCE` — a direct observable fact matching the node's
 predicted state. Links backed by weaker categories (e.g. `SYMPTOM_EVIDENCE`)
 inform the narrative but never validate a node.
 
+**Restatement guard (ROOT-only).** However well supported, a ROOT whose
+statement *restates the problem anchor* (the PROBLEM node's statement or the
+verified symptom statement, `restatement_score ≥ RESTATEMENT_STRONG` with a
+substantive token overlap) never reaches VALIDATED through this lane — it holds
+at INCONCLUSIVE, a live candidate whose statement still lacks a mechanism. The
+symptom dressed up as a cause carries no explanatory depth, and the LLM labels
+its own evidence, so a restating root + one self-labeled `CAUSAL_EVIDENCE` link
+is exactly the shape of a false conclusion (#656 turn 6: a disjunction of two
+untested hypotheses restating the symptom validated off one link and minted a
+0.9 "verified" conclusion). The guard is deliberately ROOT-scoped — the rung(s)
+adjacent to `D` legitimately paraphrase the failure mode as the ladder
+converges. `synthesize_rcc_from_validated_root` applies the same check before
+minting an engine conclusion (defense-in-depth for roots validated by other
+lanes), and each blocked validation increments
+`root_validation_blocked_restatement_total` (a sustained rate = the model keeps
+emitting symptom-as-cause roots — an elicitation signal, the guard holding).
+
 *Rejected alternative:* a second grounding arm — SUPPORTS links stamped
 `runbook` provenance by a deterministic runbook-cause-matcher evaluating
 expert-authored predicates against submitted telemetry — was retired without

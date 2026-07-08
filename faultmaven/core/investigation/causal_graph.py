@@ -30,6 +30,9 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.lifecycle_metrics import (
+    root_validation_blocked_restatement_total,
+)
 from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
@@ -243,6 +246,47 @@ def _node_evidence_tally(
     return supports, refutes, causal_supports, counterfactual_refutes
 
 
+def _problem_anchor_statements(case: Case) -> list[str]:
+    """The statements a ROOT must add explanatory depth OVER: the PROBLEM node
+    D's statement plus the verified symptom statement (they can differ — D is
+    chain-anchored, the symptom is inquiry-anchored). Empty when neither exists
+    (the restatement guard is then inert)."""
+    anchors = [
+        n.statement
+        for n in case.causal_nodes.values()
+        if n.node_type == NodeType.PROBLEM and n.statement
+    ]
+    symptom = getattr(
+        getattr(case, "problem_verification", None), "symptom_statement", None
+    )
+    if symptom:
+        anchors.append(symptom)
+    return anchors
+
+
+def root_restates_problem(node: "CausalNode", anchors: list[str]) -> bool:
+    """The §7.1 restatement guard: a ROOT whose statement restates the problem
+    anchor is the symptom dressed up as a cause — it offers no explanatory
+    depth, so no amount of self-labeled causal support may VALIDATE it (the #656
+    turn-6 failure: a disjunction root restating the symptom validated off ONE
+    LLM-labeled link and minted a 0.9 "verified" conclusion).
+
+    ROOT-only by design: the rung(s) adjacent to ``D`` legitimately paraphrase
+    the failure mode (the ladder converges on the problem); only the ROOT is
+    claimed as the CAUSE. Uses the shared ``restatement_score`` +
+    ``RESTATEMENT_STRONG`` threshold (one definition of "restates", engine and
+    sim analyzer agree) plus the substantive-overlap floor so a 1-token
+    containment artifact cannot trip it.
+    """
+    if node.node_type != NodeType.ROOT:
+        return False
+    return any(
+        restatement_score(node.statement, anchor) >= RESTATEMENT_STRONG
+        and _substantive_overlap(node.statement, anchor)
+        for anchor in anchors
+    )
+
+
 def derive_node_states(case: Case) -> bool:
     """Derive every causal node's ``node_state`` from its OWN rung evidence
     (§7.1) plus the M7 AND-gate. A root reaches VALIDATED only from real rung
@@ -268,8 +312,10 @@ def derive_node_states(case: Case) -> bool:
       ``actionable=False``.
     - **VALIDATED** — not refuted, has at least one causally-grounding SUPPORTS
       link (CAUSAL_EVIDENCE-backed), is net-supporting (``supports > refutes``),
-      AND every
-      AND-set feeding it is fully VALIDATED (M7 proof, strict). EMPIRICAL grade;
+      every AND-set feeding it is fully VALIDATED (M7 proof, strict), AND — for a
+      ROOT — its statement does not restate the problem anchor
+      (``root_restates_problem``, §7.1 restatement guard: the symptom dressed as
+      a cause holds at INCONCLUSIVE instead). EMPIRICAL grade;
       a validated ROOT is marked ``actionable`` (M1). Method/actionable/reason
       are kept mutually consistent so the node satisfies its M1/M4/refutation
       model-validators on reload (``CausalNode(**...)``; ``validate_assignment``
@@ -295,6 +341,7 @@ def derive_node_states(case: Case) -> bool:
     evidence_by_id: dict[str, EvidenceCategory | None] = {
         e.evidence_id: e.category for e in case.evidence
     }
+    anchors = _problem_anchor_statements(case)
 
     changed_any = False
     # Fixpoint: a validated parent can unlock a child's AND-gate. Bound the loop
@@ -321,8 +368,21 @@ def derive_node_states(case: Case) -> bool:
                 causal_supports >= 1
                 and supports > refutes
                 and and_constraints_satisfied(node.node_id, nodes, edges)
+                and not root_restates_problem(node, anchors)
             ):
                 target_state = NodeState.VALIDATED
+            elif (
+                causal_supports >= 1
+                and supports > refutes
+                and root_restates_problem(node, anchors)
+            ):
+                # §7.1 restatement guard: supported, but the "cause" restates the
+                # problem — hold at INCONCLUSIVE (a live candidate needing a real
+                # mechanism, never a validated conclusion). Counted for
+                # calibration; the LLM refines the statement, the engine never
+                # validates the symptom as its own cause.
+                root_validation_blocked_restatement_total.inc()
+                target_state = NodeState.INCONCLUSIVE
             elif supports or refutes:
                 target_state = NodeState.INCONCLUSIVE
             else:
@@ -909,11 +969,16 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
         ):
             return False  # the engine mirror still names the grounding root
         # else: stale engine mirror — refresh from the current validated root.
+    anchors = _problem_anchor_statements(case)
     hyp = next(
         (
             h
             for h in _standing_hypotheses(case)
+            # Restatement guard (defense-in-depth with derive_node_states): never
+            # mint a conclusion whose root restates the problem anchor, whatever
+            # lane validated it — a symptom-as-cause must not become RCC text.
             if is_chain_root_validated(h, case.causal_nodes)
+            and not root_restates_problem(case.causal_nodes[h.root_node_id], anchors)
         ),
         None,
     )

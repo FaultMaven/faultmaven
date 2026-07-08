@@ -142,3 +142,17 @@ evidence_need_id_dropped_total = Counter(
     "references on the suggestion side.",
     ["reason"],
 )
+
+
+# §7.1 restatement guard (#656 turn-6 class): a supported ROOT whose statement
+# restates the problem anchor was held at INCONCLUSIVE instead of VALIDATED —
+# the symptom dressed as a cause must never validate off its own restatement.
+# Healthy systems sit near zero; a sustained rate means the model keeps
+# emitting symptom-as-cause roots (an elicitation problem, not a truth one —
+# the guard is holding).
+root_validation_blocked_restatement_total = Counter(
+    "faultmaven_root_validation_blocked_restatement_total",
+    "A causally-supported ROOT node was held at INCONCLUSIVE because its "
+    "statement restates the problem anchor (no explanatory depth) — the "
+    "restatement guard refused to validate the symptom as its own cause.",
+)

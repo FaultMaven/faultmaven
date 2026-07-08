@@ -449,3 +449,83 @@ def test_grade_ignores_non_root_deductive_nodes():
         [rung], evidence=[_evidence("ev_rung", EvidenceCategory.CAUSAL_EVIDENCE)]
     )
     assert grade_cause_assurance(case) == CauseAssuranceGrade.NO_ROOT
+
+
+# ---------------------------------------------------------------------------
+# §7.1 restatement guard — the symptom dressed as a cause never validates
+# ---------------------------------------------------------------------------
+
+_D_STATEMENT = "Intermittent 502 errors under load"
+
+
+def _problem_node() -> CausalNode:
+    return _node(_nid(0xD0), node_type=NodeType.PROBLEM)
+
+
+def _anchored_case(root_statement: str, *, node_type=NodeType.ROOT):
+    """A case with a PROBLEM anchor D and one supported node under test."""
+    d = _problem_node()
+    object.__setattr__(d, "statement", _D_STATEMENT)
+    ev = _evidence("ev_causal", EvidenceCategory.CAUSAL_EVIDENCE)
+    n = _node(
+        _nid(0xD1),
+        node_type=node_type,
+        links=[_link("ev_causal", EvidenceStance.SUPPORTS)],
+    )
+    object.__setattr__(n, "statement", root_statement)
+    return _case([d, n], evidence=[ev]), n
+
+
+def test_restating_root_holds_at_inconclusive():
+    # The #656 turn-6 shape: the "root cause" is a disjunction restating the
+    # symptom. One self-labeled causal support must NOT validate it — it holds
+    # at INCONCLUSIVE (a live candidate needing a real mechanism).
+    case, root = _anchored_case(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors"
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert root.validation_method == ValidationMethod.NONE
+
+
+def test_mechanism_root_validates_past_the_guard():
+    # A root that adds explanatory depth (a mechanism, not a paraphrase)
+    # validates exactly as before.
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+    assert root.validation_method == ValidationMethod.EMPIRICAL
+
+
+def test_intermediate_rung_may_paraphrase_the_problem():
+    # ROOT-only scope: the rung adjacent to D legitimately paraphrases the
+    # failure mode (the ladder converges on the problem) — the guard must not
+    # block an INTERMEDIATE node.
+    case, rung = _anchored_case(
+        "Intermittent 502 errors on API requests under load",
+        node_type=NodeType.INTERMEDIATE,
+    )
+    derive_node_states(case)
+    assert rung.node_state == NodeState.VALIDATED
+
+
+def test_restating_root_vs_symptom_statement_anchor():
+    # The guard also anchors on problem_verification.symptom_statement (no
+    # PROBLEM node needed) — _case sets symptom "X fails", so use a root that
+    # restates a realistic symptom via a dedicated case.
+    ev = _evidence("ev_causal", EvidenceCategory.CAUSAL_EVIDENCE)
+    root = _node(
+        _nid(0xD2),
+        node_type=NodeType.ROOT,
+        links=[_link("ev_causal", EvidenceStance.SUPPORTS)],
+    )
+    object.__setattr__(root, "statement", "Orders fail intermittently during checkout")
+    case = _case([root], evidence=[ev])
+    case.problem_verification.symptom_statement = (
+        "Checkout orders are failing intermittently"
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
