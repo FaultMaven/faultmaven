@@ -170,3 +170,45 @@ async def test_ready_case_resolves_guard_does_not_interfere():
 
     assert case.pending_transition["to_state"] == "resolved"
     assert not metadata.get("resolution_suggest_close")
+
+
+@pytest.mark.asyncio
+async def test_readiness_verdict_recorded_for_transition_compliance():
+    """The readiness verdict + missing list must land in turn metadata so
+    the transition_compliance log line explains WHY a proposed transition
+    did not transition (a pending handshake previously read as a silent
+    gate refusal — #656 triage)."""
+    engine = _engine()
+    case = _needs_info_case()
+    metadata = _llm_proposes_resolved()
+
+    await engine._check_automatic_transitions(
+        case=case, metadata=metadata, user_message="mark resolved"
+    )
+
+    assert metadata.get("resolution_readiness_verdict") == "needs_info"
+    assert "solution" in (metadata.get("resolution_readiness_missing") or [])
+
+
+@pytest.mark.asyncio
+async def test_readiness_verdict_recorded_on_needs_info_recheck():
+    """The needs_info re-check path (second pass) records the verdict too."""
+    engine = _engine()
+    case = _needs_info_case()
+    case.pending_transition = {
+        "to_state": "resolved",
+        "summary": "Before I can mark this as resolved…",
+        "evidence_ids": [],
+        "proposed_at": datetime.now(timezone.utc).isoformat(),
+        "needs_info": True,
+    }
+    metadata = {
+        "response_obj": MagicMock(state_updates=MagicMock(proposed_transition=None))
+    }
+
+    await engine._check_automatic_transitions(
+        case=case, metadata=metadata, user_message="I don't have a solution"
+    )
+
+    assert metadata.get("resolution_readiness_verdict") == "needs_info"
+    assert metadata.get("resolution_readiness_missing")
