@@ -167,6 +167,31 @@ from faultmaven.modules.knowledge.contracts import IKnowledgeService
 # act again — enough to avoid per-turn churn without going dormant.
 _ANTI_ANCHORING_COOLDOWN_TURNS = 2
 
+# On a pending-transition turn, a typed reply that matches neither the confirm
+# nor the decline patterns is either a short ambiguous answer to the gate
+# ("why?", "hm") or a message that isn't answering the gate at all — new
+# evidence, a question, an instruction to keep investigating. Above this length
+# the message is treated as the latter: the proposal is withdrawn and the
+# message is processed as a normal investigation turn, so the gate can never
+# swallow substantive input. (The confirm matcher's own 100-char guard already
+# encodes the same idea in the opposite direction: long messages are not
+# gate answers.)
+_PENDING_GATE_SUBSTANTIVE_LEN = 40
+
+
+def _matches_gate_token(msg: str, tokens: list[str]) -> bool:
+    """Word-boundary prefix match for typed gate answers.
+
+    Bare ``startswith`` also matched words that merely share the prefix —
+    "note db latency spiked…" read as "no", "yesterday the pod restarted…"
+    as "yes" — turning evidence-bearing messages into gate answers.
+    Requiring a word boundary after the token keeps the intended matches
+    ("no", "no.", "nope!", "yes, it's resolved") while rejecting the
+    prefix-sharing words. ``msg`` must already be stripped/lowercased.
+    """
+    return any(re.match(rf"{re.escape(t)}\b", msg) for t in tokens)
+
+
 CATEGORY_MILESTONE_MAP = {
     EvidenceCategory.SYMPTOM_EVIDENCE: [
         "symptom_verified",  # Confirms problem exists
@@ -1226,6 +1251,31 @@ def engine_owned_affordances(
         return ("insufficient_evidence", _insufficient_evidence_handoff_suggestions())
 
     return None
+
+
+def _prose_with_gate_notice(llm_text: str | None, gate_text: str) -> str:
+    """Compose an engine gate message WITH the LLM's reply instead of over it.
+
+    Engine-owned gate turns (resolution needs-info, close pivot,
+    RCA-infeasible closure) override the response so the user sees the
+    canonical gate prompt. But the LLM's ``agent_response`` on those turns
+    often carries the substantive analysis the user just asked for — and its
+    ``state_updates`` are already applied and persisted — so replacing the
+    prose wholesale makes the engine appear to have ignored the question
+    while the case record shows it answered (#656 turns 10-11: configmap
+    analyses created hypotheses+solutions, yet the transcript showed only
+    the canned resolution ask). The prose is therefore preserved and the
+    gate message appended below a separator.
+
+    Scope: prose ONLY. Follow-up *suggestions* on gate turns remain
+    engine-owned and are still replaced outright — that is a separate,
+    deliberate ownership decision (the #428 "augment" experiment was
+    reverted by #430). Do not extend this composition to suggestions.
+    """
+    llm_text = (llm_text or "").strip()
+    if not llm_text:
+        return gate_text
+    return f"{llm_text}\n\n---\n\n{gate_text}"
 
 
 def _build_resolution_confirmation(case) -> str:
@@ -2439,6 +2489,20 @@ class MilestoneEngine:
             #    intent_type="confirmation" + confirmation_value — deterministic
             # 2. Pattern-based: fallback for users who type instead of clicking
             if hasattr(case, "pending_transition") and case.pending_transition:
+                from faultmaven.core.investigation.terminal_transitions import (
+                    cancel_pending_transition,
+                )
+
+                # Shared gate-reply classification: a question is never a
+                # gate answer regardless of length; otherwise length is the
+                # substance proxy. Computed once so the decline and
+                # non-answer branches below cannot drift apart.
+                stripped_message = (user_message or "").strip()
+                message_is_substantive = bool(stripped_message) and (
+                    len(stripped_message) > _PENDING_GATE_SUBSTANTIVE_LEN
+                    or "?" in stripped_message
+                )
+
                 # Contradicting status_transition intent cancels the pending
                 # transition. Example: user clicked "Close" (pending), then
                 # clicked "Investigating" — cancel the close and process the
@@ -2449,10 +2513,6 @@ class MilestoneEngine:
                     and intent_data.get("to_state")
                     != case.pending_transition.get("to_state")
                 ):
-                    from faultmaven.core.investigation.terminal_transitions import (
-                        cancel_pending_transition,
-                    )
-
                     old_target = case.pending_transition.get("to_state")
                     new_target = intent_data.get("to_state")
                     cancel_pending_transition(case)
@@ -2557,66 +2617,108 @@ class MilestoneEngine:
                             },
                         }
                     elif user_declines:
-                        from faultmaven.core.investigation.terminal_transitions import (
-                            cancel_pending_transition,
-                        )
-
                         cancel_pending_transition(case)
 
-                        agent_response = "Understood. The case remains open for further investigation."
-                        self._record_deterministic_turn(
-                            case, user_message or "", agent_response
-                        )
-                        await self.repository.save(case)
+                        if message_is_substantive:
+                            # The decline carries substance beyond a bare
+                            # "no" — new data, a question, a redirection
+                            # ("no, we did not do anything yet — did you
+                            # see anything wrong?"). The proposal is
+                            # withdrawn; the message itself must still be
+                            # processed as a normal turn so nothing the
+                            # user said is swallowed by the gate.
+                            logger.info(
+                                f"Pending transition declined with a "
+                                f"substantive message for case "
+                                f"{case.case_id} — proposal withdrawn, "
+                                f"processing message normally"
+                            )
+                            # Fall through to normal processing (section 0c)
+                        else:
+                            agent_response = "Understood. The case remains open for further investigation."
+                            self._record_deterministic_turn(
+                                case, user_message or "", agent_response
+                            )
+                            await self.repository.save(case)
 
-                        return {
-                            "agent_response": agent_response,
-                            "suggested_follow_ups": [],
-                            "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": [],
-                                "progress_made": False,
-                            },
-                        }
+                            return {
+                                "agent_response": agent_response,
+                                "suggested_follow_ups": [],
+                                "case_updated": case,
+                                "metadata": {
+                                    "turn_number": case.current_turn,
+                                    "milestones_completed": [],
+                                    "progress_made": False,
+                                },
+                            }
                     else:
                         # User said something that isn't a clear yes/no.
-                        # Re-present the confirmation — don't fall through
-                        # to the LLM tool loop, which crashes on short or
-                        # ambiguous messages (tool_choice=required fails).
-                        to_state = case.pending_transition.get("to_state", "resolved")
-                        summary = case.pending_transition.get("summary", "")
-
-                        if to_state == "resolved":
-                            agent_response = (
-                                "Please select one of the options above to continue."
-                                if not summary
-                                else f"{summary}\n\nPlease select one of the options above to continue."
-                            )
-                            follow_ups = _resolution_confirmation_suggestions()
-                        else:
-                            agent_response = (
-                                "Please select one of the options above to continue."
-                                if not summary
-                                else f"{summary}\n\nPlease select one of the options above to continue."
-                            )
-                            follow_ups = _close_confirmation_suggestions()
-
-                        self._record_deterministic_turn(
-                            case, user_message or "", agent_response
+                        # A SHORT question-free reply is treated as an
+                        # ambiguous answer to the confirmation and
+                        # re-presented ONCE (don't send a bare "hmm"
+                        # through the LLM tool loop). A substantive message
+                        # (long, or carrying a question) — or any second
+                        # non-answer — is not an answer to the gate at all:
+                        # holding the gate against those swallowed every
+                        # typed turn with no LLM call and bricked the case
+                        # (#656, turns 12-13). The proposal is withdrawn
+                        # instead and the message processed as a normal
+                        # turn; the engine can always re-propose later from
+                        # fresher state.
+                        already_re_presented = case.pending_transition.get(
+                            "re_presented", False
                         )
-                        await self.repository.save(case)
+                        # Blank input (whitespace-only slips past the route's
+                        # empty-payload guard) is never worth an LLM turn —
+                        # it re-presents deterministically without consuming
+                        # the one re-present allowance.
+                        if stripped_message and (
+                            message_is_substantive or already_re_presented
+                        ):
+                            cancel_pending_transition(case)
+                            logger.info(
+                                f"Pending transition withdrawn for case "
+                                f"{case.case_id}: message is not a gate "
+                                f"answer (substantive="
+                                f"{message_is_substantive}, "
+                                f"already_re_presented="
+                                f"{already_re_presented}) — processing "
+                                f"message normally"
+                            )
+                            # Fall through to normal processing (section 0c)
+                        else:
+                            if stripped_message:
+                                case.pending_transition["re_presented"] = True
+                            to_state = case.pending_transition.get(
+                                "to_state", "resolved"
+                            )
+                            summary = case.pending_transition.get("summary", "")
 
-                        return {
-                            "agent_response": agent_response,
-                            "suggested_follow_ups": follow_ups,
-                            "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": [],
-                                "progress_made": False,
-                            },
-                        }
+                            agent_response = (
+                                "Please select one of the options above to continue."
+                                if not summary
+                                else f"{summary}\n\nPlease select one of the options above to continue."
+                            )
+                            if to_state == "resolved":
+                                follow_ups = _resolution_confirmation_suggestions()
+                            else:
+                                follow_ups = _close_confirmation_suggestions()
+
+                            self._record_deterministic_turn(
+                                case, user_message or "", agent_response
+                            )
+                            await self.repository.save(case)
+
+                            return {
+                                "agent_response": agent_response,
+                                "suggested_follow_ups": follow_ups,
+                                "case_updated": case,
+                                "metadata": {
+                                    "turn_number": case.current_turn,
+                                    "milestones_completed": [],
+                                    "progress_made": False,
+                                },
+                            }
 
             # 0c. Detect explicit user intent to close/resolve case
             # This handles cases where user explicitly says "close this case" or "mark as resolved"
@@ -3395,30 +3497,43 @@ class MilestoneEngine:
             agent_response_text = response_obj.agent_response
 
             # Post-LLM overrides for resolution readiness re-evaluation.
+            # Gate PROSE is composed with (appended below) the LLM's reply via
+            # _prose_with_gate_notice — never replacing the analysis the user
+            # asked for. Gate SUGGESTIONS stay engine-owned replacements.
             # After a needs_info turn, check whether requirements are now met.
             if metadata.get("resolution_ready_for_confirmation"):
-                agent_response_text = (
+                agent_response_text = _prose_with_gate_notice(
+                    response_obj.agent_response,
                     "Thanks for the additional details.\n\n"
-                    + _build_resolution_confirmation(case_updated)
+                    + _build_resolution_confirmation(case_updated),
                 )
                 follow_ups = _resolution_confirmation_suggestions()
             elif metadata.get("resolution_suggest_close"):
                 # User didn't provide required info — suggest Close instead.
-                agent_response_text = metadata["resolution_readiness_message"]
+                agent_response_text = _prose_with_gate_notice(
+                    response_obj.agent_response,
+                    metadata["resolution_readiness_message"],
+                )
                 follow_ups = _close_confirmation_suggestions()
             elif metadata.get("resolution_needs_info_first_pass"):
                 # LLM proposed RESOLVED but readiness check returned NEEDS_INFO.
-                # Override the LLM's agent_response with the readiness message
-                # so the prompt the user sees matches the missing-info ask
-                # the UI dropdown path produces in the same situation.
-                agent_response_text = metadata["resolution_needs_info_message"]
+                # Append the readiness ask below the LLM's agent_response so
+                # the user sees both the turn's analysis and the same
+                # missing-info ask the UI dropdown path produces.
+                agent_response_text = _prose_with_gate_notice(
+                    response_obj.agent_response,
+                    metadata["resolution_needs_info_message"],
+                )
                 follow_ups = metadata["override_suggestions"]
             elif metadata.get("rca_infeasible_closure_message"):
                 # Stage-gate side effect: mitigation_verified + rca_infeasible=True.
-                # Replace the LLM's mitigation-confirmation reply with the engine-
-                # built closure proposal so the user sees a coherent prompt + the
-                # canonical close confirm/decline pair.
-                agent_response_text = metadata["rca_infeasible_closure_message"]
+                # Append the engine-built closure proposal below the LLM's
+                # mitigation-confirmation reply, with the canonical close
+                # confirm/decline pair.
+                agent_response_text = _prose_with_gate_notice(
+                    response_obj.agent_response,
+                    metadata["rca_infeasible_closure_message"],
+                )
                 follow_ups = metadata["override_suggestions"]
             elif metadata.get("override_suggestions"):
                 # ProposedTransition was emitted by the LLM this turn (either
@@ -3618,6 +3733,19 @@ class MilestoneEngine:
                         p in _agent_text_lower for p in _completion_phrases
                     ),
                     "status_transitioned": bool(metadata.get("status_transitioned")),
+                    # Readiness verdicts explain WHY a proposed transition did
+                    # not transition this turn (pending confirmation /
+                    # needs_info / pivot) — without them a pending handshake
+                    # reads as a silent gate refusal (#656 triage).
+                    "resolution_readiness_verdict": metadata.get(
+                        "resolution_readiness_verdict"
+                    ),
+                    "resolution_readiness_missing": metadata.get(
+                        "resolution_readiness_missing"
+                    ),
+                    "closure_readiness_verdict": metadata.get(
+                        "closure_readiness_verdict"
+                    ),
                 },
             )
 
@@ -7892,6 +8020,12 @@ class MilestoneEngine:
                 )
 
                 readiness = assess_resolution_readiness(case)
+                # Telemetry: transition_compliance carries the readiness
+                # verdict so a pending-but-not-transitioned turn is
+                # self-explaining in logs (#656 triage misread this as a
+                # silent gate refusal).
+                metadata["resolution_readiness_verdict"] = readiness.verdict
+                metadata["resolution_readiness_missing"] = readiness.missing
 
                 if readiness.verdict == readiness.READY:
                     # Requirements met — clear needs_info, show confirmation
@@ -8118,6 +8252,8 @@ class MilestoneEngine:
 
                 if proposed.to_state == "resolved":
                     readiness = assess_resolution_readiness(case)
+                    metadata["resolution_readiness_verdict"] = readiness.verdict
+                    metadata["resolution_readiness_missing"] = readiness.missing
                     if readiness.verdict == readiness.SUGGEST_CLOSE:
                         effective_to_status = "closed"
                         summary = readiness.message
@@ -8138,6 +8274,7 @@ class MilestoneEngine:
                         summary = _build_resolution_confirmation(case)
                 else:  # closed
                     closure = assess_closure_readiness(case)
+                    metadata["closure_readiness_verdict"] = closure.verdict
                     if closure.verdict == closure.SUGGEST_RESOLVE:
                         effective_to_status = "resolved"
                         summary = closure.message
@@ -8192,11 +8329,20 @@ class MilestoneEngine:
         Uses a 100-char length guard: short messages are direct responses
         to the confirmation prompt; longer messages likely contain context
         that should go through normal LLM processing.
+
+        A match here executes a TERMINAL transition, so it must be a BARE
+        confirmation: tokens match on word boundaries ("yesterday…" is not
+        "yes"), and a message carrying a question or a contrastive
+        continuation ("ok but what is the root cause?") is substantive
+        input, not consent — it falls to the pending-gate escape lane
+        instead (INV-26: the gate never consumes substantive input).
         """
         if not user_message:
             return False
         msg = user_message.strip().lower()
         if len(msg) > 100:
+            return False
+        if "?" in msg or " but " in msg or msg.endswith(" but"):
             return False
         confirm_patterns = [
             "yes",
@@ -8227,10 +8373,16 @@ class MilestoneEngine:
             "looks good",
             "lgtm",
         ]
-        return any(msg.startswith(p) or msg == p for p in confirm_patterns)
+        return _matches_gate_token(msg, confirm_patterns)
 
     def _user_declines_transition(self, user_message: str) -> bool:
-        """Check if user message declines a pending transition."""
+        """Check if user message declines a pending transition.
+
+        Tokens match on word boundaries — "note db latency spiked" must not
+        read as "no", nor "stopped the pod" as "stop" (the old bare
+        ``startswith`` swallowed such evidence-bearing messages with a
+        canned acknowledgment).
+        """
         if not user_message:
             return False
         msg = user_message.strip().lower()
@@ -8245,7 +8397,7 @@ class MilestoneEngine:
             "hold on",
             "stop",
         ]
-        return any(msg.startswith(p) or msg == p for p in decline_patterns)
+        return _matches_gate_token(msg, decline_patterns)
 
     # v3: `_check_fast_track_resolution` and `KB_FAST_TRACK_THRESHOLD` removed.
     # KB-driven cases route through INVESTIGATING via same-turn milestone
