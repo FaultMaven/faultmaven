@@ -288,7 +288,7 @@ Format as Markdown with these sections:
                 content_to_scan = (
                     f"{suggestion.suggested_title}\n\n{suggestion.suggested_content}"
                 )
-                sanitized = self._sanitizer.sanitize(content_to_scan)
+                sanitized = await self._sanitizer.asanitize(content_to_scan)
 
                 # If content was modified, PII was found
                 if sanitized != content_to_scan:

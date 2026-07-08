@@ -1,8 +1,14 @@
-from unittest.mock import MagicMock
+import asyncio
+import threading
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.infrastructure.security.redaction import (
+    DataSanitizer,
+    RedactionUnavailableError,
+)
 
 
 class TestDataSanitizer:
@@ -144,14 +150,9 @@ class TestDataSanitizer:
         text = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ"
         result = sanitizer.sanitize(text)
 
-        # Should redact something in the JWT token (either JWT or AWS secret)
-        assert any(
-            prefix in result
-            for prefix in [
-                "<JWT_TOKEN_",
-                "<AWS_SECRET_KEY_",
-            ]
-        )
+        # The JWT is caught by the JWT pattern specifically. (It is NOT caught
+        # by the AWS-secret pattern any more — that is now context-anchored, #654.)
+        assert "<JWT_TOKEN_" in result
 
     def test_ip_address_redaction(self):
         """Test internal IP address redaction."""
@@ -172,6 +173,280 @@ class TestDataSanitizer:
         # Should redact MAC address with indexed pseudonym
         assert "<MAC_ADDRESS_" in result
         assert "00:1B:44:11:3A:B7" not in result
+
+
+class TestAwsSecretContextGating:
+    """#654: the AWS-secret pattern must be context-anchored, not a bare
+    40-char-base64 match (which corrupts hashes / base64 blobs)."""
+
+    def test_bare_40char_base64_not_redacted(self):
+        sanitizer = DataSanitizer()
+        # A 40-char base64 run (e.g. a slice of an opaque reasoning signature).
+        blob = "EsUWCsIWARFNMg8jby27u6zpclKJYV3HOly3IpA7"
+        assert len(blob) == 40
+        result = sanitizer.sanitize(f"signature: {blob}")
+        assert blob in result
+        assert "AWS_SECRET_KEY" not in result
+
+    def test_bare_sha1_and_git_sha_not_redacted(self):
+        sanitizer = DataSanitizer()
+        sha1 = "356a192b7913b04c54574d18c28d46e6395428ab"  # 40 hex chars
+        result = sanitizer.sanitize(f"commit {sha1}")
+        assert sha1 in result
+        assert "AWS_SECRET_KEY" not in result
+
+    def test_context_anchored_aws_secret_is_redacted(self):
+        sanitizer = DataSanitizer()
+        secret = (
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"  # canonical 40-char AWS example
+        )
+        assert len(secret) == 40
+        text = f"aws_secret_access_key = {secret}"
+        result = sanitizer.sanitize(text)
+        assert secret not in result
+        assert "<AWS_SECRET_KEY_" in result
+
+
+class TestOpaqueArtifactPassthrough:
+    """#654: opaque provider/model artifacts (reasoning signatures, provider
+    round-trip metadata) must pass through the sanitizer VERBATIM — redacting
+    them corrupts the bytes and breaks the provider's decode on the next call."""
+
+    def _thought_signature(self) -> str:
+        # Contains a 40-char base64 run that the old entropy pattern mangled.
+        return "EsUWCsIWARFNMg8jby27u6zpclKJYV3HOly3IpA7vQFM8pmM14M5a008vApMFg"
+
+    def test_top_level_provider_metadata_verbatim(self):
+        sanitizer = DataSanitizer()
+        sig = self._thought_signature()
+        message = {
+            "role": "assistant",
+            "content": "Server 192.168.1.5 is down",  # should still be redacted
+            "provider_metadata": {
+                "assistant_parts": [{"functionCall": {"thoughtSignature": sig}}]
+            },
+        }
+        out = sanitizer.sanitize(message)
+        # Opaque artifact preserved byte-for-byte...
+        assert (
+            out["provider_metadata"]["assistant_parts"][0]["functionCall"][
+                "thoughtSignature"
+            ]
+            == sig
+        )
+        # ...but real PII in content is still redacted.
+        assert "192.168.1.5" not in out["content"]
+
+    def test_per_tool_call_provider_metadata_verbatim(self):
+        sanitizer = DataSanitizer()
+        sig = self._thought_signature()
+        message = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {"name": "kb_qa", "arguments": "{}"},
+                    "provider_metadata": {"thought_signature": sig},
+                }
+            ],
+        }
+        out = sanitizer.sanitize(message)
+        assert out["tool_calls"][0]["provider_metadata"]["thought_signature"] == sig
+
+    def test_direct_thought_signature_key_verbatim(self):
+        sanitizer = DataSanitizer()
+        sig = self._thought_signature()
+        out = sanitizer.sanitize({"thoughtSignature": sig})
+        assert out["thoughtSignature"] == sig
+
+
+class TestAsyncSanitizeBoundary:
+    """#654: redaction (CPU-bound regex + blocking Presidio round-trip) MUST run
+    off the event loop. `asanitize()` is the boundary; a synchronous `sanitize()`
+    on an async path stalls the loop and starves the k8s liveness probe."""
+
+    @pytest.mark.asyncio
+    async def test_asanitize_matches_sanitize(self):
+        sanitizer = DataSanitizer()
+        text = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE on 192.168.1.9"
+        assert await sanitizer.asanitize(text) == sanitizer.sanitize(text)
+
+    @pytest.mark.asyncio
+    async def test_asanitize_runs_off_the_event_loop(self):
+        sanitizer = DataSanitizer()
+        loop_thread_id = threading.get_ident()
+        sanitize_thread = {}
+
+        def slow_sanitize(_text, *_a, **_k):
+            sanitize_thread["id"] = threading.get_ident()
+            time.sleep(0.05)
+            return "redacted"
+
+        # Patch the sync worker the boundary offloads.
+        sanitizer.sanitize = slow_sanitize  # type: ignore[method-assign]
+
+        concurrent_tick = {"ran": False}
+
+        async def concurrent_work():
+            await asyncio.sleep(0)
+            concurrent_tick["ran"] = True
+
+        result, _ = await asyncio.gather(
+            sanitizer.asanitize("some text"), concurrent_work()
+        )
+
+        assert result == "redacted"
+        assert concurrent_tick["ran"] is True
+        assert sanitize_thread["id"] != loop_thread_id, (
+            "sanitize ran on the event loop thread — asyncio.to_thread offload "
+            "regressed."
+        )
+
+
+class TestDictKeySensitivity:
+    """#654: sensitive-key detection matches whole segments only — benign keys
+    that merely contain 'key'/'token'/'secret' as substrings are not flagged."""
+
+    def test_secret_naming_keys_redact_value(self):
+        sanitizer = DataSanitizer()
+        out = sanitizer.sanitize(
+            {
+                "password": "hunter2",
+                "api_key": "abc123",
+                "auth_token": "tok_xyz",
+                "secret_key": "s3cr3t",
+            }
+        )
+        assert out["password"] == "[PASSWORD_REDACTED]"
+        assert out["api_key"] == "[KEY_REDACTED]"
+        assert out["auth_token"] == "[TOKEN_REDACTED]"
+        assert out["secret_key"] == "[SECRET_REDACTED]"
+
+    def test_camelcase_and_concatenated_keys_redact_value(self):
+        """Regression (#654 review): camelCase / concatenated secret keys must
+        redact — an earlier segment-anchored matcher leaked them verbatim."""
+        sanitizer = DataSanitizer()
+        out = sanitizer.sanitize(
+            {
+                "apiKey": "SECRETVAL",
+                "apikey": "SECRETVAL",
+                "accessToken": "TOKVAL",
+                "accesstoken": "TOKVAL",
+                "privateKey": "PK",
+                "SecretAccessKey": "AWSSECRET",
+            }
+        )
+        assert out["apiKey"] == "[KEY_REDACTED]"
+        assert out["apikey"] == "[KEY_REDACTED]"
+        assert out["accessToken"] == "[TOKEN_REDACTED]"
+        assert out["accesstoken"] == "[TOKEN_REDACTED]"
+        assert out["privateKey"] == "[KEY_REDACTED]"
+        assert out["SecretAccessKey"] == "[SECRET_REDACTED]"
+
+    def test_benign_keys_not_flagged(self):
+        sanitizer = DataSanitizer()
+        out = sanitizer.sanitize(
+            {
+                "monkey": "curious george",
+                "tokenizer": "bge-m3",
+                "secretary": "alice",
+                "keyboard": "mechanical",
+                "turnkey": "solution",
+                "donkey": "eeyore",
+            }
+        )
+        # Values preserved — none of these keys name a secret.
+        assert out["monkey"] == "curious george"
+        assert out["tokenizer"] == "bge-m3"
+        assert out["secretary"] == "alice"
+        assert out["keyboard"] == "mechanical"
+        assert out["turnkey"] == "solution"
+        assert out["donkey"] == "eeyore"
+
+
+class TestDockerPatternRemoval:
+    """#654: the over-broad `email@host.tld:token` pattern was removed — it
+    false-matched ordinary `user@host:port` in logs / connection strings."""
+
+    def test_email_host_port_not_redacted(self):
+        sanitizer = DataSanitizer()
+        text = "connecting as admin@db.example.com:5432"
+        result = sanitizer.sanitize(text)
+        assert "admin@db.example.com:5432" in result
+        assert "CREDENTIALS_REDACTED" not in result
+
+
+class TestFailClosedPosture:
+    """#654: fail-closed applies to a RUNTIME Presidio error (analyzer was
+    working, then failed) — NOT to the analyzer simply never being established
+    (not configured, health-check skipped in tests/dev, down at startup), which
+    runs regex-only. Otherwise every call would fail whenever Presidio isn't
+    wired up (e.g. the Cloud CI job with SANITIZE_PII=true + SKIP_SERVICE_CHECKS)."""
+
+    def _settings(self, *, sanitize_pii: bool, fail_open: bool):
+        settings = MagicMock()
+        settings.protection.entities_to_protect = ["EMAIL_ADDRESS"]
+        settings.protection.min_score_threshold = 0.9
+        settings.protection.presidio_analyzer_url = "http://fake:8080"
+        settings.protection.presidio_anonymizer_url = "http://fake:8081"
+        settings.protection.sanitize_pii = sanitize_pii
+        settings.protection.fail_open = fail_open
+        settings.server.skip_service_checks = True  # forces analyzer_available=False
+        return settings
+
+    def test_startup_unavailable_does_not_raise_even_when_fail_closed(self):
+        # The Cloud CI scenario: sanitize_pii=True, fail_open=False, Presidio
+        # not established (skip_service_checks) → regex-only, NO raise.
+        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=False))
+        assert s.analyzer_available is False
+        result = s.sanitize("email john@example.com key AKIAIOSFODNN7EXAMPLE")
+        assert "<AWS_ACCESS_KEY_" in result  # regex still applied
+        assert "john@example.com" in result  # Presidio-only PII passes (analyzer down)
+
+    def test_fail_closed_raises_on_runtime_presidio_error(self):
+        # Analyzer WAS available, then a call errors → fail-closed refuses.
+        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=False))
+        s.analyzer_available = True
+        with patch.object(
+            s, "call_external_sync", side_effect=Exception("Connection timed out")
+        ):
+            with pytest.raises(RedactionUnavailableError):
+                s.sanitize("contact me at john@example.com")
+
+    def test_fail_open_returns_text_on_runtime_presidio_error(self):
+        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=True))
+        s.analyzer_available = True
+        with patch.object(
+            s, "call_external_sync", side_effect=Exception("Connection timed out")
+        ):
+            result = s.sanitize("email john@example.com key AKIAIOSFODNN7EXAMPLE")
+        assert "<AWS_ACCESS_KEY_" in result  # regex applied
+        assert "john@example.com" in result  # fail-open lets it through
+
+    def test_disabled_redaction_never_fails_closed(self):
+        # sanitize_pii off → best-effort regex for logs/etc.; never raises even
+        # under fail_open=False, even on a runtime Presidio error.
+        s = DataSanitizer(settings=self._settings(sanitize_pii=False, fail_open=False))
+        s.analyzer_available = True
+        with patch.object(
+            s, "call_external_sync", side_effect=Exception("Connection timed out")
+        ):
+            assert isinstance(s.sanitize("john@example.com"), str)
+
+    def test_transient_presidio_error_does_not_latch_analyzer_off(self):
+        """Regression (#654 review): a transient Presidio error must NOT
+        permanently disable the analyzer — that would fail every subsequent
+        call until process restart. The circuit breaker handles transient
+        failures with recovery instead."""
+        # fail_open=True so _apply_presidio returns text (isolates the latch).
+        s = DataSanitizer(settings=self._settings(sanitize_pii=True, fail_open=True))
+        s.analyzer_available = True
+        with patch.object(
+            s, "call_external_sync", side_effect=Exception("Connection timed out")
+        ):
+            result = s._apply_presidio("hello world", {})
+        assert result == "hello world"
+        assert s.analyzer_available is True  # NOT latched off
 
 
 class TestPasswordRegexWordBoundary:

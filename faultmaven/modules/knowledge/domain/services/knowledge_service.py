@@ -165,8 +165,8 @@ class KnowledgeService:
             self._validate_document_data(title, content)
 
             # Sanitize content for privacy compliance
-            sanitized_content = self._sanitizer.sanitize(content)
-            sanitized_title = self._sanitizer.sanitize(title)
+            sanitized_content = await self._sanitizer.asanitize(content)
+            sanitized_title = await self._sanitizer.asanitize(title)
 
             # Generate unique document ID
             document_id = self._generate_document_id(sanitized_title, document_type)
@@ -254,7 +254,7 @@ class KnowledgeService:
             if not query or not query.strip():
                 raise ValueError("Query cannot be empty")
 
-            sanitized_query = self._sanitizer.sanitize(query)
+            sanitized_query = await self._sanitizer.asanitize(query)
 
             try:
                 # Search via vector store interface if available
@@ -384,7 +384,7 @@ class KnowledgeService:
             # Sanitize query if sanitizer available
             sanitized_query = query
             if self._sanitizer:
-                sanitized_query = self._sanitizer.sanitize(query)
+                sanitized_query = await self._sanitizer.asanitize(query)
 
             # Enhanced multi-level caching with optimization
             cache_key = self._generate_optimized_cache_key(
@@ -842,12 +842,12 @@ class KnowledgeService:
             metadata = {}
 
             if title:
-                sanitized_title = self._sanitizer.sanitize(title)
+                sanitized_title = await self._sanitizer.asanitize(title)
                 update_data["title"] = sanitized_title
                 metadata["title"] = sanitized_title
 
             if content:
-                sanitized_content = self._sanitizer.sanitize(content)
+                sanitized_content = await self._sanitizer.asanitize(content)
                 update_data["content"] = sanitized_content
 
             if tags is not None:
@@ -2140,9 +2140,9 @@ class KnowledgeService:
                     return None
 
                 if kwargs.get("title"):
-                    item.title = self._sanitizer.sanitize(kwargs["title"])
+                    item.title = await self._sanitizer.asanitize(kwargs["title"])
                 if kwargs.get("content"):
-                    item.content = self._sanitizer.sanitize(kwargs["content"])
+                    item.content = await self._sanitizer.asanitize(kwargs["content"])
                 if "tags" in kwargs:
                     item.tags = [str(t) for t in (kwargs["tags"] or [])]
                 if kwargs.get("category"):

@@ -18,10 +18,10 @@ Usage:
     await ctx.save()                # Persist updated registry to Redis
 """
 
+import asyncio
 import json
 import logging
-import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,28 @@ class CaseRedactionContext:
         result = self.sanitizer.sanitize_text_with_registry(text, self._forward)
 
         # Sync reverse mapping from forward registry
+        self._rebuild_reverse()
+        self._dirty = True
+
+        return result
+
+    async def asanitize(self, text: str) -> str:
+        """Async boundary for :meth:`sanitize`.
+
+        Offloads the sanitizer's CPU-bound regex passes and blocking Presidio
+        round-trip to a worker thread so the event loop stays responsive. Any
+        ``async`` caller MUST use this instead of ``sanitize()`` (#654). The
+        registry mutation and reverse-map rebuild run back on the loop thread
+        after the offloaded work completes, so no locking is needed for the
+        sequential per-turn access pattern.
+        """
+        if not self.enabled or not text or not isinstance(text, str):
+            return text
+
+        result = await asyncio.to_thread(
+            self.sanitizer.sanitize_text_with_registry, text, self._forward
+        )
+
         self._rebuild_reverse()
         self._dirty = True
 

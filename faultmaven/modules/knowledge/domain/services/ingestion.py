@@ -275,7 +275,7 @@ class KnowledgeIngester:
                 raise ValueError(f"Could not extract text from {file_path}")
 
             # Sanitize content
-            sanitized_content = self.sanitizer.sanitize(content)
+            sanitized_content = await self.sanitizer.asanitize(content)
 
             # Create document object
             now = datetime.now(timezone.utc).isoformat()
@@ -774,7 +774,7 @@ class KnowledgeIngester:
             self.logger.info(f"Starting ingestion of document: {document.title}")
 
             # Sanitize content (already done in API, but double-check)
-            sanitized_content = self.sanitizer.sanitize(document.content)
+            sanitized_content = await self.sanitizer.asanitize(document.content)
 
             # Update document with sanitized content
             document.content = sanitized_content

@@ -1750,17 +1750,6 @@ class DIContainer(BaseDIContainer):
             return self.get_log_processor()
         return enhanced_processor
 
-    def get_enhanced_security_assessment(self):
-        """Get the enhanced security assessment service"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "Enhanced security assessment requested but container not initialized"
-            )
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        return getattr(self, "enhanced_security_assessment", None)
-
     def get_enhanced_data_service(self):
         """Get the enhanced data service with memory integration and pattern learning"""
         if not self._initialized:

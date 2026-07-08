@@ -4210,8 +4210,9 @@ class MilestoneEngine:
                 # Redact PII in tool results before sending to LLM.
                 # Tool results contain raw file content (search_file,
                 # deep_analysis) which bypasses prompt-level redaction.
+                # Off the event loop via the async boundary (#654).
                 if redaction_ctx:
-                    result_text = redaction_ctx.sanitize(result_text)
+                    result_text = await redaction_ctx.asanitize(result_text)
 
                 # Truncate long results
                 if len(result_text) > self.TOOL_RESULT_MAX_CHARS:
@@ -5535,8 +5536,9 @@ class MilestoneEngine:
         """
         # Apply case-scoped PII redaction to the prompt before any LLM call.
         # This covers both the tool-augmented (DA) and single-shot paths.
+        # Off the event loop via the async boundary (#654).
         if redaction_ctx:
-            prompt = redaction_ctx.sanitize(prompt)
+            prompt = await redaction_ctx.asanitize(prompt)
         # Branch to tool-augmented generation for DA turns with tools.
         # Two layers of protection:
         # 1. Pre-check: skip known-incompatible providers (avoids wasted API call)
