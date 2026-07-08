@@ -12,8 +12,7 @@ designed-but-dead into a firing path (§7.1.1):
      exclusion bar reachable — a merely-correlational net-refute stays above the
      bar and blocks the deduction (graceful denial).
 
-Acceptance: a case validated this way grades ``GROUNDED`` and its
-``count_grounded_roots(case).deductive_arm`` moves off 0 (the #593 metric check).
+Acceptance: a case validated this way grades ``GROUNDED`` (§7 harvest bar).
 Pure graph/grade primitives — no LLM, no DB.
 """
 
@@ -30,7 +29,6 @@ from faultmaven.core.investigation.causal_graph import (
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
-    count_grounded_roots,
     grade_cause_assurance,
 )
 from faultmaven.core.investigation.milestone_engine import (
@@ -221,11 +219,8 @@ def test_exhausted_and_asserted_differential_stamps_deductive():
     assert survivor.node_state == NodeState.VALIDATED
     assert survivor.validation_method == ValidationMethod.DEDUCTIVE
     assert survivor.actionable is True  # M1
-    # Acceptance: grades GROUNDED via the deductive arm; the #593 metric moves off 0.
+    # Acceptance: grades GROUNDED via the deductive arm (#593).
     assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
-    tally = count_grounded_roots(case)
-    assert tally.deductive_arm == 1
-    assert tally.runbook_arm == 0
 
 
 def test_graceful_denial_when_sibling_only_correlationally_refuted():

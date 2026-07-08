@@ -200,7 +200,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 
 **Indicators:**
 - root: [Step 2] the alert's `expr` returns an empty `result` array, and the same query without the threshold filter also returns 0 series
-  <!-- match: {"step": 2, "predicate": "contains", "target": "\"result\":[]"} -->
 - s1: [Step 1] the rule's `state` is `inactive` and `health` is `ok` even when the underlying condition is known to be true
 
 **Interventions:**
@@ -249,7 +248,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 **Indicators:**
 - root: [Step 2] the expression returns results some of the time but not on every evaluation
 - s1: [Step 1] the rule's `state` repeatedly shows `pending` but never reaches `firing` across multiple polls
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"state\":\"pending\""} -->
 - s2: [Symptom] dashboards confirm the underlying condition is real but transient on the scrape-interval timescale
 
 **Interventions:**
@@ -302,7 +300,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 
 **Indicators:**
 - root: [Step 3] `data.activeAlertmanagers` is an empty array, or all peers appear under `droppedAlertmanagers`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "\"active\":[]"} -->
 - s2: [Step 5] `/api/v2/alerts` on Alertmanager shows no alerts despite Prometheus showing rules in `firing`
 
 **Interventions:**
@@ -357,7 +354,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 **Indicators:**
 - root: [Step 6] at least one silence is in `active` state and its `matchers` match the alert's labels
 - s1: [Step 5] the alert is present with `status.state == "suppressed"` and a non-empty `silencedBy` array
-  <!-- match: {"step": 5, "predicate": "contains", "target": "\"suppressed\""} -->
 
 **Interventions:**
 - **remediation** (root): expire the matching silence; if it is on a maintenance schedule, narrow the matchers or shorten `endsAt` instead of expiring outright.
@@ -389,7 +385,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 
 **Indicators:**
 - root: [Step 7] `amtool config routes test` with the alert's exact labels resolves to a receiver other than the one expected (often the root/default)
-  <!-- match: {"step": 7, "predicate": "contains", "target": "default"} -->
 - s1: [Step 5] the alert is present in `/api/v2/alerts` with `status.state == "active"` but the wrong receiver gets notified (or the silent default receiver gets it)
 
 **Interventions:**
@@ -459,7 +454,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 **Indicators:**
 - root: [Step 9] an `inhibit_rules` block has `target_matchers` that match the missing alert's labels, and at least one source alert is currently firing
 - s1: [Step 5] alerts appear with `status.state == "suppressed"` and a non-empty `inhibitedBy` array, but no `silencedBy`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "\"inhibitedBy\""} -->
 
 **Interventions:**
 - **remediation** (root): narrow `target_matchers` and add labels to the `equal` list so inhibition only covers the intended cascade.
@@ -514,7 +508,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 
 **Indicators:**
 - root: [Step 8] a `time_intervals` block matches the current time in the configured `location`, and a route uses it under `mute_time_intervals`
-  <!-- match: {"step": 8, "predicate": "contains", "target": "mute_time_intervals"} -->
 - s1: [Step 5] the alert is `active` with no `silencedBy` and no `inhibitedBy`
 
 **Interventions:**
@@ -565,7 +558,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 
 **Indicators:**
 - root: [Step 11] Alertmanager logs show `Notify for alerts failed` for the affected receiver with `401`, `403`, `429`, a `5xx`, `connection refused`, or `context deadline exceeded`
-  <!-- match: {"step": 11, "predicate": "contains", "target": "Notify for alerts failed"} -->
 - s2: [Step 12] the synthetic alert reaches `/api/v2/alerts` but the receiver does not deliver a notification
 
 **Interventions:**
@@ -624,7 +616,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 
 **Indicators:**
 - root: [Step 10] `promtool check rules`, `promtool check config`, or `amtool check-config` exits non-zero with a parse or schema error
-  <!-- match: {"step": 10, "predicate": "exit_code", "target": 1} -->
 - s1: [Step 11] Alertmanager logs contain `error loading config` or `msg="Loading configuration file failed"`
 - s2: [Symptom] a recent commit to the rules or routing config does not appear to take effect in Step 1 or Step 7
 

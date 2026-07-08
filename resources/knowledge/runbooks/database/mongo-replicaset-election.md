@@ -102,11 +102,8 @@ Expected output: `db.getReplicationInfo()` returns `timeDiff`/`timeDiffHours` (t
 - D: writes fail (`not primary` / `PrimarySteppedDown`) as primacy oscillates
 **Indicators:**
 - root: [Step 3] `pingMs` in the hundreds-to-thousands of ms or `lastHeartbeatRecv` stale beyond ~10s for at least one member
-  <!-- match: {"step": 3, "predicate": "threshold", "op": ">", "value": 1000, "target": "pingMs"} -->
 - s1: [Step 2] log lines `Couldn't get a heartbeat response` / heartbeat marking a member inaccessible
-  <!-- match: {"step": 2, "predicate": "contains", "target": "heartbeat"} -->
 - s2: [Step 2] log line `Stepping down from primary`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Stepping down from primary"} -->
 - D: [Symptom] drivers report `not primary` / code 189 during the partition window
 **Interventions:**
 - **remediation** (root): Restore the network path between members (fix the firewall/route/MTU/saturated link) and confirm bidirectional reachability, then re-verify heartbeat health.
@@ -134,11 +131,8 @@ Expected output: `db.getReplicationInfo()` returns `timeDiff`/`timeDiffHours` (t
 - D: writes are repeatedly rejected as primacy churns and majority write concern blocks
 **Indicators:**
 - s1: [Step 4] `rs.printSecondaryReplicationInfo()` reports a secondary tens of seconds or more behind the primary
-  <!-- match: {"step": 4, "predicate": "contains", "target": "secs (0 hrs) behind the primary"} -->
 - root: [Step 6] `mongostat` shows high `dirty`/`used` cache and large insert/update rates on the primary
-  <!-- match: {"step": 6, "predicate": "contains", "target": "dirty"} -->
 - s2: [Step 1] `rs.status()` shows secondaries flipping between `SECONDARY` and `RECOVERING`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "RECOVERING"} -->
 **Interventions:**
 - **remediation** (root): Relieve the apply bottleneck — provision faster/dedicated disk for secondaries, increase WiredTiger cache, and throttle/batch bulk writes (smaller `batchSize`, pacing). Re-check lag after the burst clears.
 
@@ -164,9 +158,7 @@ Expected output: `db.getReplicationInfo()` returns `timeDiff`/`timeDiffHours` (t
 - D: writes fail during each takeover as the primary steps down
 **Indicators:**
 - root: [Step 5] `rs.conf()` shows multiple members with the same high `priority` value
-  <!-- match: {"step": 5, "predicate": "contains", "target": "priority=1"} -->
 - s1: [Step 2] log line `Scheduling priority takeover`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "priority takeover"} -->
 - D: [Symptom] writes intermittently return `PrimarySteppedDown` aligned with takeover log timestamps
 **Interventions:**
 - **remediation** (root): Differentiate priorities so one member is the clear preferred primary; give chronically lagged or remote members lower priority (0 to bar primacy). Apply via a single `rs.reconfig()`.
@@ -188,11 +180,8 @@ Expected output: `db.getReplicationInfo()` returns `timeDiff`/`timeDiffHours` (t
 - D: writes fail because there is no stable writable primary
 **Indicators:**
 - root: [Step 1] one or more voting members show `health=0` / `state=(not reachable/healthy)`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "health=0"} -->
 - root: [Step 5] `rs.conf()` shows a required member with `votes=0` (or an even voting-member count enabling ties)
-  <!-- match: {"step": 5, "predicate": "contains", "target": "votes=0"} -->
 - s2: [Step 2] repeated `Starting an election, since we've seen no PRIMARY` with no lasting `transition to PRIMARY`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "no PRIMARY"} -->
 **Interventions:**
 - **remediation** (root): Restore the down voting member (or add an arbiter/voting member to reach an odd voting count) and correct `votes`/`priority` so a majority is reachable.
 

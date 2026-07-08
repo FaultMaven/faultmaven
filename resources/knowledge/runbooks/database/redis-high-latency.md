@@ -161,9 +161,6 @@ Expected output: max latency below 1,000 µs on bare metal, below 10,000 µs on 
 
 **Indicators:**
 - root: [Step 1] `SLOWLOG GET` shows `KEYS`, `SORT`, `SMEMBERS`, `HGETALL`, or `LRANGE 0 -1` with duration above 10,000 µs.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "KEYS"} -->
-  <!-- match: {"step": 1, "predicate": "contains", "target": "SMEMBERS"} -->
-  <!-- match: {"step": 1, "predicate": "contains", "target": "HGETALL"} -->
 - s1: [Step 2] `LATENCY HISTORY command` shows spikes correlated with the timestamps of those SLOWLOG entries.
 
 **Interventions:**
@@ -209,9 +206,7 @@ Expected output: max latency below 1,000 µs on bare metal, below 10,000 µs on 
 
 **Indicators:**
 - root: [Step 5] `rdb_last_bgsave_time_sec` above 5 s or `aof_last_rewrite_time_sec` above 5 s.
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "rdb_last_bgsave_time_sec", "op": ">", "value": 5} -->
 - s1: [Step 2] `LATENCY HISTORY fork` shows values above 200 ms.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "fork"} -->
 - D: [Symptom] latency spikes occur on a predictable schedule matching RDB `save` trigger thresholds.
 
 **Interventions:**
@@ -255,10 +250,8 @@ Expected output: max latency below 1,000 µs on bare metal, below 10,000 µs on 
 
 **Indicators:**
 - root: [Step 3] `awk '/^Swap:/ {sum+=$2}' /proc/<pid>/smaps` returns a non-zero value.
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "swap_kb", "op": ">", "value": 0} -->
 - s1: [Step 3] `vmstat 1` shows non-zero `si` (swap-in) or `so` (swap-out) columns.
 - s1: [Step 6] `mem_fragmentation_ratio` below 1.0.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "mem_fragmentation_ratio", "op": "<", "value": 1.0} -->
 
 **Interventions:**
 - **remediation** (root): set `maxmemory` with headroom and an eviction policy so the dataset never exceeds physical RAM.
@@ -303,7 +296,6 @@ Expected output: max latency below 1,000 µs on bare metal, below 10,000 µs on 
 
 **Indicators:**
 - s1: [Step 6] `mem_fragmentation_ratio` above 1.5.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "mem_fragmentation_ratio", "op": ">", "value": 1.5} -->
 - s1: [Step 6] `used_memory_rss_human` significantly larger than `used_memory_human`.
 
 **Interventions:**
@@ -339,7 +331,6 @@ Expected output: max latency below 1,000 µs on bare metal, below 10,000 µs on 
 
 **Indicators:**
 - root: [Step 4] `redis-cli --bigkeys` reports a key above 10,240 bytes (strings) or above 1,000 elements (collections).
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "memory_usage_bytes", "op": ">", "value": 10240} -->
 - root: [Step 4] `redis-cli MEMORY USAGE <key>` returns a value above 10,240.
 - s1: [Step 1] SLOWLOG shows `GET`, `HGETALL`, `SMEMBERS`, or `DEL` on the same key name with high duration.
 
@@ -384,7 +375,6 @@ Expected output: max latency below 1,000 µs on bare metal, below 10,000 µs on 
 
 **Indicators:**
 - s1: [Step 2] `LATENCY LATEST` shows `expire-cycle` events above 100 ms.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "expire-cycle"} -->
 - s1: [Step 2] `LATENCY HISTORY expire-cycle` shows spikes at predictable intervals (hourly, at session TTL boundaries).
 - D: [Symptom] latency spikes are brief (seconds) and correlate with traffic patterns or deployment times.
 
@@ -422,7 +412,6 @@ Expected output: max latency below 1,000 µs on bare metal, below 10,000 µs on 
 
 **Indicators:**
 - root: [Step 7] `redis-cli --latency` average is significantly higher than `redis-cli --intrinsic-latency` on the server.
-  <!-- match: {"step": 7, "predicate": "threshold", "target": "avg_latency_ms", "op": ">", "value": 1} -->
 - root: [Step 7] `--intrinsic-latency` on the server shows below 1,000 µs, confirming Redis itself is healthy.
 - D: [Symptom] all commands are uniformly slow (not just specific command types), ruling out O(N) commands.
 

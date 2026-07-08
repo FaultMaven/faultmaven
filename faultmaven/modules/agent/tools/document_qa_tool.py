@@ -11,7 +11,6 @@ Design: Design C (Stateless Sub-Agent + Proactive Phase Handlers)
 """
 
 import logging
-import re
 from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import get_settings
@@ -256,10 +255,7 @@ Answer:"""
         """Retrieve chunks per the KB config's search mode.
 
         ``hybrid`` (when the store supports it) → vector + keyword + reranking;
-        otherwise pure vector search. Shared by the prose Q&A path
-        (``answer_question``) and the structured cause matcher
-        (``AnswerFromKB._retrieve_chunks``) so the dispatch lives in one place
-        and the two paths can't drift. Raises on store error — callers decide
+        otherwise pure vector search. Raises on store error — callers decide
         how to degrade.
         """
         if self._kb_config.search_mode == "hybrid" and hasattr(
@@ -271,112 +267,6 @@ Answer:"""
         return await self._vector_store.search(
             collection_name=collection, query=question, k=k, where=filters
         )
-
-    async def answer_yes_no(
-        self,
-        question: str,
-        scope_id: Optional[str] = None,
-        k: int = 5,
-        filters: Optional[Dict[str, Any]] = None,
-        fallback_context: Optional[str] = None,
-    ) -> bool:
-        """Single-LLM-call boolean judgment over the evidence (KB-neutral).
-
-        Retrieves the top-``k`` chunks for ``question`` and asks the (cheap)
-        classifier model to answer strictly YES/NO based only on that evidence.
-        This is the runbook Cause matcher's T2 tier — "does the case evidence
-        satisfy this indicator?" — as ONE call (retrieve + judge), not the
-        prose-synthesis path plus a second classify.
-
-        ``fallback_context``: raw evidence text to judge against **when the
-        vector collection yields no chunks** (e.g. case evidence not yet
-        vectorized — vectorization is DA-mode + size-gated, so small/conversational
-        evidence is often absent from the index). Without it, an empty collection
-        means the matcher's T2 tier can never fire; with it, the same YES/NO
-        judgment runs over the caller-supplied raw evidence instead. The caller
-        (the engine) owns assembling it (it holds ``case.evidence``).
-
-        Conservative by design: no evidence (and no fallback), an unparsed
-        answer, or any error → ``False``. The matcher treats ``False`` as 'not
-        matched', never 'refuted', so a fail-open here only lowers belief — it
-        never prunes a Cause on missing/ambiguous evidence. The fallback path
-        keeps that invariant: it can only turn an abstention into a possible
-        match, never into a refutation.
-        """
-        try:
-            collection = self._kb_config.get_collection_name(scope_id)
-            try:
-                chunks = await self._dispatch_search(collection, question, k, filters)
-            except Exception as exc:  # noqa: BLE001
-                # A store error (ChromaDB down / collection unreadable) is treated
-                # as "no vectors", not a hard abstention — so the raw-evidence
-                # fallback below still gets to fire. Without this, the very case
-                # the fallback exists for (no usable vector index) skips it.
-                logger.warning(
-                    "answer_yes_no: vector search failed for scope %s (%s) — "
-                    "treating as no vectors",
-                    scope_id,
-                    exc,
-                )
-                chunks = []
-            if chunks:
-                context = self._build_context_from_chunks(chunks)
-            elif fallback_context and fallback_context.strip():
-                # Vector index empty → judge against the caller's raw evidence.
-                logger.info(
-                    "answer_yes_no: no vectors for scope %s — judging indicator "
-                    "against raw evidence fallback (%d chars)",
-                    scope_id,
-                    len(fallback_context),
-                )
-                context = fallback_context
-            else:
-                return False
-            return await self._judge_yes_no(question, context)
-        except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
-            logger.warning("answer_yes_no failed for %r: %s", question[:80], exc)
-            return False
-
-    async def _judge_yes_no(self, question: str, evidence_context: str) -> bool:
-        """Ask the classifier model a strict YES/NO over ``evidence_context``.
-
-        Shared by the vector-chunk path and the raw-evidence fallback so the two
-        can't drift. Returns False on a missing classifier model or an unparsed
-        answer (conservative — never refutes).
-        """
-        classifier_model = self._settings.llm.get_classifier_model()
-        if not classifier_model:
-            # Misconfiguration: no classifier model resolved. Surface it once
-            # rather than silently abstaining (every call would return False).
-            logger.warning(
-                "answer_yes_no: no classifier model configured; "
-                "returning False (evidence judgment unavailable)"
-            )
-            return False
-        prompt = (
-            "Based ONLY on the evidence below, is the following condition "
-            "true? Answer with a single word: YES or NO. If the evidence "
-            "does not clearly establish it, answer NO.\n\n"
-            f"Condition: {question}\n\nEvidence:\n{evidence_context}\n\nAnswer:"
-        )
-        response = await self._llm_router.route(
-            model=classifier_model,
-            messages=[{"role": "user", "content": prompt}],
-            # 64, not 5: a "thinking" classifier (e.g. gemini-3.x) bills hidden
-            # reasoning against max_tokens, and a 5-token cap is consumed before
-            # the YES/NO is emitted → truncated/placeholder output that never
-            # starts with "yes" → a false NO. 64 leaves headroom for the trivial
-            # answer; conservative parsing still maps any non-affirmative to False.
-            max_tokens=64,
-            temperature=0.0,
-        )
-        # Parse the FIRST alphabetic token, not the raw prefix: with the larger
-        # max_tokens a verbose/thinking model may wrap the verdict in markup or a
-        # short preamble ("**YES**", "Answer: yes"). Conservative — anything that
-        # isn't a clear leading yes/y is False (never a refutation).
-        answer = (getattr(response, "content", "") or "").lower()
-        first = re.search(r"[a-z]+", answer)
-        return first is not None and first.group() in ("yes", "y")
 
     def _build_context_from_chunks(self, chunks: list) -> str:
         """

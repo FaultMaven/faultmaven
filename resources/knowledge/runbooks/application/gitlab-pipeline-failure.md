@@ -99,9 +99,7 @@ Expected output: Lines showing successful job acquisition (`Checking for jobs...
 - D: the job is stuck pending and the pipeline never progresses
 **Indicators:**
 - root: [Step 2] `gitlab-runner status` reports the service is not running, or `gitlab-runner verify` fails to reach GitLab; Runners page shows no online runner
-  <!-- match: {"step": 2, "predicate": "absent", "target": "is alive"} -->
 - s1: [Symptom] stuck message reads `the project doesn't have any runners online assigned to it`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "doesn't have any runners online"} -->
 **Interventions:**
 - **remediation** (root): start the runner service and (if the token was deleted) re-register it, then assign it to the project.
 
@@ -130,9 +128,7 @@ Expected output: Lines showing successful job acquisition (`Checking for jobs...
 - D: the job is stuck pending despite runners being online
 **Indicators:**
 - root: [Step 3] the job's `tags:` include a value absent from `config.toml`, or the job has no tags and `run_untagged = false`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "run_untagged = false"} -->
 - s1: [Symptom] stuck message reads `you don't have any active runners online or available with any of these tags`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "with any of these tags"} -->
 **Interventions:**
 - **remediation** (root): align the job tags with an available runner — either add the runner's tag to the job or add the required tag to the runner.
 
@@ -165,9 +161,7 @@ Expected output: Lines showing successful job acquisition (`Checking for jobs...
 - D: the pipeline does not run (or the deploy job is missing), so the deployment fails
 **Indicators:**
 - root: [Step 1] CI Lint fails, or `xxd` shows a leading `efbbbf` BOM; [Step 4] log shows `config contains unknown keys`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "unknown keys"} -->
 - s2: [Step 4] log shows `job needs ... job, but it was not added to the pipeline`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "was not added to the pipeline"} -->
 **Interventions:**
 - **remediation** (root): fix the keyword/BOM and make the `needs` target reliably present, or mark the dependency optional.
 
@@ -199,7 +193,6 @@ Expected output: Lines showing successful job acquisition (`Checking for jobs...
 **Indicators:**
 - root: [Step 4] effective timeout is lower than the job's real runtime, or the artifact archive is larger than the configured max
 - s1: [Step 4] log ends with `Job failed: execution took longer than` (timeout) OR `Uploading artifacts as "archive" to coordinator... too large` (size)
-  <!-- match: {"step": 4, "predicate": "contains", "target": "execution took longer than"} -->
 **Interventions:**
 - **remediation** (root): set an appropriate per-job timeout and shrink/scope artifacts to stay under the limit (raise the limit only if genuinely required).
 

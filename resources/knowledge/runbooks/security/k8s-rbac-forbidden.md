@@ -167,7 +167,6 @@ Expected output: audit records containing the full user identity, impersonated u
 **Indicators:**
 - root: [Step 3] No output from both the namespace-scoped and cluster-scoped binding queries.
 - s1: [Step 2] `kubectl auth can-i` returns `no`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "no"} -->
 
 **Interventions:**
 - **remediation** (root): Create a purpose-built Role and bind the subject to it.
@@ -206,7 +205,6 @@ Expected output: audit records containing the full user identity, impersonated u
 **Indicators:**
 - root: [Step 4] The `rules` section does not contain the required verb, or lists the resource without the required subresource.
 - s1: [Step 2] `kubectl auth can-i` returns `no` for the specific verb/subresource.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "no"} -->
 
 **Interventions:**
 - **remediation** (root): Add the missing verb to the appropriate rule entry, or add a new rule stanza.
@@ -238,7 +236,6 @@ Expected output: audit records containing the full user identity, impersonated u
 
 **Indicators:**
 - root: [Step 5] Binding found, but its namespace does not match the namespace in the 403 error.
-  <!-- match: {"step": 5, "predicate": "contains", "target": "ns:"} -->
 - s2: [Step 2] `kubectl auth can-i` returns `yes` in one namespace and `no` in another.
 
 **Interventions:**
@@ -264,7 +261,6 @@ Expected output: audit records containing the full user identity, impersonated u
 
 **Indicators:**
 - root: [Step 1] `kubectl get pod ... -o jsonpath='{.spec.serviceAccountName}'` returns `default` or empty.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "default"} -->
 - s1: [Step 3] No bindings found for the `default` ServiceAccount that cover the required permission.
 
 **Interventions:**
@@ -298,7 +294,6 @@ Expected output: audit records containing the full user identity, impersonated u
 
 **Indicators:**
 - root: [Step 6] `kubectl get clusterroles -l <selector>` returns no resources.
-  <!-- match: {"step": 6, "predicate": "absent", "target": "items"} -->
 - s1: [Step 6] `kubectl get clusterrole ... -o jsonpath='{.aggregationRule}'` returns a non-empty value.
 
 **Interventions:**
@@ -327,7 +322,6 @@ Expected output: audit records containing the full user identity, impersonated u
 **Indicators:**
 - root: [Step 7] Audit log shows `verb: impersonate` in the denied record.
 - s1: [Symptom] Error message references impersonation: `cannot impersonate resource "users"`.
-  <!-- match: {"step": 7, "predicate": "contains", "target": "impersonate"} -->
 
 **Interventions:**
 - **remediation** (root): Grant the `impersonate` verb to the caller via a ClusterRole and binding.

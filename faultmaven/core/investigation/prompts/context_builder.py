@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any, Dict, List, Optional
 
-from faultmaven.core.investigation.intake_evaluation import (
+from faultmaven.core.investigation.evidence_need_surfacing import (
     select_surfaced_causal_needs,
 )
 from faultmaven.core.preprocessing.evidence_metadata import (
@@ -2571,67 +2571,6 @@ def _build_causal_graph_block(case: Case) -> str:
     return "\n".join(lines)
 
 
-# Mirror of runbook_cause_matcher.RUNBOOK_INTERVENTIONS_META_KEY. Duplicated as a
-# local literal to keep this prompt module from importing the matcher (a heavier
-# core.investigation module); the two are pinned together by
-# test_documented_fixes_block.
-_RUNBOOK_INTERVENTIONS_META_KEY = "runbook_interventions"
-# Bound the block so a verbose runbook can't dominate the kb_results budget slot
-# (mirrors KB_MAX_SOLUTION_CHARS for the <knowledge_context> block).
-_MAX_FIXES_RENDERED = 8
-
-
-def _build_documented_fixes_block(case: Case) -> str:
-    """Surface a runbook-matched cause's documented fixes — ONLY once that cause
-    is established (``cause_state == IDENTIFIED``).
-
-    The runbook Cause matcher stashes the fixes on the chain's ROOT node when it
-    matches; this renders them only after that root VALIDATES from real evidence.
-    Framed as suggestions: the matcher never creates Solutions — the LLM proposes
-    the fix and the M5 gate governs it. Self-gating — renders nothing unless the
-    (flag-gated) matcher stashed interventions on a now-validated root.
-
-    Note: self-gating is on the *data*, not a live flag re-check — interventions
-    stashed (and persisted) while ``enable_runbook_cause_matcher`` was on still
-    render after it is turned off. That is intended: a completed match is part of
-    the case's established state; disabling the flag stops *new* matches, not the
-    consequences of one already made. (Confirm at inc5 enablement.)
-    """
-    progress = case.progress
-    if not progress or getattr(progress, "cause_state", None) != CauseState.IDENTIFIED:
-        return ""
-    lines: List[str] = []
-    for node in (case.causal_nodes or {}).values():
-        if node.node_type != NodeType.ROOT or node.node_state != NodeState.VALIDATED:
-            continue
-        interventions = (node.metadata or {}).get(_RUNBOOK_INTERVENTIONS_META_KEY)
-        if not isinstance(interventions, list):
-            continue
-        for iv in interventions:
-            if not isinstance(iv, dict):
-                continue
-            text = str(iv.get("text", "")).strip()
-            if not text:
-                continue
-            if len(text) > KB_MAX_SOLUTION_CHARS:
-                text = text[:KB_MAX_SOLUTION_CHARS] + "... [truncated]"
-            quadrant = str(iv.get("quadrant", "")).strip()
-            tag = f"[{quadrant}] " if quadrant else ""
-            lines.append(f"  - {tag}{text}")
-            if len(lines) >= _MAX_FIXES_RENDERED:
-                break
-        if len(lines) >= _MAX_FIXES_RENDERED:
-            break
-    if not lines:
-        return ""
-    return (
-        "<documented_fixes>\n"
-        "The established root cause matches a documented runbook. Its documented "
-        "fixes are below — propose the appropriate one as a solution if the "
-        "evidence supports it.\n" + "\n".join(lines) + "\n</documented_fixes>"
-    )
-
-
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -2915,12 +2854,6 @@ def build_investigation_context(
                 kb_str += f"  SOLUTION: {solution}\n"
             kb_str += "\n"
         kb_str += "</knowledge_context>"
-
-    # 7a. Documented fixes for an established, runbook-matched cause (4b-3).
-    # Runbook-derived knowledge, so it travels in the KB context budget slot.
-    fixes_str = _build_documented_fixes_block(case)
-    if fixes_str:
-        kb_str = f"{kb_str}\n{fixes_str}" if kb_str else fixes_str
 
     # 8. System Feedback (Validation errors from previous turn)
     feedback_str = ""

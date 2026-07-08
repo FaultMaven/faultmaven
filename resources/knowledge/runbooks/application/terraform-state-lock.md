@@ -134,7 +134,6 @@ Expected output: `"ACTIVE"` if the table exists and is ready. A `ResourceNotFoun
 **Indicators:**
 - root: [Symptom] `Who` field identifies a CI runner hostname, not a developer workstation
 - s1: [Step 2] no active Terraform process found on the lock owner host and no CI job is `in_progress`
-  <!-- match: {"step": 2, "predicate": "absent", "target": "terraform"} -->
 - s1: [Step 3] lock age exceeds 60 minutes
 
 **Interventions:**
@@ -167,7 +166,6 @@ Expected output: `"ACTIVE"` if the table exists and is ready. A `ResourceNotFoun
 **Indicators:**
 - root: [Symptom] error appears during a period of high commit/deployment activity
 - s1: [Step 2] an active Terraform process or an `in_progress` CI job is found for the lock owner
-  <!-- match: {"step": 2, "predicate": "contains", "target": "terraform"} -->
 - s1: [Step 3] lock age is recent (under 30 minutes)
 
 **Interventions:**
@@ -207,7 +205,6 @@ Expected output: `"ACTIVE"` if the table exists and is ready. A `ResourceNotFoun
 
 **Indicators:**
 - root: [Step 6] `ResourceNotFoundException` returned by `aws dynamodb describe-table`
-  <!-- match: {"step": 6, "predicate": "absent", "target": "ACTIVE"} -->
 - s1: [Symptom] error message contains `ResourceNotFoundException` or `Backend initialization required`
 
 **Interventions:**
@@ -264,7 +261,6 @@ Expected output: `"ACTIVE"` if the table exists and is ready. A `ResourceNotFoun
 **Indicators:**
 - root: [Step 1] `Who` field contains the local machine hostname
 - s1: [Step 5] `lsof` shows open file handles on `terraform.tfstate`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "terraform.tfstate"} -->
 - s1: [Step 2] `ps aux` finds a Terraform process on the local machine with no associated terminal
 
 **Interventions:**
@@ -301,7 +297,6 @@ Expected output: `"ACTIVE"` if the table exists and is ready. A `ResourceNotFoun
 **Indicators:**
 - root: [Symptom] `Error: Error releasing the state lock` appears in the prior run's output immediately after `Apply complete!`
 - s1: [Step 4] lock entry exists in the backend but its `Operation` field shows `OperationTypeApply`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "OperationTypeApply"} -->
 - s1: [Step 3] lock age matches the time of the last successful apply
 
 **Interventions:**

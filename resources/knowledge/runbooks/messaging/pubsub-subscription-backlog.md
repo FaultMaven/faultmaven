@@ -84,9 +84,7 @@ Expected output: count of open StreamingPull streams. A value at/near zero (or f
 - D: undelivered-message backlog and oldest-unacked age grow
 **Indicators:**
 - root: [Step 1] `ackDeadlineSeconds` is low (e.g. 10) relative to known processing latency
-  <!-- match: {"step": 1, "predicate": "contains", "target": "ackDeadlineSeconds"} -->
 - s1: [Step 2] `subscription/expired_ack_deadlines_count` is non-zero and rising
-  <!-- match: {"step": 2, "predicate": "contains", "target": "expired_ack_deadlines_count"} -->
 - s2: [Symptom] same messages reappear; delivery-latency health score flags expired acks
 **Interventions:**
 - **remediation** (root): raise the subscription ack deadline to comfortably exceed p99 processing time (max 600s), and rely on the client library to auto-extend the lease for in-flight work.
@@ -118,7 +116,6 @@ Expected output: count of open StreamingPull streams. A value at/near zero (or f
 - D: backlog and oldest-unacked age keep growing
 **Indicators:**
 - root: [Step 4] `subscription/ack_latencies` high while `open_streaming_pulls` is low — subscriber saturated
-  <!-- match: {"step": 4, "predicate": "contains", "target": "open_streaming_pulls"} -->
 - s1: [Step 2] `subscription/expired_ack_deadlines_count` rising alongside duplicate deliveries
 - s2: [Symptom] subscriber CPU/memory pegged; same messages delivered repeatedly
 **Interventions:**
@@ -152,7 +149,6 @@ Expected output: count of open StreamingPull streams. A value at/near zero (or f
 **Indicators:**
 - root: [Step 4] high `subscription/ack_latencies` and few `open_streaming_pulls` vs. replica count
 - s1: [Step 2] both `num_undelivered_messages` and `oldest_unacked_message_age` increase simultaneously
-  <!-- match: {"step": 2, "predicate": "contains", "target": "oldest_unacked_message_age"} -->
 - s2: [Symptom] subscriber CPU/memory/network saturated; recent deploy correlates with onset
 **Interventions:**
 - **remediation** (root): scale subscriber capacity up to exceed publish throughput (more replicas/threads); use Pub/Sub backlog metrics as the autoscaling signal so capacity tracks load.
@@ -184,9 +180,7 @@ Expected output: count of open StreamingPull streams. A value at/near zero (or f
 - D: oldest_unacked_message_age rises and backlog for that key cannot drain
 **Indicators:**
 - root: [Step 1] `enableMessageOrdering: true` on the subscription
-  <!-- match: {"step": 1, "predicate": "contains", "target": "enableMessageOrdering"} -->
 - s1: [Step 3] pulled sample shows many messages sharing one `orderingKey`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "orderingKey"} -->
 - s2: [Step 2] `subscription/oldest_unacked_message_age` rising while overall throughput is low — hot-key signal
 **Interventions:**
 - **remediation** (root): redistribute publish traffic across many distinct ordering keys (higher-cardinality key) so per-key serialization no longer bottlenecks the fleet; if strict order is unnecessary, publish without ordering keys to a non-ordered subscription.

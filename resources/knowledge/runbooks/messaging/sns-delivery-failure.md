@@ -104,7 +104,6 @@ Expected output: log events whose message contains `"status":"FAILURE"` and a `"
 **Indicators:**
 - s2: [Step 2] non-zero `Sum` on `NumberOfNotificationsFilteredOut` (or the `-NoMessageAttributes` / `-InvalidAttributes` variants)
 - root: [Step 3] `FilterPolicy` rules whose keys/values do not match what publishers send, and `FilterPolicyScope` set unexpectedly to `MessageAttributes` while publishers send no attributes
-  <!-- match: {"step": 3, "predicate": "contains", "target": "FilterPolicy"} -->
 **Interventions:**
 - **remediation** (root): correct or remove the filter policy so it matches real traffic. To clear it entirely, set an empty policy.
 
@@ -137,7 +136,6 @@ Expected output: log events whose message contains `"status":"FAILURE"` and a `"
 **Indicators:**
 - s2: [Step 1] non-zero `Sum` on `NumberOfNotificationsFailed`
 - root: [Step 5] failure log event with a `"statusCode"` of 403/404/400 (not 429 or 5xx)
-  <!-- match: {"step": 5, "predicate": "contains", "target": "\"status\":\"FAILURE\""} -->
 **Interventions:**
 - **remediation** (root): fix the endpoint so it returns HTTP 200 and accepts the SNS message format (correct auth, route, and 200 on the confirmation/notification POST). This is an endpoint-side fix; redeploy the receiver, then publish a test message.
 
@@ -159,7 +157,6 @@ Expected output: log events whose message contains `"status":"FAILURE"` and a `"
 **Indicators:**
 - s2: [Step 1] sustained non-zero `NumberOfNotificationsFailed` over consecutive periods
 - root: [Step 5] repeated failure events with `"statusCode"` 500/503/429 for the same subscription
-  <!-- match: {"step": 5, "predicate": "contains", "target": "\"statusCode\":429"} -->
 **Interventions:**
 - **defensive_fix** (root): attach an SQS dead-letter queue so messages survive retry exhaustion and can be redriven later.
 
@@ -191,7 +188,6 @@ Expected output: log events whose message contains `"status":"FAILURE"` and a `"
 - D: the failed message is dropped entirely (no DLQ safety net)
 **Indicators:**
 - s2: [Step 1] / [Step 3] non-zero `NumberOfNotificationsFailedToRedriveToDlq` while Step 3 shows a `RedrivePolicy` is configured
-  <!-- match: {"step": 3, "predicate": "contains", "target": "deadLetterTargetArn"} -->
 - root: [Step 3] `deadLetterTargetArn` ARN whose account ID or Region differs from the topic/subscription
 **Interventions:**
 - **remediation** (root): point RedrivePolicy at an SQS queue in the SAME account and Region, and grant the SQS queue policy permission for SNS to send to it.

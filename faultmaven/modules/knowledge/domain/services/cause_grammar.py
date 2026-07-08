@@ -24,10 +24,9 @@ vocabularies are equal (the field-level pack-record golden,
 ``EXPECTED_GOLDEN_SHA256``, does NOT cover the authoring vocabulary).
 
 LAYER NOTE: these are the AUTHORING markdown sub-fields — a *different layer*
-from the parsed 9-field ``CauseRecord`` (``core.investigation.cause_schemas``).
-``chain_edges`` is *derived* from ``Chain:`` rung order and ``match_predicates``
-come from inline ``<!-- match -->`` comments, so neither is an authored sub-field
-and neither appears here.
+from the parsed per-cause records in the built KB pack. ``chain_edges`` is
+*derived* from ``Chain:`` rung order, so it is not an authored sub-field and
+does not appear here.
 
 The intervention quadrant VALUES are owned by the ``InterventionQuadrant`` enum
 (``modules.case.domain.models``); ``INTERVENTION_QUADRANTS`` mirrors them for the

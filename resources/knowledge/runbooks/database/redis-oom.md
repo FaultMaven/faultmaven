@@ -131,7 +131,6 @@ Expected output: `vm.overcommit_memory` should be `1`. A value of `0` causes `fo
 
 **Indicators:**
 - root: [Step 1] `maxmemory_human:0B`, or `maxmemory` greater than `(physical_RAM - other_processes) * 0.7`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "maxmemory_human:0B"} -->
 - s2: [Step 9] `/proc/<pid>/smaps` shows non-zero `Swap:` for the `redis-server` process.
 - D: [Symptom] kernel `dmesg` contains `Out of memory: Killed process` referencing `redis-server`, OR Redis log contains `Can't save in background: fork: Cannot allocate memory`.
 
@@ -167,9 +166,7 @@ Expected output: `vm.overcommit_memory` should be `1`. A value of `0` causes `fo
 
 **Indicators:**
 - root: [Step 1] `maxmemory_policy:noeviction`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "maxmemory_policy:noeviction"} -->
 - s1: [Step 2] `evicted_keys` is exactly `0` and not increasing despite `used_memory` at the ceiling.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "evicted_keys:0"} -->
 - D: [Symptom] client error logs contain `OOM command not allowed when used memory > 'maxmemory'`.
 
 **Interventions:**
@@ -257,7 +254,6 @@ Expected output: `vm.overcommit_memory` should be `1`. A value of `0` causes `fo
 **Indicators:**
 - root: [Step 4] `--bigkeys` reports at least one key whose size dominates the type's total.
 - s1: [Step 5] `MEMORY USAGE <key> SAMPLES 0` returns a value greater than 1048576 (1 MiB) for individual keys.
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "memory_usage_bytes", "op": ">", "value": 1048576} -->
 - s2: [Step 3] `MEMORY DOCTOR` advisory notes a high ratio between `used_memory_peak` and current `used_memory`, consistent with a small set of large keys.
 
 **Interventions:**
@@ -299,11 +295,8 @@ Expected output: `vm.overcommit_memory` should be `1`. A value of `0` causes `fo
 
 **Indicators:**
 - root: [Step 1] `mem_allocator:jemalloc-*` (active defrag is jemalloc-only).
-  <!-- match: {"step": 1, "predicate": "contains", "target": "mem_allocator:jemalloc"} -->
 - s1: [Step 1] `mem_fragmentation_ratio` is greater than `1.5`.
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "mem_fragmentation_ratio", "op": ">", "value": 1.5} -->
 - s1: [Step 3] `MEMORY DOCTOR` advisory contains the substring `high allocator fragmentation`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "high allocator fragmentation"} -->
 
 **Interventions:**
 - **remediation** (root): make active defragmentation permanent so the allocator compacts pages continuously.
@@ -347,7 +340,6 @@ Expected output: `vm.overcommit_memory` should be `1`. A value of `0` causes `fo
 **Indicators:**
 - root: [Symptom] Redis log contains `Client ... scheduled to be closed ASAP for overcoming of output buffer limits`.
 - s1: [Step 6] `CLIENT LIST` shows at least one client with `omem` greater than 1048576 (1 MiB).
-  <!-- match: {"step": 6, "predicate": "contains", "target": "omem="} -->
 - s2: [Step 5] `MEMORY STATS` shows `clients.normal` or `clients.slaves` or `pubsub.clients` is a large fraction of `used_memory`.
 
 **Interventions:**
@@ -386,7 +378,6 @@ Expected output: `vm.overcommit_memory` should be `1`. A value of `0` causes `fo
 
 **Indicators:**
 - root: [Step 7] `rdb_bgsave_in_progress:1` or `aof_rewrite_in_progress:1` at the time symptoms appeared.
-  <!-- match: {"step": 7, "predicate": "contains", "target": "rdb_bgsave_in_progress:1"} -->
 - s1: [Step 7] `latest_fork_usec` greater than 250000 microseconds per GiB of dataset (slow fork amplifies the COW window).
 - D: [Symptom] Redis log contains `Can't save in background: fork: Cannot allocate memory` OR `Background saving terminated by signal 9`.
 

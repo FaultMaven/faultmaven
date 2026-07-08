@@ -112,7 +112,6 @@ Expected output: the strategy plus the ASG's `min`/`max`/`desired`/`inService`. 
 **Indicators:**
 - root: [Step 2] task/container `cpu`/`memory` value is >= any instance's `remCPU`/`remMEM` from Step 3 (e.g. task `cpu:1024` but every `remCPU` < 1024)
 - root: [Step 1] event reason includes insufficient CPU/memory
-  <!-- match: {"step": 1, "predicate": "contains", "target": "no container instance met all of its requirements"} -->
 - s1: [Step 3] every row shows `remCPU`/`remMEM` below the Step 2 requirement
 **Interventions:**
 - **remediation** (root): right-size the task so it fits an instance, or run on larger instances. Lower the reservation in the task definition, register a new revision, and update the service.
@@ -141,7 +140,6 @@ Expected output: the strategy plus the ASG's `min`/`max`/`desired`/`inService`. 
 **Indicators:**
 - root: [Step 2] a `portMappings` entry has a fixed `hostPort` (non-zero) under `bridge`/`host` mode
 - s1: [Step 3] that port appears in every instance's `usedPorts` set
-  <!-- match: {"step": 1, "predicate": "contains", "target": "port required by your task"} -->
 **Interventions:**
 - **remediation** (root): use dynamic host port mapping (set `hostPort` to `0`, let ECS assign an ephemeral port) and front the service with an ALB target group. Register a new revision and update the service.
 
@@ -168,9 +166,7 @@ Expected output: the strategy plus the ASG's `min`/`max`/`desired`/`inService`. 
 - D: service emits the placement-failure / no-available-network-interfaces event
 **Indicators:**
 - root: [Step 2] `netMode` is `awsvpc`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "awsvpc"} -->
 - s1: [Step 1] event reason references no available network interfaces
-  <!-- match: {"step": 1, "predicate": "contains", "target": "network interface"} -->
 - s1: [Step 3] `running` task count per instance equals that instance type's ENI ceiling (e.g. 2 awsvpc tasks on a c5.large without trunking)
 **Interventions:**
 - **remediation** (root): enable ENI trunking (`awsvpcTrunking`) so supported instances get a higher ENI limit (e.g. c5.large rises from 3 to 12 ENIs → ~10 tasks instead of 2). Only instances launched AFTER enabling it get the trunk interface.
@@ -223,7 +219,6 @@ Expected output: the strategy plus the ASG's `min`/`max`/`desired`/`inService`. 
 - D: service never reaches desiredCount and emits the placement-failure event
 **Indicators:**
 - root: [Step 5] ASG `max` is `0`, or `desired == max` while capacity is still short
-  <!-- match: {"step": 5, "predicate": "threshold", "metric": "max", "op": "le", "value": 0} -->
 - root: [Step 2] task `cpu`/`memory` exceeds the capacity of the ASG's smallest instance type
 - s2: [Step 1] tasks observed in PROVISIONING and not transitioning to RUNNING
 **Interventions:**

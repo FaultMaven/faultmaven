@@ -131,7 +131,6 @@ Expected output: If any NetworkPolicy selects the backend pods with `policyTypes
 **Indicators:**
 - root: [Step 3] `kubectl get pods -l <key>=<value>` returns zero pods
 - s1: [Step 2] `ENDPOINTS` column is empty or shows `<none>`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "<none>"} -->
 
 **Interventions:**
 - **remediation** (root): fix the Service selector or add the missing label to the Deployment pod template.
@@ -171,7 +170,6 @@ Expected output: If any NetworkPolicy selects the backend pods with `policyTypes
 
 **Indicators:**
 - root: [Step 4] pod shows `READY 0/1` and events contain `Readiness probe failed`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "Readiness probe failed"} -->
 - s2: [Step 2] `ENDPOINTS` is empty
 
 **Interventions:**
@@ -213,7 +211,6 @@ Expected output: If any NetworkPolicy selects the backend pods with `policyTypes
 
 **Indicators:**
 - root: [Step 6] direct curl to pod IP on the Service `targetPort` returns `Connection refused`, but `ss -tlnp` shows the container listening on a different port
-  <!-- match: {"step": 6, "predicate": "contains", "target": "Connection refused"} -->
 - s1: [Step 2] EndpointSlices are populated (pod IPs appear)
 
 **Interventions:**
@@ -249,7 +246,6 @@ Expected output: If any NetworkPolicy selects the backend pods with `policyTypes
 **Indicators:**
 - root: [Step 5] `kubectl get pods -n kube-system -l k8s-app=kube-dns` shows `CrashLoopBackOff` or `0/1 Running`
 - s1: [Step 5] `nslookup` from a debug pod returns `NXDOMAIN` or `server can't find`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "NXDOMAIN"} -->
 
 **Interventions:**
 - **remediation** (root): repair the Corefile and restart CoreDNS.
@@ -289,7 +285,6 @@ Expected output: If any NetworkPolicy selects the backend pods with `policyTypes
 
 **Indicators:**
 - root: [Step 7] kube-proxy pods show `CrashLoopBackOff` or fewer pods than nodes, or `iptables -t nat -L KUBE-SERVICES` returns no entry for the ClusterIP
-  <!-- match: {"step": 7, "predicate": "absent", "target": "<cluster-ip>"} -->
 - s2: [Step 6] direct pod-IP connectivity works
 
 **Interventions:**
@@ -329,7 +324,6 @@ Expected output: If any NetworkPolicy selects the backend pods with `policyTypes
 
 **Indicators:**
 - root: [Step 8] a NetworkPolicy exists that selects the backend pods and has no `from` rule covering the client pod's namespace or labels
-  <!-- match: {"step": 8, "predicate": "contains", "target": "Ingress"} -->
 - s2: [Step 6] direct pod-IP curl times out (not connection refused)
 
 **Interventions:**
@@ -402,7 +396,6 @@ Expected output: If any NetworkPolicy selects the backend pods with `policyTypes
 
 **Indicators:**
 - root: [Step 6] `ss -tlnp` inside the pod shows no listener on `targetPort`, or a listener bound to `127.0.0.1`
-  <!-- match: {"step": 6, "predicate": "absent", "target": "0.0.0.0:<target-port>"} -->
 - s2: [Step 2] EndpointSlices are populated
 
 **Interventions:**

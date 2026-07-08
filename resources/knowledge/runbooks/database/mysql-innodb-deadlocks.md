@@ -155,7 +155,6 @@ Expected output: Cumulative counters. Record these values and re-run after 5 min
 - s1: [Step 1] Deadlock output shows Transaction 1 holding a lock on table/index X and waiting on table/index Y, while Transaction 2 holds on Y and waits on X.
 - root: [Step 1] The two SQL statements access the same set of tables in a different sequence.
 - s2: [Step 1] Deadlock output reports the circular hold/wait relationship.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "HOLDS THE LOCK(S)"} -->
 **Interventions:**
 - **remediation** (root): Ensure all code paths that write to multiple rows or tables do so in the same deterministic order (e.g., alphabetical by table, ascending by PK). Use stored procedures to enforce ordering when multiple code paths share the same data.
 
@@ -189,9 +188,7 @@ Expected output: Cumulative counters. Record these values and re-run after 5 min
 - D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
 **Indicators:**
 - s1: [Step 4] `lock_mode` values of `X,GAP` or `S,GAP` appear in `performance_schema.data_locks`.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "GAP"} -->
 - root: [Step 5] `@@GLOBAL.transaction_isolation` is `REPEATABLE-READ`.
-  <!-- match: {"step": 5, "predicate": "contains", "target": "REPEATABLE-READ"} -->
 - s2: [Step 1] Deadlock output contains `lock_mode X,GAP` or `lock_mode X locks gap before rec`.
 **Interventions:**
 - **remediation** (root): Persist `READ COMMITTED` in the server config so gap and next-key locks are not taken on range reads.
@@ -222,7 +219,6 @@ Expected output: Cumulative counters. Record these values and re-run after 5 min
 - D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
 **Indicators:**
 - s1: [Step 7] `EXPLAIN` shows `type: ALL` or `type: index` for the query from the deadlock output.
-  <!-- match: {"step": 7, "predicate": "contains", "target": "ALL"} -->
 - s2: [Step 7] `rows` estimate is a large fraction of the total table row count.
 **Interventions:**
 - **remediation** (root): Add a selective index on the filtered column so the query stops scanning (and locking) the whole table.
@@ -243,7 +239,6 @@ Expected output: Cumulative counters. Record these values and re-run after 5 min
 - D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
 **Indicators:**
 - root: [Step 6] Rows show `duration_sec` above 5 seconds with non-zero `trx_rows_locked`.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "duration_sec", "op": ">", "value": 5} -->
 - root: [Step 6] Rows show `trx_query = NULL` (idle-in-transaction) with high `duration_sec`.
 - s1: [Step 3] `blocking_query` is NULL for the blocking thread (idle-in-transaction).
 **Interventions:**
@@ -278,7 +273,6 @@ Expected output: Cumulative counters. Record these values and re-run after 5 min
 - D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
 **Indicators:**
 - s1: [Step 1] Deadlock output shows one transaction waiting on a shared lock (`lock_mode S`) on the parent table while another holds an exclusive lock on the same row.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "lock_mode S"} -->
 - s2: [Step 4] Parent table appears in granted locks with both `S` and `IX` mode entries from different transactions.
 **Interventions:**
 - **remediation** (root): Insert parent rows before child rows in all application code paths so FK validation never contends with a concurrent X lock.
@@ -314,7 +308,6 @@ Expected output: Cumulative counters. Record these values and re-run after 5 min
 - D: InnoDB detects the cycle and raises error 1213 (Symptom Recognition).
 **Indicators:**
 - s1: [Step 6] A transaction shows very high `trx_rows_modified` (thousands or more) and elevated `duration_sec`.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "trx_rows_modified", "op": ">", "value": 1000} -->
 - root: [Step 1] Deadlock output involves a query with no `WHERE` clause or a very broad range predicate.
 **Interventions:**
 - **remediation** (root): Break bulk operations into 500–1000 row transactions with COMMIT between batches to release locks and allow interleaving.

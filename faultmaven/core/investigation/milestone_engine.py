@@ -63,7 +63,6 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_status_changed_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
-    runbook_cause_matcher_errored_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
     CONTEXT_OVERFLOW_PHRASES,
@@ -6389,174 +6388,6 @@ class MilestoneEngine:
             current = metadata.get("system_feedback", "") or ""
             metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
 
-    async def _apply_runbook_cause_matcher(
-        self, case: "Case", updates: Any, metadata: dict[str, Any]
-    ) -> None:
-        """Flag-gated: match retrieved runbooks against the case and instantiate
-        the winning Cause's chain as CANDIDATE priors (+ a capped hypothesis),
-        before the LLM's own chain emission. A *prior, not a gate* — every
-        failure is swallowed so it can never break the turn.
-
-        Matching fires on the T2 semantic tier (``case_evidence_qa`` over the
-        case's vectorized evidence); the T1 deterministic tier stays inert
-        because FaultMaven investigates uploaded evidence rather than executing a
-        runbook's numbered steps, so there is no per-step output to resolve.
-        """
-        try:
-            from faultmaven.core.investigation.runbook_cause_matcher import (
-                is_runbook_match_hypothesis,
-            )
-
-            # Skip-guard (cost): the T2 match is LLM-heavy, so run it at most once
-            # per case — skip when the cause is already established, or a
-            # runbook-match hypothesis already exists for this case. The latter
-            # keys on the hypothesis rationale, which persists across turns, so
-            # the guard survives the case being reloaded between turns.
-            #
-            # Intentionally one-shot, even after a failed fix. The matcher seeds a
-            # structural PRIOR once; thereafter the case is driven by evidence. A
-            # failed fix DEMOTES the matched cause via the engine's counterfactual
-            # backstop (M6/R6) — it does NOT re-trigger the matcher, because
-            # re-expanding the search space after a refutation is the LLM's job
-            # (it proposes the next hypothesis), not a re-seed of the same runbook
-            # prior. Re-firing would re-instantiate the just-demoted chain and
-            # fight the demotion, so the guard has no cause_state filter on the
-            # hypothesis-exists branch by design.
-            if (
-                case.progress
-                and getattr(case.progress, "cause_state", None) == CauseState.IDENTIFIED
-            ):
-                return
-            if any(is_runbook_match_hypothesis(h) for h in case.hypotheses.values()):
-                return
-
-            adapter = (
-                self.investigation_tools.get("kb_qa")
-                if self.investigation_tools
-                else None
-            )
-            kb_tool = getattr(adapter, "wrapped", None)
-            if kb_tool is None or not hasattr(kb_tool, "aget_cause_matches"):
-                return
-            if self.knowledge_service is None or not hasattr(
-                self.knowledge_service, "get_runbook_causes"
-            ):
-                return
-
-            from faultmaven.core.investigation.indicator_evaluator import (
-                IndicatorEvaluator,
-            )
-            from faultmaven.core.investigation.runbook_cause_matcher import (
-                apply_runbook_cause_matcher,
-                build_case_evidence_fallback_text,
-            )
-
-            # T2 semantic resolver: a single-LLM-call yes/no over case evidence.
-            # T1 step-output stays None (FM has no runbook-step execution); with
-            # no case-evidence tool the evaluator simply abstains (verdict 'none').
-            ce_adapter = (
-                self.investigation_tools.get("case_evidence_search")
-                if self.investigation_tools
-                else None
-            )
-            ce_tool = getattr(ce_adapter, "wrapped", None)
-            case_evidence_qa = None
-            if ce_tool is not None and hasattr(ce_tool, "answer_yes_no"):
-                # Raw-evidence fallback (#543): case evidence is vectorized only in
-                # DA mode + above a size gate, so the T2 vector lookup is often
-                # empty and the matcher could never fire. Hand the tool the case's
-                # already-recorded Evidence rows to judge against when the vector
-                # collection is empty. Conservative: None when the case has no
-                # evidence, so the tool keeps its abstain-on-nothing behavior.
-                evidence_fallback = build_case_evidence_fallback_text(case)
-
-                async def case_evidence_qa(indicator_question: str) -> bool:
-                    return await ce_tool.answer_yes_no(
-                        indicator_question,
-                        scope_id=case.case_id,
-                        k=5,
-                        fallback_context=evidence_fallback,
-                    )
-
-            evaluator = IndicatorEvaluator(
-                step_output_resolver=lambda _step: None,
-                case_evidence_qa=case_evidence_qa,
-            )
-            question = (
-                getattr(case.problem_verification, "symptom_statement", None)
-                or case.description
-                or ""
-            )
-            if not question:
-                return
-            await apply_runbook_cause_matcher(
-                case,
-                kb_tool=kb_tool,
-                resolve_causes=self.knowledge_service.get_runbook_causes,
-                evaluator=evaluator,
-                question=question,
-                user_id=case.user_id,
-                team_ids=[],
-                # Top-1 runbook for the firing path → at most one candidate chain
-                # per case (bounds both LLM cost and graph pollution).
-                max_runbooks=1,
-                hypothesis_manager=self.hypothesis_manager,
-            )
-        except Exception as exc:  # noqa: BLE001 — a prior must never break the turn
-            runbook_cause_matcher_errored_total.inc()
-            logger.warning(
-                "Runbook cause matcher skipped for case %s: %s", case.case_id, exc
-            )
-
-    async def _run_differential_intake(
-        self, case: "Case", metadata: dict[str, Any]
-    ) -> None:
-        """Validate this turn's newly submitted data against the standing
-        differential: re-resolve each differential runbook's candidate causes
-        (a cheap DB read, no LLM), then check every new datum against their
-        expert-authored predicates, attaching authority-grounded node-evidence
-        links. A validation prior, never a gate — wrapped so it can't break the
-        turn, and inert until the matcher has established a differential source.
-        """
-        try:
-            from faultmaven.core.investigation.runbook_cause_matcher import (
-                differential_runbook_ids,
-                resolve_root,
-            )
-
-            runbook_ids = differential_runbook_ids(case)
-            if not runbook_ids:
-                return
-            if self.knowledge_service is None or not hasattr(
-                self.knowledge_service, "get_runbook_causes"
-            ):
-                return
-            added = set(metadata.get("evidence_added") or [])
-            if not added:
-                return
-            new_evidence = [e for e in case.evidence if e.evidence_id in added]
-            if not new_evidence:
-                return
-
-            from faultmaven.core.investigation.cause_schemas import build_cause_records
-            from faultmaven.core.investigation.intake_evaluation import (
-                run_differential_intake_turn,
-            )
-
-            await run_differential_intake_turn(
-                case,
-                new_evidence,
-                case.current_turn,
-                runbook_ids=runbook_ids,
-                resolve_causes=self.knowledge_service.get_runbook_causes,
-                build_records=build_cause_records,
-                resolve_root=resolve_root,
-            )
-        except Exception as exc:  # noqa: BLE001 — validation prior, never breaks turn
-            logger.warning(
-                "Differential intake skipped for case %s: %s", case.case_id, exc
-            )
-
     def _apply_chain_emission(
         self,
         case: "Case",
@@ -7385,15 +7216,6 @@ class MilestoneEngine:
                 f"(total: {len(case.investigation_journal)})"
             )
 
-        # Runbook Cause matcher (flag-gated, increment 4a): when a retrieved
-        # runbook's Cause matches this case, instantiate its chain as CANDIDATE
-        # priors BEFORE the LLM's emission, so both share the dedup/derive/
-        # recompute pass below. Off by default; inert until its resolvers land.
-        from faultmaven.config.settings import get_settings
-
-        if get_settings().features.enable_runbook_cause_matcher:
-            await self._apply_runbook_cause_matcher(case, updates, metadata)
-
         # Populate the causal graph from the LLM's emitted chain (lazy backward
         # expansion), then resolve any chain the LLM left unlinked. The graph is
         # always populated from the emitted chain; cause_state/M6 derive from the
@@ -7406,13 +7228,6 @@ class MilestoneEngine:
         # the LLM as a one-turn nudge (T2a) to re-root it or declare it
         # separate, rather than guessing.
         self._nudge_ambiguous_orphan_chains(case, metadata)
-
-        # Validate this turn's NEW data against the standing differential
-        # (authority-grounded runbook predicates vs. raw telemetry), attaching
-        # provenance-typed node-evidence links BEFORE the recompute below counts
-        # them. Runs every turn (the matcher seeds the differential once; this
-        # keeps later evidence from driving an unsupported cause to IDENTIFIED).
-        await self._run_differential_intake(case, metadata)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).

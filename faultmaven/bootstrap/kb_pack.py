@@ -81,8 +81,8 @@ class PackRunbook:
     team_id: Optional[str]
     chunks: List[PackChunk]
     # v4 per-Cause graph records (cause_letter/statement, chain_nodes/edges,
-    # rung_indicators, match_predicates, interventions, is_fallback_cause) for the
-    # runbook-cause matcher. Empty for older packs that predate the v4 record.
+    # rung_indicators, interventions, is_fallback_cause), stored verbatim on the
+    # knowledge item. Empty for older packs that predate the v4 record.
     causes: List[Dict[str, Any]] = field(default_factory=list)
 
 

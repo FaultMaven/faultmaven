@@ -52,11 +52,6 @@ def build_causal_graph_debug_payload(case: Any) -> dict:
             "root_node_id": getattr(h, "root_node_id", None),
             "path": getattr(h, "path", None),
             "generated_at_turn": getattr(h, "generated_at_turn", None),
-            # The runbook Cause matcher's firing signal: its seeded hypotheses
-            # carry a marker-prefixed rationale (RUNBOOK_MATCH_RATIONALE_PREFIX,
-            # "Instantiated from runbook …"). Exposing it lets the sim probe
-            # distinguish a matcher-seeded hypothesis from an LLM-emitted one
-            # (matcher firing, false-match, and capped-prior soundness checks).
             "rationale": getattr(h, "rationale", None),
         }
 

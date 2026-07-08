@@ -156,7 +156,6 @@ Expected output: two snapshots of interrupt counters. A single IRQ line incremen
 
 **Indicators:**
 - s2: [Step 2] same PID appears at or near 100% `%CPU` across all `pidstat` sample intervals.
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "cpu_pct", "op": ">", "value": 95} -->
 - root: [Step 5] `perf report` shows a single flat call chain with no blocking points (tight loop).
 
 **Interventions:**
@@ -193,7 +192,6 @@ Expected output: two snapshots of interrupt counters. A single IRQ line incremen
 
 **Indicators:**
 - s2: [Step 1] run queue `r` > CPU count across all `vmstat` intervals.
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "vmstat_r", "op": ">", "value": 8} -->
 - s1: [Step 3] `mpstat` shows all CPUs with `%usr` > 70% and `%idle` < 10%, with no single dominant process in Step 2.
 
 **Interventions:**
@@ -231,7 +229,6 @@ Expected output: two snapshots of interrupt counters. A single IRQ line incremen
 **Indicators:**
 - s2: [Step 3] `mpstat` aggregate `%sys` > 20% sustained.
 - s1: [Step 6] `perf report` on `syscalls:sys_enter` shows `futex` in top entries.
-  <!-- match: {"step": 6, "predicate": "contains", "target": "futex"} -->
 
 **Interventions:**
 - **mitigation** (s1): profile the futex syscalls to confirm and localize the contention before changing code.
@@ -266,7 +263,6 @@ Expected output: two snapshots of interrupt counters. A single IRQ line incremen
 
 **Indicators:**
 - s2: [Step 3] `mpstat -P ALL` shows one CPU with `%irq` + `%soft` > 50% while other CPUs show < 10% utilization.
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "cpu_irq_soft_pct", "op": ">", "value": 50} -->
 - s2: [Step 8] single IRQ line increments by >50,000 per 5-second interval in one CPU column.
 
 **Interventions:**
@@ -305,7 +301,6 @@ Expected output: two snapshots of interrupt counters. A single IRQ line incremen
 
 **Indicators:**
 - s2: [Step 7] `nr_throttled` count is non-zero and increasing across repeated reads of `cpu.stat`.
-  <!-- match: {"step": 7, "predicate": "contains", "target": "nr_throttled"} -->
 - s2: [Step 3] host-level `mpstat` shows available `%idle` > 20% (host is NOT saturated).
 
 **Interventions:**
@@ -341,7 +336,6 @@ Expected output: two snapshots of interrupt counters. A single IRQ line incremen
 
 **Indicators:**
 - s1: [Step 4] `perf stat -a -- sleep 5` shows IPC below 0.5 combined with LLC cache-miss rate above 10%.
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "ipc", "op": "<", "value": 0.5} -->
 - s2: [Step 2] process shows high `%usr` CPU in `pidstat` but application throughput remains low.
 
 **Interventions:**

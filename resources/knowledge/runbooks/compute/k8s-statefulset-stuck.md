@@ -118,8 +118,6 @@ Expected output: `clusterIP` must be `None`. `nslookup` must return the pod IP. 
 **Indicators:**
 - root: [Step 5] Container logs show application exception, panic, or non-zero exit on startup.
 - s1: [Step 4] Events show `Back-off restarting failed container` or `Readiness probe failed: ...`.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "Back-off restarting failed container"} -->
-  <!-- match: {"step": 4, "predicate": "contains", "target": "Readiness probe failed"} -->
 
 **Interventions:**
 - **remediation** (root): Fix the image or readiness probe, then re-apply.
@@ -157,9 +155,7 @@ Expected output: `clusterIP` must be `None`. `nslookup` must return the pod IP. 
 
 **Indicators:**
 - s1: [Step 6] `kubectl get pvc` shows a PVC in `Pending` state for the stuck pod.
-  <!-- match: {"step": 6, "predicate": "contains", "target": "Pending"} -->
 - root: [Step 6] `kubectl describe pvc <pvc>` Events show `no persistent volumes available for this claim` or `storageclass not found`.
-  <!-- match: {"step": 6, "predicate": "contains", "target": "no persistent volumes available"} -->
 
 **Interventions:**
 - **remediation** (root): Restore matching storage capacity, then resume the rollout.
@@ -202,7 +198,6 @@ Expected output: `clusterIP` must be `None`. `nslookup` must return the pod IP. 
 
 **Indicators:**
 - s1: [Step 7] `kubectl get pv <pv-name>` shows phase `Released`.
-  <!-- match: {"step": 7, "predicate": "contains", "target": "Released"} -->
 - s2: [Step 7] `kubectl get volumeattachments` shows a stale attachment for a deleted pod.
 
 **Interventions:**
@@ -238,8 +233,6 @@ Expected output: `clusterIP` must be `None`. `nslookup` must return the pod IP. 
 **Indicators:**
 - root: [Step 5] Init container logs show migration failure, connection refused to peer, or schema mismatch.
 - s1: [Step 4] Events show `Init:CrashLoopBackOff` or `Init:Error` in pod status.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "Init:CrashLoopBackOff"} -->
-  <!-- match: {"step": 4, "predicate": "contains", "target": "Init:Error"} -->
 
 **Interventions:**
 - **remediation** (root): Fix the init container image or command, then re-deploy.
@@ -274,7 +267,6 @@ Expected output: `clusterIP` must be `None`. `nslookup` must return the pod IP. 
 
 **Indicators:**
 - root: [Step 2] `kubectl get statefulset ... -o jsonpath='{.spec.updateStrategy.rollingUpdate.partition}'` returns a value > 0.
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "partition"} -->
 - s2: [Step 1] `updatedReplicas` equals `replicas - partition`, not `replicas`.
 
 **Interventions:**
@@ -301,7 +293,6 @@ Expected output: `clusterIP` must be `None`. `nslookup` must return the pod IP. 
 
 **Indicators:**
 - s1: [Step 3] Stuck pod shows phase `Terminating` for more than 10 minutes.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Terminating"} -->
 - root: [Step 4] `kubectl describe pod` shows `DeletionTimestamp` is set but pod is not gone; node may show `NotReady`.
 
 **Interventions:**
@@ -342,7 +333,6 @@ Expected output: `clusterIP` must be `None`. `nslookup` must return the pod IP. 
 
 **Indicators:**
 - root: [Step 8] `kubectl get svc <svc-name>` returns `Not Found`, or `clusterIP` is not `None`.
-  <!-- match: {"step": 8, "predicate": "absent", "target": "clusterIP: None"} -->
 - s1: [Step 8] `nslookup <pod-name>.<svc>.<ns>.svc.cluster.local` fails with `NXDOMAIN` or returns no address.
 
 **Interventions:**

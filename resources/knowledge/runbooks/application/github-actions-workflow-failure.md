@@ -114,7 +114,6 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 - root: [Step 3] On self-hosted runners, `free -m` shows available memory below 2 GB at the time of failure.
 - s1: [Step 2] Log line contains `Killed` or `OOMKilled`.
 - D: [Step 1] Log line contains `exit code 137`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "exit code 137"} -->
 
 **Interventions:**
 - **mitigation** (s1): Reduce per-process memory pressure so the OOM killer is not triggered.
@@ -151,7 +150,6 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 **Indicators:**
 - root: [Step 3] On self-hosted runners, `df -h /home/runner` shows disk usage above 90%.
 - D: [Step 2] Log line contains `No space left on device`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "No space left on device"} -->
 
 **Interventions:**
 - **mitigation** (root): Reclaim disk by removing pre-installed toolchains the workflow does not need before the build runs.
@@ -188,7 +186,6 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 **Indicators:**
 - root: [Step 5] A secret name referenced in the workflow YAML is absent from `gh secret list` (or the env-scoped `gh secret list --env production`) output.
 - s2: [Step 2] Log contains `SecretNotFound`, `invalid token`, or a 401/403 response from an external service.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "SecretNotFound"} -->
 
 **Interventions:**
 - **mitigation** (root): Set or correct the secret value (including its environment scope) so the next run resolves it.
@@ -226,7 +223,6 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 **Indicators:**
 - root: [Step 7] `gh api /rate_limit` shows `remaining` at or near 0 (the `GITHUB_TOKEN` default is 1,000 requests/hour), implicating throttling.
 - s1: [Step 2] Log contains `ETIMEDOUT`, `ECONNREFUSED`, or `HTTP 429`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "ETIMEDOUT"} -->
 - D: [Step 1] The failed step is a package install step (`npm ci`, `pip install`, `mvn install`, etc.).
 
 **Interventions:**
@@ -268,7 +264,6 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 **Indicators:**
 - s1: [Step 2] Log contains `timeout`, or the last line before termination is a network or wait command with no further output.
 - D: [Step 1] Log ends with `The job running on runner … has exceeded the maximum execution time`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "exceeded the maximum execution time"} -->
 
 **Interventions:**
 - **defensive_fix** (s1): Add explicit job- and step-level `timeout-minutes` so a hung step fails fast instead of consuming the full budget.
@@ -307,7 +302,6 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 **Indicators:**
 - root: [Step 8] No runner in the `gh api .../actions/runners` response has a label matching the job's `runs-on` value (or no runner is `"status": "online"`).
 - D: [Step 8] `gh run list --status=queued` shows the job stuck for more than 10 minutes.
-  <!-- match: {"step": 8, "predicate": "contains", "target": "queued"} -->
 
 **Interventions:**
 - **mitigation** (s1): Restart the self-hosted runner service so it re-registers and becomes eligible again.
@@ -341,7 +335,6 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 
 **Indicators:**
 - root: [Step 4] `actionlint` reports one or more errors with line numbers and descriptions (`unknown action`, `invalid expression`, `undefined output`).
-  <!-- match: {"step": 4, "predicate": "contains", "target": "error"} -->
 - D: [Step 1] The failed run shows an error before any job is assigned a runner.
 
 **Interventions:**
@@ -367,7 +360,6 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 
 **Indicators:**
 - root: [Step 6] The GitHub status API returns a `"status"` other than `"operational"` for an Actions component.
-  <!-- match: {"step": 6, "predicate": "absent", "target": "operational"} -->
 - s1: [Symptom] Multiple unrelated workflows across the repository fail simultaneously with no recent code changes.
 
 **Interventions:**

@@ -144,7 +144,6 @@ Expected output: either no NetworkPolicies in the affected namespace, or egress 
 
 **Indicators:**
 - root: [Step 1] pods show status other than `Running` with `READY 1/1`
-  <!-- match: {"step": 1, "predicate": "absent", "target": "Running"} -->
 - D: [Symptom] cluster-wide DNS failures affecting all namespaces simultaneously
 
 **Interventions:**
@@ -179,7 +178,6 @@ Expected output: either no NetworkPolicies in the affected namespace, or egress 
 **Indicators:**
 - root: [Step 6] Corefile contains `forward . /etc/resolv.conf` and node `/etc/resolv.conf` contains `127.0.0.53` or `127.0.0.1`
 - s2: [Step 2] log line `plugin/loop: Loop ... detected for zone "."` or `[FATAL] plugin/loop: Loop detected`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Loop"} -->
 
 **Interventions:**
 - **remediation** (root): point the forwarder at explicit upstream resolvers and reload.
@@ -215,7 +213,6 @@ Expected output: either no NetworkPolicies in the affected namespace, or egress 
 
 **Indicators:**
 - root: [Step 2] log line `plugin/kubernetes: failed to list *v1.Service` or `plugin/kubernetes: failed to list *v1.EndpointSlice`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "failed to list"} -->
 - s2: [Step 3] internal `nslookup kubernetes.default` returns `SERVFAIL`; external `nslookup google.com` succeeds
 
 **Interventions:**
@@ -255,7 +252,6 @@ Expected output: either no NetworkPolicies in the affected namespace, or egress 
 
 **Indicators:**
 - root: [Step 4] `/etc/resolv.conf` shows `options ndots:` value less than `5`
-  <!-- match: {"step": 4, "predicate": "absent", "target": "ndots:5"} -->
 - s2: [Step 3] `nslookup my-service` fails but `nslookup my-service.default.svc.cluster.local` succeeds
 - D: [Symptom] only certain pods fail DNS resolution while others in the same cluster succeed
 
@@ -296,7 +292,6 @@ Expected output: either no NetworkPolicies in the affected namespace, or egress 
 **Indicators:**
 - root: [Step 7] `nf_conntrack_count` at or near `nf_conntrack_max`
 - s1: [Step 7] `dmesg` contains `nf_conntrack: table full, dropping packet`
-  <!-- match: {"step": 7, "predicate": "contains", "target": "nf_conntrack: table full"} -->
 - D: [Symptom] intermittent DNS timeouts with no corresponding errors in CoreDNS logs
 
 **Interventions:**
@@ -338,7 +333,6 @@ Expected output: either no NetworkPolicies in the affected namespace, or egress 
 
 **Indicators:**
 - root: [Step 8] NetworkPolicy with `policyTypes: [Egress]` exists in the affected namespace and has no `port: 53` allowance
-  <!-- match: {"step": 8, "predicate": "contains", "target": "Egress"} -->
 - s1: [Step 3] DNS resolution fails from an affected pod but succeeds from a pod in a different namespace without NetworkPolicies
 
 **Interventions:**
@@ -403,7 +397,6 @@ Expected output: either no NetworkPolicies in the affected namespace, or egress 
 **Indicators:**
 - root: [Step 6] `forward` directive specifies IPs that are not reachable from the node network
 - s1: [Step 3] `nslookup google.com` returns `SERVFAIL` or times out; `nslookup kubernetes.default` succeeds
-  <!-- match: {"step": 3, "predicate": "contains", "target": "SERVFAIL"} -->
 - s1: [Step 2] log line `plugin/forward: no nameservers found` or upstream timeout errors
 
 **Interventions:**

@@ -158,7 +158,6 @@ Expected output: measured `iperf3` bitrate well above the primary's WAL generati
 - D: the standby serves stale data and `replay_lag` exceeds the SLO
 **Indicators:**
 - root: [Step 7] recovery / `startup` process at or near 100% on its core, or sustained `%iowait > 30%` on the data volume
-  <!-- match: {"step": 7, "predicate": "threshold", "target": "iowait_pct", "op": ">", "value": 30} -->
 - s1: [Step 1] `replay_backlog_bytes` grows while `flush_backlog_bytes` stays small
 - s2: [Step 2] `receive_to_replay_bytes` increases over successive samples
 **Interventions:**
@@ -194,7 +193,6 @@ Expected output: measured `iperf3` bitrate well above the primary's WAL generati
 - D: primary `pg_wal/` fills toward the disk limit; any replica reusing the slot starts far behind (or the slot is invalidated and must be rebuilt)
 **Indicators:**
 - root: [Step 4] one or more rows with `active = false` and `retained_bytes` in the hundreds of MB or more
-  <!-- match: {"step": 4, "predicate": "contains", "target": "active = false"} -->
 - s2: [Step 4] `wal_status` is `'extended'` (or `'lost'` if already invalidated)
 - D: [Symptom] primary `pg_wal/` directory growing without bound
 **Interventions:**
@@ -234,7 +232,6 @@ Expected output: measured `iperf3` bitrate well above the primary's WAL generati
 - D: `replay_age` on the replica grows during each gap and `pg_wal/` accumulates on the primary while the slot holds WAL
 **Indicators:**
 - s1: [Step 3] `status` not equal to `'streaming'`, or `since_last_message` greater than `wal_receiver_status_interval`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "status"} -->
 - root: [Step 8] `iperf3` bitrate close to or below WAL generation rate, or non-zero TCP retransmits
 - s2: [Symptom] replica log contains `terminating walreceiver due to timeout` or `could not receive data from WAL stream`
 **Interventions:**
@@ -278,7 +275,6 @@ Expected output: measured `iperf3` bitrate well above the primary's WAL generati
 - D: replay backlog grows and `replay_lag` exceeds the SLO
 **Indicators:**
 - root: [Step 5] `confl_snapshot` or `confl_bufferpin` increasing across samples
-  <!-- match: {"step": 5, "predicate": "contains", "target": "confl_snapshot"} -->
 - s2: [Step 1] `replay_backlog_bytes` grows while `flush_backlog_bytes` stays near 0
 - s1: [Step 7] recovery process CPU is low (it is sleeping on the conflict, not working)
 **Interventions:**
@@ -316,7 +312,6 @@ Expected output: measured `iperf3` bitrate well above the primary's WAL generati
 - D: `replay_lag` stays elevated and risks pushing the slot past `max_slot_wal_keep_size` invalidation
 **Indicators:**
 - root: [Step 6] primary `bytes_per_sec` step-changes well above its OLTP baseline
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "primary_wal_bytes_per_sec", "op": ">", "value": 10000000} -->
 - s2: [Step 1] `replay_backlog_bytes` rises sharply, correlated with a known migration or import on the primary
 - s1: [Step 7] replica recovery process is busy but bounded; `%iowait` is moderate, not pinned
 **Interventions:**
@@ -357,7 +352,6 @@ Expected output: measured `iperf3` bitrate well above the primary's WAL generati
 - D: application commit latency rises in lockstep even though asynchronous replicas are healthy
 **Indicators:**
 - root: [Step 1] `sync_state` is `'sync'` or `'quorum'` on the lagging replica
-  <!-- match: {"step": 1, "predicate": "contains", "target": "sync"} -->
 - s1: [Step 1] `flush_lag` or `replay_lag` on the synchronous standby is well above SLO
 - s2: [Symptom] primary commit latency p95 rises in lockstep with replica `flush_lag`
 **Interventions:**

@@ -111,12 +111,9 @@ Expected output: rows for the VM size with a `Restrictions` column. An entry of 
 - D: the upgrade operation fails with UpgradeFailed / PodDrainFailure
 **Indicators:**
 - root: [Step 2] a PDB shows `ALLOWED DISRUPTIONS` of `0`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "0"} -->
 - s1: [Step 2] events contain "Eviction blocked by Too Many Requests (usually a pdb)"
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Eviction blocked by Too Many Requests"} -->
 - s2: [Symptom] error contains "Cannot evict pod as it would violate the pod's disruption budget"
 - D: [Step 1] provisioningState is `Failed`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Failed"} -->
 **Interventions:**
 - **remediation** (root): Raise the workload's replica count or relax the PDB so `ALLOWED DISRUPTIONS` is at least 1, then re-run the upgrade to trigger reconciliation of the failed cluster.
 
@@ -147,7 +144,6 @@ Expected output: rows for the VM size with a `Restrictions` column. An entry of 
 - D: the upgrade operation fails with QuotaExceeded / ErrCode_InsufficientVCPUQuota
 **Indicators:**
 - root: [Step 3] `az vm list-usage` shows `CurrentValue` at/near `Limit` for the node's VM family or Total Regional vCPUs
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Total Regional vCPUs"} -->
 - s1: [Symptom] error contains "exceeding approved" cores quota or "Insufficient vcpu quota"
 - s2: [Step 5] a high `maxSurge` increases the surge-node vCPU demand
 - D: [Symptom] error code is `QuotaExceeded` or `ErrCode_InsufficientVCPUQuota`
@@ -184,7 +180,6 @@ Expected output: rows for the VM size with a `Restrictions` column. An entry of 
 **Indicators:**
 - root: [Step 4] consumed IPs leave fewer than the surge requirement free in the subnet prefix
 - s1: [Symptom] error contains "doesn't have enough capacity for IP addresses"
-  <!-- match: {"step": 4, "predicate": "threshold", "op": "lt", "value": 5} -->
 - s2: [Symptom] error contains "VMSSAgentPoolReconciler retry failed"
 - D: [Symptom] error code is `SubnetIsFull`
 **Interventions:**
@@ -221,7 +216,6 @@ Expected output: rows for the VM size with a `Restrictions` column. An entry of 
 - D: the upgrade operation fails with an allocation error code
 **Indicators:**
 - root: [Step 6] `az vm list-skus` shows the size restricted (e.g. `NotAvailableForSubscription`) or zone-restricted in the region
-  <!-- match: {"step": 6, "predicate": "contains", "target": "NotAvailableForSubscription"} -->
 - s1: [Symptom] error contains "We do not have sufficient capacity for the requested VM size in this zone"
 - s2: [Step 1] provisioningState is `Failed`
 - D: [Symptom] error code is `ZonalAllocationFailed`, `AllocationFailed`, or `OverconstrainedAllocationRequest`

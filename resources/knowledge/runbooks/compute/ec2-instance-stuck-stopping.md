@@ -95,7 +95,6 @@ Expected output: CPU utilization percentages for the last 2 hours. Sustained val
 **Indicators:**
 - s2: [Step 2] `SystemStatus` is `failed`.
 - s2: [Step 2] `Events` contains an `instance-retirement` or `system-maintenance` event.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "instance-retirement"} -->
 
 **Interventions:**
 - **mitigation** (root): force-stop the instance to power it off without a clean host shutdown.
@@ -127,7 +126,6 @@ Expected output: CPU utilization percentages for the last 2 hours. Sustained val
 
 **Indicators:**
 - s1: [Step 4] Console output contains `A stop job is running for` followed by a service name.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "A stop job is running for"} -->
 - s1: [Step 4] Console output contains `Waiting for NFS` or a network mount name.
 - root: [Step 5] CPU utilization was low before the stop, ruling out a compute-related timeout.
 
@@ -165,7 +163,6 @@ Expected output: CPU utilization percentages for the last 2 hours. Sustained val
 
 **Indicators:**
 - root: [Step 3] Any volume shows `Status: impaired`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "impaired"} -->
 - root: [Step 5] Pre-stop `CPUUtilization` shows normal levels but EBS I/O metrics show high activity.
 
 **Interventions:**
@@ -204,7 +201,6 @@ Expected output: CPU utilization percentages for the last 2 hours. Sustained val
 
 **Indicators:**
 - root: [Step 1] `RootDeviceType` is `instance-store`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "instance-store"} -->
 
 **Interventions:**
 - **remediation** (root): terminate the instance, since stop is unsupported for instance store roots.

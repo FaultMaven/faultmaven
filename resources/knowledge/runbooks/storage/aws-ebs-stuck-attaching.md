@@ -105,7 +105,6 @@ Expected output: `AttachVolume` or `DetachVolume` events; inspect the `CloudTrai
 
 **Indicators:**
 - root: [Step 3] `mount | grep` shows the device is still mounted (e.g., `/dev/xvdf on /mnt/data type xfs`)
-  <!-- match: {"step": 3, "predicate": "contains", "target": "/mnt/data"} -->
 - s1: [Step 3] `lsof +D /mnt/data` or `fuser -vm /mnt/data` lists active PIDs with open file handles
 - D: [Step 1] `AttachState` is `detaching` or `busy` with `AttachTime` more than 5 minutes in the past
 
@@ -145,7 +144,6 @@ Expected output: `AttachVolume` or `DetachVolume` events; inspect the `CloudTrai
 
 **Indicators:**
 - root: [Step 2] `SystemCheck` or `InstanceCheck` shows `impaired`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "impaired"} -->
 - root: [Step 2] `Events` lists an `instance-retirement` or `system-maintenance` event
 - s1: [Step 4] Console output shows `nvme: I/O timeout` or kernel panics
 - D: [Step 1] Volume `AttachState` is `attaching`/`detaching` and not progressing
@@ -185,9 +183,7 @@ Expected output: `AttachVolume` or `DetachVolume` events; inspect the `CloudTrai
 
 **Indicators:**
 - root: [Step 5] `nvme list` does not show the expected volume (identified by serial number matching the volume ID)
-  <!-- match: {"step": 5, "predicate": "absent", "target": "vol-"} -->
 - s1: [Step 4] Console output contains `nvme: I/O timeout` or `nvme nvme0: controller is down`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "nvme: I/O timeout"} -->
 - D: [Step 1] Volume `AttachState` is `attaching` and has not progressed in more than 10 minutes on a Nitro instance type
 
 **Interventions:**
@@ -225,7 +221,6 @@ Expected output: `AttachVolume` or `DetachVolume` events; inspect the `CloudTrai
 **Indicators:**
 - root: [Step 1] Volume `AttachState` is `attaching` with `Device: /dev/sdf` and the same device is visible in `lsblk` mapped to a different volume
 - s1: [Step 6] CloudTrail `AttachVolume` event contains `errorCode: AttachmentLimitExceeded` or the `Device` parameter matches a device already listed in `describe-instances` block device mappings
-  <!-- match: {"step": 6, "predicate": "contains", "target": "AttachmentLimitExceeded"} -->
 
 **Interventions:**
 - **remediation** (root): Force-detach the stuck volume and re-attach using a verified-free device name.
@@ -259,10 +254,8 @@ Expected output: `AttachVolume` or `DetachVolume` events; inspect the `CloudTrai
 
 **Indicators:**
 - root: [Step 2] `InstanceState` is `stopped`, `terminated`, or `shutting-down`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "stopped"} -->
 - s1: [Step 4] Console output is empty or shows a crashed/panicked OS
 - D: [Step 1] Volume `AttachState` has been `detaching` for more than 15 minutes
-  <!-- match: {"step": 1, "predicate": "contains", "target": "detaching"} -->
 
 **Interventions:**
 - **remediation** (root): After a snapshot-protected force detach, run a filesystem check before remounting to confirm integrity.
@@ -301,9 +294,7 @@ Expected output: `AttachVolume` or `DetachVolume` events; inspect the `CloudTrai
 
 **Indicators:**
 - root: [Step 6] CloudTrail contains `errorCode: RequestLimitExceeded` or `Throttling` on `AttachVolume`/`DetachVolume` events within the same 5-minute window
-  <!-- match: {"step": 6, "predicate": "contains", "target": "RequestLimitExceeded"} -->
 - s1: [Step 6] Multiple volumes on the same account show `attaching`/`detaching` simultaneously
-  <!-- match: {"step": 6, "predicate": "contains", "target": "Throttling"} -->
 
 **Interventions:**
 - **remediation** (root): Implement exponential backoff with jitter in all volume-management automation; target fewer than 5 concurrent attach/detach calls per region.

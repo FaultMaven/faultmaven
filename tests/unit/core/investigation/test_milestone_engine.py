@@ -142,19 +142,19 @@ def _make_resolution_ready(case):
     return case
 
 
-def _ground_root_in_runbook(
+def _ground_root_deductively(
     case,
     evidence_id="ev_d00dfeed0001",
     node_id="cn_d00dfeed0001",
 ):
-    """Add a runbook-grounded VALIDATED ROOT so the case clears the §7 harvest bar.
+    """Add a deductively VALIDATED ROOT so the case clears the §7 harvest bar.
 
-    ``cause_is_runbook_grounded`` requires at least one VALIDATED root borne out by
-    a ``runbook``-provenance SUPPORTS link (a deterministic expert predicate that
-    fired against the telemetry) before a cause may auto-seed reusable knowledge
-    (#590 A1). A bare ``RootCauseConclusion`` — LLM prose with no validated root —
-    is NOT grounded and is held back from harvest. Appends (does not replace) so a
-    caller can set other evidence first.
+    ``grade_cause_assurance`` requires at least one VALIDATED root with a
+    DEDUCTIVE derivation (proof-by-exclusion, §7.1.1) before a cause may
+    auto-seed reusable knowledge (#590 A1). A bare ``RootCauseConclusion`` —
+    LLM prose with no validated root — is NOT grounded and is held back from
+    harvest. Appends (does not replace) so a caller can set other evidence
+    first.
     """
     from faultmaven.modules.case.contracts import (
         CausalNode,
@@ -173,7 +173,7 @@ def _ground_root_in_runbook(
             evidence_id=evidence_id,
             category=EvidenceCategory.CAUSAL_EVIDENCE,
             primary_purpose="diagnosis",
-            summary="runbook predicate matched the submitted telemetry",
+            summary="causal evidence bearing on the surviving cause",
             extract="pool: 0 idle / 0 free",
             source_type=EvidenceSourceType.LOGS,
             source_file_id="file_aabb12345678",
@@ -186,7 +186,7 @@ def _ground_root_in_runbook(
         statement="connection pool exhausted",
         node_type=NodeType.ROOT,
         node_state=NodeState.VALIDATED,
-        validation_method=ValidationMethod.EMPIRICAL,
+        validation_method=ValidationMethod.DEDUCTIVE,
         actionable=True,
         belief=0.8,
         generated_at_turn=1,
@@ -194,8 +194,7 @@ def _ground_root_in_runbook(
             NodeEvidenceLink(
                 evidence_id=evidence_id,
                 stance=EvidenceStance.SUPPORTS,
-                reasoning="runbook predicate fired",
-                provenance="runbook",
+                reasoning="sole surviving cause after exclusion",
                 linked_at_turn=1,
             )
         ],
@@ -1566,17 +1565,17 @@ class TestReadinessAssessments:
                 collected_at_turn=1,
             )
         ]
-        # A harvestable cause must be runbook-grounded (#590 A1), not bare RCC prose.
-        _ground_root_in_runbook(case)
+        # A harvestable cause must be GROUNDED (#590 A1), not bare RCC prose.
+        _ground_root_deductively(case)
         result = assess_runbook_readiness(case)
         assert result.verdict == result.READY
 
     def test_runbook_readiness_not_suitable_when_cause_validation_is_fallback_only(
         self,
     ):
-        """An otherwise-READY case whose cause was validated ONLY by lower-assurance
-        LLM-authored (llm_fallback) support is held back from runbook harvesting —
-        an unverified cause must not auto-seed reusable knowledge."""
+        """An otherwise-READY case whose cause was validated only EMPIRICALLY
+        (LLM-mediated, no deductive derivation) is held back from runbook
+        harvesting — an unverified cause must not auto-seed reusable knowledge."""
         from faultmaven.core.investigation.terminal_transitions import (
             assess_runbook_readiness,
         )
@@ -1612,7 +1611,7 @@ class TestReadinessAssessments:
                 verification_method="Check p99 latency < 500ms for 30 min",
             )
         ]
-        # The root validated empirically, but only off an llm_fallback support.
+        # The root validated empirically — never deductively grounded.
         case.evidence = [
             Evidence(
                 evidence_id="ev_aaaaaaaaaaaa",
@@ -1641,7 +1640,6 @@ class TestReadinessAssessments:
                         evidence_id="ev_aaaaaaaaaaaa",
                         stance=EvidenceStance.SUPPORTS,
                         reasoning="pool metrics",
-                        provenance="llm_fallback",
                         linked_at_turn=1,
                     )
                 ],
@@ -1739,7 +1737,7 @@ class TestReadinessAssessments:
         # Cause must be runbook-grounded to be harvestable at all (#590 A1); the
         # enrichment verdict then turns on the thin solution (no mitigation, no
         # verification method).
-        _ground_root_in_runbook(case)
+        _ground_root_deductively(case)
         result = assess_runbook_readiness(case)
         assert result.verdict == result.NEEDS_ENRICHMENT
 
@@ -1942,7 +1940,7 @@ class TestRunbookSuggestion:
             )
         ]
         # A suggestible cause must be runbook-grounded (#590 A1).
-        _ground_root_in_runbook(case)
+        _ground_root_deductively(case)
 
         result = await evaluate_runbook_suggestion(case, runbook_kb=None)
         assert result.verdict == RunbookSuggestion.SUGGEST
@@ -1981,7 +1979,7 @@ class TestRunbookSuggestion:
         _make_resolution_ready(case)
         case.solutions[0].commands = ["kubectl edit configmap"]
         # A suggestible cause must be runbook-grounded (#590 A1).
-        _ground_root_in_runbook(case)
+        _ground_root_deductively(case)
 
         # Mock runbook_kb that returns a high-similarity match
         mock_kb = AsyncMock()

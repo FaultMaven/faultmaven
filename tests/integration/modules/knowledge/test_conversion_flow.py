@@ -855,10 +855,9 @@ class TestConversionEdgeCases:
         assert "not available" in response.json()["detail"].lower()
 
 
-def _resolved_case_with_root(provenance):
-    """A minimal RESOLVED case whose single VALIDATED root carries one
-    CAUSAL_EVIDENCE SUPPORTS link with the given provenance — sound iff
-    provenance=='runbook'."""
+def _resolved_case_with_root(method):
+    """A minimal RESOLVED case whose single VALIDATED root was validated with the
+    given method — sound (GROUNDED) iff the method is DEDUCTIVE."""
     from types import SimpleNamespace
 
     from faultmaven.modules.case.contracts import (
@@ -887,7 +886,7 @@ def _resolved_case_with_root(provenance):
         statement="connection pool exhausted",
         node_type=NodeType.ROOT,
         node_state=NodeState.VALIDATED,
-        validation_method=ValidationMethod.EMPIRICAL,
+        validation_method=ValidationMethod(method),
         actionable=True,
         belief=0.7,
         generated_at_turn=1,
@@ -896,7 +895,6 @@ def _resolved_case_with_root(provenance):
                 evidence_id="ev_aaaaaaaaaaaa",
                 stance=EvidenceStance.SUPPORTS,
                 reasoning="pool metrics",
-                provenance=provenance,
                 linked_at_turn=1,
             )
         ],
@@ -943,15 +941,15 @@ def _resolved_case_no_graph():
 
 
 class TestConvertFromCaseSoundnessGate:
-    """§7: the API conversion path must enforce the same authority-grounded harvest
-    bar as the chat-side, so an LLM-asserted (never runbook-grounded) cause can't
+    """§7: the API conversion path must enforce the same GROUNDED harvest bar as
+    the chat-side, so an LLM-asserted (never deductively grounded) cause can't
     seed the KB."""
 
     @pytest.mark.asyncio
     async def test_rejects_fallback_only_cause(self, app_with_user):
         app = app_with_user
         app.state.case_repository = MagicMock(
-            get_by_id=AsyncMock(return_value=_resolved_case_with_root(None))
+            get_by_id=AsyncMock(return_value=_resolved_case_with_root("empirical"))
         )
         async with await _client(app) as client:
             resp = await client.post(
@@ -959,7 +957,7 @@ class TestConvertFromCaseSoundnessGate:
                 json={"case_id": "case_aaaaaaaaaaaa", "scope": "personal"},
             )
         assert resp.status_code == 422
-        assert "runbook-grounded" in resp.json()["detail"]
+        assert "deductively validated" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_rejects_cause_with_no_validated_root(self, app_with_user):
@@ -975,10 +973,10 @@ class TestConvertFromCaseSoundnessGate:
                 json={"case_id": "case_bbbbbbbbbbbb", "scope": "personal"},
             )
         assert resp.status_code == 422
-        assert "runbook-grounded" in resp.json()["detail"]
+        assert "deductively validated" in resp.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_allows_runbook_grounded_cause(
+    async def test_allows_deductively_grounded_cause(
         self, app_with_user, mock_conversion_service
     ):
         mock_conversion_service.convert_from_case = AsyncMock(
@@ -986,7 +984,7 @@ class TestConvertFromCaseSoundnessGate:
         )
         app = app_with_user
         app.state.case_repository = MagicMock(
-            get_by_id=AsyncMock(return_value=_resolved_case_with_root("runbook"))
+            get_by_id=AsyncMock(return_value=_resolved_case_with_root("deductive"))
         )
         async with await _client(app) as client:
             resp = await client.post(

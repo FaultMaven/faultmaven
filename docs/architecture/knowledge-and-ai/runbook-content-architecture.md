@@ -132,7 +132,7 @@ Chunking parameters (implemented in `kb_toolkit/core/chunker.py`):
 | Min chunk size | 100 characters | Tiny sections merged with adjacent section |
 | Fallback | Sentence-boundary splitting | For structureless text without headers |
 | Frontmatter | Stripped before chunking | Metadata stored separately in ChromaDB, not embedded |
-| HTML comments | Stripped before chunking | Predicate hints lifted to per-Cause metadata (see [runbook-cause-matching.md §6](../investigation-engine/runbook-cause-matching.md#6-where-the-cause-graph-structure-lives)) |
+| HTML comments | Stripped before chunking | Comments never reach the embedding; per-Cause structure is lifted to metadata (see [kb-pack-architecture.md](./kb-pack-architecture.md)) |
 
 This means:
 
@@ -159,139 +159,35 @@ express the conjunction by its kind:
 
 - **Causally sequential** (one condition enables the other) → make them `Chain`
   rungs (`root → s1 → D`), so the chain topology carries the conjunction. Prefer
-  this whenever an ordering exists. (The chain is a *prior, not a gate* — it is
-  instantiated into the case graph as a CANDIDATE, never VALIDATED without case
-  evidence. The **durable** guarantee is that a matcher-seeded node only becomes
-  VALIDATED — and so drives `cause_state` to IDENTIFIED — through real case
-  evidence, never from the runbook itself, and `cause_state` is engine-derived +
-  counterfactual-backstopped (a failed fix demotes the cause). The capped prior
-  (≤ 0.5) is the matcher's *initial* belief, just enough to keep the firing turn
-  from jumping the cause-identified gate — **not** a permanent ceiling (the engine
-  clamps belief to `[0, 1]` only; the contract is LLM-grounded + counterfactual,
-  not a static cap). Soundness therefore rests on CANDIDATE-never-VALIDATED-
-  without-evidence + the cause-state / M5 gates + the failed-fix backstop, **not**
-  on the runbook's structure or per-rung matching. See "Match surface" below.
-  *Cross-cause convergence* — a `Chain` rung's `converges:` directive that points
-  at **another Cause's** node — is an authoring annotation only: the matcher
-  instantiates one Cause's chain at a time, so a cross-cause `converges:` ref does
-  not resolve and is dropped at instantiation. Express genuine shared downstream
-  states within a single Cause's chain; do not rely on cross-cause convergence
-  being reconstructed in the case graph.)
+  this whenever an ordering exists. (The chain is a *prior, not a gate* — a
+  runbook-suggested cause enters the case graph as a CANDIDATE, never VALIDATED
+  without case evidence, and `cause_state` is engine-derived +
+  counterfactual-backstopped: a failed fix demotes the cause. Express genuine
+  shared downstream states within a single Cause's chain; do not rely on
+  cross-cause convergence being reconstructed in the case graph.)
 - **Genuinely parallel** (neither condition causes the other, both simply
   required) → fold the co-necessary condition into the single root `Statement`
   and give each fix its own quadrant-tagged intervention. **The `Statement` must
-  name *both* folded conditions at symptom level** — since the `Statement` is the
-  match surface (see "Match surface" below), holistic matching then only confirms
-  the cause when *both* conditions are evidenced. A `Statement` that names only
-  one condition would match on partial evidence — the exact false conclusion the
-  fold exists to prevent.
+  name *both* folded conditions at symptom level** — a `Statement` that names
+  only one condition invites confirming the cause on partial evidence, the exact
+  false conclusion the fold exists to prevent.
 
 The engine's `and_group` AND-machinery exists for conjunctions the *engine* forms
 at runtime; runbooks do not pre-author them. This keeps each Cause one
 validate/refute/demote unit and maps cleanly to the engine's single-root
 `Hypothesis`.
 
-### Match surface vs validation surface — `Statement` matches, predicates validate
+Two `Statement` invariants are load-bearing and validator-enforced: **the
+`Statement` must be symptom-level** (it describes *what the evidence would show*
+— the observable failure and its mechanism — not what an operator would run or
+an internal API field), and **sibling cause `Statement`s must be mutually
+discriminative (MECE, with teeth)** — each sibling distinguishable from the
+others from case evidence alone.
 
-> **⚠️ NOT ADOPTED — NO-GO 2026-07-08 (human sign-off).** The `<!-- match -->`
-> **predicate / validation-surface layer described in this subsection is retired.**
-> The deterministic runbook-cause-matcher it feeds was ruled out: the soundness
-> guarantees are held by the LLM+RAG path + insufficient-evidence handoff
-> (`project` verification-status §5b), the live sim showed no collapse the arm
-> uniquely prevents, and issue **#656** showed the arm is directionally *harmful*
-> (it adds a second auto-firing path into the over-validation gate that produced a
-> wrong conclusion). **The runbook structure is `Statement` + `Chain` +
-> `Interventions` only; predicates are a rejected alternative.** The shipped
-> corpus already carries **zero** `<!-- match -->` blocks. The prose below is
-> retained pending the code decommission (matcher module, flag, differential-intake,
-> `<!-- match -->` grammar) — after which this subsection collapses to the single
-> match rule (`Statement` symptom-level + sibling-MECE) and this note is removed.
-> Do **not** author predicates.
-
-A Cause has **three** distinct jobs, and they run on **different surfaces**:
-
-1. **Matching** (does this cause explain the case?) is judged holistically over
-   the Cause's **symptom-level description** — its name + `Statement` +
-   non-problem chain prose. The `Statement` is the **load-bearing match
-   surface**: matching is a semantic judgment over it, the same way the engine's
-   signature screen (F3) and cause identity are LLM judgments, not token-matches.
-   How the engine computes the match is the matching spec's concern — see
-   [runbook-cause-matching.md](../investigation-engine/runbook-cause-matching.md).
-2. **Instantiation** (once matched) seeds the chain **topology** (nodes/edges)
-   into the case causal graph as a **CANDIDATE prior** — never VALIDATED without
-   case evidence. Keep topology richly structured; that is its value.
-3. **Validation** (does a submitted datum support or refute this cause?) is the
-   job of the `<!-- match -->` **predicates**. The differential-intake loop
-   evaluates each piece of submitted telemetry against the predicates of every
-   candidate Cause; a firing predicate yields a deterministic SUPPORTS/REFUTES
-   that moves the cause toward — or away from — `IDENTIFIED`. This is the
-   **load-bearing validation surface**, and the *sound* tier: an expert-authored
-   runbook predicate against trusted telemetry outranks the LLM's own
-   self-authored predicate (the labeled lower-assurance fallback).
-
-**`Statement` matches; predicates validate — two different surfaces, not a
-hierarchy.** Predicates carry **no matching weight**: FaultMaven retrieves and
-matches a Cause holistically over its symptom-level `Statement`, never over
-operator/tool-output-level predicates, so the matching signal must still live in
-the `Statement`. But predicates are **not inert** — once a Cause is a candidate,
-its predicates are the deterministic check that submitted evidence bears it out.
-A Cause with a strong `Statement` but no predicates still *matches*; it simply
-falls back to the lower-assurance LLM tier for *validation*. (This supersedes the
-earlier framing of predicates as an inert "opportunistic fast-path.")
-
-Four authoring invariants follow. The first two govern the **match surface**
-(`Statement`); the last two govern the **validation surface** (predicates). The
-validator/generator enforce the `Statement` rules; the predicate rules are an
-authoring discipline (see the Predicate-Coverage Authoring campaign).
-
-- **The `Statement` must be symptom-level.** It describes *what the evidence
-  would show* (the observable failure and its mechanism), not what an operator
-  would run or an internal API field. Because the `Statement` is the sole match
-  surface, a tool-output-phrased or vague `Statement` makes the Cause silently
-  under-fire. The validator checks the `Statement` itself, not merely that
-  `Indicators` exist.
-- **Sibling cause `Statement`s must be mutually discriminative (MECE, with
-  teeth).** Holistic matching judges each Cause independently, so if two sibling
-  `Statement`s overlap, the matcher answers YES to both → verdict `multiple` →
-  it abstains and instantiates nothing. MECE on the OR-roots is therefore
-  load-bearing, not just conceptual hygiene: each sibling `Statement` must be
-  distinguishable from the others from case evidence alone.
-- **Predicates are content-addressed, not step-addressed.** A predicate is
-  evaluated against the *submitted datum* — the trusted preprocessing digest of
-  whatever the user uploads — not against a numbered Diagnostic Step's output
-  (FaultMaven does not execute runbook steps). The `step` key in a `<!-- match -->`
-  block is **provenance/agenda only** (which step would surface this signal); it
-  is *not* an evaluation key. Author the `target`/`op`/`value` to fire against the
-  symptom-level content the evidence actually contains, not a step's tool output.
-- **Predicates evaluate under subset-trust, and sibling predicates must be MECE.**
-  The validator sees the preprocessing *digest* (the crime-scene/error excerpt),
-  not the whole raw file: a **present** substring/value is decisive, but an
-  **absent** one is `untested` — never a refutation inferred from the digest's
-  gaps. Bias predicates toward symptom/error content that lands in the digest. As
-  with `Statement`s, a predicate that fires for Cause A should **not** fire for a
-  sibling Cause B — non-discriminating predicates dilute the validation signal.
-- **Targets are symptom-telemetry, not command-output (T1).** A `contains`/`absent`
-  `target` must be a token that appears **verbatim in the raw telemetry a user
-  pastes** — not as a diagnostic command formats it (no column-alignment
-  double-spaces, no tool-specific JSON re-quoting of text logs, no `field=value`
-  shapes that only a `jsonpath`/`awk` produces). Matching normalizes case +
-  *intra-line* whitespace (newlines stay boundaries), so a same-line formatting/case
-  variant still fires. The `step` key is **optional provenance** (the
-  content-addressed evaluator ignores it). The validator warns on over-broad /
-  command-shaped targets (`≥2`-space run, `≤3` chars, stop-word).
-- **Optional `stance` counterfactual (T2).** A predicate may carry
-  `"stance": "supports" | "refutes"` (default `"supports"`). A `refutes` predicate is
-  a **disqualifier**: firing (its token — categorically a *sibling*'s signature — is
-  present) ELIMINATES the cause; it is silent otherwise and never SUPPORTS. Author
-  `refutes` **more conservatively** than `supports` (a wrong `refutes` mis-eliminates
-  a competitor). Sibling-elimination only — not proof-by-exclusion. An invalid
-  `stance` value is a validator error.
-
-> **Planned (not yet authored):** an optional `data_type` key on a predicate —
-> scoping it to a datum type (`logs` / `metrics` / `configuration` / …) so it only
-> validates against a matching datum — is gated on first unifying the stored
-> data-type vocabulary (see issues #583 / #584). **Do not author `data_type` yet;**
-> predicates without it evaluate against every datum (the current behavior).
+Rejected alternative: deterministic `<!-- match -->` predicates feeding a
+runbook-cause-matcher — retired without adoption (NO-GO 2026-07-08, #658);
+runbooks serve as RAG context, and cause structure is a prior for the LLM, not a
+gate.
 
 **`Chain` is optional.** Omit it and the Cause is a degenerate `root → D` chain —
 ingestion stays tolerant (no runbook breaks for lacking a decomposed ladder).
@@ -340,9 +236,7 @@ Expected output: list of idle-in-transaction sessions with age.
 - D: clients fail with "too many connections"
 **Indicators:**
 - root: [Step 2] sessions with state = 'idle in transaction' older than 30 minutes present
-  <!-- match: {"step": 2, "predicate": "contains", "target": "idle in transaction"} -->
 - s1: [Step 1] active connections > 80% of max_connections
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "active_pct", "op": ">", "value": 0.8} -->
 **Interventions:**
 - **remediation** (root): bound idle-in-transaction lifetime so slots are reclaimed.
   ```sql
@@ -361,7 +255,6 @@ Expected output: list of idle-in-transaction sessions with age.
 **Statement:** `max_connections` is reached while the held slots are *genuinely active* queries (no idle-in-transaction sessions), so the pool is saturated by real working-set demand that exceeds its configured size.
 **Indicators:**
 - root: [Step 1] active connections > 80% of max_connections, and [Step 2] no idle-in-transaction sessions
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "active_pct", "op": ">", "value": 0.8} -->
 **Interventions:**
 - **remediation** (root): raise the pool size once DB memory headroom is confirmed.
   ```ini
@@ -399,13 +292,13 @@ This section explains WHY each template section is structured the way it is. Thi
 |---------|------------|------------------------|
 | **Symptom Recognition** | First retrieval signal. The agent matches user-reported symptoms against this section via vector similarity. | **Symptom-only co-location.** Keep alerts, error messages, and metric patterns together as a tight block. Do not mix with applicability or mechanism. Generic descriptions ("database is slow") match too many runbooks; specificity wins retrieval. |
 | **Applicability** | Confirms whether the runbook applies to the user's environment. Scope context — system version, required tools, access requirements. | Concrete versions and tool names. The agent surfaces applicability when proposing the runbook to the user; vague scope ("works on Postgres") leads to misapplication. |
-| **Diagnostic Steps** | The agent proposes these commands to the user during DIAGNOSIS; their findings become case evidence the agent reasons over. | **Procedure only — no interpretation.** Command, expected output shape, nothing else. What a finding *means* belongs in the cause `Statement` (the match surface), with per-`Step` notes optionally mirrored in `Indicators`. Keeping interpretation out of the Steps chunk avoids duplicating it across the Diagnostic-Step and Cause chunks (which dilutes retrieval signal). |
+| **Diagnostic Steps** | The agent proposes these commands to the user during DIAGNOSIS; their findings become case evidence the agent reasons over. | **Procedure only — no interpretation.** Command, expected output shape, nothing else. What a finding *means* belongs in the cause `Statement`, with per-`Step` notes optionally mirrored in `Indicators`. Keeping interpretation out of the Steps chunk avoids duplicating it across the Diagnostic-Step and Cause chunks (which dilutes retrieval signal). |
 | **Causes → `### Cause N`** | Each Cause subsection is one chunk and one **causal chain** terminating in a single ROOT. Retrieval surfaces a complete cause→fix unit. The root `Statement` seeds `RootCauseConclusion.root_cause`; `Interventions` seed `Solution` (`immediate_action`/`longterm_fix` by quadrant). | Per-Cause inlining of `Statement` / `Chain` / `Indicators` / `Interventions` keeps the chunk self-contained. One ROOT per Cause maps to the engine's single-root `Hypothesis`; no AND-sets are authored. |
-| **Causes → `Statement`** | Direct copy → `RootCauseConclusion.root_cause`. **The load-bearing match surface** (holistic per-cause matching judges the case against it). | Single **symptom-level** declarative sentence — what the *evidence would show* (observable failure + mechanism), not a tool command or internal field. Must be discriminative from sibling Causes (MECE). Fold any *parallel* co-necessary condition in here; sequential co-necessity becomes `Chain` rungs instead. Not a fix, not a bare symptom. ≤300 characters. |
+| **Causes → `Statement`** | Direct copy → `RootCauseConclusion.root_cause`. **The cause's load-bearing one-line identity** — what the agent judges the case evidence against. | Single **symptom-level** declarative sentence — what the *evidence would show* (observable failure + mechanism), not a tool command or internal field. Must be discriminative from sibling Causes (MECE). Fold any *parallel* co-necessary condition in here; sequential co-necessity becomes `Chain` rungs instead. Not a fix, not a bare symptom. ≤300 characters. |
 | **Causes → `Chain`** *(optional)* | Decomposes the causal ladder into rung nodes the engine instantiates as `CausalNode`s. Absence → degenerate `root → D` chain. | Linear `root → s1 → … → D`; each rung a short ref (`root`, `s1`, …, reserved `D`). No AND-gate — *sequential* co-necessity becomes rungs here; *parallel* co-necessity folds into the root `Statement`. Each rung ≤300 chars. |
-| **Causes → `Indicators`** *(NOT the match surface; their `<!-- match -->` predicates are the VALIDATION surface)* | Per-rung diagnostic notes; the optional `<!-- match -->` predicate is the deterministic **validation** check — the differential-intake loop runs submitted telemetry against it → SUPPORTS/REFUTES, the *sound* tier above the LLM's self-authored fallback. **No matching weight** (matching is holistic over the symptom-level `Statement`), but **not inert**. | Bullet list addressed by rung ref; each entry carries a `[Step N]` finding, `[Symptom]` pattern, or `[Default]` (fallback only). Optional `<!-- match: ... -->` predicate (content-addressed: `step` is provenance, not an eval key); see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary). Do not rely on these to make a Cause *match* — the `Statement` does that; do author them to make *validation* deterministic. |
+| **Causes → `Indicators`** | Per-rung diagnostic notes — what observable finding ties each chain rung to a Diagnostic Step or reported symptom. They anchor the agent's evidence reasoning; the `Statement` remains the cause's identity. | Bullet list addressed by rung ref; each entry carries a `[Step N]` finding, `[Symptom]` pattern, or `[Default]` (fallback only). |
 | **Causes → `Interventions`** | Each intervention seeds a `Solution` tagged with an `InterventionQuadrant` and the node it targets. | Per-node, quadrant-tagged: `remediation` (permanent @ root), `defensive_fix` (permanent @ intermediate), `mitigation` (temporary @ intermediate — carries **Risk** + **Duration**), `loop_break`. One root may carry two interventions (e.g. a `defensive_fix` and a `remediation`). Every intervention carries a `Verification` (feeds the `solution_verified` prompt). |
-| **`### Cause Z: Unidentified`** | Fallback when no real Cause's `Statement` matches the case (holistic verdict `none`). | Mandatory in every runbook. Carries the `[Default]` Indicator token (the structural fallback marker — engine-side fallback detection reads it). Its single intervention is a `mitigation`/`loop_break` describing a safe diagnostic/escalation path. |
+| **`### Cause Z: Unidentified`** | Fallback when none of the documented causes fit the observed evidence. | Mandatory in every runbook. Carries the `[Default]` Indicator token (the structural fallback marker — engine-side fallback detection reads it). Its single intervention is a `mitigation`/`loop_break` describing a safe diagnostic/escalation path. |
 | **Prevention** | Used in post-resolution recommendations and report generation. **Rarely retrieved during active investigation** — Prevention chunks don't match symptom queries. They become relevant after the problem is resolved, when the agent generates recommendations. | Configuration changes, monitoring alerts, capacity thresholds — concrete actions. |
 | **Sources** | Provenance for the knowledge. Enables verification and updates. | URL + brief description of what was used from each source. |
 
@@ -418,9 +311,8 @@ This section explains WHY each template section is structured the way it is. Thi
 5. **Hard character limits.** `Statement` ≤300 chars; each `Chain` rung ≤300 chars (soft warning). Validator hard error on `Statement` overflow; generation pipeline re-prompts on overflow.
 6. **Indicator format.** Each `**Indicators:**` entry carries a rung ref and must contain at least one of `[Step N]` (N must resolve to an existing numbered Diagnostic Step), `[Symptom]` (free-form reference back to Symptom Recognition), or `[Default]` (reserved for the fallback Cause). Validator hard error on missing token.
 7. **Interventions are quadrant-tagged.** Each `**Interventions:**` entry must lead with a valid quadrant — `remediation`, `defensive_fix`, `mitigation`, or `loop_break`. Validator hard error on a missing or unknown quadrant. Soft warnings: a `mitigation` should declare **Risk** + **Duration**; interventions should carry a **Verification**; command-based fixes should include a fenced code block.
-8. **Match-hint comments are optional but must be strict JSON when present.** The body of any `<!-- match: ... -->` block must be `json.loads()`-parseable (quoted keys, double quotes, no trailing commas, no JSON5/YAML-flow syntax) and must use a predicate from the controlled vocabulary (see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary)). The `step` key is optional (provenance only). An optional `stance` must be `"supports"` or `"refutes"`. Validator hard error on malformed JSON, an unregistered predicate, or an invalid `stance`; validator **warning** on an over-broad / command-shaped `contains`/`absent` target (`≥2`-space run, `≤3` chars, stop-word) or a real Cause with no predicate.
-9. **Section titles must match exactly.** The quality gate linter checks for these headers. Variant names (e.g., "Troubleshooting" instead of "Diagnostic Steps") will fail validation.
-10. **`Chain` is optional and tolerant.** Omitting `Chain` yields a degenerate `root → D` chain (no error). When present it must be a linear `<ref>:` ladder; `converges: <Cause>.<ref>` is the only cross-chain construct. There is **no** AND grammar in authored runbooks.
+8. **Section titles must match exactly.** The quality gate linter checks for these headers. Variant names (e.g., "Troubleshooting" instead of "Diagnostic Steps") will fail validation.
+9. **`Chain` is optional and tolerant.** Omitting `Chain` yields a degenerate `root → D` chain (no error). When present it must be a linear `<ref>:` ladder; `converges: <Cause>.<ref>` is the only cross-chain construct. There is **no** AND grammar in authored runbooks.
 
 ---
 
@@ -456,7 +348,6 @@ Validates the markdown document contains required sections, subsections, and fie
 - Each `**Indicators:**` entry must carry a rung ref and at least one of `[Step N]`, `[Symptom]`, or `[Default]`
 - `[Step N]` references must resolve to existing numbered Diagnostic Steps
 - Each `**Interventions:**` entry must carry a valid quadrant (`remediation` / `defensive_fix` / `mitigation` / `loop_break`)
-- Any `<!-- match: ... -->` HTML comment must parse as **strict JSON** (`json.loads()`-parseable; no JSON5/YAML-flow) and must use a predicate from the controlled vocabulary (see [runbook-cause-matching.md §3](../investigation-engine/runbook-cause-matching.md#3-predicate-vocabulary))
 - No required section or sub-field is empty
 
 **Quality warnings (do not block, flagged for author review):**
@@ -466,7 +357,7 @@ Validates the markdown document contains required sections, subsections, and fie
 - A `Chain` rung over 300 chars, or a `Chain` missing a `root:` / `D:` rung
 - Content length below 500 characters; no external references or links
 
-**Implementation:** `RunbookValidator` rewritten for the v4 causal-chain schema in `kb_toolkit/core/validator.py`. Section and subsection presence checked via header regex; required sub-fields (`Statement`/`Indicators`/`Interventions`, optional `Chain`) checked per-Cause via labelled-field regex; `Chain` validated tolerantly (absence = degenerate); Indicator tokens validated against the Diagnostic Steps inventory; intervention quadrants checked against the controlled set; match-hint JSON parsed and predicate name checked against the registered vocabulary.
+**Implementation:** `RunbookValidator` rewritten for the v4 causal-chain schema in `kb_toolkit/core/validator.py`. Section and subsection presence checked via header regex; required sub-fields (`Statement`/`Indicators`/`Interventions`, optional `Chain`) checked per-Cause via labelled-field regex; `Chain` validated tolerantly (absence = degenerate); Indicator tokens validated against the Diagnostic Steps inventory; intervention quadrants checked against the controlled set.
 
 ### Gate 3: Semantic Density Check (Planned)
 
@@ -532,10 +423,10 @@ The first three sources are sufficient for common infrastructure failure modes. 
 | Mega-runbooks across symptoms | "Everything about Service X" — covers multiple unrelated symptom classes; only a small section matches any given query, but the whole document competes in retrieval. | Split into one runbook per symptom class. Multiple `### Cause N` subsections within a runbook are expected and correct; multiple symptom classes are not. |
 | Copy-pasted vendor docs | Low signal density. Chunks contain boilerplate that dilutes the embedding. | Summarize the relevant parts, add your operational context |
 | Missing per-intervention verification | An intervention without a `**Verification:**` gives the engine no fix-specific check; `solution_verified` falls back to generic prompts and the agent cannot confirm the right fix worked. | Every intervention under `**Interventions:**` carries its own `**Verification:**` |
-| Two roots / AND-sets in one Cause | A Cause with two roots (or an authored AND-gate) reads as duplicate nodes and does not map to the engine's single-root `Hypothesis`. | One Cause = one ROOT. Sequence co-necessary conditions as `Chain` rungs where an ordering exists; otherwise fold the *parallel* condition into the root `Statement` (which must **name both** conditions, so holistic matching confirms only when both are evidenced) and give each fix its own quadrant-tagged intervention (a `defensive_fix` *and* a `remediation` if needed). |
-| Overlapping cause `Statement`s | Two sibling Causes whose symptom-level `Statement`s are not distinguishable from case evidence → holistic matching answers YES to both → verdict `multiple` → the matcher abstains and instantiates nothing. | Author sibling `Statement`s as mutually discriminative (MECE with teeth); make the observable difference explicit in each `Statement`. |
-| Tool-output-phrased `Statement` | A `Statement` written at operator/API level (`operationState.phase is Failed`) won't match symptom-level case evidence, so the Cause silently under-fires (the `Statement` is the sole match surface). | Phrase the `Statement` at symptom level — what the evidence shows (errors, log lines, exit codes) and the mechanism. |
-| Indicator without step or symptom reference | An `**Indicators:**` entry that lacks `[Step N]` / `[Symptom]` / `[Default]` cannot be matched deterministically and offers no anchor for `case_evidence_qa` either. | Every Indicators entry carries a rung ref and at least one reference token |
+| Two roots / AND-sets in one Cause | A Cause with two roots (or an authored AND-gate) reads as duplicate nodes and does not map to the engine's single-root `Hypothesis`. | One Cause = one ROOT. Sequence co-necessary conditions as `Chain` rungs where an ordering exists; otherwise fold the *parallel* condition into the root `Statement` (which must **name both** conditions, so the cause is confirmed only when both are evidenced) and give each fix its own quadrant-tagged intervention (a `defensive_fix` *and* a `remediation` if needed). |
+| Overlapping cause `Statement`s | Two sibling Causes whose symptom-level `Statement`s are not distinguishable from case evidence leave the agent unable to discriminate between them — both stay plausible and neither can be confirmed. | Author sibling `Statement`s as mutually discriminative (MECE with teeth); make the observable difference explicit in each `Statement`. |
+| Tool-output-phrased `Statement` | A `Statement` written at operator/API level (`operationState.phase is Failed`) won't line up with symptom-level case evidence, so the Cause silently under-fires. | Phrase the `Statement` at symptom level — what the evidence shows (errors, log lines, exit codes) and the mechanism. |
+| Indicator without step or symptom reference | An `**Indicators:**` entry that lacks `[Step N]` / `[Symptom]` / `[Default]` offers no anchor tying the rung to observable evidence. | Every Indicators entry carries a rung ref and at least one reference token |
 
 ---
 
@@ -549,13 +440,13 @@ v3-shaped runbooks (the validator rejects them).
 `quality.py`, `kb_init.py`, the `kb-researcher` author prompt, and `chunker.py`
 all enforce/produce the v4 schema (`Statement` / optional `Chain` / `Indicators`
 / quadrant-tagged `Interventions`, one ROOT per Cause). The chunker strips
-`<!-- match -->` comments and lifts per-Cause metadata + parsed predicates.
+HTML comments and lifts per-Cause metadata.
 
 **Content migration is complete.** All **91 built-in runbooks** (the 59
 pre-existing + the 32 backlog) are authored in v4, and the vendored KB pack ships
 all 91 with their per-Cause `causes` record. The FaultMaven API's
 `runbook_validator.py` is on the v4 causal-chain schema and enforces the
-cause-`Statement` match-surface invariants (#545/#557).
+cause-`Statement` invariants (symptom-level phrasing + sibling MECE, #545/#557).
 
 | Feature | Status | Location |
 | --- | --- | --- |
@@ -563,8 +454,8 @@ cause-`Statement` match-surface invariants (#545/#557).
 | Char-limit enforcement (`Statement` ≤300; `Chain` rung ≤300 soft) | **Implemented (toolkit)** | `kb_toolkit/core/validator.py` |
 | Indicator token validation (`[Step N]`, `[Symptom]`, `[Default]`) | **Implemented (toolkit)** | `_validate_indicator_field()` with step-number cross-reference |
 | Intervention quadrant validation | **Implemented (toolkit)** | `_validate_interventions()` against `valid_quadrants` |
-| Match-hint stripping + per-Cause metadata at chunk time | **Implemented (toolkit)** | `kb_toolkit/core/chunker.py` — `_post_process_chunk()` lifts `cause_*` + parsed `match_predicates`, `is_fallback_cause` |
-| Per-Cause metadata carried into KB pack | **Implemented** | `kb_toolkit/core/pack_builder.py` — `_extract_causes` writes the per-Cause graph record into `pack.json` `runbooks[].causes`; see [kb-pack-architecture.md](./kb-pack-architecture.md) and [runbook-cause-matching.md](../investigation-engine/runbook-cause-matching.md) |
+| HTML-comment stripping + per-Cause metadata at chunk time | **Implemented (toolkit)** | `kb_toolkit/core/chunker.py` — `_post_process_chunk()` lifts `cause_*` + `is_fallback_cause` |
+| Per-Cause metadata carried into KB pack | **Implemented** | `kb_toolkit/core/pack_builder.py` — `_extract_causes` writes the per-Cause graph record into `pack.json` `runbooks[].causes`; see [kb-pack-architecture.md](./kb-pack-architecture.md) |
 | FaultMaven API `runbook_validator.py` v4 update | **Implemented** | `modules/knowledge/domain/services/runbook_validator.py` — v4 causal-chain schema + cause-`Statement` match-surface invariants (#545/#557) |
 | Regenerate the 59 built-in runbooks to v4 | **Implemented** | all 91 built-ins (59 + 32) are v4; the vendored pack ships 91/91 with `causes` |
 | Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags` propagated per chunk |
@@ -574,6 +465,6 @@ cause-`Statement` match-surface invariants (#545/#557).
 ### Implementation Priority
 
 1. **Regenerate the 59 built-in runbooks to v4** — the clean break means the KB cannot mix v3 + v4; the existing 59 must be brought to v4 before deploy alongside the 32 new ones.
-2. **Per-Cause metadata into the KB pack** — carry the chunker's per-Cause metadata (incl. parsed predicates) into `pack.json` so the engine matcher can instantiate the causal subgraph (forward-investment; consumed when the matcher lands).
+2. **Per-Cause metadata into the KB pack** — carry the chunker's per-Cause metadata into `pack.json` so the structured cause record ships alongside the chunks.
 3. **FaultMaven API `runbook_validator.py` v4 update** — align it with the v4 schema so the document-to-runbook conversion pipeline produces v4-compliant runbooks.
 4. **Semantic density check (Gate 3)** — reject runbooks that are architectural description without actionable procedures. Requires classifier-tier LLM integration.

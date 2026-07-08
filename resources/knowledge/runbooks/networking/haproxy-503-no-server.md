@@ -90,11 +90,8 @@ Expected output: a 2xx/3xx `http=` and sub-second `connect=` if the backend is h
 - D: client receives 503 Service Unavailable
 **Indicators:**
 - root: [Step 5] direct probe to the backend returns refused/timeout/non-2xx
-  <!-- match: {"step": 5, "predicate": "contains", "target": "http=000"} -->
 - s1: [Step 2] `show stat` shows server `status` `DOWN`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "DOWN"} -->
 - s2: [Step 1] access log shows `SC--` with server name `<NOSRV>`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "SC--"} -->
 - D: [Symptom] response is `503 Service Unavailable`
 **Interventions:**
 - **remediation** (root): restore the backend so the health-check URI returns the expected status (restart the app / fix the failing dependency), then confirm HAProxy re-marks it UP.
@@ -133,11 +130,8 @@ Expected output: a 2xx/3xx `http=` and sub-second `connect=` if the backend is h
 - D: client receives 503 Service Unavailable
 **Indicators:**
 - root: [Step 4] config shows a low per-`server`/`default-server` `maxconn`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "maxconn"} -->
 - s1: [Step 2] `scur` equals `slim` and `qcur` is non-zero
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "qcur", "op": ">", "value": 0} -->
 - s2: [Step 1] access log shows `sQ--` termination state
-  <!-- match: {"step": 1, "predicate": "contains", "target": "sQ--"} -->
 - D: [Symptom] response is `503 Service Unavailable`
 **Interventions:**
 - **remediation** (root): raise per-server `maxconn` to match capacity (and add backends/replicas if the servers themselves are the bottleneck).
@@ -174,11 +168,8 @@ Expected output: a 2xx/3xx `http=` and sub-second `connect=` if the backend is h
 - D: client receives 503 Service Unavailable
 **Indicators:**
 - root: [Step 4] config shows a very small `timeout connect`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "timeout connect"} -->
 - s1: [Step 1] access log shows `sC--` termination state
-  <!-- match: {"step": 1, "predicate": "contains", "target": "sC--"} -->
 - s2: [Step 5] direct probe shows `connect=` time exceeding the configured `timeout connect`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "connect="} -->
 - D: [Symptom] response is `503 Service Unavailable`
 **Interventions:**
 - **remediation** (root): set `timeout connect` above the observed backend connect latency (typical baseline 5s), and fix the underlying network/backend slowness if connect time is abnormally high.
@@ -210,9 +201,7 @@ Expected output: a 2xx/3xx `http=` and sub-second `connect=` if the backend is h
 - D: client receives 503 Service Unavailable
 **Indicators:**
 - root: [Step 3] `show servers state` shows `srv_admin_state` non-zero (e.g. `1` FMAINT / `8` FDRAIN) on all servers
-  <!-- match: {"step": 3, "predicate": "contains", "target": "MAINT"} -->
 - s1: [Step 2] `show stat` shows server `status` `MAINT` or `DRAIN`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "MAINT"} -->
 - s2: [Step 1] access log shows `SC--` with `<NOSRV>` despite the app being reachable in Step 5
 - D: [Symptom] response is `503 Service Unavailable`
 **Interventions:**

@@ -104,9 +104,7 @@ Expected output: scale-up rejection reason ids such as `no.scale.up.nap.pod.zona
 **Indicators:**
 - root: [Step 5] `maxNodeCount` equals the current node count and autoscaler status shows the pool at its ceiling
 - s1: [Step 6] scale-up log shows a noScaleUp reason for the pool
-  <!-- match: {"step": 6, "predicate": "contains", "target": "no.scale.up"} -->
 - s2: [Step 2] FailedScheduling event reports `Insufficient cpu` or `Insufficient memory`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Insufficient cpu"} -->
 - D: [Symptom] pod STATUS is `Pending` with reason `PodUnschedulable`
 **Interventions:**
 - **remediation** (root): raise the node pool's autoscaling maximum so the autoscaler can provision capacity.
@@ -135,9 +133,7 @@ Expected output: scale-up rejection reason ids such as `no.scale.up.nap.pod.zona
 **Indicators:**
 - root: [Step 4] every node's allocatable cpu/memory is smaller than the pod's request shown in Step 2
 - s1: [Step 6] scale-up log shows `no.scale.up.nap.pod.zonal.resources.exceeded` or a failing-predicate reason
-  <!-- match: {"step": 6, "predicate": "contains", "target": "no.scale.up.nap.pod.zonal.resources.exceeded"} -->
 - D: [Step 2] FailedScheduling event: `No nodes are available that match all of the predicates: Insufficient cpu`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "No nodes are available that match all of the predicates"} -->
 **Interventions:**
 - **remediation** (root): right-size the container's resource requests below the node's allocatable capacity.
 
@@ -165,7 +161,6 @@ Expected output: scale-up rejection reason ids such as `no.scale.up.nap.pod.zona
 **Indicators:**
 - root: [Step 4] no node carries the label the pod selects, or candidate nodes show a `NoSchedule` taint in `kubectl describe nodes`
 - s1: [Step 2] FailedScheduling event references `MatchNodeSelector` or `node(s) had untolerated taint`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "MatchNodeSelector"} -->
 - D: [Symptom] pod STATUS is `Pending` with reason `PodUnschedulable`
 **Interventions:**
 - **remediation** (root): label the intended nodes to satisfy the pod's `nodeSelector`.
@@ -192,11 +187,8 @@ Expected output: scale-up rejection reason ids such as `no.scale.up.nap.pod.zona
 - D: pod reports CrashLoopBackOff and is not serving traffic
 **Indicators:**
 - root: [Step 2] container `Last State: Terminated`, `Reason: OOMKilled`, `Exit Code: 137`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "OOMKilled"} -->
 - s1: [Step 2] exit code is `137`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "137"} -->
 - s2: [Step 1] pod STATUS is `CrashLoopBackOff` with a rising restart count
-  <!-- match: {"step": 1, "predicate": "contains", "target": "CrashLoopBackOff"} -->
 - D: [Symptom] workload event `Does not have minimum availability`
 **Interventions:**
 - **remediation** (root): raise the container's memory request and limit above its measured working set.
@@ -224,7 +216,6 @@ Expected output: scale-up rejection reason ids such as `no.scale.up.nap.pod.zona
 - D: workload has no running pods / shows minimum-availability failure
 **Indicators:**
 - root: [Step 2] controller `Events:` show the Autopilot maximum message, e.g. `is higher than the Autopilot maximum of '10Gi'`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Autopilot maximum"} -->
 - s2: [Step 1] the Deployment/Job has zero pods listed in the namespace
 - D: [Symptom] workload event `Does not have minimum availability`
 **Interventions:**

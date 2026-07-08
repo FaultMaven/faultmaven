@@ -42,10 +42,10 @@ from faultmaven.modules.case.contracts import (
 
 # Likelihood at or above which a ``working_conclusion`` counts as a known cause
 # (the proxy fallback in ``_cause_identified`` below). This is the single source
-# of truth for that threshold: the runbook-cause matcher caps its instantiated
-# prior strictly BELOW this value (``runbook_cause_matcher._MATCHER_MAX_PRIOR``)
-# so a runbook match ALONE can never trip the gate — only real case evidence can
-# lift belief past it. The ``cap < gate`` invariant is pinned by a test.
+# of truth for that threshold: new-hypothesis priors are capped strictly BELOW
+# this value (``hypothesis_manager.NEW_HYPOTHESIS_MAX_PRIOR``) so no emission
+# ALONE can trip the gate — only real case evidence can lift belief past it.
+# The ``cap < gate`` invariant is pinned by an import-time check.
 CAUSE_IDENTIFIED_LIKELIHOOD = 0.6
 
 
@@ -871,14 +871,14 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
         case.root_cause_conclusion
         and getattr(case.root_cause_conclusion, "root_cause", None)
     )
-    # Harvest counts a cause only when it is AUTHORITY-GROUNDED — borne out by a
-    # runbook-provenance (or deductive) support. Read the single assurance grade
+    # Harvest counts a cause only when it is GROUNDED — borne out by a deductive
+    # derivation (proof-by-exclusion, §7.1.1). Read the single assurance grade
     # once and gate on GROUNDED explicitly: this also holds a RootCauseConclusion
     # with NO validated root (pure LLM prose, zero causal graph) — graded NO_ROOT,
     # not GROUNDED — which the old negative "fallback-only" view let through (#590
-    # A1). A cause carried only by lower-assurance validation (FALLBACK_ONLY) is
+    # A1). A cause carried only by empirical validation (FALLBACK_ONLY) is
     # likewise held: harvesting it would promote an unverified cause (the model
-    # authored both the predicate and its citation) into the corpus.
+    # authored both the evidence link and its citation) into the corpus.
     cause_grade = grade_cause_assurance(case)
     has_root_cause = (
         has_root_cause_record and cause_grade == CauseAssuranceGrade.GROUNDED
@@ -955,8 +955,8 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
             if root_cause_unverified:
                 missing_desc.append(
                     "- a verified root cause (one is identified, but it rests on "
-                    "lower-assurance evidence — confirm it with runbook-grounded "
-                    "telemetry before it can seed a runbook)"
+                    "lower-assurance evidence — confirm it by ruling out the "
+                    "alternatives before it can seed a runbook)"
                 )
             elif not has_root_cause:
                 missing_desc.append("- identified root cause")

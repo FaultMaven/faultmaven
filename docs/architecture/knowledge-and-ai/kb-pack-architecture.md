@@ -71,8 +71,7 @@ A pack is a directory (transported as `kb-pack-<version>.tar.gz`):
       "chunks": [ {"chunk_index": 0, "vector_row": 0, "text": "..."}, ... ],
       "causes": [ {"cause_letter": "A", "cause_name": "...", "cause_statement": "...",
                    "chain_nodes": [...], "chain_edges": [...], "rung_indicators": {...},
-                   "match_predicates": [...], "interventions": [...],
-                   "is_fallback_cause": false}, ... ]
+                   "interventions": [...], "is_fallback_cause": false}, ... ]
     }
   ]
 }
@@ -97,36 +96,23 @@ contract: runbook content + chunk text + vectors + the per-Cause `causes` record
 
 Each runbook entry also ships a **`causes`** array — one record per `### Cause`
 in the runbook's `## Causes` section, produced by the toolkit's
-`pack_builder._extract_causes`. This is the structured input the **runbook cause
-matcher** consumes: per cause, a `cause_letter`/`cause_name`/`cause_statement`,
-the `chain_nodes`/`chain_edges` topology, and optional `rung_indicators`,
-`match_predicates`, and `interventions`. At ingest the app persists it verbatim to
-`knowledge_items.metadata['causes']` (no re-derivation); the matcher resolves it
-back by `item_id` and loads each entry into `CauseRecord`
-(`faultmaven/core/investigation/cause_schemas.py`) — the app-side **reference
-shape**. See [runbook-content-architecture.md](./runbook-content-architecture.md)
-(authoring + the symptom-level `Statement` match surface) and
-[runbook-cause-matching.md](../investigation-engine/runbook-cause-matching.md)
-(matching mechanism).
+`pack_builder._extract_causes`. Per cause: `cause_letter`, `cause_name`,
+`cause_statement`, the `chain_nodes`/`chain_edges` topology, optional
+`rung_indicators` and `interventions`, and `is_fallback_cause`. At ingest the
+app persists the record verbatim to `knowledge_items.metadata['causes']` (no
+re-derivation; `bootstrap/kb_pack.py`). It is structured per-Cause metadata
+riding alongside the chunks — retrieval itself serves the runbook *text* as RAG
+context. See [runbook-content-architecture.md](./runbook-content-architecture.md)
+for the authoring grammar the record is extracted from.
 
-**The cause shape is a cross-repo contract.** The toolkit producer
-(`_extract_causes`) and the app consumer (`CauseRecord`) live in different repos
-and share no importable module, so the field set is a **manual mirror** kept
-honest by tests, not a shared package. The full path is guarded end-to-end:
-
-- **kb-toolkit** `tests/unit/test_pack_causes_contract.py` — runs the real
-  `build_pack` over a fixture runbook and asserts each emitted Cause has exactly
-  `CauseRecord`'s field set (the producer↔consumer drift check).
-- **faultmaven** `tests/integration/.../test_runbook_cause_lifecycle_e2e.py` —
-  the AUTHORING → PACK → INGEST → RETRIEVE → APPLY end-to-end: ingests a real
-  pack `causes` record, resolves it back, loads it into `CauseRecord` losslessly,
-  and instantiates it through the live matcher.
-- The two halves are joined by a **byte-identical golden fixture**
-  (`expected_pack_causes.json`, vendored in both repos), pinned by an
-  `EXPECTED_GOLDEN_SHA256` constant kept equal in both repos' tests — so a
-  value-level divergence between the copies fails CI rather than silently rotting.
-  (This is the integration test whose earlier absence let an unconsumed v4 cause
-  record sit in every pack undetected.)
+**The cause authoring grammar is a cross-repo contract.** The toolkit grammar
+source (`kb_toolkit/core/runbook_grammar.py` + `config.py`) and the backend
+mirror (`modules/knowledge/domain/services/cause_grammar.py`, referenced by
+`runbook_validator.py`) live in different repos and share no importable module,
+so the vocabulary is a **manual mirror** kept honest by each repo's
+frozen-literal drift-guard test plus the kb-toolkit `golden-cross-repo` CI job
+(`scripts/check_vocab_cross_repo.py`), which mechanically asserts the two
+repos' vocabularies are equal.
 
 ### Identity & idempotency keys
 

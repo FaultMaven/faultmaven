@@ -98,7 +98,6 @@ Expected output: the alarm's `Namespace`/`MetricName`/`Dimensions`/`Period`, its
 - D: expected metrics and log streams are absent in CloudWatch
 **Indicators:**
 - root: [Step 1] `amazon-cloudwatch-agent-ctl -a status` reports `"status": "stopped"`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "stopped"} -->
 - s1: [Step 2] agent log is stale or shows a startup/config-parse failure rather than publish lines
 - D: [Step 3] `list-metrics` returns an empty `Metrics` array for the namespace
 **Interventions:**
@@ -121,7 +120,6 @@ Expected output: the alarm's `Namespace`/`MetricName`/`Dimensions`/`Period`, its
 - D: metrics and log events never reach CloudWatch
 **Indicators:**
 - root: [Step 5] `list-attached-role-policies` output does not include `CloudWatchAgentServerPolicy`
-  <!-- match: {"step": 5, "predicate": "absent", "target": "CloudWatchAgentServerPolicy"} -->
 - s1: [Step 2] agent log contains `AccessDenied` / `AccessDeniedException` on `PutMetricData` or `CreateLogStream`
 - D: [Step 3] published namespace stays empty in `list-metrics`
 **Interventions:**
@@ -144,7 +142,6 @@ Expected output: the alarm's `Namespace`/`MetricName`/`Dimensions`/`Period`, its
 **Indicators:**
 - root: [Step 1] the config `metrics.namespace` (or `append_dimensions`) differs from the alarm's `Namespace`/`Dimensions` in Step 6
 - s1: [Step 3] `list-metrics` returns the metric under the *published* namespace but with different dimensions than queried
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Dimensions"} -->
 - D: [Step 6] alarm `Namespace`/`Dimensions` do not match the published values; `State` is `INSUFFICIENT_DATA`
 **Interventions:**
 - **remediation** (root): point the alarm/query at the exact namespace and dimensions the agent publishes (re-create the alarm with matching `--namespace`/`--dimensions`).
@@ -168,7 +165,6 @@ Expected output: the alarm's `Namespace`/`MetricName`/`Dimensions`/`Period`, its
 - D: expected log events are absent even though the stream exists and ingested them
 **Indicators:**
 - root: [Step 4] `describe-log-groups` shows a small `retentionInDays` (e.g. 1) on the group
-  <!-- match: {"step": 4, "predicate": "contains", "target": "\"retentionInDays\": 1"} -->
 - s1: [Step 4] the stream's `lastIngestionTime` is recent but events beyond the window are gone
 - D: [Step 4] queries over the expired window return no events for an existing stream
 **Interventions:**
@@ -199,7 +195,6 @@ Expected output: the alarm's `Namespace`/`MetricName`/`Dimensions`/`Period`, its
 **Indicators:**
 - root: [Step 3] `list-metrics` confirms the metric exists but `get-metric-statistics` (same dimensions) returns gaps during idle windows
 - s1: [Step 6] alarm `TreatMissingData` is `missing` and `State` is `INSUFFICIENT_DATA`
-  <!-- match: {"step": 6, "predicate": "contains", "target": "INSUFFICIENT_DATA"} -->
 - D: [Symptom] alarm `StateValue` is `INSUFFICIENT_DATA` while the resource is confirmed healthy
 **Interventions:**
 - **defensive_fix** (s1): set `treat-missing-data` deliberately so sparse reporting does not page — `notBreaching` for "idle is fine", or `missing` so the alarm only fires on real ALARM data.

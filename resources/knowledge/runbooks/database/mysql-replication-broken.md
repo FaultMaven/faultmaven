@@ -142,7 +142,6 @@ Expected output: `SERVICE_STATE = ON` for the connection, and zero rows from the
 **Indicators:**
 - root: [Step 4] replica `gtid_executed` carries the replica's own server UUID, evidence of a local write.
 - s2: [Step 1] `Last_SQL_Errno: 1062` and `Last_SQL_Error` contains `Duplicate entry`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Duplicate entry"} -->
 - D: [Step 1] `Replica_SQL_Running: No`, `Replica_IO_Running: Yes`.
 **Interventions:**
 - **remediation** (root): block future direct writes and reconcile existing drift.
@@ -187,7 +186,6 @@ Expected output: `SERVICE_STATE = ON` for the connection, and zero rows from the
 **Indicators:**
 - root: [Step 4] replica `gtid_executed` carries the replica's own server UUID, evidence of a local write.
 - s2: [Step 1] `Last_SQL_Errno: 1032` and `Last_SQL_Error` contains `Can't find record`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Can't find record"} -->
 - D: [Step 1] `Replica_SQL_Running: No`, `Replica_IO_Running: Yes`.
 **Interventions:**
 - **remediation** (root): block future drift-causing writes and reconcile the affected table.
@@ -224,7 +222,6 @@ Expected output: `SERVICE_STATE = ON` for the connection, and zero rows from the
 - D: Replication is broken and the replica cannot catch up (Symptom).
 **Indicators:**
 - s3: [Step 1] `Last_IO_Errno: 1236` and `Last_IO_Error` contains `purged binary logs`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "purged binary logs"} -->
 - s1: [Step 3] the binary log file referenced in `Master_Log_File` from Step 1 is absent from `SHOW BINARY LOGS` on the source.
 **Interventions:**
 - **remediation** (root): rebuild the replica from a consistent backup, then widen retention to prevent recurrence.
@@ -328,7 +325,6 @@ Expected output: `SERVICE_STATE = ON` for the connection, and zero rows from the
 - D: The SQL thread cannot advance past the corrupt relay log and replication stalls (Symptom).
 **Indicators:**
 - s2: [Step 2] error log contains `relay log read failure` or `Could not parse relay log event entry`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "relay log read failure"} -->
 - D: [Step 1] `Replica_SQL_Running: No`, `Last_SQL_Error` contains `relay log` or `corrupt`.
 **Interventions:**
 - **remediation** (root): enable relay log durability so future crashes do not corrupt the relay log.
@@ -370,7 +366,6 @@ Expected output: `SERVICE_STATE = ON` for the connection, and zero rows from the
 - D: The IO thread is stopped and replication cannot advance (Symptom).
 **Indicators:**
 - root: [Step 6] `df -h /var/lib/mysql` shows the filesystem at or near 100 % used.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "disk_pct_used", "op": ">", "value": 95} -->
 - s1: [Step 1] `Replica_IO_Running: No` and `Last_IO_Error` contains `disk` or `write` failure, or the error log shows `disk full`.
 **Interventions:**
 - **remediation** (root): cap relay log disk usage so growth cannot fill the volume again.
@@ -413,7 +408,6 @@ Expected output: `SERVICE_STATE = ON` for the connection, and zero rows from the
 - D: Binary log retrieval halts and the replica stops fetching events (Symptom).
 **Indicators:**
 - root: [Step 5] connectivity test `mysql -h SOURCE_HOST -u repl_user -p -e "SELECT 1"` fails or times out.
-  <!-- match: {"step": 5, "predicate": "contains", "target": "Can't connect"} -->
 - s2: [Step 1] `Replica_IO_Running: Connecting` or `No`, `Last_IO_Error` contains `Lost connection` or `Can't connect`.
 **Interventions:**
 - **remediation** (root): confirm the network path is stable and tolerate brief interruptions going forward.

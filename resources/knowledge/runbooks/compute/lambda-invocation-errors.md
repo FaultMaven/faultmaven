@@ -184,9 +184,7 @@ Expected output: Decoded log tail shows the last 4 KB of execution output includ
 - D: invocation returns a non-200/FunctionError result (Symptom Recognition)
 **Indicators:**
 - root: [Step 2] `maxMemMB` equals `limitMB` in the REPORT query output
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "maxMemMB_pct_of_limitMB", "op": ">=", "value": 0.98} -->
 - s2: [Step 1] log contains `signal: killed` in the `Runtime.ExitError` line
-  <!-- match: {"step": 1, "predicate": "contains", "target": "signal: killed"} -->
 **Interventions:**
 - **remediation** (root): profile 24h peak usage and set memory to ~1.5× peak so RSS never reaches the ceiling.
 
@@ -228,8 +226,6 @@ Expected output: Decoded log tail shows the last 4 KB of execution output includ
 - D: every invocation fails (Symptom Recognition)
 **Indicators:**
 - s2: [Step 1] log contains `Runtime.ImportModuleError` or `Runtime.HandlerNotFound`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.ImportModuleError"} -->
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.HandlerNotFound"} -->
 - root: [Step 3] `Handler` value does not correspond to a file visible in Step 4's ZIP listing
 **Interventions:**
 - **remediation** (root): rebuild the package with the handler module at the ZIP root, redeploy, and set `Handler` to match.
@@ -273,8 +269,6 @@ Expected output: Decoded log tail shows the last 4 KB of execution output includ
 - D: every invocation fails immediately (Symptom Recognition)
 **Indicators:**
 - s2: [Step 1] log contains `Runtime.InvalidEntrypoint` or `Couldn't find valid bootstrap`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Runtime.InvalidEntrypoint"} -->
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Couldn't find valid bootstrap"} -->
 - root: [Step 4] `bootstrap` is absent from the root of the ZIP listing or listed under a subdirectory path
 **Interventions:**
 - **remediation** (root): rebuild with an executable `bootstrap` (mode 755) at the ZIP root and redeploy.
@@ -304,9 +298,7 @@ Expected output: Decoded log tail shows the last 4 KB of execution output includ
 - D: invocation returns a FunctionError result (Symptom Recognition)
 **Indicators:**
 - s1: [Step 1] log contains `AccessDeniedException` with the denied action name
-  <!-- match: {"step": 1, "predicate": "contains", "target": "AccessDeniedException"} -->
 - root: [Step 5] `EvalDecision` is `implicitDeny` or `explicitDeny` for that action
-  <!-- match: {"step": 5, "predicate": "contains", "target": "implicitDeny"} -->
 **Interventions:**
 - **remediation** (root): generate a least-privilege policy from CloudTrail activity via IAM Access Analyzer and replace the inline policy.
 
@@ -357,9 +349,7 @@ Expected output: Decoded log tail shows the last 4 KB of execution output includ
 - D: the invocation fails on the timed-out downstream call (Symptom Recognition)
 **Indicators:**
 - s2: [Step 1] log contains `EndpointConnectionError`, `ConnectTimeoutError`, or `Could not connect to the endpoint URL`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "EndpointConnectionError"} -->
 - root: [Step 6] subnet route table has no `0.0.0.0/0` route targeting a NAT Gateway
-  <!-- match: {"step": 6, "predicate": "absent", "target": "nat-"} -->
 **Interventions:**
 - **remediation** (root): add a NAT Gateway (public subnet) with a `0.0.0.0/0` route on the Lambda subnets, or remove the VPC config if no VPC resources are needed.
 
@@ -401,9 +391,7 @@ Expected output: Decoded log tail shows the last 4 KB of execution output includ
 - D: invocation is rejected (Symptom Recognition)
 **Indicators:**
 - root: [Step 7] `ReservedConcurrentExecutions` is 0, or the CloudWatch `Throttles` metric sum is non-zero
-  <!-- match: {"step": 7, "predicate": "contains", "target": "TooManyRequestsException"} -->
 - s1: [Step 8] `StatusCode` is 429 / `TooManyRequestsException` in the invoke response
-  <!-- match: {"step": 8, "predicate": "contains", "target": "TooManyRequestsException"} -->
 **Interventions:**
 - **remediation** (root): if the account limit is the constraint, request a concurrency quota increase.
 

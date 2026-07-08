@@ -18,14 +18,7 @@ from faultmaven.core.investigation.causal_graph import (
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
-    cause_is_runbook_grounded,
-    cause_validation_is_fallback_only,
-    count_grounded_roots,
     grade_cause_assurance,
-    support_is_runbook_grounded,
-)
-from faultmaven.core.investigation.grounding_metrics import (
-    compute_grounding_baseline,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -389,379 +382,70 @@ def test_validated_root_makes_chain_root_validated():
 
 
 # ---------------------------------------------------------------------------
-# Validation-assurance from provenance (cause_validation_is_fallback_only)
+# Cause-assurance grade (grade_cause_assurance) — §7 harvest bar
 # ---------------------------------------------------------------------------
 
 
-def _plink(label, stance, provenance) -> NodeEvidenceLink:
-    return NodeEvidenceLink(
-        evidence_id=_eid(label),
-        stance=stance,
-        reasoning="bears on the rung",
-        provenance=provenance,
-        linked_at_turn=2,
-    )
-
-
-def _validated_root_case(provenances) -> Case:
-    """A case with one ROOT validated empirically by CAUSAL_EVIDENCE support
-    links carrying the given provenances."""
-    evs = [
-        _evidence(f"ev_{i}", EvidenceCategory.CAUSAL_EVIDENCE)
-        for i in range(len(provenances))
-    ]
-    links = [
-        _plink(f"ev_{i}", EvidenceStance.SUPPORTS, p) for i, p in enumerate(provenances)
-    ]
-    root = _node(_nid(50), node_type=NodeType.ROOT, links=links)
-    case = _case([root], evidence=evs)
-    derive_node_states(case)
-    assert root.node_state == NodeState.VALIDATED  # precondition for the signal
-    return case
-
-
-def test_fallback_only_validation_is_flagged():
-    # A root borne out solely by an llm_fallback-provenance causal support is a
-    # lower-assurance identification.
-    case = _validated_root_case(["llm_fallback"])
-    assert cause_validation_is_fallback_only(case) is True
-
-
-def test_runbook_provenance_is_sound():
-    case = _validated_root_case(["runbook"])
-    assert cause_validation_is_fallback_only(case) is False
-
-
-def test_unlabeled_none_provenance_is_lower_assurance():
-    # provenance=None is the LLM's own asserted link (the emitted-chain path never
-    # tags provenance) — NOT authority-grounded, so a root borne out only by it is
-    # fallback-only. Only a runbook-grounded support is sound.
-    case = _validated_root_case([None])
-    assert cause_validation_is_fallback_only(case) is True
-
-
-def test_any_sound_support_makes_validation_sound():
-    # A single runbook-grounded support alongside a fallback one is enough.
-    case = _validated_root_case(["llm_fallback", "runbook"])
-    assert cause_validation_is_fallback_only(case) is False
-
-
-def test_no_validated_root_is_not_fallback_only():
-    # The signal applies only once a cause is identified.
-    ev = _evidence("ev_x", EvidenceCategory.SYMPTOM_EVIDENCE)
-    root = _node(
-        _nid(51),
+def _validated_root(*, method: ValidationMethod) -> CausalNode:
+    """A VALIDATED root with the given validation method (constructed valid so
+    the M1/M4 model-validators hold: a validated root is actionable and carries
+    a method)."""
+    return CausalNode(
+        node_id=_nid(0xA0),
+        statement="the posited root cause",
         node_type=NodeType.ROOT,
-        links=[_plink("ev_x", EvidenceStance.SUPPORTS, "llm_fallback")],
+        node_state=NodeState.VALIDATED,
+        validation_method=method,
+        belief=0.9,
+        actionable=True,
+        evidence_links=[_link("ev_root", EvidenceStance.SUPPORTS)],
+        generated_at_turn=1,
     )
-    case = _case([root], evidence=[ev])
-    derive_node_states(case)
-    assert root.node_state != NodeState.VALIDATED  # symptom-backed, not validated
-    assert cause_validation_is_fallback_only(case) is False
-
-
-def test_deductively_validated_root_is_sound():
-    # Proof-by-exclusion is a methodology derivation, not an LLM-fallback grade.
-    root = _node(_nid(52), node_type=NodeType.ROOT)
-    root.node_state = NodeState.VALIDATED
-    root.validation_method = ValidationMethod.DEDUCTIVE
-    case = _case([root])
-    assert cause_validation_is_fallback_only(case) is False
-
-
-# ---------------------------------------------------------------------------
-# Harvest bar from provenance (cause_is_runbook_grounded) — #590 A1/A2
-# ---------------------------------------------------------------------------
-
-
-def test_runbook_grounded_true_for_runbook_support():
-    case = _validated_root_case(["runbook"])
-    assert cause_is_runbook_grounded(case) is True
-
-
-def test_runbook_grounded_false_for_fallback_only():
-    case = _validated_root_case(["llm_fallback"])
-    assert cause_is_runbook_grounded(case) is False
-
-
-def test_runbook_grounded_true_when_any_support_is_runbook():
-    case = _validated_root_case(["llm_fallback", "runbook"])
-    assert cause_is_runbook_grounded(case) is True
-
-
-def test_runbook_grounded_true_for_deductive_root():
-    root = _node(_nid(53), node_type=NodeType.ROOT)
-    root.node_state = NodeState.VALIDATED
-    root.validation_method = ValidationMethod.DEDUCTIVE
-    case = _case([root])
-    assert cause_is_runbook_grounded(case) is True
-
-
-def test_runbook_grounded_false_when_no_validated_root():
-    # #590 A1: a RootCauseConclusion may carry ZERO causal graph (pure LLM prose).
-    # With no validated root there is nothing authority-grounded, so harvest must be
-    # held. The negative "fallback-only" view returns False here too — which is
-    # exactly why gating harvest on it leaked an ungrounded cause. The positive bar
-    # returns False (not grounded), closing the hole.
-    case = _case([])  # no nodes at all — bare RCC prose shape
-    assert cause_is_runbook_grounded(case) is False
-    assert cause_validation_is_fallback_only(case) is False  # the leak it replaces
-
-
-def test_runbook_support_validates_regardless_of_evidence_category():
-    # #590 A2: a runbook-provenance SUPPORTS is causal grounding even when the LLM
-    # filed the backing datum as SYMPTOM_EVIDENCE — the deterministic predicate
-    # fired against the telemetry, which is causal independent of the orthogonal
-    # category label. (Contrast test_symptom_backed_support_does_not_validate: a
-    # None-provenance, LLM-asserted symptom support does NOT validate.)
-    ev = _evidence("ev_rb_sym", EvidenceCategory.SYMPTOM_EVIDENCE)
-    root = _node(
-        _nid(54),
-        node_type=NodeType.ROOT,
-        links=[_plink("ev_rb_sym", EvidenceStance.SUPPORTS, "runbook")],
-    )
-    case = _case([root], evidence=[ev])
-    derive_node_states(case)
-    assert root.node_state == NodeState.VALIDATED
-    assert cause_is_runbook_grounded(case) is True
-
-
-# ---------------------------------------------------------------------------
-# The single assurance grade (grade_cause_assurance) + its shared primitive
-# ---------------------------------------------------------------------------
-
-
-def test_support_is_runbook_grounded_primitive():
-    # The one home for "runbook provenance is causal grounding". Only a
-    # runbook-provenance SUPPORTS qualifies — stance and provenance both matter.
-    assert (
-        support_is_runbook_grounded(_plink("ev_a", EvidenceStance.SUPPORTS, "runbook"))
-        is True
-    )
-    assert (
-        support_is_runbook_grounded(
-            _plink("ev_a", EvidenceStance.SUPPORTS, "llm_fallback")
-        )
-        is False
-    )
-    assert (
-        support_is_runbook_grounded(_plink("ev_a", EvidenceStance.SUPPORTS, None))
-        is False
-    )
-    # A runbook-provenance REFUTES is not a grounding SUPPORTS.
-    assert (
-        support_is_runbook_grounded(_plink("ev_a", EvidenceStance.REFUTES, "runbook"))
-        is False
-    )
-
-
-def test_grade_is_grounded_for_runbook_support():
-    case = _validated_root_case(["runbook"])
-    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
 
 
 def test_grade_is_grounded_for_deductive_root():
-    root = _node(_nid(55), node_type=NodeType.ROOT)
-    root.node_state = NodeState.VALIDATED
-    root.validation_method = ValidationMethod.DEDUCTIVE
-    case = _case([root])
+    # Proof-by-exclusion (§7.1.1) is the grounding arm: a DEDUCTIVE validated
+    # root clears the §7 harvest bar.
+    case = _case(
+        [_validated_root(method=ValidationMethod.DEDUCTIVE)],
+        evidence=[_evidence("ev_root", EvidenceCategory.CAUSAL_EVIDENCE)],
+    )
     assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
 
 
-def test_grade_is_fallback_only_for_lower_assurance_support():
-    case = _validated_root_case(["llm_fallback"])
+def test_grade_is_fallback_only_for_empirical_root():
+    # An EMPIRICAL (LLM-mediated) validation is graph-identified but NOT
+    # grounded — it must not auto-seed reusable knowledge.
+    case = _case(
+        [_validated_root(method=ValidationMethod.EMPIRICAL)],
+        evidence=[_evidence("ev_root", EvidenceCategory.CAUSAL_EVIDENCE)],
+    )
     assert grade_cause_assurance(case) == CauseAssuranceGrade.FALLBACK_ONLY
 
 
 def test_grade_is_no_root_for_bare_rcc():
-    # No validated root at all (#590 A1) — distinct from FALLBACK_ONLY. This is the
-    # state the negative "fallback-only" view conflated into False, leaking harvest.
-    case = _case([])
+    # No VALIDATED root at all (a pure LLM-authored conclusion, #590 A1) is
+    # NO_ROOT — distinct from fallback-only, and equally held back from harvest.
+    root = _node(_nid(0xA1), node_type=NodeType.ROOT)
+    case = _case([root])
     assert grade_cause_assurance(case) == CauseAssuranceGrade.NO_ROOT
 
 
-def test_boolean_views_agree_with_grade_across_all_states():
-    # The wrappers can never disagree with the grade — that consistency is the
-    # whole point of routing both through grade_cause_assurance.
-    cases = {
-        CauseAssuranceGrade.GROUNDED: _validated_root_case(["runbook"]),
-        CauseAssuranceGrade.FALLBACK_ONLY: _validated_root_case(["llm_fallback"]),
-        CauseAssuranceGrade.NO_ROOT: _case([]),
-    }
-    for grade, case in cases.items():
-        assert grade_cause_assurance(case) == grade
-        assert cause_is_runbook_grounded(case) is (
-            grade == CauseAssuranceGrade.GROUNDED
-        )
-        assert cause_validation_is_fallback_only(case) is (
-            grade == CauseAssuranceGrade.FALLBACK_ONLY
-        )
-
-
-# ---------------------------------------------------------------------------
-# Phase 0b — per-case grounded-root counter (count_grounded_roots).
-# Drift-lock: it mirrors grade_cause_assurance, so R1 equivalence
-# (grade == GROUNDED  iff  grounded_roots >= 1) must hold on every fixture.
-# ---------------------------------------------------------------------------
-
-
-def _both_arms_root_case() -> Case:
-    """One VALIDATED root grounded by BOTH arms — a runbook SUPPORTS link AND a
-    DEDUCTIVE validation_method. The overlap fixture for R2 sum-safety."""
-    ev = _evidence("ev_both", EvidenceCategory.CAUSAL_EVIDENCE)
-    root = _node(
-        _nid(60),
-        node_type=NodeType.ROOT,
-        links=[_plink("ev_both", EvidenceStance.SUPPORTS, "runbook")],
-    )
-    root.node_state = NodeState.VALIDATED
-    root.validation_method = ValidationMethod.DEDUCTIVE
-    return _case([root], evidence=[ev])
-
-
-def test_count_r1_equivalence_across_all_grades():
-    # The ratification test for R1: grade == GROUNDED  iff  grounded_roots >= 1, on
-    # the SAME fixtures the grade tests use. If these ever disagree the counter has
-    # drifted from the gate.
-    fixtures = {
-        CauseAssuranceGrade.GROUNDED: _validated_root_case(["runbook"]),
-        CauseAssuranceGrade.FALLBACK_ONLY: _validated_root_case(["llm_fallback"]),
-        CauseAssuranceGrade.NO_ROOT: _case([]),
-    }
-    for grade, case in fixtures.items():
-        tally = count_grounded_roots(case)
-        assert (tally.grounded_roots >= 1) is (
-            grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
-        )
-        assert grade_cause_assurance(case) == grade  # fixture sanity
-
-
-def test_count_runbook_arm_only():
-    tally = count_grounded_roots(_validated_root_case(["runbook"]))
-    assert tally.grounded_roots == 1
-    assert tally.runbook_arm == 1
-    assert tally.deductive_arm == 0
-    assert tally.validated_roots == 1
-
-
-def test_count_deductive_arm_only():
-    root = _node(_nid(56), node_type=NodeType.ROOT)
-    root.node_state = NodeState.VALIDATED
-    root.validation_method = ValidationMethod.DEDUCTIVE
-    tally = count_grounded_roots(_case([root]))
-    assert tally.grounded_roots == 1
-    assert tally.deductive_arm == 1
-    assert tally.runbook_arm == 0
-
-
-def test_count_r2_arms_are_non_exclusive_and_must_not_sum():
-    # A root grounded by both arms is ONE grounded root but appears in BOTH arm
-    # tallies — so runbook_arm + deductive_arm (2) > grounded_roots (1). Reporting the
-    # sum as the total would double-count; this pins the sum-safety invariant.
-    tally = count_grounded_roots(_both_arms_root_case())
-    assert tally.grounded_roots == 1
-    assert tally.runbook_arm == 1
-    assert tally.deductive_arm == 1
-    assert tally.runbook_arm + tally.deductive_arm > tally.grounded_roots
-
-
-def test_count_ignores_dangling_runbook_link():
-    # A runbook SUPPORTS link whose evidence was deleted (not in case.evidence) never
-    # grounds — mirrors grade_cause_assurance's dangling guard.
-    root = _node(
-        _nid(57),
-        node_type=NodeType.ROOT,
-        links=[_plink("ev_gone", EvidenceStance.SUPPORTS, "runbook")],
-    )
-    root.node_state = NodeState.VALIDATED
-    root.validation_method = ValidationMethod.EMPIRICAL
-    case = _case([root], evidence=[])  # dangling: evidence absent
-    tally = count_grounded_roots(case)
-    assert tally.grounded_roots == 0
-    assert tally.runbook_arm == 0
-    # Equivalence still holds: grade is not GROUNDED either.
-    assert grade_cause_assurance(case) != CauseAssuranceGrade.GROUNDED
-
-
-def test_count_links_fired_counts_intermediate_nodes_but_not_as_grounding():
-    # Leading indicator: a runbook predicate that fired on an INTERMEDIATE rung (no
-    # validated root yet) — the earliest proof the loop is alive, but NOT a grounded
-    # root. runbook_links_fired moves off 0 while grounded_roots stays 0.
-    ev = _evidence("ev_mid", EvidenceCategory.CAUSAL_EVIDENCE)
-    inter = _node(
-        _nid(58),
+def test_grade_ignores_non_root_deductive_nodes():
+    # Only a validated ROOT can ground the case grade; a deductively validated
+    # intermediate rung does not clear the bar.
+    rung = CausalNode(
+        node_id=_nid(0xA2),
+        statement="an intermediate rung",
         node_type=NodeType.INTERMEDIATE,
-        links=[_plink("ev_mid", EvidenceStance.SUPPORTS, "runbook")],
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.DEDUCTIVE,
+        belief=0.9,
+        actionable=False,
+        evidence_links=[_link("ev_rung", EvidenceStance.SUPPORTS)],
+        generated_at_turn=1,
     )
-    case = _case([inter], evidence=[ev])
-    tally = count_grounded_roots(case)
-    assert tally.grounded_roots == 0
-    assert tally.validated_roots == 0
-    assert tally.runbook_links_fired == 1
-
-
-# ---------------------------------------------------------------------------
-# Phase 0b — grounding baseline aggregation (compute_grounding_baseline).
-# R3: the denominator is the retrieval marker (runbook_retrieved), NEVER the
-# verdict-gated differential_runbook_ids — so a non-zero denominator can sit
-# over a zero numerator (the dead-arm baseline this metric exists to expose).
-# ---------------------------------------------------------------------------
-
-
-def test_baseline_r3_denominator_excludes_non_retrieved_cases():
-    # A grounded case that never had a runbook retrieved is NOT in the matching-runbook
-    # population — it must not inflate the denominator.
-    grounded = _validated_root_case(["runbook"])
-    grounded.runbook_retrieved = False
-    baseline = compute_grounding_baseline([grounded])
-    assert baseline.population == 0
-    assert baseline.grounded_rate == 0.0
-
-
-def test_baseline_r3_non_circular_zero_numerator_over_nonzero_denominator():
-    # The finding this metric was built to surface: cases WHERE a runbook was retrieved
-    # (real denominator) but nothing grounded (dead arms) — a 7%-style dead baseline,
-    # distinct from a meaningless 0/0.
-    retrieved_but_ungrounded = _validated_root_case(["llm_fallback"])
-    retrieved_but_ungrounded.runbook_retrieved = True
-    baseline = compute_grounding_baseline([retrieved_but_ungrounded])
-    assert baseline.population == 1  # denominator is real
-    assert baseline.grounded_roots == 0  # numerator is dead
-    assert baseline.runbook_arm_roots == 0
-    assert baseline.deductive_arm_roots == 0
-
-
-def test_baseline_counts_grounded_case_in_population():
-    grounded = _validated_root_case(["runbook"])
-    grounded.runbook_retrieved = True
-    baseline = compute_grounding_baseline([grounded])
-    assert baseline.population == 1
-    assert baseline.cases_grounded == 1
-    assert baseline.grounded_roots == 1
-    assert baseline.runbook_arm_roots == 1
-    assert baseline.grounded_rate == 1.0
-
-
-def test_baseline_terminal_scope_filters_non_terminal_cases():
-    investigating = _validated_root_case(["runbook"])
-    investigating.runbook_retrieved = True
-    investigating.state = CaseState.INVESTIGATING
-    resolved = _validated_root_case(["runbook"])
-    resolved.runbook_retrieved = True
-    # Bypass the RESOLVED cross-field validator (needs resolved_at/closed_at/closure
-    # metadata) — the aggregation only reads case.state, so the disposition timestamps
-    # are irrelevant to this test.
-    object.__setattr__(resolved, "state", CaseState.RESOLVED)
-
-    all_scope = compute_grounding_baseline([investigating, resolved], scope="all")
-    terminal_scope = compute_grounding_baseline(
-        [investigating, resolved], scope="terminal"
+    case = _case(
+        [rung], evidence=[_evidence("ev_rung", EvidenceCategory.CAUSAL_EVIDENCE)]
     )
-    assert all_scope.population == 2  # both reached INVESTIGATING
-    assert terminal_scope.population == 1  # only the RESOLVED case is harvest-ready
-
-
-def test_baseline_empty_population_rate_is_zero():
-    baseline = compute_grounding_baseline([])
-    assert baseline.population == 0
-    assert baseline.grounded_rate == 0.0
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.NO_ROOT

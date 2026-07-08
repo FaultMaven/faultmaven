@@ -118,11 +118,8 @@ Expected output: `ContributorInsightsStatus` transitions to `ENABLED`; the resul
 **Indicators:**
 - root: [Step 5] Contributor Insights "most throttled keys" graph is dominated by one or a few partition-key values
 - s1: [Step 3] consumed capacity is far below provisioned capacity while throttling persists
-  <!-- match: {"step": 3, "predicate": "threshold", "op": "lt", "value": 0.7} -->
 - s2: [Step 1] ThrottledRequests Sum > 0 on the base table
-  <!-- match: {"step": 1, "predicate": "threshold", "op": "gt", "value": 0} -->
 - D: [Symptom] application logs show ProvisionedThroughputExceededException
-  <!-- match: {"step": 1, "predicate": "contains", "target": "ProvisionedThroughputExceededException"} -->
 **Interventions:**
 - **remediation** (root): Redesign the partition key for high cardinality and uniform access — switch to a key with many distinct values, or add a calculated write-sharding suffix so writes spread across N logical partitions; backfill into a new table and repoint the application.
 
@@ -153,7 +150,6 @@ Expected output: `ContributorInsightsStatus` transitions to `ENABLED`; the resul
 - D: requests are throttled with ProvisionedThroughputExceededException
 **Indicators:**
 - root: [Step 4] describe-table shows `BillingMode` PROVISIONED with low ProvisionedThroughput relative to load
-  <!-- match: {"step": 4, "predicate": "contains", "target": "PROVISIONED"} -->
 - s1: [Step 3] Average/Maximum consumed capacity is at or near provisioned units (not a hot-partition pattern)
 - D: [Step 1] ThrottledRequests Sum > 0 across many keys
 **Interventions:**
@@ -188,10 +184,8 @@ Expected output: `ContributorInsightsStatus` transitions to `ENABLED`; the resul
 **Indicators:**
 - root: [Step 4] describe-table shows the GSI key schema uses a low-cardinality attribute and/or low ProvisionedThroughput
 - s1: [Step 2] WriteThrottleEvents Sum > 0 when the GlobalSecondaryIndexName dimension is supplied
-  <!-- match: {"step": 2, "predicate": "threshold", "op": "gt", "value": 0} -->
 - s2: [Step 1] base-table ThrottledRequests Sum > 0 with no base-table hot key in Step 5
 - D: [Symptom] write paths log ThrottlingException / ProvisionedThroughputExceededException
-  <!-- match: {"step": 1, "predicate": "contains", "target": "ThrottlingException"} -->
 **Interventions:**
 - **remediation** (root): Give the GSI a higher-cardinality partition key (or add a sharding suffix), and/or provision the GSI's write capacity to match the base-table write rate.
 
@@ -223,7 +217,6 @@ Expected output: `ContributorInsightsStatus` transitions to `ENABLED`; the resul
 - root: [Symptom] client config shows retries set to 0 or a custom client that bypasses SDK backoff
 - s1: [Step 1] ThrottledRequests appears in brief bursts that resolve on their own within minutes
 - D: [Symptom] application surfaces ProvisionedThroughputExceededException instead of silently succeeding on retry
-  <!-- match: {"step": 1, "predicate": "contains", "target": "ProvisionedThroughputExceededException"} -->
 **Interventions:**
 - **defensive_fix** (s1): Use the AWS SDK default retry/backoff (progressively longer waits — e.g. up to 50 ms, then 100 ms, then 200 ms) and raise max retry attempts; for batch operations, back off the whole batch so the individual requests are far more likely to succeed.
 
