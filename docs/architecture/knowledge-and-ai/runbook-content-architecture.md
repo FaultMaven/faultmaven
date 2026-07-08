@@ -193,6 +193,21 @@ validate/refute/demote unit and maps cleanly to the engine's single-root
 
 ### Match surface vs validation surface — `Statement` matches, predicates validate
 
+> **⚠️ NOT ADOPTED — NO-GO 2026-07-08 (human sign-off).** The `<!-- match -->`
+> **predicate / validation-surface layer described in this subsection is retired.**
+> The deterministic runbook-cause-matcher it feeds was ruled out: the soundness
+> guarantees are held by the LLM+RAG path + insufficient-evidence handoff
+> (`project` verification-status §5b), the live sim showed no collapse the arm
+> uniquely prevents, and issue **#656** showed the arm is directionally *harmful*
+> (it adds a second auto-firing path into the over-validation gate that produced a
+> wrong conclusion). **The runbook structure is `Statement` + `Chain` +
+> `Interventions` only; predicates are a rejected alternative.** The shipped
+> corpus already carries **zero** `<!-- match -->` blocks. The prose below is
+> retained pending the code decommission (matcher module, flag, differential-intake,
+> `<!-- match -->` grammar) — after which this subsection collapses to the single
+> match rule (`Statement` symptom-level + sibling-MECE) and this note is removed.
+> Do **not** author predicates.
+
 A Cause has **three** distinct jobs, and they run on **different surfaces**:
 
 1. **Matching** (does this cause explain the case?) is judged holistically over

@@ -1,5 +1,12 @@
 # Runbook Cause Matcher — Increment 5 Sim Validation Plan
 
+> ⛔ **NOT ADOPTED — NO-GO 2026-07-08 (human sign-off).** This validation plan is
+> **superseded**: the matcher is retired, not defaulted on. The one live sim that ran
+> (isolated instance, 2026-07-08) showed the model concluded correctly unaided — no
+> collapse the arm uniquely prevents — and issue **#656** showed the arm is
+> directionally harmful. See [runbook-cause-matching.md](./runbook-cause-matching.md)
+> status. Kept as historical record.
+
 **Purpose:** behaviorally validate the runbook Cause matcher against a *live* API
 server (via `fm-sre-simulator`) before the flag is defaulted on. The unit + the
 in-process e2e suites prove the wiring is correct and sound *by construction*;

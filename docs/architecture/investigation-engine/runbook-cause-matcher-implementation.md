@@ -1,5 +1,13 @@
 # Runbook Cause Matcher — Implementation Plan
 
+> ⛔ **NOT ADOPTED — NO-GO 2026-07-08 (human sign-off).** The matcher is **retired**,
+> not flipped. See [runbook-cause-matching.md](./runbook-cause-matching.md) status for
+> the rationale (necessity settled by verification-status §5b; live sim showed no
+> collapse; issue **#656** showed the arm is directionally harmful). The module, flag,
+> differential-intake grounding, and `<!-- match -->` grammar are scheduled for
+> decommission (`docs/working/PLAN-runbook-template-execution.md`). This plan is kept
+> as historical record of what was built.
+
 **Document Type:** Implementation companion to
 [runbook-cause-matching.md](./runbook-cause-matching.md) (the component spec).
 **Status:** Built behind a flag — increments 1–5 landed (PRs #534–#541). The
