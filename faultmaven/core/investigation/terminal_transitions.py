@@ -955,8 +955,9 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
             if root_cause_unverified:
                 missing_desc.append(
                     "- a verified root cause (one is identified, but it rests on "
-                    "lower-assurance evidence — confirm it by ruling out the "
-                    "alternatives before it can seed a runbook)"
+                    "lower-assurance evidence, so it won't auto-seed a runbook — "
+                    "if you've confirmed it yourself, document it via "
+                    "'Create runbook' / POST /knowledge/runbooks/create)"
                 )
             elif not has_root_cause:
                 missing_desc.append("- identified root cause")

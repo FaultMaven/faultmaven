@@ -26,11 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import (
-    Base,
-    EnterpriseModel,
-    OrganizationModel,
-)
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.knowledge.domain.models.knowledge_item import VerificationLevel
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
@@ -38,6 +34,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
     DatabaseKnowledgeItemRepository,
 )
+from tests.utils import seed_organizations
 
 pytestmark = pytest.mark.integration
 
@@ -45,7 +42,6 @@ pytestmark = pytest.mark.integration
 # Stable for ``cause-lifecycle-sample-runbook``.
 RUNBOOK_ITEM_ID = "kb_62620ab62e3f"
 DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
-DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 
 GOLDEN_CAUSES = (
     Path(__file__).resolve().parents[3]  # .../tests
@@ -114,20 +110,9 @@ async def seeded_service(session_factory):
     org so the knowledge_items FK is satisfied); only the ChromaDB write is
     mocked so we can assert SQL persistence of ``metadata['causes']``."""
     async with session_factory() as session:
-        session.add(
-            EnterpriseModel(
-                enterprise_id=DEFAULT_ENTERPRISE_ID, name="Default", slug="default"
-            )
-        )
-        session.add(
-            OrganizationModel(
-                organization_id=DEFAULT_ORG_ID,
-                enterprise_id=DEFAULT_ENTERPRISE_ID,
-                name="Default Org",
-                slug="default-org",
-            )
-        )
-        await session.commit()
+        # Shared tenancy seed (tests/utils) — the enterprise+org FK chain the
+        # knowledge_items row needs, kept in one place across suites.
+        await seed_organizations(session, [DEFAULT_ORG_ID])
 
     service = KnowledgeService(
         knowledge_ingester=MagicMock(),

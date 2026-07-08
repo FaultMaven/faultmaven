@@ -9,8 +9,6 @@ an unanswerable ask must never permanently hide an answerable discriminator.
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 import pytest
 
 from faultmaven.core.investigation.evidence_need_surfacing import (
@@ -28,13 +26,14 @@ from faultmaven.modules.case.contracts import (
     NeedState,
     ProblemVerification,
 )
+from tests.utils import generate_case_id, generate_evidence_id
 
 pytestmark = pytest.mark.unit
 
 
 def _case() -> Case:
     case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
+        case_id=generate_case_id(),
         user_id="u",
         organization_id="o",
         title="t",
@@ -184,7 +183,7 @@ def test_surfaced_excludes_symptom_and_non_outstanding():
         case,
         "already collected",
         state=NeedState.FULFILLED,
-        fulfilling_evidence_ids=["ev_000000000000"],
+        fulfilling_evidence_ids=[generate_evidence_id()],
     )
     surfaced = select_surfaced_causal_needs(case)
     assert len(surfaced) == 2  # only the 2 outstanding causal needs

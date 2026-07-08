@@ -66,8 +66,6 @@ def grade_cause_assurance(case: "Case") -> CauseAssuranceGrade:
     validated_roots = _validated_roots(case)
     if not validated_roots:
         return CauseAssuranceGrade.NO_ROOT
-
-    for root in validated_roots:
-        if root.validation_method == ValidationMethod.DEDUCTIVE:
-            return CauseAssuranceGrade.GROUNDED
+    if any(r.validation_method == ValidationMethod.DEDUCTIVE for r in validated_roots):
+        return CauseAssuranceGrade.GROUNDED
     return CauseAssuranceGrade.FALLBACK_ONLY

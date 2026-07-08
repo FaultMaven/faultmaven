@@ -1320,10 +1320,14 @@ class KnowledgeService:
             created_at=now,
             updated_at=now,
             # v4 per-Cause graph records, stored verbatim (absent/None on the
-            # upload path and pre-v4 runbooks). Co-located in the row so the
-            # orphan-prune removes them with it and a content-body change
-            # refreshes them on re-ingest — NOTE a causes-only pack change
-            # (unchanged markdown) is skipped by the content-hash gate.
+            # upload path and pre-v4 runbooks). No runtime reader today —
+            # retained DELIBERATELY: the shape is the cross-repo pack contract
+            # (test_runbook_causes_contract), and the causal-chain structure is
+            # the KB's machine-readable form for future engine alignment.
+            # Co-located in the row so the orphan-prune removes them with it
+            # and a content-body change refreshes them on re-ingest — NOTE a
+            # causes-only pack change (unchanged markdown) is skipped by the
+            # content-hash gate.
             metadata={"causes": causes} if causes else None,
         )
         async with self._db_session_factory() as session:
