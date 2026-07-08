@@ -46,7 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration Chain** (linear; current head is `f5a6b7c8d9e0`):
+**Migration Chain** (linear; current head is `e6f7a8b9c0d1`):
 
 | # | Revision | Description |
 | --- | --- | --- |
@@ -66,6 +66,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | 017–021 | … | (rows omitted — see alembic/versions: config-override source/category (017), RLS tenant isolation (018), causal-graph chain model (019), node-evidence provenance (020), evidence-need obtainability (021)) |
 | 022 | `d3e4f5a6b7c8` | PostgreSQL type-divergence fixes (forward ALTERs; PG-only, no-op on SQLite): `uploaded_files.coverage_start_ts`/`coverage_end_ts` → `TIMESTAMPTZ` (were naive `TIMESTAMP` from 010; the model is `DateTime(timezone=True)` and the app binds tz-aware datetimes, which asyncpg's naive codec rejected); `evidence.advances_milestones` → `VARCHAR(50)[]` (was `TEXT` from 009; the model's `TagsArray` binds a Python list on PG). Both were invisible on SQLite (loosely typed) and 500'd only on real PostgreSQL. |
 | 023 | `f5a6b7c8d9e0` | Enrol the causal-graph tables (`causal_nodes`, `causal_edges`, `causal_node_evidence`) in RLS tenant isolation — they carry `organization_id` but were added after migration 018 and never enrolled. Applies the identical `<table>_tenant_isolation` policy. PostgreSQL-only. |
+| 024 | `e6f7a8b9c0d1` | Drop `causal_node_evidence.provenance` and its value CHECK (`causal_node_evidence_provenance_check`, from migration 020). The column served the retired runbook-cause-matcher grounding arm (#658); node grounding now reads the backing datum's `CAUSAL_EVIDENCE` category only. |
 
 **Active Implementations**:
 
@@ -1751,7 +1752,7 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply migrations via alembic (chain head: f5a6b7c8d9e0)
+# Apply migrations via alembic (chain head: e6f7a8b9c0d1)
 alembic upgrade head
 
 # Verify all tables created

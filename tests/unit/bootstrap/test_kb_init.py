@@ -652,8 +652,8 @@ class TestReconcileVectors:
 
 
 # ---------------------------------------------------------------------------
-# Runbook-cause matcher, increment 1: persist the per-Cause graph record
-# (see docs/architecture/investigation-engine/runbook-cause-matcher-implementation.md)
+# Per-Cause graph record persistence (the app half of the cross-repo pack
+# contract — see tests/integration/modules/knowledge/test_runbook_causes_contract.py)
 # ---------------------------------------------------------------------------
 
 
@@ -675,9 +675,6 @@ async def test_ingest_runbook_persists_causes_to_metadata(fk_on_ingest_service):
             "cause_letter": "A",
             "cause_statement": "idle txns exhaust the pool",
             "chain_nodes": [{"ref": "root", "node_type": "root", "statement": "x"}],
-            "match_predicates": [
-                {"step": 2, "predicate": "contains", "target": "idle"}
-            ],
             "is_fallback_cause": False,
         },
         {"cause_letter": "Z", "is_fallback_cause": True},

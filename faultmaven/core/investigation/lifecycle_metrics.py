@@ -142,36 +142,3 @@ evidence_need_id_dropped_total = Counter(
     "references on the suggestion side.",
     ["reason"],
 )
-
-
-# Runbook Cause matcher resilience telemetry. The matcher is a *prior, not a
-# gate*: a per-runbook failure (resolver returned a non-iterable, a malformed
-# stored Cause, or an evaluation error) is swallowed so it can never break the
-# turn. That safety also makes failures INVISIBLE — a runbook whose stored
-# causes are persistently malformed would silently never match, with no signal
-# beyond a warning log. This counter surfaces the swallow rate so a spike (e.g.
-# a KB-pack regression that corrupts ``metadata["causes"]``) is alertable rather
-# than buried. Healthy systems sit at ~zero; a sustained nonzero rate points at
-# bad stored KB metadata or an evaluator regression, NOT a user-facing error.
-runbook_cause_match_skipped_total = Counter(
-    "faultmaven_runbook_cause_match_skipped_total",
-    "Runbook Cause matcher skipped a retrieved runbook because resolving / "
-    "parsing / evaluating its causes raised; the failure is swallowed so the "
-    "turn never breaks. Sustained nonzero ⇒ malformed stored KB causes or an "
-    "evaluator regression.",
-)
-
-# Coarser companion to the per-runbook counter above: the ENTIRE matcher pass
-# (``apply_runbook_cause_matcher``) raised and was swallowed at the engine level
-# so the turn never breaks. This is the failure mode for bugs in the matcher's
-# own machinery — instantiation, the differential-id recording, hypothesis
-# attachment — which the per-runbook counter (scoped inside ``aget_cause_matches``)
-# cannot see. Without it, a regression in the matcher silently no-ops every turn
-# with the per-runbook counter stuck at zero. Sustained nonzero ⇒ a matcher bug,
-# not bad KB data.
-runbook_cause_matcher_errored_total = Counter(
-    "faultmaven_runbook_cause_matcher_errored_total",
-    "The whole runbook Cause matcher pass raised for a case and was swallowed "
-    "at the engine level (a prior must never break the turn). Sustained nonzero "
-    "⇒ a bug in the matcher's own machinery, distinct from per-runbook KB skips.",
-)

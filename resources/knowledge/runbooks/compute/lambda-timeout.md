@@ -164,9 +164,7 @@ Expected output: `Maximum` concurrency per minute. Sustained high concurrency ap
 
 **Indicators:**
 - root: [Step 2] `INIT_START` appears in the log stream and `Task timed out after` follows in the same invocation
-  <!-- match: {"step": 2, "predicate": "contains", "target": "INIT_START"} -->
 - s1: [Step 3] `maxInitMs` is close to or exceeds the configured timeout in milliseconds
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "maxInitMs", "op": ">", "value": 2500} -->
 - s2: [Step 3] `coldStarts` count is high relative to `invocations` (e.g., >20% cold-start rate)
 
 **Interventions:**
@@ -215,7 +213,6 @@ Expected output: `Maximum` concurrency per minute. Sustained high concurrency ap
 
 **Indicators:**
 - root: [Step 7] X-Ray subsegment for a specific downstream call (DynamoDB, RDS, HTTP) shows duration equal to total trace duration
-  <!-- match: {"step": 7, "predicate": "contains", "target": "HasError"} -->
 - s1: [Step 2] Application logs show the function reaching the downstream call but no response log after it
 - s2: [Symptom] Duration in REPORT line equals the configured timeout consistently across invocations
 
@@ -265,7 +262,6 @@ Expected output: `Maximum` concurrency per minute. Sustained high concurrency ap
 
 **Indicators:**
 - root: [Step 1] `MemorySize` is 128 or 256 MB
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "MemorySize", "op": "<", "value": 512} -->
 - s1: [Step 4] `peakMemBytes` is well below the `MemorySize` allocation (not memory-bound), yet `avgMs` is high
 - s2: [Step 2] No downstream service call in logs immediately before timeout — function appears to time out inside CPU-bound code
 
@@ -312,9 +308,7 @@ Expected output: `Maximum` concurrency per minute. Sustained high concurrency ap
 **Indicators:**
 - root: [Step 1] `VpcConfig.SubnetIds` is non-empty (function is VPC-attached)
 - s1: [Step 5] `AvailableIPs` for one or more subnets is below 10
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "AvailableIPs", "op": "<", "value": 10} -->
 - s1: [Step 6] No route with `NatGatewayId` exists for `0.0.0.0/0` in the subnet route table
-  <!-- match: {"step": 6, "predicate": "absent", "target": "NatGatewayId"} -->
 
 **Interventions:**
 - **mitigation** (s1): Add gateway VPC endpoints so AWS-service calls bypass the missing NAT path at no hourly charge.
@@ -376,7 +370,6 @@ Expected output: `Maximum` concurrency per minute. Sustained high concurrency ap
 **Indicators:**
 - root: [Step 2] Function logs show the same event payload pattern repeating across multiple log streams
 - s1: [Step 8] `Maximum` concurrent executions is at or near the account concurrency limit (default 1000)
-  <!-- match: {"step": 8, "predicate": "threshold", "target": "Maximum", "op": ">", "value": 800} -->
 - s2: [Symptom] Lambda `Throttles` metric is also elevated simultaneously with `Errors`
 
 **Interventions:**

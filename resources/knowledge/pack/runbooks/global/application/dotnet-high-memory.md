@@ -93,7 +93,6 @@ Expected output: the `configProperties` block (e.g. `System.GC.Server`, `System.
 - D: working set hits the container/process limit and OutOfMemoryException / OOMKilled occurs
 **Indicators:**
 - root: [Step 3] `gcroot` traces the leaked instance up through a static field or cache/collection root (e.g. `CustomerCache -> List<Customer> -> Customer`)
-  <!-- match: {"step": 3, "predicate": "contains", "target": "gcroot"} -->
 - s1: [Step 3] `dumpheap -stat` shows one or few application types with an enormous `Count` and `TotalSize`
 - s2: [Step 1] `dotnet.gc.last_collection.heap.size` gen2 bucket increases across refreshes and never drops after load
 - D: [Symptom] `OutOfMemoryException` or `OOMKilled` / exit code 137
@@ -124,7 +123,6 @@ Expected output: the `configProperties` block (e.g. `System.GC.Server`, `System.
 - D: working set grows and/or a large allocation throws OutOfMemoryException despite apparent free space
 **Indicators:**
 - root: [Step 3] `dumpheap -stat` shows large `System.Byte[]` / `System.Char[]` / `System.Object[]` rows and a high `Free` count interleaved on the LOH
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Free"} -->
 - s1: [Step 1] `dotnet.gc.last_collection.heap.fragmentation.size` loh bucket is large relative to the loh `heap.size`
 - s2: [Step 1] loh `heap.size` stays high while live large-object bytes (from Step 4 report) are comparatively small
 - D: [Symptom] `OutOfMemoryException` raised on a large allocation
@@ -158,7 +156,6 @@ Expected output: the `configProperties` block (e.g. `System.GC.Server`, `System.
 **Indicators:**
 - root: [Step 4] `dotnet-gcdump report` shows high `Count` for short-lived-looking app types, indicating a high allocation rate funneled into gen2
 - s1: [Step 1] `dotnet.gc.collections` gen2 count increments rapidly relative to gen0/gen1
-  <!-- match: {"step": 1, "predicate": "contains", "target": "dotnet.gc.collections"} -->
 - s2: [Step 1] `dotnet.gc.pause.time` is elevated and correlates with the gen2 count increments
 - D: [Symptom] request latency spikes correlated with `dotnet.gc.pause.time`
 **Interventions:**
@@ -187,7 +184,6 @@ Expected output: the `configProperties` block (e.g. `System.GC.Server`, `System.
 - D: OutOfMemoryException is thrown despite available container memory
 **Indicators:**
 - root: [Step 5] `runtimeconfig.json` / env shows `System.GC.HeapHardLimit` or `DOTNET_GCHeapHardLimit` set low, or container limit small with the 75% default in effect
-  <!-- match: {"step": 5, "predicate": "contains", "target": "HeapHardLimit"} -->
 - s1: [Step 1] `dotnet.gc.last_collection.heap.size` total plateaus exactly at the configured limit just before the failure
 - D: [Symptom] `OutOfMemoryException` with the working set well under the container memory limit
 **Interventions:**

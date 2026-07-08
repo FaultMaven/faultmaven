@@ -115,9 +115,7 @@ Expected output: A list of PriorityClass objects with their numeric values, and 
 - root: [Step 5] `qosClass` is `BestEffort` or `Burstable` and memory limit is absent or much larger than request.
 - s1: [Step 3] node memory allocation/usage is near capacity with no headroom.
 - s2: [Step 2] `MemoryPressure` condition is `True`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "MemoryPressure  True"} -->
 - D: [Step 1] `Message` contains `low on resource: memory`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "low on resource: memory"} -->
 
 **Interventions:**
 - **remediation** (root): Right-size memory requests and limits for all containers in the affected deployment, using observed peak usage from Step 3 as the baseline for requests. Cluster-wide improvement in scheduler bin-packing; requires a rolling restart. Rollback by setting values back to previous or removing limits.
@@ -157,7 +155,6 @@ Expected output: A list of PriorityClass objects with their numeric values, and 
 - root: [Step 5] `limits.ephemeral-storage` is set and Step 4 shows the pod's volume directory near that size.
 - s1: [Step 2] `DiskPressure` may be `False` — this is a per-pod limit, not a node-level signal.
 - D: [Step 1] `Message` contains `ephemeral-storage`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "ephemeral-storage"} -->
 
 **Interventions:**
 - **remediation** (root): Identify what consumes ephemeral storage, then bound it — fix the writer or add `sizeLimit` to unbounded emptyDir volumes. Single deployment; requires a rolling restart. Rollback by reverting `sizeLimit`/`limits.ephemeral-storage` if the app cannot tolerate the cap.
@@ -195,9 +192,7 @@ Expected output: A list of PriorityClass objects with their numeric values, and 
 
 **Indicators:**
 - root: [Step 4] Filesystem at `/var/lib/containerd` or `/var/log/pods` is above 90% full.
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "disk_pct", "op": ">", "value": 0.90} -->
 - s2: [Step 2] `DiskPressure` condition is `True`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "DiskPressure  True"} -->
 - D: [Step 1] `Message` contains `nodefs` or `imagefs`.
 
 **Interventions:**
@@ -251,7 +246,6 @@ Expected output: A list of PriorityClass objects with their numeric values, and 
 - s1: [Step 4] `df -hi` shows inode usage at or near 100% while `df -h` shows available space.
 - s2: [Step 2] `DiskPressure` condition is `True`.
 - D: [Step 1] `Message` contains `inodes`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "inodes"} -->
 
 **Interventions:**
 - **remediation** (root): Identify the pod or process producing the files and fix the root cause (common culprits: logging frameworks writing per-request files, unmanaged temp dirs), then verify inode recovery.
@@ -292,9 +286,7 @@ Expected output: A list of PriorityClass objects with their numeric values, and 
 
 **Indicators:**
 - root: [Step 1] `Message` contains `pid`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "pid"} -->
 - s2: [Step 2] `PIDPressure` condition is `True`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "PIDPressure  True"} -->
 - D: [Symptom] System-wide process creation failures or fork errors appear in application logs.
 
 **Interventions:**
@@ -349,7 +341,6 @@ Expected output: A list of PriorityClass objects with their numeric values, and 
 
 **Indicators:**
 - root: [Step 7] Evicted pod has no PriorityClass or a low numeric value (below 1000).
-  <!-- match: {"step": 7, "predicate": "absent", "target": "spec.priorityClassName"} -->
 - s2: [Step 7] Other pods on the same node have higher PriorityClass values.
 - D: [Step 5] `qosClass` is `Burstable` or `Guaranteed` but the pod was still evicted.
 

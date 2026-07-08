@@ -170,9 +170,7 @@ Expected output: tables with `dead_pct` above 20% are bloated — queries must r
 
 **Indicators:**
 - root: [Step 4] Table appears with a high `excess_seq_scans` value.
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "excess_seq_scans", "op": ">", "value": 1000} -->
 - s1: [Step 3] Plan contains `Seq Scan on <table>` where `rows` is large (thousands or more).
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Seq Scan"} -->
 
 **Interventions:**
 - **remediation** (root): create the missing index so the planner can use an index scan. Use a partial index when queries filter on a common condition.
@@ -208,7 +206,6 @@ Expected output: tables with `dead_pct` above 20% are bloated — queries must r
 
 **Indicators:**
 - root: [Step 6] Table appears with `n_mod_since_analyze` exceeding 10% of `n_live_tup`.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "n_mod_since_analyze_ratio", "op": ">", "value": 0.10} -->
 - s1: [Step 3] Estimated `rows` in plan differs from `actual rows` by more than 10x.
 
 **Interventions:**
@@ -246,7 +243,6 @@ Expected output: tables with `dead_pct` above 20% are bloated — queries must r
 **Indicators:**
 - root: [Step 1] Query has high `mean_exec_time` while `shared_blks_read` is only moderate — execution time is disproportionate to block reads.
 - s1: [Step 3] Plan shows `Sort Method: external merge Disk` or `Batches: N` greater than 1 on a Hash node.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "external merge Disk"} -->
 
 **Interventions:**
 - **remediation** (root): raise `work_mem` persistently for the workload's role.
@@ -282,7 +278,6 @@ Expected output: tables with `dead_pct` above 20% are bloated — queries must r
 
 **Indicators:**
 - root: [Step 7] Table has `dead_pct` above 20% and appears in top results.
-  <!-- match: {"step": 7, "predicate": "threshold", "target": "dead_pct", "op": ">", "value": 20} -->
 - s1: [Step 3] Plan shows higher-than-expected cost for a table whose row count alone does not justify it.
 
 **Interventions:**
@@ -319,7 +314,6 @@ Expected output: tables with `dead_pct` above 20% are bloated — queries must r
 
 **Indicators:**
 - root: [Step 3] Plan shows `SubPlan` or `InitPlan` nodes with a high `loops` count equal to the outer row count.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "SubPlan"} -->
 - s1: [Step 2] Query has very high `rows_per_call` but the number does not match expected business logic result size.
 
 **Interventions:**
@@ -350,7 +344,6 @@ Expected output: tables with `dead_pct` above 20% are bloated — queries must r
 **Indicators:**
 - root: [Step 1] High `stddev_exec_time` relative to `mean_exec_time` for the same `queryid` (variable performance across executions).
 - s1: [Step 3] Plan shows `Seq Scan` but adding `WHERE column = <literal>` produces an index scan in a separate EXPLAIN.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Generic Plan"} -->
 
 **Interventions:**
 - **remediation** (root): force custom plans for the affected application role.

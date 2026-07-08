@@ -2693,19 +2693,6 @@ class NodeEvidenceLink(BaseModel):
         description="Confidence in the stance assessment (0.0-1.0)",
     )
 
-    provenance: Optional[Literal["runbook", "llm_fallback"]] = Field(
-        default=None,
-        description=(
-            "How the deterministic intake evaluator determined this link's "
-            "stance: 'runbook' = an expert-authored predicate fired against the "
-            "telemetry (sound); 'llm_fallback' = the LLM's own predicate, "
-            "re-checked (lower-assurance). None = a legacy / LLM-asserted link not "
-            "produced by intake evaluation, treated as lower-assurance for the "
-            "sound-tier cause check. Mirrors "
-            "differential_intake.StanceVerdict.provenance."
-        ),
-    )
-
     linked_at_turn: int = Field(
         default=0, ge=0, description="Turn when the link was established"
     )
@@ -4225,41 +4212,6 @@ class Case(BaseModel):
             "Populated at INQUIRY→INVESTIGATING (symptom search) and when "
             "root_cause_identified completes (remediation search). Included "
             "in the LLM context as historical suggestions, not absolute truths."
-        ),
-    )
-
-    differential_runbook_ids: List[str] = Field(
-        default_factory=list,
-        description=(
-            "Matched runbook id(s) backing the case's candidate differential. "
-            "Stamped by the runbook Cause matcher; the per-turn intake hook "
-            "re-resolves these into ActiveCauses to evaluate evidence against. "
-            "Held at the case level (not on a causal node) so it survives node "
-            "pruning / hypothesis re-rooting. Read via "
-            "``runbook_cause_matcher.differential_runbook_ids``."
-        ),
-    )
-
-    runbook_retrieved: bool = Field(
-        default=False,
-        description=(
-            "Whether the Cause matcher found >=1 MATCHABLE runbook on any turn of "
-            "this case — i.e. ``aget_cause_matches`` returned a non-empty list — set "
-            "at retrieval time, BEFORE the single/multiple/none verdict gate. Scope "
-            "note: 'matchable' means a retrieved runbook with a resolvable v4 causes "
-            "record; pre-v4 / upload-path runbooks (no chain to match) are excluded, "
-            "so this is narrower than raw retrieval — and deliberately so: only a "
-            "runbook with predicates can ever ground a cause, so v4-matchable is the "
-            "correct grounding denominator. This is the gate-independent R3 "
-            "denominator for the grounding baseline metric: it marks the "
-            "matching-runbook population WITHOUT depending on the verdict-gated "
-            "``differential_runbook_ids`` (which is written only on a 'single' "
-            "verdict, so using it as the denominator would divide by the very "
-            "seeding gap the metric measures). Boolean, not a count, on purpose: "
-            "the matcher is one-shot on the productive path but re-fires each turn "
-            "on the unproductive path, so a count would be a misleading throughput "
-            "signal; membership (>=1 ever matched) is exactly what R3 needs. "
-            "Parallels post-Part-A ``differential_runbook_ids != []``."
         ),
     )
 

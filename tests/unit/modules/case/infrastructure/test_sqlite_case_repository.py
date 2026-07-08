@@ -350,34 +350,6 @@ class TestRelatedDataRoundTrip:
         assert summaries == {"evidence one", "evidence two"}
 
     @pytest.mark.asyncio
-    async def test_round_trips_differential_runbook_ids(self, repository):
-        # The durable case-level home for the matcher's differential — a
-        # node-metadata stamp would be lost on re-root/prune, so it must survive
-        # save→load at the case level instead.
-        case = _make_case()
-        case.differential_runbook_ids = ["kb_rb1", "kb_rb2"]
-
-        await repository.save(case)
-
-        retrieved = await repository.get(case.case_id)
-        assert retrieved.differential_runbook_ids == ["kb_rb1", "kb_rb2"]
-
-    @pytest.mark.asyncio
-    async def test_round_trips_runbook_retrieved_marker(self, repository):
-        # The R3 denominator marker for the grounding baseline metric — set at
-        # retrieval time, before the verdict gate. It must survive save→load so the
-        # matching-runbook population is measurable across turns/reloads. Defaults
-        # False (unset), so pin both the True round-trip and the False default.
-        default_case = _make_case()
-        await repository.save(default_case)
-        assert (await repository.get(default_case.case_id)).runbook_retrieved is False
-
-        case = _make_case()
-        case.runbook_retrieved = True
-        await repository.save(case)
-        assert (await repository.get(case.case_id)).runbook_retrieved is True
-
-    @pytest.mark.asyncio
     async def test_evidence_upsert_is_purely_additive(self, repository):
         """save(case) must NOT delete evidence rows that are absent from the
         in-memory case.evidence list.
@@ -480,31 +452,21 @@ class TestRelatedDataRoundTrip:
         assert got.likelihood == pytest.approx(0.6)
 
     @pytest.mark.asyncio
-    async def test_runbook_match_guard_signal_survives_db_round_trip(self, repository):
-        """The matcher's per-case skip-guard keys on the hypothesis rationale
-        (is_runbook_match_hypothesis). The original bug was that the prior signal
-        did NOT survive save→reload; this proves rationale (hence the guard) does.
-        """
-        from faultmaven.core.investigation.runbook_cause_matcher import (
-            RUNBOOK_MATCH_RATIONALE_PREFIX,
-            is_runbook_match_hypothesis,
-        )
-
+    async def test_hypothesis_rationale_survives_db_round_trip(self, repository):
+        """The rationale is a persisted hypothesis field (surfaced in the debug
+        payload); it must survive save→reload verbatim."""
         case = _make_case()
-        matched = _make_hypothesis(statement="runbook-matched cause")
-        matched.rationale = (
-            f"{RUNBOOK_MATCH_RATIONALE_PREFIX} kb_abc123 (cause A) matching the case."
-        )
-        llm = _make_hypothesis(statement="llm cause")
-        llm.rationale = "The deploy preceded the errors."
-        case.hypotheses[matched.hypothesis_id] = matched
-        case.hypotheses[llm.hypothesis_id] = llm
+        h = _make_hypothesis(statement="llm cause")
+        h.rationale = "The deploy preceded the errors."
+        case.hypotheses[h.hypothesis_id] = h
 
         await repository.save(case)
         reloaded = await repository.get(case.case_id)
 
-        assert is_runbook_match_hypothesis(reloaded.hypotheses[matched.hypothesis_id])
-        assert not is_runbook_match_hypothesis(reloaded.hypotheses[llm.hypothesis_id])
+        assert (
+            reloaded.hypotheses[h.hypothesis_id].rationale
+            == "The deploy preceded the errors."
+        )
 
     @pytest.mark.asyncio
     async def test_hypothesis_upsert_is_purely_additive(self, repository):
@@ -2034,7 +1996,6 @@ class TestCausalGraphRoundTrip:
                     reasoning="timeout signature observed",
                     stance_confidence=0.9,
                     linked_at_turn=2,
-                    provenance="llm_fallback",
                 )
             ],
         )
@@ -2108,9 +2069,6 @@ class TestCausalGraphRoundTrip:
         assert len(fi.evidence_links) == 1
         assert fi.evidence_links[0].evidence_id == ev_id
         assert fi.evidence_links[0].stance == EvidenceStance.SUPPORTS
-        # provenance must survive the junction round-trip (the relational column,
-        # not a JSON blob) — else the fallback-only signal is dead on reload.
-        assert fi.evidence_links[0].provenance == "llm_fallback"
 
         assert len(fetched.causal_edges) == 3
         and_edges = [
@@ -2128,26 +2086,16 @@ class TestCausalGraphRoundTrip:
         assert fs.quadrant == InterventionQuadrant.REMEDIATION
 
     @pytest.mark.asyncio
-    async def test_runbook_interventions_node_metadata_survives_round_trip(
-        self, repository
-    ):
-        """The matcher stashes a runbook's documented fixes on the ROOT node's
-        metadata (4b-3); they must survive save→reload so the documented-fixes
-        context block can surface them once the cause is established.
-        """
-        from faultmaven.core.investigation.runbook_cause_matcher import (
-            RUNBOOK_INTERVENTIONS_META_KEY,
-        )
-
+    async def test_node_metadata_survives_round_trip(self, repository):
+        """A node's structured ``metadata`` dict must survive save→reload
+        losslessly (it rides the node row, not the JSON case blob)."""
         case = _make_case()
-        interventions = [
-            {"quadrant": "remediation", "ref": "root", "text": "Fix the root."}
-        ]
+        meta = {"notes": [{"ref": "root", "text": "annotated by the engine"}]}
         root = CausalNode(
-            statement="the matched root cause",
+            statement="the posited root cause",
             node_type=NodeType.ROOT,
             generated_at_turn=1,
-            metadata={RUNBOOK_INTERVENTIONS_META_KEY: interventions},
+            metadata=meta,
         )
         case.causal_nodes = {root.node_id: root}
 
@@ -2155,7 +2103,7 @@ class TestCausalGraphRoundTrip:
         fetched = await repository.get(case.case_id)
 
         got = fetched.causal_nodes[root.node_id]
-        assert got.metadata[RUNBOOK_INTERVENTIONS_META_KEY] == interventions
+        assert got.metadata == meta
 
     @pytest.mark.asyncio
     async def test_pruned_node_does_not_resurrect(self, repository):

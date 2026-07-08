@@ -127,7 +127,6 @@ Expected output: `notAfter` dates in the future for healthy certs. If `notAfter`
 
 **Indicators:**
 - root: [Step 4] `systemctl status kubelet` shows `Active: failed` or `Active: inactive (dead)`; journal shows `kubelet.service: Main process exited`.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "Main process exited"} -->
 - D: [Symptom] node shows `NotReady` in `kubectl get nodes`.
 
 **Interventions:**
@@ -164,9 +163,7 @@ Expected output: `notAfter` dates in the future for healthy certs. If `notAfter`
 
 **Indicators:**
 - root: [Step 5] `systemctl status containerd` shows `Active: failed` or `Active: inactive`; `crictl ps` fails with `connect: no such file or directory`.
-  <!-- match: {"step": 5, "predicate": "contains", "target": "connect: no such file or directory"} -->
 - s2: [Step 4] kubelet journal contains `PLEG is not healthy` or `failed to connect to containerd`.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "PLEG is not healthy"} -->
 
 **Interventions:**
 - **mitigation** (root): restart containerd and kubelet to re-establish the CRI connection.
@@ -203,9 +200,7 @@ Expected output: `notAfter` dates in the future for healthy certs. If `notAfter`
 
 **Indicators:**
 - s1: [Step 1] `kubectl describe node` shows `DiskPressure: True`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "DiskPressure"} -->
 - root: [Step 6] `df -h` shows a filesystem at 90%+ on `/`, `/var`, or the containerd data directory.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "disk_usage_pct", "op": ">", "value": 0.9} -->
 
 **Interventions:**
 - **mitigation** (root): reclaim disk by pruning images, exited containers, and vacuuming journal logs.
@@ -242,9 +237,7 @@ Expected output: `notAfter` dates in the future for healthy certs. If `notAfter`
 
 **Indicators:**
 - s1: [Step 1] `kubectl describe node` shows `MemoryPressure: True` or `MemoryPressure: Unknown`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "MemoryPressure"} -->
 - s2: [Step 6] `dmesg | grep -i "oom"` shows `oom-kill` entries naming `kubelet` or `containerd`; `free -h` shows near-zero `available`.
-  <!-- match: {"step": 6, "predicate": "contains", "target": "oom-kill"} -->
 
 **Interventions:**
 - **mitigation** (s2): restart the OOM-killed processes and identify the memory consumer before pods respawn.
@@ -289,9 +282,7 @@ Expected output: `notAfter` dates in the future for healthy certs. If `notAfter`
 
 **Indicators:**
 - root: [Step 7] `curl -k https://<api-server-ip>:6443/healthz` times out or returns `connection refused`; `ping` fails or shows high loss.
-  <!-- match: {"step": 7, "predicate": "contains", "target": "context deadline exceeded"} -->
 - s1: [Step 4] kubelet journal contains `connection refused` or `context deadline exceeded` contacting the API server.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "connection refused"} -->
 
 **Interventions:**
 - **mitigation** (root): inspect node firewall and routing to locate the blocked path.
@@ -330,9 +321,7 @@ Expected output: `notAfter` dates in the future for healthy certs. If `notAfter`
 
 **Indicators:**
 - root: [Step 8] `openssl x509 -in /var/lib/kubelet/pki/kubelet-client-current.pem -noout -dates` shows `notAfter` in the past.
-  <!-- match: {"step": 8, "predicate": "contains", "target": "notAfter"} -->
 - s1: [Step 4] kubelet journal contains `x509: certificate has expired or not yet valid`.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "x509: certificate has expired"} -->
 
 **Interventions:**
 - **mitigation** (root): renew the certificates and restart kubelet to restore authentication.
@@ -367,9 +356,7 @@ Expected output: `notAfter` dates in the future for healthy certs. If `notAfter`
 
 **Indicators:**
 - s1: [Step 1] `kubectl describe node` shows `PIDPressure: True`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "PIDPressure"} -->
 - root: [Step 6] `ps aux | wc -l` is within 10% of `cat /proc/sys/kernel/pid_max`.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "pid_count_pct_of_pid_max", "op": ">", "value": 0.9} -->
 
 **Interventions:**
 - **mitigation** (root): identify and reap leaked or zombie processes to free PIDs.

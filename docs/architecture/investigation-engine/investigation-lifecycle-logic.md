@@ -445,7 +445,7 @@ class KnowledgeResolution(BaseModel):
 
 **Engine behavior on `knowledge_resolution`** (during INVESTIGATING turn processing):
 
-1. **Attribute the active Cause.** Engine runs [Runbook cause matching](./runbook-cause-matching.md) against current case state to identify which `### Cause <X>` from the matched runbook applies. If `verdict="single"`, proceed. If `verdict="multiple"`, defer the collapse: agent asks for a disambiguating Diagnostic Step finding before completing the transition. If `verdict="none"`, the fallback Cause is selected.
+1. **Attribute the active Cause.** The agent judges which `### Cause <X>` from the matched runbook applies by reasoning over the retrieved runbook content against current case state. If exactly one Cause fits, proceed. If several fit, defer the collapse: agent asks for a disambiguating Diagnostic Step finding before completing the transition. If none fits, the fallback Cause is selected.
 2. **Populate `RootCauseConclusion`** by direct field copy from the attributed Cause's ChromaDB metadata (no LLM extraction call):
    - `root_cause` ← Cause `Statement` (≤300 chars)
    - `mechanism` ← Cause `Mechanism` (≤800 chars)
@@ -1705,7 +1705,7 @@ This is not a separate lifecycle edge — it is the standard `INQUIRY → INVEST
 
 1. **Detection (during INQUIRY)**: Agent calls `kb_qa` for the symptom and identifies a high-confidence runbook match. KB match is held back from the user until problem statement is confirmed.
 2. **Problem confirmation (INQUIRY → INVESTIGATING)**: Agent presents problem statement; user confirms. Standard INQUIRY → INVESTIGATING transition fires.
-3. **Cause attribution (early INVESTIGATING)**: Engine runs [Runbook cause matching](./runbook-cause-matching.md) against current case state to attribute the active `### Cause <X>` from the retrieved runbook. If attribution is unambiguous, agent proposes the Cause's `Mitigation` + `Resolution` to the user.
+3. **Cause attribution (early INVESTIGATING)**: The agent attributes the active `### Cause <X>` from the retrieved runbook by reasoning over its content against current case state. If attribution is unambiguous, agent proposes the Cause's `Mitigation` + `Resolution` to the user.
 4. **User applies the fix and confirms** ("That fixed it" / "It worked"). LLM emits `knowledge_resolution` in `state_updates`.
 5. **Same-turn milestone collapse**: Engine populates `RootCauseConclusion` (Statement → `root_cause`, Mechanism → `mechanism`), creates `Solution` (Mitigation → `immediate_action`, Resolution → `longterm_fix`), and sets `root_cause_identified`, `solution_accepted`, `solution_verified`.
 6. **Standard RESOLVED handshake**: LLM emits `ProposedTransition`; user's same confirmation message is recognized as the disposition acknowledgment; transition executes.

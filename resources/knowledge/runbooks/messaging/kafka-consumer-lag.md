@@ -157,11 +157,8 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 **Indicators:**
 - root: [Step 2] consumer log contains the poll-timeout message.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "consumer poll timeout has expired"} -->
 - s1: [Step 2] consumer log contains `CommitFailedException`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "CommitFailedException"} -->
 - s2: [Step 3] `kafka_consumer_coordinator_metrics_rebalance_rate_per_hour > 1` over the affected window.
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "rebalance_rate_per_hour", "op": ">", "value": 1} -->
 
 **Interventions:**
 - **mitigation** (root): lower `max.poll.records` and raise `max.poll.interval.ms` so a batch fits inside the limit.
@@ -212,9 +209,7 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 **Indicators:**
 - root: [Step 4] `members < partitions` from the `members=` / `partitions=` lines.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "members="} -->
 - s1: [Step 4] every consumer in the histogram has `>= ceil(partitions/members)` partitions and lag is rising on the majority; [Step 5] `messages_in_per_sec` is within ±20% of baseline (producer not spiking).
-  <!-- match: {"step": 5, "predicate": "contains", "target": "messages_in_per_sec"} -->
 
 **Interventions:**
 - **remediation** (root): scale consumers up to (not above) the partition count so each member owns fewer partitions; adding members beyond `N` leaves the extras idle.
@@ -240,9 +235,7 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 **Indicators:**
 - root: [Step 4] `members == partitions` (or `members > partitions` with idle members reporting `#PARTITIONS=0`) and the histogram is flat at 1 per member, yet [Step 1] `total_lag` is still growing.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "members="} -->
 - s1: [Step 5] `messages_in_per_sec` is at or above baseline and per-member CPU is not saturated (room to consume faster if partitions allowed).
-  <!-- match: {"step": 5, "predicate": "contains", "target": "messages_in_per_sec"} -->
 
 **Interventions:**
 - **mitigation** (root): confirm the current partition count before any irreversible alter.
@@ -277,11 +270,8 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 **Indicators:**
 - root: [Step 2] `--state` reports `ASSIGNMENT-STRATEGY: range` (or `roundrobin`, `sticky`) rather than `cooperative-sticky`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "range"} -->
 - root: [Step 6] `partition.assignment.strategy` does not contain `CooperativeStickyAssignor`.
-  <!-- match: {"step": 6, "predicate": "absent", "target": "CooperativeStickyAssignor"} -->
 - s1: [Step 2] consumer logs show `Revoking previously assigned partitions` followed by `(Re-)joining group` on every membership change.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Revoking previously assigned partitions"} -->
 
 **Interventions:**
 - **mitigation** (root): first bounce — ADD `CooperativeStickyAssignor` alongside the existing eager assignor (a single-bounce swap is rejected by the broker and leaves the group stuck in `PreparingRebalance`).
@@ -322,11 +312,8 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 **Indicators:**
 - root: [Step 6] `group.instance.id` is null (no output) for every consumer.
-  <!-- match: {"step": 6, "predicate": "absent", "target": "group.instance.id"} -->
 - s1: [Step 2] consumer logs show `LeaveGroup` followed by `JoinGroup` correlated with pod restarts, rollouts, or node maintenance.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "LeaveGroup"} -->
 - s2: [Step 3] `kafka_consumer_coordinator_metrics_last_rebalance_seconds_ago` is small (recent) with `rebalance-rate-per-hour > 1`, timed to deployment activity rather than load changes.
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "rebalance_rate_per_hour", "op": ">", "value": 1} -->
 
 **Interventions:**
 - **remediation** (root): set a stable `group.instance.id` per replica (KIP-345 static membership) and tune `session.timeout.ms` so transient absences within the window do not rebalance.
@@ -362,9 +349,7 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 **Indicators:**
 - root: [Symptom] business metrics show a small number of keys (tenant IDs, hash buckets) dominating production rate.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "max_partition_lag"} -->
 - s1: [Step 1] `max_partition_lag` is orders of magnitude larger than the median; [Step 4] the partition-count histogram is balanced yet [Step 1] LAG is uneven.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "max_partition_lag"} -->
 
 **Interventions:**
 - **mitigation** (root): quantify the skew across partitions before changing the producer.
@@ -411,9 +396,7 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 **Indicators:**
 - root: [Step 5] `messages_in_per_sec` is materially higher (e.g. >2x) than the recorded baseline.
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "messages_in_per_sec_ratio_vs_baseline", "op": ">", "value": 2.0} -->
 - s1: [Step 2] group state is `Stable` and rebalance rate is near zero; [Step 3] `poll_idle_ratio_avg` is near 0 (consumers saturated processing, not idle waiting).
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Stable"} -->
 
 **Interventions:**
 - **mitigation** (root): burst-scale consumers up to the partition count for the duration of the burst.
@@ -454,9 +437,7 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 **Indicators:**
 - root: [Step 6] `fetch.min.bytes` > 1, or `max.partition.fetch.bytes` < `1048576` (the documented default).
-  <!-- match: {"step": 6, "predicate": "contains", "target": "fetch.min.bytes"} -->
 - s1: [Step 3] `fetch_rate` is unusually high relative to `records_consumed_rate` (low records-per-fetch), and `poll_idle_ratio_avg` is high (>0.5) yet lag is growing.
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "poll_idle_ratio_avg", "op": ">", "value": 0.5} -->
 
 **Interventions:**
 - **remediation** (root): restore the default fetch sizing so each fetch returns a full batch.
@@ -484,9 +465,7 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 **Indicators:**
 - root: [Step 7] `jstat -gcutil` shows `O > 90` (old generation >90% full) and `FGC` increments during the affected window.
-  <!-- match: {"step": 7, "predicate": "threshold", "target": "old_gen_pct", "op": ">", "value": 90} -->
 - s1: [Step 2] `consumer poll timeout has expired` entries are preceded by GC log lines `Pause Full` lasting hundreds of ms to seconds; [Step 7] `jstack` shows the poll thread inside `Consumer.poll()`/`Fetcher.fetchedRecords()` while application threads pile up waiting for memory.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "consumer poll timeout has expired"} -->
 
 **Interventions:**
 - **mitigation** (root): take a heap snapshot for offline analysis and halve the batch size to cap heap growth per `poll()`.

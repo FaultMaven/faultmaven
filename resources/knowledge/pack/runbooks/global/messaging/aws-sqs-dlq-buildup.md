@@ -231,7 +231,6 @@ Expected output: the `VisibilityTimeout` from Step 3 must exceed the maximum obs
 **Indicators:**
 - root: [Step 3] `VisibilityTimeout` is 30 (the default) while any processing workload has non-trivial downstream I/O.
 - s1: [Step 6] maximum observed Lambda duration exceeds the `VisibilityTimeout` value returned in Step 3.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "VisibilityTimeout_seconds_vs_max_duration_seconds", "op": "<", "value": 1.0} -->
 - s2: [Step 2] DLQ messages show `ApproximateReceiveCount` equal to `maxReceiveCount`; consumer logs show no error for the same message IDs (the consumer succeeded eventually, but too late).
 
 **Interventions:**
@@ -281,9 +280,7 @@ Expected output: the `VisibilityTimeout` from Step 3 must exceed the maximum obs
 
 **Indicators:**
 - root: [Step 2] DLQ messages share a common structural pattern in their body previews — missing fields, unusual encoding, consistent size outlier, or identical schema.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Body preview"} -->
 - s1: [Step 4] consumer logs show `JSONDecodeError`, `ValidationError`, `KeyError`, `NullPointerException`, or similar parsing/schema error for the same message IDs.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "JSONDecodeError"} -->
 - s2: [Step 2] all DLQ messages have `ApproximateReceiveCount` equal to `maxReceiveCount` (fully exhausted retries).
 
 **Interventions:**
@@ -344,7 +341,6 @@ Expected output: the `VisibilityTimeout` from Step 3 must exceed the maximum obs
 
 **Indicators:**
 - root: [Step 3] `maxReceiveCount` is 1, 2, or 3 in the redrive policy output.
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "maxReceiveCount", "op": "<", "value": 4} -->
 - s1: [Step 4] consumer logs show transient errors (connection timeouts, rate limit errors, brief exceptions) rather than persistent schema or logic failures.
 - s2: [Step 2] DLQ messages show mixed `ApproximateReceiveCount` values (some at 1, some at 2) rather than all at the `maxReceiveCount` ceiling — messages fail on the first attempt with no retry opportunity.
 
@@ -375,7 +371,6 @@ Expected output: the `VisibilityTimeout` from Step 3 must exceed the maximum obs
 
 **Indicators:**
 - root: [Step 4] consumer logs show `ConnectionRefused`, `ServiceUnavailable`, `ReadTimeout`, `ConnectionTimeout`, or `HTTPError 5xx` errors for the downstream dependency.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "ConnectionRefused"} -->
 - s1: [Step 1] DLQ growth rate tracks the source queue's incoming message rate exactly — every message being processed during the outage window ends up in the DLQ.
 - s2: [Step 2] DLQ message receive counts are clustered at `maxReceiveCount` and DLQ depth correlates with the downstream outage window.
 
@@ -431,7 +426,6 @@ Expected output: the `VisibilityTimeout` from Step 3 must exceed the maximum obs
 - root: [Step 5] `sqs:DeleteMessage` is `allowed` for the consumer role (ruling out an IAM cause).
 - s1: [Step 1] source queue `NumberOfMessagesNotVisible` is consistently non-zero even when processing throughput appears normal — messages are in flight indefinitely.
 - s2: [Step 4] consumer logs show successful processing log lines but no errors — the consumer appears healthy yet DLQ depth grows.
-  <!-- match: {"step": 4, "predicate": "absent", "target": "Exception"} -->
 
 **Interventions:**
 - **remediation** (root): ensure `DeleteMessage` is called (or the Lambda returns successfully) for every processed message, and enable `ReportBatchItemFailures` so partial batch failures do not redeliver the whole batch.

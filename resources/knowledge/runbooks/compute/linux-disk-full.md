@@ -114,7 +114,6 @@ Expected output: Total disk usage of the systemd journal. Values above 500 MB in
 
 **Indicators:**
 - s1: [Step 2] A single file under `/var/log/` or an application log directory dominates `du` output.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "/var/log/"} -->
 - s1: [Step 6] The same file appears among recently modified large files.
 - D: [Step 1] `df -h` shows `Use%` at 100% on the affected mount.
 
@@ -161,7 +160,6 @@ Expected output: Total disk usage of the systemd journal. Values above 500 MB in
 
 **Indicators:**
 - s1: [Step 3] `lsof +L1` shows one or more entries with a `(deleted)` path and a size above 100 MB.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "(deleted)"} -->
 - s2: [Step 1] `df -h` shows `Use%` at 100% while `du` (Step 2) reports less consumed space.
 
 **Interventions:**
@@ -216,7 +214,6 @@ Expected output: Total disk usage of the systemd journal. Values above 500 MB in
 **Indicators:**
 - s1: [Step 4] One directory contains hundreds of thousands or millions of files.
 - s2: [Step 1] `df -i` shows `IUse%` at 100% while `df -h` shows block space available.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "100%"} -->
 
 **Interventions:**
 - **remediation** (root): schedule periodic cleanup so the file-producing app no longer accumulates inodes unbounded.
@@ -260,7 +257,6 @@ Expected output: Total disk usage of the systemd journal. Values above 500 MB in
 
 **Indicators:**
 - s2: [Step 2] `du` output shows `/var/lib/docker` as the dominant consumer.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "/var/lib/docker"} -->
 - D: [Step 1] `df -h` shows `Use%` at or near 100% on the host filesystem.
 
 **Interventions:**
@@ -307,7 +303,6 @@ Expected output: Total disk usage of the systemd journal. Values above 500 MB in
 
 **Indicators:**
 - s2: [Step 6] `journalctl --disk-usage` reports a value above 1 GB.
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "journal_gb", "op": ">", "value": 1} -->
 
 **Interventions:**
 - **remediation** (root): set explicit `SystemMaxUse`/`SystemKeepFree` limits so the journal can never grow unbounded again.
@@ -345,7 +340,6 @@ Expected output: Total disk usage of the systemd journal. Values above 500 MB in
 
 **Indicators:**
 - root: [Step 5] `tune2fs -l` shows `Reserved block count` at 5% of total blocks.
-  <!-- match: {"step": 5, "predicate": "contains", "target": "Reserved block count"} -->
 - s1: [Step 1] `df -h` shows `Use%` at 95–96% but application writes fail with ENOSPC.
 
 **Interventions:**

@@ -126,7 +126,6 @@ Expected output: shows the current GetSecretValue quota value (default 10,000 RP
 
 **Indicators:**
 - root: [Step 4] Output is `Caching library NOT INSTALLED`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "NOT INSTALLED"} -->
 - s1: [Step 3] A single IAM role ARN accounts for the majority of GetSecretValue calls
 - s2: [Step 2] Per-60s `Sum` divided by 60 approaches or exceeds 10,000 RPS
 
@@ -172,7 +171,6 @@ Expected output: shows the current GetSecretValue quota value (default 10,000 RP
 - root: [Step 3] Multiple distinct Lambda execution role ARNs each contribute GetSecretValue calls at the same timestamp
 - s1: [Symptom] `ThrottlingException` errors correlate with Lambda concurrency spikes visible in CloudWatch Lambda metrics
 - s2: [Step 1] CloudTrail shows `ThrottlingException` clustered at cold-start timestamps
-  <!-- match: {"step": 1, "predicate": "contains", "target": "ThrottlingException"} -->
 
 **Interventions:**
 - **defensive_fix** (s2): add the AWS Parameters and Secrets Lambda Extension so secrets are cached in the execution environment, then read from the extension endpoint instead of the SDK.
@@ -217,7 +215,6 @@ Expected output: shows the current GetSecretValue quota value (default 10,000 RP
 **Indicators:**
 - root: [Symptom] `ThrottlingException` errors correlate with deployment or HPA scale events visible in Kubernetes events
 - s1: [Step 1] CloudTrail ThrottlingException timestamps align with pod startup timestamps
-  <!-- match: {"step": 1, "predicate": "contains", "target": "ThrottlingException"} -->
 
 **Interventions:**
 - **defensive_fix** (s1): stagger pod initialization with `minReadySeconds` so secret fetches spread out across the rollout.
@@ -253,7 +250,6 @@ Expected output: shows the current GetSecretValue quota value (default 10,000 RP
 
 **Indicators:**
 - root: [Step 1] CloudTrail shows `ThrottlingException` on `PutSecretValue` or `DescribeSecret` operations (not only `GetSecretValue`)
-  <!-- match: {"step": 1, "predicate": "contains", "target": "PutSecretValue"} -->
 - s2: [Step 2] Re-run Step 2 with `Value=PutSecretValue` — Sum divided by 60 approaches 50 RPS
 
 **Interventions:**
@@ -286,7 +282,6 @@ Expected output: shows the current GetSecretValue quota value (default 10,000 RP
 
 **Indicators:**
 - root: [Step 5] `AWS_RETRY_MODE` is unset (defaults to `legacy`) or `AWS_MAX_ATTEMPTS` is set above 10
-  <!-- match: {"step": 5, "predicate": "absent", "target": "AWS_RETRY_MODE"} -->
 - s2: [Step 1] CloudTrail shows repeated ThrottlingException entries from the same ARN within seconds of each other
 
 **Interventions:**

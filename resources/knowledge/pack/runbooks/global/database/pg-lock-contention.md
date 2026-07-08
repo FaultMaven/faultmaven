@@ -190,7 +190,6 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
 **Indicators:**
 - root: [Step 7] one or more rows with `state = 'idle in transaction'` and `state_age` exceeding a few minutes.
 - s1: [Step 2] `blocking_state = 'idle in transaction'` for the dominant blocker.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "idle in transaction"} -->
 **Interventions:**
 - **mitigation** (s1): terminate stuck idle-in-transaction backends to release their locks immediately.
 
@@ -231,7 +230,6 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
 **Indicators:**
 - root: [Step 8] one row in `active` state running `CREATE INDEX` (without `CONCURRENTLY`), `ALTER TABLE`, `REINDEX`, `CLUSTER`, `VACUUM FULL`, or `REFRESH MATERIALIZED VIEW`.
 - s2: [Step 3] `AccessExclusiveLock` present with `granted = true` and a non-trivial count of `granted = false` rows.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "AccessExclusiveLock"} -->
 **Interventions:**
 - **mitigation** (s1): cancel (then terminate, if needed) the DDL session to release the lock now.
 
@@ -276,7 +274,6 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
 **Indicators:**
 - root: [Step 7] one or more rows with `state = 'active'`, long `xact_duration`, and identifiable scan-heavy `last_query`.
 - s2: [Step 2] `blocking_state = 'active'` for the dominant blocker, with rising `blocked_duration`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "active"} -->
 **Interventions:**
 - **mitigation** (s2): inspect, then cancel the offending active query to drain the queue.
 
@@ -324,7 +321,6 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
 **Indicators:**
 - s2: [Symptom] server log contains `ERROR: deadlock detected` lines.
 - s2: [Step 5] `pg_stat_database.deadlocks` is non-zero and growing across successive checks.
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "deadlocks", "op": ">", "value": 0} -->
 - root: [Step 6] log `DETAIL:` lines show the same pair of queries / tables involved.
 **Interventions:**
 - **mitigation** (s2): confirm the detector is active and tuned; rely on application retry-with-backoff to absorb individual aborts.
@@ -365,7 +361,6 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
 - D: Serialised traffic surfaces as latency and timeouts (see Symptom Recognition).
 **Indicators:**
 - s1: [Step 3] `AccessExclusiveLock` or `ExclusiveLock` present on `relation` lock types from an application backend.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "ExclusiveLock"} -->
 - root: [Step 8] no DDL statement is active, yet a long-running session holds the strong table lock.
 **Interventions:**
 - **mitigation** (s2): cancel the lock-holding session to release the table (the application must be safe to retry).
@@ -409,7 +404,6 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
 - D: The widened lock footprint accumulates waiters and surfaces as latency/timeouts (see Symptom Recognition).
 **Indicators:**
 - s1: [Step 4] one relation shows a disproportionately large count of `RowExclusiveLock` rows compared to its expected write rate.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "RowExclusiveLock"} -->
 - s2: [Step 2] multiple blocked sessions are waiting on tuple-level locks against the same relation.
 **Interventions:**
 - **mitigation** (s1): confirm the scan with EXPLAIN, then narrow the query (tighter `WHERE`/`LIMIT`) or cancel the scan.
@@ -455,7 +449,6 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
 **Indicators:**
 - s2: [Step 2] blocked sessions are running INSERT/UPDATE on a child table; the blocker holds a lock on the parent.
 - s1: [Step 3] `RowShareLock` or `ShareLock` counts are elevated against the parent relation.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "ShareLock"} -->
 **Interventions:**
 - **mitigation** (root): find and cancel the long parent-side `FOR UPDATE` transaction; do not drop the FK as a panic measure.
 

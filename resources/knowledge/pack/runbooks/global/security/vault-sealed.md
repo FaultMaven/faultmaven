@@ -104,11 +104,8 @@ Expected output: `vault token lookup` returns a non-expired `ttl`/`expire_time`;
 - D: Vault sealed / unavailable (Symptom Recognition)
 **Indicators:**
 - root: [Step 2] log contains `failed to decrypt encrypted root key` (KMS/credential/network fault)
-  <!-- match: {"step": 2, "predicate": "contains", "target": "failed to decrypt encrypted root key"} -->
 - s1: [Step 2] log contains `failed to unseal core`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "failed to unseal core"} -->
 - s2: [Step 1] `vault status` shows `Sealed   true` with `Seal Type` of `awskms`/`azurekeyvault`/`gcpckms`/`transit`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Sealed          true"} -->
 **Interventions:**
 - **remediation** (root): Restore the seal provider — fix the `seal "awskms"` stanza (`kms_key_id`, `region`), restore IAM permissions/credentials, and confirm network reachability; then restart Vault to retry auto-unseal.
 
@@ -136,11 +133,8 @@ Expected output: `vault token lookup` returns a non-expired `ttl`/`expire_time`;
 - D: Vault unavailable (Symptom Recognition)
 **Indicators:**
 - root: [Step 3] `vault operator raft list-peers` lists fewer than a voter majority reachable, or errors out
-  <!-- match: {"step": 3, "predicate": "contains", "target": "follower"} -->
 - s1: [Step 1] every node reports `HA Mode   standby` (no `active`)
-  <!-- match: {"step": 1, "predicate": "absent", "target": "HA Mode                 active"} -->
 - s2: [Step 2] log contains `local node not active but active cluster node not found`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "active cluster node not found"} -->
 **Interventions:**
 - **remediation** (root): Bring failed voter nodes back online and rejoin so a majority of voters is restored.
 
@@ -170,7 +164,6 @@ Expected output: `vault token lookup` returns a non-expired `ttl`/`expire_time`;
 - D: auth_failure for the caller (Symptom Recognition)
 **Indicators:**
 - root: [Step 4] `vault token lookup` shows an expired/near-zero TTL, or `vault token capabilities` returns `deny` for the path
-  <!-- match: {"step": 4, "predicate": "contains", "target": "deny"} -->
 - s2: [Symptom] request returns `1 error occurred: * permission denied`
 **Interventions:**
 - **remediation** (root): Re-authenticate to obtain a fresh token and attach a policy that grants the needed capability (and `update` on `auth/token/renew-self` for renewable tokens).
@@ -201,7 +194,6 @@ Expected output: `vault token lookup` returns a non-expired `ttl`/`expire_time`;
 - D: Vault sealed / unavailable (Symptom Recognition)
 **Indicators:**
 - root: [Step 1] `vault status` shows `Seal Type   shamir`, `Initialized   true`, `Sealed   true`, and `Unseal Progress` below `Threshold`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Seal Type       shamir"} -->
 - s2: [Symptom] API requests return `Vault is sealed`
 **Interventions:**
 - **remediation** (root): Submit unseal key shares until the threshold is reached (each operator runs the command with their share, in any order).

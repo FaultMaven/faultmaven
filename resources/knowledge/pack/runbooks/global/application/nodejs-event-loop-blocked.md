@@ -158,7 +158,6 @@ Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applie
 
 **Indicators:**
 - root: [Step 3] `grep` output lists one or more `*Sync(` calls inside `src/` handler files
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Sync("} -->
 - s2: [Step 4] flame graph shows a wide bar for a `fs`, `crypto`, or `zlib` synchronous call originating from a route handler
 
 **Interventions:**
@@ -202,7 +201,6 @@ Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applie
 
 **Indicators:**
 - root: [Step 3] `grep` finds `JSON.parse` or `JSON.stringify` inside a request handler
-  <!-- match: {"step": 3, "predicate": "contains", "target": "JSON.parse"} -->
 - s1: [Step 4] flame graph shows a wide `JSON.parse` or `JSON.stringify` bar
 - s2: [Symptom] lag spikes correlate with large-payload requests visible in access logs
 
@@ -250,7 +248,6 @@ Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applie
 
 **Indicators:**
 - s2: [Step 2] main thread CPU stays near 100% during lag spikes
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "cpu_pct", "op": ">", "value": 90} -->
 - root: [Step 4] flame graph shows a wide bar for an application function (not a Node core function)
 - s1: [Step 1] p99 lag spikes correlate with request volume, not a fixed interval
 
@@ -303,7 +300,6 @@ Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applie
 
 **Indicators:**
 - root: [Step 7] `safe-regex` reports `VULNERABLE` for a pattern present in the codebase
-  <!-- match: {"step": 7, "predicate": "contains", "target": "VULNERABLE"} -->
 - s2: [Step 4] flame graph shows a wide `RegExp.exec` or `String.match` bar
 - s1: [Symptom] lag spikes occur only on specific input shapes, not uniformly under load
 
@@ -347,7 +343,6 @@ Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applie
 
 **Indicators:**
 - root: [Step 6] active requests consistently at or above `UV_THREADPOOL_SIZE` value
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "active_requests", "op": ">=", "value": 4} -->
 - s2: [Step 2] main thread CPU is low (below 30%) during lag spikes
 - s1: [Step 1] lag is present but no blocking patterns found in Step 3 or Step 4
 
@@ -398,7 +393,6 @@ Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applie
 
 **Indicators:**
 - s1: [Step 5] `--trace-gc` output shows `Mark-Compact` lines with pause times above 100 ms
-  <!-- match: {"step": 5, "predicate": "contains", "target": "Mark-Compact"} -->
 - s2: [Step 1] lag spikes occur at a regular interval (every 30–120 s) rather than correlating with request volume
 - root: [Step 2] main thread CPU spikes briefly (5–15 s) and returns to baseline between spikes
 

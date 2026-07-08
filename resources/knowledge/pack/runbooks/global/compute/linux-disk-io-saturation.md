@@ -122,9 +122,7 @@ Expected output: status of `md` arrays. A line such as `[====>................] 
 
 **Indicators:**
 - root: [Step 2] `iotop` shows `postgres`, `mysqld`, or `mongod` at the top of the I/O list with sustained `DISK WRITE` above device IOPS capacity
-  <!-- match: {"step": 2, "predicate": "contains", "target": "postgres"} -->
 - s2: [Step 1] `w_await` is significantly higher than `r_await` and `%util` is above 90%
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "%util", "op": ">", "value": 90} -->
 
 **Interventions:**
 - **remediation** (root): persist IOPS-friendly database tuning so checkpoint/flush I/O stays within device capacity across restarts.
@@ -168,7 +166,6 @@ Expected output: status of `md` arrays. A line such as `[====>................] 
 
 **Indicators:**
 - root: [Step 7] `lsof +D /var/log` identifies a specific log file receiving high-volume writes from an application process
-  <!-- match: {"step": 7, "predicate": "contains", "target": "/var/log"} -->
 - s1: [Step 2] `iotop` shows the logging process near the top with `DISK WRITE` dominated by `/var/log` paths
 
 **Interventions:**
@@ -208,9 +205,7 @@ Expected output: status of `md` arrays. A line such as `[====>................] 
 
 **Indicators:**
 - root: [Step 2] `iotop` shows `rsync`, `tar`, `mysqldump`, `pg_dump`, or a cloud backup agent process at the top with high `DISK READ` or `DISK WRITE`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "rsync"} -->
 - s2: [Step 1] `rkB/s` or `wkB/s` is near the device's rated throughput ceiling with `%util` above 90%
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "%util", "op": ">", "value": 90} -->
 
 **Interventions:**
 - **remediation** (root): schedule backups off-peak with idle I/O class so they never compete with production load.
@@ -246,7 +241,6 @@ Expected output: status of `md` arrays. A line such as `[====>................] 
 
 **Indicators:**
 - root: [Step 3] `vmstat` shows `si` or `so` above 100 (pages/sec) sustained across multiple 1-second intervals
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "si", "op": ">", "value": 100} -->
 - s2: [Step 1] `%util` is high but neither `r/s` nor `w/s` corresponds to a known application workload
 
 **Interventions:**
@@ -280,7 +274,6 @@ Expected output: status of `md` arrays. A line such as `[====>................] 
 
 **Indicators:**
 - root: [Step 5] Active scheduler is not `none` or `mq-deadline` on SSD/NVMe, or not `mq-deadline` on HDD
-  <!-- match: {"step": 5, "predicate": "contains", "target": "bfq"} -->
 - root: [Step 6] `rotational` is `0` (SSD/NVMe) but scheduler is `bfq` or `kyber`
 
 **Interventions:**
@@ -320,9 +313,7 @@ Expected output: status of `md` arrays. A line such as `[====>................] 
 
 **Indicators:**
 - root: [Step 6] `lsblk` shows device is `nvme` type (EBS NVMe); Step 1 `r/s + w/s` is near 3,000 and `%util` is at 100%
-  <!-- match: {"step": 6, "predicate": "contains", "target": "nvme"} -->
 - s2: [Step 1] `await` above 5 ms on what should be a fast NVMe device indicates throttling
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "await", "op": ">", "value": 5} -->
 
 **Interventions:**
 - **remediation** (root): raise the gp3 IOPS/throughput provision to above the measured peak (no downtime), removing the quota ceiling.
@@ -364,7 +355,6 @@ Expected output: status of `md` arrays. A line such as `[====>................] 
 
 **Indicators:**
 - s1: [Step 9] `cat /proc/mdstat` shows a rebuild in progress (e.g., `[====>................]  recovery = 22.3%`)
-  <!-- match: {"step": 9, "predicate": "contains", "target": "recovery"} -->
 - s2: [Step 1] `iostat` shows high `%util` on multiple physical drives simultaneously with similar `rkB/s`/`wkB/s` patterns
 
 **Interventions:**

@@ -86,7 +86,6 @@ Expected output: `TRUE` if OS Login is enabled at the instance or project level,
 - D: client reports connection refused/timeout, SSH unreachable
 **Indicators:**
 - root: [Step 2] no `tcp:22` ingress allow rule whose source ranges include the client CIDR or `35.235.240.0/20`
-  <!-- match: {"step": 2, "predicate": "absent", "target": "tcp:22"} -->
 - s1: [Step 1] troubleshooter flags the firewall/network-connectivity check as failing
 - D: [Symptom] `Operation timed out` / `Connection refused` on port 22
 **Interventions:**
@@ -112,7 +111,6 @@ Expected output: `TRUE` if OS Login is enabled at the instance or project level,
 - D: client receives `Permission denied (publickey).`
 **Indicators:**
 - root: [Step 5] `enable-oslogin` resolves to `TRUE` at instance or project level
-  <!-- match: {"step": 5, "predicate": "contains", "target": "TRUE"} -->
 - s1: [Step 1] troubleshooter flags the OS Login / IAM permissions check as failing
 - D: [Symptom] `Permission denied (publickey).`
 **Interventions:**
@@ -144,7 +142,6 @@ Expected output: `TRUE` if OS Login is enabled at the instance or project level,
 - D: SSH login fails (publickey / could-not-connect)
 **Indicators:**
 - root: [Step 4] serial log contains `No space left on device`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "No space left on device"} -->
 - s1: [Step 3] serial log shows guest-agent / `authorized_keys` write failures
 - D: [Symptom] `Permission denied (publickey).` or `Could not connect, retrying...`
 **Interventions:**
@@ -180,7 +177,6 @@ Expected output: `TRUE` if OS Login is enabled at the instance or project level,
 - D: client sees `Connection refused` or `Could not connect, retrying...`
 **Indicators:**
 - root: [Step 3] serial log shows `google-guest-agent` or `sshd` failing to start / inactive
-  <!-- match: {"step": 3, "predicate": "contains", "target": "google-guest-agent"} -->
 - s1: [Step 1] troubleshooter flags the guest-agent / VM-status check as failing
 - D: [Symptom] `Connection refused` or `Could not connect, retrying...`
 **Interventions:**
@@ -209,7 +205,6 @@ Expected output: `TRUE` if OS Login is enabled at the instance or project level,
 - D: SSH connection times out / is refused
 **Indicators:**
 - root: [Step 4] serial log contains `emergency mode`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "emergency mode"} -->
 - s1: [Step 3] serial log shows boot halting before `sshd` / network targets reached
 - D: [Symptom] `Operation timed out` / `Connection refused` on port 22
 **Interventions:**

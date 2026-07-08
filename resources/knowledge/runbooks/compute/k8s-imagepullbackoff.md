@@ -150,7 +150,6 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s2: [Step 1] pull error message contains `manifest unknown` or `MANIFEST_UNKNOWN`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "manifest unknown"} -->
 - root: [Step 3] `crane manifest`/`skopeo inspect` from a workstation also fails not-found against the same reference.
 - root: [Symptom] the reference uses a humanly-mutable tag like `v1.2.4` or `latest` rather than an immutable digest.
 
@@ -187,7 +186,6 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s3: [Step 1] pull error contains `unauthorized: authentication required` or `unauthorized` with no other qualifier.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "unauthorized: authentication required"} -->
 - root: [Step 5] both the pod's `spec.imagePullSecrets` and its ServiceAccount's `imagePullSecrets` are empty.
 - s2: [Step 7] HTTP probe to `/v2/` returns `401`, proving network reach and an auth-gated registry.
 
@@ -232,7 +230,6 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s2: [Step 1] pull error contains `unauthorized` or `token has expired` or `invalid_token`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "unauthorized"} -->
 - root: [Step 5] pod or ServiceAccount references a pull secret AND [Step 6] the secret decodes cleanly to a non-empty username for the target registry host.
 - s3: [Step 8] a manual `crictl pull` on the node fails the same way until fresh credentials are written.
 
@@ -274,7 +271,6 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s3: [Step 1] pull error contains `no basic auth credentials` or `Your authorization token has expired`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "no basic auth credentials"} -->
 - root: [Step 2] image reference matches `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>`.
 - s2: [Step 9] containerd journal shows `failed to fetch oauth token` or `401 Unauthorized` against the ECR host.
 
@@ -318,7 +314,6 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s2: [Step 1] pull error contains `no such host` or `dial tcp: lookup`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "no such host"} -->
 - s1: [Step 7] `nslookup <registry-host>` from a pod on the same node fails (no answer, or `SERVFAIL`).
 - root: [Step 8] manual `crictl pull` on the affected node fails identically; nodes in different subnets succeed.
 
@@ -358,7 +353,6 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s2: [Step 1] pull error contains `i/o timeout` or `connection refused` against the registry host.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "i/o timeout"} -->
 - s1: [Step 7] DNS resolves but `curl https://<registry-host>/v2/` from a pod on the same node hangs or returns `000`.
 - root: [Step 8] `crictl pull` on the node times out identically; the same image pulls fine from a workstation outside the cluster network.
 
@@ -401,9 +395,7 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s2: [Step 1] pull error contains `toomanyrequests` or `pull rate limit`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "toomanyrequests"} -->
 - s1: [Step 10] `ratelimit-remaining: 0;w=21600` for the anonymous bearer token.
-  <!-- match: {"step": 10, "predicate": "contains", "target": "ratelimit-remaining: 0"} -->
 - root: [Symptom] image reference uses `docker.io/` or no registry prefix at all (defaulting to Docker Hub).
 
 **Interventions:**
@@ -448,7 +440,6 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s2: [Step 1] pull error contains `x509: certificate signed by unknown authority` or `x509: certificate has expired`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "x509: certificate signed by unknown authority"} -->
 - s1: [Step 7] `curl https://<registry-host>/v2/` from a pod returns `unable to get local issuer certificate`.
 - s1: [Step 9] containerd journal shows the TLS error at the connection layer, before any auth attempt.
 
@@ -496,7 +487,6 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s2: [Step 1] pull error contains `no match for platform in manifest` or `no matching manifest for linux/`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "no match for platform in manifest"} -->
 - root: [Step 4] manifest list does not include the node's `kubectl get node <node-name> -o jsonpath='{.status.nodeInfo.architecture}'` value.
 - root: [Symptom] cluster mixes `arm64` and `amd64` nodes; pull works on one architecture and fails on the other.
 
@@ -533,7 +523,6 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 **Indicators:**
 - s2: [Step 1] pull error contains `ErrImageNeverPull` or `Container image "..." is not present with pull policy of Never`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "ErrImageNeverPull"} -->
 - root: [Step 2] `imagePullPolicy` is `Never` or `IfNotPresent`.
 - s1: [Step 8] `crictl images | grep <repo>` on the node returns no rows for the requested tag/digest.
 

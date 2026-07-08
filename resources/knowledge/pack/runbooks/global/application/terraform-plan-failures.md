@@ -152,9 +152,7 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
 
 **Indicators:**
 - root: [Step 3] `aws sts get-caller-identity` exits non-zero or returns the wrong account ID
-  <!-- match: {"step": 3, "predicate": "exit_code", "target": 1} -->
 - s1: [Step 1] error message contains `no valid credential sources found`, `AuthFailure`, or `403 Forbidden`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "no valid credential sources found"} -->
 
 **Interventions:**
 - **remediation** (root): refresh the credentials so the provider authenticates against the expected account, then re-run plan.
@@ -202,9 +200,7 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
 
 **Indicators:**
 - root: [Step 4] exit code 2 and output shows resources marked `(deleted)` or `must be replaced`
-  <!-- match: {"step": 4, "predicate": "exit_code", "target": 2} -->
 - s1: [Step 1] error message contains `Error refreshing state` and a resource address
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Error refreshing state"} -->
 
 **Interventions:**
 - **remediation** (root): reconcile state with reality — remove a permanently-deleted resource from state and config, or re-import a manually-recreated one.
@@ -240,9 +236,7 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
 
 **Indicators:**
 - root: [Step 6] graph output shows circular edges between the named resources
-  <!-- match: {"step": 6, "predicate": "contains", "target": "Cycle"} -->
 - s1: [Step 1] error message contains `Cycle:` followed by two or more resource addresses
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Cycle:"} -->
 
 **Interventions:**
 - **remediation** (root): break the cycle by replacing inline rules with standalone resources (or removing the looping `depends_on`), then validate and plan.
@@ -279,9 +273,7 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
 
 **Indicators:**
 - root: [Step 7] installed provider version is higher than the last version where the attribute existed per the changelog
-  <!-- match: {"step": 7, "predicate": "contains", "target": "hashicorp/aws"} -->
 - s1: [Step 1] error message contains `Unsupported argument` or `Unsupported block type` referencing an attribute name
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Unsupported argument"} -->
 
 **Interventions:**
 - **remediation** (root): consult the provider changelog and update the config to the new attribute name/type, then validate and plan.
@@ -330,9 +322,7 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
 
 **Indicators:**
 - root: [Step 8] backend access command returns a network error or permission-denied
-  <!-- match: {"step": 8, "predicate": "exit_code", "target": 1} -->
 - s1: [Step 1] error message contains `Failed to query available provider packages`, `Backend initialization required`, or `Failed to get existing workspaces`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Failed to query available provider packages"} -->
 
 **Interventions:**
 - **remediation** (root): restore the network path to the registry and backend, then re-run plan.
@@ -377,9 +367,7 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
 
 **Indicators:**
 - root: [Step 5] `terraform validate` exits non-zero with a type or expression error
-  <!-- match: {"step": 5, "predicate": "exit_code", "target": 1} -->
 - s1: [Step 1] error message contains `Invalid count argument`, `Inconsistent conditional result types`, or `The "count" value depends on resource attributes that cannot be determined until apply`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Invalid count argument"} -->
 
 **Interventions:**
 - **remediation** (root): fix the type/expression error in the `.tf` file, then validate and plan.
@@ -419,7 +407,6 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
 
 **Indicators:**
 - root: [Step 1] error message references a `data.` address and contains `no matching` followed by a resource type (e.g., `no matching AMI found`, `no matching VPC found`)
-  <!-- match: {"step": 1, "predicate": "contains", "target": "no matching"} -->
 
 **Interventions:**
 - **remediation** (root): update the data source filter to match an existing resource, then validate and plan.

@@ -145,7 +145,6 @@ Expected output: `Response Status: 401 Unauthorized` confirms authentication fai
 
 **Indicators:**
 - root: [Step 1] `Arn` in `get-caller-identity` output does not match any ARN in Step 5 or Step 6
-  <!-- match: {"step": 1, "predicate": "contains", "target": "assumed-role"} -->
 - s1: [Step 2] kubeconfig `exec` section contains no `--role-arn` argument and ambient credentials are wrong
 - D: [Symptom] kubectl returns `You must be logged in to the server (Unauthorized)`
 
@@ -178,7 +177,6 @@ Expected output: `Response Status: 401 Unauthorized` confirms authentication fai
 
 **Indicators:**
 - root: [Step 5] caller's ARN does not appear in `eksctl get iamidentitymapping` output
-  <!-- match: {"step": 5, "predicate": "absent", "target": "arn:aws:iam"} -->
 - root: [Step 4] authentication mode is `CONFIG_MAP` or `API_AND_CONFIG_MAP`
 - s1: [Step 3] token generation succeeds but kubectl returns `Unauthorized`
 
@@ -216,7 +214,6 @@ Expected output: `Response Status: 401 Unauthorized` confirms authentication fai
 **Indicators:**
 - root: [Step 6] caller's ARN absent from `aws eks list-access-entries` output
 - root: [Step 4] authentication mode is `API` or `API_AND_CONFIG_MAP`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "API"} -->
 - s1: [Step 3] token generation succeeds but kubectl returns `Unauthorized`
 
 **Interventions:**
@@ -246,7 +243,6 @@ Expected output: `Response Status: 401 Unauthorized` confirms authentication fai
 
 **Indicators:**
 - root: [Step 5] ConfigMap entry contains `rolearn` with a slash-separated path such as `arn:aws:iam::111122223333:role/ops/MyRole`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "role/ops/"} -->
 - s1: [Step 1] caller ARN includes a path in its role segment
 
 **Interventions:**
@@ -278,7 +274,6 @@ Expected output: `Response Status: 401 Unauthorized` confirms authentication fai
 
 **Indicators:**
 - root: [Step 7] node IAM role ARN absent from ConfigMap `mapRoles` entries or from `aws eks list-access-entries`
-  <!-- match: {"step": 7, "predicate": "absent", "target": "system:bootstrappers"} -->
 - s2: [Symptom] kubelet logs show `Unable to register node ... with API server: Unauthorized`
 
 **Interventions:**
@@ -310,7 +305,6 @@ Expected output: `Response Status: 401 Unauthorized` confirms authentication fai
 
 **Indicators:**
 - root: [Step 5] `eksctl get iamidentitymapping` returns empty output or the command fails entirely
-  <!-- match: {"step": 5, "predicate": "absent", "target": "system:masters"} -->
 - root: [Step 6] `aws eks list-access-entries` returns no admin-level entries
 - D: [Symptom] all kubectl commands return `Unauthorized` regardless of which IAM identity is used
 
@@ -360,7 +354,6 @@ Expected output: `Response Status: 401 Unauthorized` confirms authentication fai
 
 **Indicators:**
 - root: [Step 8] cluster OIDC issuer URL does not match any ARN in `aws iam list-open-id-connect-providers` output
-  <!-- match: {"step": 8, "predicate": "absent", "target": "oidc.eks"} -->
 - D: [Symptom] pods fail with `InvalidClientTokenId` or `An error occurred (AccessDenied) when calling AssumeRoleWithWebIdentity`
 
 **Interventions:**
@@ -395,7 +388,6 @@ Expected output: `Response Status: 401 Unauthorized` confirms authentication fai
 
 **Indicators:**
 - root: [Step 3] `aws eks get-token` fails with `InvalidClientTokenId`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "InvalidClientTokenId"} -->
 - D: [Symptom] error message contains `The security token included in the request is invalid`
 
 **Interventions:**

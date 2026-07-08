@@ -98,11 +98,8 @@ Expected output: `health_check.healthy` equals `membership_total` and `health_ch
 - D: load balancer finds no host and returns 503 `no healthy upstream`
 **Indicators:**
 - root: [Step 6] `health_check.failure` is climbing while `health_check.success` is flat
-  <!-- match: {"step": 6, "predicate": "contains", "target": "health_check.failure"} -->
 - s1: [Step 2] host `health_status` shows `failed_active_health_check: true`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "failed_active_health_check"} -->
 - s2: [Step 1] `membership_healthy: 0` with `membership_total` greater than 0
-  <!-- match: {"step": 1, "predicate": "contains", "target": "membership_healthy: 0"} -->
 - D: [Symptom] response body `no healthy upstream` with flag `UH`
 **Interventions:**
 - **remediation** (root): correct the health-check definition so it targets the endpoint the app actually serves (right `path`, `port_value`, and `expected_statuses`); for Istio set `appProtocol`/readiness correctly so the probe matches the app.
@@ -130,9 +127,7 @@ Expected output: `health_check.healthy` equals `membership_total` and `health_ch
 - D: load balancer has no host and returns 503 `no healthy upstream`
 **Indicators:**
 - root: [Step 3] `lb_endpoints` length is 0 and `cluster.<name>.update_empty` is incrementing
-  <!-- match: {"step": 3, "predicate": "contains", "target": "update_empty"} -->
 - s1: [Step 1] `membership_total: 0` for the affected cluster
-  <!-- match: {"step": 1, "predicate": "contains", "target": "membership_total: 0"} -->
 - D: [Symptom] response body `no healthy upstream` with flag `UH`
 **Interventions:**
 - **remediation** (root): restore the endpoint source so EDS has members to advertise — fix the Kubernetes Service selector / `EndpointSlice`, scale the backing workload above 0, or repair the xDS subscription on the management server.
@@ -160,11 +155,8 @@ Expected output: `health_check.healthy` equals `membership_total` and `health_ch
 - D: load balancer finds no host and returns 503 `no healthy upstream`
 **Indicators:**
 - root: [Step 4] `outlier_detection.ejections_enforced_total` / `ejections_detected_consecutive_5xx` climbing
-  <!-- match: {"step": 4, "predicate": "contains", "target": "ejections_enforced_total"} -->
 - s1: [Step 2] host `health_status` shows `failed_outlier_check: true`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "failed_outlier_check"} -->
 - s2: [Step 1] `membership_healthy: 0` while `membership_total` is unchanged
-  <!-- match: {"step": 1, "predicate": "contains", "target": "membership_healthy: 0"} -->
 - D: [Symptom] response body `no healthy upstream` with flag `UH`
 **Interventions:**
 - **remediation** (root): fix the upstream failures driving ejection (the actual 5xx source), then make ejection survivable by capping `max_ejection_percent` below 100 so a panic wave cannot eject the whole cluster.
@@ -196,9 +188,7 @@ Expected output: `health_check.healthy` equals `membership_total` and `health_ch
 - D: requests are rejected with 503 and flag `UO` (overflow), surfacing alongside `no healthy upstream`
 **Indicators:**
 - root: [Step 5] `upstream_rq_pending_overflow` / `upstream_cx_overflow` counters climbing
-  <!-- match: {"step": 5, "predicate": "contains", "target": "upstream_rq_pending_overflow"} -->
 - s1: [Step 5] a `circuit_breakers.<priority>.*_open` gauge reads `1`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "rq_pending_open: 1"} -->
 - D: [Symptom] 503 with access-log response flag `UO`
 **Interventions:**
 - **remediation** (root): raise the circuit-breaker limits to fit real concurrency (and/or scale the upstream) so the pool is not the bottleneck.

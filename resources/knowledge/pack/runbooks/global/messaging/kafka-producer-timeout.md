@@ -141,10 +141,8 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 **Indicators:**
 - s1: [Step 1] log contains `Expiring N record(s) for topic-partition: delivery.timeout.ms expired`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "delivery.timeout.ms expired"} -->
 - root: [Step 2] `delivery.timeout.ms` value is less than or equal to `request.timeout.ms` (no retry budget remains after one request)
 - s2: [Step 5] `record_error_rate > 0` and `request_latency_avg` is high relative to `request.timeout.ms`
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "record_error_rate", "op": ">", "value": 0} -->
 
 **Interventions:**
 - **remediation** (root): set `delivery.timeout.ms=300000` and `request.timeout.ms=60000` durably in producer config (constraint: `delivery.timeout.ms >= linger.ms + request.timeout.ms`).
@@ -184,7 +182,6 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 **Indicators:**
 - root: [Step 2] `acks=0` or `acks=1` is present in producer configuration
-  <!-- match: {"step": 2, "predicate": "contains", "target": "acks=1"} -->
 - root: [Step 2] `enable.idempotence` is false or absent (default before Kafka 3.0)
 - D: [Symptom] consumer lag and offset growth do not match expected producer send count — loss detected only by comparing producer send-total with consumer receive-total
 
@@ -219,11 +216,8 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 **Indicators:**
 - s1: [Step 3] `nc -zv` fails for one or more brokers — `Connection refused` or `timed out`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "timed out"} -->
 - s1: [Step 1] log contains `Connection to node -1 could not be established`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Connection to node -1 could not be established"} -->
 - s1: [Step 3] `kafka-broker-api-versions.sh` returns no output or `Error connecting to node`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Error connecting to node"} -->
 
 **Interventions:**
 - **remediation** (root): correct `advertised.listeners` to an address the producer can reach, then roll the brokers.
@@ -265,9 +259,7 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 **Indicators:**
 - s1: [Step 1] log contains `SSLHandshakeException` or `PKIX path building failed` or `certificate_expired`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "SSLHandshakeException"} -->
 - root: [Step 3] `openssl s_client -connect kafka1:9093` output contains `Verify return code:` not equal to `0 (ok)`, or `notAfter` date is in the past
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Verify return code"} -->
 - root: [Step 2] `security.protocol=SSL` or `SASL_SSL` is configured
 
 **Interventions:**
@@ -309,9 +301,7 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 **Indicators:**
 - s2: [Step 1] log contains `BufferExhaustedException`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "BufferExhaustedException"} -->
 - s1: [Step 5] `buffer_available_bytes` is near zero and `waiting_threads > 0`
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "waiting_threads", "op": ">", "value": 0} -->
 - root: [Step 5] `record_queue_time_avg` is much higher than `linger.ms`, indicating batches are waiting for broker acknowledgment rather than just for batch accumulation
 
 **Interventions:**
@@ -352,9 +342,7 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 **Indicators:**
 - s1: [Step 1] log contains `RecordTooLargeException`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "RecordTooLargeException"} -->
 - root: [Step 4] `kafka-configs.sh ... --describe` shows `max.message.bytes` lower than the actual message size
-  <!-- match: {"step": 4, "predicate": "contains", "target": "max.message.bytes"} -->
 - root: [Step 2] `max.request.size` is at the default 1048576 and application produces binary or JSON payloads that may exceed this
 
 **Interventions:**
@@ -402,9 +390,7 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 **Indicators:**
 - s1: [Step 4] broker JMX `RequestHandlerAvgIdlePercent < 0.30` (30%)
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "RequestHandlerAvgIdlePercent", "op": "<", "value": 0.30} -->
 - s2: [Step 5] `request_latency_avg` is high (>500 ms for a local cluster) — brokers are slow to respond
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "request_latency_avg_ms", "op": ">", "value": 500} -->
 - D: [Step 1] `TimeoutException` appears in producer logs but Step 3 confirms TCP connectivity is healthy
 
 **Interventions:**
@@ -446,7 +432,6 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 **Indicators:**
 - s1: [Step 5] `record_queue_time_avg` is significantly higher than expected end-to-end latency budget
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "record_queue_time_avg_ms", "op": ">", "value": 100} -->
 - root: [Step 2] `linger.ms` value is larger than the application's latency SLO (e.g. `linger.ms=500` for a 200 ms end-to-end target)
 - s1: [Step 5] `batch_size_avg` is much smaller than `batch.size` — batches flush before filling, so `linger.ms` is not the bottleneck and could be increased for throughput
 

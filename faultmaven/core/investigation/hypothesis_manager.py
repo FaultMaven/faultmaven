@@ -53,9 +53,8 @@ logger = logging.getLogger(__name__)
 # likelihood is capped strictly below the ``CAUSE_IDENTIFIED_LIKELIHOOD`` gate so
 # no single emission — an over-confident LLM ``likelihood: 1.0`` in particular —
 # can arrive near-conclusion on creation; the climb past the gate is earned only
-# by evidence (``update_likelihood_from_evidence``) or chain validation. This
-# mirrors ``runbook_cause_matcher._MATCHER_MAX_PRIOR`` (the same bound for the
-# runbook-sourced prior). The value is pinned below the gate by the import-time
+# by evidence (``update_likelihood_from_evidence``) or chain validation. The
+# value is pinned below the gate by the import-time
 # check below, so it cannot silently drift above the gate if the gate constant
 # is later changed.
 NEW_HYPOTHESIS_MAX_PRIOR = 0.5
@@ -164,8 +163,7 @@ class HypothesisManager:
 
         ``initial_likelihood`` is capped at ``NEW_HYPOTHESIS_MAX_PRIOR`` (below
         the IDENTIFIED gate) — a new hypothesis is a prior, not a conclusion;
-        evidence/validation earns the climb. The runbook matcher pre-caps to
-        ``_MATCHER_MAX_PRIOR`` (same bound), so its values pass through unchanged.
+        evidence/validation earns the climb.
         """
         capped_likelihood = min(max(0.0, initial_likelihood), NEW_HYPOTHESIS_MAX_PRIOR)
         if capped_likelihood < initial_likelihood:

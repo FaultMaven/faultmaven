@@ -142,9 +142,7 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
 
 **Indicators:**
 - root: [Step 2] direct data-source timing for the panel query exceeds 2 seconds
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "datasource_query_seconds", "op": ">", "value": 2} -->
 - s2: [Step 1] Query Inspector Stats tab shows `"Rows"` exceeding 10 000 or execution time exceeding 2 000 ms
-  <!-- match: {"step": 1, "predicate": "threshold", "target": "row_count", "op": ">", "value": 10000} -->
 
 **Interventions:**
 - **remediation** (root): create a Prometheus recording rule for the expensive aggregation so per-query CPU drops on every scrape. The recording rule is cluster-wide; a bad expr produces zero data until corrected (roll back by removing the rule block, reloading Prometheus, and restoring the original panel query).
@@ -189,7 +187,6 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
 
 **Indicators:**
 - root: [Step 4] `multi_all_vars` array contains a variable whose resolved value count exceeds 50
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "multi_all_var_count", "op": ">", "value": 50} -->
 - s1: [Step 1] panel load time scales linearly with the number of selected variable values
 
 **Interventions:**
@@ -228,7 +225,6 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
 
 **Indicators:**
 - root: [Step 4] `panel_count` exceeds 25 or `total_queries` exceeds 30
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "panel_count", "op": ">", "value": 25} -->
 - s1: [Step 3] `grafana_datasource_request_duration_seconds` p99 is high while direct data-source queries are fast (Step 2)
 
 **Interventions:**
@@ -267,7 +263,6 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
 
 **Indicators:**
 - root: [Step 1] Query Inspector shows a request error or `"context deadline exceeded"` in the response rather than a data result
-  <!-- match: {"step": 1, "predicate": "contains", "target": "context deadline exceeded"} -->
 - s1: [Symptom] Grafana logs contain `context deadline exceeded` or `request canceled` paired with the `/api/ds/query` path
 
 **Interventions:**
@@ -309,7 +304,6 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
 
 **Indicators:**
 - root: [Step 3] `kubectl top pod` shows CPU throttling (`cpu` at or above request limit) or memory near the resource limit
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "cpu_pct", "op": ">", "value": 80} -->
 - s1: [Step 2] direct data-source queries are fast but Step 1 panel load times are slow
 
 **Interventions:**
@@ -352,7 +346,6 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
 
 **Indicators:**
 - root: [Step 7] `grep type` in the `[database]` section returns `sqlite3`
-  <!-- match: {"step": 7, "predicate": "contains", "target": "sqlite3"} -->
 - s1: [Symptom] slowness correlates with the number of concurrent active Grafana users rather than with data-source query complexity
 
 **Interventions:**
@@ -391,7 +384,6 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
 
 **Indicators:**
 - root: [Step 6] `max_conns_per_host` is set to a non-zero value less than 20
-  <!-- match: {"step": 6, "predicate": "contains", "target": "max_conns_per_host"} -->
 - s1: [Step 4] `total_queries` exceeds the configured `max_conns_per_host` value
 
 **Interventions:**

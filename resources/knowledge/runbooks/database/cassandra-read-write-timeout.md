@@ -80,9 +80,7 @@ Expected output: coordinator-side `Read Latency` percentiles in microseconds. A 
 - D: client sees ReadTimeoutException / TombstoneOverwhelmingException
 **Indicators:**
 - s1: [Step 5] log line `Read 5000 live rows and 100000 tombstone cells for query SELECT ... (see tombstone_warn_threshold)`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "tombstone cells for query"} -->
 - s2: [Step 5] abort line `TombstoneOverwhelmingException: Scanned over 100001 tombstones during query`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "TombstoneOverwhelmingException"} -->
 - D: [Symptom] driver raises ReadTimeoutException / `OperationTimedOut` on the SELECT
 **Interventions:**
 - **remediation** (root): redesign the query/model to avoid scanning deleted ranges (e.g. add a time bucket to the partition key so reads target a live bucket), then purge existing tombstones by forcing compaction of the table.
@@ -107,7 +105,6 @@ Expected output: coordinator-side `Read Latency` percentiles in microseconds. A 
 - D: reads exceed timeout → ReadTimeoutException
 **Indicators:**
 - s1: [Step 3] `nodetool compactionstats` shows a large, non-decreasing `pending tasks` count
-  <!-- match: {"step": 3, "predicate": "absent", "target": "pending tasks: 0"} -->
 - s2: [Step 4] `tablehistograms` `99%` `SSTables` per read is well above 1
 - D: [Step 6] `proxyhistograms` `99%` Read Latency approaches `read_request_timeout_in_ms`
 **Interventions:**
@@ -133,7 +130,6 @@ Expected output: coordinator-side `Read Latency` percentiles in microseconds. A 
 - D: client sees ReadTimeoutException
 **Indicators:**
 - s1: [Step 5] log line `Writing large partition <keyspace>/<table>:<key> (... bytes)`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "Writing large partition"} -->
 - s1: [Step 4] `tablehistograms` `99%` `Partition Size` in the hundreds of MB
 - D: [Step 6] `proxyhistograms` `99%` Read Latency near/above the read timeout
 **Interventions:**
@@ -162,9 +158,7 @@ Expected output: coordinator-side `Read Latency` percentiles in microseconds. A 
 - D: client sees ReadTimeoutException / WriteTimeoutException naming the CL
 **Indicators:**
 - root: [Step 1] `nodetool status` shows a `DN` (Down/Normal) node owning the range
-  <!-- match: {"step": 1, "predicate": "contains", "target": "DN"} -->
 - s1: [Step 2] `nodetool tpstats` shows non-zero dropped `READ`/`MUTATION` messages on a live replica
-  <!-- match: {"step": 2, "predicate": "absent", "target": "READ                             0"} -->
 - D: [Symptom] driver message `... at consistency QUORUM (2 responses were required but only 1 replica responded)`
 **Interventions:**
 - **remediation** (root): restore the down/overloaded replica and re-sync data so the full replica set serves the range again.
@@ -189,7 +183,6 @@ Expected output: coordinator-side `Read Latency` percentiles in microseconds. A 
 - D: client sees Read/WriteTimeoutException
 **Indicators:**
 - s1: [Step 5] `GCInspector.java` line `GC for ParNew: 256 ms for 1 collections` or `G1 Young Generation GC in 1392ms`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "GCInspector"} -->
 - s2: [Step 2] `nodetool tpstats` shows dropped `READ`/`MUTATION` messages coinciding with the pauses
 - D: [Symptom] intermittent Read/WriteTimeoutException with no single down replica
 **Interventions:**

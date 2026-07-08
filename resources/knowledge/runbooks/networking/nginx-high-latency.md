@@ -194,7 +194,6 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
 
 **Indicators:**
 - root: [Step 5] `nginx -T | grep -E "keepalive|proxy_http_version"` shows no `keepalive` directive in the upstream block, or `proxy_http_version 1.0`, or the absence of `proxy_set_header Connection "";`.
-  <!-- match: {"step": 5, "predicate": "absent", "target": "keepalive"} -->
 - s2: [Step 3] decomposition shows `avg_uct` is the dominant term in `$request_time` (e.g., `uct >= 0.50 * rt`).
 
 **Interventions:**
@@ -288,9 +287,7 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
 **Indicators:**
 - root: [Step 4] `stub_status` reports `Active connections` close to `worker_processes * worker_connections`, and `Waiting` similarly close to capacity.
 - s1: [Step 4] `ss -tln 'sport = :443'` shows `Recv-Q > 0` on the NGINX listen socket.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "Recv-Q"} -->
 - s2: [Step 9] `nstat`/`/proc/net/netstat` shows `TcpExtListenOverflows` or `TcpExtListenDrops` incrementing during the latency window.
-  <!-- match: {"step": 9, "predicate": "contains", "target": "ListenOverflow"} -->
 
 **Interventions:**
 - **remediation** (root): raise `worker_connections` and FD limits, enlarge the listen backlog, and widen `somaxconn`.
@@ -345,7 +342,6 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
 
 **Indicators:**
 - s1: [Step 6] error log contains `an upstream response is buffered to a temporary file`.
-  <!-- match: {"step": 6, "predicate": "contains", "target": "an upstream response is buffered to a temporary file"} -->
 - s1: [Step 6] `ls /var/cache/nginx/proxy_temp/` shows files larger than zero accumulating during the latency window.
 - s2: [Step 3] `client_overhead = avg_rt - avg_urt` is significant (>50 ms) while `avg_uct`/`avg_uht`/`avg_urt` are nominal.
 
@@ -394,7 +390,6 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
 
 **Indicators:**
 - root: [Step 7] config shows neither `ssl_session_cache shared:...` nor `ssl_session_tickets on;`.
-  <!-- match: {"step": 7, "predicate": "absent", "target": "ssl_session_cache shared"} -->
 - s2: [Step 7] `curl -w "ssl=%{time_appconnect}s"` reports >100 ms on a new connection while reused connections show `ttfb` well below `ssl`.
 - s2: [Symptom] latency p99 spikes correlate with connection-establishment events (mobile network roams, load-balancer fail-over, scraper bursts).
 
@@ -434,9 +429,7 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
 
 **Indicators:**
 - root: [Step 8] `nginx -T | grep -E "max_conns|queue "` shows `max_conns=` on upstream servers and a `queue` directive in the upstream block.
-  <!-- match: {"step": 8, "predicate": "contains", "target": "max_conns"} -->
 - s1: [Step 8] `awk` summary over access logs reports `queue_samples > 0` with non-trivial `avg`/`max` queue time.
-  <!-- match: {"step": 8, "predicate": "contains", "target": "queue_samples="} -->
 - s2: [Step 3] `avg_rt` is materially higher than `avg_urt + avg_uct + avg_uht`, with the difference matching `avg_uqt`.
 
 **Interventions:**
@@ -490,9 +483,7 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
 
 **Indicators:**
 - root: [Step 9] `cat /proc/sys/net/netfilter/nf_conntrack_count` is within 5% of `nf_conntrack_max`.
-  <!-- match: {"step": 9, "predicate": "threshold", "target": "conntrack_utilization_pct", "op": ">", "value": 95} -->
 - s1: [Step 9] `dmesg | grep nf_conntrack` shows `table full, dropping packet`.
-  <!-- match: {"step": 9, "predicate": "contains", "target": "nf_conntrack: table full"} -->
 - s2: [Step 3] `avg_uct` is elevated only on new connections and recovers when upstream keepalive is in use.
 
 **Interventions:**

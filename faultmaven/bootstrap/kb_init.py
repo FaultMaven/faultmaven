@@ -161,8 +161,7 @@ async def bootstrap_kb(
     # Catches drift that the row-keyed prune above is structurally blind to:
     # ChromaDB chunks whose parent has no row (orphaned vectors — deleted) and
     # rows with no chunks (orphaned rows — warned). This is the safety net that
-    # keeps the runbook-cause matcher's retrieve→resolve step from landing on a
-    # ghost vector that has no causal-chain row behind it.
+    # keeps retrieval from landing on a ghost vector with no row behind it.
     (
         result.orphaned_vectors_cleaned,
         result.orphaned_rows,
@@ -234,8 +233,8 @@ async def _ingest_pack_runbook(
         verified_by=None,
         verification_level=VerificationLevel.COMMUNITY,
         prechunked=prechunked,
-        # v4 per-Cause graph records → knowledge_items.metadata["causes"], for the
-        # runbook-cause matcher to read back by item_id (inert until that lands).
+        # v4 per-Cause graph records → knowledge_items.metadata["causes"], stored
+        # verbatim (the cross-repo pack contract pins the shape).
         causes=runbook.causes,
     )
 

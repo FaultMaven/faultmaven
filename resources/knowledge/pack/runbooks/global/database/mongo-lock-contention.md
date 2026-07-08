@@ -178,9 +178,7 @@ Expected output: Cache occupancy values. Rising `pages evicted by application th
 
 **Indicators:**
 - s1: [Step 3] `planSummary` contains `"COLLSCAN"` on the hot namespace
-  <!-- match: {"step": 3, "predicate": "contains", "target": "COLLSCAN"} -->
 - s1: [Step 6] `docsExamined` greatly exceeds `nreturned` in profiler output
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "docsExamined_nreturned_ratio", "op": ">", "value": 10} -->
 
 **Interventions:**
 - **remediation** (root): create a compound index following the equality-sort-range (ESR) rule for the hot query pattern. No restart required; per-collection write overhead increases proportional to indexed-field count.
@@ -222,8 +220,6 @@ Expected output: Cache occupancy values. Rising `pages evicted by application th
 **Indicators:**
 - s2: [Step 2] Multiple operations with `waitingForLock: true` targeting the same `ns`
 - root: [Step 3] A `command` op with `command.dropIndexes` or `command.reIndex` and high `secs_running`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "dropIndexes"} -->
-  <!-- match: {"step": 3, "predicate": "contains", "target": "reIndex"} -->
 - s1: [Step 5] `Collection` lock type shows high `timeAcquiringMicros`
 
 **Interventions:**
@@ -261,8 +257,6 @@ Expected output: Cache occupancy values. Rising `pages evicted by application th
 
 **Indicators:**
 - s3: [Step 4] `read.available: 0` or `write.available: 0`
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "read_available", "op": "=", "value": 0} -->
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "write_available", "op": "=", "value": 0} -->
 - s3: [Step 1] `currentQueue.readers` or `currentQueue.writers` non-zero while Step 4 shows zero available tickets
 
 **Interventions:**
@@ -302,9 +296,7 @@ Expected output: Cache occupancy values. Rising `pages evicted by application th
 
 **Indicators:**
 - root: [Step 3] `op: "command"` with `command.aggregate` present and `secs_running` above 30
-  <!-- match: {"step": 3, "predicate": "contains", "target": "aggregate"} -->
 - s3: [Step 4] read tickets (`read.available`) trending toward `0` during batch/reporting windows
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "read_available", "op": "<", "value": 10} -->
 
 **Interventions:**
 - **remediation** (root): add `$match` as the first stage, ensure a supporting index exists for that filter, and bound the pipeline with `$limit` and `maxTimeMS`.
@@ -346,7 +338,6 @@ Expected output: Cache occupancy values. Rising `pages evicted by application th
 **Indicators:**
 - s3: [Step 2] ops with `waitingForLock: true` and `op: "insert"`/`"update"` queued behind a long-running insert/bulkWrite
 - s2: [Step 4] write tickets trending to `0` during known data-load windows
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "write_available", "op": "<", "value": 10} -->
 - s2: [Step 3] a single `insert` or `command` operation with `secs_running` above `10`
 
 **Interventions:**
@@ -385,7 +376,6 @@ Expected output: Cache occupancy values. Rising `pages evicted by application th
 
 **Indicators:**
 - s1: [Step 2] ops with `desc` containing `"TxnCoordinator"`, or `type: "op"` with `waitingForLock: true` and high `secs_running`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "TxnCoordinator"} -->
 - D: [Symptom] application logs contain `"Transaction has been aborted"` or `"exceeded time limit"`
 
 **Interventions:**
@@ -423,9 +413,7 @@ Expected output: Cache occupancy values. Rising `pages evicted by application th
 
 **Indicators:**
 - s2: [Step 8] `pages evicted by application threads` is non-zero and increasing between polls
-  <!-- match: {"step": 8, "predicate": "threshold", "target": "app_evictions", "op": ">", "value": 0} -->
 - s1: [Step 8] `used_bytes / max_bytes` ratio above 0.95
-  <!-- match: {"step": 8, "predicate": "threshold", "target": "cache_utilization_ratio", "op": ">", "value": 0.95} -->
 
 **Interventions:**
 - **remediation** (root): set `storage.wiredTiger.engineConfig.cacheSizeGB` in `mongod.conf` to 50–60% of available RAM. Requires a `mongod` restart; perform as a rolling restart on replica-set members.

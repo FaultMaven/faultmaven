@@ -30,7 +30,7 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.intake_evaluation import _SURFACED_CAUSAL_CAP
+from faultmaven.core.investigation.evidence_need_surfacing import _SURFACED_CAUSAL_CAP
 from faultmaven.core.investigation.prompts.context_builder import (
     _build_evidence_needs_block,
     build_investigation_context,
@@ -631,7 +631,7 @@ class TestCausalSurfaceCap:
         # evict the MEDIUM causal asks the surface cap chose. Without reserving their
         # slots, the priority sort + _EVIDENCE_NEEDS_RENDER_CAP would drop all causal
         # needs (HIGH symptoms fill every slot). Asserts identity, not just count.
-        from faultmaven.core.investigation.intake_evaluation import (
+        from faultmaven.core.investigation.evidence_need_surfacing import (
             select_surfaced_causal_needs,
         )
         from faultmaven.core.investigation.prompts.context_builder import (

@@ -122,8 +122,6 @@ Expected output: index table sorted by segment count descending; read-only histo
 
 **Indicators:**
 - root: [Step 5] slow log entries repeat the same query `source` pattern across multiple shards
-  <!-- match: {"step": 5, "predicate": "contains", "target": "wildcard"} -->
-  <!-- match: {"step": 5, "predicate": "contains", "target": "script"} -->
 - s2: [Step 6] `build_scorer` or `next_doc` `time_in_nanos` dominates the profile breakdown for the slow query
 
 **Interventions:**
@@ -172,7 +170,6 @@ Expected output: index table sorted by segment count descending; read-only histo
 
 **Indicators:**
 - root: [Step 3] `heap_used_percent` above 75 on any data node
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "heap_used_percent", "op": ">", "value": 75} -->
 - s2: [Step 3] old-generation `collection_time_in_millis` increasing rapidly (more than 5 collections per minute)
 
 **Interventions:**
@@ -209,7 +206,6 @@ Expected output: index table sorted by segment count descending; read-only histo
 
 **Indicators:**
 - root: [Step 4] `tripped` counter is non-zero on any breaker for any node
-  <!-- match: {"step": 4, "predicate": "contains", "target": "\"tripped\" : 1"} -->
 - s2: [Symptom] HTTP 429 responses with body containing `circuit_breaking_exception`
 
 **Interventions:**
@@ -258,7 +254,6 @@ Expected output: index table sorted by segment count descending; read-only histo
 
 **Indicators:**
 - root: [Step 2] `rejected` column non-zero and increasing across polling intervals
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "rejected", "op": ">", "value": 0} -->
 - s1: [Step 2] `queue` column consistently above 500 during peak traffic
 
 **Interventions:**
@@ -299,7 +294,6 @@ Expected output: index table sorted by segment count descending; read-only histo
 
 **Indicators:**
 - root: [Step 8] `segments.count` above 200 per shard on indices that are no longer receiving writes
-  <!-- match: {"step": 8, "predicate": "threshold", "target": "segments.count", "op": ">", "value": 200} -->
 - root: [Step 8] read-only time-based indices (e.g., Logstash `logstash-YYYY.MM.DD`) with high segment counts
 
 **Interventions:**
@@ -342,7 +336,6 @@ Expected output: index table sorted by segment count descending; read-only histo
 
 **Indicators:**
 - root: [Step 5] slow log entries showing `from` values above 5 000 in the query `source`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "\"from\""} -->
 - s2: [Step 4] `request` breaker `estimated_size` spikes correlated with pagination-heavy traffic
 
 **Interventions:**

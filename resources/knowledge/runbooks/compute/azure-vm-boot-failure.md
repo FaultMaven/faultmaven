@@ -82,9 +82,7 @@ Expected output: `Active: active (running)` for a healthy agent; the `curl` to t
 - D: VM panics before init and never reaches a login prompt
 **Indicators:**
 - root: [Step 2] serial console shows the panic referencing a missing root fs / initramfs
-  <!-- match: {"step": 2, "predicate": "contains", "target": "VFS: Unable to mount root fs on unknown-block(0,0)"} -->
 - s1: [Step 1] boot log ends at the kernel panic banner
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Kernel panic - not syncing"} -->
 - D: [Symptom] VM Agent status is not Ready and SSH is unreachable
 **Interventions:**
 - **mitigation** (s1): boot the previous known-good kernel from the GRUB menu via the serial console.
@@ -118,9 +116,7 @@ Expected output: `Active: active (running)` for a healthy agent; the `curl` to t
 **Indicators:**
 - root: [Step 2] fstab review shows an entry pointing at a non-existent device/UUID without `nofail`
 - s1: [Step 1] boot log shows the dependency failure for local filesystems
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Dependency failed for Local File Systems"} -->
 - s2: [Step 2] serial console shows the emergency-mode banner
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Welcome to emergency mode!"} -->
 - D: [Symptom] VM Agent status is not Ready
 **Interventions:**
 - **mitigation** (s2): in single-user/emergency mode over the serial console, comment out the offending line and reboot.
@@ -152,11 +148,8 @@ Expected output: `Active: active (running)` for a healthy agent; the `curl` to t
 - D: VM never reaches multi-user; SSH unreachable and agent not Ready
 **Indicators:**
 - root: [Step 1] boot log shows the kernel filesystem driver flagging corruption
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Unmount and run xfs_repair"} -->
 - s1: [Step 1] a specific mount fails
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Failed to mount"} -->
 - s2: [Step 2] serial console shows `You are in emergency mode.`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "You are in emergency mode"} -->
 - D: [Symptom] VM Agent status is not Ready
 **Interventions:**
 - **remediation** (root): take a snapshot, then repair the unmounted filesystem (use the repair VM from Step 3 for root/`/usr`).
@@ -179,9 +172,7 @@ Expected output: `Active: active (running)` for a healthy agent; the `curl` to t
 - D: VM Agent status stays not Ready and extensions/provisioning fail
 **Indicators:**
 - root: [Step 4] `waagent.log` reports a goal-state retrieval error
-  <!-- match: {"step": 4, "predicate": "contains", "target": "An error occurred while retrieving the goal state"} -->
 - root: [Step 4] WireServer connectivity probe fails
-  <!-- match: {"step": 4, "predicate": "exit_code", "target": "non-zero"} -->
 - D: [Symptom] VM Agent status in the portal is not Ready
 **Interventions:**
 - **remediation** (root): restart the agent and restore outbound access to the host IP.

@@ -165,7 +165,6 @@ Expected output: Key name matches the file you are using. File permissions show 
 
 **Indicators:**
 - root: [Step 3] No rule with `Port: 22` exists, or the `Source` CIDR does not contain the operator's current IP.
-  <!-- match: {"step": 3, "predicate": "absent", "target": "22"} -->
 - s2: [Symptom] Connection times out (not refused) — the packet is dropped, not rejected.
 
 **Interventions:**
@@ -214,7 +213,6 @@ Expected output: Key name matches the file you are using. File permissions show 
 
 **Indicators:**
 - root: [Step 4] Inbound rules show a DENY with rule number lower than the ALLOW for port 22, OR outbound rules have no ALLOW for ports 1024–65535.
-  <!-- match: {"step": 4, "predicate": "contains", "target": "DENY"} -->
 - s2: [Symptom] Timeout persists even after confirming security group allows port 22.
 
 **Interventions:**
@@ -266,7 +264,6 @@ Expected output: Key name matches the file you are using. File permissions show 
 
 **Indicators:**
 - root: [Step 5] No route with `Destination: 0.0.0.0/0` and `Target: igw-*` exists in the route table.
-  <!-- match: {"step": 5, "predicate": "absent", "target": "igw-"} -->
 - s2: [Step 2] Instance has a public IP assigned (non-null `PublicIp`) yet connections time out.
 
 **Interventions:**
@@ -309,7 +306,6 @@ Expected output: Key name matches the file you are using. File permissions show 
 
 **Indicators:**
 - root: [Step 2] `PublicIp` field is null in `describe-instances` output.
-  <!-- match: {"step": 2, "predicate": "absent", "target": "PublicIp"} -->
 - s2: [Symptom] Instance was reachable before a stop/start operation and is now unreachable.
 
 **Interventions:**
@@ -349,7 +345,6 @@ Expected output: Key name matches the file you are using. File permissions show 
 
 **Indicators:**
 - s2: [Step 7] Verbose output shows `Permission denied (publickey)` after key exchange succeeds (network path is fine).
-  <!-- match: {"step": 7, "predicate": "contains", "target": "Permission denied (publickey)"} -->
 - root: [Step 8] Key pair name in console does not match the filename of the `.pem` file being used.
 
 **Interventions:**
@@ -414,7 +409,6 @@ Expected output: Key name matches the file you are using. File permissions show 
 **Indicators:**
 - root: [Step 8] `ls -la` on the key file shows group or other read/write bits set.
 - s1: [Step 7] Output contains `WARNING: UNPROTECTED PRIVATE KEY FILE!` and shows permissions like `0644` or `0777`.
-  <!-- match: {"step": 7, "predicate": "contains", "target": "UNPROTECTED PRIVATE KEY FILE"} -->
 
 **Interventions:**
 - **remediation** (root): Restrict the key file to owner-read-only.
@@ -437,7 +431,6 @@ Expected output: Key name matches the file you are using. File permissions show 
 
 **Indicators:**
 - s1: [Step 7] Connection is immediately refused (`Connection refused` within 1 second, not a timeout).
-  <!-- match: {"step": 7, "predicate": "contains", "target": "Connection refused"} -->
 - root: [Step 6] Console output shows `sshd.service: Main process exited`, `Failed to start OpenBSD Secure Shell server`, or missing sshd startup lines.
 
 **Interventions:**
@@ -480,7 +473,6 @@ Expected output: Key name matches the file you are using. File permissions show 
 
 **Indicators:**
 - root: [Step 6] Console output shows `No space left on device` or similar filesystem error messages.
-  <!-- match: {"step": 6, "predicate": "contains", "target": "No space left on device"} -->
 - s2: [Step 7] Authentication succeeds (key accepted) but session immediately closes without a shell prompt.
 
 **Interventions:**

@@ -124,7 +124,6 @@ Expected output: `type` column shows `classic`, `quorum`, or `stream`. Classic q
 
 **Indicators:**
 - root: [Step 4] `publish_rate` is materially higher than `deliver_rate`
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "publish_rate", "op": ">", "value": "deliver_rate"} -->
 - s1: [Step 3] One or more queues show rapidly increasing `messages` count with non-zero `consumers`
 
 **Interventions:**
@@ -167,7 +166,6 @@ Expected output: `type` column shows `classic`, `quorum`, or `stream`. Classic q
 
 **Indicators:**
 - root: [Step 6] Queues show `type=classic` and no `x-queue-mode: lazy` in arguments
-  <!-- match: {"step": 6, "predicate": "absent", "target": "x-queue-mode"} -->
 - s2: [Step 2] `binary` or `queue_procs` is the largest memory subsystem
 
 **Interventions:**
@@ -207,7 +205,6 @@ Expected output: `type` column shows `classic`, `quorum`, or `stream`. Classic q
 
 **Indicators:**
 - root: [Step 5] Watermark fraction is below 0.35 or above 0.7
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "vm_memory_high_watermark", "op": "<", "value": 0.35} -->
 - s2a: [Step 5] Detected `total_memory` is far larger than the container memory limit
 
 **Interventions:**
@@ -250,7 +247,6 @@ Expected output: `type` column shows `classic`, `quorum`, or `stream`. Classic q
 
 **Indicators:**
 - root: [Step 6] `rabbitmqctl list_policies` shows policies with `ha-mode: all` or `ha-mode: exactly`
-  <!-- match: {"step": 6, "predicate": "contains", "target": "ha-mode"} -->
 - s2: [Step 2] Memory breakdown is proportionally high across multiple nodes with similar `queue_procs` figures
 
 **Interventions:**
@@ -296,7 +292,6 @@ Expected output: `type` column shows `classic`, `quorum`, or `stream`. Classic q
 
 **Indicators:**
 - s2: [Step 2] `binary` memory is the dominant subsystem and does not decrease after purging queues
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "binary_pct_of_total", "op": ">", "value": 0.5} -->
 - s1: [Step 3] Queue message counts are low but overall memory remains high
 
 **Interventions:**

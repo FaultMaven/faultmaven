@@ -157,7 +157,6 @@ Expected output: `superuser_reserved_connections` ≥ 3 and superuser `psql` ret
 **Indicators:**
 - root: [Step 4] one or more rows with `idle_duration` exceeding a few minutes; `last_query` names the offending code path
 - s1: [Step 2] `idle in transaction` / `idle in transaction (aborted)` share of total connections is significantly elevated
-  <!-- match: {"step": 2, "predicate": "contains", "target": "idle in transaction"} -->
 **Interventions:**
 - **remediation** (root): set a server-wide reclaim timeout and fix the application so every `BEGIN` reaches `COMMIT`/`ROLLBACK` via a context manager / `try-finally`; move external calls outside the transaction boundary.
 
@@ -189,7 +188,6 @@ Expected output: `superuser_reserved_connections` ≥ 3 and superuser `psql` ret
 **Indicators:**
 - root: [Step 3] one application/host dominates the total connection count despite low traffic
 - s1: [Step 5] many rows from a single `application_name` with `idle_since` exceeding 30 minutes
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "idle_since_minutes", "op": ">", "value": 30} -->
 **Interventions:**
 - **remediation** (root): patch the offending service to release connections with a language-native scope guard (Python `with`, Java try-with-resources, Go `defer`, Node `try/finally`) and cap the client pool.
 
@@ -222,7 +220,6 @@ Expected output: `superuser_reserved_connections` ≥ 3 and superuser `psql` ret
 - D: the (N × P + 1)-th client connect attempt receives `FATAL: sorry, too many clients already` (see Symptom Recognition)
 **Indicators:**
 - root: [Step 6] no PgBouncer/PgPool front end (`SHOW POOLS` returns nothing or the pooler is unreachable)
-  <!-- match: {"step": 6, "predicate": "absent", "target": "pgbouncer"} -->
 - s1: [Step 3] connection counts roughly proportional to instance count × per-instance pool size, with no single outlier
 - s1: [Symptom] `FATAL: sorry, too many clients already` correlates with autoscaling events that increase instance count
 **Interventions:**
@@ -269,7 +266,6 @@ Expected output: `superuser_reserved_connections` ≥ 3 and superuser `psql` ret
 **Indicators:**
 - root: [Step 4] no idle-in-transaction sessions, yet [Step 3] shows long `query_duration` concentrated in one application
 - s1: [Step 2] `active` share dominates (rather than `idle in transaction` / `idle`)
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "active_pct", "op": ">", "value": 0.7} -->
 - s2: [Symptom] latency rises before `FATAL: sorry, too many clients already` appears
 **Interventions:**
 - **remediation** (root): set bounded `statement_timeout` per application role and add the missing indexes / rewrites surfaced in `pg_stat_statements`.
@@ -309,7 +305,6 @@ Expected output: `superuser_reserved_connections` ≥ 3 and superuser `psql` ret
 **Indicators:**
 - root: [Step 1] PostgreSQL connection count is well below `max_connections` despite application reports of connection failures
 - s1: [Step 6] `cl_waiting > 0` and `maxwait > 0` in `SHOW POOLS` while [Step 1] PostgreSQL `pct_used` is moderate (< 70)
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "cl_waiting", "op": ">", "value": 0} -->
 **Interventions:**
 - **remediation** (root): right-size PgBouncer so the sum of pool sizes (plus reserve capacity) stays comfortably below PostgreSQL's effective limit; scale the DB host (more RAM) or shard if aggregate demand legitimately exceeds the RAM-bounded ceiling, before raising PostgreSQL `max_connections` blindly.
 

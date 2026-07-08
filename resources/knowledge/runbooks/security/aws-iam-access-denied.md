@@ -220,9 +220,7 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 **Indicators:**
 - root: [Step 4] no attached policy contains an `"Effect": "Allow"` statement whose `Action` and `Resource` match the failing call.
 - s2: [Step 3] `simulate-principal-policy` returns `Decision: implicitDeny` for the action.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "implicitDeny"} -->
 - D: [Step 1] error message contains `because no identity-based policy allows`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "because no identity-based policy allows"} -->
 
 **Interventions:**
 - **remediation** (root): author a targeted inline Allow scoped to the action and resource.
@@ -269,9 +267,7 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 **Indicators:**
 - root: [Step 4] an attached policy contains an `"Effect": "Deny"` statement whose `Action` and `Resource` match the failing call.
 - s1: [Step 3] `simulate-principal-policy` returns `Decision: explicitDeny` and `MatchedStatements` names an identity-policy ARN (not SCP, not permissions boundary).
-  <!-- match: {"step": 3, "predicate": "contains", "target": "explicitDeny"} -->
 - D: [Step 1] error message contains `with an explicit deny in an identity-based policy`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "with an explicit deny in an identity-based policy"} -->
 
 **Interventions:**
 - **remediation** (root): publish a corrected policy version with the Deny removed or its Condition narrowed so the caller no longer matches.
@@ -312,9 +308,7 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 **Indicators:**
 - root: [Step 5] the caller has a non-null `PermissionsBoundary` whose policy document omits the action from any Allow or includes a Deny for it.
 - s2: [Step 3] `simulate-principal-policy` returns `PermissionsBoundaryDecisionDetail.AllowedByPermissionsBoundary: false`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "AllowedByPermissionsBoundary"} -->
 - D: [Step 1] error message contains `permissions boundary`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "permissions boundary"} -->
 
 **Interventions:**
 - **remediation** (root): update the boundary policy to include the missing action.
@@ -362,10 +356,8 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 
 **Indicators:**
 - root: [Step 9] grep shows a `Condition` block on the matching Allow statement referencing the caller's request context (`aws:SourceVpc`, `aws:SourceIp`, `aws:RequestedRegion`, `aws:MultiFactorAuthPresent`, `aws:RequestTag/*`, `aws:ResourceTag/*`, `aws:PrincipalOrgID`).
-  <!-- match: {"step": 9, "predicate": "contains", "target": "aws:"} -->
 - s2: [Step 3] `simulate-principal-policy` returns `implicitDeny` despite Step 4 showing a matching Allow statement on paper.
 - D: [Step 1] error message contains `because no identity-based policy allows`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "because no identity-based policy allows"} -->
 
 **Interventions:**
 - **remediation** (root): satisfy the Condition by submitting the call from a matching context, adding the required tag, or (with security review) narrowing the Condition.
@@ -406,10 +398,8 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 
 **Indicators:**
 - root: [Step 8] the AssumeRole CloudTrail event for the current session has a non-empty `requestParameters.policy` or `requestParameters.policyArns`.
-  <!-- match: {"step": 8, "predicate": "contains", "target": "policy"} -->
 - s1: [Step 3] `simulate-principal-policy` against the role itself returns `allowed`, but the runtime call still fails — indicating a restriction beyond the role's identity policies.
 - D: [Step 1] error message contains `session policy`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "session policy"} -->
 
 **Interventions:**
 - **remediation** (root): edit the caller (CI script, SDK wrapper, IAM Identity Center permission set) to drop the session policy or broaden it to include the missing action.
@@ -463,7 +453,6 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 - root: [Step 7] the endpoint's `PolicyDocument` omits the resource ARN from `Resource` or includes a `Deny` matching the action.
 - s1: [Step 7] the CloudTrail event includes a `vpcEndpointId` field naming an endpoint with a non-default policy.
 - D: [Step 1] error message contains `VPC endpoint policy`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "VPC endpoint policy"} -->
 
 **Interventions:**
 - **remediation** (root): add the action and resource to the endpoint policy.
@@ -509,9 +498,7 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 **Indicators:**
 - root: [Step 6] an SCP or RCP on the account contains a `"Effect": "Deny"` matching the action, or an Allow-list SCP omits it.
 - s2: [Step 3] `simulate-principal-policy` returns `OrganizationsDecisionDetail.AllowedByOrganizations: false`.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "AllowedByOrganizations"} -->
 - D: [Step 1] error message contains `service control policy`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "service control policy"} -->
 
 **Interventions:**
 - **remediation** (root): after the Organizations admin updates the policy content, apply and verify the corrected SCP/RCP.
@@ -548,10 +535,8 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 
 **Indicators:**
 - root: [Step 10] `simulate-principal-policy` for `iam:PassRole` against the role ARN returns `implicitDeny` or `explicitDeny`.
-  <!-- match: {"step": 10, "predicate": "contains", "target": "implicitDeny"} -->
 - s1: [Step 10] the failing parent call's `requestParameters` (in CloudTrail) references a role ARN via `iamInstanceProfile`, `roleArn`, `executionRoleArn`, `taskRoleArn`, or `monitoringRoleArn`.
 - D: [Step 1] error message contains `iam:PassRole`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "iam:PassRole"} -->
 
 **Interventions:**
 - **remediation** (root): grant scoped `iam:PassRole` on the specific role ARN bound to the target service via `iam:PassedToService`.
@@ -595,7 +580,6 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 **Indicators:**
 - root: [Step 1] the failing call ran within ~2 minutes of an `iam:*` (CreatePolicy, AttachRolePolicy, CreatePolicyVersion, CreateRole, PutRolePolicy) call in CloudTrail.
 - s2: [Step 3] `simulate-principal-policy` returns `Decision: allowed` (the simulator sees the new policy) but the runtime call still fails.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "allowed"} -->
 - D: [Symptom] the same call succeeds on retry after 30–120 seconds with no other change.
 
 **Interventions:**

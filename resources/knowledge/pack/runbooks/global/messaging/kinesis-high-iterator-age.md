@@ -124,7 +124,6 @@ Expected output: `Returned` record count and `MillisBehindLatest`. A high `Milli
 - D: GetRecords.IteratorAgeMilliseconds rises (consumers fall behind)
 **Indicators:**
 - root: [Step 4] `ReadProvisionedThroughputExceeded` has non-zero `Sum` datapoints
-  <!-- match: {"step": 4, "predicate": "contains", "target": "ReadProvisionedThroughputExceeded"} -->
 - s1: [Step 6] `MillisBehindLatest` non-zero / throttling errors on raw `GetRecords`
 - D: [Symptom] `GetRecords.IteratorAgeMilliseconds` trending upward in Step 1
 **Interventions:**
@@ -152,9 +151,7 @@ Expected output: `Returned` record count and `MillisBehindLatest`. A high `Milli
 - D: GetRecords.IteratorAgeMilliseconds rises (driven by the hot shards)
 **Indicators:**
 - root: [Step 5] one or few shards carry most `IncomingBytes` while others are near 0
-  <!-- match: {"step": 5, "predicate": "contains", "target": "incoming_bytes_10m"} -->
 - s1: [Step 4] `WriteProvisionedThroughputExceeded` has non-zero `Sum` datapoints
-  <!-- match: {"step": 4, "predicate": "contains", "target": "WriteProvisionedThroughputExceeded"} -->
 - D: [Symptom] iterator age elevated on the hot shards
 **Interventions:**
 - **remediation** (root): change the producer to use a higher-cardinality, evenly distributed partition key (e.g. a random/UUID or hashed key) so writes spread across shards. (Producer code change — set `PartitionKey` per `PutRecord`/`PutRecords` to a high-cardinality value.)
@@ -187,7 +184,6 @@ Expected output: `Returned` record count and `MillisBehindLatest`. A high `Milli
 **Indicators:**
 - root: [Step 6] raw `GetRecords` keeps up (low `MillisBehindLatest` on direct read) yet the app lags
 - s1: [Step 4] no `ReadProvisionedThroughputExceeded` datapoints (not throttling)
-  <!-- match: {"step": 4, "predicate": "absent", "target": "ReadProvisionedThroughputExceeded"} -->
 - D: [Symptom] `GetRecords.IteratorAgeMilliseconds` elevated despite headroom
 **Interventions:**
 - **defensive_fix** (s1): raise consumer parallelism/throughput by removing blocking work from `processRecords` (offload I/O to async workers) and keep KCL `maxRecords` at the system default rather than a low value.
@@ -214,7 +210,6 @@ Expected output: `Returned` record count and `MillisBehindLatest`. A high `Milli
 - D: GetRecords.IteratorAgeMilliseconds rises
 **Indicators:**
 - root: [Step 6] `Returned` record count is small while `MillisBehindLatest` is high
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "Returned", "op": "lt", "value": 1000} -->
 - s1: [Step 4] no read throttling (capacity is available, just under-used)
 - D: [Symptom] iterator age elevated
 **Interventions:**

@@ -169,9 +169,7 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 
 **Indicators:**
 - root: [Step 4] `simulate-principal-policy` returns `Decision: implicitDeny` for the action
-  <!-- match: {"step": 4, "predicate": "contains", "target": "implicitDeny"} -->
 - D: [Step 1] error message contains `because no identity-based policy allows`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "because no identity-based policy allows"} -->
 
 **Interventions:**
 - **remediation** (root): attach a least-privilege inline policy granting the needed S3 actions on the target ARNs.
@@ -221,10 +219,8 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 
 **Indicators:**
 - root: [Step 3] bucket policy contains an `"Effect": "Deny"` statement whose Action and Resource match the failing call
-  <!-- match: {"step": 3, "predicate": "contains", "target": "\"Effect\": \"Deny\""} -->
 - s1: [Step 3] policy Conditions reference `aws:SourceIp`, `aws:SourceVpce`, `aws:MultiFactorAuthPresent`, `aws:SecureTransport`, or `aws:PrincipalOrgID` that exclude the caller
 - D: [Step 1] error message contains `with an explicit deny in a resource-based policy`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "with an explicit deny in a resource-based policy"} -->
 
 **Interventions:**
 - **remediation** (root): delete the offending Deny statement or narrow its Condition (e.g. add the caller's CIDR to the allowed `aws:SourceIp`, or use a `StringNotEquals` exception list) and re-apply the corrected policy.
@@ -258,10 +254,8 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 
 **Indicators:**
 - root: [Step 3] the bucket policy contains `"Principal": "*"` or `"Principal": {"AWS": "*"}` Allow statements
-  <!-- match: {"step": 3, "predicate": "contains", "target": "\"Principal\": \"*\""} -->
 - s1: [Step 5] account or bucket Block Public Access shows `BlockPublicAcls=true`, `IgnorePublicAcls=true`, `BlockPublicPolicy=true`, or `RestrictPublicBuckets=true`
 - D: [Step 1] error message contains the BlockPublicAcls setting hint
-  <!-- match: {"step": 1, "predicate": "contains", "target": "BlockPublicAcls setting in S3 Block Public Access"} -->
 
 **Interventions:**
 - **remediation** (root): replace the wildcard-principal Allow with a principal-scoped Allow (which Block Public Access does not strip) and re-tighten BPA to the secure default.
@@ -316,9 +310,7 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 **Indicators:**
 - root: [Step 7] the KMS key policy has no Allow with `kms:Decrypt`/`kms:GenerateDataKey` whose Principal includes the caller, and `list-grants` returns no covering grant
 - s1: [Step 6] `head-object` reports `ServerSideEncryption: aws:kms` and a `SSEKMSKeyId`
-  <!-- match: {"step": 6, "predicate": "contains", "target": "aws:kms"} -->
 - s2: [Step 1] CloudTrail shows a `kms.amazonaws.com` event with `errorCode=AccessDenied` and `eventName=Decrypt` or `GenerateDataKey` correlated with the S3 403
-  <!-- match: {"step": 1, "predicate": "contains", "target": "kms:Decrypt"} -->
 
 **Interventions:**
 - **remediation** (root): grant the caller's role `kms:Decrypt`/`kms:GenerateDataKey` on the key via both the key policy and an identity-based policy (defense in depth).
@@ -385,7 +377,6 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 
 **Indicators:**
 - root: [Step 9] `get-bucket-ownership-controls` returns `ObjectWriter` or `BucketOwnerPreferred`
-  <!-- match: {"step": 9, "predicate": "contains", "target": "ObjectWriter"} -->
 - s1: [Step 9] `get-object-acl` shows the `Owner.ID` is a different canonical ID than the bucket owner's canonical ID
 - D: [Step 4] `simulate-principal-policy` shows `allowed` for the action against the bucket but the runtime call still returns `AccessDenied`
 
@@ -427,7 +418,6 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 - root: [Step 8] the active endpoint's `PolicyDocument` is non-default and either omits the bucket from `Resource` or contains a `Deny` matching the action
 - s1: [Step 8] the failing CloudTrail event includes a `vpcEndpointId` field that maps to a custom-policy endpoint
 - D: [Step 1] error message contains `VPC endpoint policy`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "VPC endpoint policy"} -->
 
 **Interventions:**
 - **remediation** (root): update the endpoint policy to allow the required actions on the bucket ARNs.
@@ -475,7 +465,6 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 **Indicators:**
 - root: [Step 4] `simulate-principal-policy` returns `Decision: explicitDeny` with `MatchedStatements` pointing to an SCP/RCP/permissions-boundary/session policy, or `OrganizationsDecisionDetail.AllowedByOrganizations=false`
 - D: [Step 1] error message contains `service control policy`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "service control policy"} -->
 
 **Interventions:**
 - **remediation** (root): have the SCP/RCP/permissions-boundary owner edit the policy to allow the action, then re-apply it.
@@ -511,7 +500,6 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 
 **Indicators:**
 - root: [Step 10] `get-bucket-request-payment` returns `Requester`
-  <!-- match: {"step": 10, "predicate": "contains", "target": "Requester"} -->
 - s1: [Step 1] the failing call has no `x-amz-request-payer` request header (visible in CloudTrail `requestParameters`, or absent in the CLI invocation)
 - D: [Step 2] the caller's account differs from the bucket owner's account
 

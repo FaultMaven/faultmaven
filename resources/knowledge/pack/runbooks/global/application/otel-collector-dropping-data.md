@@ -95,12 +95,9 @@ Expected output: debug exporter prints payloads if data reaches the pipeline; `/
 - D: spans/metrics dropped at the exporter (data_loss)
 **Indicators:**
 - root: [Step 1] `otelcol_exporter_send_failed_spans` / `_metric_points` growing, indicating export attempts are failing or timing out
-  <!-- match: {"step": 1, "predicate": "contains", "target": "otelcol_exporter_send_failed_spans"} -->
 - s2: [Step 2] `otelcol_exporter_queue_size` equals `otelcol_exporter_queue_capacity`
 - s2: [Step 1] `otelcol_exporter_enqueue_failed_spans` is nonzero and increasing
-  <!-- match: {"step": 1, "predicate": "contains", "target": "otelcol_exporter_enqueue_failed_spans"} -->
 - s2: [Step 3] log line `Dropping data because sending_queue is full`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "sending_queue is full"} -->
 **Interventions:**
 - **remediation** (root): Restore backend throughput — fix the backend outage, raise its ingest quota, or scale the gateway Collector tier so export keeps pace with ingest.
   ```bash
@@ -148,11 +145,8 @@ Expected output: debug exporter prints payloads if data reaches the pipeline; `/
 - D: spans/metrics refused before reaching the exporter (data_loss)
 **Indicators:**
 - s2: [Step 1] `otelcol_processor_refused_spans` / `_metric_points` increasing
-  <!-- match: {"step": 1, "predicate": "contains", "target": "otelcol_processor_refused_spans"} -->
 - s1: [Step 3] log line `data refused due to high memory usage`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "high memory usage"} -->
 - root: [Step 4] `memory_limiter` present with a `limit_mib` at/below the container memory request
-  <!-- match: {"step": 4, "predicate": "contains", "target": "limit_mib"} -->
 **Interventions:**
 - **remediation** (root): Raise the container/pod memory and align `limit_mib` to ~80% of it (keep `spike_limit_mib` ≈ 25% of `limit_mib`); add `batch` upstream of the exporter to cut per-item overhead.
 
@@ -182,9 +176,7 @@ Expected output: debug exporter prints payloads if data reaches the pipeline; `/
 - D: spans/metrics dropped under sustained throughput (throughput_degradation)
 **Indicators:**
 - s2: [Step 1] `otelcol_receiver_refused_spans` increasing alongside `otelcol_exporter_send_failed_spans`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "otelcol_receiver_refused_spans"} -->
 - root: [Step 4] `batch` processor with a large `timeout` or missing `send_batch_max_size` cap
-  <!-- match: {"step": 4, "predicate": "contains", "target": "send_batch_size"} -->
 - s1: [Step 5] `/debug/tracez` shows long-running/error export spans backing up
 **Interventions:**
 - **defensive_fix** (root): Tune the `batch` processor — cap `send_batch_max_size` and shorten `timeout` so batches flush at a steady, exporter-digestible rate.
@@ -218,7 +210,6 @@ Expected output: debug exporter prints payloads if data reaches the pipeline; `/
 - D: that signal type never reaches the backend (data_loss)
 **Indicators:**
 - root: [Step 4] exporter/processor defined under `exporters:`/`processors:` but missing from the pipeline's `exporters:`/`processors:` list
-  <!-- match: {"step": 4, "predicate": "absent", "target": "service.pipelines"} -->
 - s1: [Step 1] `otelcol_receiver_accepted_spans` increases while `otelcol_exporter_sent_spans` for that signal stays flat
 - s1: [Step 5] debug exporter prints nothing for the affected signal type
 **Interventions:**

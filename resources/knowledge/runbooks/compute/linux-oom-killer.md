@@ -150,7 +150,6 @@ Expected output: `Slab:` total in kB. Values exceeding 1 GB on hosts with modest
 
 **Indicators:**
 - s1: [Step 5] `VmRSS` for the process increases monotonically across 30-minute intervals without stabilising
-  <!-- match: {"step": 5, "predicate": "contains", "target": "VmRSS"} -->
 - s1: [Step 4] the same process appears at the top of the RSS ranking for multiple hours
 - D: [Step 1] dmesg identifies the same process name killed repeatedly across reboots
 
@@ -195,7 +194,6 @@ Expected output: `Slab:` total in kB. Values exceeding 1 GB on hosts with modest
 **Indicators:**
 - root: [Step 4] total RSS of top 10 processes exceeds 90% of `MemTotal`
 - s1: [Step 3] `available` memory is below 200 MB even at quiet hours (low traffic periods)
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "available_mb", "op": "<", "value": 200} -->
 - s2: [Step 3] swap is more than 50% used during normal operations
 
 **Interventions:**
@@ -234,7 +232,6 @@ Expected output: `Slab:` total in kB. Values exceeding 1 GB on hosts with modest
 
 **Indicators:**
 - root: [Step 3] `SwapTotal: 0 kB` or `SwapFree` equals `SwapTotal` (swap full)
-  <!-- match: {"step": 3, "predicate": "contains", "target": "SwapTotal:          0 kB"} -->
 - s1: [Step 1] OOM kill occurs during a known batch job or traffic spike (transient event)
 
 **Interventions:**
@@ -273,7 +270,6 @@ Expected output: `Slab:` total in kB. Values exceeding 1 GB on hosts with modest
 - root: [Step 7] `memory.current` approaches `memory.max` for the target cgroup
 - s1: [Step 7] `docker stats` shows a container at or above its memory limit
 - D: [Step 1] dmesg contains `memory cgroup out of memory` or `oom-kill-constraint` referencing a cgroup path
-  <!-- match: {"step": 7, "predicate": "contains", "target": "memory cgroup out of memory"} -->
 
 **Interventions:**
 - **mitigation** (s1): raise the cgroup limit to stop the immediate kills (only if host has headroom).
@@ -312,7 +308,6 @@ Expected output: `Slab:` total in kB. Values exceeding 1 GB on hosts with modest
 **Indicators:**
 - root: [Step 9] `slabtop` shows `dentry`, `inode_cache`, or `ext4_inode_cache` as the largest consumers
 - s1: [Step 9] `Slab:` in `/proc/meminfo` exceeds 1 GB
-  <!-- match: {"step": 9, "predicate": "threshold", "target": "slab_kb", "op": ">", "value": 1048576} -->
 - s2: [Step 3] `MemAvailable` is low despite few large user-space processes in Step 4
 
 **Interventions:**
@@ -346,7 +341,6 @@ Expected output: `Slab:` total in kB. Values exceeding 1 GB on hosts with modest
 
 **Indicators:**
 - root: [Step 8] `vm.overcommit_memory = 1`
-  <!-- match: {"step": 8, "predicate": "contains", "target": "vm.overcommit_memory = 1"} -->
 - s1: [Step 8] `Committed_AS` is 2× or more `MemTotal`
 - D: [Step 1] OOM kills occur without prior warning — no gradual memory climb visible in monitoring
 

@@ -98,11 +98,8 @@ Expected output: the configured `healthCheckGracePeriodSeconds` and load balance
 - D: task repeatedly stops / service never reaches steady state
 **Indicators:**
 - root: [Step 2] `stoppedReason` contains `CannotPullContainerError`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "CannotPullContainerError"} -->
 - root: [Step 2] for Fargate registry-auth/network failures, `stopCode` is `ResourceInitializationError` and `stoppedReason` contains `unable to pull secrets or registry auth`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "ResourceInitializationError"} -->
 - s1: [Step 3] no application log lines exist for the container (stream empty or absent)
-  <!-- match: {"step": 3, "predicate": "absent", "target": "application startup log line"} -->
 **Interventions:**
 - **remediation** (root): Fix the image reference and pull path — correct the `image` name/tag in the task definition, attach an `executionRoleArn` with `AmazonECSTaskExecutionRolePolicy` (ECR pull + CloudWatch), and confirm the task's subnet has a route to the registry (NAT gateway or ECR VPC endpoints). Then register the revision and force a new deployment.
 
@@ -133,11 +130,8 @@ Expected output: the configured `healthCheckGracePeriodSeconds` and load balance
 - D: task repeatedly stops / service never reaches steady state
 **Indicators:**
 - root: [Step 2] `stoppedReason` contains `OutOfMemoryError: Container killed due to memory usage`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "OutOfMemoryError: Container killed due to memory usage"} -->
 - s2: [Step 2] container `exitCode` is `137` (SIGKILL) or `139` (segfault on an unavailable memory region)
-  <!-- match: {"step": 2, "predicate": "exit_code", "target": 137} -->
 - s1: [Step 3] logs show a `java.lang.OutOfMemoryError` / allocation failure / abrupt truncation just before exit
-  <!-- match: {"step": 3, "predicate": "contains", "target": "OutOfMemoryError"} -->
 **Interventions:**
 - **remediation** (root): Raise the memory allocation to fit observed usage (task-level `memory` and/or container `memory`), register the revision, and redeploy.
 
@@ -163,11 +157,8 @@ Expected output: the configured `healthCheckGracePeriodSeconds` and load balance
 - D: task repeatedly stops / service never reaches steady state
 **Indicators:**
 - s1: [Step 2] `stoppedReason` contains `Essential container in task exited`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Essential container in task exited"} -->
 - root: [Step 2] container `exitCode` is `255` (the `ENTRYPOINT`/`CMD` failed because of an error) or `1` (application error)
-  <!-- match: {"step": 2, "predicate": "exit_code", "target": 255} -->
 - root: [Step 3] logs show the application stack trace, `exec ... no such file or directory`, or `permission denied` immediately before exit
-  <!-- match: {"step": 3, "predicate": "contains", "target": "no such file or directory"} -->
 **Interventions:**
 - **remediation** (root): Fix the container command/application — correct the `entryPoint`/`command`/`image` so the binary exists and is executable, or fix the application bug surfaced in Step 3 logs. Register the revision and redeploy.
 
@@ -188,11 +179,8 @@ Expected output: the configured `healthCheckGracePeriodSeconds` and load balance
 - D: task repeatedly stops / service never reaches steady state
 **Indicators:**
 - s2: [Step 2] `stoppedReason` contains `Task failed ELB health checks in (target-group`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Task failed ELB health checks in (target-group"} -->
 - s1: [Step 4] `describe-target-health` shows the target `state` `unhealthy` with reason such as `Target.ResponseCodeMismatch` or `Request timed out`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "unhealthy"} -->
 - root: [Step 4] `healthCheckGracePeriodSeconds` is shorter than the app's observed cold-start time (e.g. grace period `0`/unset while app needs tens of seconds)
-  <!-- match: {"step": 4, "predicate": "threshold", "field": "healthCheckGracePeriodSeconds", "op": "lt", "value": 60} -->
 **Interventions:**
 - **remediation** (root): Correct the target group health check `port`/`path`/expected matcher to hit a real ready endpoint the container serves (addresses the wrong-port/path branch of the root).
 

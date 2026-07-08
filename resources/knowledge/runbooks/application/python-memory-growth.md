@@ -124,9 +124,7 @@ Expected output: `show_growth` lists a class with a steadily increasing count (e
 - D: RSS exceeds the cgroup/OS limit and the process is OOM-killed
 **Indicators:**
 - root: [Step 4] `objgraph.show_growth` shows one type growing linearly and `gc.get_referrers` points at a module-level/class-level `dict`/`list`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "+"} -->
 - s1: [Step 2] tracemalloc diff blames a single line that appends to that container, with `count` proportional to iterations
-  <!-- match: {"step": 2, "predicate": "contains", "target": "size="} -->
 - s2: [Step 1] RSS in `ps` rises monotonically across runs with no plateau
 - D: [Symptom] `dmesg` shows `Out of memory: Killed process` for the python pid
 **Interventions:**
@@ -161,9 +159,7 @@ Expected output: `show_growth` lists a class with a steadily increasing count (e
 - D: RSS exceeds the limit and the process is OOM-killed
 **Indicators:**
 - root: [Step 3] `gc.collect()` returns a large, growing count of unreachable objects and/or `len(gc.garbage) > 0`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "gc.garbage (uncollectable):"} -->
 - s1: [Step 3] `DEBUG_LEAK` prints `gc: collectable <...>` lines for the cycle members each cycle
-  <!-- match: {"step": 3, "predicate": "contains", "target": "collectable"} -->
 - s2: [Step 4] `gc.get_objects()` length and the suspect type's count keep rising despite an explicit `gc.collect()`
 - D: [Symptom] pod restarts `OOMKilled` (exit 137)
 **Interventions:**
@@ -195,7 +191,6 @@ Expected output: `show_growth` lists a class with a steadily increasing count (e
 - D: RSS exceeds the limit and the process is OOM-killed
 **Indicators:**
 - root: [Step 1] `pmap -x` shows growth concentrated in a named native library mapping or large `[anon]` regions, not Python arenas
-  <!-- match: {"step": 1, "predicate": "contains", "target": "anon"} -->
 - s1: [Step 2] `tracemalloc.get_traced_memory()` current stays roughly flat while OS RSS climbs (the gap is native)
 - s2: [Step 4] `len(gc.get_objects())` and `objgraph.show_growth` are flat despite rising RSS
 - D: [Symptom] application raises `MemoryError` or the container is `OOMKilled`
@@ -226,7 +221,6 @@ Expected output: `show_growth` lists a class with a steadily increasing count (e
 - D: workers are OOM-killed (exit 137) one after another
 **Indicators:**
 - root: [Step 3] in a worker, `gc.isenabled()` is `False` and `gc.get_count()` keeps rising with no collections
-  <!-- match: {"step": 3, "predicate": "contains", "target": "gen counts:"} -->
 - s1: [Step 4] worker `gc.get_objects()` length grows continuously and `gc.collect()` (when forced) reclaims a large count
 - s2: [Step 1] each forked worker's RSS climbs in parallel; `pmap` shows growing private (non-shared) pages
 - D: [Symptom] multiple workers restart `OOMKilled` (exit 137)

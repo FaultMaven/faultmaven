@@ -142,9 +142,7 @@ Expected output: NMT diff shows reserved and committed delta per category (Java 
 **Indicators:**
 - root: [Step 5] Dominator Tree shows `HashMap$Node[]` or `ArrayList` reachable from a static field retaining the majority of heap
 - s2: [Step 3] Old generation (`O`) climbs to 90%+ and does not drop after full GC
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "O", "op": ">", "value": 90} -->
 - D: [Step 1] Log shows `Java heap space` or `GC overhead limit exceeded`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Java heap space"} -->
 
 **Interventions:**
 - **remediation** (root): Replace the unbounded collection with a bounded cache in application code, then redeploy.
@@ -185,7 +183,6 @@ Expected output: NMT diff shows reserved and committed delta per category (Java 
 - s1: [Step 5] Heap histogram shows large counts of JPA entity classes (`com.example.*Entity`) or `Object[]` arrays
 - s1: [Step 4] Heap dump Leak Suspects path traces through `List` to ORM-managed collections
 - D: [Step 1] Log shows `Java heap space`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Java heap space"} -->
 
 **Interventions:**
 - **remediation** (root): Implement pagination or streaming in the data-access layer, then redeploy.
@@ -258,9 +255,7 @@ Expected output: NMT diff shows reserved and committed delta per category (Java 
 **Indicators:**
 - root: [Step 6] `VM.classloader_stats` shows a growing number of classloaders with each redeployment
 - s2: [Step 6] `jstat -gcmetacapacity` shows Metaspace committed approaching `MaxMetaspaceSize`
-  <!-- match: {"step": 6, "predicate": "threshold", "target": "M", "op": ">", "value": 90} -->
 - D: [Step 1] OOM variant is `Metaspace`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Metaspace"} -->
 
 **Interventions:**
 - **remediation** (root): Fix the leaking reference so the old classloader becomes collectible (deregister JDBC drivers, flush offending ThreadLocals), and set a hard Metaspace cap to fail leaks faster.
@@ -297,10 +292,8 @@ Expected output: NMT diff shows reserved and committed delta per category (Java 
 **Indicators:**
 - root: [Step 2] `-Xmx` is close to the container memory limit (within 20%)
 - s2: [Step 1] `kubectl describe pod` shows `Last State: Terminated, Reason: OOMKilled, Exit Code: 137`
-  <!-- match: {"step": 1, "predicate": "exit_code", "target": 137} -->
 - s2: [Step 1] No `OutOfMemoryError` in application logs
 - D: [Step 1] `kubectl describe pod` shows `OOMKilled`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "OOMKilled"} -->
 
 **Interventions:**
 - **remediation** (root): Use percentage-based heap sizing and size the container limit to ~1.3x heap so non-heap regions have headroom.
@@ -339,7 +332,6 @@ Expected output: NMT diff shows reserved and committed delta per category (Java 
 - root: [Step 8] NMT shows growing native committed memory not accounted for by heap, class, or thread categories
 - s1: [Step 2] Heap usage is low (below 50%) while the OOM occurs
 - D: [Step 1] OOM variant is `Direct buffer memory`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Direct buffer memory"} -->
 
 **Interventions:**
 - **remediation** (root): Ensure direct buffers are released (let references go out of scope or explicitly clean them), enable Netty leak detection to find allocate-without-release sites, and raise `MaxDirectMemorySize` as a short-term cushion.

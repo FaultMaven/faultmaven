@@ -8,7 +8,7 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol
 
 if TYPE_CHECKING:
     from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
@@ -41,12 +41,6 @@ class IKnowledgeService(Protocol):
 
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific document by ID."""
-        ...
-
-    async def get_runbook_causes(self, item_id: str) -> Optional[List[Dict[str, Any]]]:
-        """Get a runbook's v4 per-Cause graph records (``metadata['causes']``),
-        or None when the runbook has none (upload-path / pre-v4) or is unknown.
-        Used as the runbook Cause matcher's ``resolve_causes`` callable."""
         ...
 
     async def get_semantic_snippet(

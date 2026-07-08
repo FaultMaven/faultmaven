@@ -121,8 +121,8 @@ def _make_runbook_ready(case: Case) -> None:
             collected_by="u1",
             collected_at_turn=1,
         ),
-        # A harvestable cause must be runbook-grounded (#590 A1): a VALIDATED root
-        # borne out by a runbook-provenance SUPPORTS, not bare RCC prose.
+        # A harvestable cause must be GROUNDED (#590 A1): a deductively
+        # VALIDATED root, not bare RCC prose.
         Evidence(
             evidence_id="ev_d00dfeed0001",
             category=EvidenceCategory.CAUSAL_EVIDENCE,
@@ -140,7 +140,7 @@ def _make_runbook_ready(case: Case) -> None:
         statement="connection pool exhausted",
         node_type=NodeType.ROOT,
         node_state=NodeState.VALIDATED,
-        validation_method=ValidationMethod.EMPIRICAL,
+        validation_method=ValidationMethod.DEDUCTIVE,
         actionable=True,
         belief=0.8,
         generated_at_turn=1,
@@ -148,8 +148,7 @@ def _make_runbook_ready(case: Case) -> None:
             NodeEvidenceLink(
                 evidence_id="ev_d00dfeed0001",
                 stance=EvidenceStance.SUPPORTS,
-                reasoning="runbook predicate fired",
-                provenance="runbook",
+                reasoning="sole surviving cause after exclusion",
                 linked_at_turn=1,
             )
         ],

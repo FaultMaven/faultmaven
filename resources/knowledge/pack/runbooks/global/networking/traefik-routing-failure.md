@@ -100,9 +100,7 @@ Expected output: IngressRoute events show no errors; the EndpointSlice lists rea
 **Indicators:**
 - root: [Step 3] no rule in the priority-sorted list matches the failing Host/Path, or the intended rule uses single quotes / v2 operators
 - s1: [Step 1] access log line has empty `RouterName` with `"DownstreamStatus":404`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"DownstreamStatus\":404"} -->
 - root: [Step 2] router `status` is `warning`/`disabled` when the rule failed to build
-  <!-- match: {"step": 2, "predicate": "contains", "target": "\"status\":\"warning\""} -->
 **Interventions:**
 - **remediation** (root): Fix the rule to use v3 syntax with backticks and matchers that cover the request, e.g.:
 
@@ -126,9 +124,7 @@ Expected output: IngressRoute events show no errors; the EndpointSlice lists rea
 **Indicators:**
 - root: [Step 6] EndpointSlice for the service lists no ready addresses
 - s1: [Step 4] `loadBalancer.servers` is empty or every `serverStatus` entry is `DOWN`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "DOWN"} -->
 - s1: [Step 1] access log shows populated `ServiceName` with `"OriginStatus":502`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"OriginStatus\":502"} -->
 **Interventions:**
 - **remediation** (root): Restore ready backend endpoints — scale up and/or fix the failing readiness probe.
 
@@ -156,7 +152,6 @@ Expected output: IngressRoute events show no errors; the EndpointSlice lists rea
 **Indicators:**
 - root: [Step 6] declared IngressRoute `port:` is absent from `kubectl get service ... .spec.ports[*].port`
 - s1: [Step 4] service `status` is `warning` or `loadBalancer.servers` is empty
-  <!-- match: {"step": 4, "predicate": "contains", "target": "\"status\":\"warning\""} -->
 - root: [Step 2] router `service` points at a name with no corresponding `/api/http/services` entry
 **Interventions:**
 - **remediation** (root): Correct the `name`/`port` in the IngressRoute `services` block to match the live Service port.
@@ -177,10 +172,8 @@ Expected output: IngressRoute events show no errors; the EndpointSlice lists rea
 - D: Traefik returns 404 page not found on that entrypoint
 **Indicators:**
 - root: [Step 5] the entrypoint named in the router's `entryPoints` is absent from `/api/entrypoints`
-  <!-- match: {"step": 5, "predicate": "absent", "target": "websecure"} -->
 - s1: [Step 2] router lists `entryPoints` that do not include the one the client connects to
 - s1: [Step 1] access log shows empty `RouterName` with `"DownstreamStatus":404` on the served entrypoint
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"DownstreamStatus\":404"} -->
 **Interventions:**
 - **remediation** (root): Point the IngressRoute `entryPoints` at an entrypoint that exists in the static config (verify names with Step 5).
 

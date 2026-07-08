@@ -170,9 +170,7 @@ Expected output: the target's keep-alive timeout must be strictly greater than t
 
 **Indicators:**
 - root: [Step 4] p99 `TargetResponseTime` approaches or exceeds the idle timeout value from Step 2
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "p99_TargetResponseTime", "op": ">=", "value": 55} -->
 - s2: [Step 1] `target_processing_time` is `-1` and `target_status_code` is `-` in access logs
-  <!-- match: {"step": 1, "predicate": "contains", "target": "-1"} -->
 
 **Interventions:**
 - **remediation** (root): Identify and optimize the slowest endpoints; apply connection-level timeouts in the application for all downstream calls.
@@ -208,7 +206,6 @@ Expected output: the target's keep-alive timeout must be strictly greater than t
 
 **Indicators:**
 - s1: [Step 3] `describe-target-health` shows all targets with `State: unhealthy`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "unhealthy"} -->
 - s1: [Step 3] `UnHealthyHostCount` Maximum equals the total number of registered targets
 
 **Interventions:**
@@ -246,7 +243,6 @@ Expected output: the target's keep-alive timeout must be strictly greater than t
 
 **Indicators:**
 - s1: [Step 5] `TargetConnectionErrorCount` Sum is non-zero
-  <!-- match: {"step": 5, "predicate": "threshold", "target": "TargetConnectionErrorCount_Sum", "op": ">", "value": 0} -->
 - root: [Step 7] direct `curl` to the target IP and port times out or is refused
 
 **Interventions:**
@@ -287,7 +283,6 @@ Expected output: the target's keep-alive timeout must be strictly greater than t
 
 **Indicators:**
 - root: [Step 6] NACL entries show no outbound `ALLOW` rule covering TCP ports 1024–65535 toward ALB subnets
-  <!-- match: {"step": 6, "predicate": "absent", "target": "1024-65535"} -->
 - s1: [Step 7] direct curl to the target succeeds but traffic through the ALB times out
 - s1: [Step 5] `TargetConnectionErrorCount` may be zero (TCP SYN reaches target) while 504s persist
 
@@ -319,7 +314,6 @@ Expected output: the target's keep-alive timeout must be strictly greater than t
 
 **Indicators:**
 - root: [Step 8] target keep-alive timeout is less than or equal to the ALB idle timeout from Step 2
-  <!-- match: {"step": 8, "predicate": "threshold", "target": "target_keepalive_seconds", "op": "<=", "value": 60} -->
 - s2: [Step 1] 504s are intermittent, with `target_processing_time = -1` but no corresponding spike in `TargetConnectionErrorCount`
 
 **Interventions:**
@@ -352,7 +346,6 @@ Expected output: the target's keep-alive timeout must be strictly greater than t
 
 **Indicators:**
 - s2: [Step 1] `target:port` (field 5) is `-` (Lambda target) and `target_status_code` is `-`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "lambda"} -->
 - s1: [Step 3] target group is of type `lambda`; CloudWatch `LambdaInternalError` or `LambdaUserError` metrics are non-zero
 
 **Interventions:**

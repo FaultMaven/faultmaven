@@ -147,9 +147,7 @@ Expected output: the pod's declared `hostPort` values (if any), then a frequency
 
 **Indicators:**
 - s2: [Step 2] scheduler event message contains `Insufficient cpu`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Insufficient cpu"} -->
 - s2: [Step 2] scheduler event message contains `Insufficient memory`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "Insufficient memory"} -->
 - root: [Step 4] every node's `Allocated resources` block shows `cpu  Requests` or `memory  Requests` at or near 100% of allocatable (scheduler decides on requests, not `kubectl top` live usage)
 
 **Interventions:**
@@ -187,9 +185,7 @@ Expected output: the pod's declared `hostPort` values (if any), then a frequency
 
 **Indicators:**
 - s2: [Step 2] scheduler event message contains `node(s) didn't match Pod's node affinity/selector`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't match Pod's node affinity"} -->
 - s2: [Step 2] scheduler event message contains `node(s) didn't match Pod's nodeSelector`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't match Pod's nodeSelector"} -->
 - root: [Step 6] no node in `kubectl get nodes --show-labels` satisfies every key/value pair in the pod's `nodeSelector` or `requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms` (common shapes: `nodepool=gpu` with no GPU pool, drained zone, or a typo like `beta.kubernetes.io/arch`)
 
 **Interventions:**
@@ -225,9 +221,7 @@ Expected output: the pod's declared `hostPort` values (if any), then a frequency
 
 **Indicators:**
 - s2: [Step 2] scheduler event message contains `node(s) had taints that the pod didn't tolerate`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "had taints that the pod didn't tolerate"} -->
 - s2: [Step 2] scheduler event message contains `untolerated taint`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "untolerated taint"} -->
 - root: [Step 5] every node listed shows at least one `NoSchedule`/`NoExecute` taint whose key is absent from the pod's `tolerations` (dedicated pools, control-plane-only nodes, pressure taints, or a cordoned `unschedulable` node)
 
 **Interventions:**
@@ -260,7 +254,6 @@ Expected output: the pod's declared `hostPort` values (if any), then a frequency
 
 **Indicators:**
 - s2: [Step 2] scheduler event message contains `pod has unbound immediate PersistentVolumeClaims`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "unbound immediate PersistentVolumeClaims"} -->
 - s1: [Step 7] one or more PVCs referenced by the pod show `STATUS: Pending` in `kubectl get pvc`
 - root: [Step 7] PVC events contain `ProvisioningFailed`, `no persistent volumes available for this claim and no storage class is set`, or `waiting for a volume to be created` (or a zone-topology mismatch: PV pre-committed in one zone, capacity only in another)
 
@@ -300,9 +293,7 @@ Expected output: the pod's declared `hostPort` values (if any), then a frequency
 
 **Indicators:**
 - s2: [Step 8] `kubectl get events --field-selector reason=FailedCreate` shows messages containing `exceeded quota`
-  <!-- match: {"step": 8, "predicate": "contains", "target": "exceeded quota"} -->
 - s1: [Step 8] `kubectl get events --field-selector reason=FailedCreate` shows messages containing `is forbidden`
-  <!-- match: {"step": 8, "predicate": "contains", "target": "is forbidden"} -->
 - root: [Step 8] `kubectl describe resourcequota` shows at least one row where `Used` equals `Hard`, and `kubectl get pods -n <namespace>` shows fewer replicas than the Deployment's `spec.replicas`
 
 **Interventions:**
@@ -355,7 +346,6 @@ Expected output: the pod's declared `hostPort` values (if any), then a frequency
 
 **Indicators:**
 - s2: [Step 2] scheduler event message contains `node(s) didn't have free ports for the requested pod ports`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't have free ports for the requested pod ports"} -->
 - root: [Step 10] the pod declares one or more `hostPort` values in `.spec.containers[*].ports[*].hostPort`
 - s1: [Step 10] the same hostPort is already claimed on every node (frequency table count equals or exceeds total node count — e.g. a DaemonSet hostPort, or two exporters contending on `:9100`)
 
@@ -390,9 +380,7 @@ Expected output: the pod's declared `hostPort` values (if any), then a frequency
 
 **Indicators:**
 - s2: [Step 2] scheduler event message contains `node(s) didn't match pod topology spread constraints`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't match pod topology spread constraints"} -->
 - s2: [Step 2] scheduler event message contains `node(s) didn't satisfy existing pods anti-affinity rules`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "didn't satisfy existing pods anti-affinity rules"} -->
 - root: [Step 6] the pod spec contains `topologySpreadConstraints` with `whenUnsatisfiable: DoNotSchedule` or `affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution`
 
 **Interventions:**
@@ -429,9 +417,7 @@ Expected output: the pod's declared `hostPort` values (if any), then a frequency
 
 **Indicators:**
 - s2: [Step 1] pod `STATUS` is the literal string `SchedulingGated`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "SchedulingGated"} -->
 - s2: [Step 3] `PodScheduled  False  SchedulingGated` appears in the conditions output
-  <!-- match: {"step": 3, "predicate": "contains", "target": "SchedulingGated"} -->
 - s1: [Step 2] the Events table contains NO `FailedScheduling` event (the scheduler never considered the pod)
 
 **Interventions:**

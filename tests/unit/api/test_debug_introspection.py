@@ -1,10 +1,8 @@
 """Unit tests for the debug causal-graph payload builder.
 
-The fm-sre-simulator chain probe consumes this payload to validate the runbook
-Cause matcher. The load-bearing requirement: each hypothesis's ``rationale`` is
-exposed, because that is the matcher's firing signal — a matcher-seeded
-hypothesis carries the ``RUNBOOK_MATCH_RATIONALE_PREFIX`` marker, an LLM-emitted
-one does not, and the probe must tell them apart.
+The fm-sre-simulator chain probe consumes this payload to validate the engine's
+causal graph from the outside: hypotheses (with their ``rationale`` and chain
+link), nodes/edges, and the engine-derived ``cause_state``.
 """
 
 from types import SimpleNamespace
@@ -12,11 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from faultmaven.api.debug_introspection import build_causal_graph_debug_payload
-from faultmaven.core.investigation.runbook_cause_matcher import (
-    RUNBOOK_INTERVENTIONS_META_KEY,
-    RUNBOOK_MATCH_RATIONALE_PREFIX,
-    is_runbook_match_hypothesis,
-)
 from faultmaven.modules.case.domain.models import (
     CausalEdge,
     CausalNode,
@@ -56,40 +49,13 @@ def _case(hypotheses: dict) -> SimpleNamespace:
 
 
 class TestRationaleExposure:
-    def test_matcher_hypothesis_rationale_is_exposed(self):
-        matcher_rationale = (
-            f"{RUNBOOK_MATCH_RATIONALE_PREFIX} kb_runbook_pvc_pending "
-            "(cause A: storage class missing)"
-        )
-        h = _hyp("The PVC has no matching StorageClass", matcher_rationale)
+    def test_hypothesis_rationale_is_exposed_verbatim(self):
+        rationale = "Derived from the user's stack trace"
+        h = _hyp("The PVC has no matching StorageClass", rationale)
         payload = build_causal_graph_debug_payload(_case({h.hypothesis_id: h}))
 
         dumped = payload["hypotheses"][h.hypothesis_id]
-        assert dumped["rationale"] == matcher_rationale
-        # The exposed rationale round-trips through the matcher's own detector —
-        # the probe can rely on the same prefix the engine uses.
-        assert dumped["rationale"].startswith(RUNBOOK_MATCH_RATIONALE_PREFIX)
-
-    def test_probe_can_distinguish_matcher_from_llm_hypothesis(self):
-        seeded = _hyp(
-            "Seeded cause",
-            f"{RUNBOOK_MATCH_RATIONALE_PREFIX} kb_x (cause A)",
-        )
-        llm = _hyp("LLM cause", "Derived from the user's stack trace")
-        payload = build_causal_graph_debug_payload(
-            _case({seeded.hypothesis_id: seeded, llm.hypothesis_id: llm})
-        )
-
-        # Reconstruct the firing check the way the probe would, from exposed data.
-        is_matcher = {
-            hid: str(h["rationale"] or "").startswith(RUNBOOK_MATCH_RATIONALE_PREFIX)
-            for hid, h in payload["hypotheses"].items()
-        }
-        assert is_matcher[seeded.hypothesis_id] is True
-        assert is_matcher[llm.hypothesis_id] is False
-        # And it agrees with the engine's own helper on the live objects.
-        assert is_runbook_match_hypothesis(seeded) is True
-        assert is_runbook_match_hypothesis(llm) is False
+        assert dumped["rationale"] == rationale
 
 
 class TestPayloadShape:
@@ -139,11 +105,7 @@ class TestPayloadShape:
 
 class TestRealGraphSerialization:
     """Exercise the real CausalNode/CausalEdge/cause_state paths the probe reads —
-    not just empty collections. In particular the matcher's NODE-level firing
-    signal: it stashes the matched runbook's interventions on the chain ROOT
-    node's ``metadata[RUNBOOK_INTERVENTIONS_META_KEY]``, which the node dump must
-    round-trip (the only firing signal visible until the hypothesis ``rationale``
-    field ships)."""
+    not just empty collections — including node ``metadata`` round-trip."""
 
     def test_real_nodes_edges_and_cause_state_serialize(self):
         d = CausalNode(
@@ -155,11 +117,7 @@ class TestRealGraphSerialization:
             statement="Referenced StorageClass is missing",
             node_type=NodeType.ROOT,
             generated_at_turn=1,
-            metadata={
-                RUNBOOK_INTERVENTIONS_META_KEY: [
-                    {"quadrant": "remediation", "text": "create the StorageClass"}
-                ]
-            },
+            metadata={"origin": "chain-emission"},
         )
         edge = CausalEdge(
             cause_node_id=root.node_id,
@@ -182,7 +140,7 @@ class TestRealGraphSerialization:
         assert len(payload["causal_edges"]) == 1
         assert payload["causal_edges"][0]["cause_node_id"] == root.node_id
         assert payload["causal_edges"][0]["effect_node_id"] == d.node_id
-        # NODE-level matcher firing signal survives the dump.
-        root_meta = payload["causal_nodes"][root.node_id]["metadata"]
-        assert RUNBOOK_INTERVENTIONS_META_KEY in root_meta
-        assert root_meta[RUNBOOK_INTERVENTIONS_META_KEY][0]["quadrant"] == "remediation"
+        # Node metadata survives the dump.
+        assert payload["causal_nodes"][root.node_id]["metadata"] == {
+            "origin": "chain-emission"
+        }

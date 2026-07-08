@@ -156,9 +156,7 @@ Expected output: ZooKeeper-mode clusters should show ≤4,000 partition replicas
 **Indicators:**
 - root: [Step 6] partition replica count on the broker is unusually high, or heap is undersized relative to load
 - s1: [Step 3] `OutOfMemoryError` present in `/var/log/kafka/server.log`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "OutOfMemoryError"} -->
 - s2: [Step 3] `Out of memory: Kill process` matching the Kafka PID in `dmesg` output
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Out of memory: Kill process"} -->
 
 **Interventions:**
 - **remediation** (root): set heap in `kafka-env.sh` or a systemd drop-in and add G1GC flags so the heap is sized correctly and GC overhead stays bounded.
@@ -199,9 +197,7 @@ Expected output: ZooKeeper-mode clusters should show ≤4,000 partition replicas
 
 **Indicators:**
 - root: [Step 4] `df -h` shows 100% utilisation on `/var/kafka-logs`, or `dmesg` contains disk error strings (`I/O error`, `failed command`)
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "disk_use_pct", "op": ">=", "value": 100} -->
 - s1: [Step 3] `KafkaStorageException` present in `/var/log/kafka/server.log`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "KafkaStorageException"} -->
 - s2: [Step 4] `kafka-log-dirs.sh` reports the directory with an `error`/`offline` field
 
 **Interventions:**
@@ -246,7 +242,6 @@ Expected output: ZooKeeper-mode clusters should show ≤4,000 partition replicas
 **Indicators:**
 - root: [Step 1] broker process is running (`jps` shows the PID, `systemctl status kafka` active) but absent from the registered broker list
 - s1: [Step 3] `server.log` contains `ZooKeeper session expired`, `Lost connection to ZooKeeper`, or KRaft `Disconnected from controller quorum`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "ZooKeeper session expired"} -->
 
 **Interventions:**
 - **remediation** (root): restore the network path (switch/firewall/NIC fix — environment-specific), then restart the broker for a clean reconnection.
@@ -287,7 +282,6 @@ Expected output: ZooKeeper-mode clusters should show ≤4,000 partition replicas
 **Indicators:**
 - s1: [Step 3] `/var/log/kafka/gc.log` shows pause times exceeding 10 s
 - s2: [Step 3] `server.log` contains `ZooKeeper session expired` or `Expiring session` immediately following GC log entries
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Expiring session"} -->
 
 **Interventions:**
 - **remediation** (root): replace CMS/ParallelGC with G1GC and a pause target so GC pauses stay short; optionally widen the session timeout if topology warrants.
@@ -326,7 +320,6 @@ Expected output: ZooKeeper-mode clusters should show ≤4,000 partition replicas
 **Indicators:**
 - root: [Step 6] partition replica count on the failed broker is near or above 4,000 (ZooKeeper) or 14,000 (KRaft)
 - s1: [Step 3] `server.log` contains `Too many open files`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Too many open files"} -->
 
 **Interventions:**
 - **remediation** (root): after raising the FD limit, reassign excess partitions off the broker to bring its replica count back within bounds.
@@ -374,7 +367,6 @@ Expected output: ZooKeeper-mode clusters should show ≤4,000 partition replicas
 **Indicators:**
 - root: [Step 1] broker was last stopped without `controlled.shutdown.enable=true` or during a failed rolling upgrade
 - s2: [Step 3] `server.log` contains `CorruptRecordException` or `Recovering unflushed producer state`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "CorruptRecordException"} -->
 
 **Interventions:**
 - **remediation** (root): ensure controlled shutdown is enabled and wait for `UnderReplicatedPartitions=0` before stopping each broker in a rolling upgrade.

@@ -98,9 +98,7 @@ Expected output: a valid signed URL returns `200`; an expired/tampered one retur
 - D: 403 `does not have <permission> access` (Symptom Recognition)
 **Indicators:**
 - root: [Step 2] `CALLER_EMAIL` has no role (e.g. `roles/storage.objectViewer`) granting the permission at bucket or project level.
-  <!-- match: {"step": 2, "predicate": "absent", "target": "roles/storage"} -->
 - s1: [Step 1] the 403 message names this permission and the acting identity.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "does not have storage"} -->
 **Interventions:**
 - **remediation** (root): grant the least-privilege role that includes the missing permission to the caller on the bucket.
 
@@ -121,9 +119,7 @@ Expected output: a valid signed URL returns `200`; an expired/tampered one retur
 - D: 403 access denied for an identity that "used to work" (Symptom Recognition)
 **Indicators:**
 - root: [Step 3] `uniform_bucket_level_access: true` on the bucket.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "uniform_bucket_level_access: true"} -->
 - s1: [Step 4] the object ACL list is empty / ACL get returns `400 Bad Request`, and Step 2 shows no IAM role for the identity.
-  <!-- match: {"step": 2, "predicate": "absent", "target": "roles/storage"} -->
 **Interventions:**
 - **remediation** (root): replace the lost ACL grant with an equivalent IAM binding (the durable model under UBLA).
 
@@ -150,9 +146,7 @@ Expected output: a valid signed URL returns `200`; an expired/tampered one retur
 - D: `Anonymous caller does not have storage.objects.get access` / 403 (Symptom Recognition)
 **Indicators:**
 - root: [Step 3] `public_access_prevention: enforced` in the bucket describe output.
-  <!-- match: {"step": 3, "predicate": "contains", "target": "public_access_prevention: enforced"} -->
 - s1: [Step 1] the 403 names the principal as `Anonymous caller`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Anonymous caller"} -->
 **Interventions:**
 - **remediation** (root): if public access is genuinely required and permitted by org policy, set public access prevention to inherited and grant the public role; otherwise serve via signed URLs instead.
 
@@ -173,7 +167,6 @@ Expected output: a valid signed URL returns `200`; an expired/tampered one retur
 **Indicators:**
 - root: [Step 5] the `X-Goog-Date` + `X-Goog-Expires` window has elapsed, or signed headers differ from those actually sent.
 - s1: [Step 5] the 403 body contains `<Code>SignatureDoesNotMatch</Code>` (or `AccessDenied` for expiry).
-  <!-- match: {"step": 5, "predicate": "contains", "target": "SignatureDoesNotMatch"} -->
 **Interventions:**
 - **remediation** (root): regenerate the signed URL with a fresh, sufficient expiry and signing identity, ensuring all custom headers included in the signature are sent verbatim (no extra spaces after colons).
 
@@ -202,9 +195,7 @@ Expected output: a valid signed URL returns `200`; an expired/tampered one retur
 - D: 403 `Request is prohibited by organization's policy` with a `vpcServiceControlsUniqueIdentifier` (Symptom Recognition)
 **Indicators:**
 - root: [Step 1] the gcloud 403 message includes `vpcServiceControlsUniqueIdentifier: <UID>` even though Step 2 shows the identity HAS the required IAM role.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "vpcServiceControlsUniqueIdentifier"} -->
 - s1: [Step 2] IAM bindings are present and correct, yet access still fails — pointing past IAM to the perimeter.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "roles/storage"} -->
 **Interventions:**
 - **remediation** (root): take the unique ID to the security admin to locate the denial in audit logs and add the source (project/IP/identity) to an access level or ingress rule on the perimeter.
 

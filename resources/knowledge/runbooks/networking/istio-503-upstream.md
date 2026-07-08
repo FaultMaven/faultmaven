@@ -183,9 +183,7 @@ Expected output: istiod log shows periodic `Push debounce stable[N]` and `XDS: P
 **Indicators:**
 - root: [Step 5] `istioctl x describe pod` reports a STRICT PeerAuthentication paired with a DestinationRule whose `tls.mode` is `DISABLE`
 - s3: [Step 1] client sidecar access log contains `"response_flags":"UF"` for the failed request
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"response_flags\":\"UF\""} -->
 - s3: [Step 1] `response_code_details` field contains `upstream_reset_before_response_started{connection_failure}`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "upstream_reset_before_response_started{connection_failure}"} -->
 
 **Interventions:**
 - **remediation** (root): align the DestinationRule with the in-mesh STRICT destination.
@@ -229,9 +227,7 @@ Expected output: istiod log shows periodic `Push debounce stable[N]` and `XDS: P
 **Indicators:**
 - root: [Step 2] namespace `<dst-ns>` is missing both `istio-injection=enabled` and any `istio.io/rev` label, or the pod annotation `sidecar.istio.io/inject` is `"false"` or `spec.hostNetwork: true`
 - s1: [Step 2] container list for `<dst-pod>` does not contain `istio-proxy`
-  <!-- match: {"step": 2, "predicate": "absent", "target": "istio-proxy"} -->
 - s3: [Step 1] client sidecar access log contains `"response_flags":"UF"` for the failed request
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"response_flags\":\"UF\""} -->
 
 **Interventions:**
 - **remediation** (root): label the namespace, clear any opt-out annotation, and roll the workload so every pod gains a sidecar.
@@ -267,9 +263,7 @@ Expected output: istiod log shows periodic `Push debounce stable[N]` and `XDS: P
 - root: [Step 8] `kubectl get endpoints -n <dst-ns> <dst-svc>` shows `<none>` or no `addresses:` block
 - s1: [Step 4] `istioctl proxy-config endpoint` returns an empty list for the affected cluster
 - s2: [Step 1] client sidecar access log contains `"response_flags":"UH"`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"response_flags\":\"UH\""} -->
 - s2: [Step 1] `response_code_details` field contains `no_healthy_upstream`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "no_healthy_upstream"} -->
 
 **Interventions:**
 - **remediation** (root): find why pods are not Ready, fix the root (readinessProbe path, dependency, image), then roll the deployment.
@@ -305,9 +299,7 @@ Expected output: istiod log shows periodic `Push debounce stable[N]` and `XDS: P
 - root: [Step 6] `istioctl analyze` reports `IST0118 (PortNameIsNotUnderNamingConvention)` or `IST0101 (ReferencedResourceNotFound)` against the Service or VirtualService
 - s1: [Step 4] `istioctl proxy-config route` for the affected port returns no `virtual_host` whose domains include `<dst-host>`
 - s2: [Step 1] client sidecar access log contains `"response_flags":"NR"`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"response_flags\":\"NR\""} -->
 - s2: [Step 1] `response_code_details` field contains `route_not_found` or `cluster_not_found`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "route_not_found"} -->
 
 **Interventions:**
 - **remediation** (root): correct the VirtualService host list and port, or rename the Service port to a recognised protocol prefix.
@@ -357,9 +349,7 @@ Expected output: istiod log shows periodic `Push debounce stable[N]` and `XDS: P
 **Indicators:**
 - root: [Step 7] traffic spike coincides with the 503 burst and the upstream pods are otherwise healthy
 - s2: [Step 1] client sidecar access log contains `"response_flags":"UO"`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"response_flags\":\"UO\""} -->
 - s2: [Step 7] `pilot-agent request GET stats | grep <dst-svc>` shows a non-zero `upstream_rq_pending_overflow` or `upstream_cx_overflow` counter
-  <!-- match: {"step": 7, "predicate": "contains", "target": "upstream_rq_pending_overflow"} -->
 
 **Interventions:**
 - **remediation** (root): raise the `connectionPool` limits to match sized peak concurrency after confirming upstream headroom.
@@ -412,9 +402,7 @@ Expected output: istiod log shows periodic `Push debounce stable[N]` and `XDS: P
 **Indicators:**
 - root: [Step 8] `kubectl get endpoints` shows backing pods still listed as ready (distinguishes from Cause C)
 - s2: [Step 7] `pilot-agent request GET stats | grep outlier` shows `outlier_detection.ejections_active` greater than zero for the destination cluster
-  <!-- match: {"step": 7, "predicate": "contains", "target": "outlier_detection.ejections_active"} -->
 - s3: [Step 1] client sidecar access log contains `"response_flags":"UH"`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"response_flags\":\"UH\""} -->
 
 **Interventions:**
 - **remediation** (root): tune outlier-detection thresholds and cap `maxEjectionPercent` so brief blips cannot empty the pool.
@@ -461,9 +449,7 @@ Expected output: istiod log shows periodic `Push debounce stable[N]` and `XDS: P
 **Indicators:**
 - root: [Step 4] endpoints are listed as `HEALTHY` (the retry exhaustion is downstream of pool health)
 - s1: [Step 1] client sidecar access log contains `"response_flags":"URX"`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"response_flags\":\"URX\""} -->
 - s2: [Step 7] `pilot-agent request GET stats` shows `upstream_rq_retry_overflow` or `upstream_rq_retry_limit_exceeded` incrementing for the cluster
-  <!-- match: {"step": 7, "predicate": "contains", "target": "upstream_rq_retry_overflow"} -->
 
 **Interventions:**
 - **remediation** (root): fix the underlying upstream failure first — roll back a bad deploy — then set a sane retry budget.
@@ -514,9 +500,7 @@ Expected output: istiod log shows periodic `Push debounce stable[N]` and `XDS: P
 **Indicators:**
 - root: [Step 10] `kubectl exec ... pilot-agent request GET stats | grep rbac` shows `rbac.denied` incrementing on the destination sidecar
 - s2: [Step 1] destination sidecar access log contains `rbac_access_denied_matched_policy` for the request (status 403)
-  <!-- match: {"step": 1, "predicate": "contains", "target": "rbac_access_denied_matched_policy"} -->
 - s2: [Step 1] client sidecar access log contains `"response_flags":"UAEX"` and status 503 (CUSTOM ext-authz path)
-  <!-- match: {"step": 1, "predicate": "contains", "target": "\"response_flags\":\"UAEX\""} -->
 
 **Interventions:**
 - **remediation** (root): for native DENY 403, identify the offending policy from the access-log line and adjust its rule to admit the intended caller; for ext-authz `UAEX`, restore the external authorizer Service.
@@ -552,7 +536,6 @@ Expected output: istiod log shows periodic `Push debounce stable[N]` and `XDS: P
 - root: [Step 11] istiod log contains `rejected ... update from <pod>` or `update rejected` referencing the source workload
 - s1: [Step 3] `istioctl proxy-status` shows `STALE` or `NOT SENT` against the affected pod for one or more of CDS/EDS/LDS/RDS
 - s2: [Step 1] client sidecar access log contains `cluster_not_found` (`NC`)
-  <!-- match: {"step": 1, "predicate": "contains", "target": "cluster_not_found"} -->
 
 **Interventions:**
 - **remediation** (root): confirm istiod health, scale it if push debounce times grow, and restart any proxy that keeps rejecting updates.

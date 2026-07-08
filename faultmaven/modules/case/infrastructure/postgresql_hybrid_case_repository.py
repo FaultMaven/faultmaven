@@ -825,7 +825,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         placeholders = self._bind_ids(params, node_ids)
         query = text(f"""
             SELECT node_id, evidence_id, stance, stance_confidence,
-                   reasoning, linked_at_turn, created_at, provenance
+                   reasoning, linked_at_turn, created_at
             FROM causal_node_evidence
             WHERE node_id IN ({placeholders})
         """)
@@ -845,7 +845,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     stance_confidence=max(0.0, min(1.0, conf)),
                     linked_at_turn=row[5] or 0,
                     analyzed_at=analyzed_at,
-                    provenance=row[7],
                 )
             )
         return by_node
@@ -2062,8 +2061,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             if case.turn_history
                             else []
                         ),
-                        "differential_runbook_ids": list(case.differential_runbook_ids),
-                        "runbook_retrieved": bool(case.runbook_retrieved),
                     }.items()
                     if v
                 }
@@ -2483,19 +2480,18 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         query = text("""
             INSERT INTO causal_node_evidence (
                 node_id, evidence_id, organization_id, stance,
-                stance_confidence, reasoning, linked_at_turn, provenance,
+                stance_confidence, reasoning, linked_at_turn,
                 created_at
             ) VALUES (
                 :node_id, :evidence_id, :organization_id, :stance,
-                :stance_confidence, :reasoning, :linked_at_turn, :provenance,
+                :stance_confidence, :reasoning, :linked_at_turn,
                 :created_at
             )
             ON CONFLICT (node_id, evidence_id) DO UPDATE SET
                 stance = EXCLUDED.stance,
                 stance_confidence = EXCLUDED.stance_confidence,
                 reasoning = EXCLUDED.reasoning,
-                linked_at_turn = EXCLUDED.linked_at_turn,
-                provenance = EXCLUDED.provenance
+                linked_at_turn = EXCLUDED.linked_at_turn
         """)
         for link in links:
             await self.db.execute(
@@ -2508,7 +2504,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "stance_confidence": link.stance_confidence,
                     "reasoning": link.reasoning,
                     "linked_at_turn": link.linked_at_turn,
-                    "provenance": link.provenance,
                     "created_at": link.analyzed_at,
                 },
             )
@@ -3027,8 +3022,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 else None
             ),
             "pending_transition": metadata.get("pending_transition"),
-            "differential_runbook_ids": metadata.get("differential_runbook_ids", []),
-            "runbook_retrieved": metadata.get("runbook_retrieved", False),
             "progress": progress,
             "current_turn": int(row.current_turn or 0),
             "turns_without_progress": int(row.turns_without_progress or 0),

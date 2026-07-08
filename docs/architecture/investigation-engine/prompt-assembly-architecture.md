@@ -283,4 +283,4 @@ For any rendering audit (e.g., regression testing the templates after edits), th
 - `source_file_id` description in evidence-creation prose references `file_id="…"` on both `<evidence>` and `<uploaded_file>` (the two elements share the attribute convention).
 - All `.format()` calls render without `KeyError` / `IndexError` when given empty-string values for every placeholder.
 
-Engine tests `tests/unit/core/investigation/test_indicator_evaluator.py` and `tests/unit/modules/agent/tools/test_kb_qa_cause_parsing.py` (20 tests total) exercise the dispatcher and indirectly validate template renderability.
+Engine tests `tests/unit/core/investigation/test_prompt_budget_allocator.py` (drives `get_prompt_for_case`) and the template-structure suites (`test_inquiry_template_structure.py`, `test_investigation_template_acknowledgment_rules.py`) exercise the dispatcher and indirectly validate template renderability.

@@ -356,25 +356,17 @@ correlation are not validation. Engine-side, a node reaches VALIDATED only on a
 **causally-grounding SUPPORTS** link (`derive_node_states` → `_node_evidence_tally`,
 `causal_graph.py`), net of refutations and behind the M7 AND-gate.
 
-A SUPPORTS link is causally grounding when **either** of two independent
-conditions holds:
+A SUPPORTS link is causally grounding **only** when its backing datum is
+categorized `CAUSAL_EVIDENCE` — a direct observable fact matching the node's
+predicted state. Links backed by weaker categories (e.g. `SYMPTOM_EVIDENCE`)
+inform the narrative but never validate a node.
 
-- its backing datum is categorized `CAUSAL_EVIDENCE` (a direct observable fact); **or**
-- the link carries **`runbook` provenance** — a deterministic, expert-authored
-  predicate that *fired against the submitted telemetry*. A predicate match **is**
-  a §7.1-grade observation by construction, so it grounds **regardless** of how
-  the LLM categorized the backing datum (`support_is_runbook_grounded`,
-  `cause_assurance.py`). Were grounding keyed on `Evidence.category` alone, an
-  authority-grounded match would be silently dropped whenever the LLM filed the
-  datum as, e.g., `SYMPTOM_EVIDENCE`.
-
-This is the **one** place the "runbook provenance is causal grounding" rule
-lives; both the node-validation tally and the KB-harvest grade ([§9.5](#95-harvest-assurance-grade-which-causes-may-seed-the-kb)) read it,
-so the rule cannot drift. Provenance also separates assurance *levels*: a
-`runbook` (or deductive) support is **authority-grounded**; a `None` /
-`llm_fallback` support is **lower-assurance** (the LLM authored both the predicate
-and its citation). Both can validate a node, but only the authority-grounded kind
-clears the harvest bar.
+*Rejected alternative:* a second grounding arm — SUPPORTS links stamped
+`runbook` provenance by a deterministic runbook-cause-matcher evaluating
+expert-authored predicates against submitted telemetry — was retired without
+adoption (NO-GO 2026-07-08, #658). Runbooks serve as RAG context: the LLM forms
+causes from retrieved runbook content, and those causes ground through the same
+`CAUSAL_EVIDENCE` rule (or the deductive derivation below) as any other.
 
 ### 7.1.1 Deductive validation (proof by exclusion)
 
@@ -660,9 +652,13 @@ cause into three mutually-exclusive grades, in one pass over its validated roots
 
 | Grade | Condition | May seed KB? |
 |-------|-----------|--------------|
-| `GROUNDED` | ≥1 VALIDATED root borne out by a `runbook`-provenance SUPPORTS ([§7.1](#71-empirical-validation-only)) **or** a deductive derivation ([§7.1.1](#711-deductive-validation-proof-by-exclusion)). | **Yes** |
-| `FALLBACK_ONLY` | ≥1 VALIDATED root, but every one rests only on lower-assurance (`None` / `llm_fallback`) support. | No — ask the user to *verify* the cause. |
+| `GROUNDED` | ≥1 VALIDATED root borne out by a **deductive derivation** ([§7.1.1](#711-deductive-validation-proof-by-exclusion)). | **Yes** |
+| `FALLBACK_ONLY` | ≥1 VALIDATED root, but none deductively derived — every root rests on the LLM's own evidence linking (the LLM authored both the cause and its citation). | No — ask the user to *verify* the cause. |
 | `NO_ROOT` | No VALIDATED root at all (a bare, LLM-authored `RootCauseConclusion` with no causal graph). | No — ask the user to *identify* a cause. |
+
+The grade semantics — in particular whether the deductive derivation should
+remain the sole `GROUNDED` arm — are under redesign; tracked on issue #656
+(systemic-review).
 
 `GROUNDED` is the harvest bar, and both entry points refuse to seed an unverified
 cause — the `POST /knowledge/convert-from-case` API rejects with 422 before

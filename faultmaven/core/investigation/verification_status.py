@@ -80,7 +80,7 @@ def work_gate_passed(case: "Case") -> bool:
 
 def _is_grounded(case: "Case") -> bool:
     """Grounding axis for the disposition join: an authority-grounded root
-    (drift-locked §7 ``GROUNDED``) **anchored on a verified symptom**.
+    (§7 ``GROUNDED``) **anchored on a verified symptom**.
 
     The symptom-verified anchor closes the composition seam (§4 limitation 1):
     the §7 grade walks the causal graph and can read ``GROUNDED`` off a validated
@@ -94,7 +94,7 @@ def _is_grounded(case: "Case") -> bool:
     *same* anchor ``cause_state`` already requires for ``IDENTIFIED`` (and that
     ``terminal_transitions._cause_identified`` enforces): cause identification is
     anchored on evidence that the problem exists. It does **not** touch
-    ``grade_cause_assurance`` itself — the §7 harvest grade keeps its drift-lock,
+    ``grade_cause_assurance`` itself — the §7 harvest grade is unchanged,
     and its RESOLVED-case consumers (KB harvest, conversion) already run with a
     verified symptom, so they are unaffected. The residual desync (grade
     ``GROUNDED`` × ``symptom_verified`` but ``cause_state`` not IDENTIFIED) is not

@@ -1319,13 +1319,15 @@ class KnowledgeService:
             verified_at=now if verified_by else None,
             created_at=now,
             updated_at=now,
-            # v4 per-Cause graph records for the runbook-cause matcher, read back
-            # by item_id via metadata.get("causes") (absent/None on the upload
-            # path and pre-v4 runbooks). Co-located in the row so the orphan-prune
-            # removes them with it and a content-body change refreshes them on
-            # re-ingest — NOTE a causes-only pack change (unchanged markdown) is
-            # skipped by the content-hash gate; see the idempotency note in
-            # runbook-cause-matcher-implementation.md. Inert until increment 4.
+            # v4 per-Cause graph records, stored verbatim (absent/None on the
+            # upload path and pre-v4 runbooks). No runtime reader today —
+            # retained DELIBERATELY: the shape is the cross-repo pack contract
+            # (test_runbook_causes_contract), and the causal-chain structure is
+            # the KB's machine-readable form for future engine alignment.
+            # Co-located in the row so the orphan-prune removes them with it
+            # and a content-body change refreshes them on re-ingest — NOTE a
+            # causes-only pack change (unchanged markdown) is skipped by the
+            # content-hash gate.
             metadata={"causes": causes} if causes else None,
         )
         async with self._db_session_factory() as session:
@@ -1762,36 +1764,6 @@ class KnowledgeService:
 
         except Exception as e:
             logger.error(f"Failed to get document {document_id}: {e}")
-            return None
-
-    async def get_runbook_causes(self, item_id: str) -> Optional[List[Dict[str, Any]]]:
-        """Return a runbook's v4 per-Cause graph records, or None.
-
-        Reads ``knowledge_items.metadata["causes"]`` directly from the
-        repository — ``get_document`` cherry-picks a few metadata keys and drops
-        ``causes``, so it can't be used here. None for upload-path / pre-v4
-        runbooks (no causes record) and for unknown ids. This is the
-        ``resolve_causes`` callable the runbook Cause matcher injects.
-        """
-        try:
-            if not item_id or not self._db_session_factory:
-                return None
-
-            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
-                DatabaseKnowledgeItemRepository,
-            )
-
-            async with self._db_session_factory() as session:
-                repo = DatabaseKnowledgeItemRepository(session)
-                item = await repo.get_by_id(item_id)
-
-            if item is None:
-                return None
-            causes = (item.metadata or {}).get("causes")
-            return causes if isinstance(causes, list) else None
-
-        except Exception as e:
-            logger.error(f"Failed to get runbook causes for {item_id}: {e}")
             return None
 
     async def get_semantic_snippet(

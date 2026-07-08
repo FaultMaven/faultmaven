@@ -114,9 +114,7 @@ Expected output: no `INACTIVE`/`FAILED` lines; failures print the unsatisfied de
 
 **Indicators:**
 - root: [Step 2] agent log shows `The channel is closing down or has closed down` or `Read timed out` with no OOM nearby
-  <!-- match: {"step": 2, "predicate": "contains", "target": "channel is closing down"} -->
 - s1: [Step 1] controller log shows `onDeadPing failed` then `Terminating the channel`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Terminating the channel"} -->
 - s2: [Symptom] build console shows `Remote call on JNLP4-connect connection ... failed. The channel is closing down`
 
 **Interventions:**
@@ -149,10 +147,8 @@ Expected output: no `INACTIVE`/`FAILED` lines; failures print the unsatisfied de
 
 **Indicators:**
 - root: [Step 3] `jstat` shows old-gen `O` pinned ~100% and `FGC` climbing each second
-  <!-- match: {"step": 3, "predicate": "contains", "target": "OutOfMemory"} -->
 - s1: [Step 3] `GC.heap_info` shows `used` ≈ `capacity` (no headroom)
 - s2: [Step 1] controller log shows `java.lang.OutOfMemoryError: Java heap space` or `GC overhead limit exceeded`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "OutOfMemoryError"} -->
 
 **Interventions:**
 - **remediation** (root): raise the heap and switch to G1GC with the Jenkins-recommended large-instance flags, then capture a heap dump if it recurs.
@@ -186,9 +182,7 @@ Expected output: no `INACTIVE`/`FAILED` lines; failures print the unsatisfied de
 
 **Indicators:**
 - root: [Step 4] `df -h` shows the workspace or `/tmp` filesystem at `100%` Use
-  <!-- match: {"step": 4, "predicate": "contains", "target": "100%"} -->
 - s1: [Symptom] build console shows `No space left on device` (Java IOException or `Errno 28`)
-  <!-- match: {"step": 4, "predicate": "contains", "target": "No space left on device"} -->
 - s2: [Step 5] queue `why` shows the node offline / `low disk space` and `idleExecutors=0`
 
 **Interventions:**
@@ -223,7 +217,6 @@ Expected output: no `INACTIVE`/`FAILED` lines; failures print the unsatisfied de
 
 **Indicators:**
 - root: [Step 6] failed-plugins list prints `requires <plugin> >= <version>` or `Jenkins (X) or higher required`
-  <!-- match: {"step": 6, "predicate": "contains", "target": "required"} -->
 - s1: [Symptom] startup banner shows `Some plugins could not be loaded due to unsatisfied dependencies`
 - s2: [Step 6] `<JENKINS_URL>/log/all` shows `Failed Loading plugin <name>` / `INACTIVE` entries
 

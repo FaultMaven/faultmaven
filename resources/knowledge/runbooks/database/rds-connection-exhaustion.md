@@ -108,10 +108,8 @@ Expected output: average active sessions (AAS) split by wait event. `Client:Clie
 - D: clients get `Too many connections` / `remaining connection slots are reserved`
 **Indicators:**
 - root: [Step 1] `DatabaseConnections` Maximum equals the configured `max_connections` value
-  <!-- match: {"step": 1, "predicate": "contains", "target": "max_connections"} -->
 - s1: [Step 2] connection count grouped by `client_addr`/`HOST` is spread across many distinct application hosts in `active` state
 - D: [Symptom] clients log `ERROR 1040 (HY000): Too many connections` or `FATAL: remaining connection slots are reserved`
-  <!-- match: {"step": 2, "predicate": "threshold", "field": "Threads_connected", "op": ">=", "value": 1} -->
 **Interventions:**
 - **remediation** (root): Front the database with RDS Proxy so many client connections multiplex onto a bounded server-side pool; cap the pool with `MaxConnectionsPercent` (leave ≥30% headroom).
 
@@ -153,7 +151,6 @@ Expected output: average active sessions (AAS) split by wait event. `Client:Clie
 - D: new connects are refused with the too-many-connections error
 **Indicators:**
 - root: [Step 2] high `idle in transaction` count with large `TIME`/age on those sessions
-  <!-- match: {"step": 2, "predicate": "contains", "target": "idle in transaction"} -->
 - s1: [Step 2] `idle` connection count is a large fraction of total and grows over time without matching query activity
 - s2: [Step 1] `DatabaseConnections` trends upward monotonically (saw-toothless climb) rather than tracking traffic
 **Interventions:**
@@ -185,7 +182,6 @@ Expected output: average active sessions (AAS) split by wait event. `Client:Clie
 **Indicators:**
 - root: [Step 1] configured `max_connections` is the default formula value (not a hand-raised override) and is low relative to demand
 - s1: [Step 2] sessions are predominantly `active` (real work), not idle — demand is legitimate
-  <!-- match: {"step": 2, "predicate": "absent", "target": "idle in transaction"} -->
 - D: [Symptom] error occurs at peak load with pools correctly sized
 **Interventions:**
 - **remediation** (root): Scale the instance up to a class with more memory; this raises the formula-derived `max_connections` automatically without manual tuning (AWS best practice: scale up before raising the parameter).
@@ -215,7 +211,6 @@ Expected output: average active sessions (AAS) split by wait event. `Client:Clie
 - D: new connects are refused while blocked sessions occupy the slots
 **Indicators:**
 - root: [Step 3] Performance Insights `db.load.avg` is dominated by a `Lock:`/`LWLock:` wait event
-  <!-- match: {"step": 3, "predicate": "contains", "target": "Lock:"} -->
 - s1: [Step 2] many sessions share the same `STATE`/blocked state with large `TIME` values
 - s2: [Step 1] `DatabaseConnections` climbs during the lock window while traffic is flat
 **Interventions:**

@@ -29,7 +29,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from faultmaven.core.investigation.cause_assurance import support_is_runbook_grounded
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.modules.case.contracts import (
     CausalEdge,
@@ -217,12 +216,9 @@ def _node_evidence_tally(
 
     Counts only links whose backing evidence row actually exists (a dangling
     ``evidence_id`` is ignored, never assumed). ``causal_supports`` is the subset
-    of SUPPORTS links that are causally grounding — either backed by
-    ``CAUSAL_EVIDENCE`` (the §7.1 "direct observable fact" bar) OR carrying
-    ``runbook`` provenance (a deterministic expert predicate fired against the
-    telemetry, causal regardless of the LLM's ``Evidence.category`` choice — #590
-    A2) — so a node validates only on real causal grounding.
-    ``counterfactual_refutes`` is
+    of SUPPORTS links that are causally grounding — backed by ``CAUSAL_EVIDENCE``
+    (the §7.1 "direct observable fact" bar) — so a node validates only on real
+    causal grounding. ``counterfactual_refutes`` is
     the subset of REFUTES links backed by ``CAUSAL_ABSENCE_EVIDENCE`` — a
     counterfactual disconfirmation (the cause was addressed yet ``D`` persisted),
     the §7.2 strongest grade, which refutes DECISIVELY (it is not outweighed by
@@ -234,12 +230,8 @@ def _node_evidence_tally(
             continue  # dangling reference — never counts
         if link.stance == EvidenceStance.SUPPORTS:
             supports += 1
-            # Causal grounding is either a CAUSAL_EVIDENCE-backed datum (§7.1) or a
-            # runbook-provenance predicate firing (causal regardless of category —
-            # #590 A2; the shared primitive is the one home for that rule).
-            if evidence_by_id[
-                link.evidence_id
-            ] == EvidenceCategory.CAUSAL_EVIDENCE or support_is_runbook_grounded(link):
+            # Causal grounding is a CAUSAL_EVIDENCE-backed datum (§7.1).
+            if evidence_by_id[link.evidence_id] == EvidenceCategory.CAUSAL_EVIDENCE:
                 causal_supports += 1
         elif link.stance == EvidenceStance.REFUTES:
             refutes += 1
@@ -275,8 +267,8 @@ def derive_node_states(case: Case) -> bool:
       tie is INCONCLUSIVE, not a disproof). ``validation_method=NONE``,
       ``actionable=False``.
     - **VALIDATED** — not refuted, has at least one causally-grounding SUPPORTS
-      link (CAUSAL_EVIDENCE-backed, or ``runbook``-provenance regardless of
-      category — #590 A2), is net-supporting (``supports > refutes``), AND every
+      link (CAUSAL_EVIDENCE-backed), is net-supporting (``supports > refutes``),
+      AND every
       AND-set feeding it is fully VALIDATED (M7 proof, strict). EMPIRICAL grade;
       a validated ROOT is marked ``actionable`` (M1). Method/actionable/reason
       are kept mutually consistent so the node satisfies its M1/M4/refutation

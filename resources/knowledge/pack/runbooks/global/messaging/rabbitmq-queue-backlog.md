@@ -132,7 +132,6 @@ Expected output: Queues with `x-overflow: drop-head` discard old messages silent
 
 **Indicators:**
 - root: [Step 2] publish rate significantly exceeds ack rate with no sign of convergence
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "publish_rate_minus_ack_rate", "op": ">", "value": 10} -->
 - s1: [Step 1] `consumers` count is low (1–2) while `messages_ready` is in the thousands or growing
 
 **Interventions:**
@@ -167,7 +166,6 @@ Expected output: Queues with `x-overflow: drop-head` discard old messages silent
 
 **Indicators:**
 - root: [Step 3] `prefetch_count` is 1 for channels on the affected queue while `messages_ready` is large
-  <!-- match: {"step": 3, "predicate": "contains", "target": "prefetch_count\t1"} -->
 - s1: [Step 3] `messages_unacknowledged` is 1 per channel (matching the low prefetch)
 
 **Interventions:**
@@ -202,7 +200,6 @@ Expected output: Queues with `x-overflow: drop-head` discard old messages silent
 **Indicators:**
 - root: [Step 5] consumer logs show the same error message repeated at high frequency
 - s2: [Step 2] `redeliver` rate is close to or exceeds `ack` rate
-  <!-- match: {"step": 2, "predicate": "threshold", "target": "redeliver_rate_vs_ack_rate", "op": ">", "value": 0.5} -->
 - s2: [Step 4] DLQ depth is zero despite consumer errors (no DLX configured, or nack requeues instead of routing to DLX)
 
 **Interventions:**
@@ -238,9 +235,7 @@ Expected output: Queues with `x-overflow: drop-head` discard old messages silent
 
 **Indicators:**
 - root: [Step 4] DLQ row shows `consumers=0`
-  <!-- match: {"step": 4, "predicate": "contains", "target": "consumers\t0"} -->
 - s2: [Step 4] DLQ depth is non-zero and growing
-  <!-- match: {"step": 4, "predicate": "threshold", "target": "dlq_messages", "op": ">", "value": 0} -->
 
 **Interventions:**
 - **remediation** (root): deploy a permanent DLQ consumer service that logs every dead-lettered message with `x-death` context, retries retriable errors with backoff, and archives + alerts on non-retriable ones.
@@ -280,9 +275,7 @@ Expected output: Queues with `x-overflow: drop-head` discard old messages silent
 
 **Indicators:**
 - root: [Step 5] consumer logs contain downstream errors: `connection refused`, `timeout`, `ECONNREFUSED`, or `upstream connect error`
-  <!-- match: {"step": 5, "predicate": "contains", "target": "connection refused"} -->
 - s2: [Step 3] `messages_unacknowledged` equals `prefetch_count` across all channels for the affected queue
-  <!-- match: {"step": 3, "predicate": "threshold", "target": "unack_to_prefetch_ratio", "op": ">=", "value": 1.0} -->
 
 **Interventions:**
 - **remediation** (root): add a circuit breaker plus explicit connection timeout (e.g. 5s) to all downstream calls in consumer code; on open circuit, fast-fail with `nack(requeue=false)` to the DLX.
@@ -318,7 +311,6 @@ Expected output: Queues with `x-overflow: drop-head` discard old messages silent
 
 **Indicators:**
 - root: [Step 6] `x-message-ttl` is set to a value (e.g., 60000 ms) shorter than observed consumer processing time
-  <!-- match: {"step": 6, "predicate": "contains", "target": "x-message-ttl"} -->
 - s2: [Step 4] DLQ depth grows rapidly even when consumers are active and `messages_ready` is low
 
 **Interventions:**
@@ -355,7 +347,6 @@ Expected output: Queues with `x-overflow: drop-head` discard old messages silent
 
 **Indicators:**
 - root: [Step 6] `x-overflow: drop-head` is present in queue arguments or applied policy
-  <!-- match: {"step": 6, "predicate": "contains", "target": "drop-head"} -->
 - s1: [Step 6] `x-max-length` is set and `messages_ready` is exactly at that limit
 
 **Interventions:**

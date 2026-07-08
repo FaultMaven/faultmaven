@@ -75,7 +75,6 @@ Expected output: `code=200` with `total` well under 30s. A hung connect (`connec
 - D: 502 Bad Gateway returned to the viewer (Symptom Recognition)
 **Indicators:**
 - root: [Step 3] `openssl s_client` negotiates only protocols/ciphers outside CloudFront's supported list (e.g. only TLS 1.0 or a non-supported cipher), or handshake fails outright
-  <!-- match: {"step": 3, "predicate": "absent", "target": "Verify return code: 0 (ok)"} -->
 - s1: [Step 2] `OriginSslProtocols` on the origin config omits the protocol the origin actually requires
 - D: [Symptom] response header `X-Cache: Error from cloudfront` with a 502 page
 **Interventions:**
@@ -100,7 +99,6 @@ Expected output: `code=200` with `total` well under 30s. A hung connect (`connec
 - D: 502 Bad Gateway returned to the viewer (Symptom Recognition)
 **Indicators:**
 - root: [Step 3] `openssl s_client` shows `Verify return code` other than 0, a self-signed leaf, missing intermediate `issuer=` entries, or a `subject=` CN/SAN that does not match the Origin Domain Name
-  <!-- match: {"step": 3, "predicate": "contains", "target": "self signed certificate"} -->
 - s1: [Step 2] `OriginProtocolPolicy` is `https-only` or `match-viewer` (TLS to origin is in force, so cert validation applies)
 - D: [Symptom] 502 page with `CloudFront wasn't able to connect to the origin`
 **Interventions:**
@@ -122,7 +120,6 @@ Expected output: `code=200` with `total` well under 30s. A hung connect (`connec
 - D: 504 Gateway Timeout returned to the viewer (Symptom Recognition)
 **Indicators:**
 - root: [Step 4] `curl` to the origin hangs at `connect`/`tls` and aborts at `--max-time`, OR origin access logs show no CloudFront requests at all
-  <!-- match: {"step": 4, "predicate": "absent", "target": "code=200"} -->
 - s1: [Step 2] origin `DomainName` resolves to a private IP or a security group lacking the CloudFront managed prefix list
 - D: [Symptom] 504 page `either the attempt failed or the origin closed the connection`
 **Interventions:**
@@ -154,7 +151,6 @@ Expected output: `code=200` with `total` well under 30s. A hung connect (`connec
 - D: 504 Gateway Timeout returned to the viewer (Symptom Recognition)
 **Indicators:**
 - root: [Step 4] `curl` `ttfb`/`total` for the slow path approaches or exceeds the configured `OriginReadTimeout`
-  <!-- match: {"step": 4, "predicate": "threshold", "metric": "total", "op": ">=", "value": 30} -->
 - s1: [Step 2] `Origins.Items[].CustomOriginConfig.OriginReadTimeout` is at default 30 while the workload's p99 exceeds it
 - D: [Symptom] 504 page returned only on the slow/expensive endpoints
 **Interventions:**
@@ -186,7 +182,6 @@ Expected output: `code=200` with `total` well under 30s. A hung connect (`connec
 - D: 502/504 returned to the viewer for the affected paths only (Symptom Recognition)
 **Indicators:**
 - root: [Step 2] the `PathPattern` of an earlier-listed cache behavior matches the failing path and its `TargetOriginId` points at the wrong/dead origin
-  <!-- match: {"step": 2, "predicate": "contains", "target": "TargetOriginId"} -->
 - s1: [Step 1] 5xx errors are scoped to specific URL paths rather than the whole distribution
 - D: [Symptom] only requests under one path prefix return 502/504 while others return 200
 **Interventions:**

@@ -933,8 +933,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         than pulling every chunk's full metadata payload — ``include=[]`` returns
         only ids, so the per-boot cost scales with id count, not metadata size, and
         a chunk missing the ``parent_document_id`` metadata key is still resolved
-        (item_ids never contain ``_chunk_``). This matches the retrieval path's
-        ``AnswerFromKB._item_id_for_chunk`` fallback.
+        (item_ids never contain ``_chunk_``).
         """
 
         async def _list_wrapper() -> Set[str]:

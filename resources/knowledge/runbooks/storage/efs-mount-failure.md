@@ -112,9 +112,7 @@ Expected output: `BurstCreditBalance` well above 0 for a healthy Bursting filesy
 - D: mount hangs and fails with `mount.nfs4: Connection timed out`
 **Indicators:**
 - root: [Step 3] `nc -vz <mt-ip> 2049` reports timeout / non-zero exit (no rule permits the client)
-  <!-- match: {"step": 3, "predicate": "exit_code", "target": "1"} -->
 - s1: [Step 1] `mount.log` / console shows `Connection timed out`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "Connection timed out"} -->
 - D: [Symptom] `mount.nfs4: Connection timed out`
 **Interventions:**
 - **remediation** (root): authorize inbound TCP 2049 on the mount-target SG from the client's subnet/VPC CIDR.
@@ -137,7 +135,6 @@ Expected output: `BurstCreditBalance` well above 0 for a healthy Bursting filesy
 **Indicators:**
 - root: [Step 2] no mount-target AZ matches the client AZ from instance metadata
 - s1: [Step 4] `nslookup` of the EFS DNS name returns NXDOMAIN / no private IP
-  <!-- match: {"step": 4, "predicate": "contains", "target": "can't find"} -->
 - D: [Symptom] `mount.nfs4: Failed to resolve server` or `Connection timed out`
 **Interventions:**
 - **remediation** (root): create a mount target in the client's AZ/subnet (wait 90s for DNS to propagate before mounting).
@@ -165,9 +162,7 @@ Expected output: `BurstCreditBalance` well above 0 for a healthy Bursting filesy
 - D: mount fails with `mount.nfs4: Failed to resolve server ...: Name or service not known`
 **Indicators:**
 - root: [Step 4] `describe-vpc-attribute` returns `false` for DNS support or hostnames
-  <!-- match: {"step": 4, "predicate": "contains", "target": "false"} -->
 - s1: [Step 4] `nslookup` cannot resolve the EFS DNS name
-  <!-- match: {"step": 4, "predicate": "contains", "target": "can't find"} -->
 - D: [Symptom] `mount.nfs4: Failed to resolve server`
 **Interventions:**
 - **remediation** (root): enable DNS support/hostnames on the VPC (and forward `*.amazonaws.com` on any custom resolver).
@@ -195,9 +190,7 @@ Expected output: `BurstCreditBalance` well above 0 for a healthy Bursting filesy
 - D: mount fails with `mount.nfs4: access denied by server while mounting 127.0.0.1:/`
 **Indicators:**
 - root: [Step 5] file-system policy has no `Allow` for the caller ARN (or has a `Deny`), or access-point root path is absent
-  <!-- match: {"step": 5, "predicate": "absent", "target": "ClientMount"} -->
 - s1: [Step 1] mount attempted with `-o iam`/`-o tls` still rejected; `mount.log` shows `access denied`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "access denied by server"} -->
 - D: [Symptom] `mount.nfs4: access denied by server`
 **Interventions:**
 - **remediation** (root): grant the client role ClientMount/ClientWrite and ensure the access-point root directory exists (or set `CreationInfo` so EFS creates it).
@@ -224,9 +217,7 @@ Expected output: `BurstCreditBalance` well above 0 for a healthy Bursting filesy
 - D: reads/writes hang intermittently for seconds (timeout symptom_class) on an already-mounted FS
 **Indicators:**
 - root: [Step 6] `BurstCreditBalance` Minimum at/near 0
-  <!-- match: {"step": 6, "predicate": "threshold", "op": "lt", "value": 1000000} -->
 - s1: [Step 6] throughput mode is `bursting`
-  <!-- match: {"step": 6, "predicate": "contains", "target": "bursting"} -->
 - D: [Symptom] mounted FS shows intermittent I/O stalls; `MeteredIOBytes` == `PermittedThroughput`
 **Interventions:**
 - **remediation** (root): switch the filesystem to Elastic (or Provisioned) throughput to remove the credit ceiling.

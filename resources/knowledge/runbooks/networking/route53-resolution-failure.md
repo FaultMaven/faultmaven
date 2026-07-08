@@ -108,9 +108,7 @@ Expected output: a `PRIMARY` and `SECONDARY` record exist; the primary has a `He
 - D: name resolution fails in the application
 **Indicators:**
 - root: [Step 2] `EnableDnsSupport.Value` or `EnableDnsHostnames.Value` is `false`.
-  <!-- match: {"step": 2, "predicate": "contains", "target": "\"Value\": false"} -->
 - s1: [Step 1] query to `169.254.169.253` times out or returns `SERVFAIL`.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "SERVFAIL"} -->
 **Interventions:**
 - **remediation** (root): enable both VPC DNS attributes.
 
@@ -130,9 +128,7 @@ Expected output: a `PRIMARY` and `SECONDARY` record exist; the primary has a `He
 - D: name resolution fails (NXDOMAIN) for the private name
 **Indicators:**
 - root: [Step 3] the domain's PHZ is absent from `list-hosted-zones-by-vpc` output for `<vpc-id>`.
-  <!-- match: {"step": 3, "predicate": "absent", "target": "HostedZoneSummaries"} -->
 - s2: [Step 1] `dig @169.254.169.253` returns `status: NXDOMAIN` for the private name.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "NXDOMAIN"} -->
 **Interventions:**
 - **remediation** (root): associate the VPC with the private hosted zone.
 
@@ -152,9 +148,7 @@ Expected output: a `PRIMARY` and `SECONDARY` record exist; the primary has a `He
 - D: name resolution fails for the forwarded domain
 **Indicators:**
 - root: [Step 4] no `FORWARD` rule for the domain is associated with `<vpc-id>`, or its `TargetIps`/`ResolverEndpointId` is wrong / not `OPERATIONAL`.
-  <!-- match: {"step": 4, "predicate": "absent", "target": "FORWARD"} -->
 - s2: [Step 1] `dig` for the forwarded domain returns `status: SERVFAIL` or times out.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "SERVFAIL"} -->
 **Interventions:**
 - **remediation** (root): point the rule at the correct target IPs and associate it with the VPC.
 
@@ -181,9 +175,7 @@ Expected output: a `PRIMARY` and `SECONDARY` record exist; the primary has a `He
 - D: name resolution fails for the forwarded domain
 **Indicators:**
 - root: [Step 5] SG `IpPermissionsEgress` has no rule allowing UDP/TCP port 53 to the target DNS IPs, or NACL lacks the ephemeral inbound range.
-  <!-- match: {"step": 5, "predicate": "absent", "target": "\"ToPort\": 53"} -->
 - s2: [Step 1] `dig` for the forwarded domain returns `status: SERVFAIL` after a delay.
-  <!-- match: {"step": 1, "predicate": "contains", "target": "SERVFAIL"} -->
 **Interventions:**
 - **remediation** (root): allow UDP and TCP port 53 egress to the target DNS servers.
 
@@ -205,9 +197,7 @@ Expected output: a `PRIMARY` and `SECONDARY` record exist; the primary has a `He
 - D: clients connect to a dead endpoint (connection refused / timeout)
 **Indicators:**
 - root: [Step 6] the `PRIMARY` record has no `HealthCheckId` and its alias `EvaluateTargetHealth` is `false`.
-  <!-- match: {"step": 6, "predicate": "contains", "target": "\"EvaluateTargetHealth\": false"} -->
 - s2: [Step 6] `test-dns-answer` still returns the primary endpoint while its health check shifts to `Failure`.
-  <!-- match: {"step": 6, "predicate": "contains", "target": "Failure"} -->
 **Interventions:**
 - **remediation** (root): attach a health check to the primary and enable `EvaluateTargetHealth` on the alias; set `EvaluateTargetHealth=false` on the secondary. Apply with a `change-resource-record-sets` batch.
 

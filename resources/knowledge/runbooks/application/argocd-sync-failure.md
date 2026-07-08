@@ -147,7 +147,6 @@ Expected output: `connectionState.status` of `Successful` confirms repo access. 
 
 **Indicators:**
 - root: [Step 3] `kubectl describe job` shows `BackoffLimitExceeded` or pods in `CrashLoopBackOff`
-  <!-- match: {"step": 3, "predicate": "contains", "target": "BackoffLimitExceeded"} -->
 - s1: [Step 1] `operationState.phase` is `Failed` and `message` references a hook resource name
 
 **Interventions:**
@@ -182,7 +181,6 @@ Expected output: `connectionState.status` of `Successful` confirms repo access. 
 **Indicators:**
 - root: [Step 4] A resource's wave number is higher than (or equal to) a resource that depends on it
 - s1: [Step 2] `message` contains `the server could not find the requested resource` for a custom resource kind
-  <!-- match: {"step": 2, "predicate": "contains", "target": "the server could not find the requested resource"} -->
 
 **Interventions:**
 - **remediation** (root): Update the manifests in Git to assign correct wave annotations — CRDs and Namespaces at wave `-1` or lower, Services and ConfigMaps at wave `0`, Deployments and StatefulSets at wave `1` or higher. Commit the corrected annotations and let ArgoCD sync the updated revision. Rollback: revert the wave annotation commits in Git and trigger a sync.
@@ -219,7 +217,6 @@ Expected output: `connectionState.status` of `Successful` confirms repo access. 
 
 **Indicators:**
 - root: [Step 5] `ignoreDifferences` returns `null` or `[]`
-  <!-- match: {"step": 5, "predicate": "absent", "target": "ignoreDifferences"} -->
 - s1: [Step 5] `argocd app diff` shows only server-defaulted fields such as `spec.replicas`, `metadata.managedFields`, or injected sidecar containers
 
 **Interventions:**
@@ -270,7 +267,6 @@ Expected output: `connectionState.status` of `Successful` confirms repo access. 
 **Indicators:**
 - root: [Step 1] `operationState.phase` is `Failed` and the failing resource is also managed by HPA or another controller
 - s1: [Step 2] `message` contains `metadata.resourceVersion: Invalid value`
-  <!-- match: {"step": 2, "predicate": "contains", "target": "metadata.resourceVersion: Invalid value"} -->
 
 **Interventions:**
 - **remediation** (root): Enable server-side apply so the API server uses field ownership instead of `resourceVersion` for conflict resolution. Rollback: `argocd app set <APP_NAME> --sync-option ServerSideApply=false` and re-sync.
@@ -311,7 +307,6 @@ Expected output: `connectionState.status` of `Successful` confirms repo access. 
 
 **Indicators:**
 - root: [Step 7] `helm template` or `kustomize build` exits non-zero locally
-  <!-- match: {"step": 7, "predicate": "exit_code", "target": 1} -->
 - s1: [Step 6] Controller logs contain `Failed to load target state` or `ComparisonError`
 
 **Interventions:**
@@ -352,7 +347,6 @@ Expected output: `connectionState.status` of `Successful` confirms repo access. 
 
 **Indicators:**
 - root: [Step 7] `connectionState.status` is not `Successful`
-  <!-- match: {"step": 7, "predicate": "contains", "target": "Failed"} -->
 - s1: [Step 6] Controller logs contain `rpc error` or `context deadline exceeded` when referencing the repository
 
 **Interventions:**
@@ -394,7 +388,6 @@ Expected output: `connectionState.status` of `Successful` confirms repo access. 
 **Indicators:**
 - root: [Step 2] Multiple Applications show the same resource in their sync failure list
 - s1: [Step 1] `operationState` message references label conflict or `app.kubernetes.io/instance`
-  <!-- match: {"step": 1, "predicate": "contains", "target": "app.kubernetes.io/instance"} -->
 
 **Interventions:**
 - **remediation** (root): Refactor so each Kubernetes resource is owned by exactly one ArgoCD Application. Move shared resources (Namespaces, CRDs, shared ConfigMaps) to a dedicated `shared-infra` Application and remove them from all but one Application in Git.

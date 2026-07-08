@@ -89,9 +89,7 @@ Expected output: the third number in `start->end->live MB` (the live set) increa
 - D: RSS climbs until OOM and p99 latency rises (Symptom Recognition)
 **Indicators:**
 - root: [Step 3] stacks read `[chan receive, ...]` or `[chan send, ...]` with multi-minute durations at the same application frame
-  <!-- match: {"step": 3, "predicate": "contains", "target": "chan receive"} -->
 - s1: [Step 2] one channel call site (e.g. `runtime.chanrecv`) dominates the aggregated goroutine profile
-  <!-- match: {"step": 2, "predicate": "contains", "target": "runtime.chanrecv"} -->
 - s2: [Step 1] goroutine `total` rises across the two scrapes
 **Interventions:**
 - **remediation** (root): Make the channel's lifecycle complete — buffer it adequately, guarantee a receiver, or have the producer honor a cancellation channel so the send/receive can never block forever.
@@ -123,7 +121,6 @@ Expected output: the third number in `start->end->live MB` (the live set) increa
 **Indicators:**
 - root: [Step 2] aggregated profile concentrates in `net/http.(*persistConn).roundTrip` or a `database/sql` acquire frame
 - s1: [Step 3] stacks show `[IO wait, ...]` or `[select, ...]` at the call site with growing durations
-  <!-- match: {"step": 3, "predicate": "contains", "target": "IO wait"} -->
 - s2: [Step 1] goroutine `total` climbs in step with request rate
 **Interventions:**
 - **remediation** (root): Set an explicit client timeout and thread a request-scoped context through every outbound call so a stalled peer cannot pin the goroutine.
@@ -151,7 +148,6 @@ Expected output: the third number in `start->end->live MB` (the live set) increa
 - D: live heap climbs until OOM and GC pressure raises p99 latency (Symptom Recognition)
 **Indicators:**
 - root: [Step 4] one allocation site (the map insert / cache `Set`) dominates `inuse_space` in the heap top
-  <!-- match: {"step": 4, "predicate": "contains", "target": "inuse_space"} -->
 - s1: [Step 5] the live-heap term in gctrace rises monotonically across GCs while goroutine count stays flat
 - s2: [Step 1] goroutine `total` is roughly stable (distinguishes this from a goroutine leak)
 **Interventions:**
