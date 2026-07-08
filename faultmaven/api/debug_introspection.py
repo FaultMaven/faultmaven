@@ -3,7 +3,7 @@
 Extracted from the ``/debug/cases/{id}/causal-graph`` route so the payload shape
 is unit-testable without booting the app (the route stays a thin wrapper that
 adds I/O + a timestamp). The fm-sre-simulator's chain probe consumes this exact
-shape per turn to validate 2D-hypothesis chains and the runbook Cause matcher.
+shape per turn to validate 2D-hypothesis chains.
 """
 
 from __future__ import annotations
@@ -25,10 +25,8 @@ def build_causal_graph_debug_payload(case: Any) -> dict:
     Pure (no I/O, no clock) so the route can frame it with a timestamp and the
     unit tests can assert the shape directly. Returns the persisted causal DAG
     (nodes/edges), each hypothesis's chain link (``root_node_id`` / ``path``) and
-    its ``rationale`` — the runbook Cause matcher's firing signal, a
-    marker-prefixed rationale ("Instantiated from runbook …") that distinguishes a
-    matcher-seeded hypothesis from an LLM-emitted one — the engine-derived
-    ``cause_state``, and the root-cause conclusion.
+    its ``rationale``, the engine-derived ``cause_state``, and the root-cause
+    conclusion.
     """
     problem_node_id = next(
         (

@@ -46,8 +46,6 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
-    NodeState,
-    NodeType,
 )
 from faultmaven.modules.case.domain.models import CauseState
 

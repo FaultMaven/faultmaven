@@ -1,8 +1,8 @@
 """Cause-Statement match-surface invariants in the backend runbook validator (#545).
 
-The Statement is the load-bearing match surface (per runbook-cause-matching.md
-§2.1); these guard it: no operator-step marker leaking in, and siblings must be
-discriminative. Bias is hard toward WARN — only unambiguous mechanical tells
+The Statement is the load-bearing summary of each Cause (RAG discriminability +
+sibling MECE, per runbook-content-architecture.md §3); these guard it: no
+operator-step marker leaking in, and siblings must be discriminative. Bias is hard toward WARN — only unambiguous mechanical tells
 block (verified never to fire on the 91 shipped runbooks).
 """
 

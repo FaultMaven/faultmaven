@@ -1,11 +1,6 @@
 """Render-time surfacing of causal evidence-needs (pure view, writes nothing).
 
-The engine keeps every causal ``EvidenceNeed`` PENDING in the pool; what the
-prompt SHOWS each turn is a capped, rotating window over that pool. Capping at
-render — not emission — is what prevents the demand-side deadlock (#604): an
-existence cap lets a few unanswerable asks lock the slots forever; a surface
-cap rotates past them, so an answerable discriminator is never permanently
-hidden behind unanswerable ones.
+See ``select_surfaced_causal_needs`` for the full cap-and-rotate contract (#604).
 """
 
 from __future__ import annotations
@@ -22,17 +17,9 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case, EvidenceNeed
 
 
-# SURFACE cap (not an existence cap): at most this many CAUSAL_VERIFICATION needs are
-# SHOWN at once (``select_surfaced_causal_needs``). All needs stay PENDING in the pool;
-# capping at render — not emission — keeps the full pool available so the surfaced window
-# can rotate, which is what prevents the demand-side deadlock (#604): an existence cap
-# lets 3 unanswerable asks lock the slots forever; a surface cap rotates past them.
+# SURFACE cap (not an existence cap): at most this many CAUSAL_VERIFICATION
+# needs are SHOWN at once — see ``select_surfaced_causal_needs``.
 _SURFACED_CAUSAL_CAP = 3
-
-# Advance the surfaced window by one full page each this-many turns-of-non-progress
-# (``case.turns_without_progress``). See ``select_surfaced_causal_needs`` for the paged
-# coverage guarantee this provides and its (exhaustion-horizon) bound.
-_ROTATE_EVERY_K = 1
 
 
 def select_surfaced_causal_needs(case: "Case") -> "list[EvidenceNeed]":
@@ -87,6 +74,6 @@ def select_surfaced_causal_needs(case: "Case") -> "list[EvidenceNeed]":
     # Paged, non-overlapping rotation: one CAP-sized page per non-progress turn, so the
     # pool is covered in ceil(pool_size / CAP) turns — fast enough to sweep a realistic
     # pool before the exhaustion horizon, unlike a 1-rank slide.
-    page = case.turns_without_progress // _ROTATE_EVERY_K
+    page = case.turns_without_progress  # one full page per non-progress turn
     offset = (page * _SURFACED_CAUSAL_CAP) % pool_size
     return [ranked[(offset + i) % pool_size] for i in range(_SURFACED_CAUSAL_CAP)]

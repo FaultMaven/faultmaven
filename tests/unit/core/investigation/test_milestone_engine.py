@@ -1734,7 +1734,7 @@ class TestReadinessAssessments:
                 commands=["kubectl edit configmap"],
             )
         ]
-        # Cause must be runbook-grounded to be harvestable at all (#590 A1); the
+        # Cause must be GROUNDED (deductively) to be harvestable at all (#590 A1); the
         # enrichment verdict then turns on the thin solution (no mitigation, no
         # verification method).
         _ground_root_deductively(case)
@@ -1939,7 +1939,7 @@ class TestRunbookSuggestion:
                 collected_at_turn=1,
             )
         ]
-        # A suggestible cause must be runbook-grounded (#590 A1).
+        # A suggestible cause must be GROUNDED (deductively) (#590 A1).
         _ground_root_deductively(case)
 
         result = await evaluate_runbook_suggestion(case, runbook_kb=None)
@@ -1978,7 +1978,7 @@ class TestRunbookSuggestion:
         )
         _make_resolution_ready(case)
         case.solutions[0].commands = ["kubectl edit configmap"]
-        # A suggestible cause must be runbook-grounded (#590 A1).
+        # A suggestible cause must be GROUNDED (deductively) (#590 A1).
         _ground_root_deductively(case)
 
         # Mock runbook_kb that returns a high-similarity match

@@ -652,8 +652,8 @@ class TestReconcileVectors:
 
 
 # ---------------------------------------------------------------------------
-# Runbook-cause matcher, increment 1: persist the per-Cause graph record
-# (see docs/architecture/investigation-engine/runbook-cause-matcher-implementation.md)
+# Per-Cause graph record persistence (the app half of the cross-repo pack
+# contract — see tests/integration/modules/knowledge/test_runbook_causes_contract.py)
 # ---------------------------------------------------------------------------
 
 

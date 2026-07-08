@@ -163,8 +163,7 @@ class HypothesisManager:
 
         ``initial_likelihood`` is capped at ``NEW_HYPOTHESIS_MAX_PRIOR`` (below
         the IDENTIFIED gate) — a new hypothesis is a prior, not a conclusion;
-        evidence/validation earns the climb. The runbook matcher pre-caps to
-        ``_MATCHER_MAX_PRIOR`` (same bound), so its values pass through unchanged.
+        evidence/validation earns the climb.
         """
         capped_likelihood = min(max(0.0, initial_likelihood), NEW_HYPOTHESIS_MAX_PRIOR)
         if capped_likelihood < initial_likelihood:
