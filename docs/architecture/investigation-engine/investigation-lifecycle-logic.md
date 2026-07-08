@@ -351,23 +351,65 @@ chance to see what was accomplished before committing to an irreversible action.
 
 **needs_info flag for RESOLVED:** When resolution readiness returns `NEEDS_INFO`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, the system re-evaluates readiness via `assess_resolution_readiness()`:
 
-- **READY** → clears `needs_info`, overrides LLM response with confirmation prompt
+- **READY** → clears `needs_info`, appends the confirmation prompt to the LLM response
 - **Still not ready** → cancels pending transition, suggests Close instead (no re-ask loop — the user was already asked once and couldn't provide the info). The resulting CLOSE proposal is terminal-clean: the root-cause analysis and full history are preserved.
+
+**Gate prose composes; gate suggestions replace.** On every gate-override turn
+(needs-info first pass, the READY/suggest-Close re-evaluations above, RCA-infeasible
+closure), the engine's canned gate message is **appended below the LLM's
+`agent_response`** via `_prose_with_gate_notice` — never substituted for it. The LLM's
+`state_updates` on such turns are applied and persisted, so replacing the prose made the
+transcript contradict the case record: in #656 turns 10-11 the model's configmap
+analyses created hypotheses and solutions while the user saw only the canned resolution
+ask ("did you see anything wrong?" — it had, twice, invisibly). Follow-up *suggestions*
+on gate turns remain engine-owned **replacements** — that is the separate
+suggestion-ownership decision (#428's "augment" was reverted by #430) and is
+deliberately unchanged.
 
 > **Loop-bound (`resolution_suggest_close` guard).** The "suggests Close instead" pivot above is produced by the handshake block early in `_check_automatic_transitions`. But the user typically re-confirms ("yes, it's resolved") and the LLM dutifully re-emits `proposed_transition=resolved` on the **same** turn — and the later LLM-proposal block in the same method calls `propose_transition`, which **replaces `pending_transition` wholesale**, clobbering the CLOSE pivot. Unguarded, that re-arms RESOLVED+`needs_info` every turn → the gate loops to max_turns ([project-resolution-gate-stuck-loop]; Run 36). The invariant is enforced by a guard: when the handshake block has set `metadata["resolution_suggest_close"]` this turn, the LLM's same-turn `proposed_transition` is **ignored** so it cannot overwrite the escape. This is what makes "no re-ask loop" actually hold — independent of *why* the case is in resolution `NEEDS_INFO` (instant/index resolution, mitigation-first, or any desync that leaves 0 `Solution` records).
 >
 > **Gate strictness — absence-driven.** `assess_resolution_readiness` gates RESOLVED on a `causal_absence_evidence` row (`_has_causal_absence`): the root cause is confirmed *eliminated*, which is the only failure-proof, non-circular "the fix worked" signal. That row alone is sufficient — a separate `Solution` record is for documentation quality (and the higher runbook bar), not a resolution gate; an out-of-band fix the user reports verbally yields `causal_absence_evidence` (`source_type=user_description`) with no `solutions_to_add` and still resolves. A case that never confirms the cause is gone — stabilized, deferred, or symptom-only relief (`symptom_absence_evidence`) — converges to CLOSE instead. (This is the settled end-state of the [project-resolution-gate-stuck-loop] sequencing: the success flow now emits absence evidence on confirmed resolution and the gate keys on it. The earlier gate, which required a `Solution` record, produced the documented stuck-loop — it refused a clear "yes, it's resolved" and kept demanding a "documented solution" the user did not have, then closed.)
 
-**Pending transition confirmation — all paths deterministic:** When a `pending_transition`
-exists (not `needs_info`), the user's response is handled without LLM involvement:
+**Pending transition confirmation — deterministic answers, escape lane for everything
+else:** When a `pending_transition` exists (not `needs_info`), the user's response is
+classified before any LLM call:
 
-- **Clear yes** (pattern match or intent metadata) → execute transition
-- **Clear no** (pattern match or intent metadata) → cancel transition, acknowledge
-- **Anything else** (ambiguous, long message, unrelated question) → re-present the
-  confirmation with DECIDE suggestions (clickable Yes/No with intent metadata)
+- **Bare yes** (word-boundary token match or intent metadata) → execute transition.
+  A typed confirmation must be *bare*: tokens match on word boundaries
+  ("yesterday…" is not "yes"), and a message carrying a question mark or a
+  contrastive " but " ("ok but what is the root cause?") is substantive input, not
+  consent — it takes the escape lane below instead of executing a terminal
+  transition
+- **Bare no** (word-boundary token match or intent metadata, below the substantive
+  bound) → cancel transition, acknowledge deterministically ("note…"/"stopped…" do
+  not read as "no"/"stop")
+- **Decline carrying substance** (decline token followed by data, a question, a
+  redirection) → cancel transition, then process the message as a normal turn so
+  its content is not lost
+- **Short question-free ambiguous reply** ("hmm maybe") → re-present the
+  confirmation with DECIDE suggestions (clickable Yes/No with intent metadata),
+  **at most once** per proposal (`pending_transition["re_presented"]`)
+- **Blank input** (whitespace-only slips past the route's empty-payload guard) →
+  re-present deterministically; never withdrawn to an LLM turn, and it does not
+  consume the re-present allowance
+- **Anything else — a substantive message (long, or containing a question), or any
+  second non-answer** → the message is *not an answer to the gate*: the proposal is
+  **withdrawn** (`cancel_pending_transition`) and the message processed as a normal
+  investigation turn. The engine can always re-propose later from fresher state.
 
-No message falls through to the LLM tool loop when a `pending_transition` exists. This
-prevents crashes from the LLM failing to produce tool calls on short ambiguous messages.
+The escape lane is load-bearing for NO-COLLAPSE: the earlier "re-present on anything
+else" rule held the gate against substantive typed input indefinitely — no LLM call, no
+state change, identical canned reply every turn (#656, `case_5db5417fe445` turns 12-13:
+"I refuse to do that. you must continue to investigate" and "what is the root cause?"
+were both swallowed). And the bare-confirmation rule is its confirm-side mirror: without
+it, a confirm-prefixed substantive message ("ok but what is the root cause?") did not
+merely swallow the input — it *executed* the terminal transition on it. Only short,
+question-free, first-time mumbles are still answered with the cheap re-present; nothing
+substantive is ever consumed by the gate. The short-message re-present also preserves
+the original motivation of the deterministic path — not sending a bare "hmm" through
+the LLM tool loop. Residual seam (Phase-1 scope): the IntentResolver's LLM classifier
+tier can map typed text to the Yes suggestion without a substance guard; the
+deterministic tiers and pattern matchers above carry the guarantee today.
 
 **Repeated status_transition intent:** If a user clicks the same dropdown option again
 after the agent already proposed the transition, this is treated as an implicit
