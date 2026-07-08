@@ -362,15 +362,21 @@ predicted state. Links backed by weaker categories (e.g. `SYMPTOM_EVIDENCE`)
 inform the narrative but never validate a node.
 
 **Restatement guard (ROOT-only, all validation lanes).** However well
-supported, a ROOT whose statement *restates the problem anchor* (the PROBLEM
-node's statement or the verified symptom statement, scored against the guard's
-own `ROOT_RESTATEMENT_BLOCK_THRESHOLD` with a shared-token floor) never
-becomes a validated conclusion. The symptom dressed up as a cause carries no
-explanatory depth, and the LLM labels its own evidence, so a restating root +
-one self-labeled `CAUSAL_EVIDENCE` link is exactly the shape of a false
-conclusion (#656 turn 6: a disjunction of two untested hypotheses restating
-the symptom validated off one link and minted a 0.9 "verified" conclusion).
-The guard has one predicate and three enforcement points:
+supported, a ROOT whose statement *restates the case frame* — carries less
+than `ROOT_NOVELTY_MIN_FRACTION` novel content tokens beyond the problem
+anchors (PROBLEM node statement, verified symptom) and the OTHER standing
+hypotheses' statements — never becomes a validated conclusion. The symptom
+dressed up as a cause carries no explanatory depth, and the LLM labels its own
+evidence, so a restating root + one self-labeled `CAUSAL_EVIDENCE` link is
+exactly the shape of a false conclusion (#656 turn 6: a disjunction of the
+case's two untested hypotheses restating the symptom validated off one link
+and minted a 0.9 "verified" conclusion — every token of that root already
+lived in the case frame). Novelty was chosen over lexical similarity by
+calibration on the shipped corpus (`test_restatement_guard_calibration` pins
+it): similarity blocked 4.5–5.9% of real expert mechanism statements and
+caught the incident with zero margin; novelty blocks 0% of them and catches
+the incident at 0.11 vs a 0.3 bar. The guard has one predicate
+(`root_restates_case_frame`) and three enforcement points:
 
 - **Empirical lane** (`derive_node_states`): a restating ROOT that would
   otherwise validate holds at INCONCLUSIVE — a live candidate whose statement
@@ -385,14 +391,19 @@ The guard has one predicate and three enforcement points:
   clears an engine-authored conclusion whose root subsequently demotes.
 
 The guard is deliberately ROOT-scoped — the rung(s) adjacent to `D`
-legitimately paraphrase the failure mode as the ladder converges. Its
-threshold is deliberately NOT the orphan-reattach `RESTATEMENT_STRONG` knob:
-the two checks have opposite error economics, so each is tuned independently.
+legitimately paraphrase the failure mode as the ladder converges — and a
+root's OWN hypothesis is excluded from the frame (a chain root legitimately
+mirrors its hypothesis statement). Its bar is deliberately NOT the
+orphan-reattach `RESTATEMENT_STRONG` knob: the two checks have opposite error
+economics, so each is tuned independently.
 
-*Known limit (by design):* the check is lexical — a synonym paraphrase of the
-symptom scores ~0 and passes. The guard is one layer; the semantic layers
-(multi-support validation, assurance-grade caps) are tracked on #656. A
-near-zero counter therefore does not prove the failure class closed.
+*Known limits (by design):* token novelty is lexical — a synonym paraphrase
+reads as novel and passes; and a disjunction root in a case with no standing
+hypotheses carries novel tokens and passes (arbitrating a multi-cause root
+against MECE siblings is a separate concern). The guard is one layer; the
+semantic layers (multi-support validation, assurance-grade caps, MECE
+arbitration) are tracked on #656. A near-zero counter therefore does not
+prove the failure class closed.
 
 *Rejected alternative:* a second grounding arm — SUPPORTS links stamped
 `runbook` provenance by a deterministic runbook-cause-matcher evaluating

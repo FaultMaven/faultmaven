@@ -462,7 +462,19 @@ def _problem_node() -> CausalNode:
     return _node(_nid(0xD0), node_type=NodeType.PROBLEM)
 
 
-def _anchored_case(root_statement: str, *, node_type=NodeType.ROOT):
+def _hyp(statement: str, *, root_node_id=None) -> Hypothesis:
+    return Hypothesis(
+        statement=statement,
+        category=HypothesisCategory.OTHER,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="posited",
+        root_node_id=root_node_id,
+        generated_at_turn=1,
+    )
+
+
+def _anchored_case(root_statement: str, *, node_type=NodeType.ROOT, hyps=None):
     """A case with a PROBLEM anchor D and one supported node under test."""
     d = _problem_node()
     object.__setattr__(d, "statement", _D_STATEMENT)
@@ -473,20 +485,63 @@ def _anchored_case(root_statement: str, *, node_type=NodeType.ROOT):
         links=[_link("ev_causal", EvidenceStance.SUPPORTS)],
     )
     object.__setattr__(n, "statement", root_statement)
-    return _case([d, n], evidence=[ev]), n
+    return _case([d, n], evidence=[ev], hyps=hyps or []), n
+
+
+# The #656 turn-6 case frame: the two still-ACTIVE hypotheses whose statements
+# the disjunction root OR-ed together.
+_INCIDENT_HYPS = [
+    _hyp("Transient network congestion"),
+    _hyp("Resource contention on the backend"),
+]
 
 
 def test_restating_root_holds_at_inconclusive():
-    # The #656 turn-6 shape: the "root cause" is a disjunction restating the
-    # symptom. One self-labeled causal support must NOT validate it — it holds
-    # at INCONCLUSIVE (a live candidate needing a real mechanism).
+    # The #656 turn-6 shape: the "root cause" is a disjunction of the case's
+    # two still-ACTIVE hypotheses restating the symptom — every token already
+    # lives in the case frame (novelty ~0.11). One self-labeled causal support
+    # must NOT validate it — it holds at INCONCLUSIVE (a live candidate
+    # needing a real mechanism).
+    case, root = _anchored_case(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors",
+        hyps=_INCIDENT_HYPS,
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert root.validation_method == ValidationMethod.NONE
+
+
+def test_novel_disjunction_without_hypotheses_is_not_blocked():
+    # The SAME disjunction root in a case with NO standing hypotheses carries
+    # genuinely novel tokens (congestion/contention are posited causes the
+    # frame doesn't contain), so the guard does not block it. The guard blocks
+    # restatement of the case frame, not disjunction per se — arbitration of a
+    # multi-cause root against its MECE siblings is a separate concern (#656).
     case, root = _anchored_case(
         "Transient network congestion or resource contention causing "
         "intermittent 502 errors"
     )
     derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_verbatim_symptom_as_cause_blocked_even_without_hypotheses():
+    # Zero-novelty restatement needs no hypothesis context to be blocked.
+    case, root = _anchored_case("Intermittent 502 errors under load")
+    derive_node_states(case)
     assert root.node_state == NodeState.INCONCLUSIVE
-    assert root.validation_method == ValidationMethod.NONE
+
+
+def test_terse_subset_mechanism_passes():
+    # Review-flagged false-positive class under the old similarity scoring: a
+    # terse root fully lexically contained in a verbose anchor. Under the
+    # novelty bar it passes when it carries any genuinely novel content.
+    case, root = _anchored_case(
+        "Upstream keepalive pool exhaustion",  # 'keepalive'/'pool'/'exhaustion' novel
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
 
 
 def test_mechanism_root_validates_past_the_guard():
@@ -539,7 +594,8 @@ def test_restatement_block_counted_once_per_event():
 
     case, root = _anchored_case(
         "Transient network congestion or resource contention causing "
-        "intermittent 502 errors"
+        "intermittent 502 errors",
+        hyps=_INCIDENT_HYPS,
     )
     with patch(
         "faultmaven.core.investigation.causal_graph."

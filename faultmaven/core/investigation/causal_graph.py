@@ -264,66 +264,70 @@ def _problem_anchor_statements(case: Case) -> list[str]:
     return anchors
 
 
-def _restates_tokens(statement_tokens: set, anchor_tokens: set) -> bool:
-    """Token-set core of the §7.1 restatement guard: max of Jaccard and the two
-    containments (same shape as ``restatement_score``) against the guard's OWN
-    threshold, plus a shared-token floor so a 1–2 token containment artifact
-    cannot trip it. Operates on pre-tokenized sets so callers tokenize each
-    string exactly once."""
-    inter = len(statement_tokens & anchor_tokens)
-    if inter < _RESTATEMENT_MIN_SHARED_TOKENS:
-        return False
-    score = max(
-        inter / len(statement_tokens | anchor_tokens),
-        inter / len(statement_tokens),
-        inter / len(anchor_tokens),
-    )
-    return score >= ROOT_RESTATEMENT_BLOCK_THRESHOLD
+def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
+    """§7.1 restatement guard predicate: a ROOT whose statement carries
+    (almost) no content beyond the case's existing frame — the problem anchors
+    plus the OTHER standing hypotheses' statements — is a restatement, not an
+    explanation, and no validation lane may conclude on it. Measured as the
+    NOVEL-TOKEN FRACTION: |root tokens − frame tokens| / |root tokens| must
+    reach ``ROOT_NOVELTY_MIN_FRACTION`` for the root to be validatable.
 
-
-def root_restates_problem(node: "CausalNode", anchors: list[str]) -> bool:
-    """§7.1 restatement guard predicate: a ROOT whose statement restates the
-    problem anchor is the symptom dressed up as a cause — no explanatory depth
-    — so no validation lane may conclude on it (see §7.1 for the full rule and
-    its known limits: the check is lexical, one layer of a layered defense).
+    Why novelty (calibrated on the shipped 91-runbook corpus, see
+    ``test_restatement_guard_calibration``): a lexical-similarity threshold
+    blocked 4.5–5.9% of real expert-authored mechanism statements (a long
+    mechanism that MENTIONS the symptom fully contains a short anchor) while
+    catching the #656 incident root with zero margin. Novelty separates the
+    two cleanly: every corpus mechanism scores ≥0.4 novel (0% false
+    positives), verbatim symptom-as-cause scores ~0, and the incident's
+    disjunction root — whose every token came from the symptom + the two
+    still-ACTIVE hypotheses it OR-ed together — scores ~0.11 against the case
+    frame. Hypotheses rooted at the node itself are EXCLUDED from the frame
+    (a chain root legitimately mirrors its own hypothesis statement).
 
     ROOT-only by design: the rung(s) adjacent to ``D`` legitimately paraphrase
     the failure mode (the ladder converges on the problem); only the ROOT is
-    claimed as the CAUSE.
+    claimed as the CAUSE. Known limit (by design): token novelty is lexical —
+    a synonym paraphrase reads as novel and passes; this is one layer of the
+    #656 layered defense, and a near-zero block counter does not prove the
+    failure class closed.
     """
     if node.node_type != NodeType.ROOT or not node.statement:
         return False
     statement_tokens = _content_tokens(node.statement)
     if not statement_tokens:
         return False
-    return any(
-        _restates_tokens(statement_tokens, anchor_tokens)
-        for anchor_tokens in (_content_tokens(a) for a in anchors)
-        if anchor_tokens
-    )
+    frame = _case_frame_tokens(case, exclude_root_node_id=node.node_id)
+    if not frame:
+        return False  # no frame to restate — the guard is inert
+    novel = len(statement_tokens - frame) / len(statement_tokens)
+    return novel < ROOT_NOVELTY_MIN_FRACTION
+
+
+def _case_frame_tokens(case: Case, *, exclude_root_node_id: str) -> set:
+    """The token frame a ROOT must add novelty over: the problem anchors plus
+    every OTHER standing hypothesis's statement (the hypothesis rooted at the
+    node under test is excluded — a root mirrors its own hypothesis)."""
+    frame: set = set()
+    for anchor in _problem_anchor_statements(case):
+        frame |= _content_tokens(anchor)
+    for h in _standing_hypotheses(case):
+        if getattr(h, "root_node_id", None) == exclude_root_node_id:
+            continue
+        if h.statement:
+            frame |= _content_tokens(h.statement)
+    return frame
 
 
 def _restating_root_ids(case: Case) -> set:
-    """Precompute the ROOT node ids whose statements restate the problem anchor.
-    Statements and anchors are immutable within one derive call, so this runs
-    ONCE per derive (each string tokenized once) and the fixpoint loop tests set
-    membership instead of re-scoring per pass."""
-    anchors = _problem_anchor_statements(case)
-    if not anchors:
-        return set()
-    anchor_token_sets = [t for t in (_content_tokens(a) for a in anchors) if t]
-    if not anchor_token_sets:
-        return set()
-    restating: set = set()
-    for node in case.causal_nodes.values():
-        if node.node_type != NodeType.ROOT or not node.statement:
-            continue
-        statement_tokens = _content_tokens(node.statement)
-        if not statement_tokens:
-            continue
-        if any(_restates_tokens(statement_tokens, at) for at in anchor_token_sets):
-            restating.add(node.node_id)
-    return restating
+    """Precompute the ROOT node ids blocked by the restatement guard.
+    Statements, anchors, and hypotheses are immutable within one derive call,
+    so this runs ONCE per derive and the fixpoint loop tests set membership
+    instead of re-scoring per pass."""
+    return {
+        node.node_id
+        for node in case.causal_nodes.values()
+        if node.node_type == NodeType.ROOT and root_restates_case_frame(node, case)
+    }
 
 
 def derive_node_states(case: Case) -> bool:
@@ -352,9 +356,9 @@ def derive_node_states(case: Case) -> bool:
     - **VALIDATED** — not refuted, has at least one causally-grounding SUPPORTS
       link (CAUSAL_EVIDENCE-backed), is net-supporting (``supports > refutes``),
       every AND-set feeding it is fully VALIDATED (M7 proof, strict), AND — for a
-      ROOT — its statement does not restate the problem anchor
-      (``root_restates_problem``, §7.1 restatement guard: the symptom dressed as
-      a cause holds at INCONCLUSIVE instead). EMPIRICAL grade;
+      ROOT — its statement carries novel content beyond the case frame
+      (``root_restates_case_frame``, §7.1 restatement guard: the symptom dressed
+      as a cause holds at INCONCLUSIVE instead). EMPIRICAL grade;
       a validated ROOT is marked ``actionable`` (M1). Method/actionable/reason
       are kept mutually consistent so the node satisfies its M1/M4/refutation
       model-validators on reload (``CausalNode(**...)``; ``validate_assignment``
@@ -1030,16 +1034,15 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
         ):
             return False  # the engine mirror still names the grounding root
         # else: stale engine mirror — refresh from the current validated root.
-    anchors = _problem_anchor_statements(case)
     hyp = next(
         (
             h
             for h in _standing_hypotheses(case)
             # Restatement guard (defense-in-depth with derive_node_states): never
-            # mint a conclusion whose root restates the problem anchor, whatever
+            # mint a conclusion whose root restates the case frame, whatever
             # lane validated it — a symptom-as-cause must not become RCC text.
             if is_chain_root_validated(h, case.causal_nodes)
-            and not root_restates_problem(case.causal_nodes[h.root_node_id], anchors)
+            and not root_restates_case_frame(case.causal_nodes[h.root_node_id], case)
         ),
         None,
     )
@@ -1223,19 +1226,15 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
 RESTATEMENT_STRONG = 0.6
 RESTATEMENT_AMBIGUOUS = 0.4
 
-# §7.1 restatement guard's OWN validation-blocking bar. Deliberately a separate
-# knob from RESTATEMENT_STRONG (T1 orphan re-attach): the two have opposite
-# error economics — a wrong re-attach is recoverable via the LLM nudge, a wrong
-# validation mints a false conclusion — so tuning one must never silently move
-# the other. Initialized equal; the #656 incident root scores exactly 0.60
-# against the plain symptom anchor (zero margin), so calibration sweeps this
-# constant, not the re-attach one.
-ROOT_RESTATEMENT_BLOCK_THRESHOLD = 0.6
-
-# Shared-token floor for the guard (mirrors the re-attach floor's rationale —
-# a 1–2 token containment artifact must not trip a validation block — but is
-# its own knob for the same economics reason as the threshold above).
-_RESTATEMENT_MIN_SHARED_TOKENS = 2
+# §7.1 restatement guard's validation bar: the minimum NOVEL-token fraction a
+# ROOT statement must carry beyond the case frame (problem anchors + other
+# standing hypotheses) to be validatable. Deliberately its own knob, decoupled
+# from the T1 orphan-reattach threshold (opposite error economics — a wrong
+# re-attach is recoverable via the LLM nudge; a wrong validation mints a false
+# conclusion). Calibrated on the shipped corpus (test_restatement_guard_
+# calibration): corpus mechanisms ≥0.4 novel (0% FP), verbatim restatement ~0,
+# the #656 incident root 0.11 vs its case frame.
+ROOT_NOVELTY_MIN_FRACTION = 0.3
 
 # Function/filler words dropped before comparing two statements. This is the
 # GENERAL base list; the sim analyzer may EXTEND it with scenario-specific noise

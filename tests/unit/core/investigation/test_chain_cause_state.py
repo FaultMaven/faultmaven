@@ -739,7 +739,7 @@ def test_synthesize_rcc_refuses_a_restating_root():
     the problem anchor must never be minted into a conclusion — the symptom
     dressed as a cause must not become RCC text."""
     case, root, hyp = _chain_case()
-    object.__setattr__(root, "statement", "customer orders are failing")
+    object.__setattr__(root, "statement", "orders failing")
     object.__setattr__(root, "node_state", NodeState.VALIDATED)
     object.__setattr__(root, "validation_method", ValidationMethod.DEDUCTIVE)
     assert synthesize_rcc_from_validated_root(case) is False
