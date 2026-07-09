@@ -21,6 +21,24 @@ That's the complete bare statement. The rule for audience qualifiers is: do not 
 ### Extended description (when more context is needed)
 > FaultMaven is an AI-powered troubleshooting copilot. It correlates live telemetry with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation.
 
+### Product character — the four traits
+> **FaultMaven works a problem the way a seasoned engineer does — and never forgets what it learns.**
+
+1. **Goal-driven** — it works toward a solution, not just a reply.
+2. **Methodical** — it follows a proven diagnostic method; it doesn't jump to conclusions.
+3. **Evidence-based** — every step is grounded in your data, and it shows its work.
+4. **Self-learning** — every problem it solves becomes knowledge it reuses.
+
+Use the traits wherever a surface explains *how* FaultMaven behaves (README opening, About blurbs, hero copy). Keep the trait names and their order; each surface may phrase the glosses in its own voice. The traits complement §2's value propositions — traits say how it behaves, value props say what you get (Evidence-based ↔ evidence-centric investigation; Self-learning ↔ knowledge flywheel).
+
+### One-sentence version (for tight spots)
+> FaultMaven is a troubleshooting copilot that's goal-driven, methodical, evidence-based, and self-learning — it reasons a problem to its solution the way a seasoned engineer would, and gets sharper every time it does.
+
+### Approved taglines
+- *Built to solve, not to chat.*
+- *Methodical. Evidence-based. Better every time.*
+- *Troubleshoots like an engineer. Learns like a team.*
+
 ---
 
 ## 2. Value Propositions
