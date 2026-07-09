@@ -42,6 +42,8 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CauseState,
     EvidenceCategory,
+    HypothesisState,
+    NodeState,
     VerificationStatus,
 )
 
@@ -458,6 +460,21 @@ def _execute_resolved_transition(case: Case, user_id: str):
         case.progress.verification_status = assess_verification_status(
             case, grade=case.progress.cause_assurance
         )
+        # Same coherence rule for cause_state: the last in-flight recompute ran
+        # BEFORE the stamp, so a count-held root the confirmation just
+        # validated (INV-29) would otherwise freeze the terminal blob at
+        # CANDIDATES beside a CONFIRMED grade. Mirror the §9.2 derivation
+        # locally (a standing hypothesis whose chain root is VALIDATED —
+        # kept literal here for the same import-cycle reason as
+        # cause_assurance._STANDING_HYP_STATES).
+        if any(
+            h.state in (HypothesisState.ACTIVE, HypothesisState.VALIDATED)
+            and h.root_node_id
+            and getattr(case.causal_nodes.get(h.root_node_id), "node_state", None)
+            == NodeState.VALIDATED
+            for h in case.hypotheses.values()
+        ):
+            case.progress.cause_state = CauseState.IDENTIFIED
 
     now = datetime.now(UTC)
 

@@ -1553,3 +1553,6 @@ def test_resolution_execution_confirms_count_held_root_end_to_end():
     assert case.state == CaseState.RESOLVED
     assert root.node_state == NodeState.VALIDATED
     assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    # Terminal-blob coherence: the confirmed cause reads IDENTIFIED, not the
+    # stale pre-stamp CANDIDATES (observed live in the P1.3 gate run 1).
+    assert case.progress.cause_state == CauseState.IDENTIFIED
