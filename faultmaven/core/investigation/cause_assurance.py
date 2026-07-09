@@ -28,8 +28,10 @@ from typing import TYPE_CHECKING
 
 from faultmaven.modules.case.contracts import (
     CauseAssuranceGrade,
+    ConfidenceLevel,
     EvidenceCategory,
     EvidenceStance,
+    NodeEvidenceLink,
     NodeState,
     NodeType,
 )
@@ -39,6 +41,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CauseAssuranceGrade",
+    "conclusion_overclaims",
+    "confirm_root_from_resolution_absence",
     "evidence_category_map",
     "grade_cause_assurance",
     "root_counterfactually_confirmed",
@@ -79,6 +83,93 @@ def root_counterfactually_confirmed(
         and evidence_category_by_id.get(link.evidence_id)
         == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
         for link in node.evidence_links
+    )
+
+
+_CONFIRMATION_REASON = (
+    "engine: user-confirmed resolution — the recorded causal-absence outcome "
+    "bears on the sole standing validated root (M2 gone⇒gone)"
+)
+
+
+def confirm_root_from_resolution_absence(case: "Case") -> bool:
+    """M2 confirm-side twin of the failed-fix refute stamp: make the
+    ``CONFIRMED`` grade reachable from the live flow — called at RESOLVED
+    **transition execution** (after the user's explicit confirmation), never
+    on the mere appearance of an absence row.
+
+    The prompt's verify-turn contract records the resolution-confirming
+    ``causal_absence_evidence`` row as a STAND-ALONE audit row ("do NOT link
+    it"), and no LLM path links absence evidence to a causal node — so without
+    an engine stamp the counterfactual confirmation the grade requires would
+    never exist, silently decommissioning the harvest gate. But the row alone
+    is an LLM self-claim: a premature "pods are stable" absence row emitted
+    mid-rollout (observed live in the gate sims) must not confirm anything.
+    The trigger is therefore the RESOLVED handshake — the user's explicit
+    consent — which is strictly stronger evidence than the row's existence.
+
+    Deliberately conservative (NO INCORRECT CONCLUSION):
+
+    - Only at resolution execution (caller: ``_execute_resolved_transition``).
+    - Only when exactly ONE standing validated ROOT exists. With several (an
+      unarbitrated MECE violation) the engine never guesses which cause the
+      fix removed — the case stays MECHANISTIC pending arbitration.
+    - Only absence rows with NO existing node link anywhere in the graph
+      qualify: a REFUTES-linked absence row is a failed-fix disconfirmation
+      (M6) and must never flip to confirmation; an already-linked row's
+      bearing is already decided.
+    - Idempotent: a root already counterfactually confirmed is left alone.
+
+    Returns True if it attached a link. The caller re-persists the grade
+    afterwards so the terminal blob reflects the confirmation.
+    """
+    validated_roots = [
+        n
+        for n in case.causal_nodes.values()
+        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
+    ]
+    if len(validated_roots) != 1:
+        return False
+    root = validated_roots[0]
+    cat_by_id = evidence_category_map(case)
+    if root_counterfactually_confirmed(root, cat_by_id):
+        return False
+    linked_ids = {
+        link.evidence_id
+        for node in case.causal_nodes.values()
+        for link in node.evidence_links
+    }
+    absence_row = next(
+        (
+            e
+            for e in reversed(case.evidence)
+            if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            and e.evidence_id not in linked_ids
+        ),
+        None,
+    )
+    if absence_row is None:
+        return False
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=absence_row.evidence_id,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning=_CONFIRMATION_REASON,
+            linked_at_turn=case.current_turn,
+        )
+    )
+    return True
+
+
+def conclusion_overclaims(rcc, grade: CauseAssuranceGrade) -> bool:
+    """The M2 over-claim seam predicate — ONE definition shared by the WARNING
+    in the per-turn recompute, the ``seam_overclaim`` flag in the DEBUG
+    grounding trace, and the terminal re-grade, so the prod signal and the
+    greppable trace can never disagree about the same turn."""
+    return (
+        rcc is not None
+        and rcc.confidence_level == ConfidenceLevel.VERIFIED
+        and grade != CauseAssuranceGrade.CONFIRMED
     )
 
 

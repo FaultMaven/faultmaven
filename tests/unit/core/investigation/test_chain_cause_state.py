@@ -987,8 +987,9 @@ def test_no_overclaim_warning_for_grade_consistent_mirror(caplog):
 
 
 # ---------------------------------------------------------------------------
-# M2 confirm-side stamp: the engine makes CONFIRMED reachable from the live flow
-# (the prompt records the resolution causal_absence row UNLINKED by contract)
+# M2 confirm-side stamp: fires ONLY at RESOLVED execution (user consent) — the
+# prompt records the resolution causal_absence row UNLINKED by contract, but a
+# row's mere appearance is an LLM self-claim and must not confirm anything
 # ---------------------------------------------------------------------------
 
 
@@ -1000,10 +1001,11 @@ def _standalone_absence(case, label="ev_standalone_absence"):
     return row
 
 
-def test_stamp_confirms_sole_validated_root_from_standalone_absence():
-    """Happy path: fix confirmed → standalone causal_absence row recorded →
-    the engine attaches the SUPPORTS link, and the same recompute reads
-    CONFIRMED with a VERIFIED mirror."""
+def test_recompute_never_confirms_from_a_standalone_absence_row():
+    """Sim-gate regression (run 1): the LLM emitted a premature 'it's stable
+    now' causal_absence row mid-rollout while the problem persisted. The
+    per-turn recompute must NOT confirm from the row's mere appearance — the
+    grade holds at MECHANISTIC until the user confirms resolution."""
     from faultmaven.modules.case.contracts import CauseAssuranceGrade
 
     case, root, hyp = _chain_case()
@@ -1011,18 +1013,36 @@ def test_stamp_confirms_sole_validated_root_from_standalone_absence():
     assert case.progress.cause_assurance == CauseAssuranceGrade.MECHANISTIC
     _standalone_absence(case)
     _recompute_assessment_state(case)
-    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
-    assert case.root_cause_conclusion.confidence_level == ConfidenceLevel.VERIFIED
-    # Idempotent: another recompute attaches nothing further.
-    links_before = len(root.evidence_links)
+    assert case.progress.cause_assurance == CauseAssuranceGrade.MECHANISTIC
+    assert case.root_cause_conclusion.confidence_level == ConfidenceLevel.CONFIDENT
+
+
+def test_resolution_execution_confirms_sole_validated_root():
+    """The real trigger: the user confirms resolution → the RESOLVED executor
+    stamps the confirmation link and re-persists the grade as CONFIRMED."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        _execute_resolved_transition,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _chain_case()
     _recompute_assessment_state(case)
-    assert len(root.evidence_links) == links_before
+    _standalone_absence(case)
+    _execute_resolved_transition(case, "user_x")
+    assert case.state == CaseState.RESOLVED
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    assert any(
+        link.stance == EvidenceStance.SUPPORTS and "user-confirmed" in link.reasoning
+        for link in root.evidence_links
+    )
+    # A standing LLM over-claim clears once the confirmation lands.
+    assert case.progress.cause_overclaim is False
 
 
 def test_stamp_never_confirms_from_a_refutes_linked_absence_row():
     """A REFUTES-linked absence row is a failed-fix disconfirmation (M6) —
     it must never flip into a confirmation of another root."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.cause_assurance import (
         confirm_root_from_resolution_absence,
     )
 
@@ -1044,7 +1064,7 @@ def test_stamp_never_confirms_from_a_refutes_linked_absence_row():
 def test_stamp_holds_when_multiple_roots_stand_validated():
     """MECE-violation guard: with two standing validated roots the engine never
     guesses which cause the fix removed — no link, grade stays MECHANISTIC."""
-    from faultmaven.core.investigation.causal_graph import (
+    from faultmaven.core.investigation.cause_assurance import (
         confirm_root_from_resolution_absence,
     )
     from faultmaven.modules.case.contracts import CauseAssuranceGrade, NodeState

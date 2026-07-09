@@ -28,6 +28,8 @@ from typing import Any, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
+    conclusion_overclaims,
+    confirm_root_from_resolution_absence,
     grade_cause_assurance,
 )
 from faultmaven.modules.case.contracts import (
@@ -431,6 +433,19 @@ def _execute_resolved_transition(case: Case, user_id: str):
     if not case.progress.solution_accepted:
         case.progress.solution_accepted = True
     case.progress.solution_verified = True
+
+    # M2 confirm-side stamp: the user just CONFIRMED the resolution — the
+    # strongest confirmation signal the flow produces — so the engine links
+    # the (prompt-contract unlinked) causal_absence row to the sole standing
+    # validated root and re-persists the grade, making CONFIRMED the terminal
+    # truth for the harvest gate / report / seam analytics. Deliberately NOT
+    # done on the row's mere appearance during investigation (an LLM
+    # self-claim; a premature "it's stable" row must not confirm anything).
+    if confirm_root_from_resolution_absence(case):
+        case.progress.cause_assurance = grade_cause_assurance(case)
+        case.progress.cause_overclaim = conclusion_overclaims(
+            case.root_cause_conclusion, case.progress.cause_assurance
+        )
 
     now = datetime.now(UTC)
 

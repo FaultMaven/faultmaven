@@ -1201,78 +1201,12 @@ def retract_stale_engine_rcc(case: Case) -> bool:
     return True
 
 
-_CONFIRMATION_REASON = (
-    "engine: resolution confirmation — the recorded causal-absence outcome "
-    "bears on the sole standing validated root (M2 gone⇒gone)"
-)
-
-
-def confirm_root_from_resolution_absence(case: Case) -> bool:
-    """M2 confirm-side twin of the Option-(c) refute stamp: make the
-    ``CONFIRMED`` grade reachable from the live flow.
-
-    The prompt's verify-turn contract records the resolution-confirming
-    ``causal_absence_evidence`` row as a STAND-ALONE audit row ("do NOT link
-    it"), and no LLM path links absence evidence to a causal node — so without
-    an engine stamp the counterfactual confirmation the grade requires would
-    never exist, silently decommissioning the harvest gate and the grounded
-    disposition axis. The engine therefore attaches the SUPPORTS link itself
-    when the bearing is UNAMBIGUOUS, mirroring ``_attach_engine_refutation``
-    (which already mints the REFUTES twin on failed fixes).
-
-    Deliberately conservative (NO INCORRECT CONCLUSION):
-
-    - Only when exactly ONE standing validated ROOT exists. With several (an
-      unarbitrated MECE violation) the engine never guesses which cause the
-      fix removed — the case stays MECHANISTIC pending arbitration.
-    - Only absence rows with NO existing node link anywhere in the graph
-      qualify: a REFUTES-linked absence row is a failed-fix disconfirmation
-      (M6) and must never flip to confirmation; an already-linked row's
-      bearing is already decided.
-    - Idempotent: a root already counterfactually confirmed is left alone.
-
-    Trust level is deliberately the SAME as the resolution gate's: the
-    ``causal_absence`` category is the LLM/user resolution-confirmation signal
-    that alone satisfies ``assess_resolution_readiness`` — bearing hardening
-    of the category label itself is the separate causal-absence bearing check
-    tracked on #656. Returns True if it attached a link.
-    """
-    validated_roots = [
-        n
-        for n in case.causal_nodes.values()
-        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
-    ]
-    if len(validated_roots) != 1:
-        return False
-    root = validated_roots[0]
-    cat_by_id = _evidence_category_map(case)
-    if root_counterfactually_confirmed(root, cat_by_id):
-        return False
-    linked_ids = {
-        link.evidence_id
-        for node in case.causal_nodes.values()
-        for link in node.evidence_links
-    }
-    absence_row = next(
-        (
-            e
-            for e in reversed(case.evidence)
-            if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-            and e.evidence_id not in linked_ids
-        ),
-        None,
-    )
-    if absence_row is None:
-        return False
-    root.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=absence_row.evidence_id,
-            stance=EvidenceStance.SUPPORTS,
-            reasoning=_CONFIRMATION_REASON,
-            linked_at_turn=case.current_turn,
-        )
-    )
-    return True
+# The M2 confirm-side stamp (confirm_root_from_resolution_absence) lives in
+# cause_assurance.py: it fires at RESOLVED transition execution (after the
+# user's explicit confirmation — a premature LLM-emitted absence row must not
+# confirm anything), and terminal_transitions cannot import this module
+# (causal_graph → hypothesis_manager → terminal_transitions would close the
+# cycle) — while the stamp needs only the case contracts.
 
 
 def any_chain_root_inconclusive(case: Case) -> bool:

@@ -725,13 +725,17 @@ it (the same bearing discipline as the counterfactual-refute arm).
 
 Because the prompt's verify-turn contract records the resolution-confirming
 `causal_absence` row as a stand-alone audit row (never linked), the **engine
-attaches the confirmation link itself** when the bearing is unambiguous:
-`confirm_root_from_resolution_absence` links an unlinked absence row to the
-**sole** standing validated root (the confirm-side twin of the M6 failed-fix
-refute stamp). With several simultaneously-validated roots the engine never
-guesses which cause the fix removed — the case stays `MECHANISTIC` pending
-arbitration; a REFUTES-linked absence row (a failed fix) never flips to
-confirmation.
+attaches the confirmation link itself** — but only at **RESOLVED transition
+execution**, on the user's explicit confirmation:
+`confirm_root_from_resolution_absence` (called from the resolved-transition
+executor) links an unlinked absence row to the **sole** standing validated
+root (the confirm-side twin of the M6 failed-fix refute stamp) and
+re-persists the grade. The row's mere appearance during investigation never
+confirms anything — it is an LLM self-claim, and a premature "it's stable
+now" row emitted mid-rollout (observed live) must not upgrade the grade. With
+several simultaneously-validated roots the engine never guesses which cause
+the fix removed — the case stays `MECHANISTIC` pending arbitration; a
+REFUTES-linked absence row (a failed fix) never flips to confirmation.
 
 The grade is **persisted** per turn on `InvestigationProgress.cause_assurance`
 (the `verification_status` pattern — rides the progress blob, no migration).

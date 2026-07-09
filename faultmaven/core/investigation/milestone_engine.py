@@ -38,7 +38,6 @@ from faultmaven.core.investigation.causal_graph import (
     any_chain_root_inconclusive,
     any_chain_root_validated,
     chain_path_to_problem,
-    confirm_root_from_resolution_absence,
     demote_disconfirmed_cause_via_evidence,
     derive_node_states,
     ingest_emitted_chain,
@@ -53,6 +52,9 @@ from faultmaven.core.investigation.causal_graph import (
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
     grade_cause_assurance,
+)
+from faultmaven.core.investigation.cause_assurance import (
+    conclusion_overclaims as _conclusion_overclaims,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
@@ -910,13 +912,12 @@ def _recompute_assessment_state(
     """
     p = case.progress
 
-    # M2 confirm-side stamp FIRST: the resolution-confirming causal_absence row
-    # is recorded UNLINKED by the prompt contract, so when its bearing is
-    # unambiguous (exactly one standing validated root) the engine attaches the
-    # SUPPORTS link here — before the chain recompute, so the same turn's
-    # derive/mirror/grade all see the confirmation.
-    confirm_root_from_resolution_absence(case)
-
+    # NOTE: the M2 confirm-side stamp (confirm_root_from_resolution_absence)
+    # deliberately does NOT run here. An absence row's mere appearance is an
+    # LLM self-claim — a premature "it's stable now" row emitted mid-rollout
+    # must not confirm anything (observed live in the gate sims). The stamp
+    # fires only at RESOLVED transition execution, on the user's explicit
+    # confirmation (terminal_transitions._execute_resolved_transition).
     _recompute_cause_state_from_chain(case, exclusion_survivors=exclusion_survivors)
 
     if p.solution_state != SolutionState.SELECTED:
@@ -966,18 +967,6 @@ def _recompute_assessment_state(
     p.cause_overclaim = overclaims
 
     _log_grounding_assessment(case)
-
-
-def _conclusion_overclaims(rcc, grade) -> bool:
-    """The M2 over-claim seam predicate — ONE definition shared by the WARNING
-    in ``_recompute_assessment_state`` and the ``seam_overclaim`` flag in the
-    DEBUG grounding trace, so the prod signal and the greppable trace can never
-    disagree about the same turn."""
-    return (
-        rcc is not None
-        and rcc.confidence_level == ConfidenceLevel.VERIFIED
-        and grade != CauseAssuranceGrade.CONFIRMED
-    )
 
 
 def _log_grounding_assessment(case: "Case") -> None:
