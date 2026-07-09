@@ -78,6 +78,27 @@ sum(rate(faultmaven_inquiry_turn_total[1h])) > 0
 
 **Enable the endpoint.** This counter only exposes via `/metrics` when `METRICS_EXPORTER=prometheus_http` is set in `.env`. With the default (`METRICS_EXPORTER=none`), the counter still records in-process — but `curl http://localhost:8090/metrics` returns 404. Set the env var and restart FM to expose.
 
+## INV-29: independent-support bar + prior-cap telemetry
+
+- `faultmaven_root_validation_blocked_support_count_total` — a ROOT with real causal-category support that cleared the generic validation bar was held at INCONCLUSIVE for lacking two independent causal supports (count, mutual-restatement collapse, or the `stance_confidence` filter). One increment per block event (state transition, never per fixpoint pass).
+- `faultmaven_hypothesis_likelihood_capped_no_evidence_total` — an LLM likelihood update on a hypothesis with no confident supporting evidence links was capped at `NEW_HYPOTHESIS_MAX_PRIOR` (#573 B1).
+
+**Healthy shape.** Transient blips on the block counter that clear within a few turns — the bar doing elicitation work (the context builder tells the model a SECOND INDEPENDENT observation is needed). The cap counter should decay to near-zero as the model learns from the `system_feedback` recovery message.
+
+```promql
+# Block events that never resolve into validations — sustained rate = bar too
+# high for real traffic or the model keeps re-recording one datum. Judge
+# against grounded-resolution outcomes, not this counter alone
+# (cost-per-grounded-resolution is the metric that matters).
+rate(faultmaven_root_validation_blocked_support_count_total[24h])
+
+# Fiat-cap pressure: sustained non-zero = the model is asserting belief
+# instead of linking evidence (prompt/elicitation drift).
+rate(faultmaven_hypothesis_likelihood_capped_no_evidence_total[24h])
+```
+
+Matrix row: INV-29 in `investigation-invariants.md`; methodology §7.1 (*Independent-support bar*).
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:

@@ -46,6 +46,7 @@ from faultmaven.core.investigation.causal_graph import (
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
     retract_stale_engine_rcc,
+    support_count_held_root_ids,
     synthesize_rcc_from_validated_root,
     validate_by_exclusion,
 )
@@ -940,7 +941,7 @@ def _recompute_assessment_state(
     # engine mirror can no longer produce this (its confidence is grade-derived),
     # so a hit here is an LLM-authored conclusion over-claiming — surfaced at
     # WARNING (prod-visible, unlike the DEBUG grounding trace) until conclusion
-    # retraction/refresh lands (#656 P2.3). Edge-triggered via the persisted
+    # retraction/refresh lands (tracked on #656). Edge-triggered via the persisted
     # flag so a standing over-claim warns once, not once per turn (alert
     # hygiene); the per-turn state stays visible in the DEBUG grounding trace
     # and the persisted flag itself. The under-claim polarity lives in
@@ -6438,17 +6439,75 @@ class MilestoneEngine:
                 metadata["hypotheses_updated"].append(h_id)
 
             # Non-REFUTED state transitions are intentionally not applied here.
-            # Likelihood updates go through the canonical mutator.
+            # Likelihood updates are DEFERRED to after the same-turn
+            # hypothesis_evidence_links pass (``_apply_deferred_likelihood_
+            # updates``): the B1 evidence-free cap must judge the hypothesis
+            # WITH the links this same emission carries — the prompt mandates
+            # record → link → set-likelihood in one turn, and capping before
+            # the link lands would gaslight a model that did exactly that.
             if upd.likelihood is not None:
-                self.hypothesis_manager.update_hypothesis_likelihood(
-                    hypothesis,
-                    upd.likelihood,
-                    current_turn,
-                    reason="LLM hypothesis update",
+                metadata.setdefault("deferred_likelihood_updates", []).append(
+                    (h_id, upd.likelihood)
                 )
                 if not reroot:
                     metadata["hypotheses_updated"].append(h_id)
 
+        if feedback:
+            current = metadata.get("system_feedback", "") or ""
+            metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
+
+    def _apply_deferred_likelihood_updates(
+        self,
+        case: "Case",
+        metadata: dict[str, Any],
+        current_turn: int,
+    ) -> None:
+        """Apply the likelihood updates stashed by ``_apply_hypothesis_updates``
+        — AFTER the same-turn ``hypothesis_evidence_links`` pass, so the B1
+        evidence-free cap sees the links this emission carried. The mutator
+        caps an evidence-free (or hedged-links-only) update at the prior bar;
+        when it does, tell the LLM WHY its number was not applied — the
+        recovery is to record the observation as evidence and link it with a
+        confident stance, not to re-assert a larger number."""
+        deferred = metadata.pop("deferred_likelihood_updates", None)
+        if not deferred:
+            return
+        feedback: list[str] = []
+        for h_id, likelihood in deferred:
+            hypothesis = case.hypotheses.get(h_id)
+            if hypothesis is None:
+                continue
+            # Re-check terminal immutability HERE, not only at stash time:
+            # the links pass between stash and apply can auto-REFUTE this
+            # same hypothesis (two REFUTES links -> likelihood <= 0.20 ->
+            # _check_state_transition), and applying the stale pre-refutation
+            # number would resurrect a terminal hypothesis's likelihood
+            # against its own refutation_reason.
+            if hypothesis.state in (
+                HypothesisState.REFUTED,
+                HypothesisState.RETIRED,
+            ):
+                feedback.append(
+                    f"Hypothesis {h_id}: likelihood update not applied — the "
+                    f"hypothesis became {hypothesis.state.value} this turn "
+                    f"(terminal states are immutable)."
+                )
+                continue
+            self.hypothesis_manager.update_hypothesis_likelihood(
+                hypothesis,
+                likelihood,
+                current_turn,
+                reason="LLM hypothesis update",
+                case=case,  # chain-axis grounding visible to the B1 cap
+            )
+            if hypothesis.likelihood < min(1.0, likelihood) - 1e-9:
+                feedback.append(
+                    f"Hypothesis {h_id}: likelihood capped at "
+                    f"{hypothesis.likelihood:.2f} — a hypothesis with no "
+                    f"confident supporting evidence links is a prior, not a "
+                    f"conclusion. Record the observation as evidence and "
+                    f"link it (hypothesis_evidence_links) to raise belief."
+                )
         if feedback:
             current = metadata.get("system_feedback", "") or ""
             metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
@@ -7126,6 +7185,11 @@ class MilestoneEngine:
                     metadata.get("hypothesis_evidence_links_applied", 0) + 1
                 )
 
+        # (Deferred likelihood updates are applied AFTER chain emission —
+        # see the call beside _apply_chain_emission below: the B1 cap must
+        # judge the hypothesis WITH the links this same turn carried on BOTH
+        # axes, flat hypothesis_evidence_links AND chain node_evidence_links.)
+
         # 4b. Evidence Needs (Phase 3 of evidence-needs rollout)
         # Process LLM-emitted ``evidence_need_updates``. Runs AFTER
         # evidence_to_add (so ``metadata["evidence_added"]`` is populated
@@ -7294,6 +7358,13 @@ class MilestoneEngine:
         # the LLM as a one-turn nudge (T2a) to re-root it or declare it
         # separate, rather than guessing.
         self._nudge_ambiguous_orphan_chains(case, metadata)
+
+        # Deferred likelihood updates — applied AFTER both link passes (flat
+        # step 4 AND chain emission above), so the B1 evidence-free cap judges
+        # the hypothesis with everything this turn's emission grounded it on;
+        # a chain-contract turn (record -> node-link -> set likelihood) must
+        # not be capped and gaslit for links it did emit.
+        self._apply_deferred_likelihood_updates(case, metadata, case.current_turn)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).
@@ -8521,12 +8592,19 @@ class MilestoneEngine:
             # hypotheses the detector flagged so the differential actually
             # diversifies. Exclude any flagged hypothesis whose chain root is
             # validated — it is grounding the cause, and retiring it for "anchoring"
-            # would discard the answer.
+            # would discard the answer. Same protection for a COUNT-HELD root
+            # (§7.1/INV-29: really causally supported, blocked only by the
+            # independent-support bar) — pre-INV-29 that root would have been
+            # VALIDATED and protected; the raised bar must not feed the true
+            # cause to the anchoring retirer while it waits for its second
+            # observation.
+            count_held = support_count_held_root_ids(case)
             targets = [
                 hid
                 for hid in hypothesis_ids
                 if hid in case.hypotheses
                 and not is_chain_root_validated(case.hypotheses[hid], case.causal_nodes)
+                and case.hypotheses[hid].root_node_id not in count_held
             ]
             retired = self.hypothesis_manager.force_alternative_generation(
                 targets, active_hypotheses, case.current_turn

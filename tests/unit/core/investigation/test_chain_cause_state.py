@@ -57,10 +57,15 @@ def _eid(label: str) -> str:
     return "ev_" + hashlib.md5(label.encode()).hexdigest()[:12]
 
 
-def _evidence(label, category=EvidenceCategory.CAUSAL_EVIDENCE) -> Evidence:
+def _evidence(
+    label, category=EvidenceCategory.CAUSAL_EVIDENCE, summary=None
+) -> Evidence:
+    # Default summary embeds the label as content tokens so two fixture rows
+    # read as INDEPENDENT observations under the §7.1 mirror collapse (INV-29);
+    # pass an explicit summary to model near-duplicate rows.
     return Evidence(
         evidence_id=_eid(label),
-        summary="an observed fact",
+        summary=summary or f"fact-{label} metric-{label} reading-{label}",
         primary_purpose="diagnosis",
         category=category,
         source_type=EvidenceSourceType.USER_DESCRIPTION,
@@ -70,17 +75,19 @@ def _evidence(label, category=EvidenceCategory.CAUSAL_EVIDENCE) -> Evidence:
     )
 
 
-def _root(node_id="cn_000000000001", *, support_label=None) -> CausalNode:
-    links = []
-    if support_label:
-        links = [
-            NodeEvidenceLink(
-                evidence_id=_eid(support_label),
-                stance=EvidenceStance.SUPPORTS,
-                reasoning="bears on the root",
-                linked_at_turn=2,
-            )
-        ]
+def _root(
+    node_id="cn_000000000001", *, support_label=None, support_labels=None
+) -> CausalNode:
+    labels = list(support_labels or ([support_label] if support_label else []))
+    links = [
+        NodeEvidenceLink(
+            evidence_id=_eid(label),
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="bears on the root",
+            linked_at_turn=2,
+        )
+        for label in labels
+    ]
     return CausalNode(
         node_id=node_id,
         statement="the root cause",
@@ -166,9 +173,13 @@ def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
 
 
 def _chain_case():
-    """A case with a root→D chain and a CAUSAL_EVIDENCE SUPPORTS on the root."""
-    root = _root(support_label="ev_root_support")
-    case = _case(nodes=[root], evidence=[_evidence("ev_root_support")])
+    """A case with a root→D chain and TWO independent CAUSAL_EVIDENCE SUPPORTS
+    on the root (the INV-29 validation bar)."""
+    root = _root(support_labels=["ev_root_support", "ev_root_support_b"])
+    case = _case(
+        nodes=[root],
+        evidence=[_evidence("ev_root_support"), _evidence("ev_root_support_b")],
+    )
     d = seed_problem_node(case)
     case.causal_edges = [
         CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
@@ -487,9 +498,17 @@ def test_ordinary_refute_does_not_suppress_decisive_attach():
 def test_one_chain_demoted_other_standing_stays_identified():
     """Two chains; one is counterfactually disconfirmed, the other's root stays
     validated → the case remains IDENTIFIED via the standing chain."""
-    r1 = _root("cn_000000000001", support_label="ev_s1")
-    r2 = _root("cn_000000000002", support_label="ev_s2")
-    case = _case(nodes=[r1, r2], evidence=[_evidence("ev_s1"), _evidence("ev_s2")])
+    r1 = _root("cn_000000000001", support_labels=["ev_s1", "ev_s1b"])
+    r2 = _root("cn_000000000002", support_labels=["ev_s2", "ev_s2b"])
+    case = _case(
+        nodes=[r1, r2],
+        evidence=[
+            _evidence("ev_s1"),
+            _evidence("ev_s1b"),
+            _evidence("ev_s2"),
+            _evidence("ev_s2b"),
+        ],
+    )
     d = seed_problem_node(case)
     case.causal_edges = [
         CausalEdge(cause_node_id=r1.node_id, effect_node_id=d.node_id),
@@ -537,16 +556,20 @@ def test_soft_floor_inconclusive_root_holds_candidates_not_unknown():
 
     # Ordinary (non-counterfactual) causal REFUTES ties the root's support →
     # derive marks it INCONCLUSIVE (not REFUTED), and the hyp itself is untouched.
-    tie = _evidence("ev_tie", EvidenceCategory.CAUSAL_EVIDENCE)
-    case.evidence.append(tie)
-    root.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=tie.evidence_id,
-            stance=EvidenceStance.REFUTES,
-            reasoning="one contrary reading",
-            linked_at_turn=case.current_turn,
+    ties = [
+        _evidence("ev_tie", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_tie2", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
+    case.evidence.extend(ties)
+    for tie in ties:
+        root.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=tie.evidence_id,
+                stance=EvidenceStance.REFUTES,
+                reasoning="one contrary reading",
+                linked_at_turn=case.current_turn,
+            )
         )
-    )
     _recompute_cause_state_from_chain(case)
     assert root.node_state == NodeState.INCONCLUSIVE
     assert case.progress.cause_state == CauseState.CANDIDATES  # soft floor, not UNKNOWN
@@ -615,9 +638,9 @@ def test_stale_engine_rcc_refreshed_on_root_handoff_without_refutation():
     """The non-M6 handoff: chain A grounds (engine RCC for A); next turn A drifts
     to INCONCLUSIVE (a tie, NOT refuted, so M6 never clears the RCC) while chain B
     validates. The stale engine RCC must REFRESH to B, not keep naming A."""
-    rA = _root("cn_00000000000a", support_label="ev_sa")
+    rA = _root("cn_00000000000a", support_labels=["ev_sa", "ev_sa2"])
     rB = _root("cn_00000000000b")  # B not yet supported
-    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa")])
+    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa"), _evidence("ev_sa2")])
     d = seed_problem_node(case)
     case.causal_edges = [
         CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),
@@ -631,24 +654,28 @@ def test_stale_engine_rcc_refreshed_on_root_handoff_without_refutation():
 
     # A drifts to a tie (INCONCLUSIVE, not refuted); B gains causal support.
     tie = _evidence("ev_tieA", EvidenceCategory.CAUSAL_EVIDENCE)
+    tie2 = _evidence("ev_tieA2", EvidenceCategory.CAUSAL_EVIDENCE)
     sb = _evidence("ev_sb", EvidenceCategory.CAUSAL_EVIDENCE)
-    case.evidence += [tie, sb]
-    rA.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=tie.evidence_id,
-            stance=EvidenceStance.REFUTES,
-            reasoning="contra",
-            linked_at_turn=case.current_turn,
+    sb2 = _evidence("ev_sb2", EvidenceCategory.CAUSAL_EVIDENCE)
+    case.evidence += [tie, tie2, sb, sb2]
+    for ev in (tie, tie2):
+        rA.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=ev.evidence_id,
+                stance=EvidenceStance.REFUTES,
+                reasoning="contra",
+                linked_at_turn=case.current_turn,
+            )
         )
-    )
-    rB.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=sb.evidence_id,
-            stance=EvidenceStance.SUPPORTS,
-            reasoning="pro",
-            linked_at_turn=case.current_turn,
+    for ev in (sb, sb2):
+        rB.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=ev.evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="pro",
+                linked_at_turn=case.current_turn,
+            )
         )
-    )
     _recompute_cause_state_from_chain(case)
     assert rA.node_state == NodeState.INCONCLUSIVE  # drifted, not refuted
     assert rB.node_state == NodeState.VALIDATED
@@ -876,6 +903,36 @@ def test_stale_engine_rcc_cleared_when_root_demotes_and_nothing_validates():
     assert case.root_cause_conclusion is None  # mirror cleared with its chain
 
 
+def test_pre_bar_single_support_root_demotes_on_recompute():
+    """INV-29 is RECOMPUTE-HONEST (no grandfathering, unlike the restatement
+    guard): a root persisted VALIDATED under the old >=1 bar with a single
+    causal support demotes to INCONCLUSIVE (a live candidate — cause_state
+    holds at CANDIDATES via the soft floor, never UNKNOWN/refuted) and its
+    engine mirror retracts with it."""
+    root = _root(support_label="ev_lone")
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.EMPIRICAL
+    case = _case(nodes=[root], evidence=[_evidence("ev_lone")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    hyp = _hyp(root.node_id)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=root.statement,
+        mechanism="Directly produces the observed problem.",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+        validated_hypothesis_id=hyp.hypothesis_id,
+        determined_by="engine:chain_validation",
+    )
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert case.root_cause_conclusion is None  # mirror retracted
+    assert case.progress.cause_state == CauseState.CANDIDATES  # soft floor
+
+
 def test_llm_rcc_survives_root_demotion():
     """The engine-mirror reconcile never touches an LLM-authored conclusion —
     its retraction lifecycle is a separate concern (#656)."""
@@ -1066,9 +1123,17 @@ def _two_validated_root_case():
     """Two root→D chains, both empirically validated — the unarbitrated
     multi-root shape shared by the MECE stamp guard, the mirror-selection
     tests, and the orphan-preference test."""
-    rA = _root("cn_00000000000a", support_label="ev_sa")
-    rB = _root("cn_00000000000b", support_label="ev_sb")
-    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa"), _evidence("ev_sb")])
+    rA = _root("cn_00000000000a", support_labels=["ev_sa", "ev_sa2"])
+    rB = _root("cn_00000000000b", support_labels=["ev_sb", "ev_sb2"])
+    case = _case(
+        nodes=[rA, rB],
+        evidence=[
+            _evidence("ev_sa"),
+            _evidence("ev_sa2"),
+            _evidence("ev_sb"),
+            _evidence("ev_sb2"),
+        ],
+    )
     d = seed_problem_node(case)
     case.causal_edges = [
         CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),
@@ -1360,3 +1425,209 @@ def test_overclaim_warning_rearms_on_new_conclusion(caplog):
         if getattr(r, "event", None) == "cause_confidence_overclaim"
     ]
     assert len(recs) == 2
+
+
+# ---------------------------------------------------------------------------
+# INV-29 x the confirm stamp: the user's gone⇒gone handshake completes the
+# empirical bar for a COUNT-HELD root — the count bar never vetoes the
+# strongest evidence class
+# ---------------------------------------------------------------------------
+
+
+def _count_held_case():
+    """A 1-support root (INCONCLUSIVE under the INV-29 bar) with a standing
+    hypothesis — the most common live shape at RESOLVED."""
+    root = _root(support_label="ev_only_sup")
+    case = _case(nodes=[root], evidence=[_evidence("ev_only_sup")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    hyp = _hyp(root.node_id)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.INCONCLUSIVE  # held by the count bar
+    return case, root, hyp
+
+
+def test_resolution_confirms_sole_count_held_root():
+    """A case that reached RESOLVED with its sole root count-held must not
+    terminate NO_ROOT: the confirmation IS the decisive second observation —
+    the stamp links, the re-derive validates via the confirmed bypass, the
+    grade reads CONFIRMED."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+        grade_cause_assurance,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _count_held_case()
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is True
+    assert root.node_state == NodeState.VALIDATED  # bypass completed the bar
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
+
+
+def test_stamp_holds_when_two_roots_are_count_held():
+    """Sole-candidate discipline extends to count-held targets: with two the
+    engine never guesses which cause the fix removed."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    rA = _root("cn_0000000000c1", support_label="ev_cha")
+    rB = _root("cn_0000000000c2", support_label="ev_chb")
+    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_cha"), _evidence("ev_chb")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),
+        CausalEdge(cause_node_id=rB.node_id, effect_node_id=d.node_id),
+    ]
+    hA = _hyp(rA.node_id, hypothesis_id="hyp_0000000000c1")
+    hB = _hyp(rB.node_id, hypothesis_id="hyp_0000000000c2")
+    case.hypotheses = {hA.hypothesis_id: hA, hB.hypothesis_id: hB}
+    _recompute_cause_state_from_chain(case)
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is False
+    assert rA.node_state == NodeState.INCONCLUSIVE
+    assert rB.node_state == NodeState.INCONCLUSIVE
+
+
+def test_stamp_never_targets_a_restating_held_root():
+    """A root held for RESTATEMENT (not the count bar) never receives the
+    confirmation — 'the problem causes itself' is not completed by a
+    handshake."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    root = _root(support_label="ev_rst")
+    # Restate the problem verbatim: novelty 0 against the anchor.
+    root.statement = "orders failing"
+    case = _case(nodes=[root], evidence=[_evidence("ev_rst")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    hyp = _hyp(root.node_id)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    _recompute_cause_state_from_chain(case)
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is False
+    assert root.node_state != NodeState.VALIDATED
+
+
+def test_stamp_never_targets_an_unsupported_root():
+    """A root with NO qualifying causal support is not count-held — the
+    handshake alone (zero empirical grounding) confirms nothing."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    root = _root()  # no supports at all
+    case = _case(nodes=[root])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    hyp = _hyp(root.node_id)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    _recompute_cause_state_from_chain(case)
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is False
+    assert root.node_state == NodeState.CANDIDATE
+
+
+def test_resolution_execution_confirms_count_held_root_end_to_end():
+    """The real trigger path for the count-held shape: RESOLVED execution
+    stamps, validates, and persists CONFIRMED."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        _execute_resolved_transition,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _count_held_case()
+    _recompute_assessment_state(case)
+    _standalone_absence(case)
+    _execute_resolved_transition(case, "user_x")
+    assert case.state == CaseState.RESOLVED
+    assert root.node_state == NodeState.VALIDATED
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    # Terminal-blob coherence: the confirmed cause reads IDENTIFIED, not the
+    # stale pre-stamp CANDIDATES (observed live in the INV-29 sim gate).
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    # The blob must RELOAD: root_cause_consistency requires method + non-zero
+    # likelihood beside IDENTIFIED (observed live: the bare assignment 500ed the
+    # RESOLVED execution on reload and stranded the case INVESTIGATING).
+    type(case.progress)(**case.progress.model_dump())
+
+
+def test_confirmed_count_held_root_always_has_a_conclusion():
+    """A CONFIRMED terminal blob must never lack cause text: when no
+    conclusion exists at stamp time (the count-held shape — the per-turn
+    mirror synthesis never ran for an INCONCLUSIVE root), the stamp mints the
+    engine mirror for the root the user just confirmed (VERIFIED at the
+    floor, naming the standing hypothesis)."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case, root, hyp = _count_held_case()
+    assert case.root_cause_conclusion is None  # no LLM conclusion authored
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is True
+    rcc = case.root_cause_conclusion
+    assert rcc is not None
+    assert rcc.root_cause == root.statement
+    assert rcc.confidence_level == ConfidenceLevel.VERIFIED
+    assert rcc.validated_hypothesis_id == hyp.hypothesis_id
+    assert rcc.determined_by == "engine:chain_validation"
+
+
+def test_finalize_truth_surface_is_shared_by_the_api_resolve_path():
+    """The dashboard/API resolve surface must produce the SAME terminal truth
+    as the chat executor — pinned at the finalizer level: grade CONFIRMED,
+    cause_state IDENTIFIED (grade-keyed, so hypothesis-less confirmed roots
+    are covered too), method+likelihood set, and a conclusion present."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        finalize_resolution_truth_surface,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _count_held_case()
+    _standalone_absence(case)
+    assert finalize_resolution_truth_surface(case) is True
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.progress.root_cause_method
+    assert case.progress.root_cause_likelihood > 0
+    assert case.root_cause_conclusion is not None
+    type(case.progress)(**case.progress.model_dump())  # blob reloads
+
+
+def test_finalize_covers_hypothesis_less_confirmed_root():
+    """Grade-keyed coherence: the stamp's node-level fallback confirms a
+    hypothesis-less root; the terminal blob must still read IDENTIFIED beside
+    CONFIRMED (the standing-hypothesis mirror missed this shape)."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        finalize_resolution_truth_surface,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    root = _root(support_label="ev_orphan_sup")
+    case = _case(nodes=[root], evidence=[_evidence("ev_orphan_sup")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    # No hypothesis at all — the weak-model chain-without-hypothesis shape.
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.INCONCLUSIVE  # count-held
+    _standalone_absence(case)
+    assert finalize_resolution_truth_surface(case) is True
+    assert root.node_state == NodeState.VALIDATED
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.root_cause_conclusion is not None  # hyp-less mint
+    assert case.root_cause_conclusion.validated_hypothesis_id is None
+    type(case.progress)(**case.progress.model_dump())

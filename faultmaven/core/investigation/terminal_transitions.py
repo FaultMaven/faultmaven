@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
+    CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     CauseAssuranceGrade,
     conclusion_overclaims,
     confirm_root_from_resolution_absence,
@@ -135,6 +136,61 @@ def _has_causal_absence(case: "Case") -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+
+def finalize_resolution_truth_surface(case: "Case") -> bool:
+    """The ONE resolution-time truth-surface finalizer, shared by EVERY
+    resolve surface (the chat-side ``_execute_resolved_transition`` and the
+    dashboard/API ``ApiCaseService.close_case``) — a second hand-mirrored
+    copy is how the two surfaces previously diverged on terminal truth.
+
+    M2 confirm-side stamp: the user just CONFIRMED the resolution — the
+    strongest confirmation signal the flow produces — so the engine links the
+    (prompt-contract unlinked) causal_absence row to the sole standing
+    validated (or count-held, INV-29) root and re-persists the FULL
+    grade-derived set: grade, over-claim flag, verification_status, and the
+    cause_state coherence block. Deliberately NOT done on an absence row's
+    mere appearance during investigation (an LLM self-claim; a premature
+    "it's stable" row must not confirm anything). Returns True if the stamp
+    landed.
+
+    Coherence is keyed on the GRADE, not on hypothesis shape: a CONFIRMED
+    grade with ``cause_state`` below IDENTIFIED is incoherent regardless of
+    whether the confirmed root carries a standing hypothesis (the stamp's
+    node-level fallback deliberately confirms hypothesis-less roots — the
+    weak-model chain-without-hypothesis shape — and the terminal blob must
+    not read "no identified cause" beside the sole harvest-authority grade).
+    The ``root_cause_consistency`` validator requires method + non-zero
+    likelihood beside IDENTIFIED, so the same defaults the per-turn recompute
+    uses are applied (a bare assignment 500s the RESOLVED execution on the
+    progress-blob reload and strands the case — caught live in the INV-29
+    sim gate).
+    """
+    stamped = confirm_root_from_resolution_absence(case)
+    # The grade set is refreshed UNCONDITIONALLY: the API surface reaches here
+    # without a fresh per-turn recompute, so even a no-stamp resolve must not
+    # freeze a stale persisted grade into the terminal blob (idempotent on the
+    # chat surface, where the recompute just wrote the same values).
+    case.progress.cause_assurance = grade_cause_assurance(case)
+    case.progress.cause_overclaim = conclusion_overclaims(
+        case.root_cause_conclusion, case.progress.cause_assurance
+    )
+    # The per-turn recompute derives verification_status from the same grade
+    # snapshot precisely so the two signals can never diverge; the terminal
+    # blob must honor the same invariant.
+    case.progress.verification_status = assess_verification_status(
+        case, grade=case.progress.cause_assurance
+    )
+    if case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED:
+        case.progress.cause_state = CauseState.IDENTIFIED
+        if not case.progress.root_cause_method:
+            case.progress.root_cause_method = "hypothesis_validation"
+        if not case.progress.root_cause_likelihood:
+            case.progress.root_cause_likelihood = (
+                getattr(case.root_cause_conclusion, "likelihood", None)
+                or CONFIRMED_RCC_LIKELIHOOD_FLOOR
+            )
+    return stamped
 
 
 def derive_closure_reason(case: "Case") -> str:
@@ -437,27 +493,7 @@ def _execute_resolved_transition(case: Case, user_id: str):
         case.progress.solution_accepted = True
     case.progress.solution_verified = True
 
-    # M2 confirm-side stamp: the user just CONFIRMED the resolution — the
-    # strongest confirmation signal the flow produces — so the engine links
-    # the (prompt-contract unlinked) causal_absence row to the sole standing
-    # validated root and re-persists the grade, making CONFIRMED the terminal
-    # truth for the harvest gate / report / seam analytics. Deliberately NOT
-    # done on the row's mere appearance during investigation (an LLM
-    # self-claim; a premature "it's stable" row must not confirm anything).
-    if confirm_root_from_resolution_absence(case):
-        case.progress.cause_assurance = grade_cause_assurance(case)
-        case.progress.cause_overclaim = conclusion_overclaims(
-            case.root_cause_conclusion, case.progress.cause_assurance
-        )
-        # The FULL grade-derived persisted set — the per-turn recompute derives
-        # verification_status from the same grade snapshot precisely so the two
-        # signals can never diverge; the terminal blob must honor the same
-        # invariant or every stamp-confirmed case would freeze
-        # cause_assurance=confirmed beside a pre-stamp (e.g. not-grounded)
-        # verification_status.
-        case.progress.verification_status = assess_verification_status(
-            case, grade=case.progress.cause_assurance
-        )
+    finalize_resolution_truth_surface(case)
 
     now = datetime.now(UTC)
 

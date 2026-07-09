@@ -261,6 +261,7 @@ def test_likelihood_only_update_applies():
         meta,
         case.current_turn,
     )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
 
     assert h.state == HypothesisState.ACTIVE  # unchanged
     assert h.likelihood == 0.3
@@ -299,6 +300,7 @@ def test_new_index_placeholder_resolves_to_this_turn_hypothesis():
         meta,
         case.current_turn,
     )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
 
     assert h.likelihood == 0.2
     assert meta["hypotheses_updated"] == [h.hypothesis_id]
@@ -342,3 +344,145 @@ def test_refuted_update_drives_m6_demotion_end_to_end():
 
     assert case.progress.cause_state == CauseState.UNKNOWN
     assert case.root_cause_conclusion is None  # M6 retracted the conclusion
+
+
+def test_evidence_free_likelihood_update_capped_with_feedback():
+    """INV-29 companion (#573 B1) at the apply layer: an over-cap likelihood on
+    an evidence-free hypothesis is capped by the canonical mutator AND the LLM
+    is told why via system_feedback (the recovery is to link evidence, not to
+    re-assert a larger number)."""
+    from faultmaven.core.investigation.hypothesis_manager import (
+        NEW_HYPOTHESIS_MAX_PRIOR,
+    )
+
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()  # no evidence links
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    eng._apply_hypothesis_updates(
+        case,
+        {h.hypothesis_id: HypothesisUpdate(likelihood=0.9)},
+        meta,
+        case.current_turn,
+    )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+
+    # Ceiling semantics: the cap refuses the RAISE but never demotes below
+    # the current earned value (0.7 here), so the applied value is unchanged.
+    assert h.likelihood == 0.7
+    assert "capped" in meta.get("system_feedback", "")
+    assert meta["hypotheses_updated"] == [h.hypothesis_id]
+
+
+def test_supported_likelihood_update_no_cap_feedback():
+    """Control: with a supporting link the update applies untouched and no cap
+    feedback is emitted."""
+    from faultmaven.modules.case.contracts import (
+        EvidenceStance,
+        HypothesisEvidenceLink,
+    )
+
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()
+    h.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=h.hypothesis_id,
+            evidence_id="ev_" + "0" * 12,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="linked",
+            stance_confidence=0.9,
+        )
+    )
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    eng._apply_hypothesis_updates(
+        case,
+        {h.hypothesis_id: HypothesisUpdate(likelihood=0.9)},
+        meta,
+        case.current_turn,
+    )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+
+    assert h.likelihood == 0.9
+    assert "capped" not in meta.get("system_feedback", "")
+
+
+def test_same_turn_link_then_likelihood_is_not_capped():
+    """Ordering pin (#573 B1): the prompt mandates record -> link -> set in ONE
+    turn. Likelihood application is deferred until after the links pass, so a
+    compliant single-turn emission is NOT capped and gets no gaslighting
+    feedback."""
+    from faultmaven.modules.case.contracts import (
+        EvidenceStance,
+        HypothesisEvidenceLink,
+    )
+
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()  # no links yet — they arrive "later this turn"
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    # Step 3b: the likelihood update is stashed, not applied.
+    eng._apply_hypothesis_updates(
+        case,
+        {h.hypothesis_id: HypothesisUpdate(likelihood=0.9)},
+        meta,
+        case.current_turn,
+    )
+    assert h.likelihood == 0.7  # untouched so far
+
+    # Step 4: the same turn's evidence link lands.
+    h.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=h.hypothesis_id,
+            evidence_id="ev_" + "0" * 12,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="linked this turn",
+            stance_confidence=0.9,
+        )
+    )
+
+    # Step 4a-bis: the deferred update now sees the link — no cap.
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    assert h.likelihood == 0.9
+    assert "capped" not in meta.get("system_feedback", "")
+
+
+def test_deferred_apply_respects_same_turn_refutation():
+    """Terminal immutability re-checked at APPLY time: a hypothesis
+    auto-REFUTED by the same turn's links pass must not have the stale
+    stashed likelihood applied on top of its refutation."""
+    from faultmaven.modules.case.contracts import HypothesisState as HS
+
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    # Step 3b: stash while still ACTIVE.
+    eng._apply_hypothesis_updates(
+        case,
+        {h.hypothesis_id: HypothesisUpdate(likelihood=0.45)},
+        meta,
+        case.current_turn,
+    )
+    # Step 4 (links pass) auto-refutes it.
+    eng.hypothesis_manager.refute_hypothesis(
+        hypothesis=h,
+        current_turn=case.current_turn,
+        refuting_evidence_ids=[],
+        reason="two refuting links this turn",
+    )
+    assert h.state == HS.REFUTED
+    assert h.likelihood == 0.0
+
+    # Step 4a-bis: the deferred apply must skip it with feedback.
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+    assert h.likelihood == 0.0  # not resurrected
+    assert "immutable" in meta.get("system_feedback", "")

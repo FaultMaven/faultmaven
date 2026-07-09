@@ -650,7 +650,18 @@ class NodeEvidenceLinkToAdd(BaseModel):
     )
     stance: EvidenceStance
     reasoning: str
-    stance_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    stance_confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Confidence in the stance assessment (0.0-1.0). A SUPPORTS link "
+            "below 0.6 is treated as correlational color, NOT causal "
+            "grounding — it will not count toward validating the node. Omit "
+            "to mean full confidence on a NEW link, or to keep the existing "
+            "value when re-emitting a link."
+        ),
+    )
 
 
 class EvidenceNeedUpdate(BaseModel):
