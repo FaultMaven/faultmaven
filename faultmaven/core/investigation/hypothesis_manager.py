@@ -33,6 +33,9 @@ Anchoring Prevention:
 import logging
 from typing import TYPE_CHECKING
 
+from faultmaven.core.investigation.lifecycle_metrics import (
+    hypothesis_likelihood_capped_no_evidence_total,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     CAUSE_IDENTIFIED_LIKELIHOOD,
 )
@@ -324,6 +327,14 @@ class HypothesisManager:
     ) -> Hypothesis:
         """Update hypothesis likelihood manually (for test results)
 
+        A hypothesis with NO supporting evidence links is still a PRIOR, so the
+        update is capped at ``NEW_HYPOTHESIS_MAX_PRIOR`` — the same discipline
+        ``create_hypothesis`` applies. Without this, a direct LLM update was a
+        fiat lever past the ``CAUSE_IDENTIFIED_LIKELIHOOD`` gate the creation
+        cap exists to protect (#573 B1): belief above the prior cap is earned
+        only by linked case evidence. A refuting-only link set does not lift
+        the cap (disconfirmation is not grounds for MORE belief).
+
         Args:
             hypothesis: Hypothesis to update
             new_likelihood: New likelihood level (0.0 to 1.0)
@@ -334,15 +345,33 @@ class HypothesisManager:
             Updated hypothesis
         """
         old_likelihood = hypothesis.likelihood
-        hypothesis.likelihood = max(0.0, min(1.0, new_likelihood))  # Clamp to [0, 1]
+        capped = max(0.0, min(1.0, new_likelihood))  # Clamp to [0, 1]
+        has_supporting_evidence = any(
+            link.stance == EvidenceStance.SUPPORTS for link in hypothesis.evidence_links
+        )
+        if not has_supporting_evidence and capped > NEW_HYPOTHESIS_MAX_PRIOR:
+            logger.info(
+                "Capped evidence-free likelihood update %.3f -> %.3f on %s "
+                "(NEW_HYPOTHESIS_MAX_PRIOR; %s)",
+                capped,
+                NEW_HYPOTHESIS_MAX_PRIOR,
+                hypothesis.hypothesis_id,
+                reason,
+            )
+            hypothesis_likelihood_capped_no_evidence_total.inc()
+            capped = NEW_HYPOTHESIS_MAX_PRIOR
+        hypothesis.likelihood = capped
         hypothesis.last_updated_turn = current_turn
-        # Check if this represents progress (consistent with update_likelihood_from_evidence)
-        if abs(new_likelihood - old_likelihood) >= 0.05:  # 5% threshold
+        # Progress is judged on the APPLIED value (consistent with
+        # update_likelihood_from_evidence): a capped re-request of the same
+        # over-cap number is a no-op, not progress — it must not reset the
+        # stagnation/decay counters.
+        if abs(capped - old_likelihood) >= 0.05:  # 5% threshold
             hypothesis.last_progress_at_turn = current_turn
             hypothesis.iterations_without_progress = 0
             logger.info(
                 f"Hypothesis {hypothesis.hypothesis_id} likelihood updated: "
-                f"{old_likelihood:.2f} → {new_likelihood:.2f} ({reason})"
+                f"{old_likelihood:.2f} → {capped:.2f} ({reason})"
             )
         else:
             hypothesis.iterations_without_progress += 1

@@ -6446,6 +6446,18 @@ class MilestoneEngine:
                     current_turn,
                     reason="LLM hypothesis update",
                 )
+                # The mutator caps an evidence-free update at the prior bar
+                # (#573 B1). Tell the LLM WHY its number was not applied —
+                # the recovery is to record the observation as evidence and
+                # link it, not to re-assert a larger number.
+                if hypothesis.likelihood < min(1.0, upd.likelihood) - 1e-9:
+                    feedback.append(
+                        f"Hypothesis {h_id}: likelihood capped at "
+                        f"{hypothesis.likelihood:.2f} — a hypothesis with no "
+                        f"supporting evidence links is a prior, not a "
+                        f"conclusion. Record the observation as evidence and "
+                        f"link it (hypothesis_evidence_links) to raise belief."
+                    )
                 if not reroot:
                     metadata["hypotheses_updated"].append(h_id)
 

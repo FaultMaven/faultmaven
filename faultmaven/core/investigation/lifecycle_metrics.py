@@ -161,6 +161,27 @@ root_validation_blocked_restatement_total = Counter(
     "depth) — one increment per block event.",
 )
 
+# P1.3 (#573) calibration lever. Healthy shape: transient blips that clear as a
+# second independent causal observation arrives (the bar doing elicitation
+# work). A sustained rate on cases that never validate means the bar is too
+# high for real traffic or the model keeps re-recording one datum — judge
+# against grounded-resolution outcomes, not this counter alone.
+root_validation_blocked_support_count_total = Counter(
+    "faultmaven_root_validation_blocked_support_count_total",
+    "A ROOT with real causal-category support that cleared the generic "
+    "validation bar was held at INCONCLUSIVE for lacking "
+    "ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN independent causal supports "
+    "(count, mutual-restatement collapse, or stance_confidence filter) — "
+    "one increment per block event.",
+)
+
+hypothesis_likelihood_capped_no_evidence_total = Counter(
+    "faultmaven_hypothesis_likelihood_capped_no_evidence_total",
+    "An LLM likelihood update on a hypothesis with NO supporting evidence "
+    "links was capped at NEW_HYPOTHESIS_MAX_PRIOR — belief above the prior "
+    "cap requires linked case evidence (#573 B1).",
+)
+
 absence_confirmation_link_stripped_total = Counter(
     "faultmaven_absence_confirmation_link_stripped_total",
     "An LLM-emitted SUPPORTS link on a causal_absence evidence row was "

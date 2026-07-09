@@ -364,8 +364,47 @@ correlation are not validation. Engine-side, a node reaches VALIDATED only on a
 
 A SUPPORTS link is causally grounding **only** when its backing datum is
 categorized `CAUSAL_EVIDENCE` — a direct observable fact matching the node's
-predicted state. Links backed by weaker categories (e.g. `SYMPTOM_EVIDENCE`)
-inform the narrative but never validate a node.
+predicted state — **and** the link's own declared `stance_confidence` is at or
+above `CAUSAL_STANCE_CONFIDENCE_MIN`: a link the model itself marks as
+doubtful is correlational color, not grounding (it still counts in the
+generic supports/refutes arithmetic). Links backed by weaker categories
+(e.g. `SYMPTOM_EVIDENCE`) inform the narrative but never validate a node.
+
+**Independent-support bar (ROOT-only).** A non-ROOT rung validates on ≥1
+causally-grounding link. A ROOT — the node that mints a conclusion — requires
+`ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN` (= 2) **independent** causally-grounding
+supports: distinct evidence rows whose contents are not mutual restatements of
+each other (`_EVIDENCE_MIRROR_JACCARD` over content tokens of
+`summary + extract`; re-recording one datum twice is one observation, and rows
+too short to judge collapse into a single bucket). The rationale is the trust
+boundary: with the runbook-provenance arm decommissioned (#658), *every*
+causal link is an LLM self-labeled claim, so a single self-certified datum
+must not conclude a case (#573 / #656 DF-1) — corroboration is the only
+engine-computable difficulty knob left. Two exceptions, both principled:
+
+- A **counterfactually CONFIRMED** root (engine-stamped `causal_absence`
+  SUPPORTS, *gone ⇒ gone*) satisfies the bar outright — M2's top grade
+  dominates empirical counting, the stamp is engine-only (ingest strips LLM
+  attempts), and a confirmed root recomputed post-RESOLVED must not demote
+  for having validated on fewer supports under an earlier bar.
+- The **deductive lane** (§7.1.1) is untouched: exclusion carries its own
+  strict guards and validates a survivor with no supports of its own.
+
+The bar is recompute-honest (NOT grandfathered, unlike the restatement
+guard): support counts are monotone in evidence — links only accumulate, and
+the only decreases (a stance flip or a lowered `stance_confidence` on
+re-link) are genuine re-assessments that *should* demote. A held root sits at
+INCONCLUSIVE — a live candidate (`cause_state=CANDIDATES`), never a refuted
+one. Block events increment `root_validation_blocked_support_count_total`
+(fires when the generic bar passed and real causal-category support exists;
+a root failing both this bar and the restatement guard is attributed here).
+
+The same prior-vs-evidence discipline holds on the flat axis: a direct LLM
+likelihood update on a hypothesis with **no supporting evidence links** is
+capped at `NEW_HYPOTHESIS_MAX_PRIOR` (`update_hypothesis_likelihood`, #573
+B1) — the creation-time cap was otherwise a fiat lever away from the
+`CAUSE_IDENTIFIED_LIKELIHOOD` gate it exists to protect. The model is told to
+record and link the observation instead of re-asserting a larger number.
 
 **Restatement guard (ROOT-only, an ENTRY bar on validation).** A ROOT whose
 statement carries less than `ROOT_NOVELTY_MIN_FRACTION` novel content tokens
@@ -420,8 +459,9 @@ sibling-frame dilution bound).
 filler-padded restatements read as novel and pass; a disjunction root in a
 case with no standing hypotheses passes; dense same-domain sibling frames can
 DELAY (never permanently block) a terse mechanism root's validation. The
-guard is one layer; the semantic layers (multi-support validation,
-assurance-grade caps, MECE arbitration) are tracked on #656.
+guard is one layer of the #656 defense; the independent-support bar (above)
+and the assurance-grade caps (§9.5) are the layers that have landed, MECE
+arbitration is tracked on #656.
 
 ### 7.1.1 Deductive validation (proof by exclusion)
 

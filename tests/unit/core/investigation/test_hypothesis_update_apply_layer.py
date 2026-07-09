@@ -342,3 +342,64 @@ def test_refuted_update_drives_m6_demotion_end_to_end():
 
     assert case.progress.cause_state == CauseState.UNKNOWN
     assert case.root_cause_conclusion is None  # M6 retracted the conclusion
+
+
+def test_evidence_free_likelihood_update_capped_with_feedback():
+    """INV-29 companion (#573 B1) at the apply layer: an over-cap likelihood on
+    an evidence-free hypothesis is capped by the canonical mutator AND the LLM
+    is told why via system_feedback (the recovery is to link evidence, not to
+    re-assert a larger number)."""
+    from faultmaven.core.investigation.hypothesis_manager import (
+        NEW_HYPOTHESIS_MAX_PRIOR,
+    )
+
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()  # no evidence links
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    eng._apply_hypothesis_updates(
+        case,
+        {h.hypothesis_id: HypothesisUpdate(likelihood=0.9)},
+        meta,
+        case.current_turn,
+    )
+
+    assert h.likelihood == NEW_HYPOTHESIS_MAX_PRIOR
+    assert "capped" in meta.get("system_feedback", "")
+    assert meta["hypotheses_updated"] == [h.hypothesis_id]
+
+
+def test_supported_likelihood_update_no_cap_feedback():
+    """Control: with a supporting link the update applies untouched and no cap
+    feedback is emitted."""
+    from faultmaven.modules.case.contracts import (
+        EvidenceStance,
+        HypothesisEvidenceLink,
+    )
+
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()
+    h.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=h.hypothesis_id,
+            evidence_id="ev_" + "0" * 12,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="linked",
+            stance_confidence=0.9,
+        )
+    )
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    eng._apply_hypothesis_updates(
+        case,
+        {h.hypothesis_id: HypothesisUpdate(likelihood=0.9)},
+        meta,
+        case.current_turn,
+    )
+
+    assert h.likelihood == 0.9
+    assert "capped" not in meta.get("system_feedback", "")

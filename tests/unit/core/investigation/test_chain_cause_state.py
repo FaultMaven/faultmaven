@@ -57,10 +57,15 @@ def _eid(label: str) -> str:
     return "ev_" + hashlib.md5(label.encode()).hexdigest()[:12]
 
 
-def _evidence(label, category=EvidenceCategory.CAUSAL_EVIDENCE) -> Evidence:
+def _evidence(
+    label, category=EvidenceCategory.CAUSAL_EVIDENCE, summary=None
+) -> Evidence:
+    # Default summary embeds the label as content tokens so two fixture rows
+    # read as INDEPENDENT observations under the §7.1 mirror collapse (INV-29);
+    # pass an explicit summary to model near-duplicate rows.
     return Evidence(
         evidence_id=_eid(label),
-        summary="an observed fact",
+        summary=summary or f"fact-{label} metric-{label} reading-{label}",
         primary_purpose="diagnosis",
         category=category,
         source_type=EvidenceSourceType.USER_DESCRIPTION,
@@ -70,17 +75,19 @@ def _evidence(label, category=EvidenceCategory.CAUSAL_EVIDENCE) -> Evidence:
     )
 
 
-def _root(node_id="cn_000000000001", *, support_label=None) -> CausalNode:
-    links = []
-    if support_label:
-        links = [
-            NodeEvidenceLink(
-                evidence_id=_eid(support_label),
-                stance=EvidenceStance.SUPPORTS,
-                reasoning="bears on the root",
-                linked_at_turn=2,
-            )
-        ]
+def _root(
+    node_id="cn_000000000001", *, support_label=None, support_labels=None
+) -> CausalNode:
+    labels = list(support_labels or ([support_label] if support_label else []))
+    links = [
+        NodeEvidenceLink(
+            evidence_id=_eid(label),
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="bears on the root",
+            linked_at_turn=2,
+        )
+        for label in labels
+    ]
     return CausalNode(
         node_id=node_id,
         statement="the root cause",
@@ -166,9 +173,13 @@ def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
 
 
 def _chain_case():
-    """A case with a root→D chain and a CAUSAL_EVIDENCE SUPPORTS on the root."""
-    root = _root(support_label="ev_root_support")
-    case = _case(nodes=[root], evidence=[_evidence("ev_root_support")])
+    """A case with a root→D chain and TWO independent CAUSAL_EVIDENCE SUPPORTS
+    on the root (the INV-29 validation bar)."""
+    root = _root(support_labels=["ev_root_support", "ev_root_support_b"])
+    case = _case(
+        nodes=[root],
+        evidence=[_evidence("ev_root_support"), _evidence("ev_root_support_b")],
+    )
     d = seed_problem_node(case)
     case.causal_edges = [
         CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
@@ -487,9 +498,17 @@ def test_ordinary_refute_does_not_suppress_decisive_attach():
 def test_one_chain_demoted_other_standing_stays_identified():
     """Two chains; one is counterfactually disconfirmed, the other's root stays
     validated → the case remains IDENTIFIED via the standing chain."""
-    r1 = _root("cn_000000000001", support_label="ev_s1")
-    r2 = _root("cn_000000000002", support_label="ev_s2")
-    case = _case(nodes=[r1, r2], evidence=[_evidence("ev_s1"), _evidence("ev_s2")])
+    r1 = _root("cn_000000000001", support_labels=["ev_s1", "ev_s1b"])
+    r2 = _root("cn_000000000002", support_labels=["ev_s2", "ev_s2b"])
+    case = _case(
+        nodes=[r1, r2],
+        evidence=[
+            _evidence("ev_s1"),
+            _evidence("ev_s1b"),
+            _evidence("ev_s2"),
+            _evidence("ev_s2b"),
+        ],
+    )
     d = seed_problem_node(case)
     case.causal_edges = [
         CausalEdge(cause_node_id=r1.node_id, effect_node_id=d.node_id),
@@ -537,16 +556,20 @@ def test_soft_floor_inconclusive_root_holds_candidates_not_unknown():
 
     # Ordinary (non-counterfactual) causal REFUTES ties the root's support →
     # derive marks it INCONCLUSIVE (not REFUTED), and the hyp itself is untouched.
-    tie = _evidence("ev_tie", EvidenceCategory.CAUSAL_EVIDENCE)
-    case.evidence.append(tie)
-    root.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=tie.evidence_id,
-            stance=EvidenceStance.REFUTES,
-            reasoning="one contrary reading",
-            linked_at_turn=case.current_turn,
+    ties = [
+        _evidence("ev_tie", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_tie2", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
+    case.evidence.extend(ties)
+    for tie in ties:
+        root.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=tie.evidence_id,
+                stance=EvidenceStance.REFUTES,
+                reasoning="one contrary reading",
+                linked_at_turn=case.current_turn,
+            )
         )
-    )
     _recompute_cause_state_from_chain(case)
     assert root.node_state == NodeState.INCONCLUSIVE
     assert case.progress.cause_state == CauseState.CANDIDATES  # soft floor, not UNKNOWN
@@ -615,9 +638,9 @@ def test_stale_engine_rcc_refreshed_on_root_handoff_without_refutation():
     """The non-M6 handoff: chain A grounds (engine RCC for A); next turn A drifts
     to INCONCLUSIVE (a tie, NOT refuted, so M6 never clears the RCC) while chain B
     validates. The stale engine RCC must REFRESH to B, not keep naming A."""
-    rA = _root("cn_00000000000a", support_label="ev_sa")
+    rA = _root("cn_00000000000a", support_labels=["ev_sa", "ev_sa2"])
     rB = _root("cn_00000000000b")  # B not yet supported
-    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa")])
+    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa"), _evidence("ev_sa2")])
     d = seed_problem_node(case)
     case.causal_edges = [
         CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),
@@ -631,24 +654,28 @@ def test_stale_engine_rcc_refreshed_on_root_handoff_without_refutation():
 
     # A drifts to a tie (INCONCLUSIVE, not refuted); B gains causal support.
     tie = _evidence("ev_tieA", EvidenceCategory.CAUSAL_EVIDENCE)
+    tie2 = _evidence("ev_tieA2", EvidenceCategory.CAUSAL_EVIDENCE)
     sb = _evidence("ev_sb", EvidenceCategory.CAUSAL_EVIDENCE)
-    case.evidence += [tie, sb]
-    rA.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=tie.evidence_id,
-            stance=EvidenceStance.REFUTES,
-            reasoning="contra",
-            linked_at_turn=case.current_turn,
+    sb2 = _evidence("ev_sb2", EvidenceCategory.CAUSAL_EVIDENCE)
+    case.evidence += [tie, tie2, sb, sb2]
+    for ev in (tie, tie2):
+        rA.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=ev.evidence_id,
+                stance=EvidenceStance.REFUTES,
+                reasoning="contra",
+                linked_at_turn=case.current_turn,
+            )
         )
-    )
-    rB.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=sb.evidence_id,
-            stance=EvidenceStance.SUPPORTS,
-            reasoning="pro",
-            linked_at_turn=case.current_turn,
+    for ev in (sb, sb2):
+        rB.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=ev.evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="pro",
+                linked_at_turn=case.current_turn,
+            )
         )
-    )
     _recompute_cause_state_from_chain(case)
     assert rA.node_state == NodeState.INCONCLUSIVE  # drifted, not refuted
     assert rB.node_state == NodeState.VALIDATED
@@ -876,6 +903,36 @@ def test_stale_engine_rcc_cleared_when_root_demotes_and_nothing_validates():
     assert case.root_cause_conclusion is None  # mirror cleared with its chain
 
 
+def test_pre_bar_single_support_root_demotes_on_recompute():
+    """INV-29 is RECOMPUTE-HONEST (no grandfathering, unlike the restatement
+    guard): a root persisted VALIDATED under the old >=1 bar with a single
+    causal support demotes to INCONCLUSIVE (a live candidate — cause_state
+    holds at CANDIDATES via the soft floor, never UNKNOWN/refuted) and its
+    engine mirror retracts with it."""
+    root = _root(support_label="ev_lone")
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.EMPIRICAL
+    case = _case(nodes=[root], evidence=[_evidence("ev_lone")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    hyp = _hyp(root.node_id)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=root.statement,
+        mechanism="Directly produces the observed problem.",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+        validated_hypothesis_id=hyp.hypothesis_id,
+        determined_by="engine:chain_validation",
+    )
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert case.root_cause_conclusion is None  # mirror retracted
+    assert case.progress.cause_state == CauseState.CANDIDATES  # soft floor
+
+
 def test_llm_rcc_survives_root_demotion():
     """The engine-mirror reconcile never touches an LLM-authored conclusion —
     its retraction lifecycle is a separate concern (#656)."""
@@ -1066,9 +1123,17 @@ def _two_validated_root_case():
     """Two root→D chains, both empirically validated — the unarbitrated
     multi-root shape shared by the MECE stamp guard, the mirror-selection
     tests, and the orphan-preference test."""
-    rA = _root("cn_00000000000a", support_label="ev_sa")
-    rB = _root("cn_00000000000b", support_label="ev_sb")
-    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa"), _evidence("ev_sb")])
+    rA = _root("cn_00000000000a", support_labels=["ev_sa", "ev_sa2"])
+    rB = _root("cn_00000000000b", support_labels=["ev_sb", "ev_sb2"])
+    case = _case(
+        nodes=[rA, rB],
+        evidence=[
+            _evidence("ev_sa"),
+            _evidence("ev_sa2"),
+            _evidence("ev_sb"),
+            _evidence("ev_sb2"),
+        ],
+    )
     d = seed_problem_node(case)
     case.causal_edges = [
         CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),

@@ -68,19 +68,22 @@ def _eid(label: str) -> str:
     return "ev_" + hashlib.md5(label.encode()).hexdigest()[:12]
 
 
-def _link(label, stance) -> NodeEvidenceLink:
+def _link(label, stance, stance_confidence=1.0) -> NodeEvidenceLink:
     return NodeEvidenceLink(
         evidence_id=_eid(label),
         stance=stance,
         reasoning="bears on the rung",
         linked_at_turn=2,
+        stance_confidence=stance_confidence,
     )
 
 
 def _evidence(label, category) -> Evidence:
+    # Label-derived summary: two fixture rows read as INDEPENDENT observations
+    # under the INV-29 mirror collapse (identical summaries would be one).
     return Evidence(
         evidence_id=_eid(label),
-        summary="an observed fact",
+        summary=f"fact-{label} metric-{label} reading-{label}",
         primary_purpose="diagnosis",
         category=category,
         source_type=EvidenceSourceType.USER_DESCRIPTION,
@@ -120,13 +123,20 @@ def _case(nodes, edges=None, evidence=None, hyps=None) -> Case:
 
 
 def test_causal_supports_validates_a_root():
-    ev = _evidence("ev_causal", EvidenceCategory.CAUSAL_EVIDENCE)
+    # Two INDEPENDENT causal supports — the INV-29 ROOT bar.
+    evs = [
+        _evidence("ev_causal", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_causal_b", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
     root = _node(
         _nid(1),
         node_type=NodeType.ROOT,
-        links=[_link("ev_causal", EvidenceStance.SUPPORTS)],
+        links=[
+            _link("ev_causal", EvidenceStance.SUPPORTS),
+            _link("ev_causal_b", EvidenceStance.SUPPORTS),
+        ],
     )
-    case = _case([root], evidence=[ev])
+    case = _case([root], evidence=evs)
     changed = derive_node_states(case)
     assert changed is True
     assert root.node_state == NodeState.VALIDATED
@@ -359,11 +369,17 @@ def test_redrive_is_idempotent():
 
 
 def test_validated_root_makes_chain_root_validated():
-    ev = _evidence("ev_c", EvidenceCategory.CAUSAL_EVIDENCE)
+    evs = [
+        _evidence("ev_c", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_c2", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
     root = _node(
         _nid(40),
         node_type=NodeType.ROOT,
-        links=[_link("ev_c", EvidenceStance.SUPPORTS)],
+        links=[
+            _link("ev_c", EvidenceStance.SUPPORTS),
+            _link("ev_c2", EvidenceStance.SUPPORTS),
+        ],
     )
     hyp = Hypothesis(
         hypothesis_id="hyp_000000000001",
@@ -375,7 +391,7 @@ def test_validated_root_makes_chain_root_validated():
         root_node_id=root.node_id,
         generated_at_turn=1,
     )
-    case = _case([root], evidence=[ev], hyps=[hyp])
+    case = _case([root], evidence=evs, hyps=[hyp])
     assert is_chain_root_validated(hyp, case.causal_nodes) is False
     derive_node_states(case)
     assert is_chain_root_validated(hyp, case.causal_nodes) is True
@@ -507,17 +523,25 @@ def _hyp(statement: str, *, root_node_id=None) -> Hypothesis:
 
 
 def _anchored_case(root_statement: str, *, node_type=NodeType.ROOT, hyps=None):
-    """A case with a PROBLEM anchor D and one supported node under test."""
+    """A case with a PROBLEM anchor D and a node under test carrying TWO
+    independent causal supports (the INV-29 bar) — these tests exercise the
+    restatement guard, not the support count."""
     d = _problem_node()
     object.__setattr__(d, "statement", _D_STATEMENT)
-    ev = _evidence("ev_causal", EvidenceCategory.CAUSAL_EVIDENCE)
+    evs = [
+        _evidence("ev_causal", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_causal_b", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
     n = _node(
         _nid(0xD1),
         node_type=node_type,
-        links=[_link("ev_causal", EvidenceStance.SUPPORTS)],
+        links=[
+            _link("ev_causal", EvidenceStance.SUPPORTS),
+            _link("ev_causal_b", EvidenceStance.SUPPORTS),
+        ],
     )
     object.__setattr__(n, "statement", root_statement)
-    return _case([d, n], evidence=[ev], hyps=hyps or []), n
+    return _case([d, n], evidence=evs, hyps=hyps or []), n
 
 
 # The #656 turn-6 case frame: the two still-ACTIVE hypotheses whose statements
@@ -705,3 +729,222 @@ def test_validated_root_survives_later_paraphrasing_sibling():
         case.hypotheses[h.hypothesis_id] = h
     derive_node_states(case)
     assert root.node_state == NodeState.VALIDATED  # evidence rules; no flap
+
+
+# ---------------------------------------------------------------------------
+# INV-29: §7.1 independent-support bar — a single self-labeled causal datum
+# never validates a ROOT
+# ---------------------------------------------------------------------------
+
+
+def _single_support_root_case():
+    """A ROOT with ONE causally-grounding SUPPORTS link (the pre-P1.3 shape)."""
+    ev = _evidence("ev_only", EvidenceCategory.CAUSAL_EVIDENCE)
+    root = _node(
+        _nid(0xE1),
+        node_type=NodeType.ROOT,
+        links=[_link("ev_only", EvidenceStance.SUPPORTS)],
+    )
+    return _case([root], evidence=[ev]), root
+
+
+def test_single_causal_support_holds_root_at_inconclusive():
+    # INV-29: one self-labeled causal datum is a live candidate, never a
+    # validated conclusion (NO-COLLAPSE: held, not refuted).
+    case, root = _single_support_root_case()
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert root.validation_method == ValidationMethod.NONE
+
+
+def test_mirrored_causal_rows_collapse_to_one_observation():
+    # Two rows re-recording the SAME observation (mutual-mirror contents) are
+    # ONE independent support — re-emitting a datum cannot clear the bar.
+    ev_a = _evidence("ev_dup_a", EvidenceCategory.CAUSAL_EVIDENCE)
+    ev_b = _evidence("ev_dup_b", EvidenceCategory.CAUSAL_EVIDENCE)
+    shared = "config diff shows pool max_size dropped from 100 to 5 at deploy"
+    object.__setattr__(ev_a, "summary", shared)
+    object.__setattr__(ev_b, "summary", shared + " window")
+    root = _node(
+        _nid(0xE2),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_dup_a", EvidenceStance.SUPPORTS),
+            _link("ev_dup_b", EvidenceStance.SUPPORTS),
+        ],
+    )
+    case = _case([root], evidence=[ev_a, ev_b])
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+
+
+def test_duplicate_links_to_same_evidence_count_once():
+    # Per-evidence dedup: two SUPPORTS links referencing the SAME row are one
+    # support, not two.
+    ev = _evidence("ev_same", EvidenceCategory.CAUSAL_EVIDENCE)
+    root = _node(
+        _nid(0xE3),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_same", EvidenceStance.SUPPORTS),
+            _link("ev_same", EvidenceStance.SUPPORTS),
+        ],
+    )
+    case = _case([root], evidence=[ev])
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+
+
+def test_self_hedged_support_is_not_causal_grounding():
+    # A link the model itself marks doubtful (< CAUSAL_STANCE_CONFIDENCE_MIN)
+    # does not count toward the bar...
+    evs = [
+        _evidence("ev_firm", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_hedged", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
+    root = _node(
+        _nid(0xE4),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_firm", EvidenceStance.SUPPORTS),
+            _link("ev_hedged", EvidenceStance.SUPPORTS, stance_confidence=0.4),
+        ],
+    )
+    case = _case([root], evidence=evs)
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+
+
+def test_support_at_confidence_threshold_counts():
+    # ...while a link AT the threshold does (>= bar, boundary pin).
+    evs = [
+        _evidence("ev_firm2", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_at_bar", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
+    root = _node(
+        _nid(0xE5),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_firm2", EvidenceStance.SUPPORTS),
+            _link("ev_at_bar", EvidenceStance.SUPPORTS, stance_confidence=0.6),
+        ],
+    )
+    case = _case([root], evidence=evs)
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_rung_keeps_single_support_bar():
+    # Non-ROOT rungs validate on >=1 causal support — the conclusion-minting
+    # bar is ROOT-only.
+    ev = _evidence("ev_rung1", EvidenceCategory.CAUSAL_EVIDENCE)
+    rung = _node(_nid(0xE6), links=[_link("ev_rung1", EvidenceStance.SUPPORTS)])
+    case = _case([rung], evidence=[ev])
+    derive_node_states(case)
+    assert rung.node_state == NodeState.VALIDATED
+
+
+def test_confirmed_root_satisfies_bar_with_single_support():
+    # A counterfactually CONFIRMED root (engine-stamped causal_absence
+    # SUPPORTS, M2 top grade) satisfies the bar outright — a confirmed
+    # 1-support case recomputed post-RESOLVED must not demote.
+    evs = [
+        _evidence("ev_solo", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_gone", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE),
+    ]
+    root = _node(
+        _nid(0xE7),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_solo", EvidenceStance.SUPPORTS),
+            _link("ev_gone", EvidenceStance.SUPPORTS),
+        ],
+    )
+    case = _case([root], evidence=evs)
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_support_count_block_counted_once_per_event():
+    # Block-event semantics mirror the restatement counter: one stuck
+    # under-supported root across many derives = ONE increment.
+    from unittest.mock import patch
+
+    case, root = _single_support_root_case()
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "root_validation_blocked_support_count_total"
+    ) as counter:
+        derive_node_states(case)  # blocks: CANDIDATE -> INCONCLUSIVE (1 event)
+        derive_node_states(case)  # already held: no new event
+        derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert counter.inc.call_count == 1
+
+
+def test_support_block_requires_a_real_causal_link():
+    # A root with only symptom-backed support was never causally supported —
+    # that is not a P1.3 block event (metrics attribution).
+    from unittest.mock import patch
+
+    ev = _evidence("ev_sympt", EvidenceCategory.SYMPTOM_EVIDENCE)
+    root = _node(
+        _nid(0xE8),
+        node_type=NodeType.ROOT,
+        links=[_link("ev_sympt", EvidenceStance.SUPPORTS)],
+    )
+    case = _case([root], evidence=[ev])
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "root_validation_blocked_support_count_total"
+    ) as counter:
+        derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert counter.inc.call_count == 0
+
+
+def test_two_independent_supports_never_touch_the_support_counter():
+    from unittest.mock import patch
+
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "root_validation_blocked_support_count_total"
+    ) as counter:
+        derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+    assert counter.inc.call_count == 0
+
+
+def test_undersupported_restating_root_attributed_to_support_counter():
+    # A root failing BOTH the support bar and the restatement guard is
+    # attributed to the support counter; the restatement counter requires
+    # would_validate (causal bar passed), so the two never double-count.
+    from unittest.mock import patch
+
+    d = _problem_node()
+    object.__setattr__(d, "statement", _D_STATEMENT)
+    ev = _evidence("ev_causal_one", EvidenceCategory.CAUSAL_EVIDENCE)
+    root = _node(
+        _nid(0xE9),
+        node_type=NodeType.ROOT,
+        links=[_link("ev_causal_one", EvidenceStance.SUPPORTS)],
+    )
+    object.__setattr__(root, "statement", _D_STATEMENT)  # verbatim restatement
+    case = _case([d, root], evidence=[ev])
+    with (
+        patch(
+            "faultmaven.core.investigation.causal_graph."
+            "root_validation_blocked_support_count_total"
+        ) as support_counter,
+        patch(
+            "faultmaven.core.investigation.causal_graph."
+            "root_validation_blocked_restatement_total"
+        ) as restatement_counter,
+    ):
+        derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert support_counter.inc.call_count == 1
+    assert restatement_counter.inc.call_count == 0

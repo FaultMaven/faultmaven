@@ -44,6 +44,7 @@ from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_link_stripped_total,
     root_validation_blocked_restatement_total,
+    root_validation_blocked_support_count_total,
 )
 from faultmaven.modules.case.contracts import (
     CausalEdge,
@@ -227,24 +228,50 @@ def deductively_validated(
 # §7.1 — empirical node-state derivation (what feeds is_chain_root_validated)
 # ---------------------------------------------------------------------------
 
+# §7.1 validation difficulty (P1.3 / #573): a ROOT validates empirically only on
+# at least this many INDEPENDENT causal supports. Every causal link is an LLM
+# self-labeled claim (the runbook-provenance arm was decommissioned, #658), so a
+# single self-certified datum must not mint a conclusion — one confidently-wrong
+# categorization is exactly the #656 turn-6 shape. Non-ROOT rungs keep the ≥1
+# bar (they carry no conclusion of their own; the ROOT bar rules the chain).
+ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN = 2
+
+# A SUPPORTS link only counts as CAUSAL grounding when the LLM's own declared
+# ``stance_confidence`` meets this bar — a link self-marked as doubtful
+# (< more-likely-than-not, with margin) is correlational color, not grounding.
+# It still counts in the generic supports/refutes arithmetic. Absent values
+# default to 1.0 (schema default), so only an EXPLICIT hedge is filtered.
+CAUSAL_STANCE_CONFIDENCE_MIN = 0.6
+
+# Jaccard at or above which two causal-evidence contents are ONE observation
+# for the independence count (mutual restatement — e.g. the same config diff
+# recorded twice with different phrasing). Same value as the frame-owner bar
+# but deliberately its own knob: they calibrate different comparisons.
+_EVIDENCE_MIRROR_JACCARD = 0.6
+
 
 def _node_evidence_tally(
     node: CausalNode, evidence_by_id: dict[str, EvidenceCategory | None]
-) -> tuple[int, int, int, int]:
-    """``(supports, refutes, causal_supports, counterfactual_refutes)`` for a node
-    from its rung links.
+) -> tuple[int, int, list[str], int, int]:
+    """``(supports, refutes, causal_support_ev_ids, raw_causal_links,
+    counterfactual_refutes)`` for a node from its rung links.
 
     Counts only links whose backing evidence row actually exists (a dangling
-    ``evidence_id`` is ignored, never assumed). ``causal_supports`` is the subset
-    of SUPPORTS links that are causally grounding — backed by ``CAUSAL_EVIDENCE``
-    (the §7.1 "direct observable fact" bar) — so a node validates only on real
-    causal grounding. ``counterfactual_refutes`` is
-    the subset of REFUTES links backed by ``CAUSAL_ABSENCE_EVIDENCE`` — a
-    counterfactual disconfirmation (the cause was addressed yet ``D`` persisted),
-    the §7.2 strongest grade, which refutes DECISIVELY (it is not outweighed by
-    correlational support).
+    ``evidence_id`` is ignored, never assumed). ``causal_support_ev_ids`` is the
+    ordered, per-evidence-deduped list of evidence ids behind SUPPORTS links
+    that are causally grounding — backed by ``CAUSAL_EVIDENCE`` (the §7.1
+    "direct observable fact" bar) AND declared at ``stance_confidence >=
+    CAUSAL_STANCE_CONFIDENCE_MIN`` (a self-hedged link is not grounding) — so a
+    node validates only on real causal grounding. ``raw_causal_links`` counts
+    CAUSAL_EVIDENCE-backed SUPPORTS links BEFORE the confidence filter/dedup
+    (metrics attribution only: "blocked by the P1.3 bar" vs "never causally
+    supported"). ``counterfactual_refutes`` is the subset of REFUTES links
+    backed by ``CAUSAL_ABSENCE_EVIDENCE`` — a counterfactual disconfirmation
+    (the cause was addressed yet ``D`` persisted), the §7.2 strongest grade,
+    which refutes DECISIVELY (it is not outweighed by correlational support).
     """
-    supports = refutes = causal_supports = counterfactual_refutes = 0
+    supports = refutes = raw_causal_links = counterfactual_refutes = 0
+    causal_support_ev_ids: list[str] = []
     for link in node.evidence_links:
         if link.evidence_id not in evidence_by_id:
             continue  # dangling reference — never counts
@@ -252,7 +279,13 @@ def _node_evidence_tally(
             supports += 1
             # Causal grounding is a CAUSAL_EVIDENCE-backed datum (§7.1).
             if evidence_by_id[link.evidence_id] == EvidenceCategory.CAUSAL_EVIDENCE:
-                causal_supports += 1
+                raw_causal_links += 1
+                if (
+                    getattr(link, "stance_confidence", 1.0) or 1.0
+                ) >= CAUSAL_STANCE_CONFIDENCE_MIN and (
+                    link.evidence_id not in causal_support_ev_ids
+                ):
+                    causal_support_ev_ids.append(link.evidence_id)
         elif link.stance == EvidenceStance.REFUTES:
             refutes += 1
             if (
@@ -260,7 +293,57 @@ def _node_evidence_tally(
                 == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
             ):
                 counterfactual_refutes += 1
-    return supports, refutes, causal_supports, counterfactual_refutes
+    return (
+        supports,
+        refutes,
+        causal_support_ev_ids,
+        raw_causal_links,
+        counterfactual_refutes,
+    )
+
+
+def _causal_evidence_tokens(case: Case) -> dict[str, set[str]]:
+    """``evidence_id -> content tokens`` for the case's CAUSAL_EVIDENCE rows —
+    the raw material of the §7.1 independence count. Content = the LLM-declared
+    ``summary`` plus the verbatim ``extract`` slice when present (the extract is
+    what actually distinguishes two observations of the same subsystem)."""
+    tokens: dict[str, set[str]] = {}
+    for e in case.evidence or []:
+        if getattr(e, "category", None) != EvidenceCategory.CAUSAL_EVIDENCE:
+            continue
+        text = " ".join(
+            part
+            for part in (getattr(e, "summary", None), getattr(e, "extract", None))
+            if part
+        )
+        tokens[e.evidence_id] = _content_tokens(text)
+    return tokens
+
+
+def _independent_causal_support_count(
+    ev_ids: list[str], tokens_by_id: dict[str, set[str]]
+) -> int:
+    """How many of these causal-support evidence rows are mutually INDEPENDENT
+    observations (§7.1 / P1.3): rows whose contents mutually mirror each other
+    (``_EVIDENCE_MIRROR_JACCARD``) collapse into one, so re-recording the same
+    datum twice cannot satisfy the ROOT validation bar. Rows too short to
+    tokenize are unjudgeable and collapse into a single bucket together —
+    conservative in the NO-INCORRECT-CONCLUSION direction (they can contribute
+    at most one observation, never inflate the count)."""
+    representatives: list[set[str]] = []
+    saw_untokenizable = False
+    for eid in ev_ids:
+        toks = tokens_by_id.get(eid) or set()
+        if not toks:
+            saw_untokenizable = True
+            continue
+        if any(
+            _mutual_mirror(toks, rep, _EVIDENCE_MIRROR_JACCARD)
+            for rep in representatives
+        ):
+            continue
+        representatives.append(toks)
+    return len(representatives) + (1 if saw_untokenizable else 0)
 
 
 def _problem_anchor_statements(case: Case) -> list[str]:
@@ -337,7 +420,9 @@ def _node_restates(
     for rid, tokens in hyp_token_sets:
         if rid == node_id:
             continue  # attached own hypothesis
-        if rid is None and _mutual_mirror(statement_tokens, tokens):
+        if rid is None and _mutual_mirror(
+            statement_tokens, tokens, _FRAME_OWNER_JACCARD
+        ):
             continue  # unattached presumptive owner (attachment lag)
         frame |= tokens
     if not frame:
@@ -346,13 +431,15 @@ def _node_restates(
     return novel < ROOT_NOVELTY_MIN_FRACTION
 
 
-def _mutual_mirror(a_tokens: set, b_tokens: set) -> bool:
-    """MUTUAL restatement (high Jaccard) — both statements are ~the same claim.
-    Distinct from one-way containment: a disjunction root contains each of its
-    sources but is not mutually theirs."""
+def _mutual_mirror(a_tokens: set, b_tokens: set, threshold: float) -> bool:
+    """MUTUAL restatement (Jaccard at/above ``threshold``) — both texts are ~the
+    same claim. Distinct from one-way containment: a disjunction root contains
+    each of its sources but is not mutually theirs. Callers pass their own bar
+    (frame ownership vs causal-evidence independence — different comparisons,
+    separately calibrated)."""
     if not a_tokens or not b_tokens:
         return False
-    return len(a_tokens & b_tokens) / len(a_tokens | b_tokens) >= _FRAME_OWNER_JACCARD
+    return len(a_tokens & b_tokens) / len(a_tokens | b_tokens) >= threshold
 
 
 def _restating_root_ids(case: Case) -> set:
@@ -397,16 +484,26 @@ def derive_node_states(case: Case) -> bool:
       OR its links net-refute it ``refutes > supports`` (strict; a correlational
       tie is INCONCLUSIVE, not a disproof). ``validation_method=NONE``,
       ``actionable=False``.
-    - **VALIDATED** — not refuted, has at least one causally-grounding SUPPORTS
-      link (CAUSAL_EVIDENCE-backed), is net-supporting (``supports > refutes``),
-      every AND-set feeding it is fully VALIDATED (M7 proof, strict), AND — for a
-      ROOT — its statement carries novel content beyond the case frame
-      (``root_restates_case_frame``, §7.1 restatement guard: the symptom dressed
-      as a cause holds at INCONCLUSIVE instead). EMPIRICAL grade;
-      a validated ROOT is marked ``actionable`` (M1). Method/actionable/reason
-      are kept mutually consistent so the node satisfies its M1/M4/refutation
-      model-validators on reload (``CausalNode(**...)``; ``validate_assignment``
-      is off in memory).
+    - **VALIDATED** — not refuted, causally grounded, net-supporting
+      (``supports > refutes``), every AND-set feeding it is fully VALIDATED
+      (M7 proof, strict), AND — for a ROOT — its statement carries novel content
+      beyond the case frame (``root_restates_case_frame``, §7.1 restatement
+      guard: the symptom dressed as a cause holds at INCONCLUSIVE instead).
+      Causal grounding (§7.1 / P1.3): a non-ROOT rung needs ≥1 causally-grounding
+      SUPPORTS link (CAUSAL_EVIDENCE-backed, ``stance_confidence`` at/above
+      ``CAUSAL_STANCE_CONFIDENCE_MIN``); a ROOT — the node that mints a
+      conclusion — needs ``ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN`` INDEPENDENT
+      such supports (distinct evidence rows that are not mutual restatements of
+      each other), because every causal link is an LLM self-labeled claim and
+      one self-certified datum must not conclude a case (#573/#656 DF-1). A
+      counterfactually CONFIRMED root (engine-stamped ``causal_absence``
+      SUPPORTS, gone⇒gone — the M2 top grade, engine-only producer) satisfies
+      the ROOT bar outright: confirmation dominates empirical counting, and a
+      confirmed 1-support root recomputed post-RESOLVED must not demote.
+      EMPIRICAL grade; a validated ROOT is marked ``actionable`` (M1).
+      Method/actionable/reason are kept mutually consistent so the node
+      satisfies its M1/M4/refutation model-validators on reload
+      (``CausalNode(**...)``; ``validate_assignment`` is off in memory).
     - **INCONCLUSIVE** — has bearing evidence but neither validates nor refutes
       (including a support/refute tie).
     - **CANDIDATE** — no bearing evidence yet (the lazy default; a freshly
@@ -427,6 +524,7 @@ def derive_node_states(case: Case) -> bool:
     edges = case.causal_edges
     evidence_by_id: dict[str, EvidenceCategory | None] = _evidence_category_map(case)
     restating_roots = _restating_root_ids(case)
+    causal_tokens = _causal_evidence_tokens(case)
 
     changed_any = False
     # Fixpoint: a validated parent can unlock a child's AND-gate. Bound the loop
@@ -436,22 +534,41 @@ def derive_node_states(case: Case) -> bool:
         for node in nodes.values():
             if node.node_type == NodeType.PROBLEM:
                 continue
-            supports, refutes, causal_supports, counterfactual_refutes = (
-                _node_evidence_tally(node, evidence_by_id)
-            )
+            (
+                supports,
+                refutes,
+                causal_support_ev_ids,
+                raw_causal_links,
+                counterfactual_refutes,
+            ) = _node_evidence_tally(node, evidence_by_id)
             deductively_valid = (
                 node.node_state == NodeState.VALIDATED
                 and node.validation_method == ValidationMethod.DEDUCTIVE
             )
-            # Everything the empirical bar requires EXCEPT the restatement
-            # guard; computed once so the guard branch below is provably "would
-            # have validated but for restatement" (AND-gate blocks stay
-            # attributed to the AND-gate, not the guard).
-            would_validate = (
-                causal_supports >= 1
-                and supports > refutes
-                and and_constraints_satisfied(node.node_id, nodes, edges)
+            # §7.1 causal-grounding bar (P1.3/#573): a ROOT needs
+            # ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN independent causal supports
+            # — or a counterfactual confirmation, which dominates counting —
+            # while a non-ROOT rung keeps ≥1. The len() pre-check short-circuits
+            # the pairwise independence work when the raw count can't reach the
+            # bar anyway (independent count ≤ deduped link count).
+            if node.node_type == NodeType.ROOT:
+                causally_grounded = (
+                    len(causal_support_ev_ids) >= ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN
+                    and _independent_causal_support_count(
+                        causal_support_ev_ids, causal_tokens
+                    )
+                    >= ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN
+                ) or root_counterfactually_confirmed(node, evidence_by_id)
+            else:
+                causally_grounded = len(causal_support_ev_ids) >= 1
+            # Everything the empirical bar requires EXCEPT the causal-grounding
+            # bar and the restatement guard; computed separately so each block
+            # branch below is provably "would have validated but for THIS bar"
+            # (AND-gate blocks stay attributed to the AND-gate).
+            generic_ok = supports > refutes and and_constraints_satisfied(
+                node.node_id, nodes, edges
             )
+            would_validate = causally_grounded and generic_ok
             # A counterfactual disconfirmation (§7.2/§7.3) refutes decisively; a
             # correlational tie/majority is the lesser ``refutes > supports`` bar.
             if counterfactual_refutes >= 1 or refutes > supports:
@@ -513,6 +630,23 @@ def derive_node_states(case: Case) -> bool:
                 and node.node_id in restating_roots
             ):
                 root_validation_blocked_restatement_total.inc()
+
+            # P1.3 calibration counter, same block-event semantics: the state
+            # transition where a ROOT with real causal-category support that
+            # clears the generic bar is held ONLY by the independence/confidence
+            # bar (raw_causal_links >= 1 separates "blocked by the P1.3 bar"
+            # from "never causally supported at all"). Fires regardless of the
+            # restatement verdict — a root failing BOTH bars is attributed here
+            # (the restatement counter requires would_validate, so the two
+            # never double-count one event).
+            if (
+                target_state == NodeState.INCONCLUSIVE
+                and generic_ok
+                and not causally_grounded
+                and raw_causal_links >= 1
+                and node.node_type == NodeType.ROOT
+            ):
+                root_validation_blocked_support_count_total.inc()
 
             # Keep the FINAL field combination invariant-valid (the model
             # validators run on reload via CausalNode(**...)): M4 validated ⇒
