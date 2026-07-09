@@ -723,16 +723,29 @@ issue #656.) The confirmation must be **linked to the root it confirms** — a
 case-level `causal_absence` row with no bearing on the root does not confirm
 it (the same bearing discipline as the counterfactual-refute arm).
 
+Because the prompt's verify-turn contract records the resolution-confirming
+`causal_absence` row as a stand-alone audit row (never linked), the **engine
+attaches the confirmation link itself** when the bearing is unambiguous:
+`confirm_root_from_resolution_absence` links an unlinked absence row to the
+**sole** standing validated root (the confirm-side twin of the M6 failed-fix
+refute stamp). With several simultaneously-validated roots the engine never
+guesses which cause the fix removed — the case stays `MECHANISTIC` pending
+arbitration; a REFUTES-linked absence row (a failed fix) never flips to
+confirmation.
+
 The grade is **persisted** per turn on `InvestigationProgress.cause_assurance`
 (the `verification_status` pattern — rides the progress blob, no migration).
 That makes the grade × conclusion-confidence seam queryable, drives the
 resolution report's assurance qualifier and the `cause_assurance` field on the
 progress-transparency surface, and feeds the **over-claim seam warning**: a
 recorded conclusion claiming *verified* while the grade is below `CONFIRMED`
-is logged at WARNING every recompute (the incident shape of issue #656; the
+is logged at WARNING on the transition into that state (edge-triggered via the
+persisted `cause_overclaim` flag, so a standing over-claim warns once rather
+than once per turn; the per-turn state stays visible in the DEBUG grounding
+trace and the flag itself). This is the incident shape of issue #656; the
 engine's own mirror can no longer produce it, so a hit is an LLM-authored
 over-claim — LLM-conclusion retraction is a separate correction tracked on
-that issue).
+that issue.
 
 The grade also rules the **engine-synthesized conclusion's confidence** (§9.3
 mirror): a `MECHANISTIC` root mints `CONFIDENT` at a fixed 0.8 — a *cap*, so

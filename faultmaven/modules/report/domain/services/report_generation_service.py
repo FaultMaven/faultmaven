@@ -450,11 +450,22 @@ class ReportGenerationService:
     @staticmethod
     def _assurance_note(case: Case) -> Optional[str]:
         """A lower-assurance qualifier under the Root Cause heading, from the
-        engine's persisted assurance grade (M2 confirmation ladder). A
-        counterfactually CONFIRMED cause needs no note; anything less is labeled
-        so the report never presents an unconfirmed conclusion at full
-        certainty (#572)."""
-        grade = getattr(case.progress, "cause_assurance", None)
+        engine's assurance grade (M2 confirmation ladder). A counterfactually
+        CONFIRMED cause needs no note; anything less is labeled so the report
+        never presents an unconfirmed conclusion at full certainty (#572).
+
+        The grade is RECOMPUTED from the persisted causal graph (a pure
+        function), not read from the persisted progress field: terminal cases
+        never recompute, so a case resolved before the field existed would
+        read the NO_ROOT default forever and a regenerated report would
+        falsely discredit a validated conclusion. The persisted field remains
+        the per-turn observability signal; the report reads the graph truth.
+        """
+        from faultmaven.core.investigation.cause_assurance import (
+            grade_cause_assurance,
+        )
+
+        grade = grade_cause_assurance(case)
         if grade == CauseAssuranceGrade.MECHANISTIC:
             return (
                 "_Assurance: identified from the investigation's evidence, but "

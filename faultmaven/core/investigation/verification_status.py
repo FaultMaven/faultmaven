@@ -78,10 +78,12 @@ def work_gate_passed(case: "Case") -> bool:
     )
 
 
-def _is_grounded(case: "Case") -> bool:
+def _is_grounded(case: "Case", grade: "CauseAssuranceGrade | None" = None) -> bool:
     """Grounding axis for the disposition join: an authority-grounded root
     (§7 ``CONFIRMED`` — counterfactual confirmation, the top M2 grade)
-    **anchored on a verified symptom**.
+    **anchored on a verified symptom**. ``grade`` lets the per-turn recompute
+    pass the grade it just persisted, so both persisted signals derive from
+    one graph snapshot; when omitted the grade is computed fresh.
 
     ``CONFIRMED`` is the direct successor of the pre-M2-alignment ``GROUNDED``
     grade as the axis value (the top assurance grade either way), so the join's
@@ -127,7 +129,9 @@ def _is_grounded(case: "Case") -> bool:
     """
     if not (case.progress and case.progress.symptom_verified):
         return False
-    return grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
+    if grade is None:
+        grade = grade_cause_assurance(case)
+    return grade == CauseAssuranceGrade.CONFIRMED
 
 
 def is_stalled(case: "Case") -> bool:
@@ -197,19 +201,23 @@ def is_progress_stalled(case: "Case") -> bool:
     return is_stalled(case) or _declared_wall(case)
 
 
-def assess_verification_status(case: "Case") -> VerificationStatus:
+def assess_verification_status(
+    case: "Case", *, grade: "CauseAssuranceGrade | None" = None
+) -> VerificationStatus:
     """Compute the verification status as the grounding × progress join.
 
     Reads the grounding grade × the progress axis (``is_progress_stalled`` —
     time thresholds OR a model-declared data wall). The result is persisted onto
     ``case.progress.verification_status`` each turn by the caller
-    (``milestone_engine._recompute_assessment_state``); the model-declared
-    obtainability it reads is likewise durable (the ``evidence_needs`` column).
-    The caller must run this AFTER any deductive-validation stamp in the turn
-    pipeline (mirroring the #593 recompute), so the grounding-first disposition
-    reads a fresh grade rather than pre-empting the deductive arm.
+    (``milestone_engine._recompute_assessment_state``), which passes the grade
+    it just persisted via ``grade`` so both signals derive from one graph
+    snapshot; the model-declared obtainability it reads is likewise durable
+    (the ``evidence_needs`` column). The caller must run this AFTER any
+    deductive-validation stamp in the turn pipeline (mirroring the #593
+    recompute), so the grounding-first disposition reads a fresh grade rather
+    than pre-empting the deductive arm.
     """
-    if _is_grounded(case):
+    if _is_grounded(case, grade=grade):
         # Grounded × stalled = TREATMENT_BLOCKED, meaning "have a cause but can't
         # reach a *verified fix*". That is a fix-reachability stall — the time
         # thresholds only. The declared data wall is about not being able to

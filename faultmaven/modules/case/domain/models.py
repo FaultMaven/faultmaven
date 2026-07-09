@@ -614,6 +614,18 @@ class InvestigationProgress(BaseModel):
         ),
     )
 
+    cause_overclaim: bool = Field(
+        default=False,
+        description=(
+            "Whether the recorded RootCauseConclusion currently claims "
+            "'verified' while cause_assurance is below CONFIRMED — the M2 "
+            "over-claim seam. Derived each recompute from the same predicate "
+            "as the seam trace; persisted so the WARNING is edge-triggered "
+            "(warn on the transition into over-claim, not once per turn) and "
+            "the standing seam is queryable per case."
+        ),
+    )
+
     last_anti_anchoring_turn: int = Field(
         default=0,
         ge=0,

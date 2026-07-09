@@ -965,6 +965,7 @@ def _resolved_case_no_graph():
     )
 
 
+@pytest.mark.integration
 class TestConvertFromCaseSoundnessGate:
     """§7: the API conversion path must enforce the same CONFIRMED harvest bar
     (counterfactual confirmation, M2 gone⇒gone) as the chat-side, so an

@@ -39,9 +39,20 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CauseAssuranceGrade",
+    "evidence_category_map",
     "grade_cause_assurance",
     "root_counterfactually_confirmed",
 ]
+
+
+def evidence_category_map(case: "Case") -> dict:
+    """The one ``evidence_id → category`` map every assurance/tally reader
+    shares (this module and ``causal_graph`` import it from here), so the
+    "dangling evidence_id is ignored, never assumed" discipline has a single
+    owner — parallel hand-written comprehensions would let a future filter or
+    key change reach some readers and not others, silently splitting the M2
+    grade from node-state derivation."""
+    return {e.evidence_id: e.category for e in case.evidence}
 
 
 def _validated_roots(case: "Case") -> list["CausalNode"]:
@@ -82,7 +93,7 @@ def grade_cause_assurance(case: "Case") -> CauseAssuranceGrade:
     validated_roots = _validated_roots(case)
     if not validated_roots:
         return CauseAssuranceGrade.NO_ROOT
-    evidence_category_by_id = {e.evidence_id: e.category for e in case.evidence}
+    evidence_category_by_id = evidence_category_map(case)
     if any(
         root_counterfactually_confirmed(r, evidence_category_by_id)
         for r in validated_roots

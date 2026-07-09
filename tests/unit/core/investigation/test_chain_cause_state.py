@@ -984,3 +984,189 @@ def test_no_overclaim_warning_for_grade_consistent_mirror(caplog):
         for r in caplog.records
         if getattr(r, "event", None) == "cause_confidence_overclaim"
     ]
+
+
+# ---------------------------------------------------------------------------
+# M2 confirm-side stamp: the engine makes CONFIRMED reachable from the live flow
+# (the prompt records the resolution causal_absence row UNLINKED by contract)
+# ---------------------------------------------------------------------------
+
+
+def _standalone_absence(case, label="ev_standalone_absence"):
+    """The prompt-contract shape: a causal_absence row on the case, linked to
+    NOTHING."""
+    row = _evidence(label, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    case.evidence.append(row)
+    return row
+
+
+def test_stamp_confirms_sole_validated_root_from_standalone_absence():
+    """Happy path: fix confirmed → standalone causal_absence row recorded →
+    the engine attaches the SUPPORTS link, and the same recompute reads
+    CONFIRMED with a VERIFIED mirror."""
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _chain_case()
+    _recompute_assessment_state(case)  # root validates (mechanistic)
+    assert case.progress.cause_assurance == CauseAssuranceGrade.MECHANISTIC
+    _standalone_absence(case)
+    _recompute_assessment_state(case)
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    assert case.root_cause_conclusion.confidence_level == ConfidenceLevel.VERIFIED
+    # Idempotent: another recompute attaches nothing further.
+    links_before = len(root.evidence_links)
+    _recompute_assessment_state(case)
+    assert len(root.evidence_links) == links_before
+
+
+def test_stamp_never_confirms_from_a_refutes_linked_absence_row():
+    """A REFUTES-linked absence row is a failed-fix disconfirmation (M6) —
+    it must never flip into a confirmation of another root."""
+    from faultmaven.core.investigation.causal_graph import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)
+    absent = _evidence("ev_failed_fix", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    case.evidence.append(absent)
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=absent.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="fix applied, D persists",
+            linked_at_turn=case.current_turn,
+        )
+    )
+    assert confirm_root_from_resolution_absence(case) is False
+
+
+def test_stamp_holds_when_multiple_roots_stand_validated():
+    """MECE-violation guard: with two standing validated roots the engine never
+    guesses which cause the fix removed — no link, grade stays MECHANISTIC."""
+    from faultmaven.core.investigation.causal_graph import (
+        confirm_root_from_resolution_absence,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade, NodeState
+
+    rA = _root("cn_00000000000a", support_label="ev_sa")
+    rB = _root("cn_00000000000b", support_label="ev_sb")
+    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa"), _evidence("ev_sb")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),
+        CausalEdge(cause_node_id=rB.node_id, effect_node_id=d.node_id),
+    ]
+    hA = _hyp(rA.node_id, hypothesis_id="hyp_0000000000aa")
+    hB = _hyp(rB.node_id, hypothesis_id="hyp_0000000000bb")
+    case.hypotheses = {hA.hypothesis_id: hA, hB.hypothesis_id: hB}
+    _recompute_cause_state_from_chain(case)
+    assert rA.node_state == NodeState.VALIDATED
+    assert rB.node_state == NodeState.VALIDATED
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is False
+    from faultmaven.core.investigation.cause_assurance import grade_cause_assurance
+
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.MECHANISTIC
+
+
+# ---------------------------------------------------------------------------
+# Mirror re-mint root selection: the conclusion follows the CONFIRMED root and
+# a level-only correction never swaps the named cause
+# ---------------------------------------------------------------------------
+
+
+def _two_root_case_with_mirror_on_b():
+    rA = _root("cn_00000000000a", support_label="ev_sa")
+    rB = _root("cn_00000000000b", support_label="ev_sb")
+    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa"), _evidence("ev_sb")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),
+        CausalEdge(cause_node_id=rB.node_id, effect_node_id=d.node_id),
+    ]
+    hA = _hyp(rA.node_id, hypothesis_id="hyp_0000000000aa")
+    hB = _hyp(rB.node_id, hypothesis_id="hyp_0000000000bb")
+    case.hypotheses = {hA.hypothesis_id: hA, hB.hypothesis_id: hB}
+    _recompute_cause_state_from_chain(case)
+    # Force the engine mirror onto B (dict order would pick A).
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=rB.statement,
+        mechanism="Directly produces the observed problem.",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+        validated_hypothesis_id=hB.hypothesis_id,
+        determined_by="engine:chain_validation",
+    )
+    return case, rA, rB, hA, hB
+
+
+def test_mirror_upgrade_keeps_the_confirmed_prior_root():
+    """Confirmation lands on the mirror's OWN root B: the mirror upgrades to
+    VERIFIED still naming B — never silently swapped to first-in-dict A."""
+    case, rA, rB, hA, hB = _two_root_case_with_mirror_on_b()
+    _confirm(case, rB, label="ev_confirm_b")
+    _recompute_cause_state_from_chain(case)
+    rcc = case.root_cause_conclusion
+    assert rcc.validated_hypothesis_id == hB.hypothesis_id
+    assert rcc.confidence_level == ConfidenceLevel.VERIFIED
+
+
+def test_mirror_repoints_to_the_confirmed_sibling_root():
+    """Confirmation lands on the OTHER root A while the mirror names B: the
+    mirror re-points to the confirmed root — a conclusion asserting an
+    unconfirmed sibling under a CONFIRMED grade is not faithful."""
+    case, rA, rB, hA, hB = _two_root_case_with_mirror_on_b()
+    _confirm(case, rA, label="ev_confirm_a")
+    _recompute_cause_state_from_chain(case)
+    rcc = case.root_cause_conclusion
+    assert rcc.validated_hypothesis_id == hA.hypothesis_id
+    assert rcc.confidence_level == ConfidenceLevel.VERIFIED
+
+
+def test_level_only_correction_keeps_the_prior_root():
+    """Pre-cap VERIFIED mirror on unconfirmed B (A also validated, neither
+    confirmed): the correction fixes the LEVEL but keeps naming B."""
+    case, rA, rB, hA, hB = _two_root_case_with_mirror_on_b()
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=rB.statement,
+        mechanism="Directly produces the observed problem.",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+        validated_hypothesis_id=hB.hypothesis_id,
+        determined_by="engine:chain_validation",
+    )
+    _recompute_cause_state_from_chain(case)
+    rcc = case.root_cause_conclusion
+    assert rcc.validated_hypothesis_id == hB.hypothesis_id
+    assert rcc.confidence_level == ConfidenceLevel.CONFIDENT
+    assert rcc.likelihood == 0.8
+
+
+# ---------------------------------------------------------------------------
+# Over-claim WARNING is edge-triggered (warn on the transition, not per turn)
+# ---------------------------------------------------------------------------
+
+
+def test_overclaim_warning_is_edge_triggered(caplog):
+    import logging as _logging
+
+    case, root, hyp = _chain_case()
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="the LLM's own worded conclusion",
+        mechanism="as the LLM described it",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.95,
+    )
+    with caplog.at_level(
+        _logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _recompute_assessment_state(case)
+        _recompute_assessment_state(case)  # standing over-claim: no second warn
+    recs = [
+        r
+        for r in caplog.records
+        if getattr(r, "event", None) == "cause_confidence_overclaim"
+    ]
+    assert len(recs) == 1
+    assert case.progress.cause_overclaim is True

@@ -38,6 +38,7 @@ from faultmaven.core.investigation.causal_graph import (
     any_chain_root_inconclusive,
     any_chain_root_validated,
     chain_path_to_problem,
+    confirm_root_from_resolution_absence,
     demote_disconfirmed_cause_via_evidence,
     derive_node_states,
     ingest_emitted_chain,
@@ -909,6 +910,13 @@ def _recompute_assessment_state(
     """
     p = case.progress
 
+    # M2 confirm-side stamp FIRST: the resolution-confirming causal_absence row
+    # is recorded UNLINKED by the prompt contract, so when its bearing is
+    # unambiguous (exactly one standing validated root) the engine attaches the
+    # SUPPORTS link here — before the chain recompute, so the same turn's
+    # derive/mirror/grade all see the confirmation.
+    confirm_root_from_resolution_absence(case)
+
     _recompute_cause_state_from_chain(case, exclusion_survivors=exclusion_survivors)
 
     if p.solution_state != SolutionState.SELECTED:
@@ -919,23 +927,25 @@ def _recompute_assessment_state(
     # recompute above has run derive_node_states + the deductive-exclusion
     # stamp, so both read a fresh graph rather than pre-empting the deductive
     # arm. The grade is persisted (progress blob, like verification_status) so
-    # the grade × conclusion-confidence seam is queryable per turn (#656 DF-6).
+    # the grade × conclusion-confidence seam is queryable per turn (#656 DF-6);
+    # the join reads the just-persisted grade rather than recomputing, so both
+    # persisted signals derive from the same graph snapshot.
     p.cause_assurance = grade_cause_assurance(case)
-    p.verification_status = assess_verification_status(case)
+    p.verification_status = assess_verification_status(case, grade=p.cause_assurance)
 
     # M2 over-claim seam (#656 turn-6 shape): a recorded conclusion claims
     # "verified" while the graph grade lacks counterfactual confirmation. The
     # engine mirror can no longer produce this (its confidence is grade-derived),
     # so a hit here is an LLM-authored conclusion over-claiming — surfaced at
     # WARNING (prod-visible, unlike the DEBUG grounding trace) until conclusion
-    # retraction/refresh lands (#656 P2.3). The under-claim polarity lives in
+    # retraction/refresh lands (#656 P2.3). Edge-triggered via the persisted
+    # flag so a standing over-claim warns once, not once per turn (alert
+    # hygiene); the per-turn state stays visible in the DEBUG grounding trace
+    # and the persisted flag itself. The under-claim polarity lives in
     # ``_log_grounding_assessment``.
     rcc = case.root_cause_conclusion
-    if (
-        rcc is not None
-        and rcc.confidence_level == ConfidenceLevel.VERIFIED
-        and p.cause_assurance != CauseAssuranceGrade.CONFIRMED
-    ):
+    overclaims = _conclusion_overclaims(rcc, p.cause_assurance)
+    if overclaims and not p.cause_overclaim:
         logger.warning(
             "M2 over-claim seam: case=%s turn=%s conclusion claims verified "
             "(likelihood=%.2f, determined_by=%s) but cause_assurance=%s",
@@ -953,8 +963,21 @@ def _recompute_assessment_state(
                 "cause_assurance": p.cause_assurance.value,
             },
         )
+    p.cause_overclaim = overclaims
 
     _log_grounding_assessment(case)
+
+
+def _conclusion_overclaims(rcc, grade) -> bool:
+    """The M2 over-claim seam predicate — ONE definition shared by the WARNING
+    in ``_recompute_assessment_state`` and the ``seam_overclaim`` flag in the
+    DEBUG grounding trace, so the prod signal and the greppable trace can never
+    disagree about the same turn."""
+    return (
+        rcc is not None
+        and rcc.confidence_level == ConfidenceLevel.VERIFIED
+        and grade != CauseAssuranceGrade.CONFIRMED
+    )
 
 
 def _log_grounding_assessment(case: "Case") -> None:
@@ -996,12 +1019,7 @@ def _log_grounding_assessment(case: "Case") -> None:
         seam_divergence = grade == CauseAssuranceGrade.CONFIRMED and (
             p.cause_state != CauseState.IDENTIFIED or not p.symptom_verified
         )
-        rcc = case.root_cause_conclusion
-        seam_overclaim = (
-            rcc is not None
-            and rcc.confidence_level == ConfidenceLevel.VERIFIED
-            and grade != CauseAssuranceGrade.CONFIRMED
-        )
+        seam_overclaim = _conclusion_overclaims(case.root_cause_conclusion, grade)
         logger.debug(
             "grounding-assessment case=%s turn=%s verification_status=%s grade=%s "
             "cause_state=%s symptom_verified=%s hyps=%s nodes=%s seam_divergence=%s",
