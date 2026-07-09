@@ -32,6 +32,9 @@ from faultmaven.core.investigation.cause_assurance import (
     confirm_root_from_resolution_absence,
     grade_cause_assurance,
 )
+from faultmaven.core.investigation.verification_status import (
+    assess_verification_status,
+)
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
@@ -445,6 +448,15 @@ def _execute_resolved_transition(case: Case, user_id: str):
         case.progress.cause_assurance = grade_cause_assurance(case)
         case.progress.cause_overclaim = conclusion_overclaims(
             case.root_cause_conclusion, case.progress.cause_assurance
+        )
+        # The FULL grade-derived persisted set — the per-turn recompute derives
+        # verification_status from the same grade snapshot precisely so the two
+        # signals can never diverge; the terminal blob must honor the same
+        # invariant or every stamp-confirmed case would freeze
+        # cause_assurance=confirmed beside a pre-stamp (e.g. not-grounded)
+        # verification_status.
+        case.progress.verification_status = assess_verification_status(
+            case, grade=case.progress.cause_assurance
         )
 
     now = datetime.now(UTC)

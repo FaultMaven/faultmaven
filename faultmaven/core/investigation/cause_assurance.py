@@ -31,15 +31,20 @@ from faultmaven.modules.case.contracts import (
     ConfidenceLevel,
     EvidenceCategory,
     EvidenceStance,
+    HypothesisState,
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    RootCauseConclusion,
 )
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case, CausalNode
 
 __all__ = [
+    "CONFIRMED_RCC_LIKELIHOOD_FLOOR",
+    "ENGINE_RCC_AUTHOR",
+    "MECHANISTIC_RCC_LIKELIHOOD",
     "CauseAssuranceGrade",
     "conclusion_overclaims",
     "confirm_root_from_resolution_absence",
@@ -47,6 +52,27 @@ __all__ = [
     "grade_cause_assurance",
     "root_counterfactually_confirmed",
 ]
+
+# The marker on an engine-synthesized RootCauseConclusion (§9.3) — distinguishes
+# the engine's faithful mirror (which may be refreshed/retired) from the LLM's
+# own authored conclusion (which always wins and is never overwritten). Defined
+# here (grade semantics, contracts-only) so both ``causal_graph`` (the mint) and
+# the terminal confirm-stamp below can share it without an import cycle.
+ENGINE_RCC_AUTHOR = "engine:chain_validation"
+
+# M2 confidence vocabulary (§0 M2, §7.2): a validated-but-unconfirmed root is
+# MECHANISTIC grade — the engine-synthesized conclusion reads CONFIDENT at a
+# FIXED likelihood (a cap, not a floor: the LLM's own higher
+# root_cause_likelihood must not leak a mechanistic cause into "verified").
+# Only a counterfactually CONFIRMED root (causal_absence SUPPORTS on the root,
+# gone⇒gone) reads VERIFIED, floored at 0.9.
+MECHANISTIC_RCC_LIKELIHOOD = 0.8
+CONFIRMED_RCC_LIKELIHOOD_FLOOR = 0.9
+
+# Hypothesis states that keep a chain's root a STANDING cause (mirrors
+# ``causal_graph._STANDING_HYP_STATES`` — kept literal here to avoid the
+# import cycle; the two must not drift).
+_STANDING_HYP_STATES = (HypothesisState.ACTIVE, HypothesisState.VALIDATED)
 
 
 def evidence_category_map(case: "Case") -> dict:
@@ -56,7 +82,7 @@ def evidence_category_map(case: "Case") -> dict:
     owner — parallel hand-written comprehensions would let a future filter or
     key change reach some readers and not others, silently splitting the M2
     grade from node-state derivation."""
-    return {e.evidence_id: e.category for e in case.evidence}
+    return {e.evidence_id: getattr(e, "category", None) for e in case.evidence}
 
 
 def _validated_roots(case: "Case") -> list["CausalNode"]:
@@ -77,7 +103,11 @@ def root_counterfactually_confirmed(
     went with it (gone⇒gone). The confirmation must be LINKED to this node: a
     case-level absence row with no bearing on the root does not confirm it (the
     same bearing discipline as ``_node_evidence_tally``'s counterfactual-refute
-    arm). A dangling ``evidence_id`` is ignored, never assumed."""
+    arm). A dangling ``evidence_id`` is ignored, never assumed. The only live
+    producer of such a link is the resolution confirm-stamp below — the LLM
+    chain-emission ingest strips SUPPORTS-on-absence links (see
+    ``causal_graph.ingest_emitted_chain``), so this predicate cannot be
+    satisfied by an LLM self-claim."""
     return any(
         link.stance == EvidenceStance.SUPPORTS
         and evidence_category_by_id.get(link.evidence_id)
@@ -100,56 +130,93 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
 
     The prompt's verify-turn contract records the resolution-confirming
     ``causal_absence_evidence`` row as a STAND-ALONE audit row ("do NOT link
-    it"), and no LLM path links absence evidence to a causal node — so without
-    an engine stamp the counterfactual confirmation the grade requires would
-    never exist, silently decommissioning the harvest gate. But the row alone
-    is an LLM self-claim: a premature "pods are stable" absence row emitted
-    mid-rollout (observed live in the gate sims) must not confirm anything.
-    The trigger is therefore the RESOLVED handshake — the user's explicit
-    consent — which is strictly stronger evidence than the row's existence.
+    it"), and the chain-emission ingest strips any LLM attempt to SUPPORTS-link
+    absence evidence — so this stamp is the only producer of the counterfactual
+    confirmation the grade requires. The row alone is an LLM self-claim: a
+    premature "pods are stable" absence row emitted mid-rollout (observed live
+    in the gate sims) must not confirm anything. The trigger is therefore the
+    RESOLVED handshake — the user's explicit consent — which is strictly
+    stronger evidence than the row's existence.
 
-    Deliberately conservative (NO INCORRECT CONCLUSION):
+    Target root — exactly ONE, chosen conservatively (NO INCORRECT CONCLUSION):
 
-    - Only at resolution execution (caller: ``_execute_resolved_transition``).
-    - Only when exactly ONE standing validated ROOT exists. With several (an
-      unarbitrated MECE violation) the engine never guesses which cause the
-      fix removed — the case stays MECHANISTIC pending arbitration.
-    - Only absence rows with NO existing node link anywhere in the graph
-      qualify: a REFUTES-linked absence row is a failed-fix disconfirmation
-      (M6) and must never flip to confirmation; an already-linked row's
-      bearing is already decided.
+    - Validated roots of STANDING hypotheses (ACTIVE/VALIDATED) when any exist:
+      an orphan validated node whose hypothesis decayed to RETIRED without
+      disproof must not veto the user's confirmation of the standing cause.
+    - Otherwise all validated roots (the weak-model chain-without-hypothesis
+      shape). With several candidates either way (an unarbitrated MECE
+      violation) the engine never guesses which cause the fix removed — the
+      case stays MECHANISTIC pending arbitration.
+
+    Row selection — order-independent and windowed:
+
+    - Repositories load ``case.evidence`` newest-first, in-memory construction
+      appends oldest-first — so selection keys on ``collected_at_turn`` (the
+      NEWEST qualifying row), never on list position.
+    - Engine-authored rows never qualify: the engine only mints absence rows
+      as failed-fix disconfirmations (M6), and node pruning can orphan their
+      REFUTES link — a laundered disconfirmation must not become confirmation.
+    - Rows at or before the latest failed-fix disconfirmation never qualify: a
+      premature "it's stable" row from a fix window that later FAILED must not
+      confirm a different, later fix.
+    - Only rows with NO existing node link anywhere qualify (an already-linked
+      row's bearing is decided). Content-level bearing of the row on THIS root
+      is the separate causal-absence bearing check tracked on #656.
     - Idempotent: a root already counterfactually confirmed is left alone.
 
-    Returns True if it attached a link. The caller re-persists the grade
-    afterwards so the terminal blob reflects the confirmation.
+    On success, an ENGINE-authored conclusion mirror naming this root is
+    upgraded in place (VERIFIED + the confirming row cited) — terminal cases
+    never recompute, so the mirror would otherwise stay frozen at the
+    mechanistic grade beside a CONFIRMED case. Returns True if it attached a
+    link; the caller re-persists grade, over-claim flag, and verification
+    status so the terminal blob reflects the confirmation.
     """
-    validated_roots = [
-        n
-        for n in case.causal_nodes.values()
-        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
-    ]
-    if len(validated_roots) != 1:
+    validated_roots = _validated_roots(case)
+    if not validated_roots:
         return False
-    root = validated_roots[0]
+    standing_root_ids = {
+        h.root_node_id
+        for h in case.hypotheses.values()
+        if h is not None and h.state in _STANDING_HYP_STATES and h.root_node_id
+    }
+    targets = [n for n in validated_roots if n.node_id in standing_root_ids]
+    if not targets:
+        targets = validated_roots
+    if len(targets) != 1:
+        return False
+    root = targets[0]
     cat_by_id = evidence_category_map(case)
     if root_counterfactually_confirmed(root, cat_by_id):
         return False
-    linked_ids = {
-        link.evidence_id
-        for node in case.causal_nodes.values()
-        for link in node.evidence_links
-    }
-    absence_row = next(
+
+    linked_ids: set = set()
+    refutes_linked: set = set()
+    for node in case.causal_nodes.values():
+        for link in node.evidence_links:
+            linked_ids.add(link.evidence_id)
+            if link.stance == EvidenceStance.REFUTES:
+                refutes_linked.add(link.evidence_id)
+    last_disconfirm_turn = max(
         (
-            e
-            for e in reversed(case.evidence)
+            e.collected_at_turn or 0
+            for e in case.evidence
             if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-            and e.evidence_id not in linked_ids
+            and e.evidence_id in refutes_linked
         ),
-        None,
+        default=-1,
     )
-    if absence_row is None:
+    candidates = [
+        e
+        for e in case.evidence
+        if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+        and e.evidence_id not in linked_ids
+        and getattr(e, "collected_by", None) != "engine"
+        and (e.collected_at_turn or 0) > last_disconfirm_turn
+    ]
+    if not candidates:
         return False
+    absence_row = max(candidates, key=lambda e: e.collected_at_turn or 0)
+
     root.evidence_links.append(
         NodeEvidenceLink(
             evidence_id=absence_row.evidence_id,
@@ -158,7 +225,41 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
             linked_at_turn=case.current_turn,
         )
     )
+    _upgrade_engine_mirror(case, root, absence_row.evidence_id)
     return True
+
+
+def _upgrade_engine_mirror(
+    case: "Case", root: "CausalNode", absence_evidence_id: str
+) -> None:
+    """Scoped re-mint at the stamp site: terminal cases never run the per-turn
+    recompute (and ``terminal_transitions`` cannot import ``causal_graph``'s
+    full mirror synthesis), so without this an ENGINE-authored conclusion would
+    stay frozen at CONFIDENT/0.8 — and its ``evidence_basis``, minted pre-stamp,
+    would never cite the gone⇒gone row — beside a CONFIRMED terminal grade. The
+    upgrade keeps the mirror's text/root and raises only the grade-derived
+    fields. LLM-authored conclusions are never touched (their retraction and
+    refresh lifecycle is a separate correction tracked on #656)."""
+    rcc = case.root_cause_conclusion
+    if rcc is None or getattr(rcc, "determined_by", None) != ENGINE_RCC_AUTHOR:
+        return
+    hyp = case.hypotheses.get(getattr(rcc, "validated_hypothesis_id", None) or "")
+    if hyp is None or hyp.root_node_id != root.node_id:
+        return
+    likelihood = max(rcc.likelihood or 0.0, CONFIRMED_RCC_LIKELIHOOD_FLOOR)
+    evidence_basis = list(rcc.evidence_basis or [])
+    if absence_evidence_id not in evidence_basis:
+        evidence_basis.append(absence_evidence_id)
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=rcc.root_cause,
+        mechanism=rcc.mechanism,
+        confidence_level=ConfidenceLevel.from_score(likelihood),
+        likelihood=likelihood,
+        validated_hypothesis_id=rcc.validated_hypothesis_id,
+        evidence_basis=evidence_basis,
+        contributing_factors=list(rcc.contributing_factors or []),
+        determined_by=ENGINE_RCC_AUTHOR,
+    )
 
 
 def conclusion_overclaims(rcc, grade: CauseAssuranceGrade) -> bool:

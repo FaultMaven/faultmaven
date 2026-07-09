@@ -608,8 +608,8 @@ class InvestigationProgress(BaseModel):
             "M2 confirmation ladder (NO_ROOT | MECHANISTIC | CONFIRMED). "
             "Recomputed each turn from the causal graph alongside cause_state "
             "(never path-stripped) and persisted in the progress blob so the "
-            "grade × conclusion-confidence seam is queryable per turn (#656 "
-            "DF-6). CONFIRMED (counterfactual, gone⇒gone) is the sole harvest "
+            "grade × conclusion-confidence seam is queryable per turn (#656). "
+            "CONFIRMED (counterfactual, gone⇒gone) is the sole harvest "
             "authority and the only grade whose conclusion reads 'verified'."
         ),
     )

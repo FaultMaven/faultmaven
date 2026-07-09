@@ -900,7 +900,7 @@ def test_llm_rcc_survives_root_demotion():
 
 
 def test_recompute_persists_cause_assurance_grade():
-    """#656 DF-6: the grade is written onto the progress blob each recompute so
+    """#656: the grade is written onto the progress blob each recompute so
     the grade × conclusion-confidence seam is queryable, and it tracks the
     graph as confirmation arrives."""
     from faultmaven.modules.case.contracts import CauseAssuranceGrade
@@ -925,8 +925,8 @@ def test_recompute_persists_cause_assurance_grade():
 
 def test_cause_assurance_rides_the_progress_blob():
     """Persistence pin: the grade serializes with InvestigationProgress (the
-    verification_status pattern — no migration), and a pre-P1.2 blob without
-    the field reloads at the NO_ROOT default."""
+    verification_status pattern — no migration), and a blob persisted before
+    the field existed reloads at the NO_ROOT default."""
     import json
 
     from faultmaven.modules.case.contracts import CauseAssuranceGrade
@@ -945,7 +945,8 @@ def test_cause_assurance_rides_the_progress_blob():
 def test_overclaim_warning_fires_for_llm_verified_rcc(caplog):
     """The prod-visible over-claim seam (#656 turn-6 shape): an LLM-authored
     conclusion claiming verified while the grade lacks counterfactual
-    confirmation warns every recompute."""
+    confirmation warns on the transition into the over-claim (the per-turn
+    state stays in the DEBUG trace and the persisted flag)."""
     import logging as _logging
 
     case, root, hyp = _chain_case()
@@ -1061,14 +1062,10 @@ def test_stamp_never_confirms_from_a_refutes_linked_absence_row():
     assert confirm_root_from_resolution_absence(case) is False
 
 
-def test_stamp_holds_when_multiple_roots_stand_validated():
-    """MECE-violation guard: with two standing validated roots the engine never
-    guesses which cause the fix removed — no link, grade stays MECHANISTIC."""
-    from faultmaven.core.investigation.cause_assurance import (
-        confirm_root_from_resolution_absence,
-    )
-    from faultmaven.modules.case.contracts import CauseAssuranceGrade, NodeState
-
+def _two_validated_root_case():
+    """Two root→D chains, both empirically validated — the unarbitrated
+    multi-root shape shared by the MECE stamp guard, the mirror-selection
+    tests, and the orphan-preference test."""
     rA = _root("cn_00000000000a", support_label="ev_sa")
     rB = _root("cn_00000000000b", support_label="ev_sb")
     case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa"), _evidence("ev_sb")])
@@ -1083,6 +1080,18 @@ def test_stamp_holds_when_multiple_roots_stand_validated():
     _recompute_cause_state_from_chain(case)
     assert rA.node_state == NodeState.VALIDATED
     assert rB.node_state == NodeState.VALIDATED
+    return case, rA, rB, hA, hB
+
+
+def test_stamp_holds_when_multiple_roots_stand_validated():
+    """MECE-violation guard: with two standing validated roots the engine never
+    guesses which cause the fix removed — no link, grade stays MECHANISTIC."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, rA, rB, hA, hB = _two_validated_root_case()
     _standalone_absence(case)
     assert confirm_root_from_resolution_absence(case) is False
     from faultmaven.core.investigation.cause_assurance import grade_cause_assurance
@@ -1097,18 +1106,7 @@ def test_stamp_holds_when_multiple_roots_stand_validated():
 
 
 def _two_root_case_with_mirror_on_b():
-    rA = _root("cn_00000000000a", support_label="ev_sa")
-    rB = _root("cn_00000000000b", support_label="ev_sb")
-    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_sa"), _evidence("ev_sb")])
-    d = seed_problem_node(case)
-    case.causal_edges = [
-        CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),
-        CausalEdge(cause_node_id=rB.node_id, effect_node_id=d.node_id),
-    ]
-    hA = _hyp(rA.node_id, hypothesis_id="hyp_0000000000aa")
-    hB = _hyp(rB.node_id, hypothesis_id="hyp_0000000000bb")
-    case.hypotheses = {hA.hypothesis_id: hA, hB.hypothesis_id: hB}
-    _recompute_cause_state_from_chain(case)
+    case, rA, rB, hA, hB = _two_validated_root_case()
     # Force the engine mirror onto B (dict order would pick A).
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause=rB.statement,
@@ -1190,3 +1188,175 @@ def test_overclaim_warning_is_edge_triggered(caplog):
     ]
     assert len(recs) == 1
     assert case.progress.cause_overclaim is True
+
+
+# ---------------------------------------------------------------------------
+# Confirm-stamp hardening (review round 2): row selection, target guard,
+# mirror upgrade, terminal persist set
+# ---------------------------------------------------------------------------
+
+
+def _absence_row(label, turn, collected_by="llm"):
+    row = _evidence(label, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    object.__setattr__(row, "collected_at_turn", turn)
+    object.__setattr__(row, "collected_by", collected_by)
+    return row
+
+
+def test_stamp_selects_newest_row_regardless_of_list_order():
+    """Repositories load evidence newest-first (ORDER BY created_at DESC), so
+    positional selection inverts on DB-loaded cases — the stamp must key on
+    collected_at_turn, never list position."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)
+    fresh = _absence_row("ev_fresh_confirm", 9)
+    premature = _absence_row("ev_premature", 3)
+    # Repo order: newest first.
+    case.evidence = [fresh, premature, *case.evidence]
+    assert confirm_root_from_resolution_absence(case) is True
+    linked = [
+        l.evidence_id
+        for l in root.evidence_links
+        if l.stance == EvidenceStance.SUPPORTS
+        and l.evidence_id in (fresh.evidence_id, premature.evidence_id)
+    ]
+    assert linked == [fresh.evidence_id]
+
+
+def test_stamp_ignores_engine_authored_absence_rows():
+    """Engine-minted absence rows are failed-fix disconfirmation artifacts (M6);
+    even if node pruning orphans their REFUTES link they must never flip into a
+    confirmation."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)
+    case.evidence.append(_absence_row("ev_engine_row", 7, collected_by="engine"))
+    assert confirm_root_from_resolution_absence(case) is False
+
+
+def test_stamp_ignores_rows_from_before_a_failed_fix():
+    """A premature 'it's stable' row recorded before a fix window that later
+    FAILED (a REFUTES-linked absence row) must not confirm a later fix; a row
+    newer than the disconfirmation may."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)
+    premature = _absence_row("ev_premature2", 3)
+    failed_fix = _absence_row("ev_failed_fix2", 5)
+    case.evidence += [premature, failed_fix]
+    # The failed fix disconfirmed a SIBLING cause (a REFUTES-linked absence on
+    # the target root would refute it and moot the stamp).
+    other = _root("cn_00000000fa11")
+    case.causal_nodes[other.node_id] = other
+    other.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=failed_fix.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="fix applied, D persists",
+            linked_at_turn=5,
+        )
+    )
+    assert confirm_root_from_resolution_absence(case) is False  # only stale row
+    case.evidence.append(_absence_row("ev_post_fix", 7))
+    assert confirm_root_from_resolution_absence(case) is True
+
+
+def test_stamp_prefers_standing_hypothesis_root_over_orphan():
+    """An orphan validated node whose hypothesis decayed to RETIRED must not
+    veto the user's confirmation of the standing cause."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+        grade_cause_assurance,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, rA, rB, hA, hB = _two_validated_root_case()
+    hA.state = HypothesisState.RETIRED  # decayed, not disproven — A is an orphan
+    case.evidence.append(_absence_row("ev_confirm_std", 8))
+    assert confirm_root_from_resolution_absence(case) is True
+    assert any(
+        l.stance == EvidenceStance.SUPPORTS and "user-confirmed" in (l.reasoning or "")
+        for l in rB.evidence_links
+    )
+    assert not any("user-confirmed" in (l.reasoning or "") for l in rA.evidence_links)
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
+
+
+def test_stamp_falls_back_to_sole_node_when_no_hypothesis_stands():
+    """The weak-model shape (validated chain, hypotheses only CAPTURED) still
+    confirms via the node-level fallback."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)
+    hyp.state = HypothesisState.CAPTURED
+    case.evidence.append(_absence_row("ev_confirm_cap", 8))
+    assert confirm_root_from_resolution_absence(case) is True
+
+
+def test_resolution_execution_upgrades_engine_mirror_and_status():
+    """Terminal persist set: the stamp upgrades an ENGINE-authored mirror to
+    VERIFIED citing the confirming row, and re-derives verification_status from
+    the post-stamp grade — the terminal blob may not carry confirmed beside a
+    pre-stamp status."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        _execute_resolved_transition,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _chain_case()
+    _recompute_assessment_state(case)  # engine mirror at CONFIDENT/0.8
+    assert case.root_cause_conclusion.confidence_level == ConfidenceLevel.CONFIDENT
+    row = _absence_row("ev_confirm_up", 8)
+    case.evidence.append(row)
+    _execute_resolved_transition(case, "user_x")
+    rcc = case.root_cause_conclusion
+    assert rcc.confidence_level == ConfidenceLevel.VERIFIED
+    assert rcc.likelihood >= 0.9
+    assert row.evidence_id in rcc.evidence_basis
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    assert case.progress.verification_status.value == "healthy"
+
+
+def test_overclaim_warning_rearms_on_new_conclusion(caplog):
+    """A NEW over-claiming conclusion replacing a retracted one while the flag
+    is still True is a distinct event and gets its own WARNING."""
+    import logging as _logging
+
+    case, root, hyp = _chain_case()
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="conclusion A",
+        mechanism="m",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.95,
+    )
+    with caplog.at_level(
+        _logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _recompute_assessment_state(case)  # warns; flag latches True
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="conclusion B",
+            mechanism="m",
+            confidence_level=ConfidenceLevel.VERIFIED,
+            likelihood=0.92,
+        )
+        _recompute_assessment_state(case, rcc_authored_this_turn=True)  # re-warns
+        _recompute_assessment_state(case)  # standing: silent
+    recs = [
+        r
+        for r in caplog.records
+        if getattr(r, "event", None) == "cause_confidence_overclaim"
+    ]
+    assert len(recs) == 2

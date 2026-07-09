@@ -51,10 +51,8 @@ from faultmaven.core.investigation.causal_graph import (
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
+    conclusion_overclaims,
     grade_cause_assurance,
-)
-from faultmaven.core.investigation.cause_assurance import (
-    conclusion_overclaims as _conclusion_overclaims,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
@@ -887,7 +885,10 @@ def _recompute_cause_state_from_chain(
 
 
 def _recompute_assessment_state(
-    case: "Case", *, exclusion_survivors: "set[str] | frozenset[str]" = frozenset()
+    case: "Case",
+    *,
+    exclusion_survivors: "set[str] | frozenset[str]" = frozenset(),
+    rcc_authored_this_turn: bool = False,
 ) -> None:
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
@@ -928,7 +929,7 @@ def _recompute_assessment_state(
     # recompute above has run derive_node_states + the deductive-exclusion
     # stamp, so both read a fresh graph rather than pre-empting the deductive
     # arm. The grade is persisted (progress blob, like verification_status) so
-    # the grade × conclusion-confidence seam is queryable per turn (#656 DF-6);
+    # the grade × conclusion-confidence seam is queryable per turn (#656);
     # the join reads the just-persisted grade rather than recomputing, so both
     # persisted signals derive from the same graph snapshot.
     p.cause_assurance = grade_cause_assurance(case)
@@ -945,8 +946,12 @@ def _recompute_assessment_state(
     # and the persisted flag itself. The under-claim polarity lives in
     # ``_log_grounding_assessment``.
     rcc = case.root_cause_conclusion
-    overclaims = _conclusion_overclaims(rcc, p.cause_assurance)
-    if overclaims and not p.cause_overclaim:
+    overclaims = conclusion_overclaims(rcc, p.cause_assurance)
+    # Edge-triggered on the persisted flag, RE-ARMED when a conclusion was
+    # (re)authored this turn: a NEW over-claiming conclusion replacing a
+    # retracted one while the flag is still True is a distinct over-claim event
+    # and must get its own WARNING, not be absorbed as "standing".
+    if overclaims and (rcc_authored_this_turn or not p.cause_overclaim):
         logger.warning(
             "M2 over-claim seam: case=%s turn=%s conclusion claims verified "
             "(likelihood=%.2f, determined_by=%s) but cause_assurance=%s",
@@ -983,8 +988,9 @@ def _log_grounding_assessment(case: "Case") -> None:
     conclusion claiming "verified" while the grade lacks counterfactual
     confirmation; also emitted at WARNING by the caller so prod sees it).
 
-    Guarded by the level check so the payload construction (a fresh grade
-    computation + the node/hypothesis summaries) costs nothing above DEBUG, and
+    Guarded by the level check so the payload construction (the
+    node/hypothesis summaries; the grade is read from the field the caller just
+    persisted) costs nothing above DEBUG, and
     the whole body is failure-isolated: a diagnostic trace must never break the
     turn pipeline it runs inside, whatever shape the case is in.
     """
@@ -1008,7 +1014,7 @@ def _log_grounding_assessment(case: "Case") -> None:
         seam_divergence = grade == CauseAssuranceGrade.CONFIRMED and (
             p.cause_state != CauseState.IDENTIFIED or not p.symptom_verified
         )
-        seam_overclaim = _conclusion_overclaims(case.root_cause_conclusion, grade)
+        seam_overclaim = conclusion_overclaims(case.root_cause_conclusion, grade)
         logger.debug(
             "grounding-assessment case=%s turn=%s verification_status=%s grade=%s "
             "cause_state=%s symptom_verified=%s hyps=%s nodes=%s seam_divergence=%s",
@@ -6626,6 +6632,7 @@ class MilestoneEngine:
         # can use the conclusion text in the same turn.
         if hasattr(updates, "root_cause_conclusion") and updates.root_cause_conclusion:
             rcc = updates.root_cause_conclusion
+            metadata["rcc_authored_this_turn"] = True
             case.root_cause_conclusion = RootCauseConclusion(
                 root_cause=rcc.root_cause,
                 mechanism=rcc.mechanism,
@@ -7295,6 +7302,7 @@ class MilestoneEngine:
         _recompute_assessment_state(
             case,
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
+            rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
         )
 
         # Deferred-implementation disposition: if the fix is known but can't be

@@ -444,3 +444,64 @@ def test_ingest_dedup_does_not_merge_distinct_siblings():
     assert created[0] != created[1]
     roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
     assert len(roots) == 2
+
+
+def test_ingest_strips_llm_supports_link_on_absence_evidence():
+    """M2 trust boundary: counterfactual CONFIRMATION is engine-reserved. An
+    LLM-emitted SUPPORTS link on a causal_absence row is stripped at ingest
+    (it would mint the CONFIRMED grade — 'verified', the harvest bar, the
+    grounded axis — from a self-claim); REFUTES-on-absence stays accepted
+    (counterfactual disconfirmation feeds M6)."""
+    from datetime import datetime, timezone
+
+    from faultmaven.modules.case.contracts import (
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+        EvidenceStance,
+    )
+
+    case = _case()
+    d = seed_problem_node(case)
+    absence = Evidence(
+        evidence_id="ev_aaaaaaaaaaa1",
+        summary="errors gone after restart",
+        primary_purpose="diagnosis",
+        category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_by="llm",
+        collected_at_turn=2,
+        collected_at=datetime.now(timezone.utc),
+    )
+    case.evidence.append(absence)
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[
+            SimpleNamespace(
+                statement="kernel conntrack table saturation drops packets",
+                node_type="root",
+                produces="D",
+                and_group=None,
+            )
+        ],
+        edges_to_add=[],
+        node_evidence=[
+            SimpleNamespace(
+                node_ref="new_index_0",
+                evidence_id="ev_aaaaaaaaaaa1",
+                stance="supports",
+                reasoning="it went away",
+            ),
+            SimpleNamespace(
+                node_ref="new_index_0",
+                evidence_id="ev_aaaaaaaaaaa1",
+                stance="refutes",
+                reasoning="fix applied, problem persists",
+            ),
+        ],
+        current_turn=case.current_turn,
+    )
+    root = case.causal_nodes[created[0]]
+    stances = [link.stance for link in root.evidence_links]
+    assert EvidenceStance.SUPPORTS not in stances  # confirmation stripped
+    assert EvidenceStance.REFUTES in stances  # disconfirmation accepted

@@ -160,3 +160,12 @@ root_validation_blocked_restatement_total = Counter(
     "because its statement restates the problem anchor (no explanatory "
     "depth) — one increment per block event.",
 )
+
+absence_confirmation_link_stripped_total = Counter(
+    "faultmaven_absence_confirmation_link_stripped_total",
+    "An LLM-emitted SUPPORTS link on a causal_absence evidence row was "
+    "stripped at chain-emission ingest — counterfactual CONFIRMATION is "
+    "engine-reserved (the resolution confirm-stamp), so a self-claimed "
+    "confirmation must never mint the CONFIRMED grade. One increment per "
+    "stripped link.",
+)

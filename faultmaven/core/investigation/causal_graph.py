@@ -30,13 +30,19 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from faultmaven.core.investigation.cause_assurance import (
-    evidence_category_map as _evidence_category_map,
+    CONFIRMED_RCC_LIKELIHOOD_FLOOR,
+    MECHANISTIC_RCC_LIKELIHOOD,
+    root_counterfactually_confirmed,
 )
 from faultmaven.core.investigation.cause_assurance import (
-    root_counterfactually_confirmed,
+    ENGINE_RCC_AUTHOR as _ENGINE_RCC_AUTHOR,
+)
+from faultmaven.core.investigation.cause_assurance import (
+    evidence_category_map as _evidence_category_map,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
+    absence_confirmation_link_stripped_total,
     root_validation_blocked_restatement_total,
 )
 from faultmaven.modules.case.contracts import (
@@ -65,14 +71,10 @@ if TYPE_CHECKING:
 # partial exclusion.
 DEDUCTIVE_EXCLUSION_MAX_BELIEF = 0.05
 
-# M2 confidence vocabulary (§0 M2, §7.2): a validated-but-unconfirmed root is
-# MECHANISTIC grade — the engine-synthesized conclusion reads CONFIDENT at a
-# FIXED likelihood (a cap, not a floor: the LLM's own higher
-# root_cause_likelihood must not leak a mechanistic cause into "verified").
-# Only a counterfactually CONFIRMED root (causal_absence SUPPORTS on the root,
-# gone⇒gone) reads VERIFIED, floored at 0.9.
-MECHANISTIC_RCC_LIKELIHOOD = 0.8
-CONFIRMED_RCC_LIKELIHOOD_FLOOR = 0.9
+# The M2 confidence-band constants (MECHANISTIC_RCC_LIKELIHOOD /
+# CONFIRMED_RCC_LIKELIHOOD_FLOOR) and the engine-mirror author marker live in
+# ``cause_assurance`` (grade semantics, contracts-only) and are imported above —
+# the terminal confirm-stamp there shares them and cannot import this module.
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +858,7 @@ def ingest_emitted_chain(
 
     # Node-targeted evidence (rung-level stance).
     existing_ev = {ev.evidence_id for ev in case.evidence}
+    cat_by_id = _evidence_category_map(case)
 
     def _resolve_ev(ref: str | None) -> str | None:
         # Evidence ref: a real ev_ id, or 'new_index_N' into this turn's evidence.
@@ -881,6 +884,23 @@ def ingest_emitted_chain(
         )
         stance = getattr(link, "stance", None)
         if node is None or ev_id not in existing_ev or stance is None:
+            continue
+        # M2 trust boundary: counterfactual CONFIRMATION is engine-reserved.
+        # A SUPPORTS link on a causal_absence row would satisfy
+        # ``root_counterfactually_confirmed`` and mint the CONFIRMED grade —
+        # "verified", the harvest bar, and the grounded disposition axis —
+        # from a pure LLM self-claim, bypassing the RESOLVED handshake that is
+        # the grade's only sanctioned producer. Strip it (the INV-23 surgical-
+        # strip lane; the prompt contract already says absence rows are
+        # stand-alone). REFUTES-on-absence stays accepted: counterfactual
+        # DISCONFIRMATION feeds M6, and refusing it would suppress legitimate
+        # failed-fix signals.
+        if (
+            cat_by_id.get(ev_id) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            and str(getattr(stance, "value", stance)).lower()
+            == EvidenceStance.SUPPORTS.value
+        ):
+            absence_confirmation_link_stripped_total.inc()
             continue
         if any(el.evidence_id == ev_id for el in node.evidence_links):
             continue
@@ -1038,12 +1058,6 @@ def _standing_hypotheses(case: Case):
     )
 
 
-# The marker on an engine-synthesized RootCauseConclusion (§9.3) — distinguishes
-# the engine's faithful mirror (which may be refreshed/retired) from the LLM's own
-# authored conclusion (which always wins and is never overwritten).
-_ENGINE_RCC_AUTHOR = "engine:chain_validation"
-
-
 def any_chain_root_validated(case: Case) -> bool:
     """§9.2: does some STANDING hypothesis's chain ROOT node read VALIDATED? This
     is the chain-mode ``cause_state=IDENTIFIED`` signal."""
@@ -1074,6 +1088,13 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     mechanistic root, so it corrects down). No-op when no standing root is
     validated. Returns True if it wrote one.
     """
+    rcc = case.root_cause_conclusion
+    if rcc is not None and getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR:
+        # LLM-authored — never overwrite. Checked before any graph work: this
+        # is the steady state of most identified cases, and the scans below
+        # would be pure waste on it.
+        return False
+
     cat_by_id = _evidence_category_map(case)  # one snapshot for every check below
 
     def _hyp_confirmed(h: "Hypothesis") -> bool:
@@ -1085,13 +1106,13 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
         for h in _standing_hypotheses(case)
         if is_chain_root_validated(h, case.causal_nodes)
     ]
-    any_confirmed = any(_hyp_confirmed(h) for h in validated_hyps)
+    # ONE confirmation scan feeds the faithfulness check, the root selection,
+    # and the mint band below — separate scans of the same predicate would let
+    # an asymmetric edit split the named root from the minted confidence.
+    confirmed_hyps = [h for h in validated_hyps if _hyp_confirmed(h)]
 
-    rcc = case.root_cause_conclusion
     prior = None
     if rcc is not None:
-        if getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR:
-            return False  # LLM-authored — never overwrite
         prior = case.hypotheses.get(getattr(rcc, "validated_hypothesis_id", None) or "")
         if prior is not None and prior in validated_hyps:
             # The mirror still names a grounding root — but it must also (a)
@@ -1102,14 +1123,14 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
             # confirmed root when one exists — a mirror asserting an
             # unconfirmed sibling while another root carries the gone⇒gone
             # confirmation is not faithful. Disagreement → fall through, re-mint.
-            prior_confirmed = _hyp_confirmed(prior)
+            prior_confirmed = prior in confirmed_hyps
             expected_level = ConfidenceLevel.from_score(
                 CONFIRMED_RCC_LIKELIHOOD_FLOOR
                 if prior_confirmed
                 else MECHANISTIC_RCC_LIKELIHOOD
             )
             if rcc.confidence_level == expected_level and (
-                prior_confirmed or not any_confirmed
+                prior_confirmed or not confirmed_hyps
             ):
                 return False  # faithful mirror: grounding root AND grade agree
         # else: stale/misgraded engine mirror — refresh from the current
@@ -1125,7 +1146,7 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     # grade must be what the conclusion asserts), then the prior mirror's own
     # root (a level-only correction must not silently swap the named cause),
     # then the first standing validated chain.
-    hyp = next((h for h in validated_hyps if _hyp_confirmed(h)), None)
+    hyp = confirmed_hyps[0] if confirmed_hyps else None
     if hyp is None and prior is not None and prior in validated_hyps:
         hyp = prior
     if hyp is None:
@@ -1154,7 +1175,7 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     # confidence_level must agree with likelihood
     # (RootCauseConclusion.confidence_consistency), so derive it from the final
     # score rather than hardcoding.
-    if root_counterfactually_confirmed(root, cat_by_id):
+    if hyp in confirmed_hyps:
         likelihood = max(
             case.progress.root_cause_likelihood or 0.0,
             CONFIRMED_RCC_LIKELIHOOD_FLOOR,
@@ -1199,14 +1220,6 @@ def retract_stale_engine_rcc(case: Case) -> bool:
         return False  # still faithfully mirrors a standing validated root
     case.root_cause_conclusion = None
     return True
-
-
-# The M2 confirm-side stamp (confirm_root_from_resolution_absence) lives in
-# cause_assurance.py: it fires at RESOLVED transition execution (after the
-# user's explicit confirmation — a premature LLM-emitted absence row must not
-# confirm anything), and terminal_transitions cannot import this module
-# (causal_graph → hypothesis_manager → terminal_transitions would close the
-# cycle) — while the stamp needs only the case contracts.
 
 
 def any_chain_root_inconclusive(case: Case) -> bool:

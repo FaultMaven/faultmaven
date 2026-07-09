@@ -86,13 +86,17 @@ def _is_grounded(case: "Case", grade: "CauseAssuranceGrade | None" = None) -> bo
     one graph snapshot; when omitted the grade is computed fresh.
 
     ``CONFIRMED`` is the direct successor of the pre-M2-alignment ``GROUNDED``
-    grade as the axis value (the top assurance grade either way), so the join's
-    semantics carry over: a mechanistically-identified cause (``MECHANISTIC``,
-    formerly ``FALLBACK_ONLY``) remains not-grounded here. Whether the axis
-    should instead read "any validated root" (routing a stalled
-    mechanistically-identified case to ``TREATMENT_BLOCKED`` rather than
-    ``INSUFFICIENT_EVIDENCE``) is an open calibration question deliberately NOT
-    decided here — see insufficient-evidence-handling.md §5.1; it belongs to the
+    grade as the axis value (the top assurance grade either way). KNOWN
+    REACHABILITY CONSEQUENCE: the only live producer of ``CONFIRMED`` is the
+    resolution confirm-stamp, which fires AFTER the last per-turn recompute —
+    so on live INVESTIGATING turns this axis is effectively never true and
+    ``HEALTHY``/``TREATMENT_BLOCKED`` are engine-unreachable (pre-M2, the rare
+    deductive arm could reach the top grade mid-investigation). The material
+    shift: a stalled case holding a validated root now disposes
+    ``INSUFFICIENT_EVIDENCE`` instead of ``TREATMENT_BLOCKED``. Whether the
+    axis should instead read "any validated root" (restoring a live grounded
+    arm) is an open calibration question deliberately NOT decided here — see
+    insufficient-evidence-handling.md §5.1; it belongs to the
     verification-status calibration eval, not the M2 grade alignment.
 
     The symptom-verified anchor closes the composition seam (§4 limitation 1):

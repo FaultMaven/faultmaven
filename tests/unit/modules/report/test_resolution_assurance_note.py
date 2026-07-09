@@ -1,11 +1,12 @@
-"""Resolution summary assurance qualifier (#572 / #656 P1.2).
+"""Resolution summary assurance qualifier (#572 / #656).
 
 The Root Cause section labels a conclusion the engine grades below CONFIRMED
 (the M2 top grade), so the report never presents an unconfirmed cause at full
 certainty. A counterfactually confirmed cause renders clean — no note.
 
 The note RECOMPUTES the grade from the persisted causal graph (terminal cases
-never recompute the persisted progress field, and pre-P1.2 blobs default to
+never recompute the persisted progress field, and blobs persisted before the
+field existed default to
 NO_ROOT), so these fixtures build the graph shape for each grade rather than
 setting the persisted field.
 """
@@ -147,11 +148,11 @@ async def test_confirmed_conclusion_renders_without_note():
 
 @pytest.mark.asyncio
 async def test_note_recomputes_grade_ignoring_stale_persisted_default():
-    """A pre-P1.2 terminal case (persisted grade = the NO_ROOT default) whose
+    """A terminal case whose blob predates the persisted grade (NO_ROOT default) and whose
     graph carries a confirmed root must render clean — the note follows the
     graph, not the stale blob."""
     case = _resolved_case(with_root=True, confirmed=True)
-    # Persisted field left at its default (NO_ROOT) — the pre-P1.2 shape.
+    # Persisted field left at its default (NO_ROOT) — the pre-field blob shape.
     assert case.progress.cause_assurance.value == "no_root"
     service = ReportGenerationService()
     summary = await service._generate_resolution_summary(case, {"duration": "2h"})
