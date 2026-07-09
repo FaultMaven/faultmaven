@@ -5,9 +5,16 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688)](https://fastapi.tiangolo.com/)
 
 **AI Troubleshooting Copilot for Modern Engineering.**
-Fair-source, self-hostable, and optimized for cloud scale.
+Built to solve, not to chat — fair-source, self-hostable, and optimized for cloud scale.
 
-FaultMaven is an AI-powered troubleshooting copilot. It correlates live telemetry with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation — answers grounded in your actual system, not generic guesses. Resolve incidents faster with a copilot that understands both your stack and your organization.
+FaultMaven is an AI-powered troubleshooting copilot. It correlates live telemetry with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation — answers grounded in your actual system, not generic guesses.
+
+FaultMaven works a problem the way a seasoned engineer does — and never forgets what it learns:
+
+- **Goal-driven** — it works toward a solution, not just a reply.
+- **Methodical** — it follows a proven diagnostic method; it doesn't jump to conclusions.
+- **Evidence-based** — every step is grounded in your data, and it shows its work.
+- **Self-learning** — every problem it solves becomes knowledge it reuses.
 
 Traditional observability tools tell you **what** broke. Generic LLMs guess **why**, but can't see your infrastructure. FaultMaven bridges this gap. Where predictive AIOps platforms act like actuaries — forecasting next quarter's outage probabilities from historical patterns — FaultMaven is the ER surgeon for systems already on the table.
 
@@ -62,7 +69,7 @@ cp .env.example .env
    the embedding model and a starter Knowledge Base, so the stack runs fully
    offline with no model download at runtime) and starts the services.
 2. On first start (~1 minute) the API initializes the database, runs
-   migrations, loads the bundled embedding model, and seeds 59 starter
+   migrations, loads the bundled embedding model, and seeds 91 curated
    troubleshooting runbooks into the Knowledge Base. Restarts are faster — the
    database and vectors persist under `./data`.
 3. A default admin user is created: `admin` / `admin@local.faultmaven`
@@ -208,7 +215,7 @@ For more detailed setup instructions, see [Development Setup](docs/development/l
 
 ## Why FaultMaven?
 
-FaultMaven is not just a chatbot wrapper; it is a context-aware investigation engine designed to get smarter with every incident. It is a copilot, not an autopilot — every step it suggests is yours to run, review, or reject. You stay in command of the keyboard.
+FaultMaven is not a chatbot wrapper; it is a context-aware investigation engine, built to solve, not to chat — and designed to get smarter with every incident. It is a copilot, not an autopilot: every step it suggests is yours to run, review, or reject. You stay in command of the keyboard.
 
 ### 1. Deep Context Awareness
 
@@ -232,7 +239,7 @@ Most troubleshooting knowledge is lost once the incident is closed. FaultMaven t
 
 ### 4. Opportunistic Investigation Framework
 
-FaultMaven uses an **opportunistic investigation** approach where the agent completes tasks based on data availability rather than following rigid sequential phases.
+FaultMaven investigates methodically — verify the symptom, form hypotheses, test them against evidence, then fix — and never jumps to conclusions. But methodical doesn't mean rigid: it uses an **opportunistic investigation** approach where the agent completes tasks based on data availability rather than following rigid sequential phases.
 
 **Core Principles:**
 - **Milestone-based progress** - Track what's completed, not what phase you're in. Complete multiple milestones in one turn when data allows.
