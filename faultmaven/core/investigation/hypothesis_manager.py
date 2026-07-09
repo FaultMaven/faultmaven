@@ -33,6 +33,9 @@ Anchoring Prevention:
 import logging
 from typing import TYPE_CHECKING
 
+from faultmaven.core.investigation.cause_assurance import (
+    CAUSAL_STANCE_CONFIDENCE_MIN,
+)
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_likelihood_capped_no_evidence_total,
 )
@@ -327,13 +330,17 @@ class HypothesisManager:
     ) -> Hypothesis:
         """Update hypothesis likelihood manually (for test results)
 
-        A hypothesis with NO supporting evidence links is still a PRIOR, so the
-        update is capped at ``NEW_HYPOTHESIS_MAX_PRIOR`` — the same discipline
-        ``create_hypothesis`` applies. Without this, a direct LLM update was a
-        fiat lever past the ``CAUSE_IDENTIFIED_LIKELIHOOD`` gate the creation
-        cap exists to protect (#573 B1): belief above the prior cap is earned
-        only by linked case evidence. A refuting-only link set does not lift
-        the cap (disconfirmation is not grounds for MORE belief).
+        A hypothesis with NO qualifying supporting evidence links is still a
+        PRIOR, so the update is capped at ``NEW_HYPOTHESIS_MAX_PRIOR`` — the
+        same discipline ``create_hypothesis`` applies. Without this, a direct
+        LLM update was a fiat lever past the ``CAUSE_IDENTIFIED_LIKELIHOOD``
+        gate the creation cap exists to protect (#573 B1): belief above the
+        prior cap is earned only by linked case evidence. Qualifying = a
+        SUPPORTS link at ``stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN``
+        (a link the model itself hedges is not grounds for MORE belief —
+        the same bar the §7.1 chain tally reads); a refuting-only link set
+        does not lift the cap (disconfirmation is not grounds for MORE
+        belief either).
 
         Args:
             hypothesis: Hypothesis to update
@@ -347,7 +354,10 @@ class HypothesisManager:
         old_likelihood = hypothesis.likelihood
         capped = max(0.0, min(1.0, new_likelihood))  # Clamp to [0, 1]
         has_supporting_evidence = any(
-            link.stance == EvidenceStance.SUPPORTS for link in hypothesis.evidence_links
+            link.stance == EvidenceStance.SUPPORTS
+            and (link.stance_confidence if link.stance_confidence is not None else 1.0)
+            >= CAUSAL_STANCE_CONFIDENCE_MIN
+            for link in hypothesis.evidence_links
         )
         if not has_supporting_evidence and capped > NEW_HYPOTHESIS_MAX_PRIOR:
             logger.info(

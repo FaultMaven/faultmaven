@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any, Dict, List, Optional
 
+from faultmaven.core.investigation.causal_graph import support_count_held_root_ids
 from faultmaven.core.investigation.evidence_need_surfacing import (
     select_surfaced_causal_needs,
 )
@@ -2525,6 +2526,24 @@ def _build_causal_graph_block(case: Case) -> str:
     if not (active_h or nodes):
         return ""
 
+    # §7.1/INV-29 elicitation: a ROOT held from VALIDATED only by the
+    # independent-support bar gets its recovery action rendered inline —
+    # without it the model sees a bare [root/inconclusive], re-records the
+    # same datum (which the independence mirror collapses), and stalls.
+    count_held = support_count_held_root_ids(case)
+
+    def _node_line(indent: str, n) -> str:
+        note = (
+            " — needs a SECOND INDEPENDENT causal observation to validate "
+            "(re-recording the same datum does not count)"
+            if n.node_id in count_held
+            else ""
+        )
+        return (
+            f"{indent}{n.node_id} [{n.node_type.value}/{n.node_state.value}] "
+            f"{_stmt(n.statement)}{note}"
+        )
+
     on_path: set[str] = set()
     lines = [
         "<causal_graph>",
@@ -2543,9 +2562,7 @@ def _build_causal_graph_block(case: Case) -> str:
             if n is None or n.node_type.value == "problem":
                 continue
             on_path.add(nid)
-            lines.append(
-                f"    {nid} [{n.node_type.value}/{n.node_state.value}] {_stmt(n.statement)}"
-            )
+            lines.append(_node_line("    ", n))
         if h.state.value == "refuted" and h.refutation_reason:
             lines.append(f"    Refuted because: {_stmt(h.refutation_reason)}")
     # Standalone nodes on no hypothesis path — surface their ids so the LLM
@@ -2561,10 +2578,7 @@ def _build_causal_graph_block(case: Case) -> str:
             "do not re-emit:"
         )
         for n in orphans:
-            lines.append(
-                f"    {n.node_id} [{n.node_type.value}/{n.node_state.value}] "
-                f"{_stmt(n.statement)}"
-            )
+            lines.append(_node_line("    ", n))
     lines.append("</causal_graph>")
     return "\n".join(lines)
 

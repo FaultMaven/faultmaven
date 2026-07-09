@@ -136,3 +136,40 @@ def test_evidence_free_downward_update_applies():
     h = _mk(0.4)
     m.update_hypothesis_likelihood(h, 0.2, current_turn=3, reason="LLM update")
     assert h.likelihood == 0.2
+
+
+def test_hedged_link_does_not_lift_the_cap():
+    """A SUPPORTS link the model itself hedges (below
+    CAUSAL_STANCE_CONFIDENCE_MIN) is not grounds for MORE belief — the cap
+    holds (same bar as the §7.1 chain tally, one shared constant)."""
+    from faultmaven.modules.case.contracts import (
+        EvidenceStance,
+        HypothesisEvidenceLink,
+    )
+
+    m = HypothesisManager()
+    h = _mk(0.4)
+    h.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=h.hypothesis_id,
+            evidence_id="ev_" + "0" * 12,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="linked but hedged",
+            stance_confidence=0.4,
+        )
+    )
+    m.update_hypothesis_likelihood(h, 0.9, current_turn=3, reason="LLM update")
+    assert h.likelihood == NEW_HYPOTHESIS_MAX_PRIOR
+
+
+def test_cap_event_increments_counter():
+    from unittest.mock import patch
+
+    m = HypothesisManager()
+    h = _mk(0.4)
+    with patch(
+        "faultmaven.core.investigation.hypothesis_manager."
+        "hypothesis_likelihood_capped_no_evidence_total"
+    ) as counter:
+        m.update_hypothesis_likelihood(h, 0.9, current_turn=3, reason="LLM update")
+    assert counter.inc.call_count == 1

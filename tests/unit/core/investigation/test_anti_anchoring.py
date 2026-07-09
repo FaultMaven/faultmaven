@@ -248,3 +248,64 @@ def test_grounding_validated_root_hypothesis_is_not_retired():
         case.hypotheses[h.hypothesis_id].state == HypothesisState.RETIRED
         for h in others
     )
+
+
+def test_count_held_root_hypothesis_is_not_retired():
+    """INV-29: a flagged, stalled hypothesis whose chain root is COUNT-HELD
+    (really causally supported, blocked only by the §7.1 independent-support
+    bar) is likely the true cause awaiting its second observation — pre-bar it
+    would have been VALIDATED and protected, so the raised bar must not feed
+    it to forced retirement."""
+    from datetime import datetime, timezone
+
+    from faultmaven.modules.case.contracts import (
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+        EvidenceStance,
+        NodeEvidenceLink,
+    )
+
+    eng, case = _engine(), _case(current_turn=10)
+    ev = Evidence(
+        evidence_id="ev_" + "a" * 12,
+        summary="config diff shows pool max_size dropped to 5",
+        primary_purpose="diagnosis",
+        category=EvidenceCategory.CAUSAL_EVIDENCE,
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_by="llm",
+        collected_at_turn=2,
+        collected_at=datetime.now(timezone.utc),
+    )
+    case.evidence = [ev]
+    root = CausalNode(
+        node_id="cn_000000000001",
+        statement="undersized connection pool exhausts under load",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.INCONCLUSIVE,  # held by the count bar
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=True,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=ev.evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="bears on the root",
+                linked_at_turn=2,
+            )
+        ],
+        generated_at_turn=1,
+    )
+    case.causal_nodes = {root.node_id: root}
+    held = _hyp("hyp_0000000000f1", iters=3, root_node_id=root.node_id)
+    others = [_hyp(f"hyp_0000000000b{i}", iters=3) for i in range(3)]
+    case.hypotheses = {h.hypothesis_id: h for h in [held, *others]}
+    meta: dict = {}
+
+    eng._perform_hypothesis_housekeeping(case, meta)
+
+    assert case.hypotheses["hyp_0000000000f1"].state == HypothesisState.ACTIVE
+    assert all(
+        case.hypotheses[h.hypothesis_id].state == HypothesisState.RETIRED
+        for h in others
+    )

@@ -261,6 +261,7 @@ def test_likelihood_only_update_applies():
         meta,
         case.current_turn,
     )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
 
     assert h.state == HypothesisState.ACTIVE  # unchanged
     assert h.likelihood == 0.3
@@ -299,6 +300,7 @@ def test_new_index_placeholder_resolves_to_this_turn_hypothesis():
         meta,
         case.current_turn,
     )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
 
     assert h.likelihood == 0.2
     assert meta["hypotheses_updated"] == [h.hypothesis_id]
@@ -365,6 +367,7 @@ def test_evidence_free_likelihood_update_capped_with_feedback():
         meta,
         case.current_turn,
     )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
 
     assert h.likelihood == NEW_HYPOTHESIS_MAX_PRIOR
     assert "capped" in meta.get("system_feedback", "")
@@ -400,6 +403,49 @@ def test_supported_likelihood_update_no_cap_feedback():
         meta,
         case.current_turn,
     )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
 
+    assert h.likelihood == 0.9
+    assert "capped" not in meta.get("system_feedback", "")
+
+
+def test_same_turn_link_then_likelihood_is_not_capped():
+    """Ordering pin (#573 B1): the prompt mandates record -> link -> set in ONE
+    turn. Likelihood application is deferred until after the links pass, so a
+    compliant single-turn emission is NOT capped and gets no gaslighting
+    feedback."""
+    from faultmaven.modules.case.contracts import (
+        EvidenceStance,
+        HypothesisEvidenceLink,
+    )
+
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()  # no links yet — they arrive "later this turn"
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    # Step 3b: the likelihood update is stashed, not applied.
+    eng._apply_hypothesis_updates(
+        case,
+        {h.hypothesis_id: HypothesisUpdate(likelihood=0.9)},
+        meta,
+        case.current_turn,
+    )
+    assert h.likelihood == 0.7  # untouched so far
+
+    # Step 4: the same turn's evidence link lands.
+    h.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=h.hypothesis_id,
+            evidence_id="ev_" + "0" * 12,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="linked this turn",
+            stance_confidence=0.9,
+        )
+    )
+
+    # Step 4a-bis: the deferred update now sees the link — no cap.
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
     assert h.likelihood == 0.9
     assert "capped" not in meta.get("system_feedback", "")

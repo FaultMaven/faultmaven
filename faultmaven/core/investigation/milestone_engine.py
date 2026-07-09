@@ -46,6 +46,7 @@ from faultmaven.core.investigation.causal_graph import (
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
     retract_stale_engine_rcc,
+    support_count_held_root_ids,
     synthesize_rcc_from_validated_root,
     validate_by_exclusion,
 )
@@ -6438,29 +6439,58 @@ class MilestoneEngine:
                 metadata["hypotheses_updated"].append(h_id)
 
             # Non-REFUTED state transitions are intentionally not applied here.
-            # Likelihood updates go through the canonical mutator.
+            # Likelihood updates are DEFERRED to after the same-turn
+            # hypothesis_evidence_links pass (``_apply_deferred_likelihood_
+            # updates``): the B1 evidence-free cap must judge the hypothesis
+            # WITH the links this same emission carries — the prompt mandates
+            # record → link → set-likelihood in one turn, and capping before
+            # the link lands would gaslight a model that did exactly that.
             if upd.likelihood is not None:
-                self.hypothesis_manager.update_hypothesis_likelihood(
-                    hypothesis,
-                    upd.likelihood,
-                    current_turn,
-                    reason="LLM hypothesis update",
+                metadata.setdefault("deferred_likelihood_updates", []).append(
+                    (h_id, upd.likelihood)
                 )
-                # The mutator caps an evidence-free update at the prior bar
-                # (#573 B1). Tell the LLM WHY its number was not applied —
-                # the recovery is to record the observation as evidence and
-                # link it, not to re-assert a larger number.
-                if hypothesis.likelihood < min(1.0, upd.likelihood) - 1e-9:
-                    feedback.append(
-                        f"Hypothesis {h_id}: likelihood capped at "
-                        f"{hypothesis.likelihood:.2f} — a hypothesis with no "
-                        f"supporting evidence links is a prior, not a "
-                        f"conclusion. Record the observation as evidence and "
-                        f"link it (hypothesis_evidence_links) to raise belief."
-                    )
                 if not reroot:
                     metadata["hypotheses_updated"].append(h_id)
 
+        if feedback:
+            current = metadata.get("system_feedback", "") or ""
+            metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
+
+    def _apply_deferred_likelihood_updates(
+        self,
+        case: "Case",
+        metadata: dict[str, Any],
+        current_turn: int,
+    ) -> None:
+        """Apply the likelihood updates stashed by ``_apply_hypothesis_updates``
+        — AFTER the same-turn ``hypothesis_evidence_links`` pass, so the B1
+        evidence-free cap sees the links this emission carried. The mutator
+        caps an evidence-free (or hedged-links-only) update at the prior bar;
+        when it does, tell the LLM WHY its number was not applied — the
+        recovery is to record the observation as evidence and link it with a
+        confident stance, not to re-assert a larger number."""
+        deferred = metadata.pop("deferred_likelihood_updates", None)
+        if not deferred:
+            return
+        feedback: list[str] = []
+        for h_id, likelihood in deferred:
+            hypothesis = case.hypotheses.get(h_id)
+            if hypothesis is None:
+                continue
+            self.hypothesis_manager.update_hypothesis_likelihood(
+                hypothesis,
+                likelihood,
+                current_turn,
+                reason="LLM hypothesis update",
+            )
+            if hypothesis.likelihood < min(1.0, likelihood) - 1e-9:
+                feedback.append(
+                    f"Hypothesis {h_id}: likelihood capped at "
+                    f"{hypothesis.likelihood:.2f} — a hypothesis with no "
+                    f"confident supporting evidence links is a prior, not a "
+                    f"conclusion. Record the observation as evidence and "
+                    f"link it (hypothesis_evidence_links) to raise belief."
+                )
         if feedback:
             current = metadata.get("system_feedback", "") or ""
             metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
@@ -7137,6 +7167,11 @@ class MilestoneEngine:
                 metadata["hypothesis_evidence_links_applied"] = (
                     metadata.get("hypothesis_evidence_links_applied", 0) + 1
                 )
+
+        # 4a-bis. Deferred likelihood updates — applied AFTER the links pass so
+        # the B1 evidence-free cap judges the hypothesis WITH its same-turn
+        # links (see _apply_hypothesis_updates).
+        self._apply_deferred_likelihood_updates(case, metadata, case.current_turn)
 
         # 4b. Evidence Needs (Phase 3 of evidence-needs rollout)
         # Process LLM-emitted ``evidence_need_updates``. Runs AFTER
@@ -8533,12 +8568,19 @@ class MilestoneEngine:
             # hypotheses the detector flagged so the differential actually
             # diversifies. Exclude any flagged hypothesis whose chain root is
             # validated — it is grounding the cause, and retiring it for "anchoring"
-            # would discard the answer.
+            # would discard the answer. Same protection for a COUNT-HELD root
+            # (§7.1/INV-29: really causally supported, blocked only by the
+            # independent-support bar) — pre-INV-29 that root would have been
+            # VALIDATED and protected; the raised bar must not feed the true
+            # cause to the anchoring retirer while it waits for its second
+            # observation.
+            count_held = support_count_held_root_ids(case)
             targets = [
                 hid
                 for hid in hypothesis_ids
                 if hid in case.hypotheses
                 and not is_chain_root_validated(case.hypotheses[hid], case.causal_nodes)
+                and case.hypotheses[hid].root_node_id not in count_held
             ]
             retired = self.hypothesis_manager.force_alternative_generation(
                 targets, active_hypotheses, case.current_turn

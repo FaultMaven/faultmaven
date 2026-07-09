@@ -358,9 +358,10 @@ the very chain it is testing. The counter is per-node and resets at
 A hypothesis — intermediate *or* root — is validated only by **direct,
 observable facts** matching its predicted state (an exact log/stack trace, a
 return code, a reproducer's output). Assumption, inference, and secondary
-correlation are not validation. Engine-side, a node reaches VALIDATED only on a
-**causally-grounding SUPPORTS** link (`derive_node_states` → `_node_evidence_tally`,
-`causal_graph.py`), net of refutations and behind the M7 AND-gate.
+correlation are not validation. Engine-side, a node reaches VALIDATED only on
+**causally-grounding SUPPORTS** link(s) (`derive_node_states` →
+`_node_evidence_tally`, `causal_graph.py`), net of refutations and behind the
+M7 AND-gate.
 
 A SUPPORTS link is causally grounding **only** when its backing datum is
 categorized `CAUSAL_EVIDENCE` — a direct observable fact matching the node's
@@ -375,36 +376,71 @@ causally-grounding link. A ROOT — the node that mints a conclusion — require
 `ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN` (= 2) **independent** causally-grounding
 supports: distinct evidence rows whose contents are not mutual restatements of
 each other (`_EVIDENCE_MIRROR_JACCARD` over content tokens of
-`summary + extract`; re-recording one datum twice is one observation, and rows
-too short to judge collapse into a single bucket). The rationale is the trust
-boundary: with the runbook-provenance arm decommissioned (#658), *every*
-causal link is an LLM self-labeled claim, so a single self-certified datum
-must not conclude a case (#573 / #656 DF-1) — corroboration is the only
-engine-computable difficulty knob left. Two exceptions, both principled:
+`summary + extract`, counted as **connected components** of the pairwise
+mirror graph — order-invariant, and a mirror chain collapses to one
+observation; rows too short to tokenize are unjudgeable and count ZERO). The
+rationale is the trust boundary: with the runbook-provenance arm
+decommissioned (#658), *every* causal link is an LLM self-labeled claim, so a
+single self-certified datum must not conclude a case (#573 / #656 DF-1) —
+corroboration is the only engine-computable difficulty knob left. Two
+exceptions, both principled:
 
 - A **counterfactually CONFIRMED** root (engine-stamped `causal_absence`
   SUPPORTS, *gone ⇒ gone*) satisfies the bar outright — M2's top grade
-  dominates empirical counting, the stamp is engine-only (ingest strips LLM
-  attempts), and a confirmed root recomputed post-RESOLVED must not demote
-  for having validated on fewer supports under an earlier bar.
+  dominates empirical counting, and the stamp is engine-only (ingest strips
+  LLM attempts). The same principle runs the other way at RESOLVED execution:
+  when NO root stands validated, the confirm-stamp may target the **sole
+  count-held root** (`support_count_held_root_ids` — really causally
+  supported and blocked *only* by this bar) because the user's explicit
+  gone⇒gone handshake IS the decisive second observation; the count bar must
+  not veto the strongest evidence class, or a confirmed 1-support case would
+  terminate `NO_ROOT` with harvest permanently blocked. A root held for any
+  other reason (restating, net-refuted, AND-gate, no qualifying support)
+  never qualifies.
 - The **deductive lane** (§7.1.1) is untouched: exclusion carries its own
   strict guards and validates a survivor with no supports of its own.
 
+The count-held state is first-class for the engine's own behavior, not just
+the stamp: the anti-anchoring retirer exempts a count-held root's hypothesis
+(pre-bar it would have been VALIDATED and protected — the raised bar must not
+feed the true cause to forced retirement while it waits for its second
+observation), and the context builder annotates a count-held root with its
+recovery action ("needs a SECOND INDEPENDENT causal observation") so the
+model is steered to corroborate instead of re-recording the first datum.
+
 The bar is recompute-honest (NOT grandfathered, unlike the restatement
-guard): support counts are monotone in evidence — links only accumulate, and
+guard): support counts are monotone in evidence — links only accumulate
+(chain-emission ingest upserts a re-emitted link per `(node, evidence)`, so a
+raised `stance_confidence` after corroboration lands; links on
+`causal_absence` rows are never overwritten — engine-verdict territory), and
 the only decreases (a stance flip or a lowered `stance_confidence` on
-re-link) are genuine re-assessments that *should* demote. A held root sits at
-INCONCLUSIVE — a live candidate (`cause_state=CANDIDATES`), never a refuted
-one. Block events increment `root_validation_blocked_support_count_total`
-(fires when the generic bar passed and real causal-category support exists;
-a root failing both this bar and the restatement guard is attributed here).
+re-emission) are genuine re-assessments that *should* demote. A held root
+sits at INCONCLUSIVE — a live candidate (`cause_state=CANDIDATES`), never a
+refuted one. Block events increment
+`root_validation_blocked_support_count_total` (fires when the generic bar
+passed and real causal-category support exists; a root failing both this bar
+and the restatement guard is attributed here).
 
 The same prior-vs-evidence discipline holds on the flat axis: a direct LLM
-likelihood update on a hypothesis with **no supporting evidence links** is
-capped at `NEW_HYPOTHESIS_MAX_PRIOR` (`update_hypothesis_likelihood`, #573
-B1) — the creation-time cap was otherwise a fiat lever away from the
-`CAUSE_IDENTIFIED_LIKELIHOOD` gate it exists to protect. The model is told to
-record and link the observation instead of re-asserting a larger number.
+likelihood update on a hypothesis with **no confident supporting evidence
+links** (a SUPPORTS link at `stance_confidence ≥ CAUSAL_STANCE_CONFIDENCE_MIN`
+— the same bar as the chain tally, one shared constant) is capped at
+`NEW_HYPOTHESIS_MAX_PRIOR` (`update_hypothesis_likelihood`, #573 B1) — the
+creation-time cap was otherwise a fiat lever away from the
+`CAUSE_IDENTIFIED_LIKELIHOOD` gate it exists to protect. Likelihood updates
+apply AFTER the same turn's evidence links (the prompt mandates
+record → link → set in one turn; capping before the link lands would punish
+compliance). The model is told to record and link the observation instead of
+re-asserting a larger number.
+
+*Known limits (by design):* independence is lexical — Jaccard over content
+tokens. A paraphrase re-record of ONE datum with disjoint vocabulary reads as
+independent (the bar is one layer, not a semantic dedup), and two terse,
+scaffold-dominated summaries about the same component can falsely collapse
+(held at INCONCLUSIVE — the conservative direction; the annotation steers the
+model to a genuinely different observation, which will not mirror).
+Calibration pairs live in one executable home:
+`test_evidence_independence_calibration.py`.
 
 **Restatement guard (ROOT-only, an ENTRY bar on validation).** A ROOT whose
 statement carries less than `ROOT_NOVELTY_MIN_FRACTION` novel content tokens

@@ -1365,8 +1365,11 @@ When evidence reveals a cause, follow this exact sequence — all in ONE turn if
    root_cause_identified=True AND root_cause_likelihood to that confidence value.
 
 The likelihood is what grounds the claim: the engine marks the cause identified
-only when root_cause_likelihood ≥ 0.7 is backed by the causal_evidence from
-steps 2–3 (or a stated root-cause conclusion). The bare root_cause_identified
+only when root_cause_likelihood ≥ 0.7 is backed by causal_evidence from
+steps 2–3 (or a stated root-cause conclusion). A root cause VALIDATES only on
+TWO INDEPENDENT causal observations — distinct findings from different data,
+not the same fact re-worded — so after the first causal_evidence row, seek a
+second independent confirmation. The bare root_cause_identified
 flag without that grounding does NOT advance the milestone — always emit the
 numeric likelihood with the flag.
 
@@ -1805,8 +1808,9 @@ supports a specific claim (symptom, cause, mitigation, or solution).
 **ROOT CAUSE IDENTIFICATION — Decision Tree:**
 
 **Option A: SINGLE-SHOT** (root cause obvious from evidence)
-   Use when: single clear error, strong timing correlation, mechanism understood,
-   no conflicting evidence.
+   Use when: TWO OR MORE independent causal observations in hand (distinct
+   findings, not the same fact re-worded), mechanism understood, no
+   conflicting evidence.
    In ONE turn: CREATE hypothesis → LINK evidence → SET state=VALIDATED and
    root_cause_identified=True → propose solution
 

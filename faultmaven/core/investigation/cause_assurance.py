@@ -69,6 +69,17 @@ ENGINE_RCC_AUTHOR = "engine:chain_validation"
 MECHANISTIC_RCC_LIKELIHOOD = 0.8
 CONFIRMED_RCC_LIKELIHOOD_FLOOR = 0.9
 
+# §7.1 (INV-29): a stance the LLM itself declares at confidence below this bar
+# is a hedge, not grounding. Read by BOTH belief axes so they cannot drift: the
+# chain tally (``causal_graph._node_evidence_tally`` — a hedged SUPPORTS link
+# is not CAUSAL grounding) and the flat prior cap
+# (``hypothesis_manager.update_hypothesis_likelihood`` — a hedged link does not
+# lift the evidence-free cap). Lives here (the shared leaf) because
+# causal_graph imports hypothesis_manager: neither could import it from the
+# other. Absent/None reads as unset -> full confidence; an EXPLICIT 0.0 stays
+# filtered.
+CAUSAL_STANCE_CONFIDENCE_MIN = 0.6
+
 # Hypothesis states that keep a chain's root a STANDING cause (mirrors
 # ``causal_graph._STANDING_HYP_STATES`` — kept literal here to avoid the
 # import cycle; the two must not drift).
@@ -121,6 +132,29 @@ _CONFIRMATION_REASON = (
     "bears on the sole standing validated root (M2 gone⇒gone)"
 )
 
+# Graph hooks — inversion seam. ``causal_graph`` (the higher layer: it imports
+# this module) REGISTERS its primitives at import time so the confirm-stamp can
+# consult the §7.1 count-held set and re-derive node states without an import
+# back-edge (the architecture contract forbids the cycle, deferred or not).
+_GRAPH_HOOKS: dict = {}
+
+
+def register_graph_hooks(*, support_count_held_root_ids, derive_node_states) -> None:
+    """Called once from ``causal_graph`` at module import."""
+    _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
+    _GRAPH_HOOKS["derive"] = derive_node_states
+
+
+def _graph_hooks() -> dict:
+    """The registered hooks; cold-start fallback loads ``causal_graph`` by
+    name (call-time, both modules long initialized — no init-order hazard)
+    for any entry point that reaches the stamp without the engine stack."""
+    if not _GRAPH_HOOKS:
+        import importlib
+
+        importlib.import_module("faultmaven.core.investigation.causal_graph")
+    return _GRAPH_HOOKS
+
 
 def confirm_root_from_resolution_absence(case: "Case") -> bool:
     """M2 confirm-side twin of the failed-fix refute stamp: make the
@@ -147,6 +181,14 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
       shape). With several candidates either way (an unarbitrated MECE
       violation) the engine never guesses which cause the fix removed — the
       case stays MECHANISTIC pending arbitration.
+    - With NO validated root at all: the COUNT-HELD roots (§7.1/INV-29 —
+      really causally supported and blocked only by the independent-support
+      bar, ``causal_graph.support_count_held_root_ids``). The user's gone⇒gone
+      handshake is the decisive second observation, so the count bar must not
+      veto it; after linking, a re-derive validates the root via the
+      confirmed-root bypass. The same sole-candidate discipline applies, and a
+      root held for any OTHER reason (restating, net-refuted, AND-gate, no
+      qualifying causal support) never qualifies.
 
     Row selection — order-independent and windowed:
 
@@ -171,17 +213,33 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
     link; the caller re-persists grade, over-claim flag, and verification
     status so the terminal blob reflects the confirmation.
     """
-    validated_roots = _validated_roots(case)
-    if not validated_roots:
+    candidate_roots = _validated_roots(case)
+    count_held_ids: set = set()
+    if not candidate_roots:
+        # §7.1 independent-support bar (INV-29): a sole root held from
+        # VALIDATED ONLY by the count bar — really causally supported,
+        # net-supporting, AND-gate satisfied, not restating — may still be
+        # confirmed here: the user's explicit gone⇒gone handshake IS the
+        # decisive second observation (strictly stronger than any empirical
+        # count; M2). Without this, the count bar would VETO the confirmation
+        # — the strongest evidence class yielding the weakest grade — and the
+        # case would terminate NO_ROOT with harvest permanently blocked.
+        count_held_fn = _graph_hooks().get("count_held")
+        if count_held_fn is not None:
+            count_held_ids = count_held_fn(case)
+        candidate_roots = [
+            case.causal_nodes[nid] for nid in count_held_ids if nid in case.causal_nodes
+        ]
+    if not candidate_roots:
         return False
     standing_root_ids = {
         h.root_node_id
         for h in case.hypotheses.values()
         if h is not None and h.state in _STANDING_HYP_STATES and h.root_node_id
     }
-    targets = [n for n in validated_roots if n.node_id in standing_root_ids]
+    targets = [n for n in candidate_roots if n.node_id in standing_root_ids]
     if not targets:
-        targets = validated_roots
+        targets = candidate_roots
     if len(targets) != 1:
         return False
     root = targets[0]
@@ -225,6 +283,14 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
             linked_at_turn=case.current_turn,
         )
     )
+    if root.node_id in count_held_ids:
+        # The confirmation completes the empirical bar for a count-held root:
+        # re-derive so the confirmed-root bypass VALIDATES it before the
+        # caller re-reads the grade (grade_cause_assurance requires a
+        # VALIDATED root) and before the mirror upgrade names it.
+        derive_fn = _graph_hooks().get("derive")
+        if derive_fn is not None:
+            derive_fn(case)
     _upgrade_engine_mirror(case, root, absence_row.evidence_id)
     return True
 

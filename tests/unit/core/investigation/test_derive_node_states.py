@@ -948,3 +948,120 @@ def test_undersupported_restating_root_attributed_to_support_counter():
     assert root.node_state == NodeState.INCONCLUSIVE
     assert support_counter.inc.call_count == 1
     assert restatement_counter.inc.call_count == 0
+
+
+def test_zero_confidence_support_is_not_grounding():
+    # Boundary pin for the None-vs-0.0 distinction: an EXPLICIT 0.0 is the
+    # strongest possible self-hedge and must stay filtered (a naive `or`
+    # coerces falsy 0.0 to the 1.0 default — the regression this pins).
+    evs = [
+        _evidence("ev_zfirm", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_zzero", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
+    root = _node(
+        _nid(0xEA),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_zfirm", EvidenceStance.SUPPORTS),
+            _link("ev_zzero", EvidenceStance.SUPPORTS, stance_confidence=0.0),
+        ],
+    )
+    case = _case([root], evidence=evs)
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+
+
+def test_untokenizable_row_never_supplies_the_decisive_support():
+    # A row whose content is all stopwords is unjudgeable and counts ZERO
+    # toward independence — it must not be the second observation.
+    ev_real = _evidence("ev_real1", EvidenceCategory.CAUSAL_EVIDENCE)
+    ev_vacuous = _evidence("ev_vac1", EvidenceCategory.CAUSAL_EVIDENCE)
+    object.__setattr__(ev_vacuous, "summary", "it is as was")
+    root = _node(
+        _nid(0xEB),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_real1", EvidenceStance.SUPPORTS),
+            _link("ev_vac1", EvidenceStance.SUPPORTS),
+        ],
+    )
+    case = _case([root], evidence=[ev_real, ev_vacuous])
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+
+
+def test_two_mirrored_plus_one_distinct_validates():
+    # Passing direction of the mirror collapse: three rows where two are the
+    # same observation re-worded still yield TWO independent observations.
+    ev_a = _evidence("ev_ma", EvidenceCategory.CAUSAL_EVIDENCE)
+    ev_b = _evidence("ev_mb", EvidenceCategory.CAUSAL_EVIDENCE)
+    ev_c = _evidence("ev_mc", EvidenceCategory.CAUSAL_EVIDENCE)
+    object.__setattr__(
+        ev_a, "summary", "config diff shows pool max_size dropped from 100 to 5"
+    )
+    object.__setattr__(
+        ev_b, "summary", "config diff shows pool max_size dropped from 100 to 5 window"
+    )
+    object.__setattr__(
+        ev_c, "summary", "db wait queue saturation logged at incident start"
+    )
+    root = _node(
+        _nid(0xEC),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_ma", EvidenceStance.SUPPORTS),
+            _link("ev_mb", EvidenceStance.SUPPORTS),
+            _link("ev_mc", EvidenceStance.SUPPORTS),
+        ],
+    )
+    case = _case([root], evidence=[ev_a, ev_b, ev_c])
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_rung_with_only_hedged_link_does_not_validate():
+    # The confidence filter applies to rungs too: a rung whose only causal
+    # link is self-hedged stays INCONCLUSIVE.
+    ev = _evidence("ev_rhedge", EvidenceCategory.CAUSAL_EVIDENCE)
+    rung = _node(
+        _nid(0xED),
+        links=[_link("ev_rhedge", EvidenceStance.SUPPORTS, stance_confidence=0.4)],
+    )
+    case = _case([rung], evidence=[ev])
+    derive_node_states(case)
+    assert rung.node_state == NodeState.INCONCLUSIVE
+
+
+def test_llm_absence_supports_via_ingest_never_completes_the_bar():
+    # Composition pin (INV-28 x INV-29): the confirmed-root bypass leans on
+    # the ingest strip — an LLM-emitted SUPPORTS-on-absence run through
+    # ingest_emitted_chain must NOT reach the node, so a 1-support root stays
+    # INCONCLUSIVE (the bypass is engine-stamp-only).
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
+
+    ev = _evidence("ev_one1", EvidenceCategory.CAUSAL_EVIDENCE)
+    absence = _evidence("ev_gone1", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    root = _node(
+        _nid(0xEE),
+        node_type=NodeType.ROOT,
+        links=[_link("ev_one1", EvidenceStance.SUPPORTS)],
+    )
+    case = _case([root], evidence=[ev, absence])
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[],
+        node_evidence=[
+            SimpleNamespace(
+                node_ref=root.node_id,
+                evidence_id=absence.evidence_id,
+                stance="supports",
+                reasoning="it went away so this was the cause",
+            )
+        ],
+        current_turn=5,
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE

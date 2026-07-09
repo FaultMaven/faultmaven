@@ -1425,3 +1425,131 @@ def test_overclaim_warning_rearms_on_new_conclusion(caplog):
         if getattr(r, "event", None) == "cause_confidence_overclaim"
     ]
     assert len(recs) == 2
+
+
+# ---------------------------------------------------------------------------
+# INV-29 x the confirm stamp: the user's gone⇒gone handshake completes the
+# empirical bar for a COUNT-HELD root — the count bar never vetoes the
+# strongest evidence class
+# ---------------------------------------------------------------------------
+
+
+def _count_held_case():
+    """A 1-support root (INCONCLUSIVE under the INV-29 bar) with a standing
+    hypothesis — the most common live shape at RESOLVED."""
+    root = _root(support_label="ev_only_sup")
+    case = _case(nodes=[root], evidence=[_evidence("ev_only_sup")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    hyp = _hyp(root.node_id)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.INCONCLUSIVE  # held by the count bar
+    return case, root, hyp
+
+
+def test_resolution_confirms_sole_count_held_root():
+    """A case that reached RESOLVED with its sole root count-held must not
+    terminate NO_ROOT: the confirmation IS the decisive second observation —
+    the stamp links, the re-derive validates via the confirmed bypass, the
+    grade reads CONFIRMED."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+        grade_cause_assurance,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _count_held_case()
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is True
+    assert root.node_state == NodeState.VALIDATED  # bypass completed the bar
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
+
+
+def test_stamp_holds_when_two_roots_are_count_held():
+    """Sole-candidate discipline extends to count-held targets: with two the
+    engine never guesses which cause the fix removed."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    rA = _root("cn_0000000000c1", support_label="ev_cha")
+    rB = _root("cn_0000000000c2", support_label="ev_chb")
+    case = _case(nodes=[rA, rB], evidence=[_evidence("ev_cha"), _evidence("ev_chb")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=rA.node_id, effect_node_id=d.node_id),
+        CausalEdge(cause_node_id=rB.node_id, effect_node_id=d.node_id),
+    ]
+    hA = _hyp(rA.node_id, hypothesis_id="hyp_0000000000c1")
+    hB = _hyp(rB.node_id, hypothesis_id="hyp_0000000000c2")
+    case.hypotheses = {hA.hypothesis_id: hA, hB.hypothesis_id: hB}
+    _recompute_cause_state_from_chain(case)
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is False
+    assert rA.node_state == NodeState.INCONCLUSIVE
+    assert rB.node_state == NodeState.INCONCLUSIVE
+
+
+def test_stamp_never_targets_a_restating_held_root():
+    """A root held for RESTATEMENT (not the count bar) never receives the
+    confirmation — 'the problem causes itself' is not completed by a
+    handshake."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    root = _root(support_label="ev_rst")
+    # Restate the problem verbatim: novelty 0 against the anchor.
+    root.statement = "orders failing"
+    case = _case(nodes=[root], evidence=[_evidence("ev_rst")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    hyp = _hyp(root.node_id)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    _recompute_cause_state_from_chain(case)
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is False
+    assert root.node_state != NodeState.VALIDATED
+
+
+def test_stamp_never_targets_an_unsupported_root():
+    """A root with NO qualifying causal support is not count-held — the
+    handshake alone (zero empirical grounding) confirms nothing."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    root = _root()  # no supports at all
+    case = _case(nodes=[root])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    hyp = _hyp(root.node_id)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    _recompute_cause_state_from_chain(case)
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is False
+    assert root.node_state == NodeState.CANDIDATE
+
+
+def test_resolution_execution_confirms_count_held_root_end_to_end():
+    """The real trigger path for the count-held shape: RESOLVED execution
+    stamps, validates, and persists CONFIRMED."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        _execute_resolved_transition,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _count_held_case()
+    _recompute_assessment_state(case)
+    _standalone_absence(case)
+    _execute_resolved_transition(case, "user_x")
+    assert case.state == CaseState.RESOLVED
+    assert root.node_state == NodeState.VALIDATED
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
