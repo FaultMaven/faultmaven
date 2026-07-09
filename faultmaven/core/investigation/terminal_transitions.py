@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
+    CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     CauseAssuranceGrade,
     conclusion_overclaims,
     confirm_root_from_resolution_absence,
@@ -475,6 +476,18 @@ def _execute_resolved_transition(case: Case, user_id: str):
             for h in case.hypotheses.values()
         ):
             case.progress.cause_state = CauseState.IDENTIFIED
+            # The root_cause_consistency validator requires a method and a
+            # non-zero likelihood beside IDENTIFIED — apply the same defaults
+            # the per-turn recompute uses (gate run 2 caught the bare
+            # assignment 500ing the RESOLVED execution on the progress-blob
+            # reload, which BLOCKED the resolution and stranded the case).
+            if not case.progress.root_cause_method:
+                case.progress.root_cause_method = "hypothesis_validation"
+            if not case.progress.root_cause_likelihood:
+                case.progress.root_cause_likelihood = (
+                    getattr(case.root_cause_conclusion, "likelihood", None)
+                    or CONFIRMED_RCC_LIKELIHOOD_FLOOR
+                )
 
     now = datetime.now(UTC)
 

@@ -1556,3 +1556,7 @@ def test_resolution_execution_confirms_count_held_root_end_to_end():
     # Terminal-blob coherence: the confirmed cause reads IDENTIFIED, not the
     # stale pre-stamp CANDIDATES (observed live in the P1.3 gate run 1).
     assert case.progress.cause_state == CauseState.IDENTIFIED
+    # The blob must RELOAD: root_cause_consistency requires method + non-zero
+    # likelihood beside IDENTIFIED (gate run 2: the bare assignment 500ed the
+    # RESOLVED execution on reload and stranded the case INVESTIGATING).
+    type(case.progress)(**case.progress.model_dump())
