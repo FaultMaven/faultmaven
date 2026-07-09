@@ -408,6 +408,37 @@ class VerificationStatus(str, Enum):
     absence defaults to keep-engaging."""
 
 
+class CauseAssuranceGrade(str, Enum):
+    """The assurance behind a case's identified cause, as one of three mutually
+    exclusive grades — the M2 confirmation ladder (two-dimensional-hypothesis-
+    methodology §0/§7.2) read off the causal graph.
+
+    Computed by ``core.investigation.cause_assurance.grade_cause_assurance``
+    (which imports this enum from contracts, the same direction as
+    ``VerificationStatus``) and persisted on ``InvestigationProgress`` each turn.
+    ``CONFIRMED`` is the §7 bar for auto-seeding reusable knowledge and the only
+    grade whose conclusion may read "verified"; the other two are held back, for
+    different user-facing reasons.
+    """
+
+    NO_ROOT = "no_root"
+    """No VALIDATED root at all — e.g. a pure LLM-authored RootCauseConclusion
+    with zero causal graph (#590 A1). Not graph-identified; ask the user to
+    identify a cause."""
+
+    MECHANISTIC = "mechanistic"
+    """≥1 VALIDATED root (empirical rung evidence or a deductive derivation),
+    but none counterfactually confirmed. Mechanistic grade per M2/M4: the cause
+    is established enough to treat, but "verified" is withheld until the cause's
+    removal is observed to remove the problem. Ask the user to confirm it."""
+
+    CONFIRMED = "confirmed"
+    """≥1 VALIDATED root borne out by a counterfactual confirmation — a SUPPORTS
+    evidence link backed by a ``causal_absence_evidence`` row (the cause was
+    removed and the problem went with it, M2 gone⇒gone). The only grade that may
+    auto-seed reusable knowledge, and the only one that reads "verified"."""
+
+
 class SolutionState(str, Enum):
     """Engine-derived knowledge state of the fix (assessment variable).
 
@@ -567,6 +598,19 @@ class InvestigationProgress(BaseModel):
             "survives across turns. Drives the code-guarded insufficient-evidence "
             "handoff and the terminal capture-on-close. Default NOT_YET_PRODUCTIVE "
             "(too little work to judge). See insufficient-evidence-handling.md §5.4."
+        ),
+    )
+
+    cause_assurance: CauseAssuranceGrade = Field(
+        default=CauseAssuranceGrade.NO_ROOT,
+        description=(
+            "Engine-derived assurance grade behind the identified cause — the "
+            "M2 confirmation ladder (NO_ROOT | MECHANISTIC | CONFIRMED). "
+            "Recomputed each turn from the causal graph alongside cause_state "
+            "(never path-stripped) and persisted in the progress blob so the "
+            "grade × conclusion-confidence seam is queryable per turn (#656 "
+            "DF-6). CONFIRMED (counterfactual, gone⇒gone) is the sole harvest "
+            "authority and the only grade whose conclusion reads 'verified'."
         ),
     )
 

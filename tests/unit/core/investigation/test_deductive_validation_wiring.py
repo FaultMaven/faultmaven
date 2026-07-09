@@ -12,7 +12,8 @@ designed-but-dead into a firing path (§7.1.1):
      exclusion bar reachable — a merely-correlational net-refute stays above the
      bar and blocks the deduction (graceful denial).
 
-Acceptance: a case validated this way grades ``GROUNDED`` (§7 harvest bar).
+Acceptance: a case validated this way grades ``MECHANISTIC`` (validated but not
+counterfactually confirmed — the §7 harvest bar is ``CONFIRMED``, M2).
 Pure graph/grade primitives — no LLM, no DB.
 """
 
@@ -219,8 +220,11 @@ def test_exhausted_and_asserted_differential_stamps_deductive():
     assert survivor.node_state == NodeState.VALIDATED
     assert survivor.validation_method == ValidationMethod.DEDUCTIVE
     assert survivor.actionable is True  # M1
-    # Acceptance: grades GROUNDED via the deductive arm (#593).
-    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+    # Acceptance: a deductively validated root is MECHANISTIC grade — validated
+    # (unlocks treatment) but not counterfactually confirmed (M2: even a
+    # deductive proof rests on model-mediated refutations, so "verified" and
+    # harvest wait for the gone⇒gone confirmation).
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.MECHANISTIC
 
 
 def test_graceful_denial_when_sibling_only_correlationally_refuted():
@@ -230,7 +234,7 @@ def test_graceful_denial_when_sibling_only_correlationally_refuted():
     changed = validate_by_exclusion(case, {survivor_id})
     assert changed is False
     assert case.causal_nodes[survivor_id].node_state == NodeState.CANDIDATE
-    assert grade_cause_assurance(case) != CauseAssuranceGrade.GROUNDED
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.NO_ROOT
 
 
 def test_graceful_denial_when_survivor_not_asserted():
@@ -462,7 +466,7 @@ def test_exclusion_refuses_a_restating_survivor():
     changed = validate_by_exclusion(case, {survivor_id})
     assert changed is False
     assert survivor.node_state == NodeState.CANDIDATE
-    assert grade_cause_assurance(case) != CauseAssuranceGrade.GROUNDED
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.NO_ROOT
 
 
 def test_exclusion_stamps_a_mechanism_survivor_control():

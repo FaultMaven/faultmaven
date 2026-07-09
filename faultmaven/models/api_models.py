@@ -502,6 +502,13 @@ class ProgressTransparencyInfo(BaseModel):
         "honest partial outcome (e.g. insufficient_evidence) alongside the "
         "stalled-milestone surfacing.",
     )
+    cause_assurance: Optional[str] = Field(
+        default=None,
+        description="Engine-derived assurance grade behind the identified cause "
+        "(no_root | mechanistic | confirmed). Lets the frontend label a "
+        "lower-assurance conclusion — e.g. an identified-but-unconfirmed cause — "
+        "instead of presenting every conclusion at equal certainty.",
+    )
 
 
 class TurnResponse(BaseModel):

@@ -142,19 +142,23 @@ def _make_resolution_ready(case):
     return case
 
 
-def _ground_root_deductively(
+def _confirm_root_counterfactually(
     case,
     evidence_id="ev_d00dfeed0001",
+    absence_evidence_id="ev_d00dfeed0002",
     node_id="cn_d00dfeed0001",
 ):
-    """Add a deductively VALIDATED ROOT so the case clears the §7 harvest bar.
+    """Add a VALIDATED ROOT with a counterfactual confirmation so the case
+    clears the §7 harvest bar.
 
-    ``grade_cause_assurance`` requires at least one VALIDATED root with a
-    DEDUCTIVE derivation (proof-by-exclusion, §7.1.1) before a cause may
-    auto-seed reusable knowledge (#590 A1). A bare ``RootCauseConclusion`` —
-    LLM prose with no validated root — is NOT grounded and is held back from
-    harvest. Appends (does not replace) so a caller can set other evidence
-    first.
+    ``grade_cause_assurance`` requires at least one VALIDATED root bearing a
+    SUPPORTS link backed by a ``causal_absence_evidence`` row (the cause was
+    removed and the problem went with it — M2 gone⇒gone, grade ``CONFIRMED``)
+    before a cause may auto-seed reusable knowledge (#590 A1). A bare
+    ``RootCauseConclusion`` — LLM prose with no validated root — is NOT
+    confirmed and is held back from harvest; so is a validated-but-unconfirmed
+    (MECHANISTIC) root. Appends (does not replace) so a caller can set other
+    evidence first.
     """
     from faultmaven.modules.case.contracts import (
         CausalNode,
@@ -181,12 +185,23 @@ def _ground_root_deductively(
             collected_at_turn=1,
         )
     )
+    case.evidence.append(
+        Evidence(
+            evidence_id=absence_evidence_id,
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            primary_purpose="diagnosis",
+            summary="pool limit raised; timeouts gone for 30 minutes",
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="user_123",
+            collected_at_turn=2,
+        )
+    )
     case.causal_nodes[node_id] = CausalNode(
         node_id=node_id,
         statement="connection pool exhausted",
         node_type=NodeType.ROOT,
         node_state=NodeState.VALIDATED,
-        validation_method=ValidationMethod.DEDUCTIVE,
+        validation_method=ValidationMethod.EMPIRICAL,
         actionable=True,
         belief=0.8,
         generated_at_turn=1,
@@ -194,9 +209,15 @@ def _ground_root_deductively(
             NodeEvidenceLink(
                 evidence_id=evidence_id,
                 stance=EvidenceStance.SUPPORTS,
-                reasoning="sole surviving cause after exclusion",
+                reasoning="observed exhausted pool matches the posited cause",
                 linked_at_turn=1,
-            )
+            ),
+            NodeEvidenceLink(
+                evidence_id=absence_evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="removing the cause removed the problem",
+                linked_at_turn=2,
+            ),
         ],
     )
     return case
@@ -1565,17 +1586,18 @@ class TestReadinessAssessments:
                 collected_at_turn=1,
             )
         ]
-        # A harvestable cause must be GROUNDED (#590 A1), not bare RCC prose.
-        _ground_root_deductively(case)
+        # A harvestable cause must be CONFIRMED (#590 A1), not bare RCC prose.
+        _confirm_root_counterfactually(case)
         result = assess_runbook_readiness(case)
         assert result.verdict == result.READY
 
-    def test_runbook_readiness_not_suitable_when_cause_validation_is_fallback_only(
+    def test_runbook_readiness_not_suitable_when_cause_is_unconfirmed(
         self,
     ):
-        """An otherwise-READY case whose cause was validated only EMPIRICALLY
-        (LLM-mediated, no deductive derivation) is held back from runbook
-        harvesting — an unverified cause must not auto-seed reusable knowledge."""
+        """An otherwise-READY case whose cause is validated but never
+        counterfactually confirmed (MECHANISTIC grade — no causal_absence
+        SUPPORTS on the root) is held back from runbook harvesting — an
+        unconfirmed cause must not auto-seed reusable knowledge."""
         from faultmaven.core.investigation.terminal_transitions import (
             assess_runbook_readiness,
         )
@@ -1611,7 +1633,7 @@ class TestReadinessAssessments:
                 verification_method="Check p99 latency < 500ms for 30 min",
             )
         ]
-        # The root validated empirically — never deductively grounded.
+        # The root validated empirically — never counterfactually confirmed.
         case.evidence = [
             Evidence(
                 evidence_id="ev_aaaaaaaaaaaa",
@@ -1648,9 +1670,9 @@ class TestReadinessAssessments:
 
         result = assess_runbook_readiness(case)
         assert result.verdict == result.NOT_SUITABLE
-        # The message must ask the user to VERIFY the cause, not to provide one
-        # (the cause is present — it's the assurance that's missing).
-        assert "lower-assurance" in result.message
+        # The message must ask the user to CONFIRM the cause, not to provide one
+        # (the cause is present — it's the confirmation that's missing).
+        assert "never confirmed" in result.message
         assert "- identified root cause" not in result.message
 
     def test_runbook_readiness_not_suitable_when_rcc_has_no_validated_root(self):
@@ -1734,10 +1756,10 @@ class TestReadinessAssessments:
                 commands=["kubectl edit configmap"],
             )
         ]
-        # Cause must be GROUNDED (deductively) to be harvestable at all (#590 A1); the
+        # Cause must be CONFIRMED (counterfactually) to be harvestable at all (#590 A1); the
         # enrichment verdict then turns on the thin solution (no mitigation, no
         # verification method).
-        _ground_root_deductively(case)
+        _confirm_root_counterfactually(case)
         result = assess_runbook_readiness(case)
         assert result.verdict == result.NEEDS_ENRICHMENT
 
@@ -1939,8 +1961,8 @@ class TestRunbookSuggestion:
                 collected_at_turn=1,
             )
         ]
-        # A suggestible cause must be GROUNDED (deductively) (#590 A1).
-        _ground_root_deductively(case)
+        # A suggestible cause must be CONFIRMED (counterfactually) (#590 A1).
+        _confirm_root_counterfactually(case)
 
         result = await evaluate_runbook_suggestion(case, runbook_kb=None)
         assert result.verdict == RunbookSuggestion.SUGGEST
@@ -1978,8 +2000,8 @@ class TestRunbookSuggestion:
         )
         _make_resolution_ready(case)
         case.solutions[0].commands = ["kubectl edit configmap"]
-        # A suggestible cause must be GROUNDED (deductively) (#590 A1).
-        _ground_root_deductively(case)
+        # A suggestible cause must be CONFIRMED (counterfactually) (#590 A1).
+        _confirm_root_counterfactually(case)
 
         # Mock runbook_kb that returns a high-similarity match
         mock_kb = AsyncMock()

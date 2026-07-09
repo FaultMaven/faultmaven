@@ -591,7 +591,10 @@ def test_synthesize_rcc_when_validated_root_has_no_conclusion():
     assert rcc is not None
     assert rcc.root_cause == root.statement
     assert rcc.validated_hypothesis_id == hyp.hypothesis_id
-    assert rcc.confidence_level == ConfidenceLevel.VERIFIED  # empirical root
+    # M2: empirical validation is mechanistic grade — CONFIDENT, never VERIFIED
+    # (0.9/"verified" is reserved for counterfactual confirmation).
+    assert rcc.confidence_level == ConfidenceLevel.CONFIDENT
+    assert rcc.likelihood == 0.8
 
 
 def test_synthesized_rcc_does_not_overwrite_llm_conclusion():
@@ -656,7 +659,8 @@ def test_stale_engine_rcc_refreshed_on_root_handoff_without_refutation():
 
 def test_deductive_root_rcc_is_confident_grade():
     """A deductively-validated root yields a CONFIDENT (mechanistic-grade) RCC,
-    not VERIFIED, and the no-intermediate mechanism fallback."""
+    not VERIFIED (M2: deduction is validation, not counterfactual
+    confirmation), and the no-intermediate mechanism fallback."""
     case, root, hyp = _chain_case()
     _recompute_cause_state_from_chain(case)  # validates empirically first
     # Flip the (now validated) root to deductive grade, clear the RCC to force a
@@ -670,6 +674,96 @@ def test_deductive_root_rcc_is_confident_grade():
     assert (
         rcc.mechanism == "Directly produces the observed problem."
     )  # degenerate chain
+
+
+def _confirm(case, root, label="ev_absence"):
+    """Attach a counterfactual confirmation (causal_absence SUPPORTS) to the root."""
+    absent = _evidence(label, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    case.evidence.append(absent)
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=absent.evidence_id,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="removing the cause removed the problem",
+            linked_at_turn=case.current_turn,
+        )
+    )
+
+
+def test_confirmed_root_rcc_is_verified():
+    """M2 gone⇒gone: only a counterfactually confirmed root mints a VERIFIED
+    (≥0.9) engine conclusion."""
+    case, root, hyp = _chain_case()
+    _confirm(case, root)
+    _recompute_cause_state_from_chain(case)
+    rcc = case.root_cause_conclusion
+    assert rcc is not None
+    assert rcc.confidence_level == ConfidenceLevel.VERIFIED
+    assert rcc.likelihood >= 0.9
+
+
+def test_mechanistic_rcc_caps_llm_likelihood():
+    """The cap is a CAP: the LLM's own higher root_cause_likelihood must not
+    push an unconfirmed (mechanistic) engine mirror into 'verified' — the #656
+    turn-6 shape."""
+    case, root, hyp = _chain_case()
+    case.progress.root_cause_likelihood = 0.95  # LLM-asserted near-certainty
+    _recompute_cause_state_from_chain(case)
+    rcc = case.root_cause_conclusion
+    assert rcc is not None
+    assert rcc.confidence_level == ConfidenceLevel.CONFIDENT
+    assert rcc.likelihood == 0.8
+
+
+def test_engine_mirror_upgrades_when_confirmation_arrives():
+    """A standing mechanistic engine mirror re-mints to VERIFIED the turn its
+    root gains the counterfactual confirmation."""
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)
+    assert case.root_cause_conclusion.confidence_level == ConfidenceLevel.CONFIDENT
+    _confirm(case, root)
+    _recompute_cause_state_from_chain(case)
+    rcc = case.root_cause_conclusion
+    assert rcc.confidence_level == ConfidenceLevel.VERIFIED
+    assert rcc.validated_hypothesis_id == hyp.hypothesis_id
+
+
+def test_pre_cap_verified_engine_mirror_corrects_down():
+    """A persisted engine mirror that predates the M2 cap (VERIFIED/0.9 on a
+    root that was never confirmed) self-corrects to CONFIDENT on the next
+    recompute — the grade, not the stale claim, rules the mirror."""
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)  # root VALIDATED, mirror CONFIDENT
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=root.statement,
+        mechanism="Directly produces the observed problem.",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+        validated_hypothesis_id=hyp.hypothesis_id,
+        determined_by="engine:chain_validation",
+    )
+    _recompute_cause_state_from_chain(case)
+    rcc = case.root_cause_conclusion
+    assert rcc is not None
+    assert rcc.confidence_level == ConfidenceLevel.CONFIDENT
+    assert rcc.likelihood == 0.8
+    assert rcc.validated_hypothesis_id == hyp.hypothesis_id
+
+
+def test_llm_authored_verified_rcc_is_not_touched_by_the_cap():
+    """The M2 cap governs the ENGINE's mirror only: an LLM-authored conclusion
+    is never rewritten here (its retraction lifecycle is #656 P2.3) — the
+    over-claim is surfaced via the persisted grade + the seam warning instead."""
+    case, root, hyp = _chain_case()
+    own = RootCauseConclusion(
+        root_cause="the LLM's own worded conclusion",
+        mechanism="as the LLM described it",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.95,
+    )
+    case.root_cause_conclusion = own
+    _recompute_cause_state_from_chain(case)
+    assert case.root_cause_conclusion is own
 
 
 # Source-of-truth RCC retraction (soundness): a RootCauseConclusion whose NAMED
@@ -798,3 +892,95 @@ def test_llm_rcc_survives_root_demotion():
     _recompute_cause_state_from_chain(case)
     assert root.node_state != NodeState.VALIDATED
     assert case.root_cause_conclusion is own  # untouched
+
+
+# ---------------------------------------------------------------------------
+# M2 assurance grade: per-turn persistence + the over-claim seam warning
+# ---------------------------------------------------------------------------
+
+
+def test_recompute_persists_cause_assurance_grade():
+    """#656 DF-6: the grade is written onto the progress blob each recompute so
+    the grade × conclusion-confidence seam is queryable, and it tracks the
+    graph as confirmation arrives."""
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _chain_case()
+    assert case.progress.cause_assurance == CauseAssuranceGrade.NO_ROOT  # default
+    _recompute_assessment_state(case)
+    assert case.progress.cause_assurance == CauseAssuranceGrade.MECHANISTIC
+    absent = _evidence("ev_conf", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    case.evidence.append(absent)
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=absent.evidence_id,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="removing the cause removed the problem",
+            linked_at_turn=case.current_turn,
+        )
+    )
+    _recompute_assessment_state(case)
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+
+
+def test_cause_assurance_rides_the_progress_blob():
+    """Persistence pin: the grade serializes with InvestigationProgress (the
+    verification_status pattern — no migration), and a pre-P1.2 blob without
+    the field reloads at the NO_ROOT default."""
+    import json
+
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+    from faultmaven.modules.case.domain.models import InvestigationProgress
+
+    p = InvestigationProgress(cause_assurance=CauseAssuranceGrade.CONFIRMED)
+    blob = json.loads(p.model_dump_json())
+    assert blob["cause_assurance"] == "confirmed"
+    assert (
+        InvestigationProgress(**blob).cause_assurance == CauseAssuranceGrade.CONFIRMED
+    )
+    blob.pop("cause_assurance")  # a blob persisted before the field existed
+    assert InvestigationProgress(**blob).cause_assurance == CauseAssuranceGrade.NO_ROOT
+
+
+def test_overclaim_warning_fires_for_llm_verified_rcc(caplog):
+    """The prod-visible over-claim seam (#656 turn-6 shape): an LLM-authored
+    conclusion claiming verified while the grade lacks counterfactual
+    confirmation warns every recompute."""
+    import logging as _logging
+
+    case, root, hyp = _chain_case()
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="the LLM's own worded conclusion",
+        mechanism="as the LLM described it",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.95,
+    )
+    with caplog.at_level(
+        _logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _recompute_assessment_state(case)
+    recs = [
+        r
+        for r in caplog.records
+        if getattr(r, "event", None) == "cause_confidence_overclaim"
+    ]
+    assert recs, "over-claim seam warning not emitted"
+    assert recs[-1].cause_assurance == "mechanistic"
+
+
+def test_no_overclaim_warning_for_grade_consistent_mirror(caplog):
+    """Control: the engine's own capped mirror (CONFIDENT on mechanistic) never
+    trips the over-claim warning."""
+    import logging as _logging
+
+    case, root, hyp = _chain_case()
+    case.progress.symptom_verified = True
+    with caplog.at_level(
+        _logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
+    ):
+        _recompute_assessment_state(case)
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "event", None) == "cause_confidence_overclaim"
+    ]

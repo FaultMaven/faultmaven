@@ -38,7 +38,13 @@ PRs #487–#507. What is built versus still design-intent:
   **F3 signature-screening** (§4) — a *prompt-level* formation rule (the LLM
   rejects a cause whose mechanism cannot produce D's observed signature; this is
   a semantic judgment, deliberately not an engine token-match), sim-validated for
-  no over-screening.
+  no over-screening. Also the **M2 confidence grades** (§9.5): the assurance
+  ladder (`NO_ROOT`/`MECHANISTIC`/`CONFIRMED`) is computed and persisted per
+  turn, "verified"/≥0.9 on the engine-synthesized conclusion requires a
+  counterfactual confirmation on the validated root (empirical *and* deductive
+  validation cap at `CONFIDENT`/0.8), `CONFIRMED` is the sole KB-harvest
+  authority, and a conclusion that over-claims "verified" below the grade is
+  surfaced (WARNING seam log + report assurance qualifier).
 - **Design-intent, not yet built** — the LLM satisfies this *behaviorally*; no
   engine gate enforces it: chain-level belief propagation (§9.4 — the engine
   still uses the per-evidence `+0.15 / −0.20` counter from
@@ -108,7 +114,7 @@ LLM-owned gate milestone on the LLM's behalf.
 | ID | Invariant (must always hold) | Graceful denial (Gate-2 exit) | Planned enforcement |
 |----|------------------------------|-------------------------------|---------------------|
 | **M1** | A node is a **candidate root cause** only if it is the *terminal* node of its chain (no controllable upstream node in scope, R7) **and** *actionable* (a performable, independent remediation can be named). | Unmet → node stays an intermediate / candidate state; search continues. | Schema + engine-guard |
-| **M2** | A root cause is marked **confirmed** ("verified") only with **counterfactual** evidence — removing it removed `D` (`causal_absence_evidence`). *Gone ⇒ problem gone.* | Counterfactual unreachable → **CLOSE** on `symptom_absence`, never hang. | Engine-guard (resolution gate) |
+| **M2** | A root cause is marked **confirmed** ("verified") only with **counterfactual** evidence — removing it removed `D` (`causal_absence_evidence`). *Gone ⇒ problem gone.* | Counterfactual unreachable → **CLOSE** on `symptom_absence`, never hang. | Engine-guard, **built**: resolution gate + the §9.5 assurance grades (`CONFIRMED` requires a root-linked counterfactual; the engine mirror caps at `CONFIDENT`/0.8 without one) |
 | **M3** | Every **hypothesis is a causal chain** terminating in a (possibly-candidate) **root-cause node** proposing a mechanism — distinct from `D` and from its intermediate states. A bare intermediate state / symptom-restatement is not a hypothesis. *(Successor to retired INV-17.)* | Enforced at the **validation / solution-attach checkpoint**, not at creation — a partial chain may exist with no root yet (lazy expansion, §8.2). | Schema (checkpoint) |
 | **M4** | A node transitions to **validated** only via empirical evidence (§7.1) **or** deduction over a *certified-exhaustive* set (§7.1.1) — never by assertion, inference, or correlation. | Unobservable + non-exhaustive → node stays candidate; keep searching or escalate. | Engine-guard (extends INV-23) |
 | **M5** | A **remediation `Solution`** may not exist before its root is at least *mechanistically validated*; a diagnostic action is never a Solution. *(Mitigation / defensive state-interceptions are exempt — they precede a known root by design.)* | Pre-validation actions are recorded as **tests / mitigations**, not solutions; flow continues. | Engine-guard (veto, extends INV-23) |
@@ -697,25 +703,53 @@ that retrieves it. So KB harvest carries NO INCORRECT CONCLUSION one step furthe
 only an **authority-grounded** cause may auto-seed knowledge.
 
 `grade_cause_assurance(case)` (`cause_assurance.py`) classifies the identified
-cause into three mutually-exclusive grades, in one pass over its validated roots:
+cause into three mutually-exclusive grades — the **M2 confirmation ladder** —
+in one pass over its validated roots:
 
 | Grade | Condition | May seed KB? |
 |-------|-----------|--------------|
-| `GROUNDED` | ≥1 VALIDATED root borne out by a **deductive derivation** ([§7.1.1](#711-deductive-validation-proof-by-exclusion)). | **Yes** |
-| `FALLBACK_ONLY` | ≥1 VALIDATED root, but none deductively derived — every root rests on the LLM's own evidence linking (the LLM authored both the cause and its citation). | No — ask the user to *verify* the cause. |
+| `CONFIRMED` | ≥1 VALIDATED root borne out by a **counterfactual confirmation** — a SUPPORTS evidence link backed by a `causal_absence_evidence` row on that root (the cause was removed and `D` went with it; M2 *gone ⇒ gone*). | **Yes** |
+| `MECHANISTIC` | ≥1 VALIDATED root (empirical rung evidence, §7.1, **or** a deductive derivation, [§7.1.1](#711-deductive-validation-proof-by-exclusion)), but none counterfactually confirmed. | No — ask the user to *confirm* the cause. |
 | `NO_ROOT` | No VALIDATED root at all (a bare, LLM-authored `RootCauseConclusion` with no causal graph). | No — ask the user to *identify* a cause. |
 
-The grade semantics — in particular whether the deductive derivation should
-remain the sole `GROUNDED` arm — are under redesign; tracked on issue #656
-(systemic-review).
+Validation **method** never raises the grade: empirical and deductive
+validation are both *mechanistic* (M2/M4). A deductive derivation is itself
+assembled from LLM-mediated refutations plus an asserted-exhaustive
+differential, so on its own it stays `MECHANISTIC`; only the counterfactual
+outcome of actually removing the cause clears the top bar. (This settles the
+harvest-authority question left open by the runbook-matcher retirement:
+counterfactual confirmation succeeded the deductive-only `GROUNDED` grade,
+issue #656.) The confirmation must be **linked to the root it confirms** — a
+case-level `causal_absence` row with no bearing on the root does not confirm
+it (the same bearing discipline as the counterfactual-refute arm).
 
-`GROUNDED` is the harvest bar, and both entry points refuse to seed an unverified
-cause — the `POST /knowledge/convert-from-case` API rejects with 422 before
-conversion, and the chat-side runbook **action** returns `NOT_READY` (no draft)
-when the cause is not grounded (the suggestion is offered, but acting on it is
-gated). The full gate flow is in [document-to-runbook-conversion.md §1.1](../knowledge-and-ai/document-to-runbook-conversion.md#11-soundness-gate-only-an-authority-grounded-cause-may-seed-the-kb-7).
-The three-way grade is deliberate: a single positive bar (`GROUNDED`) makes the
-two held shapes (`FALLBACK_ONLY`, `NO_ROOT`) distinguishable for the user-facing
+The grade is **persisted** per turn on `InvestigationProgress.cause_assurance`
+(the `verification_status` pattern — rides the progress blob, no migration).
+That makes the grade × conclusion-confidence seam queryable, drives the
+resolution report's assurance qualifier and the `cause_assurance` field on the
+progress-transparency surface, and feeds the **over-claim seam warning**: a
+recorded conclusion claiming *verified* while the grade is below `CONFIRMED`
+is logged at WARNING every recompute (the incident shape of issue #656; the
+engine's own mirror can no longer produce it, so a hit is an LLM-authored
+over-claim — LLM-conclusion retraction is a separate correction tracked on
+that issue).
+
+The grade also rules the **engine-synthesized conclusion's confidence** (§9.3
+mirror): a `MECHANISTIC` root mints `CONFIDENT` at a fixed 0.8 — a *cap*, so
+the LLM's own higher `root_cause_likelihood` cannot leak a mechanistic cause
+into "verified" — and only a `CONFIRMED` root mints `VERIFIED` (floored at
+0.9). A standing engine mirror whose confidence disagrees with the current
+grade is re-minted (upgrade the turn confirmation arrives; correction of
+pre-cap persisted over-claims).
+
+`CONFIRMED` is the harvest bar, and both entry points refuse to seed an
+unconfirmed cause — the `POST /knowledge/convert-from-case` API rejects with
+422 before conversion, and the chat-side runbook **action** returns
+`NOT_READY` (no draft) when the cause is not confirmed (the suggestion is
+offered, but acting on it is gated). The full gate flow is in
+[document-to-runbook-conversion.md §1.1](../knowledge-and-ai/document-to-runbook-conversion.md#11-soundness-gate-only-an-authority-grounded-cause-may-seed-the-kb-7).
+The three-way grade is deliberate: a single positive bar (`CONFIRMED`) makes the
+two held shapes (`MECHANISTIC`, `NO_ROOT`) distinguishable for the user-facing
 ask, and unrepresentable as a "harvestable" state.
 
 ---

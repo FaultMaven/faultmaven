@@ -403,24 +403,56 @@ def _validated_root(*, method: ValidationMethod) -> CausalNode:
     )
 
 
-def test_grade_is_grounded_for_deductive_root():
-    # Proof-by-exclusion (§7.1.1) is the grounding arm: a DEDUCTIVE validated
-    # root clears the §7 harvest bar.
+def test_grade_is_mechanistic_for_deductive_root():
+    # Proof-by-exclusion (§7.1.1) validates, but validation is mechanistic
+    # grade (M2): a deductive derivation rests on model-mediated refutations
+    # plus an asserted-exhaustive differential, so it does NOT clear the §7
+    # harvest bar (CONFIRMED) on its own.
     case = _case(
         [_validated_root(method=ValidationMethod.DEDUCTIVE)],
         evidence=[_evidence("ev_root", EvidenceCategory.CAUSAL_EVIDENCE)],
     )
-    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.MECHANISTIC
 
 
-def test_grade_is_fallback_only_for_empirical_root():
+def test_grade_is_mechanistic_for_empirical_root():
     # An EMPIRICAL (LLM-mediated) validation is graph-identified but NOT
-    # grounded — it must not auto-seed reusable knowledge.
+    # confirmed — it must not auto-seed reusable knowledge.
     case = _case(
         [_validated_root(method=ValidationMethod.EMPIRICAL)],
         evidence=[_evidence("ev_root", EvidenceCategory.CAUSAL_EVIDENCE)],
     )
-    assert grade_cause_assurance(case) == CauseAssuranceGrade.FALLBACK_ONLY
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.MECHANISTIC
+
+
+def test_grade_is_confirmed_for_counterfactually_confirmed_root():
+    # M2 gone⇒gone: a validated root bearing a SUPPORTS link backed by a
+    # causal_absence_evidence row (cause removed, problem gone) is CONFIRMED —
+    # the sole harvest authority and the only grade that reads "verified".
+    root = _validated_root(method=ValidationMethod.EMPIRICAL)
+    root.evidence_links.append(_link("ev_absence", EvidenceStance.SUPPORTS))
+    case = _case(
+        [root],
+        evidence=[
+            _evidence("ev_root", EvidenceCategory.CAUSAL_EVIDENCE),
+            _evidence("ev_absence", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE),
+        ],
+    )
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
+
+
+def test_grade_ignores_unlinked_causal_absence_row():
+    # Bearing discipline: a case-level causal_absence row with NO link to the
+    # validated root does not confirm it — the confirmation must bear on the
+    # root it confirms.
+    case = _case(
+        [_validated_root(method=ValidationMethod.EMPIRICAL)],
+        evidence=[
+            _evidence("ev_root", EvidenceCategory.CAUSAL_EVIDENCE),
+            _evidence("ev_absence", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE),
+        ],
+    )
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.MECHANISTIC
 
 
 def test_grade_is_no_root_for_bare_rcc():

@@ -165,16 +165,16 @@ Auto-converting a case into a runbook seeds *reusable* knowledge, so it carries 
 
 | Grade | Meaning | Convertible? |
 |-------|---------|--------------|
-| `GROUNDED` | ≥1 VALIDATED root borne out by a **deductive derivation** (proof-by-exclusion, §7.1.1). | **Yes** |
-| `FALLBACK_ONLY` | ≥1 VALIDATED root, but none deductively derived — every root rests on the LLM's own evidence linking (the LLM authored both the cause and its citation). | No |
+| `CONFIRMED` | ≥1 VALIDATED root borne out by a **counterfactual confirmation** — a SUPPORTS evidence link backed by a `causal_absence_evidence` row on that root (the cause was removed and the problem went with it; M2 gone⇒gone). | **Yes** |
+| `MECHANISTIC` | ≥1 VALIDATED root (empirical rung evidence or a deductive derivation), but none counterfactually confirmed. | No |
 | `NO_ROOT` | No VALIDATED root at all — a bare `RootCauseConclusion` is LLM prose with zero causal graph. | No |
 
-Only `GROUNDED` clears the bar. The two non-grounded grades are held back for *different* reasons, which the user-facing copy distinguishes (verify the cause vs. identify one).
+Only `CONFIRMED` clears the bar. Validation method never raises the grade — a deductive derivation rests on model-mediated refutations plus an asserted-exhaustive differential, so it stays `MECHANISTIC` without the confirmation. The two held grades are distinguished in the user-facing copy for *different* reasons (confirm the cause vs. identify one).
 
-- **API path** — `POST /knowledge/convert-from-case` rejects a non-`GROUNDED` case with **HTTP 422** before constructing the `CaseConversionRequest` ([conversion_routes.py](../../../faultmaven/modules/knowledge/api/conversion_routes.py)), directing the user to author it manually via `POST /knowledge/runbooks/create` if the cause is correct.
-- **Chat path** — the *"Generate runbook from this case"* DECIDE suggestion is offered on RESOLVED turns (subject only to "a draft doesn't already exist"), but **acting on it** routes through `_handle_runbook_creation`, which runs `evaluate_runbook_suggestion` → `assess_runbook_readiness` (the grade read via `grade_cause_assurance`). A non-`GROUNDED` cause returns `NOT_READY` — a "not ready, verify the cause" message with **no draft side effect** — so clicking never produces a runbook from an ungrounded cause. The gate is at action time, not suggestion-emission time.
+- **API path** — `POST /knowledge/convert-from-case` rejects a non-`CONFIRMED` case with **HTTP 422** before constructing the `CaseConversionRequest` ([conversion_routes.py](../../../faultmaven/modules/knowledge/api/conversion_routes.py)), directing the user to author it manually via `POST /knowledge/runbooks/create` if the cause is correct.
+- **Chat path** — the *"Generate runbook from this case"* DECIDE suggestion is offered on RESOLVED turns (subject only to "a draft doesn't already exist"), but **acting on it** routes through `_handle_runbook_creation`, which runs `evaluate_runbook_suggestion` → `assess_runbook_readiness` (the grade read via `grade_cause_assurance`). A non-`CONFIRMED` cause returns `NOT_READY` — a "not ready, confirm the cause" message with **no draft side effect** — so clicking never produces a runbook from an unconfirmed cause. The gate is at action time, not suggestion-emission time.
 
-> **Rejected alternative:** an earlier gate keyed on the *negative* predicate "cause validated only by fallback support." It returned False for the `NO_ROOT` case (no validated root is not "fallback-only"), so a pure-prose `RootCauseConclusion` slipped through. Gating on the positive `GROUNDED` grade closes that hole — a record with no validated root is graded `NO_ROOT`, never `GROUNDED`.
+> **Rejected alternative:** an earlier gate keyed on the *negative* predicate "cause validated only by fallback support." It returned False for the `NO_ROOT` case (no validated root is not "fallback-only"), so a pure-prose `RootCauseConclusion` slipped through. Gating on the positive top grade closes that hole — a record with no validated root is graded `NO_ROOT`, never `CONFIRMED`.
 
 ---
 

@@ -855,9 +855,11 @@ class TestConversionEdgeCases:
         assert "not available" in response.json()["detail"].lower()
 
 
-def _resolved_case_with_root(method):
+def _resolved_case_with_root(method, confirmed=False):
     """A minimal RESOLVED case whose single VALIDATED root was validated with the
-    given method — sound (GROUNDED) iff the method is DEDUCTIVE."""
+    given method — sound (CONFIRMED) iff ``confirmed`` adds the counterfactual
+    confirmation link (a causal_absence SUPPORTS on the root, M2 gone⇒gone).
+    Validation method alone never clears the harvest bar."""
     from types import SimpleNamespace
 
     from faultmaven.modules.case.contracts import (
@@ -872,15 +874,45 @@ def _resolved_case_with_root(method):
         ValidationMethod,
     )
 
-    ev = Evidence(
-        evidence_id="ev_aaaaaaaaaaaa",
-        category=EvidenceCategory.CAUSAL_EVIDENCE,
-        primary_purpose="diagnosis",
-        summary="connection pool exhausted",
-        source_type=EvidenceSourceType.USER_DESCRIPTION,
-        collected_by="u",
-        collected_at_turn=1,
-    )
+    evidence = [
+        Evidence(
+            evidence_id="ev_aaaaaaaaaaaa",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            primary_purpose="diagnosis",
+            summary="connection pool exhausted",
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="u",
+            collected_at_turn=1,
+        )
+    ]
+    links = [
+        NodeEvidenceLink(
+            evidence_id="ev_aaaaaaaaaaaa",
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="pool metrics",
+            linked_at_turn=1,
+        )
+    ]
+    if confirmed:
+        evidence.append(
+            Evidence(
+                evidence_id="ev_bbbbbbbbbbbb",
+                category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                primary_purpose="diagnosis",
+                summary="pool limit raised; symptom gone",
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                collected_by="u",
+                collected_at_turn=2,
+            )
+        )
+        links.append(
+            NodeEvidenceLink(
+                evidence_id="ev_bbbbbbbbbbbb",
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="removing the cause removed the problem",
+                linked_at_turn=2,
+            )
+        )
     root = CausalNode(
         node_id="cn_aaaaaaaaaaaa",
         statement="connection pool exhausted",
@@ -890,14 +922,7 @@ def _resolved_case_with_root(method):
         actionable=True,
         belief=0.7,
         generated_at_turn=1,
-        evidence_links=[
-            NodeEvidenceLink(
-                evidence_id="ev_aaaaaaaaaaaa",
-                stance=EvidenceStance.SUPPORTS,
-                reasoning="pool metrics",
-                linked_at_turn=1,
-            )
-        ],
+        evidence_links=links,
     )
     return SimpleNamespace(
         case_id="case_aaaaaaaaaaaa",
@@ -905,7 +930,7 @@ def _resolved_case_with_root(method):
         description="d",
         state="resolved",
         causal_nodes={root.node_id: root},
-        evidence=[ev],
+        evidence=evidence,
         root_cause_conclusion=SimpleNamespace(
             root_cause="pool exhausted", mechanism="m"
         ),
@@ -941,12 +966,12 @@ def _resolved_case_no_graph():
 
 
 class TestConvertFromCaseSoundnessGate:
-    """§7: the API conversion path must enforce the same GROUNDED harvest bar as
-    the chat-side, so an LLM-asserted (never deductively grounded) cause can't
-    seed the KB."""
+    """§7: the API conversion path must enforce the same CONFIRMED harvest bar
+    (counterfactual confirmation, M2 gone⇒gone) as the chat-side, so an
+    LLM-asserted (never confirmed) cause can't seed the KB."""
 
     @pytest.mark.asyncio
-    async def test_rejects_fallback_only_cause(self, app_with_user):
+    async def test_rejects_unconfirmed_empirical_cause(self, app_with_user):
         app = app_with_user
         app.state.case_repository = MagicMock(
             get_by_id=AsyncMock(return_value=_resolved_case_with_root("empirical"))
@@ -957,7 +982,24 @@ class TestConvertFromCaseSoundnessGate:
                 json={"case_id": "case_aaaaaaaaaaaa", "scope": "personal"},
             )
         assert resp.status_code == 422
-        assert "deductively validated" in resp.json()["detail"]
+        assert "counterfactually confirmed" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_unconfirmed_deductive_cause(self, app_with_user):
+        # M2: a deductive derivation is mechanistic grade — it is assembled from
+        # model-mediated refutations plus an asserted-exhaustive differential,
+        # so on its own it must NOT clear the harvest bar either.
+        app = app_with_user
+        app.state.case_repository = MagicMock(
+            get_by_id=AsyncMock(return_value=_resolved_case_with_root("deductive"))
+        )
+        async with await _client(app) as client:
+            resp = await client.post(
+                f"{API_PREFIX}/convert-from-case",
+                json={"case_id": "case_aaaaaaaaaaaa", "scope": "personal"},
+            )
+        assert resp.status_code == 422
+        assert "counterfactually confirmed" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_rejects_cause_with_no_validated_root(self, app_with_user):
@@ -973,10 +1015,10 @@ class TestConvertFromCaseSoundnessGate:
                 json={"case_id": "case_bbbbbbbbbbbb", "scope": "personal"},
             )
         assert resp.status_code == 422
-        assert "deductively validated" in resp.json()["detail"]
+        assert "counterfactually confirmed" in resp.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_allows_deductively_grounded_cause(
+    async def test_allows_counterfactually_confirmed_cause(
         self, app_with_user, mock_conversion_service
     ):
         mock_conversion_service.convert_from_case = AsyncMock(
@@ -984,7 +1026,9 @@ class TestConvertFromCaseSoundnessGate:
         )
         app = app_with_user
         app.state.case_repository = MagicMock(
-            get_by_id=AsyncMock(return_value=_resolved_case_with_root("deductive"))
+            get_by_id=AsyncMock(
+                return_value=_resolved_case_with_root("empirical", confirmed=True)
+            )
         )
         async with await _client(app) as client:
             resp = await client.post(

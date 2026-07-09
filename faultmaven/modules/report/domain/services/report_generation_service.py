@@ -33,6 +33,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseReport,
     CaseState,
+    CauseAssuranceGrade,
     HypothesisState,
     ICaseRepository,
     NeedObtainability,
@@ -446,6 +447,27 @@ class ReportGenerationService:
             lines.append(f"_Verified by: {sol.verification_method}_\n")
         return lines
 
+    @staticmethod
+    def _assurance_note(case: Case) -> Optional[str]:
+        """A lower-assurance qualifier under the Root Cause heading, from the
+        engine's persisted assurance grade (M2 confirmation ladder). A
+        counterfactually CONFIRMED cause needs no note; anything less is labeled
+        so the report never presents an unconfirmed conclusion at full
+        certainty (#572)."""
+        grade = getattr(case.progress, "cause_assurance", None)
+        if grade == CauseAssuranceGrade.MECHANISTIC:
+            return (
+                "_Assurance: identified from the investigation's evidence, but "
+                "not counterfactually confirmed — removing this cause was never "
+                "explicitly tied to the problem disappearing._\n"
+            )
+        if grade == CauseAssuranceGrade.NO_ROOT:
+            return (
+                "_Assurance: stated by the assistant; this conclusion was not "
+                "validated in the causal analysis._\n"
+            )
+        return None
+
     async def _generate_resolution_summary(
         self, case: Case, context: Dict[str, Any]
     ) -> str:
@@ -486,6 +508,9 @@ class ReportGenerationService:
         if rcc and rcc.root_cause:
             parts.append("## Root Cause\n")
             parts.append(f"{rcc.root_cause}\n")
+            assurance_note = self._assurance_note(case)
+            if assurance_note:
+                parts.append(assurance_note)
             if getattr(rcc, "mechanism", None):
                 parts.append(f"**How it produced the symptom:** {rcc.mechanism}\n")
             if getattr(rcc, "contributing_factors", None):

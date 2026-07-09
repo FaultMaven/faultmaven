@@ -229,6 +229,9 @@ def _compute_progress_transparency(
         if case.progress.verification_status
         else None
     )
+    cause_assurance = (
+        case.progress.cause_assurance.value if case.progress.cause_assurance else None
+    )
 
     milestones = stage_milestones.get(stage_name, [])
     for milestone_name in milestones:
@@ -238,6 +241,7 @@ def _compute_progress_transparency(
                 pending_milestone=milestone_name,
                 milestone_description=_MILESTONE_DESCRIPTIONS.get(milestone_name),
                 verification_status=verification_status,
+                cause_assurance=cause_assurance,
             )
 
     return None

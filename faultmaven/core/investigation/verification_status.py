@@ -80,15 +80,26 @@ def work_gate_passed(case: "Case") -> bool:
 
 def _is_grounded(case: "Case") -> bool:
     """Grounding axis for the disposition join: an authority-grounded root
-    (§7 ``GROUNDED``) **anchored on a verified symptom**.
+    (§7 ``CONFIRMED`` — counterfactual confirmation, the top M2 grade)
+    **anchored on a verified symptom**.
+
+    ``CONFIRMED`` is the direct successor of the pre-M2-alignment ``GROUNDED``
+    grade as the axis value (the top assurance grade either way), so the join's
+    semantics carry over: a mechanistically-identified cause (``MECHANISTIC``,
+    formerly ``FALLBACK_ONLY``) remains not-grounded here. Whether the axis
+    should instead read "any validated root" (routing a stalled
+    mechanistically-identified case to ``TREATMENT_BLOCKED`` rather than
+    ``INSUFFICIENT_EVIDENCE``) is an open calibration question deliberately NOT
+    decided here — see insufficient-evidence-handling.md §5.1; it belongs to the
+    verification-status calibration eval, not the M2 grade alignment.
 
     The symptom-verified anchor closes the composition seam (§4 limitation 1):
-    the §7 grade walks the causal graph and can read ``GROUNDED`` off a validated
-    root that has **no backing hypothesis and no verified symptom** — a shape a
-    weak model can materialize (a chain without a hypothesis layer). Without the
-    anchor, ``verification_status`` reads ``HEALTHY`` over an empty hypothesis
-    layer and masks a stuck investigation (observed: a validated root, 0
-    hypotheses, ``symptom_verified=False`` → HEALTHY while the case spins).
+    the §7 grade walks the causal graph and can read ``CONFIRMED`` off a
+    validated root that has **no backing hypothesis and no verified symptom** — a
+    shape a weak model can materialize (a chain without a hypothesis layer).
+    Without the anchor, ``verification_status`` reads ``HEALTHY`` over an empty
+    hypothesis layer and masks a stuck investigation (observed: a validated root,
+    0 hypotheses, ``symptom_verified=False`` → HEALTHY while the case spins).
 
     Requiring ``symptom_verified`` here aligns the join's grounding axis with the
     *same* anchor ``cause_state`` already requires for ``IDENTIFIED`` (and that
@@ -105,7 +116,7 @@ def _is_grounded(case: "Case") -> bool:
     diverge from the raw ``grade_cause_assurance`` readers —
     ``terminal_transitions.assess_runbook_readiness`` (KB harvest gate) and
     ``knowledge/api/conversion_routes`` (convert-from-case) — for the
-    ``GROUNDED × symptom_verified=False`` state. That divergence is safe **only**
+    ``CONFIRMED × symptom_verified=False`` state. That divergence is safe **only**
     because both of those readers are gated behind RESOLVED, which requires
     ``_cause_identified`` → ``symptom_verified`` (so the divergent state is
     unreachable there). If a **pre-resolution** harvest/convert path is ever
@@ -116,7 +127,7 @@ def _is_grounded(case: "Case") -> bool:
     """
     if not (case.progress and case.progress.symptom_verified):
         return False
-    return grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+    return grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
 
 
 def is_stalled(case: "Case") -> bool:

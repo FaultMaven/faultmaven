@@ -29,6 +29,9 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from faultmaven.core.investigation.cause_assurance import (
+    root_counterfactually_confirmed,
+)
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     root_validation_blocked_restatement_total,
@@ -58,6 +61,15 @@ if TYPE_CHECKING:
 # weakly-refuted sibling does NOT count, so deductive validation cannot fire on
 # partial exclusion.
 DEDUCTIVE_EXCLUSION_MAX_BELIEF = 0.05
+
+# M2 confidence vocabulary (§0 M2, §7.2): a validated-but-unconfirmed root is
+# MECHANISTIC grade — the engine-synthesized conclusion reads CONFIDENT at a
+# FIXED likelihood (a cap, not a floor: the LLM's own higher
+# root_cause_likelihood must not leak a mechanistic cause into "verified").
+# Only a counterfactually CONFIRMED root (causal_absence SUPPORTS on the root,
+# gone⇒gone) reads VERIFIED, floored at 0.9.
+MECHANISTIC_RCC_LIKELIHOOD = 0.8
+CONFIRMED_RCC_LIKELIHOOD_FLOOR = 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -1053,13 +1065,17 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     validated a root with rung evidence but never authored a conclusion, or M6
     retracted a *different* chain's RCC while this one still stands. Either way
     the validated root IS the cause, so a derived RCC (root statement + the chain
-    as mechanism, VERIFIED for empirical / CONFIDENT for deductive grade) is a
+    as mechanism, at the confidence the M2 grade supports — CONFIDENT for a
+    mechanistic root, VERIFIED only for a counterfactually confirmed one) is a
     faithful mirror, not an assertion. Leaves an LLM-authored RCC untouched (the
     LLM's own conclusion always wins). An engine-synthesized RCC IS refreshed when
     it has gone stale — its named hypothesis is no longer a standing-validated
     root (the grounding chain handed off to another root via an INCONCLUSIVE
-    drift, NOT a refutation, so M6 never cleared it). No-op when no standing root
-    is validated. Returns True if it wrote one.
+    drift, NOT a refutation, so M6 never cleared it) — or when its confidence no
+    longer agrees with the root's M2 grade (confirmation arrived, so the mirror
+    upgrades to VERIFIED; or a pre-cap persisted mirror over-claims VERIFIED on a
+    mechanistic root, so it corrects down). No-op when no standing root is
+    validated. Returns True if it wrote one.
     """
     rcc = case.root_cause_conclusion
     if rcc is not None:
@@ -1071,8 +1087,21 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
             and prior.state in _STANDING_HYP_STATES
             and is_chain_root_validated(prior, case.causal_nodes)
         ):
-            return False  # the engine mirror still names the grounding root
-        # else: stale engine mirror — refresh from the current validated root.
+            # The mirror still names the grounding root — but it must also still
+            # claim the confidence its M2 grade supports (M2: "verified" ⇔
+            # counterfactually confirmed). A disagreement means the grade moved
+            # (or the mirror predates the cap) — fall through and re-mint.
+            prior_root = case.causal_nodes.get(prior.root_node_id or "")
+            confirmed = prior_root is not None and root_counterfactually_confirmed(
+                prior_root, {e.evidence_id: e.category for e in case.evidence}
+            )
+            expected_level = (
+                ConfidenceLevel.VERIFIED if confirmed else ConfidenceLevel.CONFIDENT
+            )
+            if rcc.confidence_level == expected_level:
+                return False  # faithful mirror: grounding root AND grade agree
+        # else: stale/misgraded engine mirror — refresh from the current
+        # validated root.
     # No restatement check here BY DESIGN: the §7.1 guard is an ENTRY bar on
     # validation (empirical lane + exclusion lane), so no restating root can
     # freshly validate — and a root that stands VALIDATED (incl. grandfathered
@@ -1101,12 +1130,22 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
         if inter
         else "Directly produces the observed problem."
     )[:2000]
-    # An empirically-validated root is VERIFIED grade (floor 0.9); a deductively-
-    # validated one is mechanistic-only (CONFIDENT, floor 0.8). confidence_level
+    # M2 confidence grades: a validated root — EMPIRICAL or DEDUCTIVE alike — is
+    # mechanistic, so the mirror reads CONFIDENT at a fixed likelihood (a CAP:
+    # the LLM's own root_cause_likelihood must not push a mechanistic cause into
+    # "verified"). Only a counterfactually CONFIRMED root (causal_absence
+    # SUPPORTS link, gone⇒gone) reads VERIFIED, floored at 0.9. confidence_level
     # must agree with likelihood (RootCauseConclusion.confidence_consistency), so
     # derive it from the final score rather than hardcoding.
-    floor = 0.9 if root.validation_method == ValidationMethod.EMPIRICAL else 0.8
-    likelihood = max(case.progress.root_cause_likelihood or 0.0, floor)
+    if root_counterfactually_confirmed(
+        root, {e.evidence_id: e.category for e in case.evidence}
+    ):
+        likelihood = max(
+            case.progress.root_cause_likelihood or 0.0,
+            CONFIRMED_RCC_LIKELIHOOD_FLOOR,
+        )
+    else:
+        likelihood = MECHANISTIC_RCC_LIKELIHOOD
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause=root.statement[:1000],
         mechanism=mechanism,

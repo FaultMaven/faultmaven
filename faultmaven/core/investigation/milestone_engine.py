@@ -915,10 +915,44 @@ def _recompute_assessment_state(
         if p.solution_proposed or bool(case.solutions):
             p.solution_state = SolutionState.SELECTED
 
-    # Verification status LAST — after the cause_state recompute above has run
-    # derive_node_states + the deductive-exclusion stamp, so the grounding-first
-    # disposition reads a fresh grade rather than pre-empting the deductive arm.
+    # Assurance grade + verification status LAST — after the cause_state
+    # recompute above has run derive_node_states + the deductive-exclusion
+    # stamp, so both read a fresh graph rather than pre-empting the deductive
+    # arm. The grade is persisted (progress blob, like verification_status) so
+    # the grade × conclusion-confidence seam is queryable per turn (#656 DF-6).
+    p.cause_assurance = grade_cause_assurance(case)
     p.verification_status = assess_verification_status(case)
+
+    # M2 over-claim seam (#656 turn-6 shape): a recorded conclusion claims
+    # "verified" while the graph grade lacks counterfactual confirmation. The
+    # engine mirror can no longer produce this (its confidence is grade-derived),
+    # so a hit here is an LLM-authored conclusion over-claiming — surfaced at
+    # WARNING (prod-visible, unlike the DEBUG grounding trace) until conclusion
+    # retraction/refresh lands (#656 P2.3). The under-claim polarity lives in
+    # ``_log_grounding_assessment``.
+    rcc = case.root_cause_conclusion
+    if (
+        rcc is not None
+        and rcc.confidence_level == ConfidenceLevel.VERIFIED
+        and p.cause_assurance != CauseAssuranceGrade.CONFIRMED
+    ):
+        logger.warning(
+            "M2 over-claim seam: case=%s turn=%s conclusion claims verified "
+            "(likelihood=%.2f, determined_by=%s) but cause_assurance=%s",
+            case.case_id,
+            case.current_turn,
+            rcc.likelihood,
+            getattr(rcc, "determined_by", None),
+            p.cause_assurance.value,
+            extra={
+                "event": "cause_confidence_overclaim",
+                "case_id": case.case_id,
+                "turn": case.current_turn,
+                "rcc_likelihood": rcc.likelihood,
+                "rcc_determined_by": getattr(rcc, "determined_by", None),
+                "cause_assurance": p.cause_assurance.value,
+            },
+        )
 
     _log_grounding_assessment(case)
 
@@ -929,11 +963,13 @@ def _log_grounding_assessment(case: "Case") -> None:
 
     Permanent observability (not throwaway): it traces the join AND its inputs so
     a **grade ↔ cause_state divergence** — the composition-seam drift the design
-    flags in §4.1 — is visible per turn in any case, not only in a debugger. The
-    canonical failure it surfaces: a validated causal root with no verified
-    symptom / no backing hypothesis grades GROUNDED, so ``verification_status``
-    reads HEALTHY while ``cause_state`` stays UNKNOWN, masking a stuck
-    investigation. ``seam_divergence`` flags exactly that shape for grep/alerting.
+    flags in §4.1 — is visible per turn in any case, not only in a debugger. Both
+    polarities are flagged: ``seam_divergence`` is the UNDER-claim (a
+    counterfactually CONFIRMED root with no identified cause_state / unverified
+    symptom — the join reads healthier than the progress signals, masking a stuck
+    investigation); ``seam_overclaim`` is the OVER-claim (#656 turn 6 — a
+    conclusion claiming "verified" while the grade lacks counterfactual
+    confirmation; also emitted at WARNING by the caller so prod sees it).
 
     Guarded by the level check so the payload construction (a fresh grade
     computation + the node/hypothesis summaries) costs nothing above DEBUG, and
@@ -945,7 +981,7 @@ def _log_grounding_assessment(case: "Case") -> None:
 
     try:
         p = case.progress
-        grade = grade_cause_assurance(case)
+        grade = p.cause_assurance  # persisted fresh by the caller this turn
         hyp_states: dict[str, int] = {}
         for h in case.hypotheses.values():
             hyp_states[h.state.value] = hyp_states.get(h.state.value, 0) + 1
@@ -957,8 +993,14 @@ def _log_grounding_assessment(case: "Case") -> None:
             }
             for n in case.causal_nodes.values()
         ]
-        seam_divergence = grade == CauseAssuranceGrade.GROUNDED and (
+        seam_divergence = grade == CauseAssuranceGrade.CONFIRMED and (
             p.cause_state != CauseState.IDENTIFIED or not p.symptom_verified
+        )
+        rcc = case.root_cause_conclusion
+        seam_overclaim = (
+            rcc is not None
+            and rcc.confidence_level == ConfidenceLevel.VERIFIED
+            and grade != CauseAssuranceGrade.CONFIRMED
         )
         logger.debug(
             "grounding-assessment case=%s turn=%s verification_status=%s grade=%s "
@@ -987,6 +1029,7 @@ def _log_grounding_assessment(case: "Case") -> None:
                 "hypothesis_states": hyp_states,
                 "causal_nodes": nodes,
                 "seam_divergence": seam_divergence,
+                "seam_overclaim": seam_overclaim,
             },
         )
     except Exception:  # noqa: BLE001 - observability must never break the turn
