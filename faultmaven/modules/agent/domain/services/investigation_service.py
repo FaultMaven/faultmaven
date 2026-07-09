@@ -1236,8 +1236,12 @@ class InvestigationService:
         ``active`` still reflects transparent mode only.
         """
         verification_status = None
-        if case.progress and case.progress.verification_status:
-            verification_status = case.progress.verification_status.value
+        cause_assurance = None
+        if case.progress:
+            if case.progress.verification_status:
+                verification_status = case.progress.verification_status.value
+            if case.progress.cause_assurance:
+                cause_assurance = case.progress.cause_assurance.value
 
         transparent = bool(metadata.get("progress_transparent"))
         surface_insufficient = (
@@ -1252,6 +1256,7 @@ class InvestigationService:
             milestone_description=metadata.get("milestone_description"),
             repair_type=metadata.get("stagnation_type"),
             verification_status=verification_status,
+            cause_assurance=cause_assurance,
         )
 
     async def _handle_greeting(self, case: "Case") -> Dict[str, Any]:

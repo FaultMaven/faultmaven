@@ -926,3 +926,15 @@ class TestBuildProgressTransparencyVerificationStatus:
         assert info.active is True
         assert info.verification_status == "insufficient_evidence"
         assert info.pending_milestone == "root_cause_identified"
+
+    def test_cause_assurance_carried_alongside_status(self):
+        # #572: the persisted assurance grade rides the same surfacing object so
+        # the frontend can label a lower-assurance conclusion.
+        from faultmaven.modules.case.domain.models import CauseAssuranceGrade
+
+        svc = self._service()
+        case = self._case("INSUFFICIENT_EVIDENCE")
+        case.progress.cause_assurance = CauseAssuranceGrade.MECHANISTIC
+        info = svc._build_progress_transparency({}, case)
+        assert info is not None
+        assert info.cause_assurance == "mechanistic"

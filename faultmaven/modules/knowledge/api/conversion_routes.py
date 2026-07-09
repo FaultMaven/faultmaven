@@ -511,27 +511,28 @@ async def convert_from_case(
             detail=f"Case must be in RESOLVED status (current: {case_status})",
         )
 
-    # §7 soundness: only a GROUNDED cause (a deductive derivation,
-    # proof-by-exclusion §7.1.1) may auto-seed reusable knowledge. The chat-side
-    # suggestion path already enforces this positive bar (via
-    # assess_runbook_readiness); enforce the same one here so this API entry
-    # point can't bypass it. Gating on the positive bar (not the negative
-    # "fallback-only" view) also holds a RootCauseConclusion with no validated root
-    # at all — pure LLM prose, zero causal graph — which the negative view let
-    # through (#590 A1).
+    # §7 soundness: only a CONFIRMED cause (counterfactually borne out — the
+    # cause was removed and the problem went with it, M2 gone⇒gone) may
+    # auto-seed reusable knowledge. The chat-side suggestion path already
+    # enforces this positive bar (via assess_runbook_readiness); enforce the
+    # same one here so this API entry point can't bypass it. Gating on the
+    # positive bar (not the negative "fallback-only" view) also holds a
+    # RootCauseConclusion with no validated root at all — pure LLM prose, zero
+    # causal graph — which the negative view let through (#590 A1).
     from faultmaven.core.investigation.cause_assurance import (
         CauseAssuranceGrade,
         grade_cause_assurance,
     )
 
-    if grade_cause_assurance(case) != CauseAssuranceGrade.GROUNDED:
+    if grade_cause_assurance(case) != CauseAssuranceGrade.CONFIRMED:
         raise HTTPException(
             status_code=422,
             detail=(
-                "This case's root cause is not backed by a deductively validated "
-                "root, so it can't be auto-converted into a runbook — that would "
-                "seed the knowledge base with an unverified cause. If the cause is "
-                "correct, document it via POST /knowledge/runbooks/create."
+                "This case's root cause was never counterfactually confirmed "
+                "(its removal observed to remove the problem), so it can't be "
+                "auto-converted into a runbook — that would seed the knowledge "
+                "base with an unconfirmed cause. If the cause is correct, "
+                "document it via POST /knowledge/runbooks/create."
             ),
         )
 

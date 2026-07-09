@@ -28,7 +28,12 @@ from typing import Any, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
+    conclusion_overclaims,
+    confirm_root_from_resolution_absence,
     grade_cause_assurance,
+)
+from faultmaven.core.investigation.verification_status import (
+    assess_verification_status,
 )
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
@@ -431,6 +436,28 @@ def _execute_resolved_transition(case: Case, user_id: str):
     if not case.progress.solution_accepted:
         case.progress.solution_accepted = True
     case.progress.solution_verified = True
+
+    # M2 confirm-side stamp: the user just CONFIRMED the resolution — the
+    # strongest confirmation signal the flow produces — so the engine links
+    # the (prompt-contract unlinked) causal_absence row to the sole standing
+    # validated root and re-persists the grade, making CONFIRMED the terminal
+    # truth for the harvest gate / report / seam analytics. Deliberately NOT
+    # done on the row's mere appearance during investigation (an LLM
+    # self-claim; a premature "it's stable" row must not confirm anything).
+    if confirm_root_from_resolution_absence(case):
+        case.progress.cause_assurance = grade_cause_assurance(case)
+        case.progress.cause_overclaim = conclusion_overclaims(
+            case.root_cause_conclusion, case.progress.cause_assurance
+        )
+        # The FULL grade-derived persisted set — the per-turn recompute derives
+        # verification_status from the same grade snapshot precisely so the two
+        # signals can never diverge; the terminal blob must honor the same
+        # invariant or every stamp-confirmed case would freeze
+        # cause_assurance=confirmed beside a pre-stamp (e.g. not-grounded)
+        # verification_status.
+        case.progress.verification_status = assess_verification_status(
+            case, grade=case.progress.cause_assurance
+        )
 
     now = datetime.now(UTC)
 
@@ -871,24 +898,27 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
         case.root_cause_conclusion
         and getattr(case.root_cause_conclusion, "root_cause", None)
     )
-    # Harvest counts a cause only when it is GROUNDED — borne out by a deductive
-    # derivation (proof-by-exclusion, §7.1.1). Read the single assurance grade
-    # once and gate on GROUNDED explicitly: this also holds a RootCauseConclusion
-    # with NO validated root (pure LLM prose, zero causal graph) — graded NO_ROOT,
-    # not GROUNDED — which the old negative "fallback-only" view let through (#590
-    # A1). A cause carried only by empirical validation (FALLBACK_ONLY) is
-    # likewise held: harvesting it would promote an unverified cause (the model
-    # authored both the evidence link and its citation) into the corpus.
+    # Harvest counts a cause only when it is CONFIRMED — counterfactually borne
+    # out (the cause was removed and the problem went with it, M2 gone⇒gone).
+    # Read the single assurance grade once and gate on CONFIRMED explicitly: this
+    # also holds a RootCauseConclusion with NO validated root (pure LLM prose,
+    # zero causal graph) — graded NO_ROOT, not CONFIRMED — which the old negative
+    # "fallback-only" view let through (#590 A1). A cause carried only by
+    # mechanistic validation (MECHANISTIC — empirical rung evidence OR a
+    # deductive derivation) is likewise held: harvesting it would promote an
+    # unconfirmed cause (the model authored the validation, and even a deductive
+    # proof rests on model-mediated refutations plus an asserted-exhaustive
+    # differential) into the corpus.
     cause_grade = grade_cause_assurance(case)
     has_root_cause = (
-        has_root_cause_record and cause_grade == CauseAssuranceGrade.GROUNDED
+        has_root_cause_record and cause_grade == CauseAssuranceGrade.CONFIRMED
     )
     # For the user-facing ask, distinguish the two held shapes: a graph-identified
-    # cause resting only on lower-assurance support (FALLBACK_ONLY) gets a "verify
-    # it" ask; a record with no validated root (NO_ROOT) falls through to the plain
-    # "identify a root cause" ask below.
+    # but unconfirmed cause (MECHANISTIC) gets a "confirm it" ask; a record with
+    # no validated root (NO_ROOT) falls through to the plain "identify a root
+    # cause" ask below.
     root_cause_unverified = (
-        has_root_cause_record and cause_grade == CauseAssuranceGrade.FALLBACK_ONLY
+        has_root_cause_record and cause_grade == CauseAssuranceGrade.MECHANISTIC
     )
     has_actionable_solution = False
     if case.solutions:
@@ -954,10 +984,11 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
         elif section == "root_cause_resolution":
             if root_cause_unverified:
                 missing_desc.append(
-                    "- a verified root cause (one is identified, but it rests on "
-                    "lower-assurance evidence, so it won't auto-seed a runbook — "
-                    "if you've confirmed it yourself, document it via "
-                    "'Create runbook' / POST /knowledge/runbooks/create)"
+                    "- a confirmed root cause (one is identified, but its removal "
+                    "was never confirmed to remove the problem, so it won't "
+                    "auto-seed a runbook — if you've confirmed it yourself, "
+                    "document it via 'Create runbook' / POST "
+                    "/knowledge/runbooks/create)"
                 )
             elif not has_root_cause:
                 missing_desc.append("- identified root cause")

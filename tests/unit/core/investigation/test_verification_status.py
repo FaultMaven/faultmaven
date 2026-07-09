@@ -39,6 +39,7 @@ from faultmaven.modules.case.contracts import (
     NeedObtainability,
     NeedPurpose,
     NeedState,
+    NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemVerification,
@@ -91,15 +92,24 @@ def _problem() -> CausalNode:
 
 
 def _grounded_root() -> CausalNode:
-    """A VALIDATED ROOT grounded via the deductive arm (validation_method =
-    DEDUCTIVE) → ``grade_cause_assurance`` == GROUNDED, no evidence link needed."""
+    """A VALIDATED ROOT at the top assurance grade — counterfactually CONFIRMED
+    via a SUPPORTS link backed by a ``causal_absence_evidence`` row (M2
+    gone⇒gone) → ``grade_cause_assurance`` == CONFIRMED. The backing row is
+    added by ``_case`` when ``grounded=True``."""
     return CausalNode(
         node_id=_nid(1),
         statement="root cause",
         node_type=NodeType.ROOT,
         node_state=NodeState.VALIDATED,
-        validation_method=ValidationMethod.DEDUCTIVE,
+        validation_method=ValidationMethod.EMPIRICAL,
         actionable=True,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=_eid("absence"),
+                stance="supports",
+                reasoning="fix removed the cause and the symptom went with it",
+            )
+        ],
         generated_at_turn=1,
     )
 
@@ -143,6 +153,8 @@ def _case(
         case.causal_edges = [
             CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
         ]
+        # The counterfactual-confirmation row the root's SUPPORTS link points at.
+        case.evidence.append(_ev("absence"))
         # A legitimate grounding is symptom-anchored (the grounding axis requires
         # a verified symptom — see _is_grounded). The seam tests below override
         # this to False to model the composition-seam pathology.
@@ -427,7 +439,8 @@ def test_time_arm_false_positive_fails_forward_when_the_cause_is_grounded():
     case = _work_done(current_turn=20, turns_without_progress=8)
     _declare(case, {h: NeedObtainability.OBTAINABLE for h in case.hypotheses.keys()})
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
-    # A validated ROOT lands (grade → GROUNDED), the symptom is verified (the
+    case.evidence.append(_ev("absence"))  # the confirmation row the root links
+    # A confirmed ROOT lands (grade → CONFIRMED), the symptom is verified (the
     # grounding anchor), and progress resumes.
     d, root = _problem(), _grounded_root()
     case.causal_nodes = {d.node_id: d, root.node_id: root}
@@ -441,20 +454,23 @@ def test_time_arm_false_positive_fails_forward_when_the_cause_is_grounded():
 
 # --- Grounding-assessment observability: seam-divergence detection -----------
 # The permanent debug trace (_log_grounding_assessment) flags the composition
-# seam: a causal-graph grade of GROUNDED co-occurring with a hypothesis layer
+# seam: a causal-graph grade of CONFIRMED co-occurring with a hypothesis layer
 # that is NOT grounded (cause_state != IDENTIFIED or symptom not verified). This
 # is the exact shape that let a HEALTHY reading mask a stuck investigation.
+# The trace reads the PERSISTED grade (its caller _recompute_assessment_state
+# writes it just before), so direct-call tests populate it the same way.
 
 
 def test_grounding_trace_flags_seam_divergence(caplog):
     import logging as _logging
 
+    from faultmaven.core.investigation.cause_assurance import grade_cause_assurance
     from faultmaven.core.investigation.milestone_engine import (
         _log_grounding_assessment,
     )
 
-    # Validated root (→ grade GROUNDED) but symptom NOT verified and no
-    # hypotheses — the divergence: grounded grade over an empty hypothesis layer.
+    # Confirmed root (→ grade CONFIRMED) but symptom NOT verified and no
+    # hypotheses — the divergence: top grade over an empty hypothesis layer.
     case = _case(
         grounded=True,
         n_hypotheses=0,
@@ -464,6 +480,7 @@ def test_grounding_trace_flags_seam_divergence(caplog):
         turns_without_progress=5,
     )
     case.progress.symptom_verified = False
+    case.progress.cause_assurance = grade_cause_assurance(case)
     case.progress.verification_status = assess_verification_status(case)
 
     with caplog.at_level(
@@ -475,7 +492,7 @@ def test_grounding_trace_flags_seam_divergence(caplog):
         r for r in caplog.records if getattr(r, "event", None) == "grounding_assessment"
     ]
     assert recs, "grounding-assessment trace not emitted at DEBUG"
-    assert recs[-1].grade == "grounded"
+    assert recs[-1].grade == "confirmed"
     assert recs[-1].seam_divergence is True
     assert recs[-1].hypothesis_count == 0
 
@@ -483,12 +500,14 @@ def test_grounding_trace_flags_seam_divergence(caplog):
 def test_grounding_trace_no_divergence_on_clean_not_grounded(caplog):
     import logging as _logging
 
+    from faultmaven.core.investigation.cause_assurance import grade_cause_assurance
     from faultmaven.core.investigation.milestone_engine import (
         _log_grounding_assessment,
     )
 
-    # Not grounded → grade is not GROUNDED → no seam divergence (the layers agree).
+    # Not grounded → grade is not CONFIRMED → no seam divergence (the layers agree).
     case = _work_done(current_turn=9, turns_without_progress=5)
+    case.progress.cause_assurance = grade_cause_assurance(case)
     case.progress.verification_status = assess_verification_status(case)
     with caplog.at_level(
         _logging.DEBUG, logger="faultmaven.core.investigation.milestone_engine"
@@ -519,7 +538,7 @@ def test_grounding_trace_silent_above_debug(caplog):
 
 # --- The composition-seam fix: grounding requires the verified-symptom anchor -
 # A weak model can materialize a validated causal root with no backing hypothesis
-# and no verified symptom. The §7 grade reads GROUNDED, but the disposition join
+# and no verified symptom. The §7 grade reads CONFIRMED, but the disposition join
 # must NOT: without the anchor, verification_status read HEALTHY over an empty
 # hypothesis layer and masked a stuck case (the observed spin). The grounding axis
 # now requires symptom_verified — the same anchor cause_state requires.
@@ -541,8 +560,8 @@ def test_validated_root_without_verified_symptom_is_not_grounded():
         turns_without_progress=5,
     )
     case.progress.symptom_verified = False
-    # The raw §7 grade still reads GROUNDED — its drift-lock is untouched...
-    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+    # The raw §7 grade still reads CONFIRMED — its drift-lock is untouched...
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
     # ...but the disposition join must NOT read HEALTHY: no verified symptom means
     # not grounded, and no work done → NOT_YET_PRODUCTIVE, not a masking HEALTHY.
     assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
@@ -566,8 +585,8 @@ def test_grounding_requires_the_verified_symptom_anchor():
 
 
 def test_grounded_but_symptom_unverified_stalled_is_insufficient_not_treatment_blocked():
-    # Conscious signoff (code-review C1): a root can grade GROUNDED (empirical /
-    # deductive by exclusion) BEFORE the symptom is verified. Under the symptom
+    # Conscious signoff (code-review C1): a root can grade CONFIRMED BEFORE the
+    # symptom is verified (a confirmation link with no verified symptom). Under the symptom
     # anchor, such a stalled case is no longer TREATMENT_BLOCKED ("have a cause,
     # blocked on the fix") — the cause is unanchored, so it disposes to
     # INSUFFICIENT_EVIDENCE and the handoff surfaces the real gap (verify the
@@ -587,8 +606,8 @@ def test_grounded_but_symptom_unverified_stalled_is_insufficient_not_treatment_b
         turns_without_progress=5,
     )
     case.progress.symptom_verified = False
-    # The §7 grade is unchanged (still GROUNDED) — only the join's axis moved.
-    assert grade_cause_assurance(case) == CauseAssuranceGrade.GROUNDED
+    # The §7 grade is unchanged (still CONFIRMED) — only the join's axis moved.
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
     # With the symptom verified, the SAME stalled grounded case is TREATMENT_BLOCKED.
     case.progress.symptom_verified = True

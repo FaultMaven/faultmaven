@@ -121,8 +121,9 @@ def _make_runbook_ready(case: Case) -> None:
             collected_by="u1",
             collected_at_turn=1,
         ),
-        # A harvestable cause must be GROUNDED (#590 A1): a deductively
-        # VALIDATED root, not bare RCC prose.
+        # A harvestable cause must be CONFIRMED (#590 A1): a VALIDATED root
+        # bearing a counterfactual confirmation (causal_absence SUPPORTS, M2
+        # gone⇒gone), not bare RCC prose.
         Evidence(
             evidence_id="ev_d00dfeed0001",
             category=EvidenceCategory.CAUSAL_EVIDENCE,
@@ -134,13 +135,22 @@ def _make_runbook_ready(case: Case) -> None:
             collected_by="u1",
             collected_at_turn=1,
         ),
+        Evidence(
+            evidence_id="ev_d00dfeed0002",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            primary_purpose="diagnosis",
+            summary="pool limit raised; timeouts gone for 30 minutes",
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="u1",
+            collected_at_turn=2,
+        ),
     ]
     case.causal_nodes["cn_d00dfeed0001"] = CausalNode(
         node_id="cn_d00dfeed0001",
         statement="connection pool exhausted",
         node_type=NodeType.ROOT,
         node_state=NodeState.VALIDATED,
-        validation_method=ValidationMethod.DEDUCTIVE,
+        validation_method=ValidationMethod.EMPIRICAL,
         actionable=True,
         belief=0.8,
         generated_at_turn=1,
@@ -148,9 +158,15 @@ def _make_runbook_ready(case: Case) -> None:
             NodeEvidenceLink(
                 evidence_id="ev_d00dfeed0001",
                 stance=EvidenceStance.SUPPORTS,
-                reasoning="sole surviving cause after exclusion",
+                reasoning="observed exhausted pool matches the posited cause",
                 linked_at_turn=1,
-            )
+            ),
+            NodeEvidenceLink(
+                evidence_id="ev_d00dfeed0002",
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="removing the cause removed the problem",
+                linked_at_turn=2,
+            ),
         ],
     )
 

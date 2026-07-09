@@ -449,6 +449,45 @@ class TestTransformInvestigating:
             result.progress_transparency.verification_status == "insufficient_evidence"
         )
 
+    def test_progress_transparency_carries_cause_assurance(self):
+        from datetime import datetime, timezone
+
+        from faultmaven.modules.case.domain.models import (
+            CauseAssuranceGrade,
+            TurnOutcome,
+            TurnProgress,
+        )
+
+        case = _make_investigating_case()
+        # The persisted assurance grade rides the same surfacing object so the
+        # dashboard can label a lower-assurance (unconfirmed) conclusion.
+        case.progress.cause_assurance = CauseAssuranceGrade.MECHANISTIC
+        case.turn_history = [
+            TurnProgress(
+                turn_number=i,
+                timestamp=datetime.now(timezone.utc),
+                milestones_completed=[],
+                evidence_added=[f"ev_{i}"] if i % 2 == 0 else [],
+                hypotheses_generated=[],
+                hypotheses_validated=[],
+                solutions_proposed=[],
+                progress_made=False,
+                outcome=(
+                    TurnOutcome.DATA_PROVIDED
+                    if i % 2 == 0
+                    else TurnOutcome.DATA_REQUESTED
+                ),
+                user_message_summary="test",
+                agent_response_summary="test",
+            )
+            for i in range(6)
+        ]
+
+        result = transform_case_for_ui(case)
+
+        assert result.progress_transparency is not None
+        assert result.progress_transparency.cause_assurance == "mechanistic"
+
 
 # ============================================================
 # RESOLVED Phase Tests

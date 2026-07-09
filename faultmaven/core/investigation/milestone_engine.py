@@ -51,6 +51,7 @@ from faultmaven.core.investigation.causal_graph import (
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
+    conclusion_overclaims,
     grade_cause_assurance,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
@@ -884,7 +885,10 @@ def _recompute_cause_state_from_chain(
 
 
 def _recompute_assessment_state(
-    case: "Case", *, exclusion_survivors: "set[str] | frozenset[str]" = frozenset()
+    case: "Case",
+    *,
+    exclusion_survivors: "set[str] | frozenset[str]" = frozenset(),
+    rcc_authored_this_turn: bool = False,
 ) -> None:
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
@@ -909,16 +913,63 @@ def _recompute_assessment_state(
     """
     p = case.progress
 
+    # NOTE: the M2 confirm-side stamp (confirm_root_from_resolution_absence)
+    # deliberately does NOT run here. An absence row's mere appearance is an
+    # LLM self-claim — a premature "it's stable now" row emitted mid-rollout
+    # must not confirm anything (observed live in the gate sims). The stamp
+    # fires only at RESOLVED transition execution, on the user's explicit
+    # confirmation (terminal_transitions._execute_resolved_transition).
     _recompute_cause_state_from_chain(case, exclusion_survivors=exclusion_survivors)
 
     if p.solution_state != SolutionState.SELECTED:
         if p.solution_proposed or bool(case.solutions):
             p.solution_state = SolutionState.SELECTED
 
-    # Verification status LAST — after the cause_state recompute above has run
-    # derive_node_states + the deductive-exclusion stamp, so the grounding-first
-    # disposition reads a fresh grade rather than pre-empting the deductive arm.
-    p.verification_status = assess_verification_status(case)
+    # Assurance grade + verification status LAST — after the cause_state
+    # recompute above has run derive_node_states + the deductive-exclusion
+    # stamp, so both read a fresh graph rather than pre-empting the deductive
+    # arm. The grade is persisted (progress blob, like verification_status) so
+    # the grade × conclusion-confidence seam is queryable per turn (#656);
+    # the join reads the just-persisted grade rather than recomputing, so both
+    # persisted signals derive from the same graph snapshot.
+    p.cause_assurance = grade_cause_assurance(case)
+    p.verification_status = assess_verification_status(case, grade=p.cause_assurance)
+
+    # M2 over-claim seam (#656 turn-6 shape): a recorded conclusion claims
+    # "verified" while the graph grade lacks counterfactual confirmation. The
+    # engine mirror can no longer produce this (its confidence is grade-derived),
+    # so a hit here is an LLM-authored conclusion over-claiming — surfaced at
+    # WARNING (prod-visible, unlike the DEBUG grounding trace) until conclusion
+    # retraction/refresh lands (#656 P2.3). Edge-triggered via the persisted
+    # flag so a standing over-claim warns once, not once per turn (alert
+    # hygiene); the per-turn state stays visible in the DEBUG grounding trace
+    # and the persisted flag itself. The under-claim polarity lives in
+    # ``_log_grounding_assessment``.
+    rcc = case.root_cause_conclusion
+    overclaims = conclusion_overclaims(rcc, p.cause_assurance)
+    # Edge-triggered on the persisted flag, RE-ARMED when a conclusion was
+    # (re)authored this turn: a NEW over-claiming conclusion replacing a
+    # retracted one while the flag is still True is a distinct over-claim event
+    # and must get its own WARNING, not be absorbed as "standing".
+    if overclaims and (rcc_authored_this_turn or not p.cause_overclaim):
+        logger.warning(
+            "M2 over-claim seam: case=%s turn=%s conclusion claims verified "
+            "(likelihood=%.2f, determined_by=%s) but cause_assurance=%s",
+            case.case_id,
+            case.current_turn,
+            rcc.likelihood,
+            getattr(rcc, "determined_by", None),
+            p.cause_assurance.value,
+            extra={
+                "event": "cause_confidence_overclaim",
+                "case_id": case.case_id,
+                "turn": case.current_turn,
+                "rcc_likelihood": rcc.likelihood,
+                "rcc_determined_by": getattr(rcc, "determined_by", None),
+                "cause_assurance": p.cause_assurance.value,
+            },
+        )
+    p.cause_overclaim = overclaims
 
     _log_grounding_assessment(case)
 
@@ -929,14 +980,17 @@ def _log_grounding_assessment(case: "Case") -> None:
 
     Permanent observability (not throwaway): it traces the join AND its inputs so
     a **grade ↔ cause_state divergence** — the composition-seam drift the design
-    flags in §4.1 — is visible per turn in any case, not only in a debugger. The
-    canonical failure it surfaces: a validated causal root with no verified
-    symptom / no backing hypothesis grades GROUNDED, so ``verification_status``
-    reads HEALTHY while ``cause_state`` stays UNKNOWN, masking a stuck
-    investigation. ``seam_divergence`` flags exactly that shape for grep/alerting.
+    flags in §4.1 — is visible per turn in any case, not only in a debugger. Both
+    polarities are flagged: ``seam_divergence`` is the UNDER-claim (a
+    counterfactually CONFIRMED root with no identified cause_state / unverified
+    symptom — the join reads healthier than the progress signals, masking a stuck
+    investigation); ``seam_overclaim`` is the OVER-claim (#656 turn 6 — a
+    conclusion claiming "verified" while the grade lacks counterfactual
+    confirmation; also emitted at WARNING by the caller so prod sees it).
 
-    Guarded by the level check so the payload construction (a fresh grade
-    computation + the node/hypothesis summaries) costs nothing above DEBUG, and
+    Guarded by the level check so the payload construction (the
+    node/hypothesis summaries; the grade is read from the field the caller just
+    persisted) costs nothing above DEBUG, and
     the whole body is failure-isolated: a diagnostic trace must never break the
     turn pipeline it runs inside, whatever shape the case is in.
     """
@@ -945,7 +999,7 @@ def _log_grounding_assessment(case: "Case") -> None:
 
     try:
         p = case.progress
-        grade = grade_cause_assurance(case)
+        grade = p.cause_assurance  # persisted fresh by the caller this turn
         hyp_states: dict[str, int] = {}
         for h in case.hypotheses.values():
             hyp_states[h.state.value] = hyp_states.get(h.state.value, 0) + 1
@@ -957,9 +1011,10 @@ def _log_grounding_assessment(case: "Case") -> None:
             }
             for n in case.causal_nodes.values()
         ]
-        seam_divergence = grade == CauseAssuranceGrade.GROUNDED and (
+        seam_divergence = grade == CauseAssuranceGrade.CONFIRMED and (
             p.cause_state != CauseState.IDENTIFIED or not p.symptom_verified
         )
+        seam_overclaim = conclusion_overclaims(case.root_cause_conclusion, grade)
         logger.debug(
             "grounding-assessment case=%s turn=%s verification_status=%s grade=%s "
             "cause_state=%s symptom_verified=%s hyps=%s nodes=%s seam_divergence=%s",
@@ -987,6 +1042,7 @@ def _log_grounding_assessment(case: "Case") -> None:
                 "hypothesis_states": hyp_states,
                 "causal_nodes": nodes,
                 "seam_divergence": seam_divergence,
+                "seam_overclaim": seam_overclaim,
             },
         )
     except Exception:  # noqa: BLE001 - observability must never break the turn
@@ -6576,6 +6632,7 @@ class MilestoneEngine:
         # can use the conclusion text in the same turn.
         if hasattr(updates, "root_cause_conclusion") and updates.root_cause_conclusion:
             rcc = updates.root_cause_conclusion
+            metadata["rcc_authored_this_turn"] = True
             case.root_cause_conclusion = RootCauseConclusion(
                 root_cause=rcc.root_cause,
                 mechanism=rcc.mechanism,
@@ -7245,6 +7302,7 @@ class MilestoneEngine:
         _recompute_assessment_state(
             case,
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
+            rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
         )
 
         # Deferred-implementation disposition: if the fix is known but can't be
