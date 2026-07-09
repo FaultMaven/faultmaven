@@ -17,6 +17,7 @@ from faultmaven.core.investigation.causal_graph import (
     any_chain_root_validated,
     demote_disconfirmed_cause_via_evidence,
     seed_problem_node,
+    synthesize_rcc_from_validated_root,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import (
@@ -730,3 +731,70 @@ def test_retract_disconfirmed_rcc_ignores_unlinked_rcc():
     case.root_cause_conclusion = rcc
     assert retract_disconfirmed_rcc(case) is False
     assert case.root_cause_conclusion is rcc
+
+
+def test_synthesize_mirrors_any_standing_validated_root():
+    """The mirror follows the validation verdict — the §7.1 guard is an ENTRY
+    bar on validation, not a mint-time re-adjudication. A root that stands
+    VALIDATED (here: deductively; the same holds for the grandfathered
+    pre-guard class) is mirrorable even when its statement restates the frame;
+    refusing it would split cause_state=IDENTIFIED from a permanently-absent
+    conclusion."""
+    case, root, hyp = _chain_case()
+    object.__setattr__(root, "statement", "orders failing")
+    object.__setattr__(root, "node_state", NodeState.VALIDATED)
+    object.__setattr__(root, "validation_method", ValidationMethod.DEDUCTIVE)
+    assert synthesize_rcc_from_validated_root(case) is True
+    assert case.root_cause_conclusion is not None
+
+
+def test_synthesize_rcc_mints_from_a_mechanism_root():
+    """The common path: a deductively validated mechanism root mints."""
+    case, root, hyp = _chain_case()
+    object.__setattr__(
+        root, "statement", "checkout service DB pool sized below peak demand"
+    )
+    object.__setattr__(root, "node_state", NodeState.VALIDATED)
+    object.__setattr__(root, "validation_method", ValidationMethod.DEDUCTIVE)
+    assert synthesize_rcc_from_validated_root(case) is True
+    assert case.root_cause_conclusion is not None
+    assert case.root_cause_conclusion.root_cause == root.statement
+
+
+def test_stale_engine_rcc_cleared_when_root_demotes_and_nothing_validates():
+    """Engine-mirror coherence on the (evidence-driven) demotion path: an
+    ENGINE-authored RCC whose grounding root demotes out of VALIDATED (its
+    backing support evaporates) is CLEARED by the recompute — the mirror must
+    not outlive its chain, or readiness/report readers (which key on RCC
+    presence) keep asserting a conclusion nothing grounds."""
+    case, root, hyp = _chain_case()
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    engine_rcc = case.root_cause_conclusion
+    assert engine_rcc is not None  # engine mirror minted
+
+    # Support evaporates: the backing evidence row is gone, so the next derive
+    # demotes the root (dangling links never count).
+    case.evidence = []
+    _recompute_cause_state_from_chain(case)
+
+    assert root.node_state != NodeState.VALIDATED
+    assert case.root_cause_conclusion is None  # mirror cleared with its chain
+
+
+def test_llm_rcc_survives_root_demotion():
+    """The engine-mirror reconcile never touches an LLM-authored conclusion —
+    its retraction lifecycle is a separate concern (#656)."""
+    case, root, hyp = _chain_case()
+    own = RootCauseConclusion(
+        root_cause="the LLM's own worded conclusion",
+        mechanism="as the LLM described it",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.9,
+    )
+    case.root_cause_conclusion = own
+    _recompute_cause_state_from_chain(case)
+    case.evidence = []
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state != NodeState.VALIDATED
+    assert case.root_cause_conclusion is own  # untouched

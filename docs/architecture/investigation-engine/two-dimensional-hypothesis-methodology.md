@@ -361,12 +361,61 @@ categorized `CAUSAL_EVIDENCE` — a direct observable fact matching the node's
 predicted state. Links backed by weaker categories (e.g. `SYMPTOM_EVIDENCE`)
 inform the narrative but never validate a node.
 
-*Rejected alternative:* a second grounding arm — SUPPORTS links stamped
-`runbook` provenance by a deterministic runbook-cause-matcher evaluating
-expert-authored predicates against submitted telemetry — was retired without
-adoption (NO-GO 2026-07-08, #658). Runbooks serve as RAG context: the LLM forms
-causes from retrieved runbook content, and those causes ground through the same
-`CAUSAL_EVIDENCE` rule (or the deductive derivation below) as any other.
+**Restatement guard (ROOT-only, an ENTRY bar on validation).** A ROOT whose
+statement carries less than `ROOT_NOVELTY_MIN_FRACTION` novel content tokens
+beyond the case frame — the problem anchors (PROBLEM node statement, verified
+symptom) plus the OTHER standing hypotheses' statements — is never ADMITTED to
+VALIDATED. The symptom dressed up as a cause carries no explanatory depth, and
+the LLM labels its own evidence, so a restating root + one self-labeled
+`CAUSAL_EVIDENCE` link is exactly the shape of a false conclusion (#656 turn
+6: a disjunction of the case's two untested hypotheses restating the symptom —
+every token already in the case frame — validated off one link and minted a
+0.9 "verified" conclusion).
+
+The guard has one predicate (`root_restates_case_frame`) and two enforcement
+points, both **entry bars**:
+
+- **Empirical lane** (`derive_node_states`): a restating ROOT that would
+  otherwise validate holds at INCONCLUSIVE. Each *block event* (the state
+  transition, never re-checks) increments
+  `root_validation_blocked_restatement_total`. A root that has ALREADY
+  validated is ruled by its evidence alone — the guard never demotes it, so a
+  later sibling emission with overlapping wording cannot retract a correct
+  conclusion (monotonicity), and pre-guard persisted conclusions are
+  deliberately grandfathered (closed cases never recompute; their confidence
+  is governed by the assurance-grade work tracked on #656).
+- **Deductive lane** (`validate_by_exclusion`): a restating survivor is not
+  stamped (graceful denial) — excluding the alternatives without stating a
+  mechanism would conclude "the problem causes itself".
+
+The conclusion mirror (`synthesize_rcc_from_validated_root`) carries NO
+restatement check by design: no restating root can freshly validate, and a
+root that stands VALIDATED must be mirrorable or `cause_state=IDENTIFIED`
+would split from a permanently-absent conclusion. `retract_stale_engine_rcc`
+clears an engine-authored conclusion whose root demotes for *evidence*
+reasons.
+
+**Frame ownership.** A hypothesis is excluded from a root's frame when it is
+attached to that root, or when it is unattached but *mutually mirrors* it
+(Jaccard ≥ `_FRAME_OWNER_JACCARD`) — the normal chain-emission shape during
+attachment lag must not let a root's own not-yet-linked hypothesis block it.
+One-way containment deliberately stays in the frame: the #656 disjunction root
+fully contains each sibling hypothesis but mutually mirrors none, which is
+what catches the incident.
+
+The guard is ROOT-scoped (rungs adjacent to `D` legitimately paraphrase) and
+its bar is its own knob, decoupled from the orphan-reattach threshold. The
+calibration lives in one executable home — `test_restatement_guard_calibration.py`
+(corpus false-positive pin, incident/verbatim true-positive pins, the
+cause-contaminated-anchor boundary, the filler-padding known escape, and the
+sibling-frame dilution bound).
+
+*Known limits (by design):* the check is lexical — synonym paraphrases and
+filler-padded restatements read as novel and pass; a disjunction root in a
+case with no standing hypotheses passes; dense same-domain sibling frames can
+DELAY (never permanently block) a terse mechanism root's validation. The
+guard is one layer; the semantic layers (multi-support validation,
+assurance-grade caps, MECE arbitration) are tracked on #656.
 
 ### 7.1.1 Deductive validation (proof by exclusion)
 

@@ -449,3 +449,227 @@ def test_grade_ignores_non_root_deductive_nodes():
         [rung], evidence=[_evidence("ev_rung", EvidenceCategory.CAUSAL_EVIDENCE)]
     )
     assert grade_cause_assurance(case) == CauseAssuranceGrade.NO_ROOT
+
+
+# ---------------------------------------------------------------------------
+# §7.1 restatement guard — the symptom dressed as a cause never validates
+# ---------------------------------------------------------------------------
+
+_D_STATEMENT = "Intermittent 502 errors under load"
+
+
+def _problem_node() -> CausalNode:
+    return _node(_nid(0xD0), node_type=NodeType.PROBLEM)
+
+
+def _hyp(statement: str, *, root_node_id=None) -> Hypothesis:
+    return Hypothesis(
+        statement=statement,
+        category=HypothesisCategory.OTHER,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="posited",
+        root_node_id=root_node_id,
+        generated_at_turn=1,
+    )
+
+
+def _anchored_case(root_statement: str, *, node_type=NodeType.ROOT, hyps=None):
+    """A case with a PROBLEM anchor D and one supported node under test."""
+    d = _problem_node()
+    object.__setattr__(d, "statement", _D_STATEMENT)
+    ev = _evidence("ev_causal", EvidenceCategory.CAUSAL_EVIDENCE)
+    n = _node(
+        _nid(0xD1),
+        node_type=node_type,
+        links=[_link("ev_causal", EvidenceStance.SUPPORTS)],
+    )
+    object.__setattr__(n, "statement", root_statement)
+    return _case([d, n], evidence=[ev], hyps=hyps or []), n
+
+
+# The #656 turn-6 case frame: the two still-ACTIVE hypotheses whose statements
+# the disjunction root OR-ed together.
+_INCIDENT_HYPS = [
+    _hyp("Transient network congestion"),
+    _hyp("Resource contention on the backend"),
+]
+
+
+def test_restating_root_holds_at_inconclusive():
+    # The #656 turn-6 shape: the "root cause" is a disjunction of the case's
+    # two still-ACTIVE hypotheses restating the symptom — every token already
+    # lives in the case frame (novelty ~0.11). One self-labeled causal support
+    # must NOT validate it — it holds at INCONCLUSIVE (a live candidate
+    # needing a real mechanism).
+    case, root = _anchored_case(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors",
+        hyps=_INCIDENT_HYPS,
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert root.validation_method == ValidationMethod.NONE
+
+
+def test_novel_disjunction_without_hypotheses_is_not_blocked():
+    # The SAME disjunction root in a case with NO standing hypotheses carries
+    # genuinely novel tokens (congestion/contention are posited causes the
+    # frame doesn't contain), so the guard does not block it. The guard blocks
+    # restatement of the case frame, not disjunction per se — arbitration of a
+    # multi-cause root against its MECE siblings is a separate concern (#656).
+    case, root = _anchored_case(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors"
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_verbatim_symptom_as_cause_blocked_even_without_hypotheses():
+    # Zero-novelty restatement needs no hypothesis context to be blocked.
+    case, root = _anchored_case("Intermittent 502 errors under load")
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+
+
+def test_terse_subset_mechanism_passes():
+    # Review-flagged false-positive class under the old similarity scoring: a
+    # terse root fully lexically contained in a verbose anchor. Under the
+    # novelty bar it passes when it carries any genuinely novel content.
+    case, root = _anchored_case(
+        "Upstream keepalive pool exhaustion",  # 'keepalive'/'pool'/'exhaustion' novel
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_mechanism_root_validates_past_the_guard():
+    # A root that adds explanatory depth (a mechanism, not a paraphrase)
+    # validates exactly as before.
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+    assert root.validation_method == ValidationMethod.EMPIRICAL
+
+
+def test_intermediate_rung_may_paraphrase_the_problem():
+    # ROOT-only scope: the rung adjacent to D legitimately paraphrases the
+    # failure mode (the ladder converges on the problem) — the guard must not
+    # block an INTERMEDIATE node.
+    case, rung = _anchored_case(
+        "Intermittent 502 errors on API requests under load",
+        node_type=NodeType.INTERMEDIATE,
+    )
+    derive_node_states(case)
+    assert rung.node_state == NodeState.VALIDATED
+
+
+def test_restating_root_vs_symptom_statement_anchor():
+    # The guard also anchors on problem_verification.symptom_statement (no
+    # PROBLEM node needed) — _case sets symptom "X fails", so use a root that
+    # restates a realistic symptom via a dedicated case.
+    ev = _evidence("ev_causal", EvidenceCategory.CAUSAL_EVIDENCE)
+    root = _node(
+        _nid(0xD2),
+        node_type=NodeType.ROOT,
+        links=[_link("ev_causal", EvidenceStance.SUPPORTS)],
+    )
+    object.__setattr__(root, "statement", "Orders fail intermittently during checkout")
+    case = _case([root], evidence=[ev])
+    case.problem_verification.symptom_statement = (
+        "Checkout orders are failing intermittently"
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+
+
+def test_restatement_block_counted_once_per_event():
+    # The calibration counter counts BLOCK EVENTS (state transitions), never
+    # fixpoint passes or repeat derives of an already-held node: one stuck
+    # symptom-as-cause root across many derives = ONE increment.
+    from unittest.mock import patch
+
+    case, root = _anchored_case(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors",
+        hyps=_INCIDENT_HYPS,
+    )
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "root_validation_blocked_restatement_total"
+    ) as counter:
+        derive_node_states(case)  # blocks: CANDIDATE -> INCONCLUSIVE (1 event)
+        derive_node_states(case)  # already held: no new event
+        derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert counter.inc.call_count == 1
+
+
+def test_non_restating_validation_never_touches_the_counter():
+    from unittest.mock import patch
+
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "root_validation_blocked_restatement_total"
+    ) as counter:
+        derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+    assert counter.inc.call_count == 0
+
+
+def test_attached_own_hypothesis_mirror_does_not_block():
+    # The root's OWN attached hypothesis legitimately mirrors it (the normal
+    # chain shape); its statement must not count toward the root's frame.
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    own = _hyp(
+        "Database connection pool max_size set below concurrent request demand",
+        root_node_id=root.node_id,
+    )
+    case.hypotheses[own.hypothesis_id] = own
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_unattached_own_hypothesis_mirror_does_not_block():
+    # Attachment lag (the common emission shape): the root's own hypothesis is
+    # not yet linked (root_node_id=None) but MUTUALLY mirrors the root — it is
+    # the presumptive owner and must not pollute the frame. (One-way containment
+    # stays in the frame: the incident's disjunction root contains each sibling
+    # but mirrors none, so the incident is still caught — see
+    # test_restating_root_holds_at_inconclusive.)
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    own = _hyp("Database connection pool max_size set below concurrent request demand")
+    case.hypotheses[own.hypothesis_id] = own
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_validated_root_survives_later_paraphrasing_sibling():
+    # ENTRY-bar monotonicity: a root that validly entered VALIDATED is ruled by
+    # its evidence alone — a later sibling emission whose wording overlaps must
+    # not retract the conclusion (the non-monotonic flap the entry semantics
+    # exist to prevent).
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+    # Two siblings arrive whose wording overlaps the root heavily.
+    for stmt in (
+        "Connection pool max_size below demand on the database",
+        "Concurrent request demand exceeds the database connection pool size",
+    ):
+        h = _hyp(stmt)
+        case.hypotheses[h.hypothesis_id] = h
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED  # evidence rules; no flap

@@ -45,6 +45,7 @@ from faultmaven.core.investigation.causal_graph import (
     prune_abandoned_nodes,
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
+    retract_stale_engine_rcc,
     synthesize_rcc_from_validated_root,
     validate_by_exclusion,
 )
@@ -840,6 +841,14 @@ def _recompute_cause_state_from_chain(
     # IDENTIFIED. Runs BEFORE the cause_state branch so a freshly-validated root
     # below re-synthesizes a correct RCC via synthesize_rcc_from_validated_root.
     retract_disconfirmed_rcc(case)
+    # Engine-mirror coherence: an ENGINE-authored RCC whose grounding root no
+    # longer stands validated (demoted by the restatement guard on a pre-guard
+    # persisted case, or by an evidence tie) is cleared here — the readiness/
+    # report readers key on RCC presence, and a mirror must not outlive its
+    # chain. Runs on EVERY recompute (the IDENTIFIED branch below re-mints via
+    # synthesize when a validated root stands; the demotion path otherwise had
+    # no owner for the stale mirror). LLM-authored conclusions are untouched.
+    retract_stale_engine_rcc(case)
     root_validated = any_chain_root_validated(case)
     # The evidence-grounded VERIFIED SYMPTOM is the anchor for cause
     # identification: IDENTIFIED requires ``symptom_verified``. A validated chain
