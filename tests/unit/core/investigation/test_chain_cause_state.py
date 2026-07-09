@@ -733,22 +733,23 @@ def test_retract_disconfirmed_rcc_ignores_unlinked_rcc():
     assert case.root_cause_conclusion is rcc
 
 
-def test_synthesize_rcc_refuses_a_restating_root():
-    """§7.1 restatement guard, RCC side (defense-in-depth with derive): a root
-    validated via a lane derive doesn't own (deductive) whose statement restates
-    the problem anchor must never be minted into a conclusion — the symptom
-    dressed as a cause must not become RCC text."""
+def test_synthesize_mirrors_any_standing_validated_root():
+    """The mirror follows the validation verdict — the §7.1 guard is an ENTRY
+    bar on validation, not a mint-time re-adjudication. A root that stands
+    VALIDATED (here: deductively; the same holds for the grandfathered
+    pre-guard class) is mirrorable even when its statement restates the frame;
+    refusing it would split cause_state=IDENTIFIED from a permanently-absent
+    conclusion."""
     case, root, hyp = _chain_case()
     object.__setattr__(root, "statement", "orders failing")
     object.__setattr__(root, "node_state", NodeState.VALIDATED)
     object.__setattr__(root, "validation_method", ValidationMethod.DEDUCTIVE)
-    assert synthesize_rcc_from_validated_root(case) is False
-    assert case.root_cause_conclusion is None
+    assert synthesize_rcc_from_validated_root(case) is True
+    assert case.root_cause_conclusion is not None
 
 
 def test_synthesize_rcc_mints_from_a_mechanism_root():
-    """Control for the guard: the same deductively validated root with a real
-    mechanism statement mints the engine RCC."""
+    """The common path: a deductively validated mechanism root mints."""
     case, root, hyp = _chain_case()
     object.__setattr__(
         root, "statement", "checkout service DB pool sized below peak demand"
@@ -761,10 +762,10 @@ def test_synthesize_rcc_mints_from_a_mechanism_root():
 
 
 def test_stale_engine_rcc_cleared_when_root_demotes_and_nothing_validates():
-    """Engine-mirror coherence on the demotion path: an ENGINE-authored RCC
-    whose grounding root demotes out of VALIDATED (e.g. the restatement guard
-    on a pre-guard persisted case) is CLEARED by the recompute — the mirror
-    must not outlive its chain, or readiness/report readers (which key on RCC
+    """Engine-mirror coherence on the (evidence-driven) demotion path: an
+    ENGINE-authored RCC whose grounding root demotes out of VALIDATED (its
+    backing support evaporates) is CLEARED by the recompute — the mirror must
+    not outlive its chain, or readiness/report readers (which key on RCC
     presence) keep asserting a conclusion nothing grounds."""
     case, root, hyp = _chain_case()
     _recompute_cause_state_from_chain(case)
@@ -772,14 +773,12 @@ def test_stale_engine_rcc_cleared_when_root_demotes_and_nothing_validates():
     engine_rcc = case.root_cause_conclusion
     assert engine_rcc is not None  # engine mirror minted
 
-    # The pre-guard persisted shape: the root's statement turns out to restate
-    # the problem anchor, so the next derive demotes it (VALIDATED ->
-    # INCONCLUSIVE via the restatement guard).
-    object.__setattr__(root, "statement", "orders are failing")
+    # Support evaporates: the backing evidence row is gone, so the next derive
+    # demotes the root (dangling links never count).
+    case.evidence = []
     _recompute_cause_state_from_chain(case)
 
-    assert root.node_state == NodeState.INCONCLUSIVE
-    assert case.progress.cause_state == CauseState.CANDIDATES  # soft floor
+    assert root.node_state != NodeState.VALIDATED
     assert case.root_cause_conclusion is None  # mirror cleared with its chain
 
 
@@ -795,7 +794,7 @@ def test_llm_rcc_survives_root_demotion():
     )
     case.root_cause_conclusion = own
     _recompute_cause_state_from_chain(case)
-    object.__setattr__(root, "statement", "orders are failing")
+    case.evidence = []
     _recompute_cause_state_from_chain(case)
-    assert root.node_state == NodeState.INCONCLUSIVE
+    assert root.node_state != NodeState.VALIDATED
     assert case.root_cause_conclusion is own  # untouched

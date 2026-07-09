@@ -621,3 +621,55 @@ def test_non_restating_validation_never_touches_the_counter():
         derive_node_states(case)
     assert root.node_state == NodeState.VALIDATED
     assert counter.inc.call_count == 0
+
+
+def test_attached_own_hypothesis_mirror_does_not_block():
+    # The root's OWN attached hypothesis legitimately mirrors it (the normal
+    # chain shape); its statement must not count toward the root's frame.
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    own = _hyp(
+        "Database connection pool max_size set below concurrent request demand",
+        root_node_id=root.node_id,
+    )
+    case.hypotheses[own.hypothesis_id] = own
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_unattached_own_hypothesis_mirror_does_not_block():
+    # Attachment lag (the common emission shape): the root's own hypothesis is
+    # not yet linked (root_node_id=None) but MUTUALLY mirrors the root — it is
+    # the presumptive owner and must not pollute the frame. (One-way containment
+    # stays in the frame: the incident's disjunction root contains each sibling
+    # but mirrors none, so the incident is still caught — see
+    # test_restating_root_holds_at_inconclusive.)
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    own = _hyp("Database connection pool max_size set below concurrent request demand")
+    case.hypotheses[own.hypothesis_id] = own
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+
+def test_validated_root_survives_later_paraphrasing_sibling():
+    # ENTRY-bar monotonicity: a root that validly entered VALIDATED is ruled by
+    # its evidence alone — a later sibling emission whose wording overlaps must
+    # not retract the conclusion (the non-monotonic flap the entry semantics
+    # exist to prevent).
+    case, root = _anchored_case(
+        "Database connection pool max_size set below concurrent request demand"
+    )
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+    # Two siblings arrive whose wording overlaps the root heavily.
+    for stmt in (
+        "Connection pool max_size below demand on the database",
+        "Concurrent request demand exceeds the database connection pool size",
+    ):
+        h = _hyp(stmt)
+        case.hypotheses[h.hypothesis_id] = h
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED  # evidence rules; no flap

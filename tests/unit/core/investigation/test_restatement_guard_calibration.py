@@ -147,3 +147,64 @@ def test_known_boundary_cause_contaminated_anchor_blocks_prenamed_cause():
     )
     root = _root("audit_events table missing index on created_at")
     assert root_restates_case_frame(root, case) is True  # blocked — the boundary
+
+
+def test_known_limit_filler_padding_escapes():
+    """KNOWN LIMIT (documented, not endorsed): novelty is lexical, so padding a
+    pure restatement with generic filler tokens crosses the bar — the incident
+    root scores 0.11 (blocked) but the same text + 'in the production
+    environment cluster' scores ~0.33 and passes. No lexical bar closes this
+    (filler tokens ARE novel); the semantic layers (multi-support validation,
+    grade caps) tracked on #656 own it. Pinned so the escape is a conscious,
+    visible property rather than a surprise."""
+    case = _case(
+        "Intermittent 502 errors under load",
+        hyp_statements=[
+            "Transient network congestion",
+            "Resource contention on the backend",
+        ],
+    )
+    padded = _root(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors in the production environment cluster"
+    )
+    assert root_restates_case_frame(padded, case) is False  # escapes — known limit
+
+
+def test_dilution_fp_bounded_under_realistic_sibling_frames():
+    """Frame-dilution bound: with the HARSHEST realistic frame — every sibling
+    cause of the same runbook standing simultaneously as unattached hypotheses
+    — the corpus FP rate stays ≤ 2% (measured 1.1%, dense-vocabulary IAM/RBAC
+    tails). Under the entry-bar semantics this is an upper bound on validation
+    DELAY, not a permanent block: an already-validated root is ruled by
+    evidence alone, and the frame shrinks as siblings are refuted/retired."""
+    from faultmaven.core.investigation.causal_graph import (
+        _content_tokens,
+        _node_restates,
+    )
+
+    pack = json.loads(PACK_JSON.read_text(encoding="utf-8"))
+    blocked = checked = 0
+    for rb in pack["runbooks"]:
+        anchors = _content_tokens(rb["title"])
+        causes = [
+            c
+            for c in rb.get("causes", [])
+            if not c.get("is_fallback_cause") and c.get("cause_statement")
+        ]
+        for i, cause in enumerate(causes):
+            st = _content_tokens(cause["cause_statement"])
+            if not st:
+                continue
+            siblings = [
+                (None, _content_tokens(o["cause_statement"]))
+                for j, o in enumerate(causes)
+                if j != i
+            ]
+            checked += 1
+            if _node_restates(st, "cn_under_test", anchors, siblings):
+                blocked += 1
+    assert checked > 400
+    assert (
+        blocked / checked <= 0.02
+    ), f"dilution FP regressed: {blocked}/{checked} ({blocked/checked:.1%})"

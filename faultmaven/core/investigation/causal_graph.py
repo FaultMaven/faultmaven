@@ -265,69 +265,96 @@ def _problem_anchor_statements(case: Case) -> list[str]:
 
 
 def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
-    """§7.1 restatement guard predicate: a ROOT whose statement carries
-    (almost) no content beyond the case's existing frame — the problem anchors
-    plus the OTHER standing hypotheses' statements — is a restatement, not an
-    explanation, and no validation lane may conclude on it. Measured as the
-    NOVEL-TOKEN FRACTION: |root tokens − frame tokens| / |root tokens| must
-    reach ``ROOT_NOVELTY_MIN_FRACTION`` for the root to be validatable.
+    """§7.1 restatement guard predicate (single-node form; ``_restating_root_ids``
+    is the batch form — keep their semantics identical): a ROOT whose statement
+    carries less than ``ROOT_NOVELTY_MIN_FRACTION`` novel content tokens beyond
+    the case frame is a restatement, not an explanation, and no validation lane
+    may ADMIT it (the guard is an ENTRY bar on validation/minting, not a
+    standing predicate — see ``derive_node_states``).
 
-    Why novelty (calibrated on the shipped 91-runbook corpus, see
-    ``test_restatement_guard_calibration``): a lexical-similarity threshold
-    blocked 4.5–5.9% of real expert-authored mechanism statements (a long
-    mechanism that MENTIONS the symptom fully contains a short anchor) while
-    catching the #656 incident root with zero margin. Novelty separates the
-    two cleanly: every corpus mechanism scores ≥0.4 novel (0% false
-    positives), verbatim symptom-as-cause scores ~0, and the incident's
-    disjunction root — whose every token came from the symptom + the two
-    still-ACTIVE hypotheses it OR-ed together — scores ~0.11 against the case
-    frame. Hypotheses rooted at the node itself are EXCLUDED from the frame
-    (a chain root legitimately mirrors its own hypothesis statement).
+    The frame = problem anchors + OTHER standing hypotheses' statements. A
+    hypothesis is treated as the node's OWN (excluded from the frame) when it is
+    attached to the node (``root_node_id`` match) or when it is unattached but
+    MUTUALLY mirrors the node (Jaccard ≥ ``_FRAME_OWNER_JACCARD``): during the
+    normal attachment lag a chain root's own not-yet-linked hypothesis restates
+    it verbatim and must not block it. One-way containment deliberately does NOT
+    make an owner: the #656 disjunction root fully CONTAINS each sibling
+    hypothesis it OR-s, but shares few tokens mutually — those siblings stay in
+    the frame, which is what catches the incident shape.
 
-    ROOT-only by design: the rung(s) adjacent to ``D`` legitimately paraphrase
-    the failure mode (the ladder converges on the problem); only the ROOT is
-    claimed as the CAUSE. Known limit (by design): token novelty is lexical —
-    a synonym paraphrase reads as novel and passes; this is one layer of the
-    #656 layered defense, and a near-zero block counter does not prove the
-    failure class closed.
+    ROOT-only by design (rungs adjacent to ``D`` legitimately paraphrase).
+    Known limits (§7.1): the check is lexical — synonym paraphrases and
+    filler-padded restatements read as novel and pass; the guard is one layer
+    of the #656 layered defense.
     """
     if node.node_type != NodeType.ROOT or not node.statement:
         return False
     statement_tokens = _content_tokens(node.statement)
     if not statement_tokens:
         return False
-    frame = _case_frame_tokens(case, exclude_root_node_id=node.node_id)
+    anchors, hyp_token_sets = _frame_components(case)
+    return _node_restates(statement_tokens, node.node_id, anchors, hyp_token_sets)
+
+
+def _frame_components(case: Case) -> tuple:
+    """Tokenize the frame's raw material ONCE: (anchor-token union,
+    [(root_node_id, hypothesis-statement tokens), ...])."""
+    anchors: set = set()
+    for anchor in _problem_anchor_statements(case):
+        anchors |= _content_tokens(anchor)
+    hyp_token_sets = []
+    if getattr(case, "hypotheses", None):
+        for h in _standing_hypotheses(case):
+            if h.statement:
+                tokens = _content_tokens(h.statement)
+                if tokens:
+                    hyp_token_sets.append((getattr(h, "root_node_id", None), tokens))
+    return anchors, hyp_token_sets
+
+
+def _node_restates(
+    statement_tokens: set, node_id: str, anchors: set, hyp_token_sets: list
+) -> bool:
+    """Novelty core shared by the single-node and batch forms."""
+    frame = set(anchors)
+    for rid, tokens in hyp_token_sets:
+        if rid == node_id:
+            continue  # attached own hypothesis
+        if rid is None and _mutual_mirror(statement_tokens, tokens):
+            continue  # unattached presumptive owner (attachment lag)
+        frame |= tokens
     if not frame:
         return False  # no frame to restate — the guard is inert
     novel = len(statement_tokens - frame) / len(statement_tokens)
     return novel < ROOT_NOVELTY_MIN_FRACTION
 
 
-def _case_frame_tokens(case: Case, *, exclude_root_node_id: str) -> set:
-    """The token frame a ROOT must add novelty over: the problem anchors plus
-    every OTHER standing hypothesis's statement (the hypothesis rooted at the
-    node under test is excluded — a root mirrors its own hypothesis)."""
-    frame: set = set()
-    for anchor in _problem_anchor_statements(case):
-        frame |= _content_tokens(anchor)
-    for h in _standing_hypotheses(case):
-        if getattr(h, "root_node_id", None) == exclude_root_node_id:
-            continue
-        if h.statement:
-            frame |= _content_tokens(h.statement)
-    return frame
+def _mutual_mirror(a_tokens: set, b_tokens: set) -> bool:
+    """MUTUAL restatement (high Jaccard) — both statements are ~the same claim.
+    Distinct from one-way containment: a disjunction root contains each of its
+    sources but is not mutually theirs."""
+    if not a_tokens or not b_tokens:
+        return False
+    return len(a_tokens & b_tokens) / len(a_tokens | b_tokens) >= _FRAME_OWNER_JACCARD
 
 
 def _restating_root_ids(case: Case) -> set:
-    """Precompute the ROOT node ids blocked by the restatement guard.
-    Statements, anchors, and hypotheses are immutable within one derive call,
-    so this runs ONCE per derive and the fixpoint loop tests set membership
-    instead of re-scoring per pass."""
-    return {
-        node.node_id
-        for node in case.causal_nodes.values()
-        if node.node_type == NodeType.ROOT and root_restates_case_frame(node, case)
-    }
+    """Batch form of ``root_restates_case_frame`` for ``derive_node_states``:
+    statements, anchors, and hypotheses are immutable within one derive call,
+    so tokenize the frame components once and test each ROOT against them."""
+    anchors, hyp_token_sets = _frame_components(case)
+    if not anchors and not hyp_token_sets:
+        return set()
+    restating: set = set()
+    for node in case.causal_nodes.values():
+        if node.node_type != NodeType.ROOT or not node.statement:
+            continue
+        statement_tokens = _content_tokens(node.statement)
+        if not statement_tokens:
+            continue
+        if _node_restates(statement_tokens, node.node_id, anchors, hyp_token_sets):
+            restating.add(node.node_id)
+    return restating
 
 
 def derive_node_states(case: Case) -> bool:
@@ -416,12 +443,24 @@ def derive_node_states(case: Case) -> bool:
                 target_state = NodeState.REFUTED
             elif deductively_valid:
                 continue  # owned by the deductive lane — never demote here
-            elif would_validate and node.node_id not in restating_roots:
+            elif would_validate and (
+                node.node_id not in restating_roots
+                or node.node_state == NodeState.VALIDATED
+            ):
+                # The restatement guard is an ENTRY bar: it blocks the
+                # transition INTO VALIDATED, but a root that already validated
+                # is ruled by its EVIDENCE alone — otherwise a later sibling
+                # emission whose wording overlaps would retract a correct,
+                # evidence-backed conclusion (non-monotonic flap), and the
+                # deductive lane (never re-derived here) would split from the
+                # mint path. Pre-guard persisted conclusions are therefore
+                # grandfathered — deliberately: closed cases never recompute
+                # anyway, and their confidence is the grade-cap work on #656.
                 target_state = NodeState.VALIDATED
             elif would_validate:
                 # §7.1 restatement guard: supported and gate-satisfied, but the
-                # "cause" restates the problem — hold at INCONCLUSIVE (a live
-                # candidate needing a real mechanism, never a validated
+                # "cause" restates the case frame — hold at INCONCLUSIVE (a
+                # live candidate needing a real mechanism, never a validated
                 # conclusion). The LLM refines the statement; the engine never
                 # validates the symptom as its own cause.
                 target_state = NodeState.INCONCLUSIVE
@@ -1034,15 +1073,17 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
         ):
             return False  # the engine mirror still names the grounding root
         # else: stale engine mirror — refresh from the current validated root.
+    # No restatement check here BY DESIGN: the §7.1 guard is an ENTRY bar on
+    # validation (empirical lane + exclusion lane), so no restating root can
+    # freshly validate — and a root that stands VALIDATED (incl. grandfathered
+    # pre-guard ones) must be mirrorable, or cause_state=IDENTIFIED would
+    # split from a permanently-absent conclusion. The mirror follows the
+    # validation verdict; it never re-adjudicates it.
     hyp = next(
         (
             h
             for h in _standing_hypotheses(case)
-            # Restatement guard (defense-in-depth with derive_node_states): never
-            # mint a conclusion whose root restates the case frame, whatever
-            # lane validated it — a symptom-as-cause must not become RCC text.
             if is_chain_root_validated(h, case.causal_nodes)
-            and not root_restates_case_frame(case.causal_nodes[h.root_node_id], case)
         ),
         None,
     )
@@ -1228,13 +1269,20 @@ RESTATEMENT_AMBIGUOUS = 0.4
 
 # §7.1 restatement guard's validation bar: the minimum NOVEL-token fraction a
 # ROOT statement must carry beyond the case frame (problem anchors + other
-# standing hypotheses) to be validatable. Deliberately its own knob, decoupled
-# from the T1 orphan-reattach threshold (opposite error economics — a wrong
-# re-attach is recoverable via the LLM nudge; a wrong validation mints a false
-# conclusion). Calibrated on the shipped corpus (test_restatement_guard_
-# calibration): corpus mechanisms ≥0.4 novel (0% FP), verbatim restatement ~0,
-# the #656 incident root 0.11 vs its case frame.
+# standing hypotheses) to be ADMITTED to VALIDATED. Deliberately its own knob,
+# decoupled from the T1 orphan-reattach threshold (opposite error economics —
+# a wrong re-attach is recoverable via the LLM nudge; a wrong validation mints
+# a false conclusion). The calibration figures live in ONE executable home:
+# test_restatement_guard_calibration.py (methodology prose: §7.1).
 ROOT_NOVELTY_MIN_FRACTION = 0.3
+
+# Jaccard at or above which an UNATTACHED hypothesis is treated as a node's
+# presumptive OWNER (excluded from that node's frame): both statements are
+# mutually ~the same claim, the normal chain-emission shape during the
+# attachment lag. One-way containment stays IN the frame (the #656 disjunction
+# root contains each source hypothesis but mutually mirrors none — jaccard
+# ~0.33 — so the incident is still caught).
+_FRAME_OWNER_JACCARD = 0.6
 
 # Function/filler words dropped before comparing two statements. This is the
 # GENERAL base list; the sim analyzer may EXTEND it with scenario-specific noise
