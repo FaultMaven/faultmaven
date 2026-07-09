@@ -738,7 +738,7 @@ def test_validated_root_survives_later_paraphrasing_sibling():
 
 
 def _single_support_root_case():
-    """A ROOT with ONE causally-grounding SUPPORTS link (the pre-P1.3 shape)."""
+    """A ROOT with ONE causally-grounding SUPPORTS link (the pre-INV-29 shape)."""
     ev = _evidence("ev_only", EvidenceCategory.CAUSAL_EVIDENCE)
     root = _node(
         _nid(0xE1),
@@ -879,12 +879,13 @@ def test_support_count_block_counted_once_per_event():
         derive_node_states(case)  # already held: no new event
         derive_node_states(case)
     assert root.node_state == NodeState.INCONCLUSIVE
-    assert counter.inc.call_count == 1
+    assert counter.labels.return_value.inc.call_count == 1
+    counter.labels.assert_called_with(reason="count")
 
 
 def test_support_block_requires_a_real_causal_link():
     # A root with only symptom-backed support was never causally supported —
-    # that is not a P1.3 block event (metrics attribution).
+    # that is not an INV-29 block event (metrics attribution).
     from unittest.mock import patch
 
     ev = _evidence("ev_sympt", EvidenceCategory.SYMPTOM_EVIDENCE)
@@ -946,7 +947,7 @@ def test_undersupported_restating_root_attributed_to_support_counter():
     ):
         derive_node_states(case)
     assert root.node_state == NodeState.INCONCLUSIVE
-    assert support_counter.inc.call_count == 1
+    assert support_counter.labels.return_value.inc.call_count == 1
     assert restatement_counter.inc.call_count == 0
 
 
@@ -1065,3 +1066,86 @@ def test_llm_absence_supports_via_ingest_never_completes_the_bar():
     )
     derive_node_states(case)
     assert root.node_state == NodeState.INCONCLUSIVE
+
+
+def test_validated_root_survives_a_bridging_corroboration_row():
+    # INV-29 monotonicity: a root VALIDATED on two independent rows must NOT
+    # demote when a third causal row arrives that paraphrases BOTH (a "bridge"
+    # summary row) — adding corroborating evidence can never retract a
+    # validated conclusion (maximum-independent-set counting; connected
+    # components regressed here).
+    from faultmaven.core.investigation.causal_graph import (
+        _EVIDENCE_MIRROR_JACCARD,
+        _content_tokens,
+        _mutual_mirror,
+    )
+
+    # Controlled tokens (verified in the calibration file): A={w1..w10},
+    # B={w1..w6,w11..w14} (J(A,B)=0.429 — independent), bridge={w1..w8,w11,w12}
+    # (J=0.667 with each — mirrors both).
+    w = [f"tok{i}x" for i in range(1, 15)]
+    a_text = " ".join(w[0:10])
+    b_text = " ".join(w[0:6] + w[10:14])
+    bridge_text = " ".join(w[0:8] + w[10:12])
+    ta, tb, tc = map(_content_tokens, (a_text, b_text, bridge_text))
+    assert not _mutual_mirror(ta, tb, _EVIDENCE_MIRROR_JACCARD)
+    assert _mutual_mirror(ta, tc, _EVIDENCE_MIRROR_JACCARD)
+    assert _mutual_mirror(tb, tc, _EVIDENCE_MIRROR_JACCARD)
+
+    ev_a = _evidence("ev_mono_a", EvidenceCategory.CAUSAL_EVIDENCE)
+    ev_b = _evidence("ev_mono_b", EvidenceCategory.CAUSAL_EVIDENCE)
+    object.__setattr__(ev_a, "summary", a_text)
+    object.__setattr__(ev_b, "summary", b_text)
+    root = _node(
+        _nid(0xF1),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_mono_a", EvidenceStance.SUPPORTS),
+            _link("ev_mono_b", EvidenceStance.SUPPORTS),
+        ],
+    )
+    case = _case([root], evidence=[ev_a, ev_b])
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED
+
+    bridge = _evidence("ev_mono_c", EvidenceCategory.CAUSAL_EVIDENCE)
+    object.__setattr__(bridge, "summary", bridge_text)
+    case.evidence.append(bridge)
+    root.evidence_links.append(_link("ev_mono_c", EvidenceStance.SUPPORTS))
+    derive_node_states(case)
+    assert root.node_state == NodeState.VALIDATED  # corroboration never demotes
+
+
+def test_hedged_only_block_labeled_and_annotated_distinctly():
+    # A root whose causal links are ALL self-hedged is a different population
+    # from count-blocked: the counter labels it 'hedged_only' and the context
+    # annotation names the right recovery (a CONFIDENT link, not a second
+    # observation).
+    from unittest.mock import patch
+
+    from faultmaven.core.investigation.causal_graph import (
+        BLOCK_REASON_HEDGED,
+        root_support_block_reasons,
+    )
+
+    evs = [
+        _evidence("ev_hg1", EvidenceCategory.CAUSAL_EVIDENCE),
+        _evidence("ev_hg2", EvidenceCategory.CAUSAL_EVIDENCE),
+    ]
+    root = _node(
+        _nid(0xF2),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_hg1", EvidenceStance.SUPPORTS, stance_confidence=0.4),
+            _link("ev_hg2", EvidenceStance.SUPPORTS, stance_confidence=0.3),
+        ],
+    )
+    case = _case([root], evidence=evs)
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "root_validation_blocked_support_count_total"
+    ) as counter:
+        derive_node_states(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    counter.labels.assert_called_with(reason="hedged_only")
+    assert root_support_block_reasons(case) == {root.node_id: BLOCK_REASON_HEDGED}

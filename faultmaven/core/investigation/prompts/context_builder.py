@@ -29,7 +29,12 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any, Dict, List, Optional
 
-from faultmaven.core.investigation.causal_graph import support_count_held_root_ids
+from faultmaven.core.investigation.causal_graph import (
+    BLOCK_REASON_COUNT,
+    BLOCK_REASON_HEDGED,
+    BLOCK_REASON_MIRROR,
+    root_support_block_reasons,
+)
 from faultmaven.core.investigation.evidence_need_surfacing import (
     select_surfaced_causal_needs,
 )
@@ -2527,18 +2532,28 @@ def _build_causal_graph_block(case: Case) -> str:
         return ""
 
     # §7.1/INV-29 elicitation: a ROOT held from VALIDATED only by the
-    # independent-support bar gets its recovery action rendered inline —
-    # without it the model sees a bare [root/inconclusive], re-records the
-    # same datum (which the independence mirror collapses), and stalls.
-    count_held = support_count_held_root_ids(case)
-
-    def _node_line(indent: str, n) -> str:
-        note = (
+    # causal-grounding bar gets its REASON-SPECIFIC recovery action rendered
+    # inline — without it the model sees a bare [root/inconclusive],
+    # re-records the same datum (which the independence mirror collapses) or
+    # re-hedges the same link, and stalls.
+    block_reasons = root_support_block_reasons(case)
+    recovery_notes = {
+        BLOCK_REASON_COUNT: (
             " — needs a SECOND INDEPENDENT causal observation to validate "
             "(re-recording the same datum does not count)"
-            if n.node_id in count_held
-            else ""
-        )
+        ),
+        BLOCK_REASON_MIRROR: (
+            " — needs a SECOND INDEPENDENT causal observation to validate "
+            "(re-recording the same datum does not count)"
+        ),
+        BLOCK_REASON_HEDGED: (
+            " — its causal support is self-hedged (stance_confidence below "
+            "0.6); record a CONFIDENT causal observation to ground it"
+        ),
+    }
+
+    def _node_line(indent: str, n) -> str:
+        note = recovery_notes.get(block_reasons.get(n.node_id), "")
         return (
             f"{indent}{n.node_id} [{n.node_type.value}/{n.node_state.value}] "
             f"{_stmt(n.statement)}{note}"

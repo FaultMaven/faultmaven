@@ -706,19 +706,15 @@ class APICaseService(BaseService):
 
         try:
             # RESOLVED must carry the same engine bookkeeping as the chat-side
-            # executor (terminal_transitions._execute_resolved_transition), or
-            # this surface produces terminal cases with an unstamped
-            # confirmation, a stale persisted grade, and unset solution
-            # milestones — permanently, since terminal cases never recompute.
-            # Function-local import: the case_ui_adapter precedent for
-            # domain-service → core.investigation reads.
-            from faultmaven.core.investigation.cause_assurance import (
-                conclusion_overclaims,
-                confirm_root_from_resolution_absence,
-                grade_cause_assurance,
-            )
-            from faultmaven.core.investigation.verification_status import (
-                assess_verification_status,
+            # executor (terminal_transitions._execute_resolved_transition) —
+            # the two surfaces share ONE finalizer so they can never diverge
+            # on terminal truth (grade, over-claim, verification_status, and
+            # the cause_state coherence block; a hand-mirrored copy here
+            # previously shipped CONFIRMED×CANDIDATES blobs). Function-local
+            # import: the case_ui_adapter precedent for domain-service →
+            # core.investigation reads.
+            from faultmaven.core.investigation.terminal_transitions import (
+                finalize_resolution_truth_surface,
             )
 
             if not case.progress.solution_proposed:
@@ -726,14 +722,7 @@ class APICaseService(BaseService):
             if not case.progress.solution_accepted:
                 case.progress.solution_accepted = True
             case.progress.solution_verified = True
-            confirm_root_from_resolution_absence(case)
-            case.progress.cause_assurance = grade_cause_assurance(case)
-            case.progress.cause_overclaim = conclusion_overclaims(
-                case.root_cause_conclusion, case.progress.cause_assurance
-            )
-            case.progress.verification_status = assess_verification_status(
-                case, grade=case.progress.cause_assurance
-            )
+            finalize_resolution_truth_surface(case)
 
             # closure_reason is None for RESOLVED — sub-categorization
             # would be redundant with the status itself.

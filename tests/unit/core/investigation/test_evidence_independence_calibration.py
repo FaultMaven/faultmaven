@@ -139,14 +139,16 @@ def test_just_under_threshold_pair_stays_independent():
     assert _count(a, b) == 2
 
 
-def test_count_is_order_invariant_across_a_bridge():
-    # A~B and B~C but not A~C (a "bridge" restatement). Greedy leader
-    # clustering would count 1 or 2 depending on iteration order; connected
-    # components always collapse the chain to ONE observation — and DB link
-    # reload order is not stable, so order-dependence would mean
-    # nondeterministic validation. Controlled token construction: A={w1..w10},
-    # B={w1..w8,w11,w12} (J=0.667), C={w1..w6,w11..w14} (J(B,C)=0.667,
-    # J(A,C)=0.429).
+def test_count_is_order_invariant_and_monotone_across_a_bridge():
+    # A~B and B~C but not A~C (a "bridge" restatement). The count is a MAXIMUM
+    # INDEPENDENT SET: {A, C} are pairwise non-mirroring, so the chain counts
+    # TWO — in every iteration order (DB link reload order is not stable, so
+    # order-dependence would mean nondeterministic validation), and adding the
+    # bridge B to an existing {A, C} pair must never DECREASE the count
+    # (monotonicity: corroborating evidence can never retract a validated
+    # conclusion — connected components violated this). Controlled tokens:
+    # A={w1..w10}, B={w1..w8,w11,w12} (J=0.667), C={w1..w6,w11..w14}
+    # (J(B,C)=0.667, J(A,C)=0.429).
     w = [f"tok{i}x" for i in range(1, 15)]  # distinct, stem-stable tokens
     a = " ".join(w[0:10])
     b = " ".join(w[0:8] + w[10:12])
@@ -155,8 +157,23 @@ def test_count_is_order_invariant_across_a_bridge():
     assert _mutual_mirror(ta, tb, _EVIDENCE_MIRROR_JACCARD)
     assert _mutual_mirror(tb, tc, _EVIDENCE_MIRROR_JACCARD)
     assert not _mutual_mirror(ta, tc, _EVIDENCE_MIRROR_JACCARD)
+    assert _count(a, c) == 2  # the two genuinely distinct observations
     for order in ([a, b, c], [b, a, c], [c, a, b], [a, c, b]):
-        assert _count(*order) == 1, order
+        assert _count(*order) == 2, order  # bridge never reduces the count
+
+
+def test_pure_mirror_chain_still_collapses():
+    # Contrast pin: A~B~C where EVERY pair mirrors (one datum re-recorded
+    # twice) stays ONE observation under maximum-independent-set counting.
+    w = [f"tok{i}x" for i in range(1, 13)]
+    a = " ".join(w[0:10])
+    b = " ".join(w[0:9] + w[10:11])
+    c = " ".join(w[0:9] + w[11:12])
+    ta, tb, tc = _content_tokens(a), _content_tokens(b), _content_tokens(c)
+    assert _mutual_mirror(ta, tb, _EVIDENCE_MIRROR_JACCARD)
+    assert _mutual_mirror(tb, tc, _EVIDENCE_MIRROR_JACCARD)
+    assert _mutual_mirror(ta, tc, _EVIDENCE_MIRROR_JACCARD)
+    assert _count(a, b, c) == 1
 
 
 def test_unjudgeable_rows_count_zero():

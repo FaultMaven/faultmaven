@@ -281,3 +281,51 @@ def test_count_held_root_carries_recovery_annotation():
         line for line in control_block.splitlines() if "cn_00000000ba2e" in line
     )
     assert "SECOND INDEPENDENT" not in bare_line
+
+
+def test_hedged_only_root_gets_confident_link_recovery_note():
+    """The hedged slice gets ITS recovery action — a CONFIDENT causal link —
+    not the second-observation note (which would be factually wrong: one more
+    observation still leaves zero qualifying supports)."""
+    from datetime import datetime, timezone
+
+    from faultmaven.modules.case.contracts import (
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+        EvidenceStance,
+        NodeEvidenceLink,
+    )
+
+    root = _node(
+        "cn_00000000fed9",
+        statement="undersized connection pool exhausts under load",
+        state=NodeState.INCONCLUSIVE,
+    )
+    root.evidence_links = [
+        NodeEvidenceLink(
+            evidence_id="ev_" + "c" * 12,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="bears on the root",
+            linked_at_turn=2,
+            stance_confidence=0.4,  # self-hedged
+        )
+    ]
+    hyp = _hyp(hypothesis_id="hyp_00000000fed9", root_node_id=root.node_id)
+    case = _case(nodes=[root], hyps=[hyp])
+    case.evidence = [
+        Evidence(
+            evidence_id="ev_" + "c" * 12,
+            summary="config diff shows pool max_size dropped to 5",
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="llm",
+            collected_at_turn=2,
+            collected_at=datetime.now(timezone.utc),
+        )
+    ]
+    block = _build_causal_graph_block(case)
+    line = next(ln for ln in block.splitlines() if "cn_00000000fed9" in ln)
+    assert "CONFIDENT causal observation" in line
+    assert "SECOND INDEPENDENT" not in line

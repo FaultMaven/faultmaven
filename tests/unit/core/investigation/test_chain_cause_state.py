@@ -1554,9 +1554,80 @@ def test_resolution_execution_confirms_count_held_root_end_to_end():
     assert root.node_state == NodeState.VALIDATED
     assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
     # Terminal-blob coherence: the confirmed cause reads IDENTIFIED, not the
-    # stale pre-stamp CANDIDATES (observed live in the P1.3 gate run 1).
+    # stale pre-stamp CANDIDATES (observed live in the INV-29 sim gate).
     assert case.progress.cause_state == CauseState.IDENTIFIED
     # The blob must RELOAD: root_cause_consistency requires method + non-zero
-    # likelihood beside IDENTIFIED (gate run 2: the bare assignment 500ed the
+    # likelihood beside IDENTIFIED (observed live: the bare assignment 500ed the
     # RESOLVED execution on reload and stranded the case INVESTIGATING).
+    type(case.progress)(**case.progress.model_dump())
+
+
+def test_confirmed_count_held_root_always_has_a_conclusion():
+    """A CONFIRMED terminal blob must never lack cause text: when no
+    conclusion exists at stamp time (the count-held shape — the per-turn
+    mirror synthesis never ran for an INCONCLUSIVE root), the stamp mints the
+    engine mirror for the root the user just confirmed (VERIFIED at the
+    floor, naming the standing hypothesis)."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case, root, hyp = _count_held_case()
+    assert case.root_cause_conclusion is None  # no LLM conclusion authored
+    _standalone_absence(case)
+    assert confirm_root_from_resolution_absence(case) is True
+    rcc = case.root_cause_conclusion
+    assert rcc is not None
+    assert rcc.root_cause == root.statement
+    assert rcc.confidence_level == ConfidenceLevel.VERIFIED
+    assert rcc.validated_hypothesis_id == hyp.hypothesis_id
+    assert rcc.determined_by == "engine:chain_validation"
+
+
+def test_finalize_truth_surface_is_shared_by_the_api_resolve_path():
+    """The dashboard/API resolve surface must produce the SAME terminal truth
+    as the chat executor — pinned at the finalizer level: grade CONFIRMED,
+    cause_state IDENTIFIED (grade-keyed, so hypothesis-less confirmed roots
+    are covered too), method+likelihood set, and a conclusion present."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        finalize_resolution_truth_surface,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case, root, hyp = _count_held_case()
+    _standalone_absence(case)
+    assert finalize_resolution_truth_surface(case) is True
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.progress.root_cause_method
+    assert case.progress.root_cause_likelihood > 0
+    assert case.root_cause_conclusion is not None
+    type(case.progress)(**case.progress.model_dump())  # blob reloads
+
+
+def test_finalize_covers_hypothesis_less_confirmed_root():
+    """Grade-keyed coherence: the stamp's node-level fallback confirms a
+    hypothesis-less root; the terminal blob must still read IDENTIFIED beside
+    CONFIRMED (the standing-hypothesis mirror missed this shape)."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        finalize_resolution_truth_surface,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    root = _root(support_label="ev_orphan_sup")
+    case = _case(nodes=[root], evidence=[_evidence("ev_orphan_sup")])
+    d = seed_problem_node(case)
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    # No hypothesis at all — the weak-model chain-without-hypothesis shape.
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.INCONCLUSIVE  # count-held
+    _standalone_absence(case)
+    assert finalize_resolution_truth_surface(case) is True
+    assert root.node_state == NodeState.VALIDATED
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.root_cause_conclusion is not None  # hyp-less mint
+    assert case.root_cause_conclusion.validated_hypothesis_id is None
     type(case.progress)(**case.progress.model_dump())

@@ -43,6 +43,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     CAUSE_IDENTIFIED_LIKELIHOOD,
 )
 from faultmaven.modules.case.contracts import (
+    EvidenceCategory,
     EvidenceStance,
     Hypothesis,
     HypothesisEvidenceLink,
@@ -327,15 +328,19 @@ class HypothesisManager:
         new_likelihood: float,
         current_turn: int,
         reason: str,
+        case: "Case | None" = None,
     ) -> Hypothesis:
         """Update hypothesis likelihood manually (for test results)
 
         A hypothesis with NO qualifying supporting evidence links is still a
-        PRIOR, so the update is capped at ``NEW_HYPOTHESIS_MAX_PRIOR`` — the
-        same discipline ``create_hypothesis`` applies. Without this, a direct
-        LLM update was a fiat lever past the ``CAUSE_IDENTIFIED_LIKELIHOOD``
-        gate the creation cap exists to protect (#573 B1): belief above the
-        prior cap is earned only by linked case evidence. Qualifying = a
+        PRIOR, so a RAISE is capped at ``max(current likelihood,
+        NEW_HYPOTHESIS_MAX_PRIOR)`` — the same discipline
+        ``create_hypothesis`` applies, as a ceiling only (an update never
+        drags belief BELOW its current earned value; downward moves are
+        honest and always pass). Without this, a direct LLM update was a
+        fiat lever past the ``CAUSE_IDENTIFIED_LIKELIHOOD`` gate the
+        creation cap exists to protect (#573 B1): belief above the prior
+        cap is earned only by linked case evidence. Qualifying = a
         SUPPORTS link at ``stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN``
         (a link the model itself hedges is not grounds for MORE belief —
         the same bar the §7.1 chain tally reads); a refuting-only link set
@@ -358,18 +363,25 @@ class HypothesisManager:
             and (link.stance_confidence if link.stance_confidence is not None else 1.0)
             >= CAUSAL_STANCE_CONFIDENCE_MIN
             for link in hypothesis.evidence_links
-        )
-        if not has_supporting_evidence and capped > NEW_HYPOTHESIS_MAX_PRIOR:
+        ) or self._chain_root_confidently_supported(hypothesis, case)
+        # The cap is a CEILING ON RAISES, never a demotion: a hypothesis
+        # legitimately above the prior bar (belief earned via the evidence
+        # formula, which counts links this qualifying test may reject) keeps
+        # its earned value as the effective ceiling — forcing 0.95 down to
+        # 0.5 would both punish an honest small correction and reset the
+        # stagnation counters (|delta| >= 0.05 reads as progress).
+        ceiling = max(old_likelihood, NEW_HYPOTHESIS_MAX_PRIOR)
+        if not has_supporting_evidence and capped > ceiling:
             logger.info(
                 "Capped evidence-free likelihood update %.3f -> %.3f on %s "
-                "(NEW_HYPOTHESIS_MAX_PRIOR; %s)",
+                "(ceiling=max(current, NEW_HYPOTHESIS_MAX_PRIOR); %s)",
                 capped,
-                NEW_HYPOTHESIS_MAX_PRIOR,
+                ceiling,
                 hypothesis.hypothesis_id,
                 reason,
             )
             hypothesis_likelihood_capped_no_evidence_total.inc()
-            capped = NEW_HYPOTHESIS_MAX_PRIOR
+            capped = ceiling
         hypothesis.likelihood = capped
         hypothesis.last_updated_turn = current_turn
         # Progress is judged on the APPLIED value (consistent with
@@ -394,6 +406,33 @@ class HypothesisManager:
         self._check_state_transition(hypothesis, current_turn)
 
         return hypothesis
+
+    @staticmethod
+    def _chain_root_confidently_supported(
+        hypothesis: Hypothesis, case: "Case | None"
+    ) -> bool:
+        """Chain-axis half of the B1 qualifying test: a confident
+        (>= CAUSAL_STANCE_CONFIDENCE_MIN) SUPPORTS link on the hypothesis's
+        chain ROOT, backed by a CAUSAL_EVIDENCE row, is real same-turn
+        grounding — chain node_evidence_links never mirror into the flat
+        hypothesis.evidence_links, so judging the cap on the flat list alone
+        permanently capped (and gaslit) chain-only-grounded hypotheses.
+        Conservative without a case (no graph access -> False)."""
+        if case is None or not getattr(hypothesis, "root_node_id", None):
+            return False
+        node = (case.causal_nodes or {}).get(hypothesis.root_node_id)
+        if node is None:
+            return False
+        categories = {
+            e.evidence_id: getattr(e, "category", None) for e in (case.evidence or [])
+        }
+        return any(
+            link.stance == EvidenceStance.SUPPORTS
+            and (link.stance_confidence if link.stance_confidence is not None else 1.0)
+            >= CAUSAL_STANCE_CONFIDENCE_MIN
+            and categories.get(link.evidence_id) == EvidenceCategory.CAUSAL_EVIDENCE
+            for link in node.evidence_links
+        )
 
     def _check_state_transition(
         self,

@@ -376,12 +376,15 @@ causally-grounding link. A ROOT — the node that mints a conclusion — require
 `ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN` (= 2) **independent** causally-grounding
 supports: distinct evidence rows whose contents are not mutual restatements of
 each other (`_EVIDENCE_MIRROR_JACCARD` over content tokens of
-`summary + extract`, counted as **connected components** of the pairwise
-mirror graph — order-invariant, and a mirror chain collapses to one
-observation; rows too short to tokenize are unjudgeable and count ZERO). The
+`summary + extract`, counted as a **maximum independent set** of the
+pairwise mirror graph — order-invariant AND monotone under added evidence (a
+later "bridge" row paraphrasing two independent observations must never
+reduce the count and retract a validated conclusion); a pure mirror pair
+still collapses to one observation; rows too short to tokenize are
+unjudgeable and count ZERO). The
 rationale is the trust boundary: with the runbook-provenance arm
 decommissioned (#658), *every* causal link is an LLM self-labeled claim, so a
-single self-certified datum must not conclude a case (#573 / #656 DF-1) —
+single self-certified datum must not conclude a case (#573 / #656) —
 corroboration is the only engine-computable difficulty knob left. Two
 exceptions, both principled:
 

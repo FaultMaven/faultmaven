@@ -639,3 +639,68 @@ def test_ingest_never_overwrites_absence_row_links():
     links = [l for l in root.evidence_links if l.evidence_id == "ev_ccccccccccc1"]
     assert len(links) == 1
     assert links[0].stance == EvidenceStance.SUPPORTS  # verdict untouched
+
+
+def test_omitted_confidence_on_reemission_preserves_prior_hedge():
+    """An upsert that OMITS stance_confidence keeps the existing (possibly
+    deliberately hedged) value — the schema default must not silently promote
+    a considered 0.5 to full confidence and pull the link into the §7.1
+    causal tally."""
+    case = _case()
+    seed_problem_node(case)
+    case.evidence.append(_causal_row("ev_ddddddddddd1", "pool max_size dropped to 5"))
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_node("undersized connection pool", NodeType.ROOT, produces="D")],
+        edges_to_add=[],
+        node_evidence=[
+            SimpleNamespace(
+                node_ref="new_index_0",
+                evidence_id="ev_ddddddddddd1",
+                stance="supports",
+                reasoning="tentative",
+                stance_confidence=0.5,  # deliberate hedge
+            )
+        ],
+        current_turn=case.current_turn,
+    )
+    root = case.causal_nodes[created[0]]
+    # Re-emission omitting the field (schema default None on the live path).
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[],
+        node_evidence=[
+            SimpleNamespace(
+                node_ref=created[0],
+                evidence_id="ev_ddddddddddd1",
+                stance="supports",
+                reasoning="re-listing the graph",
+                stance_confidence=None,
+            )
+        ],
+        current_turn=case.current_turn + 1,
+    )
+    assert root.evidence_links[0].stance_confidence == 0.5  # hedge preserved
+
+    # Control: omitting the field on a NEW link still means full confidence.
+    case.evidence.append(_causal_row("ev_ddddddddddd2", "wait queue saturation"))
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[],
+        node_evidence=[
+            SimpleNamespace(
+                node_ref=created[0],
+                evidence_id="ev_ddddddddddd2",
+                stance="supports",
+                reasoning="fresh link",
+                stance_confidence=None,
+            )
+        ],
+        current_turn=case.current_turn + 1,
+    )
+    new_link = next(
+        l for l in root.evidence_links if l.evidence_id == "ev_ddddddddddd2"
+    )
+    assert new_link.stance_confidence == 1.0

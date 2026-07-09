@@ -291,8 +291,63 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         derive_fn = _graph_hooks().get("derive")
         if derive_fn is not None:
             derive_fn(case)
-    _upgrade_engine_mirror(case, root, absence_row.evidence_id)
+    if case.root_cause_conclusion is None:
+        # A count-held root was INCONCLUSIVE until this stamp, so the per-turn
+        # mirror synthesis never minted a conclusion for it — and terminal
+        # cases never recompute. Without a mint HERE, the case would freeze
+        # as CONFIRMED (the sole harvest authority) with NO cause text for
+        # the report/harvest layers to read. Mint the minimal faithful
+        # mirror for the root the user just confirmed; an LLM-authored
+        # conclusion, had one existed, is never touched.
+        _mint_confirmed_mirror(case, root)
+    else:
+        _upgrade_engine_mirror(case, root, absence_row.evidence_id)
     return True
+
+
+def _mint_confirmed_mirror(case: "Case", root: "CausalNode") -> None:
+    """Mint the engine conclusion mirror for a just-confirmed root when NO
+    conclusion exists (the count-held-at-RESOLVED shape). Mechanism text
+    follows the standing hypothesis's chain when one names this root (same
+    shape as the per-turn synthesis); the hypothesis-less fallback states the
+    degenerate mechanism. Confidence is grade-derived: the root is
+    counterfactually CONFIRMED, so VERIFIED at the floor."""
+    hyp = next(
+        (
+            h
+            for h in case.hypotheses.values()
+            if h is not None
+            and h.state in _STANDING_HYP_STATES
+            and h.root_node_id == root.node_id
+        ),
+        None,
+    )
+    inter: list[str] = []
+    if hyp is not None:
+        inter = [
+            case.causal_nodes[nid].statement
+            for nid in (hyp.path or [])[1:-1]
+            if nid in case.causal_nodes
+        ]
+    mechanism = (
+        " → ".join(inter + ["the problem"])
+        if inter
+        else "Directly produces the observed problem."
+    )[:2000]
+    likelihood = CONFIRMED_RCC_LIKELIHOOD_FLOOR
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=root.statement[:1000],
+        mechanism=mechanism,
+        confidence_level=ConfidenceLevel.from_score(likelihood),
+        likelihood=likelihood,
+        validated_hypothesis_id=hyp.hypothesis_id if hyp is not None else None,
+        evidence_basis=[
+            link.evidence_id
+            for link in root.evidence_links
+            if link.stance == EvidenceStance.SUPPORTS
+        ],
+        determined_by=ENGINE_RCC_AUTHOR,
+    )
 
 
 def _upgrade_engine_mirror(

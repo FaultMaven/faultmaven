@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -230,7 +231,7 @@ def deductively_validated(
 # §7.1 — empirical node-state derivation (what feeds is_chain_root_validated)
 # ---------------------------------------------------------------------------
 
-# §7.1 validation difficulty (P1.3 / #573): a ROOT validates empirically only on
+# §7.1 validation difficulty (INV-29 / #573): a ROOT validates empirically only on
 # at least this many INDEPENDENT causal supports. Every causal link is an LLM
 # self-labeled claim (the runbook-provenance arm was decommissioned, #658), so a
 # single self-certified datum must not mint a conclusion — one confidently-wrong
@@ -243,6 +244,11 @@ ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN = 2
 # recorded twice with different phrasing). Same value as the frame-owner bar
 # but deliberately its own knob: they calibrate different comparisons.
 _EVIDENCE_MIRROR_JACCARD = 0.6
+
+# Exact maximum-independent-set search bound for the independence count: 2^n
+# subsets at n<=15 is ~32k cheap checks; a node with more causal supports than
+# that falls back to the conservative greedy bound.
+_MIS_EXACT_MAX = 15
 
 
 def _node_evidence_tally(
@@ -259,7 +265,7 @@ def _node_evidence_tally(
     CAUSAL_STANCE_CONFIDENCE_MIN`` (a self-hedged link is not grounding) — so a
     node validates only on real causal grounding. ``raw_causal_links`` counts
     CAUSAL_EVIDENCE-backed SUPPORTS links BEFORE the confidence filter/dedup
-    (metrics attribution only: "blocked by the P1.3 bar" vs "never causally
+    (metrics attribution only: "blocked by the INV-29 bar" vs "never causally
     supported"). ``counterfactual_refutes`` is the subset of REFUTES links
     backed by ``CAUSAL_ABSENCE_EVIDENCE`` — a counterfactual disconfirmation
     (the cause was addressed yet ``D`` persisted), the §7.2 strongest grade,
@@ -301,12 +307,30 @@ def _node_evidence_tally(
     )
 
 
-def _causal_evidence_tokens(case: Case) -> dict[str, set[str]]:
+# Tokenization bound for evidence CONTENT comparison: ``summary`` is capped at
+# 500 chars by the model but ``extract`` is an UNBOUNDED verbatim slice — the
+# per-character tokenizer over a 20KB log extract, swept several times per turn
+# on the async path, is the event-loop-blocking shape that produced the cloud
+# liveness kills (#651). The first 4000 chars carry ample discriminating signal
+# for a Jaccard comparison.
+_TOKENIZE_MAX_CHARS = 4000
+
+
+@lru_cache(maxsize=4096)
+def _cached_content_tokens(text: str) -> frozenset[str]:
+    """Memoized tokenizer for immutable evidence content: the same rows are
+    re-tokenized by every derive pass, every context build, and every
+    count-held consult — identical text always yields identical tokens, so
+    pay the per-character cost once per row, not per sweep."""
+    return frozenset(_content_tokens(text[:_TOKENIZE_MAX_CHARS]))
+
+
+def _causal_evidence_tokens(case: Case) -> dict[str, frozenset[str]]:
     """``evidence_id -> content tokens`` for the case's CAUSAL_EVIDENCE rows —
     the raw material of the §7.1 independence count. Content = the LLM-declared
     ``summary`` plus the verbatim ``extract`` slice when present (the extract is
     what actually distinguishes two observations of the same subsystem)."""
-    tokens: dict[str, set[str]] = {}
+    tokens: dict[str, frozenset[str]] = {}
     for e in case.evidence or []:
         if getattr(e, "category", None) != EvidenceCategory.CAUSAL_EVIDENCE:
             continue
@@ -315,69 +339,107 @@ def _causal_evidence_tokens(case: Case) -> dict[str, set[str]]:
             for part in (getattr(e, "summary", None), getattr(e, "extract", None))
             if part
         )
-        tokens[e.evidence_id] = _content_tokens(text)
+        tokens[e.evidence_id] = _cached_content_tokens(text)
     return tokens
 
 
 def _independent_causal_support_count(
     ev_ids: list[str], tokens_by_id: dict[str, set[str]]
 ) -> int:
-    """How many of these causal-support evidence rows are mutually INDEPENDENT
-    observations (§7.1 / P1.3): rows whose contents mutually mirror each other
-    (``_EVIDENCE_MIRROR_JACCARD``) collapse into one, so re-recording the same
-    datum twice cannot satisfy the ROOT validation bar.
+    """How many mutually INDEPENDENT observations exist among these
+    causal-support evidence rows (§7.1 / INV-29): the size of a MAXIMUM
+    INDEPENDENT SET of the pairwise mutual-mirror graph
+    (``_EVIDENCE_MIRROR_JACCARD``) — the largest selection of rows no two of
+    which mirror each other. Re-recording one datum (a mirror pair) still
+    counts ONE; two genuinely distinct rows count TWO even when a later
+    "bridge" row paraphrases both.
 
-    Counted as CONNECTED COMPONENTS of the pairwise mutual-mirror graph — NOT
-    greedy leader clustering: mirroring is not transitive, so a "bridge" row
-    phrased between two others would make a greedy count depend on iteration
-    order, and link order is not stable across persistence reloads (no ORDER
-    BY on the junction table). Components are order-invariant and conservative
-    (a mirror chain A~B~C collapses to ONE observation even when A and C do
-    not directly mirror). Rows too short to tokenize are unjudgeable and count
-    ZERO — an unjudgeable row must never supply the decisive support
-    (NO-INCORRECT-CONCLUSION)."""
+    Maximum-independent-set semantics — NOT connected components and NOT
+    greedy leader clustering — for two load-bearing reasons: it is
+    order-invariant (link order is not stable across persistence reloads; no
+    ORDER BY on the junction table), and it is MONOTONE under added evidence
+    (components were not: a new bridge row merging two independent rows into
+    one component DEMOTED an already-validated root — adding corroboration
+    must never retract a conclusion). Exact bitmask search for realistic
+    sizes; beyond the cap, a greedy fallback that only ever under-counts
+    (conservative — holds, never falsely validates). Rows too short to
+    tokenize are unjudgeable and count ZERO — an unjudgeable row must never
+    supply the decisive support (NO-INCORRECT-CONCLUSION)."""
     token_sets = [
         toks for eid in ev_ids if (toks := tokens_by_id.get(eid))  # empty -> 0
     ]
     n = len(token_sets)
     if n <= 1:
         return n
-    # Union-find over the mirror edges (n is small — a node's causal supports).
-    parent = list(range(n))
+    mirrors = [
+        [
+            j != i
+            and _mutual_mirror(token_sets[i], token_sets[j], _EVIDENCE_MIRROR_JACCARD)
+            for j in range(n)
+        ]
+        for i in range(n)
+    ]
+    if n <= _MIS_EXACT_MAX:
+        best = 1
+        for mask in range(1, 1 << n):
+            members = [i for i in range(n) if mask >> i & 1]
+            if len(members) <= best:
+                continue
+            if any(mirrors[a][b] for a in members for b in members if a < b):
+                continue
+            best = len(members)
+        return best
+    # Greedy fallback (lowest-degree first): a valid independent set, so the
+    # count is a LOWER bound — it can only hold a root, never validate one
+    # the exact answer would refuse.
+    order = sorted(range(n), key=lambda i: sum(mirrors[i]))
+    chosen: list[int] = []
+    for i in order:
+        if not any(mirrors[i][c] for c in chosen):
+            chosen.append(i)
+    return len(chosen)
 
-    def _find(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            if _mutual_mirror(token_sets[i], token_sets[j], _EVIDENCE_MIRROR_JACCARD):
-                parent[_find(i)] = _find(j)
-    return len({_find(i) for i in range(n)})
+# Block reasons for the §7.1 causal-grounding bar (INV-29). ONE predicate
+# produces them (``root_support_block_reasons``) and every consumer reads the
+# same classification — the derive-time metric label, the count-held set (the
+# stamp + anti-anchoring exemption), and the context annotation — so the
+# metric can never measure a different population than the interventions act
+# on, and each slice gets ITS OWN recovery guidance.
+BLOCK_REASON_COUNT = "count"  # fewer qualifying supports than the bar
+BLOCK_REASON_MIRROR = "mirror_collapse"  # enough rows, mutual restatements
+BLOCK_REASON_HEDGED = "hedged_only"  # causal links exist, all self-hedged
+
+# The reasons that make a root COUNT-HELD: really causally grounded and
+# blocked only by the independence arithmetic — the shape one more
+# independent observation (or the RESOLVED gone⇒gone confirmation, strictly
+# stronger) completes. HEDGED_ONLY is deliberately excluded: zero qualifying
+# supports means a confirmation-completes-the-bar read would rest entirely
+# on self-hedged claims.
+_COUNT_HELD_REASONS = frozenset({BLOCK_REASON_COUNT, BLOCK_REASON_MIRROR})
 
 
-def support_count_held_root_ids(case: Case) -> set[str]:
-    """ROOT node ids held from VALIDATED **only** by the §7.1 independent-
-    support bar: really causally supported (≥1 qualifying causal link),
-    net-supporting, AND-gate satisfied, NOT restating the case frame, not
-    refuted, not already validated — the shape where exactly one more
-    independent observation (or the RESOLVED gone⇒gone confirmation, which is
-    strictly stronger) completes the empirical bar.
-
-    Read by three consumers: the resolution confirm-stamp
-    (``cause_assurance.confirm_root_from_resolution_absence`` — the user's
-    explicit confirmation IS the decisive second observation, so the count bar
-    must not veto it), the anti-anchoring exemption (a true cause awaiting its
-    second observation must not be force-retired), and the context-builder
-    annotation (the model is told the recovery action: a SECOND independent
-    observation, not a re-record of the first).
-    """
-    held: set[str] = set()
+def root_support_block_reasons(case: Case) -> dict[str, str]:
+    """Per-ROOT classification of WHY the §7.1 causal-grounding bar holds an
+    otherwise-eligible root (net-supporting, AND-gate satisfied, not
+    restating, not refuted, not already validated, ≥1 raw causal link):
+    ``count`` / ``mirror_collapse`` / ``hedged_only``. Roots blocked by
+    anything else (restatement, refutation, AND-gate, no causal link at all)
+    are absent — their recovery is a different story the §7.1 machinery does
+    not own."""
+    reasons: dict[str, str] = {}
     nodes = case.causal_nodes
     if not nodes:
-        return held
+        return reasons
+    # Cheap eligibility pre-scan before the three corpus builds below: the
+    # common late-investigation state (every ROOT already settled) must not
+    # pay a full tokenization sweep per prompt build for an empty answer.
+    if not any(
+        n.node_type == NodeType.ROOT
+        and n.node_state not in (NodeState.VALIDATED, NodeState.REFUTED)
+        for n in nodes.values()
+    ):
+        return reasons
     evidence_by_id = _evidence_category_map(case)
     tokens = _causal_evidence_tokens(case)
     restating = _restating_root_ids(case)
@@ -390,24 +452,56 @@ def support_count_held_root_ids(case: Case) -> set[str]:
             supports,
             refutes,
             causal_support_ev_ids,
-            _raw_causal_links,
+            raw_causal_links,
             counterfactual_refutes,
         ) = _node_evidence_tally(node, evidence_by_id)
         if counterfactual_refutes >= 1 or refutes > supports:
             continue  # refuted territory — nothing to complete
-        if not causal_support_ev_ids:
-            continue  # no qualifying causal grounding at all — not count-held
-        if (
-            len(causal_support_ev_ids) >= ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN
-            and _independent_causal_support_count(causal_support_ev_ids, tokens)
-            >= ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN
+        if raw_causal_links < 1:
+            continue  # never causally supported — not this bar's population
+        if not (
+            supports > refutes
+            and and_constraints_satisfied(node.node_id, nodes, case.causal_edges)
         ):
-            continue  # meets the count bar — held (if at all) by something else
-        if supports > refutes and and_constraints_satisfied(
-            node.node_id, nodes, case.causal_edges
-        ):
-            held.add(node.node_id)
-    return held
+            continue  # blocked by the generic bar, not by §7.1 grounding
+        reason = _support_block_reason(causal_support_ev_ids, tokens)
+        if reason is not None:
+            reasons[node.node_id] = reason
+    return reasons
+
+
+def _support_block_reason(
+    causal_support_ev_ids: list[str], tokens: dict[str, frozenset[str]]
+) -> str | None:
+    """The §7.1 grounding-bar verdict for one node's qualifying supports:
+    None when the bar is met, else the block reason. Shared by
+    ``root_support_block_reasons`` and the derive-time metric label so the
+    two can never classify one root differently."""
+    if not causal_support_ev_ids:
+        return BLOCK_REASON_HEDGED
+    if len(causal_support_ev_ids) < ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN:
+        return BLOCK_REASON_COUNT
+    if (
+        _independent_causal_support_count(causal_support_ev_ids, tokens)
+        < ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN
+    ):
+        return BLOCK_REASON_MIRROR
+    return None
+
+
+def support_count_held_root_ids(case: Case) -> set[str]:
+    """ROOT node ids held from VALIDATED **only** by the independence
+    arithmetic (reasons ``count``/``mirror_collapse`` — see
+    ``root_support_block_reasons``). Read by the resolution confirm-stamp
+    (``cause_assurance.confirm_root_from_resolution_absence`` — the user's
+    explicit confirmation IS the decisive second observation, so the count
+    bar must not veto it) and the anti-anchoring exemption (a true cause
+    awaiting its second observation must not be force-retired)."""
+    return {
+        node_id
+        for node_id, reason in root_support_block_reasons(case).items()
+        if reason in _COUNT_HELD_REASONS
+    }
 
 
 def _problem_anchor_statements(case: Case) -> list[str]:
@@ -553,13 +647,13 @@ def derive_node_states(case: Case) -> bool:
       (M7 proof, strict), AND — for a ROOT — its statement carries novel content
       beyond the case frame (``root_restates_case_frame``, §7.1 restatement
       guard: the symptom dressed as a cause holds at INCONCLUSIVE instead).
-      Causal grounding (§7.1 / P1.3): a non-ROOT rung needs ≥1 causally-grounding
+      Causal grounding (§7.1 / INV-29): a non-ROOT rung needs ≥1 causally-grounding
       SUPPORTS link (CAUSAL_EVIDENCE-backed, ``stance_confidence`` at/above
       ``CAUSAL_STANCE_CONFIDENCE_MIN``); a ROOT — the node that mints a
       conclusion — needs ``ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN`` INDEPENDENT
       such supports (distinct evidence rows that are not mutual restatements of
       each other), because every causal link is an LLM self-labeled claim and
-      one self-certified datum must not conclude a case (#573/#656 DF-1). A
+      one self-certified datum must not conclude a case (#573/#656). A
       counterfactually CONFIRMED root (engine-stamped ``causal_absence``
       SUPPORTS, gone⇒gone — the M2 top grade, engine-only producer) satisfies
       the ROOT bar outright: confirmation dominates empirical counting, and a
@@ -609,7 +703,7 @@ def derive_node_states(case: Case) -> bool:
                 node.node_state == NodeState.VALIDATED
                 and node.validation_method == ValidationMethod.DEDUCTIVE
             )
-            # §7.1 causal-grounding bar (P1.3/#573): a ROOT needs
+            # §7.1 causal-grounding bar (INV-29/#573): a ROOT needs
             # ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN independent causal supports
             # — or a counterfactual confirmation, which dominates counting —
             # while a non-ROOT rung keeps ≥1. The len() pre-check short-circuits
@@ -695,14 +789,17 @@ def derive_node_states(case: Case) -> bool:
             ):
                 root_validation_blocked_restatement_total.inc()
 
-            # P1.3 calibration counter, same block-event semantics: the state
-            # transition where a ROOT with real causal-category support that
-            # clears the generic bar is held ONLY by the independence/confidence
-            # bar (raw_causal_links >= 1 separates "blocked by the P1.3 bar"
-            # from "never causally supported at all"). Fires regardless of the
-            # restatement verdict — a root failing BOTH bars is attributed here
-            # (the restatement counter requires would_validate, so the two
-            # never double-count one event).
+            # INV-29 calibration counter, same block-event semantics: the
+            # state transition where a ROOT with real causal-category support
+            # that clears the generic bar is held ONLY by the grounding bar
+            # (raw_causal_links >= 1 separates "blocked by this bar" from
+            # "never causally supported at all"). Labeled with the SAME
+            # block-reason classification the count-held set and the context
+            # annotation read (_support_block_reason), so the metric measures
+            # exactly the populations the interventions act on. Fires
+            # regardless of the restatement verdict — a root failing BOTH
+            # bars is attributed here (the restatement counter requires
+            # would_validate, so the two never double-count one event).
             if (
                 target_state == NodeState.INCONCLUSIVE
                 and generic_ok
@@ -710,7 +807,10 @@ def derive_node_states(case: Case) -> bool:
                 and raw_causal_links >= 1
                 and node.node_type == NodeType.ROOT
             ):
-                root_validation_blocked_support_count_total.inc()
+                reason = _support_block_reason(causal_support_ev_ids, causal_tokens)
+                root_validation_blocked_support_count_total.labels(
+                    reason=reason or BLOCK_REASON_COUNT
+                ).inc()
 
             # Keep the FINAL field combination invariant-valid (the model
             # validators run on reload via CausalNode(**...)): M4 validated ⇒
@@ -1112,15 +1212,26 @@ def ingest_emitted_chain(
         # rows, and an LLM re-emission must not launder away an engine verdict
         # (the strip above already blocks absence-SUPPORTS creation; this
         # blocks the REFUTES-overwrite of a standing confirmation).
+        # An OMITTED stance_confidence (schema default None) means "full
+        # confidence" on a NEW link but "keep the existing value" on an
+        # upsert — otherwise a routine graph re-listing that omits the field
+        # would silently PROMOTE a previously deliberate hedge (e.g. 0.5) to
+        # 1.0 and pull it into the §7.1 causal tally.
+        emitted_confidence = getattr(link, "stance_confidence", None)
+        existing_idx = next(
+            (i for i, el in enumerate(node.evidence_links) if el.evidence_id == ev_id),
+            None,
+        )
+        if emitted_confidence is None:
+            if existing_idx is not None:
+                emitted_confidence = node.evidence_links[existing_idx].stance_confidence
+            else:
+                emitted_confidence = 1.0
         fresh = NodeEvidenceLink(
             evidence_id=ev_id,
             stance=stance,
             reasoning=getattr(link, "reasoning", None) or "node evidence",
-            stance_confidence=getattr(link, "stance_confidence", 1.0),
-        )
-        existing_idx = next(
-            (i for i, el in enumerate(node.evidence_links) if el.evidence_id == ev_id),
-            None,
+            stance_confidence=emitted_confidence,
         )
         if existing_idx is None:
             node.evidence_links.append(fresh)

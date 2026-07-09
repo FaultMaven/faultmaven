@@ -161,18 +161,24 @@ root_validation_blocked_restatement_total = Counter(
     "depth) — one increment per block event.",
 )
 
-# P1.3 (#573) calibration lever. Healthy shape: transient blips that clear as a
-# second independent causal observation arrives (the bar doing elicitation
-# work). A sustained rate on cases that never validate means the bar is too
-# high for real traffic or the model keeps re-recording one datum — judge
-# against grounded-resolution outcomes, not this counter alone.
+# INV-29 (#573) calibration lever, LABELED BY BLOCK REASON so the metric
+# measures the same populations the interventions act on (an unlabeled mix of
+# count-blocked / mirror-collapsed / hedged-only slices reads as one number
+# with three different recovery actions). Healthy shape: transient blips that
+# clear as the reason-specific recovery arrives — a second independent
+# observation for count/mirror_collapse, a CONFIDENT link for hedged_only. A
+# sustained rate on cases that never validate means the bar is too high for
+# real traffic — judge against grounded-resolution outcomes, not this counter
+# alone.
 root_validation_blocked_support_count_total = Counter(
     "faultmaven_root_validation_blocked_support_count_total",
     "A ROOT with real causal-category support that cleared the generic "
-    "validation bar was held at INCONCLUSIVE for lacking "
-    "ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN independent causal supports "
-    "(count, mutual-restatement collapse, or stance_confidence filter) — "
-    "one increment per block event.",
+    "validation bar was held at INCONCLUSIVE by the independent-support "
+    "bar — one increment per block event, labeled by reason: 'count' "
+    "(fewer qualifying supports than the bar), 'mirror_collapse' (enough "
+    "rows but mutual restatements), 'hedged_only' (causal links exist but "
+    "all below the stance_confidence bar).",
+    labelnames=["reason"],
 )
 
 hypothesis_likelihood_capped_no_evidence_total = Counter(

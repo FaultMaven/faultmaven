@@ -941,7 +941,7 @@ def _recompute_assessment_state(
     # engine mirror can no longer produce this (its confidence is grade-derived),
     # so a hit here is an LLM-authored conclusion over-claiming — surfaced at
     # WARNING (prod-visible, unlike the DEBUG grounding trace) until conclusion
-    # retraction/refresh lands (#656 P2.3). Edge-triggered via the persisted
+    # retraction/refresh lands (tracked on #656). Edge-triggered via the persisted
     # flag so a standing over-claim warns once, not once per turn (alert
     # hygiene); the per-turn state stays visible in the DEBUG grounding trace
     # and the persisted flag itself. The under-claim polarity lives in
@@ -6477,11 +6477,28 @@ class MilestoneEngine:
             hypothesis = case.hypotheses.get(h_id)
             if hypothesis is None:
                 continue
+            # Re-check terminal immutability HERE, not only at stash time:
+            # the links pass between stash and apply can auto-REFUTE this
+            # same hypothesis (two REFUTES links -> likelihood <= 0.20 ->
+            # _check_state_transition), and applying the stale pre-refutation
+            # number would resurrect a terminal hypothesis's likelihood
+            # against its own refutation_reason.
+            if hypothesis.state in (
+                HypothesisState.REFUTED,
+                HypothesisState.RETIRED,
+            ):
+                feedback.append(
+                    f"Hypothesis {h_id}: likelihood update not applied — the "
+                    f"hypothesis became {hypothesis.state.value} this turn "
+                    f"(terminal states are immutable)."
+                )
+                continue
             self.hypothesis_manager.update_hypothesis_likelihood(
                 hypothesis,
                 likelihood,
                 current_turn,
                 reason="LLM hypothesis update",
+                case=case,  # chain-axis grounding visible to the B1 cap
             )
             if hypothesis.likelihood < min(1.0, likelihood) - 1e-9:
                 feedback.append(
@@ -7168,10 +7185,10 @@ class MilestoneEngine:
                     metadata.get("hypothesis_evidence_links_applied", 0) + 1
                 )
 
-        # 4a-bis. Deferred likelihood updates — applied AFTER the links pass so
-        # the B1 evidence-free cap judges the hypothesis WITH its same-turn
-        # links (see _apply_hypothesis_updates).
-        self._apply_deferred_likelihood_updates(case, metadata, case.current_turn)
+        # (Deferred likelihood updates are applied AFTER chain emission —
+        # see the call beside _apply_chain_emission below: the B1 cap must
+        # judge the hypothesis WITH the links this same turn carried on BOTH
+        # axes, flat hypothesis_evidence_links AND chain node_evidence_links.)
 
         # 4b. Evidence Needs (Phase 3 of evidence-needs rollout)
         # Process LLM-emitted ``evidence_need_updates``. Runs AFTER
@@ -7341,6 +7358,13 @@ class MilestoneEngine:
         # the LLM as a one-turn nudge (T2a) to re-root it or declare it
         # separate, rather than guessing.
         self._nudge_ambiguous_orphan_chains(case, metadata)
+
+        # Deferred likelihood updates — applied AFTER both link passes (flat
+        # step 4 AND chain emission above), so the B1 evidence-free cap judges
+        # the hypothesis with everything this turn's emission grounded it on;
+        # a chain-contract turn (record -> node-link -> set likelihood) must
+        # not be capped and gaslit for links it did emit.
+        self._apply_deferred_likelihood_updates(case, metadata, case.current_turn)
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
         # now that this turn's hypotheses and solutions are applied (redesign R1).
