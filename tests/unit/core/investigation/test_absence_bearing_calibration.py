@@ -1,4 +1,4 @@
-"""INV-30 calibration home: the causal-absence trust discipline (#656 P1.4).
+"""INV-30 calibration home: the causal-absence trust discipline (#656).
 
 Two coupled surfaces, pinned against realistic row content:
 
@@ -249,10 +249,10 @@ def test_terse_generic_confirmation_is_accepted():
     assert _stamped_row_id(case, target) == row.evidence_id
 
 
-def test_boilerplate_only_row_is_accepted_as_generic():
-    """Pure prompt-contract boilerplate with no case-specific content reads
-    generic — pinned as the CLASS, not just acceptance: an older frame-bearing
-    row outranks it (a frame-bearing row would have won on recency)."""
+def test_boilerplate_only_row_is_accepted():
+    """Pure prompt-contract boilerplate with no case-specific content is not
+    vetoed (it bears on no OTHER chain), and as the newest survivor it is the
+    citation — recency, not specificity, picks the row."""
     case, target, _ = _incident_case()
     older_specific = _absence_row(
         "older_specific_bp",
@@ -264,7 +264,7 @@ def test_boilerplate_only_row_is_accepted_as_generic():
     )
     case.evidence.extend([older_specific, boilerplate])
     assert confirm_root_from_resolution_absence(case) is True
-    assert _stamped_row_id(case, target) == older_specific.evidence_id
+    assert _stamped_row_id(case, target) == boilerplate.evidence_id
 
 
 def _frame_tokens(case, target):
@@ -286,49 +286,42 @@ def _frame_tokens(case, target):
     return frame
 
 
-def test_bearing_floor_boundary_one_shared_token_is_not_frame_bearing():
-    """_BEARING_MIN_SHARED_TOKENS boundary, low side: EXACTLY ONE shared
-    content token is a coincidence, not bearing — the row reads generic, so
-    an older genuinely frame-bearing row outranks it."""
+def test_bearing_floor_boundary_one_frame_token_gives_no_veto_immunity():
+    """_BEARING_MIN_SHARED_TOKENS boundary, low side: a row sharing ≥2 tokens
+    with a SIBLING and exactly ONE with the frame has no immunity — vetoed."""
     from faultmaven.core.investigation.cause_assurance import content_tokens
 
-    case, target, _ = _incident_case()
-    boundary_text = "One nameserver responded slowly during unrelated maintenance"
-    assert len(content_tokens(boundary_text) & _frame_tokens(case, target)) == 1
-    older_specific = _absence_row(
-        "older_specific_b1",
-        "resolv.conf nameservers trimmed; CrashLoopBackOff gone",
-        turn=5,
+    case, target, sibling = _incident_case()
+    boundary_text = (
+        "Memory pressure gone after maintenance; one nameserver responded slowly"
     )
-    boundary = _absence_row("boundary_one", boundary_text, turn=6)
-    case.evidence.extend([older_specific, boundary])
-    assert confirm_root_from_resolution_absence(case) is True
-    assert _stamped_row_id(case, target) == older_specific.evidence_id
+    row_tokens = content_tokens(boundary_text)
+    assert len(row_tokens & _frame_tokens(case, target)) == 1
+    assert len(row_tokens & content_tokens(sibling.statement)) >= 2
+    case.evidence.append(_absence_row("boundary_one", boundary_text))
+    assert confirm_root_from_resolution_absence(case) is False
 
 
-def test_bearing_floor_boundary_two_shared_tokens_is_frame_bearing():
+def test_bearing_floor_boundary_two_frame_tokens_give_veto_immunity():
     """_BEARING_MIN_SHARED_TOKENS boundary, high side: EXACTLY TWO shared
-    content tokens clear the floor — the newer boundary row outranks the
-    older frame-bearing row (both frame class, recency decides)."""
+    frame tokens clear the floor — the row is immune to the elsewhere veto
+    even though it also bears on the sibling."""
     from faultmaven.core.investigation.cause_assurance import content_tokens
 
-    case, target, _ = _incident_case()
-    boundary_text = "Nameserver handling by glibc now succeeds after maintenance"
-    assert len(content_tokens(boundary_text) & _frame_tokens(case, target)) == 2
-    older_specific = _absence_row(
-        "older_specific_b2",
-        "resolv.conf nameservers trimmed; CrashLoopBackOff gone",
-        turn=5,
-    )
-    boundary = _absence_row("boundary_two", boundary_text, turn=6)
-    case.evidence.extend([older_specific, boundary])
+    case, target, sibling = _incident_case()
+    boundary_text = "Memory pressure gone; nameserver handling by glibc now succeeds"
+    row_tokens = content_tokens(boundary_text)
+    assert len(row_tokens & _frame_tokens(case, target)) == 2
+    assert len(row_tokens & content_tokens(sibling.statement)) >= 2
+    row = _absence_row("boundary_two", boundary_text)
+    case.evidence.append(row)
     assert confirm_root_from_resolution_absence(case) is True
-    assert _stamped_row_id(case, target) == boundary.evidence_id
+    assert _stamped_row_id(case, target) == row.evidence_id
 
 
 def test_elsewhere_floor_boundary_one_shared_token_is_not_refused():
     """The elsewhere veto has the same floor: ONE shared token with another
-    chain is a coincidence — the row reads generic and is accepted."""
+    chain is a coincidence — the row is accepted."""
     from faultmaven.core.investigation.cause_assurance import content_tokens
 
     case, target, sibling = _incident_case()
@@ -342,9 +335,11 @@ def test_elsewhere_floor_boundary_one_shared_token_is_not_refused():
     assert _stamped_row_id(case, target) == row.evidence_id
 
 
-def test_frame_bearing_row_preferred_over_newer_generic():
-    """When both exist, the specific row is the better citation even when the
-    generic one is newer."""
+def test_newest_survivor_cited_over_older_specific_row():
+    """Recency beats specificity (reviewed): the cited confirmation is the row
+    temporally closest to the RESOLVED handshake. An older frame-echoing row —
+    premature rows echo frame tokens by construction — must never outrank the
+    user's actual latest confirmation, however terse."""
     case, target, _ = _incident_case()
     specific = _absence_row(
         "older_specific",
@@ -354,7 +349,7 @@ def test_frame_bearing_row_preferred_over_newer_generic():
     generic = _absence_row("newer_generic", "User confirms all good now", turn=6)
     case.evidence.extend([specific, generic])
     assert confirm_root_from_resolution_absence(case) is True
-    assert _stamped_row_id(case, target) == specific.evidence_id
+    assert _stamped_row_id(case, target) == generic.evidence_id
 
 
 # ---------------------------------------------------------------------------
@@ -455,20 +450,42 @@ def test_premature_row_from_engine_known_failed_fix_never_qualifies():
     assert has_resolution_confirmation(case) is False
 
 
-def test_refutes_linked_row_never_qualifies_regardless_of_confidence():
-    """An LLM failed-fix row is a disconfirmation whatever its link
-    confidence — a REFUTES-linked absence row (even hedged, even without an
-    engine M6 row) never reads as a confirmation. The window itself is
-    ENGINE-keyed, so the LLM link does not mask OTHER rows (see the
-    sibling-exclusion test below for why)."""
-    case, _, sibling = _incident_case()
-    hedged_fail = _absence_row(
-        "hedged_fail", "Not sure the fix helped, errors may remain", turn=5
+def _engine_marker(target, case, *, turn, label="m6_marker"):
+    """Attach the M6 engine disconfirmation row + REFUTES link to ``target``
+    — the durable failed-fix marker the scoped disqualification keys on."""
+    m6_row = _absence_row(
+        label,
+        "Counterfactual disconfirmation (M6): the cause was addressed, yet "
+        "the problem persisted.",
+        turn=turn,
+        collected_by="engine",
     )
-    case.evidence.append(hedged_fail)
-    sibling.evidence_links.append(
+    case.evidence.append(m6_row)
+    target.evidence_links.append(
         NodeEvidenceLink(
-            evidence_id=hedged_fail.evidence_id,
+            evidence_id=m6_row.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="failed treatment",
+            linked_at_turn=turn,
+        )
+    )
+    return m6_row
+
+
+def test_llm_row_refuting_the_engine_marked_cause_never_qualifies():
+    """An LLM failed-fix row co-targeting the node the ENGINE marked
+    disconfirmed is itself a disconfirmation, at ANY link confidence — it
+    never reads as a confirmation, even at the same turn as the marker
+    (the >= window alone would admit it)."""
+    case, target, _ = _incident_case()
+    _engine_marker(target, case, turn=5)
+    llm_fail = _absence_row(
+        "llm_fail", "Not sure the fix helped, errors may remain", turn=5
+    )
+    case.evidence.append(llm_fail)
+    target.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=llm_fail.evidence_id,
             stance=EvidenceStance.REFUTES,
             reasoning="uncertain failed fix",
             linked_at_turn=5,
@@ -478,19 +495,46 @@ def test_refutes_linked_row_never_qualifies_regardless_of_confidence():
     assert has_resolution_confirmation(case) is False
 
 
+def test_sibling_exclusion_link_does_not_disqualify_the_row():
+    """The dual-use emission (reviewed stuck-loop shape): ONE row records the
+    confirmation AND rules out a sibling ('the fix worked — so it wasn't the
+    eviction theory'). A REFUTES link to a node the engine never marked is
+    proof-by-exclusion, not a failed fix — the row stays confirmable and the
+    gate must not regress right after the user confirmed."""
+    case, target, sibling = _incident_case()
+    dual_use = _absence_row(
+        "dual_use",
+        "resolv.conf corrected and CrashLoopBackOff gone — memory pressure "
+        "theory ruled out",
+        turn=8,
+    )
+    case.evidence.append(dual_use)
+    sibling.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=dual_use.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="fix on the other chain resolved D — this candidate excluded",
+            linked_at_turn=8,
+        )
+    )
+    assert has_resolution_confirmation(case) is True
+    assert confirm_root_from_resolution_absence(case) is True
+    assert _stamped_row_id(case, target) == dual_use.evidence_id
+
+
 def test_hypothesis_axis_refutes_link_also_disqualifies():
-    """A failed-fix row the model linked only to the HYPOTHESIS (never to a
-    node) is still a disconfirmation — the qualification scans both belief
-    axes (review finding: node-only scanning let the disconfirmation itself
-    satisfy the gate)."""
+    """A failed-fix row the model linked only to the HYPOTHESIS of the
+    engine-marked cause (never to a node) is still a disconfirmation — the
+    scoped disqualification covers both belief axes."""
     from faultmaven.modules.case.contracts import HypothesisEvidenceLink
 
-    case, _, _ = _incident_case()
+    case, target, _ = _incident_case()
+    _engine_marker(target, case, turn=5)
     fail_row = _absence_row(
         "hyp_linked_fail", "Applied the fix but the problem persisted", turn=5
     )
     case.evidence.append(fail_row)
-    hyp = next(iter(case.hypotheses.values()))
+    hyp = next(iter(case.hypotheses.values()))  # attached to the target root
     hyp.evidence_links.append(
         HypothesisEvidenceLink(
             hypothesis_id=hyp.hypothesis_id,
@@ -554,9 +598,11 @@ def test_late_sibling_exclusion_note_does_not_mask_confirmation():
     """NO-COLLAPSE pin (review F2): a proof-by-exclusion absence-REFUTES on a
     SIBLING recorded AFTER the legitimate confirmation ('FYI we'd ruled out
     the eviction theory — reverting changed nothing') must not retroactively
-    regress READY — the window is keyed on ENGINE-authored rows, not LLM
-    refutation links."""
-    case, _, sibling = _incident_case()
+    regress READY — the window is keyed on ENGINE-authored rows, and a
+    sibling-scoped REFUTES link is not a disconfirmation. At the STAMP the
+    newer exclusion note is bearing-vetoed (it talks about the sibling), so
+    the actual confirmation is still the citation."""
+    case, target, sibling = _incident_case()
     confirm = _absence_row(
         "confirmed_first",
         "resolv.conf corrected; CrashLoopBackOff no longer observed",
@@ -577,10 +623,72 @@ def test_late_sibling_exclusion_note_does_not_mask_confirmation():
             linked_at_turn=9,
         )
     )
-    assert [r.evidence_id for r in resolution_confirmation_rows(case)] == [
-        confirm.evidence_id
-    ]
+    qualified = {r.evidence_id for r in resolution_confirmation_rows(case)}
+    assert confirm.evidence_id in qualified
     assert has_resolution_confirmation(case) is True
+    assert confirm_root_from_resolution_absence(case) is True
+    assert _stamped_row_id(case, target) == confirm.evidence_id
+
+
+def test_stamp_refuses_row_at_or_before_a_target_root_refutation():
+    """Per-root refutation window (reviewed): the CONFIRMED grade is never
+    minted from a row at-or-before a refutation recorded against the very
+    root being confirmed — a HEDGED self-claimed failed fix does not demote
+    the root (§7.2), but it marks its fix window for the mint."""
+    case, target, _ = _incident_case()
+    hedged_fail = _absence_row(
+        "hedged_fail_root", "Not sure the fix helped, errors may remain", turn=8
+    )
+    case.evidence.append(hedged_fail)
+    target.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=hedged_fail.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="uncertain failed fix",
+            linked_at_turn=8,
+            stance_confidence=0.4,
+        )
+    )
+    same_turn_confirm = _absence_row(
+        "same_turn_confirm",
+        "resolv.conf corrected; CrashLoopBackOff gone",
+        turn=8,
+    )
+    case.evidence.append(same_turn_confirm)
+    # Gate liveness untouched (the user can still resolve)...
+    assert has_resolution_confirmation(case) is True
+    # ...but the top-grade mint holds: no candidate is NEWER than the refute.
+    assert confirm_root_from_resolution_absence(case) is False
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.MECHANISTIC
+
+
+def test_stamp_accepts_confirmation_newer_than_the_root_refutation():
+    """The strictly-newer confirmation after a hedged failed fix on the same
+    root IS the legitimate second observation — the handshake plus a fresh
+    post-refute row completes the grade."""
+    case, target, _ = _incident_case()
+    hedged_fail = _absence_row(
+        "hedged_fail_root2", "Not sure the fix helped, errors may remain", turn=8
+    )
+    case.evidence.append(hedged_fail)
+    target.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=hedged_fail.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="uncertain failed fix",
+            linked_at_turn=8,
+            stance_confidence=0.4,
+        )
+    )
+    fresh = _absence_row(
+        "fresh_after_refute",
+        "resolv.conf corrected; CrashLoopBackOff gone on all pods",
+        turn=10,
+    )
+    case.evidence.append(fresh)
+    assert confirm_root_from_resolution_absence(case) is True
+    assert _stamped_row_id(case, target) == fresh.evidence_id
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
 
 
 # ---------------------------------------------------------------------------

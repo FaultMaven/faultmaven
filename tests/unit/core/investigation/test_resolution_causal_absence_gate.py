@@ -218,7 +218,7 @@ class TestClosurePivotMatchesResolutionBar:
 
 
 class TestConfirmationRowQualification:
-    """INV-30 gate side (#656 P1.4): the READY bar and the close→resolve pivot
+    """INV-30 gate side (#656): the READY bar and the close→resolve pivot
     count only QUALIFYING absence rows (``resolution_confirmation_rows``) —
     non-engine-authored and newer than the latest failed-fix disconfirmation.
     Regression: before the shared predicate, the ENGINE's own M6 failed-fix

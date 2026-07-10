@@ -37,6 +37,7 @@ from uuid import uuid4
 from faultmaven.core.investigation.cause_assurance import (
     CAUSAL_STANCE_CONFIDENCE_MIN,
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
+    ENGINE_EVIDENCE_AUTHOR,
     MECHANISTIC_RCC_LIKELIHOOD,
     _stem,  # noqa: F401
     counterfactual_link_decisive,
@@ -1573,22 +1574,42 @@ def any_chain_root_inconclusive(case: Case) -> bool:
     )
 
 
+def _node_has_engine_counterfactual_refute(node: CausalNode, case: Case) -> bool:
+    """Does the node already carry the ENGINE's own M6 refutation — a REFUTES
+    link backed by an engine-authored ``CAUSAL_ABSENCE_EVIDENCE`` row?"""
+    engine_absence_ids = {
+        e.evidence_id
+        for e in case.evidence
+        if getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+        and getattr(e, "collected_by", None) == ENGINE_EVIDENCE_AUTHOR
+    }
+    return any(
+        link.stance == EvidenceStance.REFUTES and link.evidence_id in engine_absence_ids
+        for link in node.evidence_links
+    )
+
+
 def _attach_engine_refutation(case: Case, node_id: str, reason: str) -> None:
     """Attach a DURABLE engine-authored REFUTES link (+ backing
     ``CAUSAL_ABSENCE_EVIDENCE`` row) to ``node_id`` — the Option-(c) mechanism
     that makes M6 evidence-driven. Without a persisted refuting fact,
     ``derive_node_states`` would re-validate the root next turn from the stale
     supporting evidence and resurrect the disconfirmed cause (the turn-28 bug).
-    Idempotent on the COUNTERFACTUAL refutation specifically: skips only when the
-    node already carries a CAUSAL_ABSENCE refute (not just any refute), so a
-    pre-existing ordinary/correlational refute does not suppress this DECISIVE
-    one. The backing row is ``CAUSAL_ABSENCE_EVIDENCE`` (the honest counterfactual
-    category) so it does not inflate the flat ``CAUSAL_EVIDENCE`` grounding count.
+    Idempotent on the ENGINE's own refutation specifically: skips only when
+    the node already carries an ENGINE-authored CAUSAL_ABSENCE refute. An
+    LLM-recorded decisive refute on the node deliberately does NOT suppress
+    the mint — the engine row is the durable failed-fix MARKER the
+    disconfirmation window keys on (``cause_assurance``: authorship-keyed so
+    pruning cannot collapse it), so "M6 mints exactly one engine row per
+    disconfirmation" must hold even when the model already recorded the
+    failure itself (reviewed: suppressing it left the window at -1 and let a
+    stale premature 'stable' row re-qualify as the resolution confirmation).
+    The backing row is ``CAUSAL_ABSENCE_EVIDENCE`` (the honest counterfactual
+    category) so it does not inflate the flat ``CAUSAL_EVIDENCE`` grounding
+    count.
     """
     node = case.causal_nodes.get(node_id)
-    if node is None or _node_has_counterfactual_refute(
-        node, _evidence_category_map(case)
-    ):
+    if node is None or _node_has_engine_counterfactual_refute(node, case):
         return
     ev_id = f"ev_{uuid4().hex[:12]}"
     case.evidence.append(
@@ -1602,9 +1623,9 @@ def _attach_engine_refutation(case: Case, node_id: str, reason: str) -> None:
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             # USER_DESCRIPTION is the only source_type the evidence_source_invariant
             # CHECK permits with no source_file_id (this engine-authored fact has no
-            # file); collected_by='engine' marks the true author.
+            # file); collected_by marks the true author.
             source_type=EvidenceSourceType.USER_DESCRIPTION,
-            collected_by="engine",
+            collected_by=ENGINE_EVIDENCE_AUTHOR,
             collected_at_turn=case.current_turn,
             collected_at=datetime.now(timezone.utc),
         )

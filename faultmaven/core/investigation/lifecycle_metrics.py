@@ -197,7 +197,7 @@ absence_confirmation_link_stripped_total = Counter(
     "stripped link.",
 )
 
-# §7.2 refute-side confidence discipline (#656 P1.4). A hedged counterfactual
+# §7.2 refute-side confidence discipline (#656). A hedged counterfactual
 # is ingested and kept as ORDINARY refuting evidence — this counts how often
 # the model itself hedges the strongest evidence grade. A sustained rate is an
 # elicitation signal (the model reports failed fixes it does not trust), not a
@@ -210,7 +210,7 @@ counterfactual_refute_hedged_total = Counter(
     "link created.",
 )
 
-# #656 P1.4 bearing check at the resolution confirm-stamp. One increment per
+# #656 bearing check at the resolution confirm-stamp. One increment per
 # candidate row refused because its content bears on a DIFFERENT chain than
 # the root being confirmed (frame-shared tokens below the bar, elsewhere-shared
 # at/above it). Rate is bounded by refused-rows-per-stamp × stamp evaluations

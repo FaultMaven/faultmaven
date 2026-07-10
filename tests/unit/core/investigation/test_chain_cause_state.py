@@ -552,6 +552,38 @@ def test_hedged_counterfactual_does_not_suppress_decisive_attach():
     assert len([e for e in case.evidence if e.collected_by == "engine"]) == 1
 
 
+def test_llm_decisive_refute_does_not_suppress_engine_marker():
+    """Reviewed window-hole regression: the engine row is the durable
+    failed-fix MARKER the disconfirmation window keys on — 'M6 mints exactly
+    one engine row per disconfirmation' must hold even when the LLM already
+    recorded the failure with its own DECISIVE refute (suppressing the mint
+    left the window at -1 and re-qualified stale premature rows). Idempotence
+    is scoped to the ENGINE's own row."""
+    from faultmaven.core.investigation.causal_graph import _attach_engine_refutation
+    from faultmaven.core.investigation.cause_assurance import (
+        latest_disconfirmation_turn,
+    )
+
+    llm_fail = _evidence("ev_llm_fail", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    root = _root(support_label="ev_root_support")
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=llm_fail.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="fix applied, D persists",
+            linked_at_turn=2,
+        )
+    )
+    case = _case(nodes=[root], evidence=[_evidence("ev_root_support"), llm_fail])
+    assert latest_disconfirmation_turn(case) == -1  # no engine marker yet
+    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    engine_rows = [e for e in case.evidence if e.collected_by == "engine"]
+    assert len(engine_rows) == 1
+    assert latest_disconfirmation_turn(case) == case.current_turn  # window set
+    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    assert len([e for e in case.evidence if e.collected_by == "engine"]) == 1
+
+
 def test_one_chain_demoted_other_standing_stays_identified():
     """Two chains; one is counterfactually disconfirmed, the other's root stays
     validated → the case remains IDENTIFIED via the standing chain."""

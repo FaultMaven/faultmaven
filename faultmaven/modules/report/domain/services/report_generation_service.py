@@ -587,6 +587,7 @@ class ReportGenerationService:
                 return True
             return getattr(ev, "evidence_id", None) in qualified_absence_ids
 
+        cited: List = []
         if cited_ids:
             ev_by_id = {getattr(ev, "evidence_id", ""): ev for ev in evidence_items}
             cited = [
@@ -594,7 +595,11 @@ class ReportGenerationService:
                 for i in cited_ids
                 if i in ev_by_id and _confirming_polarity(ev_by_id[i])
             ]
-        else:
+        if not cited:
+            # Category fallback — also taken when the polarity filter emptied
+            # the cited list (an LLM-authored evidence_basis can cite ONLY
+            # disqualified absence rows; the section must then fall back to
+            # the tagged rows rather than silently vanish).
             cited = [
                 ev
                 for ev in evidence_items

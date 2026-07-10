@@ -135,7 +135,7 @@ def _has_causal_absence(case: "Case") -> bool:
     investigation-lifecycle-logic.md ("Gate strictness — absence-driven") and
     the methodology doc §9.5 (INV-30).
 
-    Qualification matters (#656 P1.4): the bare any-row read this replaced
+    Qualification matters (#656): the bare any-row read this replaced
     counted the ENGINE's own M6 failed-fix DISCONFIRMATION rows — so a failed
     fix satisfied "confirmation the problem is now resolved" — and premature
     "it's stable" rows from fix windows that later failed.
@@ -642,9 +642,10 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     has_cause = _cause_identified(case)
     has_solution = bool(case.solutions and len(case.solutions) > 0)
     has_evidence = bool(case.evidence and len(case.evidence) > 0)
-    has_resolution_confirmation = _has_causal_absence(case)
+    # Named to avoid shadowing the imported has_resolution_confirmation().
+    resolution_confirmed = _has_causal_absence(case)
 
-    if has_resolution_confirmation:
+    if resolution_confirmed:
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
             message="",
