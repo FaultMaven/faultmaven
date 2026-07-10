@@ -117,6 +117,20 @@ rate(faultmaven_absence_confirmation_bearing_rejected_total[24h])
 
 Matrix row: INV-30 in `investigation-invariants.md`; methodology §7.3 (decisive counterfactual force) and §9.5 (confirmation-row qualification + bearing).
 
+## INV-31: MECE-arbitration hold telemetry
+
+- `faultmaven_cause_identification_held_mece_total` — cause identification became MECE-contested: ≥2 simultaneously-validated DISTINCT standing roots stood unarbitrated (§7.1.2), holding `cause_state` at CANDIDATES and withholding the engine conclusion mirror. One increment per transition INTO the contest (edge-triggered on the persisted `cause_identification_contested` flag), never per turn while it stands. Duplicate emissions and same-live-causal-line roots do not count (they collapse to one cause); a counterfactually confirmed root settles the contest without an event.
+
+**Healthy shape.** Near zero, and each event should clear within a few turns as discriminating evidence arrives (the context builder renders the discrimination ask on the contested roots). A sustained standing hold means the model keeps validating competing exclusive causes without running the test that separates them — an elicitation/search problem; the hold itself is the truth surface doing its job. Pair with the `cause_identification_mece_hold` WARNING (same event) for per-case forensics.
+
+```promql
+# MECE holds: each event is one case whose identification was withheld
+# pending discrimination between competing validated causes.
+rate(faultmaven_cause_identification_held_mece_total[24h])
+```
+
+Matrix row: INV-31 in `investigation-invariants.md`; methodology §7.1.2 (MECE arbitration).
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:

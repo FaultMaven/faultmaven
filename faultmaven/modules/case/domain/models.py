@@ -626,6 +626,21 @@ class InvestigationProgress(BaseModel):
         ),
     )
 
+    cause_identification_contested: bool = Field(
+        default=False,
+        description=(
+            "Whether cause identification is MECE-contested (§7.1.2, #656): "
+            ">=2 simultaneously-validated DISTINCT standing chain roots "
+            "(duplicate emissions and same-live-causal-line roots collapse "
+            "to one cause; a counterfactually confirmed root settles the "
+            "contest). While contested, cause_state never reads IDENTIFIED "
+            "and the engine conclusion mirror is withheld, until "
+            "discriminating evidence resolves the contest. Recomputed each "
+            "turn; persisted so the WARNING and the hold counter are "
+            "edge-triggered and the standing contest is queryable per case."
+        ),
+    )
+
     last_anti_anchoring_turn: int = Field(
         default=0,
         ge=0,

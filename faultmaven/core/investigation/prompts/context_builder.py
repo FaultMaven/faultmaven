@@ -33,6 +33,7 @@ from faultmaven.core.investigation.causal_graph import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
     BLOCK_REASON_MIRROR,
+    mece_contested_root_ids,
     root_support_block_reasons,
 )
 from faultmaven.core.investigation.evidence_need_surfacing import (
@@ -2552,8 +2553,27 @@ def _build_causal_graph_block(case: Case) -> str:
         ),
     }
 
+    # §7.1.2 MECE arbitration: contested roots (several simultaneously-
+    # validated, mutually-exclusive causes) get the discrimination ask
+    # rendered inline — without it the model sees several [root/validated]
+    # lines, reads the cause as settled, and never runs the test that
+    # separates them. Rendered through the SAME per-node reason → note maps
+    # as the §7.1 recovery notes; the overlay order makes the precedence
+    # explicit (a contested VALIDATED root shows the discrimination ask even
+    # if a future block reason ever annotates validated roots too).
+    _MECE_CONTESTED = "mece_contested"
+    recovery_notes[_MECE_CONTESTED] = (
+        " — one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: "
+        "cause identification is HELD until discriminating evidence refutes "
+        "the alternatives (at most one can be the real cause)"
+    )
+    node_reasons = {
+        **block_reasons,
+        **dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
+    }
+
     def _node_line(indent: str, n) -> str:
-        note = recovery_notes.get(block_reasons.get(n.node_id), "")
+        note = recovery_notes.get(node_reasons.get(n.node_id), "")
         return (
             f"{indent}{n.node_id} [{n.node_type.value}/{n.node_state.value}] "
             f"{_stmt(n.statement)}{note}"
@@ -2777,6 +2797,18 @@ def build_investigation_context(
         conclusion_str += f"REASONING: {wc.reasoning[:1000]}\n"
         if wc.supporting_evidence_ids:
             conclusion_str += f"EVIDENCE: {', '.join(wc.supporting_evidence_ids)}\n"
+        # §7.1.2 coherence: the working conclusion is the max-likelihood pick
+        # over STANDING hypotheses — on a MECE-contested case that is one of
+        # several simultaneously-validated exclusive causes, and rendering it
+        # unqualified beside the graph block's discrimination ask invites the
+        # model to anchor on the pick instead of running the separating test.
+        if getattr(case.progress, "cause_identification_contested", False):
+            conclusion_str += (
+                "NOTE: this is ONE of several simultaneously-validated "
+                "mutually-exclusive candidate causes (see the causal graph) — "
+                "cause identification is HELD; gather DISCRIMINATING evidence "
+                "before treating this statement as the cause.\n"
+            )
         conclusion_str += "</working_conclusion>"
 
     # 5c. Pending ProposedAction (Framework §4.1: LLM needs this to detect compliance)
