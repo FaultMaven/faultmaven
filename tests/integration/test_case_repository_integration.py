@@ -42,8 +42,10 @@ from faultmaven.modules.case.domain.models import (
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
+    InvestigationActionType,
     InvestigationProgress,
     InvestigationStrategy,
+    ProposedAction,
     Solution,
     SolutionType,
     UploadedFile,
@@ -909,3 +911,49 @@ async def test_evidence_full_audit_round_trip(
     # Untouched fields must survive the update.
     assert re_loaded.primary_purpose == "hypothesis-test"
     assert re_loaded.collected_by == "evidence-test-user"
+
+
+@pytest.mark.integration
+async def test_superseded_offer_stamps_round_trip(db_repository: SQLiteCaseRepository):
+    """INV-32: a superseded SOLUTION offer's state + forensic stamps survive
+    the JSON-blob persistence seam (save -> reload) alongside a live pending
+    offer, so the derived solution_proposed reads the same truth after a
+    DB reload as before it."""
+    case = Case(
+        case_id=f"case_{uuid4().hex[:12]}",
+        user_id="lifecycle-test-user",
+        organization_id="lifecycle-test-org",
+        title="Offer liveness round trip",
+        description="withdrawn fix persistence",
+    )
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="the withdrawn fix",
+            proposed_in_turn=4,
+            state="superseded",
+            superseded_in_turn=6,
+            superseded_reason="license_lost",
+        )
+    )
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="the standing fix",
+            proposed_in_turn=7,
+        )
+    )
+    await db_repository.save(case)
+
+    reloaded = await db_repository.get(case.case_id)
+    assert reloaded is not None
+    by_desc = {a.description: a for a in reloaded.proposed_actions}
+    withdrawn = by_desc["the withdrawn fix"]
+    assert withdrawn.state == "superseded"
+    assert withdrawn.superseded_in_turn == 6
+    assert withdrawn.superseded_reason == "license_lost"
+    standing = by_desc["the standing fix"]
+    assert standing.state == "pending"
+    assert standing.superseded_reason is None

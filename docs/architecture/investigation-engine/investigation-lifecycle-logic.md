@@ -731,8 +731,8 @@ State updates occur at specific points within a turn to ensure consistency:
 | `problem_statement_confirmed` | — | After user confirmation | User says "Yes" or equivalent |
 | `symptom_verified` | Progress indicator | After evidence processing | LLM sets in structured output when symptoms confirmed |
 | `cause_state` | Assessment (engine-derived) | End of each INVESTIGATING turn | Engine recomputes via `_recompute_assessment_state`: IDENTIFIED if the LLM's grounded cause signal passes justification; else CANDIDATES if ≥2 ACTIVE hypotheses; else UNKNOWN. Replaces the boolean `root_cause_identified`. Never path-stripped. |
-| `solution_state` / `solution_feasible` | Assessment (engine-derived / LLM-settable) | End of each INVESTIGATING turn / LLM output | `solution_state=SELECTED` once a permanent SOLUTION is proposed; `solution_feasible` defaults NOW, LLM sets DEFERRED. |
-| `solution_proposed` | Progress indicator | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
+| `solution_state` / `solution_feasible` | Assessment (engine-derived / LLM-settable) | End of each INVESTIGATING turn / LLM output | `solution_state` mirrors the derived `solution_proposed` (`SELECTED` while it holds, else `UNKNOWN`); `solution_feasible` defaults NOW, LLM sets DEFERRED. |
+| `solution_proposed` | Progress indicator (engine-derived) | End of each INVESTIGATING turn | Derived at the assessment recompute (INV-32): True iff a LIVE SOLUTION ProposedAction stands (`pending`/`accepted`) or the gate ladder advanced (`solution_accepted`/`solution_verified`, forward-only facts). A new SOLUTION offer supersedes prior pending ones (`reproposal`); a pending offer whose established-cause license falls — M6 demotion, conclusion retraction, MECE hold — is withdrawn (`license_lost`) with `system_feedback` to the LLM. Not a write-once latch. |
 | `mitigation_accepted` | Mitigation gate signal | LLM structured output | User acknowledges executing the proposed mitigation → materializes `mitigation.accepted` |
 | `mitigation_verified` | Mitigation gate signal | LLM structured output | User confirms the mitigation stabilized the situation → materializes `mitigation.verified` + `completed_at_turn` |
 | `solution_accepted` | Gate milestone | LLM structured output | User acknowledges executing proposed solution |
@@ -742,7 +742,7 @@ State updates occur at specific points within a turn to ensure consistency:
 **Gate signals vs Progress indicators vs Assessment variables**:
 
 - **Gate signals** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive the derived stage label + resolution handshake. Set by the LLM in structured output when it detects user compliance with a ProposedAction (Framework §4.1). The mitigation pair (`mitigation_accepted`/`mitigation_verified`) materializes into the single `progress.mitigation` record rather than booleans.
-- **Progress indicators** (`symptom_verified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
+- **Progress indicators** (`symptom_verified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions. `symptom_verified` is LLM-set; `solution_proposed` is engine-derived from live SOLUTION offers (INV-32) and can flip back to False when the standing offer leaves liveness.
 - **Assessment variables** (`cause_state`, `solution_state`, `solution_feasible`): Engine-derived truth signals recomputed each turn. `cause_state` (not a gate, not a path) is what drives whether the diagnostic machinery runs. Never path-stripped.
 
 **Order of Operations Within a Turn**:

@@ -374,7 +374,7 @@ Gate milestones drive stage transitions. They are **set by the LLM in structured
 
 #### Progress Indicators (3)
 
-Progress indicators track what has been established during the DIAGNOSIS stage. They do NOT drive stage transitions. `symptom_verified` is set by the LLM and `solution_proposed` programmatically; `cause_state` is engine-derived — recomputed each turn from the LLM's grounded cause signal plus the active-hypothesis count, and never path-stripped. They serve two purposes: (1) inform LLM focus within DIAGNOSIS, (2) provide analytics and dashboard progress.
+Progress indicators track what has been established during the DIAGNOSIS stage. They do NOT drive stage transitions. `symptom_verified` is set by the LLM; `solution_proposed` and `cause_state` are engine-derived — recomputed each turn (`cause_state` from the LLM's grounded cause signal plus the active-hypothesis count; `solution_proposed` from live SOLUTION offers, INV-32), and never path-stripped. They serve two purposes: (1) inform LLM focus within DIAGNOSIS, (2) provide analytics and dashboard progress.
 
 Only variables that pass both design tests are progress indicators: (a) they must be mandatory — their absence genuinely blocks forward progress, and (b) they must require an independent evidence search (not just extracted as a byproduct of another search).
 
@@ -382,7 +382,7 @@ Only variables that pass both design tests are progress indicators: (a) they mus
 |-----------|----------------|-------------------|
 | `symptom_verified` | Problem confirmed with concrete evidence (logs, metrics, user reports) | SYMPTOM_EVIDENCE |
 | `cause_state` | Root-cause knowledge state — `UNKNOWN`/`CANDIDATES`/`IDENTIFIED`, engine-derived from the LLM's grounded cause signal (kept as an emission) plus the active-hypothesis count | CAUSAL_EVIDENCE |
-| `solution_proposed` | Set programmatically when ProposedAction with action_type=SOLUTION is created | (programmatic, not evidence-driven) |
+| `solution_proposed` | A live permanent-fix offer stands — derived each turn from SOLUTION ProposedActions in liveness (`pending`/`accepted`) or an advanced gate ladder; withdrawn offers (superseded by reproposal, or license lost when the established cause falls) drop it back to False (INV-32) | (engine-derived, not evidence-driven) |
 
 **What about scope, timeline, and changes?** Scope and timeline are facts *extracted* from symptom evidence — they are attributes of the investigation context, not independent evidence searches. Change events (deployments, config updates) are *contextual triggers* that inform hypothesis prioritization, not mandatory gate conditions. All three are valuable context that the agent captures opportunistically when present in evidence; none of them gate progress when absent.
 
@@ -413,7 +413,7 @@ In the current model:
 - **symptom_verified**: Retained as a progress indicator — confirms the problem exists before any hypothesis work begins.
 - **scope_assessed, timeline_established, changes_identified**: **Removed.** These failed both design tests: (a) their absence does not block progress (investigation continues without them), and (b) they don't require independent evidence searches — scope and timeline are extracted facts from symptom evidence, and change events are contextual triggers that live on `uploaded_files` (as file-level metadata) rather than as a synthetic evidence category. The agent captures this context opportunistically; it never stalls waiting for it.
 - **root_cause_identified**: **Replaced** by the engine-derived `cause_state` enum (`UNKNOWN`/`CANDIDATES`/`IDENTIFIED`). The LLM still emits a grounded "cause identified" signal (kept as an emission symbol); the engine recomputes `cause_state` each turn (never path-stripped). Also reflected in hypothesis state (VALIDATED with high confidence ≥ 70%).
-- **solution_proposed**: Retained as a progress indicator, set programmatically (not by LLM) when a `ProposedAction` with `action_type=SOLUTION` is created. Tells the LLM "you already proposed a solution" without scanning conversation history.
+- **solution_proposed**: Retained as a progress indicator, engine-derived (not LLM-set) from live `ProposedAction` records with `action_type=SOLUTION` (INV-32). Tells the LLM "a fix offer currently stands" without scanning conversation history — and stops saying it when the standing offer is superseded or its established-cause license falls.
 - **solution_applied**: Tracked as part of TREATMENT workflow. Not a milestone.
 - **mitigation_applied**: Replaced by the MITIGATION stage with its own lifecycle.
 - **solution_verified**: Retained as a gate milestone driving the TREATMENT → RESOLVED transition.

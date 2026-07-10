@@ -565,8 +565,11 @@ class InvestigationProgress(BaseModel):
     solution_proposed: bool = Field(
         default=False,
         description=(
-            "Set programmatically when ProposedAction with action_type=SOLUTION "
-            "is created. Not directly set by LLM."
+            "Engine-derived at the assessment recompute (INV-32): True iff a "
+            "LIVE ProposedAction with action_type=SOLUTION stands (state "
+            "pending/accepted) or the gate ladder advanced (solution_accepted/"
+            "solution_verified). Not set by LLM; not a write-once latch — a "
+            "superseded or license-lost offer drops it."
         ),
     )
 
@@ -3430,6 +3433,27 @@ class ProposedAction(BaseModel):
     state: str = Field(
         default="pending",
         description="pending | accepted | rejected | superseded",
+    )
+
+    superseded_in_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Turn in which this action was superseded (state='superseded'). "
+            "None while the action is live or if it left liveness another way."
+        ),
+    )
+
+    superseded_reason: Optional[Literal["reproposal", "license_lost"]] = Field(
+        default=None,
+        description=(
+            "Why the engine superseded this action: 'reproposal' (a newer "
+            "SOLUTION offer replaced it) or 'license_lost' (the established-"
+            "cause license that admitted the offer fell — demotion, "
+            "retraction, MECE hold, or proxy decay). Closed vocabulary: the "
+            "value feeds the solution_offer_superseded_total metric label. "
+            "Forensic field; the context builder renders only pending "
+            "actions."
+        ),
     )
 
     downgrade_reason: Optional[str] = Field(

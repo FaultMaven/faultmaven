@@ -93,7 +93,10 @@ class StateValidator:
         """
         Validate milestone dependencies are respected.
 
-        Milestones can only go False -> True, never revert.
+        Gate milestones only go False -> True; ``solution_proposed`` is
+        engine-derived from live SOLUTION offers (INV-32) and MAY revert when
+        the standing offer leaves liveness — the orderings below still hold
+        by construction (the derivation includes the gate ladder).
         Some milestones have logical dependencies:
         - solution_verified requires solution_proposed and solution_accepted
         - solution_accepted requires solution_proposed
