@@ -564,9 +564,36 @@ class ReportGenerationService:
         if rcc and getattr(rcc, "evidence_basis", None):
             cited_ids = list(rcc.evidence_basis)
 
+        # INV-30 polarity guard on BOTH branches (the evidence_basis list is
+        # LLM-authored and can cite anything): an absence row renders as
+        # "confirming" only when it qualifies as a resolution confirmation —
+        # engine-authored M6 rows are failed-fix DISCONFIRMATIONS (the
+        # opposite polarity) and premature rows from a failed fix window
+        # confirm nothing. Same shared predicate as the readiness gate and
+        # the confirm-stamp (function-local import: the _assurance_note
+        # precedent for report → core.investigation reads).
+        from faultmaven.core.investigation.cause_assurance import (
+            resolution_confirmation_rows,
+        )
+
+        qualified_absence_ids = {
+            getattr(e, "evidence_id", None) for e in resolution_confirmation_rows(case)
+        }
+
+        def _confirming_polarity(ev) -> bool:
+            if getattr(getattr(ev, "category", None), "value", None) != (
+                "causal_absence_evidence"
+            ):
+                return True
+            return getattr(ev, "evidence_id", None) in qualified_absence_ids
+
         if cited_ids:
             ev_by_id = {getattr(ev, "evidence_id", ""): ev for ev in evidence_items}
-            cited = [ev_by_id[i] for i in cited_ids if i in ev_by_id]
+            cited = [
+                ev_by_id[i]
+                for i in cited_ids
+                if i in ev_by_id and _confirming_polarity(ev_by_id[i])
+            ]
         else:
             cited = [
                 ev
@@ -576,13 +603,7 @@ class ReportGenerationService:
                 # "fix worked at the cause level" signal (causal_absence_evidence,
                 # which supersedes the removed legacy ``solution_evidence``).
                 and ev.category.value in ("causal_evidence", "causal_absence_evidence")
-                # Engine-authored absence rows are M6 failed-fix
-                # DISCONFIRMATIONS — the opposite polarity; a failed fix must
-                # not render under "Confirming Evidence".
-                and not (
-                    ev.category.value == "causal_absence_evidence"
-                    and getattr(ev, "collected_by", None) == "engine"
-                )
+                and _confirming_polarity(ev)
             ]
 
         if cited:

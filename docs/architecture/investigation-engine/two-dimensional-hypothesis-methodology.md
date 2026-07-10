@@ -834,25 +834,42 @@ REFUTES-linked absence row (a failed fix) never flips to confirmation.
 
 Which rows may stand as a confirmation at all is ONE shared definition
 (`resolution_confirmation_rows`, INV-30): non-engine-authored (the engine only
-mints absence rows as M6 failed-fix **dis**confirmations) and strictly newer
-than the latest failed-fix disconfirmation (a premature "stable" row from a
-fix window that later failed confirms nothing). The resolution-readiness gate
-and the closure→resolve pivot read the same predicate — before this, the gate
-read READY off ANY absence row, including the engine's own disconfirmations,
-so a *failed* fix satisfied "confirmation the problem is now resolved".
+mints absence rows as M6 failed-fix **dis**confirmations), not REFUTES-linked
+on either belief axis (a failed-fix row the model linked only to the
+hypothesis is still a disconfirmation), and at-or-after the latest
+**engine-known** failed-fix disconfirmation (`latest_disconfirmation_turn` =
+the newest engine-authored M6 row — a premature "stable" row from a fix
+window the engine saw fail confirms nothing). The window is authorship-keyed
+and `>=` on purpose: node pruning can orphan the engine row's REFUTES link
+(the window must survive that); an LLM exclusion note on a sibling recorded
+*after* a legitimate confirmation must not retroactively mask it; and the
+mixed single-turn shape ("the restart didn't fix it, but correcting the
+config did") stamps the failed fix and the genuine confirmation at the SAME
+turn — masking that confirmation would strand the resolve behind an ask the
+user just answered. A failed fix the engine never saw (the cause was never
+grounded, so M6 never fired) sets no window — accepted self-claim trust; the
+RESOLVED handshake and the stamp's bearing check still guard the truth
+surface. The resolution-readiness gate and the closure→resolve pivot read
+the same predicate — before this, the gate read READY off ANY absence row,
+including the engine's own disconfirmations, so a *failed* fix satisfied
+"confirmation the problem is now resolved".
 
 On top of the metadata bar, the stamp checks **content-level bearing** on the
 specific root it confirms (`_select_bearing_row`): a **frame-bearing** row
 (≥2 shared content tokens with the root statement, its mechanism rungs, its
-standing hypotheses, or the problem anchors) is preferred newest-first; a
+attached hypotheses, or the problem anchors) is preferred newest-first; a
 **generic** row (bearing on nothing — "user confirms it's working") is
 accepted, because the user's gone⇒gone handshake is the confirmation signal
 and a terse row must not strand a count-held root at `NO_ROOT` (the INV-29
 rescue); a row affirmatively **about a different chain** (≥2 shared tokens
 with another chain's statements, <2 with the frame) is refused
 (`absence_confirmation_bearing_rejected_total`) — it is never cited as this
-root's counterfactual proof. Refusal keeps the case `MECHANISTIC`; it never
-blocks the resolution itself.
+root's counterfactual proof. This is a mis-citation guard, not a trust bar —
+the handshake is the trust bar; the row summary is LLM-authored, so echoed
+frame tokens pass by design. Refusal never blocks the resolution itself; the
+grade stays honest (`MECHANISTIC` when a validated root stands, `NO_ROOT` on
+the count-held shape, where the held root stays INCONCLUSIVE and no
+conclusion is minted).
 
 The grade is **persisted** per turn on `InvestigationProgress.cause_assurance`
 (the `verification_status` pattern — rides the progress blob, no migration).

@@ -1364,9 +1364,12 @@ def test_stamp_ignores_engine_authored_absence_rows():
 
 
 def test_stamp_ignores_rows_from_before_a_failed_fix():
-    """A premature 'it's stable' row recorded before a fix window that later
-    FAILED (a REFUTES-linked absence row) must not confirm a later fix; a row
-    newer than the disconfirmation may."""
+    """A premature 'it's stable' row recorded before a fix window the ENGINE
+    saw fail (an M6 engine-authored disconfirmation row exists at a later
+    turn) must not confirm a later fix; a row at-or-after the disconfirmation
+    may. (INV-30: the window is keyed on ENGINE M6 rows — an LLM sibling
+    refutation link deliberately does not mask earlier confirmations, so a
+    late exclusion note cannot regress an already-confirmable case.)"""
     from faultmaven.core.investigation.cause_assurance import (
         confirm_root_from_resolution_absence,
     )
@@ -1375,9 +1378,11 @@ def test_stamp_ignores_rows_from_before_a_failed_fix():
     _recompute_cause_state_from_chain(case)
     premature = _absence_row("ev_premature2", 3)
     failed_fix = _absence_row("ev_failed_fix2", 5)
+    object.__setattr__(failed_fix, "collected_by", "engine")
     case.evidence += [premature, failed_fix]
-    # The failed fix disconfirmed a SIBLING cause (a REFUTES-linked absence on
-    # the target root would refute it and moot the stamp).
+    # The M6 row is REFUTES-linked where the failed fix landed (a sibling
+    # here — a REFUTES-linked absence on the target root would refute it and
+    # moot the stamp).
     other = _root("cn_00000000fa11")
     case.causal_nodes[other.node_id] = other
     other.evidence_links.append(

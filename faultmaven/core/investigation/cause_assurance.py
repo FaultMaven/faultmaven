@@ -311,30 +311,50 @@ def root_counterfactually_confirmed(
 
 
 def latest_disconfirmation_turn(case: "Case") -> int:
-    """The turn of the NEWEST failed-fix disconfirmation: the max
-    ``collected_at_turn`` over causal_absence rows carrying a REFUTES link on
-    any node (engine M6 rows always do; an LLM-recorded failed-fix row does per
-    the prompt contract). ``-1`` when none. Confidence-blind by design: even a
-    HEDGED refutation marks its fix window as failed for CONFIRMATION purposes
-    — the conservative direction for a gate (fewer premature READYs), distinct
-    from the decisive-refutation bar (``counterfactual_link_decisive``)."""
-    refutes_linked = {
-        link.evidence_id
-        for node in (getattr(case, "causal_nodes", None) or {}).values()
-        for link in node.evidence_links
-        if link.stance == EvidenceStance.REFUTES
-    }
-    if not refutes_linked:
-        return -1
+    """The turn of the newest ENGINE-KNOWN failed-fix disconfirmation: the max
+    ``collected_at_turn`` over ENGINE-authored causal_absence rows (M6 mints
+    exactly one whenever a GROUNDED cause is counterfactually disconfirmed —
+    the population whose stale premature "it's stable" rows are dangerous).
+    ``-1`` when none.
+
+    AUTHORSHIP-keyed, deliberately not link-keyed, for two reviewed reasons:
+    node pruning (a T1 re-root) can delete the refuted node together with the
+    engine row's REFUTES link — the window must survive that; and an LLM
+    refutation link must not WIDEN the window — a late "we'd ruled out X
+    earlier" exclusion note on a sibling would otherwise retroactively mask an
+    already-recorded legitimate confirmation (READY regressing to NEEDS_INFO
+    on a resolved case, with the close-pivot converting the user's next "yes
+    it's resolved" into a CLOSED misdisposition). A failed fix the engine
+    never saw (the cause was never grounded, so M6 never fired) sets no
+    window — that residual premature-row trust is accepted: the RESOLVED
+    handshake and the stamp's bearing check still guard the truth surface."""
     return max(
         (
             getattr(e, "collected_at_turn", 0) or 0
             for e in (getattr(case, "evidence", None) or [])
             if getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-            and e.evidence_id in refutes_linked
+            and getattr(e, "collected_by", None) == "engine"
         ),
         default=-1,
     )
+
+
+def _refutes_linked_evidence_ids(case: "Case") -> set:
+    """Evidence ids carrying a REFUTES link ANYWHERE — node rungs AND flat
+    hypothesis links. The hypothesis axis matters: a failed-fix absence row
+    the model linked only to the hypothesis (never to a node) is still a
+    disconfirmation and must never read as a confirmation."""
+    linked = {
+        link.evidence_id
+        for node in (getattr(case, "causal_nodes", None) or {}).values()
+        for link in node.evidence_links
+        if link.stance == EvidenceStance.REFUTES
+    }
+    for hyp in (getattr(case, "hypotheses", None) or {}).values():
+        for link in getattr(hyp, "evidence_links", None) or []:
+            if link.stance == EvidenceStance.REFUTES:
+                linked.add(link.evidence_id)
+    return linked
 
 
 def resolution_confirmation_rows(case: "Case") -> list:
@@ -342,23 +362,32 @@ def resolution_confirmation_rows(case: "Case") -> list:
 
     - Not engine-authored: the engine only mints absence rows as failed-fix
       DISCONFIRMATIONS (M6) — a disconfirmation must never read as the
-      confirmation it disproves (and node pruning can orphan the REFUTES link,
-      so authorship is checked, not link presence).
-    - Strictly newer than the latest failed-fix disconfirmation: a premature
-      "it's stable" row from a fix window that later FAILED must not confirm
-      anything afterward. This also excludes every REFUTES-linked row itself
-      (a row is never newer than its own disconfirmation turn).
+      confirmation it disproves.
+    - Not REFUTES-linked anywhere (node or hypothesis axis): an LLM-recorded
+      failed-fix row is a disconfirmation regardless of which belief axis it
+      landed on.
+    - At or after the latest engine-known failed-fix disconfirmation
+      (``latest_disconfirmation_turn``): a premature "it's stable" row from a
+      fix window that later FAILED must not confirm anything afterward. The
+      comparison is ``>=``, not ``>`` — the mixed single-turn shape ("the
+      restart didn't fix it, but correcting resolv.conf did") stamps the
+      failed-fix row AND the legitimate confirmation at the SAME turn, and
+      turn granularity cannot order within-turn events; masking that
+      confirmation strands the resolve behind an ask the user just answered
+      (NO-COLLAPSE), while the handshake still guards the truth surface.
 
     Content-level bearing on a specific root is the stamp's additional,
     root-scoped concern (``_select_bearing_row``); this predicate is the
     case-level metadata bar the readiness gate shares."""
     last_disconfirm = latest_disconfirmation_turn(case)
+    refutes_linked = _refutes_linked_evidence_ids(case)
     return [
         e
         for e in (getattr(case, "evidence", None) or [])
         if getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
         and getattr(e, "collected_by", None) != "engine"
-        and (getattr(e, "collected_at_turn", 0) or 0) > last_disconfirm
+        and getattr(e, "evidence_id", None) not in refutes_linked
+        and (getattr(e, "collected_at_turn", 0) or 0) >= last_disconfirm
     ]
 
 
@@ -410,8 +439,17 @@ def _select_bearing_row(case: "Case", root: "CausalNode", candidates: list):
     - **bears-elsewhere** (≥2 shared with another chain, <2 with the frame) —
       REFUSED (counter ``absence_confirmation_bearing_rejected_total``): a row
       affirmatively about a DIFFERENT candidate cause must not be cited as
-      this root's gone⇒gone proof (NO INCORRECT CONCLUSION). Refusal keeps the
-      case MECHANISTIC — it never blocks the resolution itself.
+      this root's gone⇒gone proof (NO INCORRECT CONCLUSION). Refusal never
+      blocks the resolution itself; the grade stays honest — MECHANISTIC when
+      a validated root stands, NO_ROOT on the count-held shape (the held root
+      stays INCONCLUSIVE and no conclusion is minted).
+
+    This is a MIS-CITATION guard, not a trust bar: the row summary is
+    LLM-authored with the root statement in context, so a premature row that
+    echoes frame tokens passes — the RESOLVED handshake (the stamp's trigger)
+    is the trust bar; this check decides which row gets cited under it.
+    Frame overlap is tested FIRST, so a row bearing on both chains counts
+    frame-bearing by design.
 
     Returns None when every candidate is refused."""
     frame: set[str] = set()
@@ -465,8 +503,9 @@ def _select_bearing_row(case: "Case", root: "CausalNode", candidates: list):
 
 def _chain_descendant_ids(case: "Case", root_id: str) -> set[str]:
     """Node ids the target root's chain reaches (transitive cause→effect
-    closure) — its MECHANISM rungs. Bounded breadth-first walk over the case
-    edges; a malformed cyclic graph terminates via the visited set."""
+    closure) — its MECHANISM rungs. Iterative walk over the case edges
+    (traversal order is irrelevant to the set); a malformed cyclic graph
+    terminates via the visited set."""
     descendants: set[str] = set()
     frontier = [root_id]
     while frontier:

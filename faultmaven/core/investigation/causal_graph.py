@@ -34,17 +34,16 @@ from uuid import uuid4
 # module); the private aliases keep this module's call sites and the
 # calibration tests' import paths stable. ``_stem`` is re-exported solely for
 # its stemming-contract unit pins.
+from faultmaven.core.investigation.cause_assurance import _stem  # noqa: F401
 from faultmaven.core.investigation.cause_assurance import (
     CAUSAL_STANCE_CONFIDENCE_MIN,
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
-    MECHANISTIC_RCC_LIKELIHOOD,
-    _stem,  # noqa: F401
-    counterfactual_link_decisive,
-    register_graph_hooks,
-    root_counterfactually_confirmed,
 )
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_RCC_AUTHOR as _ENGINE_RCC_AUTHOR,
+)
+from faultmaven.core.investigation.cause_assurance import (
+    MECHANISTIC_RCC_LIKELIHOOD,
 )
 from faultmaven.core.investigation.cause_assurance import (
     cached_content_tokens as _cached_content_tokens,
@@ -53,10 +52,17 @@ from faultmaven.core.investigation.cause_assurance import (
     content_tokens as _content_tokens,
 )
 from faultmaven.core.investigation.cause_assurance import (
+    counterfactual_link_decisive,
+)
+from faultmaven.core.investigation.cause_assurance import (
     evidence_category_map as _evidence_category_map,
 )
 from faultmaven.core.investigation.cause_assurance import (
     problem_anchor_statements as _problem_anchor_statements,
+)
+from faultmaven.core.investigation.cause_assurance import (
+    register_graph_hooks,
+    root_counterfactually_confirmed,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -1199,7 +1205,11 @@ def ingest_emitted_chain(
         # confirm stamp's SUPPORTS, the M6 refutation) both live on absence
         # rows, and an LLM re-emission must not launder away an engine verdict
         # (the strip above already blocks absence-SUPPORTS creation; this
-        # blocks the REFUTES-overwrite of a standing confirmation).
+        # blocks the REFUTES-overwrite of a standing confirmation). Scope:
+        # this protects IN-PLACE overwrites only — a fresh link on a different
+        # node, or a new absence row, is a first emission and lands at its
+        # declared confidence (the §7.2 bar filters hedges, not confident
+        # claims; that is the stated trust posture).
         # An OMITTED stance_confidence (schema default None) means "full
         # confidence" on a NEW link but "keep the existing value" on an
         # upsert — otherwise a routine graph re-listing that omits the field

@@ -250,12 +250,13 @@ class TestConfirmationRowQualification:
 
     @staticmethod
     def _with_failed_fix_window(premature_turn, fresh_turn=None):
-        """A premature absence row, a failed-fix disconfirmation (REFUTES-linked
-        absence row at turn 5), and optionally a fresh post-failure row."""
+        """A premature absence row, an ENGINE-known failed-fix disconfirmation
+        (M6 row at turn 5, REFUTES-linked as minted), and optionally a fresh
+        post-failure row."""
         case = _case(cats=[])
         disconfirm = SimpleNamespace(
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            collected_by="llm",
+            collected_by="engine",
             collected_at_turn=5,
             evidence_id="ev_failed",
         )
@@ -290,5 +291,12 @@ class TestConfirmationRowQualification:
 
     def test_fresh_confirmation_after_failed_fix_is_ready(self):
         case = self._with_failed_fix_window(premature_turn=4, fresh_turn=6)
+        r = assess_resolution_readiness(case)
+        assert r.verdict == ResolutionReadiness.READY
+
+    def test_same_turn_confirmation_as_the_failure_is_ready(self):
+        # The mixed "first fix failed, second fix worked" single turn: the
+        # confirmation lands at the SAME turn as the M6 row and must qualify.
+        case = self._with_failed_fix_window(premature_turn=4, fresh_turn=5)
         r = assess_resolution_readiness(case)
         assert r.verdict == ResolutionReadiness.READY

@@ -1217,3 +1217,36 @@ def test_hedged_only_block_labeled_and_annotated_distinctly():
     assert root.node_state == NodeState.INCONCLUSIVE
     counter.labels.assert_called_with(reason="hedged_only")
     assert root_support_block_reasons(case) == {root.node_id: BLOCK_REASON_HEDGED}
+
+
+def test_hedged_counterfactual_does_not_evict_root_from_block_classifier():
+    """INV-30 refute-side consequence, pinned deliberately: a HEDGED
+    absence-REFUTES no longer marks 'refuted territory', so a root held only
+    by the count bar stays block-classified (count-held-eligible → the
+    RESOLVED handshake may later complete it). A DECISIVE counterfactual
+    still evicts it."""
+    from faultmaven.core.investigation.causal_graph import (
+        BLOCK_REASON_COUNT,
+        root_support_block_reasons,
+    )
+
+    sup = _evidence("ev_ch1", EvidenceCategory.CAUSAL_EVIDENCE)
+    sup2 = _evidence("ev_ch2", EvidenceCategory.CAUSAL_EVIDENCE)
+    absent = _evidence("ev_ch_abs", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    root = _node(
+        _nid(0xF3),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_ch1", EvidenceStance.SUPPORTS),
+            _link("ev_ch2", EvidenceStance.SUPPORTS, stance_confidence=0.4),
+            _link("ev_ch_abs", EvidenceStance.REFUTES, stance_confidence=0.3),
+        ],
+    )
+    case = _case([root], evidence=[sup, sup2, absent])
+    # 1 qualifying support (the hedged one filters), 2 supports > 1 refute,
+    # hedged counterfactual -> NOT refuted territory -> count-blocked.
+    assert root_support_block_reasons(case) == {root.node_id: BLOCK_REASON_COUNT}
+
+    # Raise the refute to decisive: the root leaves the classifier entirely.
+    root.evidence_links[2] = _link("ev_ch_abs", EvidenceStance.REFUTES)
+    assert root_support_block_reasons(case) == {}

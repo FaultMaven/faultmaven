@@ -251,11 +251,95 @@ def test_terse_generic_confirmation_is_accepted():
 
 def test_boilerplate_only_row_is_accepted_as_generic():
     """Pure prompt-contract boilerplate with no case-specific content reads
-    generic (it matches neither the frame nor another chain)."""
+    generic — pinned as the CLASS, not just acceptance: an older frame-bearing
+    row outranks it (a frame-bearing row would have won on recency)."""
     case, target, _ = _incident_case()
-    row = _absence_row("boilerplate", "Root cause no longer present after the fix")
+    older_specific = _absence_row(
+        "older_specific_bp",
+        "resolv.conf nameservers trimmed; CrashLoopBackOff gone",
+        turn=5,
+    )
+    boilerplate = _absence_row(
+        "boilerplate", "Root cause no longer present after the fix", turn=6
+    )
+    case.evidence.extend([older_specific, boilerplate])
+    assert confirm_root_from_resolution_absence(case) is True
+    assert _stamped_row_id(case, target) == older_specific.evidence_id
+
+
+def _frame_tokens(case, target):
+    from faultmaven.core.investigation.cause_assurance import (
+        content_tokens,
+        problem_anchor_statements,
+    )
+
+    frame = set()
+    for anchor in problem_anchor_statements(case):
+        frame |= content_tokens(anchor)
+    frame |= content_tokens(target.statement)
+    for n in case.causal_nodes.values():
+        if n.node_id == "cn_0000000000ab":  # the target's mechanism rung
+            frame |= content_tokens(n.statement)
+    for h in case.hypotheses.values():
+        if h.root_node_id == target.node_id:
+            frame |= content_tokens(h.statement)
+    return frame
+
+
+def test_bearing_floor_boundary_one_shared_token_is_not_frame_bearing():
+    """_BEARING_MIN_SHARED_TOKENS boundary, low side: EXACTLY ONE shared
+    content token is a coincidence, not bearing — the row reads generic, so
+    an older genuinely frame-bearing row outranks it."""
+    from faultmaven.core.investigation.cause_assurance import content_tokens
+
+    case, target, _ = _incident_case()
+    boundary_text = "One nameserver responded slowly during unrelated maintenance"
+    assert len(content_tokens(boundary_text) & _frame_tokens(case, target)) == 1
+    older_specific = _absence_row(
+        "older_specific_b1",
+        "resolv.conf nameservers trimmed; CrashLoopBackOff gone",
+        turn=5,
+    )
+    boundary = _absence_row("boundary_one", boundary_text, turn=6)
+    case.evidence.extend([older_specific, boundary])
+    assert confirm_root_from_resolution_absence(case) is True
+    assert _stamped_row_id(case, target) == older_specific.evidence_id
+
+
+def test_bearing_floor_boundary_two_shared_tokens_is_frame_bearing():
+    """_BEARING_MIN_SHARED_TOKENS boundary, high side: EXACTLY TWO shared
+    content tokens clear the floor — the newer boundary row outranks the
+    older frame-bearing row (both frame class, recency decides)."""
+    from faultmaven.core.investigation.cause_assurance import content_tokens
+
+    case, target, _ = _incident_case()
+    boundary_text = "Nameserver handling by glibc now succeeds after maintenance"
+    assert len(content_tokens(boundary_text) & _frame_tokens(case, target)) == 2
+    older_specific = _absence_row(
+        "older_specific_b2",
+        "resolv.conf nameservers trimmed; CrashLoopBackOff gone",
+        turn=5,
+    )
+    boundary = _absence_row("boundary_two", boundary_text, turn=6)
+    case.evidence.extend([older_specific, boundary])
+    assert confirm_root_from_resolution_absence(case) is True
+    assert _stamped_row_id(case, target) == boundary.evidence_id
+
+
+def test_elsewhere_floor_boundary_one_shared_token_is_not_refused():
+    """The elsewhere veto has the same floor: ONE shared token with another
+    chain is a coincidence — the row reads generic and is accepted."""
+    from faultmaven.core.investigation.cause_assurance import content_tokens
+
+    case, target, sibling = _incident_case()
+    boundary_text = "Pressure test of the loader completed with no issues"
+    row_tokens = content_tokens(boundary_text)
+    assert len(row_tokens & _frame_tokens(case, target)) == 0
+    assert len(row_tokens & content_tokens(sibling.statement)) == 1
+    row = _absence_row("elsewhere_one", boundary_text)
     case.evidence.append(row)
     assert confirm_root_from_resolution_absence(case) is True
+    assert _stamped_row_id(case, target) == row.evidence_id
 
 
 def test_frame_bearing_row_preferred_over_newer_generic():
@@ -354,66 +438,34 @@ def test_engine_disconfirmation_row_never_qualifies():
     assert has_resolution_confirmation(case) is False
 
 
-def test_row_from_a_failed_fix_window_never_qualifies():
-    """A premature 'stable' row from a fix window that later FAILED (a newer
-    REFUTES-linked absence row exists) confirms nothing."""
+def test_premature_row_from_engine_known_failed_fix_never_qualifies():
+    """A premature 'stable' row from a fix window the ENGINE saw fail (M6
+    minted its disconfirmation row at a later turn) confirms nothing."""
     case, target, sibling = _incident_case()
     premature = _absence_row("premature", "Pods look stable after rollout", turn=4)
-    failed_fix = _absence_row(
-        "failed_fix", "Fix applied but pods crashlooped again", turn=5
+    m6_row = _absence_row(
+        "m6_fail",
+        "Counterfactual disconfirmation (M6): the cause was addressed, yet "
+        "the problem persisted.",
+        turn=5,
+        collected_by="engine",
     )
-    case.evidence.extend([premature, failed_fix])
-    sibling.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=failed_fix.evidence_id,
-            stance=EvidenceStance.REFUTES,
-            reasoning="fix applied, D persists",
-            linked_at_turn=5,
-        )
-    )
+    case.evidence.extend([premature, m6_row])
     assert resolution_confirmation_rows(case) == []
     assert has_resolution_confirmation(case) is False
 
 
-def test_fresh_confirmation_after_a_failed_fix_qualifies():
-    """A new confirmation row NEWER than the failed-fix disconfirmation is the
-    legitimate second-attempt success — it qualifies and stamps."""
-    case, target, sibling = _incident_case()
-    failed_fix = _absence_row(
-        "failed_fix_2", "First fix did not help, pods still crashlooping", turn=5
-    )
-    case.evidence.append(failed_fix)
-    sibling.evidence_links.append(
-        NodeEvidenceLink(
-            evidence_id=failed_fix.evidence_id,
-            stance=EvidenceStance.REFUTES,
-            reasoning="fix applied, D persists",
-            linked_at_turn=5,
-        )
-    )
-    fresh = _absence_row(
-        "fresh",
-        "resolv.conf trimmed; CrashLoopBackOff gone on all payments pods",
-        turn=6,
-    )
-    case.evidence.append(fresh)
-    assert [r.evidence_id for r in resolution_confirmation_rows(case)] == [
-        fresh.evidence_id
-    ]
-    assert confirm_root_from_resolution_absence(case) is True
-    assert _stamped_row_id(case, target) == fresh.evidence_id
-
-
-def test_hedged_refutes_link_still_marks_its_window_failed():
-    """The disconfirmation WINDOW is confidence-blind by design: even a hedged
-    REFUTES on an absence row marks its fix window failed for confirmation
-    purposes (conservative direction for a gate)."""
+def test_refutes_linked_row_never_qualifies_regardless_of_confidence():
+    """An LLM failed-fix row is a disconfirmation whatever its link
+    confidence — a REFUTES-linked absence row (even hedged, even without an
+    engine M6 row) never reads as a confirmation. The window itself is
+    ENGINE-keyed, so the LLM link does not mask OTHER rows (see the
+    sibling-exclusion test below for why)."""
     case, _, sibling = _incident_case()
-    premature = _absence_row("premature_2", "Looks stable so far", turn=4)
     hedged_fail = _absence_row(
         "hedged_fail", "Not sure the fix helped, errors may remain", turn=5
     )
-    case.evidence.extend([premature, hedged_fail])
+    case.evidence.append(hedged_fail)
     sibling.evidence_links.append(
         NodeEvidenceLink(
             evidence_id=hedged_fail.evidence_id,
@@ -424,3 +476,147 @@ def test_hedged_refutes_link_still_marks_its_window_failed():
         )
     )
     assert has_resolution_confirmation(case) is False
+
+
+def test_hypothesis_axis_refutes_link_also_disqualifies():
+    """A failed-fix row the model linked only to the HYPOTHESIS (never to a
+    node) is still a disconfirmation — the qualification scans both belief
+    axes (review finding: node-only scanning let the disconfirmation itself
+    satisfy the gate)."""
+    from faultmaven.modules.case.contracts import HypothesisEvidenceLink
+
+    case, _, _ = _incident_case()
+    fail_row = _absence_row(
+        "hyp_linked_fail", "Applied the fix but the problem persisted", turn=5
+    )
+    case.evidence.append(fail_row)
+    hyp = next(iter(case.hypotheses.values()))
+    hyp.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=hyp.hypothesis_id,
+            evidence_id=fail_row.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="fix did not resolve",
+            stance_confidence=0.9,
+        )
+    )
+    assert has_resolution_confirmation(case) is False
+
+
+def test_fresh_confirmation_after_a_failed_fix_qualifies():
+    """A new confirmation row NEWER than the engine-known disconfirmation is
+    the legitimate second-attempt success — it qualifies and stamps."""
+    case, target, _ = _incident_case()
+    m6_row = _absence_row(
+        "m6_fail_2",
+        "Counterfactual disconfirmation (M6): first fix did not help.",
+        turn=5,
+        collected_by="engine",
+    )
+    fresh = _absence_row(
+        "fresh",
+        "resolv.conf trimmed; CrashLoopBackOff gone on all payments pods",
+        turn=6,
+    )
+    case.evidence.extend([m6_row, fresh])
+    assert [r.evidence_id for r in resolution_confirmation_rows(case)] == [
+        fresh.evidence_id
+    ]
+    assert confirm_root_from_resolution_absence(case) is True
+    assert _stamped_row_id(case, target) == fresh.evidence_id
+    # Readiness re-read AFTER the stamp: the now-SUPPORTS-linked row must
+    # still qualify (only REFUTES links and engine authorship disqualify).
+    assert has_resolution_confirmation(case) is True
+
+
+def test_same_turn_disconfirm_and_confirm_qualifies():
+    """NO-COLLAPSE pin (review F1): the mixed single-turn shape — 'the restart
+    didn't fix it, but correcting resolv.conf did' — stamps the M6 engine row
+    AND the legitimate confirmation at the SAME turn; turn granularity cannot
+    order within-turn events, so the confirmation must qualify (>=, not >)."""
+    case, _, _ = _incident_case()
+    m6_row = _absence_row(
+        "m6_same_turn",
+        "Counterfactual disconfirmation (M6): restart did not help.",
+        turn=7,
+        collected_by="engine",
+    )
+    confirm = _absence_row(
+        "confirm_same_turn",
+        "resolv.conf corrected; pods stable, CrashLoopBackOff gone",
+        turn=7,
+    )
+    case.evidence.extend([m6_row, confirm])
+    assert has_resolution_confirmation(case) is True
+
+
+def test_late_sibling_exclusion_note_does_not_mask_confirmation():
+    """NO-COLLAPSE pin (review F2): a proof-by-exclusion absence-REFUTES on a
+    SIBLING recorded AFTER the legitimate confirmation ('FYI we'd ruled out
+    the eviction theory — reverting changed nothing') must not retroactively
+    regress READY — the window is keyed on ENGINE-authored rows, not LLM
+    refutation links."""
+    case, _, sibling = _incident_case()
+    confirm = _absence_row(
+        "confirmed_first",
+        "resolv.conf corrected; CrashLoopBackOff no longer observed",
+        turn=8,
+    )
+    exclusion = _absence_row(
+        "late_exclusion",
+        "Reverting the eviction tuning changed nothing — memory pressure "
+        "theory ruled out",
+        turn=9,
+    )
+    case.evidence.extend([confirm, exclusion])
+    sibling.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=exclusion.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="counterfactual exclusion of the sibling",
+            linked_at_turn=9,
+        )
+    )
+    assert [r.evidence_id for r in resolution_confirmation_rows(case)] == [
+        confirm.evidence_id
+    ]
+    assert has_resolution_confirmation(case) is True
+
+
+# ---------------------------------------------------------------------------
+# Structural pins
+# ---------------------------------------------------------------------------
+
+
+def test_chain_descendants_terminate_on_cyclic_graph():
+    """The mechanism walk terminates on a malformed cyclic graph (docstring
+    claim, pinned) and still returns the reachable rungs."""
+    from faultmaven.core.investigation.cause_assurance import _chain_descendant_ids
+
+    case, target, _ = _incident_case()
+    case.causal_edges.append(
+        CausalEdge(cause_node_id="cn_0000000000ab", effect_node_id=target.node_id)
+    )  # rung -> root back-edge = cycle
+    descendants = _chain_descendant_ids(case, target.node_id)
+    assert "cn_0000000000ab" in descendants
+    assert target.node_id not in descendants
+
+
+def test_finalize_surface_tolerates_bearing_refusal():
+    """The shared finalizer (chat executor + API close_case) survives a
+    bearing refusal: no stamp, no exception, grade stays honest at
+    MECHANISTIC (a validated root stands), gate metadata bar still satisfied."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        finalize_resolution_truth_surface,
+    )
+
+    case, target, _ = _incident_case()
+    case.evidence.append(
+        _absence_row(
+            "sibling_row_3",
+            "Memory pressure on the worker node returned to normal",
+        )
+    )
+    assert finalize_resolution_truth_surface(case) is False
+    assert case.progress.cause_assurance == CauseAssuranceGrade.MECHANISTIC
+    assert has_resolution_confirmation(case) is True

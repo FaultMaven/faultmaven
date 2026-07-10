@@ -213,8 +213,9 @@ counterfactual_refute_hedged_total = Counter(
 # #656 P1.4 bearing check at the resolution confirm-stamp. One increment per
 # candidate row refused because its content bears on a DIFFERENT chain than
 # the root being confirmed (frame-shared tokens below the bar, elsewhere-shared
-# at/above it). The stamp runs once per RESOLVED execution, so the rate is
-# bounded by resolutions; any sustained rate means confirmations are being
+# at/above it). Rate is bounded by refused-rows-per-stamp × stamp evaluations
+# (a retried RESOLVED execution re-evaluates and re-counts — refusal leaves no
+# marker on the case); any sustained rate means confirmations are being
 # recorded against the wrong candidate cause — inspect before trusting
 # CONFIRMED-grade harvests from affected deployments.
 absence_confirmation_bearing_rejected_total = Counter(

@@ -121,16 +121,19 @@ def _cause_identified(case: "Case") -> bool:
 
 def _has_causal_absence(case: "Case") -> bool:
     """Whether a QUALIFYING ``causal_absence_evidence`` row is on the case
-    (``cause_assurance.has_resolution_confirmation`` — the SAME metadata bar
+    (``cause_assurance.has_resolution_confirmation`` — the SAME METADATA bar
     the confirm-stamp's candidate filter uses, so the gate can never call a
-    case confirmable on a row the stamp refuses).
+    case confirmable on a row the stamp refuses for metadata; the stamp's
+    additional content-bearing refusal deliberately does NOT bind the gate —
+    a mis-citable row still evidences that the user confirmed resolution).
 
     This is the ground-truth signal that the root cause was confirmed
     ELIMINATED — not merely that the symptom was relieved (a mitigation /
     failover / traffic-shift produces ``symptom_absence_evidence`` while the
     cause persists). It is the discriminator between RESOLVED (cause gone) and
     CLOSED-with-documented-solution (stabilized, deferred, or unfixed). See
-    investigation-flow-redesign.md §11 and intent-resolution.md §8.
+    investigation-lifecycle-logic.md ("Gate strictness — absence-driven") and
+    the methodology doc §9.5 (INV-30).
 
     Qualification matters (#656 P1.4): the bare any-row read this replaced
     counted the ENGINE's own M6 failed-fix DISCONFIRMATION rows — so a failed
