@@ -656,3 +656,27 @@ class TestSupersededStampsSerialization:
         assert rebuilt.state == "superseded"
         assert rebuilt.superseded_in_turn == 5
         assert rebuilt.superseded_reason == "license_lost"
+
+
+# ---------------------------------------------------------------------------
+# Terminal coherence: the finalizer mirrors solution_state to the ladder
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalSolutionStateMirror:
+    def test_finalizer_mirrors_selected_when_ladder_stamped(self):
+        # Both resolve surfaces stamp the ladder BEFORE the finalizer and no
+        # recompute runs on a terminal case — the blob must not read
+        # solution_proposed=True x solution_state=unknown (observed live in
+        # the P2.1 sim gate).
+        from faultmaven.core.investigation.terminal_transitions import (
+            finalize_resolution_truth_surface,
+        )
+
+        case = _make_case(established=False)
+        case.progress.solution_proposed = True
+        case.progress.solution_accepted = True
+        case.progress.solution_verified = True
+        assert case.progress.solution_state == SolutionState.UNKNOWN
+        finalize_resolution_truth_surface(case)
+        assert case.progress.solution_state == SolutionState.SELECTED

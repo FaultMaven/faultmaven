@@ -43,6 +43,7 @@ from faultmaven.modules.case.contracts import (
     CaseAction,
     CaseState,
     CauseState,
+    SolutionState,
     VerificationStatus,
 )
 
@@ -208,6 +209,13 @@ def finalize_resolution_truth_surface(case: "Case") -> bool:
                 getattr(case.root_cause_conclusion, "likelihood", None)
                 or CONFIRMED_RCC_LIKELIHOOD_FLOOR
             )
+    # INV-32 terminal coherence: both resolve surfaces stamp the solution
+    # ladder BEFORE calling this finalizer, and no per-turn recompute runs on
+    # a terminal case — without this mirror the blob would read
+    # solution_proposed=True × solution_state=unknown (observed live in the
+    # P2.1 sim gate).
+    if case.progress.solution_proposed:
+        case.progress.solution_state = SolutionState.SELECTED
     return stamped
 
 
