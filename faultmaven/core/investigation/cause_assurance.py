@@ -614,12 +614,17 @@ _GRAPH_HOOKS: dict = {}
 
 
 def register_graph_hooks(
-    *, support_count_held_root_ids, derive_node_states, distinct_cause_clusters
+    *,
+    support_count_held_root_ids,
+    derive_node_states,
+    distinct_cause_clusters,
+    cluster_origin_id,
 ) -> None:
     """Called once from ``causal_graph`` at module import."""
     _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
     _GRAPH_HOOKS["derive"] = derive_node_states
     _GRAPH_HOOKS["distinct_clusters"] = distinct_cause_clusters
+    _GRAPH_HOOKS["cluster_origin"] = cluster_origin_id
 
 
 def _graph_hooks() -> dict:
@@ -733,7 +738,9 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
     targets = [n for n in candidate_roots if n.node_id in standing_root_ids]
     if not targets:
         targets = candidate_roots
+    cat_by_id = evidence_category_map(case)
     if len(targets) == 1:
+        cluster_ids = {targets[0].node_id}
         root = targets[0]
     else:
         # §7.1.2 MECE arbitration: several candidate NODES are a coherence
@@ -743,30 +750,41 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         # emission must not veto it (the INV-29 stamp-veto lesson). A genuine
         # multi-cluster contest still refuses: the engine never guesses which
         # cause the fix removed — the case stays MECHANISTIC pending
-        # arbitration.
-        clusters = _graph_hooks()["distinct_clusters"](
-            case, {n.node_id for n in targets}
-        )
+        # arbitration. Hooks are read defensively (.get, like every other
+        # hook consumer here): this sits on the unguarded RESOLVED-execution
+        # path, so a missing registration must degrade to the safe refusal,
+        # never a KeyError that 500s the transition.
+        clusters_fn = _graph_hooks().get("distinct_clusters")
+        origin_fn = _graph_hooks().get("cluster_origin")
+        if clusters_fn is None or origin_fn is None:
+            return False
+        clusters = clusters_fn(case, {n.node_id for n in targets})
         if len(clusters) != 1:
             return False
-        # Representative: the ancestor-most member (the causal line's true
-        # origin — on a deepened chain the fix's confirmed removal is asserted
-        # of the origin, not its consequence); duplicates tie → stable id
-        # order.
-        members = sorted(clusters[0])
-        origins = [
-            nid
-            for nid in members
-            if not any(
-                nid in _chain_descendant_ids(case, other)
-                for other in members
-                if other != nid
-            )
-        ]
+        cluster_ids = set(clusters[0])
+        # The cited node is the cluster's ORIGIN (ancestor-most by the SAME
+        # live reachability the clustering used — on a deepened chain the
+        # fix's confirmed removal is asserted of the origin, not its
+        # consequence; a mixed cluster prefers the member that actually heads
+        # the line over an edge-less duplicate of a consequence). NOTE for
+        # the node-dedup follow-on (#656): this writes the durable
+        # confirmation link onto ONE member of a duplicate cluster — any
+        # later dedup/merge of persisted cases must migrate evidence_links
+        # to the surviving node.
+        origin_id = origin_fn(case, cluster_ids)
         by_id = {n.node_id: n for n in targets}
-        root = by_id[(origins or members)[0]]
-    cat_by_id = evidence_category_map(case)
-    if root_counterfactually_confirmed(root, cat_by_id):
+        if origin_id not in by_id:
+            return False
+        root = by_id[origin_id]
+    # Idempotence is CLUSTER-wide: a confirmation anywhere in the cluster is
+    # the cause's confirmation (a retried resolve, or a chain deepened after
+    # a confirmed resolution, must not stamp the same cause twice under a
+    # different node id).
+    if any(
+        root_counterfactually_confirmed(case.causal_nodes[nid], cat_by_id)
+        for nid in cluster_ids
+        if nid in case.causal_nodes
+    ):
         return False
 
     # Rows already SUPPORTS-linked anywhere are spoken for (another root's
@@ -781,13 +799,21 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         for link in node.evidence_links
         if link.stance == EvidenceStance.SUPPORTS
     }
-    # Per-root refutation window (strict >): the cited confirmation must be
-    # NEWER than any refutation recorded against THIS root — covering the
-    # shapes the case-level engine window cannot see (a hedged self-claimed
-    # failed fix never fires M6; an LLM decisive refute on the root marks the
-    # failure even when the engine marker is absent). The gate's liveness is
+    # Per-root refutation window (strict >), taken CLUSTER-wide: the cited
+    # confirmation must be NEWER than any refutation recorded against ANY
+    # member of the cause's cluster — a hedged failed-fix refute on a
+    # duplicate node (which per §7.2 does not demote it, so it stays in the
+    # cluster) is a refutation of the SAME cause and must window the mint
+    # exactly as one on the cited origin would. Covers the shapes the
+    # case-level engine window cannot see (a hedged self-claimed failed fix
+    # never fires M6; an LLM decisive refute on the root marks the failure
+    # even when the engine marker is absent). The gate's liveness is
     # untouched; only the top-grade mint holds.
-    root_refute_turn = _root_disconfirmation_turn(case, root)
+    root_refute_turn = max(
+        _root_disconfirmation_turn(case, case.causal_nodes[nid])
+        for nid in cluster_ids
+        if nid in case.causal_nodes
+    )
     candidates = [
         e
         for e in resolution_confirmation_rows(case)
@@ -816,7 +842,13 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         derive_fn = _graph_hooks().get("derive")
         if derive_fn is not None:
             derive_fn(case)
-    if case.root_cause_conclusion is None:
+    rcc = case.root_cause_conclusion
+    prior_hyp = (
+        case.hypotheses.get(getattr(rcc, "validated_hypothesis_id", None) or "")
+        if rcc is not None
+        else None
+    )
+    if rcc is None:
         # A count-held root was INCONCLUSIVE until this stamp, so the per-turn
         # mirror synthesis never minted a conclusion for it — and terminal
         # cases never recompute. Without a mint HERE, the case would freeze
@@ -824,6 +856,22 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         # the report/harvest layers to read. Mint the minimal faithful
         # mirror for the root the user just confirmed; an LLM-authored
         # conclusion, had one existed, is never touched.
+        _mint_confirmed_mirror(case, root)
+    elif (
+        getattr(rcc, "determined_by", None) == ENGINE_RCC_AUTHOR
+        and prior_hyp is not None
+        and prior_hyp.root_node_id in cluster_ids
+        and prior_hyp.root_node_id != root.node_id
+    ):
+        # The engine mirror names ANOTHER member of the just-confirmed
+        # cluster (per-turn synthesis picks in iteration order, so on a
+        # chain deepened late it can name the consequence). Same cause,
+        # wrong depth: re-mint naming the confirmed origin — otherwise the
+        # terminal blob reads CONFIRMED beside a CONFIDENT mirror citing the
+        # consequence and never the confirming row (the frozen-mechanistic-
+        # mirror shape the upgrade exists to prevent). LLM-authored
+        # conclusions are never touched.
+        case.root_cause_conclusion = None
         _mint_confirmed_mirror(case, root)
     else:
         _upgrade_engine_mirror(case, root, absence_row.evidence_id)

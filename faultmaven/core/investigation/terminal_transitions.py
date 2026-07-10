@@ -111,6 +111,16 @@ def _cause_identified(case: "Case") -> bool:
         case.root_cause_conclusion, "root_cause", None
     ):
         return True
+    # The working conclusion is ENGINE-generated (max-likelihood standing
+    # hypothesis, every turn) — so while identification is MECE-contested
+    # (§7.1.2) it is exactly the arbitrary pick between competing validated
+    # causes the hold withholds, and must not re-enter through this proxy.
+    # The fallback exists to rescue UNDER-reporting; a contest is a
+    # deliberate hold, not under-reporting. An LLM-authored
+    # root_cause_conclusion (above) still counts — the LLM taking its own
+    # stance is a different trust boundary, tracked on #656.
+    if getattr(case.progress, "cause_identification_contested", False):
+        return False
     return bool(
         case.working_conclusion
         and getattr(case.working_conclusion, "statement", None)

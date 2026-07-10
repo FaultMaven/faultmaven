@@ -589,10 +589,20 @@ def test_llm_decisive_refute_does_not_suppress_engine_marker():
 
 
 def test_one_chain_demoted_other_standing_stays_identified():
-    """Two chains; one is counterfactually disconfirmed, the other's root stays
-    validated → the case remains IDENTIFIED via the standing chain."""
-    r1 = _root("cn_000000000001", support_labels=["ev_s1", "ev_s1b"])
-    r2 = _root("cn_000000000002", support_labels=["ev_s2", "ev_s2b"])
+    """Two DISTINCT chains; while both roots stand validated the case is
+    MECE-contested (§7.1.2, held at CANDIDATES); one is counterfactually
+    disconfirmed and the contest resolves → the case reads IDENTIFIED via the
+    standing chain."""
+    r1 = _root(
+        "cn_000000000001",
+        support_labels=["ev_s1", "ev_s1b"],
+        statement="deploy removed the connection release call so connections leak",
+    )
+    r2 = _root(
+        "cn_000000000002",
+        support_labels=["ev_s2", "ev_s2b"],
+        statement="pool max size undersized for peak checkout traffic",
+    )
     case = _case(
         nodes=[r1, r2],
         evidence=[
@@ -611,7 +621,9 @@ def test_one_chain_demoted_other_standing_stays_identified():
     h2 = _hyp(r2.node_id, hypothesis_id="hyp_000000000002")
     case.hypotheses = {h1.hypothesis_id: h1, h2.hypothesis_id: h2}
     _recompute_cause_state_from_chain(case)
-    assert case.progress.cause_state == CauseState.IDENTIFIED
+    # Both distinct roots validated simultaneously = the §7.1.2 contest.
+    assert case.progress.cause_state == CauseState.CANDIDATES
+    assert case.progress.cause_identification_contested is True
     # Disconfirm chain 1 only (counterfactual on its root).
     absent = _evidence("ev_absent1", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
     case.evidence.append(absent)
@@ -627,6 +639,7 @@ def test_one_chain_demoted_other_standing_stays_identified():
     assert r1.node_state == NodeState.REFUTED
     assert r2.node_state == NodeState.VALIDATED
     assert case.progress.cause_state == CauseState.IDENTIFIED  # standing via chain 2
+    assert case.progress.cause_identification_contested is False  # contest released
     # §9.3: the conclusion mirrors the SURVIVING chain (not left None by chain 1's
     # demotion) — no IDENTIFIED-with-empty-RCC truth split.
     assert case.root_cause_conclusion is not None

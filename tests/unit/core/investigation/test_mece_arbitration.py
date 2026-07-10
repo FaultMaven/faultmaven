@@ -1,12 +1,12 @@
-"""§7.1.2 MECE arbitration (#656 P1.5): >1 simultaneously-validated DISTINCT
+"""§7.1.2 MECE arbitration (#656): >1 simultaneously-validated DISTINCT
 standing roots is a coherence violation (S2 — roots are mutually-exclusive
 origins, at most one can be the cause), so case-level identification is HELD
 at CANDIDATES pending discrimination — the forward mirror of the §7.1.1
 exclusion collapse. Node states are untouched (each root's evidence rules it).
 
 Specimen shapes pinned here come from the live gate runs that motivated the
-phase: the P1.1 gate's disp-confirmed-cause-demote run produced THREE
-simultaneously-VALIDATED roots left unarbitrated, and the P1.2 gate's run of
+phase: a prior gate's disp-confirmed-cause-demote run produced THREE
+simultaneously-VALIDATED roots left unarbitrated, and a later gate's run of
 the same scenario produced DUPLICATE root nodes for one cause — duplicates
 must collapse to ONE cause (holding on a statement vs its own restatement
 would deadlock: no evidence can ever discriminate them).
@@ -154,7 +154,7 @@ def _problem(case_id="cn_00000000000d") -> CausalNode:
     )
 
 
-# The banked P1.1-gate specimen shape: three distinct competing explanations
+# The banked gate-run specimen shape: three distinct competing explanations
 # for one pool-exhaustion incident, each independently grounded.
 _SPECIMEN = [
     (
@@ -191,7 +191,7 @@ def _specimen_case(members=_SPECIMEN):
 
 
 # ---------------------------------------------------------------------------
-# The hold: the P1.1-gate specimen (3 simultaneously-validated distinct roots)
+# The hold: the banked gate-run specimen (3 simultaneously-validated distinct roots)
 # ---------------------------------------------------------------------------
 
 
@@ -234,10 +234,12 @@ def test_hold_counter_and_warning_are_edge_triggered(caplog):
     assert case.progress.cause_identification_contested is True
 
 
-def test_hold_requires_verified_symptom():
-    """Contest without a verified symptom is not a HOLD event (identification
-    was not reachable anyway): flag stays False and the counter is silent; the
-    block event fires when the symptom verifies."""
+def test_flag_records_contest_existence_independent_of_symptom_anchor():
+    """The persisted flag keys on the SAME predicate the behavioral consumers
+    act on (mirror retraction, discrimination ask) — contest existence, not
+    the symptom-anchored sub-case. A contest with an unverified symptom is
+    already behaviorally enforced, so it must be observable too; verifying
+    the symptom later is NOT a second contest event."""
     case = _specimen_case()
     case.progress.symptom_verified = False
     with patch(
@@ -245,12 +247,13 @@ def test_hold_requires_verified_symptom():
         "cause_identification_held_mece_total"
     ) as counter:
         _recompute_cause_state_from_chain(case)
-        assert case.progress.cause_identification_contested is False
-        assert counter.inc.call_count == 0
+        assert case.progress.cause_identification_contested is True
+        assert counter.inc.call_count == 1
         case.progress.symptom_verified = True
         _recompute_cause_state_from_chain(case)
     assert case.progress.cause_identification_contested is True
-    assert counter.inc.call_count == 1
+    assert case.progress.cause_state == CauseState.CANDIDATES
+    assert counter.inc.call_count == 1  # no re-fire on the symptom flip
 
 
 def test_single_validated_root_is_never_contested():
@@ -263,12 +266,12 @@ def test_single_validated_root_is_never_contested():
 
 
 # ---------------------------------------------------------------------------
-# Duplicates and deepened chains are ONE cause (the P1.2-gate specimen)
+# Duplicates and deepened chains are ONE cause (the duplicate-emission specimen)
 # ---------------------------------------------------------------------------
 
 
 def _duplicate_case():
-    """The P1.2-gate duplicate-emission shape: ONE cause recorded as two
+    """The banked duplicate-emission shape: ONE cause recorded as two
     near-identical ROOT nodes (statement Jaccard 0.875, pinned ≥ the 0.6
     distinct-cause bar), each carried by a differently-worded hypothesis —
     the realistic emission shape (identically-worded attached hypotheses
@@ -294,7 +297,7 @@ def _duplicate_case():
 
 
 def test_duplicate_roots_are_one_cause_and_identify():
-    """The P1.2-gate duplicate-emission specimen: one cause recorded as two
+    """The banked duplicate-emission specimen: one cause recorded as two
     near-identical nodes is NOT a differential — identification proceeds
     (holding would deadlock: nothing can discriminate a statement from its
     own restatement)."""
@@ -446,7 +449,7 @@ def test_engine_mirror_retracts_when_contest_arises():
 
 def test_llm_authored_conclusion_survives_contest():
     """The retraction discipline is engine-mirror-only: the LLM's own recorded
-    conclusion is never touched here (its lifecycle is #656 P2.3)."""
+    conclusion is never touched here (its lifecycle is #656)."""
     case = _specimen_case()
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="the LLM's own worded conclusion",
@@ -546,3 +549,339 @@ def test_context_annotation_absent_when_uncontested():
     _recompute_cause_state_from_chain(case)
     block = _build_causal_graph_block(case)
     assert "MUTUALLY-EXCLUSIVE roots" not in block
+
+
+# ---------------------------------------------------------------------------
+# Live-path clustering: a REFUTED rung does not connect two causes; lexical
+# limits of the mirror bar are pinned as accepted
+# ---------------------------------------------------------------------------
+
+
+def test_path_through_refuted_rung_does_not_merge_roots():
+    """A → X → B with X counterfactually REFUTED: the link is disproven, so A
+    and B are genuine competitors — the raw-edge walk would have merged them
+    and masked the contest."""
+    case = _specimen_case(members=_SPECIMEN[:2])
+    rung = CausalNode(
+        node_id="cn_0000000000f1",
+        statement="pool wait queue saturates under sustained connection debt",
+        node_type=NodeType.INTERMEDIATE,
+        node_state=NodeState.CANDIDATE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        generated_at_turn=1,
+    )
+    case.causal_nodes[rung.node_id] = rung
+    case.causal_edges.append(
+        CausalEdge(cause_node_id="cn_00000000000a", effect_node_id=rung.node_id)
+    )
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=rung.node_id, effect_node_id="cn_00000000000b")
+    )
+    refute_row = _evidence("ev_rung_refute", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    case.evidence.append(refute_row)
+    rung.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=refute_row.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="queue saturation ruled out",
+            linked_at_turn=case.current_turn,
+        )
+    )
+    _recompute_cause_state_from_chain(case)
+    assert case.causal_nodes["cn_0000000000f1"].node_state == NodeState.REFUTED
+    assert case.progress.cause_state == CauseState.CANDIDATES
+    assert case.progress.cause_identification_contested is True
+
+
+def test_live_path_still_merges_roots():
+    """Control for the liveness filter: the same A → X → B shape with a LIVE
+    rung is one deepened line — not a contest."""
+    case = _specimen_case(members=_SPECIMEN[:2])
+    rung = CausalNode(
+        node_id="cn_0000000000f1",
+        statement="pool wait queue saturates under sustained connection debt",
+        node_type=NodeType.INTERMEDIATE,
+        node_state=NodeState.CANDIDATE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        generated_at_turn=1,
+    )
+    case.causal_nodes[rung.node_id] = rung
+    case.causal_edges.append(
+        CausalEdge(cause_node_id="cn_00000000000a", effect_node_id=rung.node_id)
+    )
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=rung.node_id, effect_node_id="cn_00000000000b")
+    )
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_identification_contested is False
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+
+
+def test_negation_blind_merge_is_the_accepted_lexical_limit():
+    """Pinned accepted limit: negation is stopworded, so opposite-polarity
+    statements read as ONE cause (no contest). Shared token-layer limit with
+    the §7.1 guards; a semantic layer would be a new lever, not a fix here."""
+    pair = [
+        (
+            "cn_0000000000d1",
+            "hyp_0000000000d1",
+            "the failover config flag was applied to the primary",
+            ["ev_n1", "ev_n2"],
+        ),
+        (
+            "cn_0000000000d2",
+            "hyp_0000000000d2",
+            "the failover config flag was NOT applied to the primary",
+            ["ev_n3", "ev_n4"],
+        ),
+    ]
+    case = _specimen_case(members=pair)
+    case.hypotheses["hyp_0000000000d1"].statement = "flag application theory"
+    case.hypotheses["hyp_0000000000d2"].statement = "missing flag theory"
+    clusters = distinct_cause_clusters(case, {p[0] for p in pair})
+    assert len(clusters) == 1  # the documented lexical limit
+
+
+# ---------------------------------------------------------------------------
+# Engine-assertion discipline beyond the mirror: synthesize refusal and the
+# working-conclusion proxy gate
+# ---------------------------------------------------------------------------
+
+
+def test_synthesize_refuses_to_mint_while_contested():
+    """Defense in depth: a direct (non-recompute) caller of the mirror
+    synthesis never gets an arbitrary pick minted on a contested case."""
+    from faultmaven.core.investigation.causal_graph import (
+        derive_node_states,
+        synthesize_rcc_from_validated_root,
+    )
+
+    case = _specimen_case()
+    derive_node_states(case)
+    assert synthesize_rcc_from_validated_root(case) is False
+    assert case.root_cause_conclusion is None
+
+
+def test_working_conclusion_proxy_does_not_count_while_contested():
+    """The working conclusion is ENGINE-generated (max-likelihood standing
+    hypothesis) — on a contested case it is the arbitrary pick the hold
+    withholds, so _cause_identified must not read it as a known cause. An
+    LLM-authored conclusion still counts (different trust boundary)."""
+    from faultmaven.core.investigation.terminal_transitions import _cause_identified
+    from faultmaven.modules.case.contracts import WorkingConclusion
+
+    case = _specimen_case()
+    _recompute_cause_state_from_chain(case)
+    case.working_conclusion = WorkingConclusion(
+        statement="the deploy removed the connection release call",
+        likelihood=0.8,
+        reasoning="engine-generated per-turn pick",
+    )
+    assert _cause_identified(case) is False
+    # The LLM's OWN recorded conclusion is a different trust boundary.
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="the LLM's own worded conclusion",
+        mechanism="as the LLM described it",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+    )
+    assert _cause_identified(case) is True
+
+
+def test_contested_flag_survives_progress_blob_round_trip():
+    """The edge-trigger and the terminal _cause_identified gate read the
+    PERSISTED flag — pin the progress-blob round-trip (model_dump → JSON →
+    reconstruct), the same shape the repositories use."""
+    import json
+
+    from faultmaven.modules.case.contracts import InvestigationProgress
+
+    case = _specimen_case()
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_identification_contested is True
+    blob = json.dumps(case.progress.model_dump(mode="json"))
+    reloaded = InvestigationProgress(**json.loads(blob))
+    assert reloaded.cause_identification_contested is True
+    # Old blobs (pre-field) default False rather than failing validation.
+    legacy = json.loads(blob)
+    legacy.pop("cause_identification_contested")
+    assert InvestigationProgress(**legacy).cause_identification_contested is False
+
+
+# ---------------------------------------------------------------------------
+# Cluster-aware stamp hardening: cluster-wide idempotence, cluster-wide
+# refutation window, mixed-cluster origin, cluster-member mirror re-mint
+# ---------------------------------------------------------------------------
+
+
+def test_stamp_is_idempotent_across_cluster_members():
+    """A cause confirmed once (on its consequence node) is never stamped a
+    second time under a different node id when the chain later deepens — the
+    idempotence check is cluster-wide, not representative-only."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case = _specimen_case(members=_SPECIMEN[:2])
+    case.causal_edges.append(
+        CausalEdge(cause_node_id="cn_00000000000a", effect_node_id="cn_00000000000b")
+    )
+    _recompute_cause_state_from_chain(case)
+    # The DESCENDANT member (b) already carries the confirmation from an
+    # earlier resolve.
+    confirmed_row = _evidence(
+        "ev_prior_confirm", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+    )
+    case.evidence.append(confirmed_row)
+    case.causal_nodes["cn_00000000000b"].evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=confirmed_row.evidence_id,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="engine: user-confirmed resolution",
+            linked_at_turn=4,
+        )
+    )
+    _resolution_absence_row(case, label="ev_second_confirm")
+    assert confirm_root_from_resolution_absence(case) is False
+
+
+def test_stamp_window_covers_refutes_on_duplicate_members():
+    """A hedged failed-fix refute on a NON-representative duplicate is a
+    refutation of the SAME cause: a confirmation row at-or-before it never
+    mints the top grade, exactly as if the refute sat on the cited origin."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case = _duplicate_case()
+    _recompute_cause_state_from_chain(case)
+    # Hedged refute on the LATER-sorted duplicate (cn_...e, never the cited
+    # representative under lexical tie-break) at turn 9.
+    refute_row = _evidence("ev_dup_refute", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    object.__setattr__(refute_row, "collected_at_turn", 9)
+    case.evidence.append(refute_row)
+    case.causal_nodes["cn_00000000000e"].evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=refute_row.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="raising the pool did not clear the errors",
+            stance_confidence=0.4,  # hedged: no demotion, but windows the mint
+            linked_at_turn=9,
+        )
+    )
+    stale = _resolution_absence_row(case, label="ev_stale_confirm")
+    object.__setattr__(stale, "collected_at_turn", 8)  # at-or-before the refute
+    assert confirm_root_from_resolution_absence(case) is False
+    fresh = _resolution_absence_row(case, label="ev_fresh_confirm")
+    object.__setattr__(fresh, "collected_at_turn", 10)  # newer than the refute
+    assert confirm_root_from_resolution_absence(case) is True
+
+
+def test_mixed_cluster_origin_prefers_the_line_head():
+    """Cluster {origin, consequence, edge-less duplicate-of-consequence}: the
+    citation goes to the member that HEADS the line (has live in-cluster
+    descendants), never to the edge-less duplicate that merely wins a lexical
+    tie among no-ancestor members."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    members = [
+        # ids chosen so the duplicate sorts LEXICALLY FIRST among candidates.
+        (
+            "cn_0000000000e9",
+            "hyp_0000000000e9",
+            "the deploy removed the connection release call so pool "
+            "connections leak until exhaustion",
+            ["ev_q1", "ev_q2"],
+        ),
+        (
+            "cn_0000000000e5",
+            "hyp_0000000000e5",
+            "connection pool max size undersized for current checkout load",
+            ["ev_r1", "ev_r2"],
+        ),
+        (
+            "cn_0000000000e1",
+            "hyp_0000000000e1",
+            "pool max size undersized for current checkout load",
+            ["ev_p1", "ev_p2"],
+        ),
+    ]
+    case = _specimen_case(members=members)
+    # e9 (origin) → e5 (consequence); e1 is an edge-less mirror duplicate of e5.
+    case.causal_edges.append(
+        CausalEdge(cause_node_id="cn_0000000000e9", effect_node_id="cn_0000000000e5")
+    )
+    case.hypotheses["hyp_0000000000e5"].statement = "pool sizing theory"
+    case.hypotheses["hyp_0000000000e1"].statement = "capacity ceiling theory"
+    _recompute_cause_state_from_chain(case)
+    row = _resolution_absence_row(case)
+    assert confirm_root_from_resolution_absence(case) is True
+    assert any(
+        link.evidence_id == row.evidence_id
+        for link in case.causal_nodes["cn_0000000000e9"].evidence_links
+    )
+    assert not any(
+        link.evidence_id == row.evidence_id
+        for link in case.causal_nodes["cn_0000000000e1"].evidence_links
+    )
+
+
+def test_stamp_remints_engine_mirror_naming_a_cluster_member():
+    """Deepened-late shape: the engine mirror names the CONSEQUENCE's
+    hypothesis; the stamp confirms the ORIGIN. Same cause, wrong depth — the
+    mirror re-mints to the confirmed origin at VERIFIED instead of freezing
+    at CONFIDENT beside a CONFIRMED grade."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case = _specimen_case(members=_SPECIMEN[:2])
+    case.causal_edges.append(
+        CausalEdge(cause_node_id="cn_00000000000a", effect_node_id="cn_00000000000b")
+    )
+    _recompute_cause_state_from_chain(case)
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=case.causal_nodes["cn_00000000000b"].statement,
+        mechanism="Directly produces the observed problem.",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+        validated_hypothesis_id="hyp_0000000000bb",
+        determined_by="engine:chain_validation",
+    )
+    _resolution_absence_row(case)
+    assert confirm_root_from_resolution_absence(case) is True
+    rcc = case.root_cause_conclusion
+    assert rcc is not None
+    assert rcc.validated_hypothesis_id == "hyp_0000000000aa"
+    assert rcc.confidence_level == ConfidenceLevel.VERIFIED
+
+
+def test_stamp_never_remints_an_llm_conclusion():
+    """The cluster-member re-mint is engine-mirror-only: an LLM-authored
+    conclusion naming the consequence stays untouched."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+    )
+
+    case = _specimen_case(members=_SPECIMEN[:2])
+    case.causal_edges.append(
+        CausalEdge(cause_node_id="cn_00000000000a", effect_node_id="cn_00000000000b")
+    )
+    _recompute_cause_state_from_chain(case)
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="the LLM's own conclusion about the consequence",
+        mechanism="as the LLM described it",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+        validated_hypothesis_id="hyp_0000000000bb",
+    )
+    _resolution_absence_row(case)
+    assert confirm_root_from_resolution_absence(case) is True
+    assert (
+        case.root_cause_conclusion.root_cause
+        == "the LLM's own conclusion about the consequence"
+    )

@@ -2557,20 +2557,23 @@ def _build_causal_graph_block(case: Case) -> str:
     # validated, mutually-exclusive causes) get the discrimination ask
     # rendered inline — without it the model sees several [root/validated]
     # lines, reads the cause as settled, and never runs the test that
-    # separates them. A node is either contested (VALIDATED) or count-held
-    # (INCONCLUSIVE), never both, so one note slot suffices.
-    contested_ids = mece_contested_root_ids(case)
-    mece_note = (
+    # separates them. Rendered through the SAME per-node reason → note maps
+    # as the §7.1 recovery notes; the overlay order makes the precedence
+    # explicit (a contested VALIDATED root shows the discrimination ask even
+    # if a future block reason ever annotates validated roots too).
+    _MECE_CONTESTED = "mece_contested"
+    recovery_notes[_MECE_CONTESTED] = (
         " — one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: "
         "cause identification is HELD until discriminating evidence refutes "
         "the alternatives (at most one can be the real cause)"
     )
+    node_reasons = {
+        **block_reasons,
+        **dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
+    }
 
     def _node_line(indent: str, n) -> str:
-        if n.node_id in contested_ids:
-            note = mece_note
-        else:
-            note = recovery_notes.get(block_reasons.get(n.node_id), "")
+        note = recovery_notes.get(node_reasons.get(n.node_id), "")
         return (
             f"{indent}{n.node_id} [{n.node_type.value}/{n.node_state.value}] "
             f"{_stmt(n.statement)}{note}"

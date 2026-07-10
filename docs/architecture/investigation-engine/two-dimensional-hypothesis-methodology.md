@@ -576,18 +576,28 @@ forward mirror of the §7.1.1 exclusion collapse: just as proof-by-exclusion
 concludes only when the differential has collapsed to one survivor, forward
 validation concludes at case level only when one distinct cause stands.
 
-While contested, the engine **holds case-level identification** — never the
-node states:
+While contested, the engine **withholds every case-level assertion of the
+cause** — never the node states:
 
 - `cause_state` reads **CANDIDATES** (the honest state: several candidates),
   never IDENTIFIED; the persisted `cause_identification_contested` flag and
   the `cause_identification_held_mece_total` block-event counter make the
-  standing hold queryable per turn.
-- The **engine conclusion mirror is withheld** (`retract_stale_engine_rcc`
-  clears one naming a contested root): asserting ONE of several
-  equally-validated exclusive causes is an arbitrary pick, not a reflection.
-  An LLM-authored conclusion is never touched (its lifecycle is tracked on
-  #656 P2.3).
+  standing contest queryable per turn. The flag records **contest
+  existence** — the same predicate every behavioral consumer acts on —
+  independent of the symptom anchor (a contest whose symptom is still
+  unverified already withholds the mirror and renders the discrimination
+  ask, so the observability surfaces must see it too).
+- The **engine conclusion mirror is withheld**: `retract_stale_engine_rcc`
+  clears a standing one naming a contested root, and
+  `synthesize_rcc_from_validated_root` refuses to mint one (defense in
+  depth — asserting ONE of several equally-validated exclusive causes is an
+  arbitrary pick, not a reflection). The engine-generated **working
+  conclusion stops counting as a known cause** in `_cause_identified` (it is
+  the max-likelihood pick over the very hypotheses under contest — the same
+  arbitrary assertion through a side door; that fallback exists to rescue
+  under-reporting, and a contest is a deliberate hold, not under-reporting).
+  An **LLM-authored** conclusion is never touched (its lifecycle is tracked
+  on #656).
 - Each contested root keeps its evidence-derived VALIDATED standing (the §7.1
   entry-bar lesson: re-adjudicating settled nodes is what causes flap), and
   the context builder renders the discrimination ask inline on the contested
@@ -602,20 +612,40 @@ counting):
   restatement (NO-COLLAPSE). An unjudgeably-short statement merges with
   nothing — the safe failure is holding, never concluding on an arbitrary
   pick.
-- **A deepened chain** — two ROOT-typed nodes on one causal path (either
-  direction) are one line of explanation at two depths, not a differential.
+- **A deepened chain** — two ROOT-typed nodes on one LIVE causal path
+  (either direction) are one line of explanation at two depths, not a
+  differential. A path through a **REFUTED** rung does NOT connect
+  (`_live_descendant_ids`): the link is disproven, so roots joined only by a
+  broken chain are genuine competitors. (This is deliberately stricter than
+  the INV-30 bearing-frame walk, which renders a chain's *recorded*
+  mechanism refuted rungs and all.)
 - **A counterfactually confirmed root** (§7.2 top grade, engine-only
   producer) settles the contest outright: the gone⇒gone confirmation IS the
   discrimination, so validated siblings never hold a proven cause hostage.
+  On a reopened case this deliberately still settles even when the old
+  confirmation has gone stale — recurrence is discharged by the failed-fix
+  machinery (M6 demotes the confirmed root on disconfirmation), not by
+  re-litigating the confirmation here.
 
 The hold is escapable exactly the way the methodology says a differential
 resolves: **discriminating evidence** (a decisive refute on the alternatives —
 M6 or counterfactual), a **counterfactual confirmation** of one root, or the
 duplicates merging. Resolution itself is never blocked — the RESOLVED gate
 keys on the confirmation row, and the confirm-stamp applies the same
-clustering (a duplicate/deepened-line node shape never vetoes the user's
-handshake; a genuine multi-cause contest stays refused and the case
-terminates MECHANISTIC, honestly).
+clustering: a duplicate/deepened-line node shape never vetoes the user's
+handshake — the cited node is the cluster's ORIGIN (`cluster_origin_id`,
+ancestor-most by the same live reachability), idempotence and the per-root
+refutation window are taken CLUSTER-wide (a confirmation or a failed-fix
+refute anywhere in the cluster belongs to the CAUSE) — while a genuine
+multi-cause contest stays refused and the case terminates MECHANISTIC,
+honestly, with the candidates on record instead of an arbitrary conclusion.
+
+*Known limits (by design):* root-statement identity is LEXICAL, like every
+mirror bar in this family — negation is stopworded, so opposite-polarity
+statements ("disk full" / "disk NOT full") read as one cause and would not
+contest each other; synonym paraphrases of one cause read as DISTINCT and
+hold identification until one is refuted or the user confirms. Both are
+token-layer limits shared with the §7.1 guards, pinned in the tests.
 
 ### 7.2 Two grades of root-cause confidence
 

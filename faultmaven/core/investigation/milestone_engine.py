@@ -854,27 +854,35 @@ def _recompute_cause_state_from_chain(
     # chain. Runs on EVERY recompute (the IDENTIFIED branch below re-mints via
     # synthesize when a validated root stands; the demotion path otherwise had
     # no owner for the stale mirror). LLM-authored conclusions are untouched.
-    retract_stale_engine_rcc(case)
-    root_validated = any_chain_root_validated(case)
-    # §7.1.2 MECE arbitration (#656 P1.5): >1 simultaneously-validated DISTINCT
+    # §7.1.2 MECE arbitration (#656): >1 simultaneously-validated DISTINCT
     # standing roots is a coherence violation (S2 — at most one origin can be
     # the cause), so identification is HELD at CANDIDATES pending
     # discrimination — the forward mirror of the §7.1.1 exclusion collapse.
     # Node states are untouched (each root's evidence rules it); duplicates and
-    # same-causal-line roots collapse to one cause; a counterfactually
-    # confirmed root settles the contest. The engine mirror on a contested root
-    # was already retracted above (retract_stale_engine_rcc), so no consumer
-    # keeps reading an arbitrary pick.
+    # same-LIVE-causal-line roots collapse to one cause; a counterfactually
+    # confirmed root settles the contest. Computed ONCE here (post-derive, the
+    # graph is settled) and threaded into every same-frame consumer.
     contested_ids = mece_contested_root_ids(case)
-    held_by_contest = bool(contested_ids) and p.symptom_verified
-    if held_by_contest and not p.cause_identification_contested:
-        # Block-event semantics (one increment per transition INTO the hold),
-        # edge-triggered on the persisted flag like the M2 over-claim seam.
+    retract_stale_engine_rcc(case, contested_ids=contested_ids)
+    root_validated = any_chain_root_validated(case)
+    # The persisted flag records CONTEST EXISTENCE — the same predicate every
+    # behavioral consumer acts on (the IDENTIFIED gate below, the mirror
+    # retraction above, the context-builder discrimination ask) — NOT the
+    # symptom-anchored sub-case: a contest whose symptom is still unverified
+    # already retracts the mirror and renders the ask, so the queryable flag
+    # and the metric must see it too (behavior and observability keyed apart
+    # is how holds go invisible).
+    contested = bool(contested_ids)
+    if contested and not p.cause_identification_contested:
+        # Block-event semantics (one increment per transition INTO the
+        # contest), edge-triggered on the persisted flag like the M2
+        # over-claim seam.
         cause_identification_held_mece_total.inc()
         logger.warning(
             "MECE arbitration hold: case=%s turn=%s — %d simultaneously-"
-            "validated distinct roots (%s); cause_state held at CANDIDATES "
-            "pending discriminating evidence",
+            "validated roots across competing causes (%s); cause "
+            "identification held at CANDIDATES pending discriminating "
+            "evidence",
             case.case_id,
             case.current_turn,
             len(contested_ids),
@@ -886,7 +894,7 @@ def _recompute_cause_state_from_chain(
                 "contested_root_ids": sorted(contested_ids),
             },
         )
-    p.cause_identification_contested = held_by_contest
+    p.cause_identification_contested = contested
     # The evidence-grounded VERIFIED SYMPTOM is the anchor for cause
     # identification: IDENTIFIED requires ``symptom_verified``. A validated chain
     # root WITHOUT a verified symptom is held at CANDIDATES (never flapped to
