@@ -267,3 +267,19 @@ solution_offer_superseded_total = Counter(
     "it fell; the engine withdrew the offer).",
     labelnames=["reason"],
 )
+
+
+# INV-33 (#656): a shadowed DIAGNOSTIC pending ask was retired when a SOLUTION
+# it predated was withdrawn on license loss, so it cannot resurface as the
+# <pending_action> the LLM reads for compliance. One increment per retired
+# action. A sustained rate means investigations keep grounding, proposing, and
+# then losing the cause with stale diagnostic asks still open underneath — read
+# alongside solution_offer_superseded_total. MITIGATION is cause-independent
+# (INV-32) and never retired this way.
+# Interpretation: docs/operations/monitoring/lifecycle-metrics.md § INV-33.
+pending_action_superseded_stale_total = Counter(
+    "faultmaven_pending_action_superseded_stale_total",
+    "A DIAGNOSTIC pending ProposedAction shadowed by a since-withdrawn SOLUTION "
+    "offer was retired ('stale_pending') so it cannot resurface in "
+    "<pending_action>. One increment per retired action.",
+)

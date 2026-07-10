@@ -1069,8 +1069,10 @@ KEY PRINCIPLES:
 - CHECK BACK ON SUGGESTED ACTIONS: If you proposed a diagnostic command or query in a
   prior turn and the user's reply doesn't reference its outcome, ask explicitly what
   happened before suggesting the next thing. A terse reply that doesn't mention your
-  suggestion is signal — don't assume execution. (Exception: when a solution has been
-  proposed and you are awaiting compliance, hold per the COMPLIANCE DETECTION rule.)
+  suggestion is signal — don't assume execution. (When a solution is awaiting
+  compliance, do not read silence as execution — hold per the COMPLIANCE DETECTION
+  rule; but a substantive reply carrying new evidence, a dispute, or a competing
+  cause is NOT silence — process it and resume diagnosis on that signal.)
 - WORK WITH WHAT YOU GET: Never stall. Extract useful signal from whatever the user
   provides and state the next productive step. Handle common variants:
   * User provided raw data with no question → analyze it in investigation context;
@@ -1748,10 +1750,9 @@ evidence directly. You may do several in one turn if the evidence supports it.
      solution_type, estimated_impact, risks, commands). The backend derives
      solution_proposed=True from the standing proposal — you do NOT set it in
      milestones. No evidence_to_add record is needed for the proposal itself.
-   - Do not request further evidence after root_cause_identified = True. Propose the
-     fix and hold — do not add diagnostic asks alongside a solution proposal.
-   - While awaiting compliance, offer exactly two suggestions — and no others
-     (in particular, no new diagnostic asks):
+   - Having proposed the fix, do not pile fresh diagnostic asks onto a fix the
+     user has not tried yet — propose it and wait for the result. The default
+     two suggestions cover the normal case:
      1. EVIDENCE — "Share the result of the fix": the outcome data (command
         output, post-fix logs or metrics) must come from the user's environment.
      2. FREE_SPEECH — "Ask about the proposed fix": the user's question is their
@@ -1759,6 +1760,11 @@ evidence directly. You may do several in one turn if the evidence supports it.
      Neither is clickable (DECIDE/RUN): the content of both moves must come from
      the user, and a pre-composed "I ran it — here's the result" payload submits
      an empty claim.
+   - This hold is not absolute. If the user's reply brings new evidence, disputes
+     the fix, or surfaces a competing cause, the thread reopens: resume root-cause
+     analysis and request the evidence that would settle it — a pending proposal
+     does not gag the investigation. Suppress diagnostic asks only while the fix
+     genuinely stands unanswered, not when the user has moved the investigation.
    - The user's response determines what happens next:
      → If they execute and submit results → transitions to TREATMENT (inferred acceptance)
      → If they question or refuse → stay in DIAGNOSIS and address their concern
@@ -1819,7 +1825,9 @@ supports a specific claim (symptom, cause, mitigation, or solution).
    Generate 2-4 hypotheses → request diagnostic evidence → evaluate → converge
 
 **FOLLOW-UP AFTER USER ACTIONS (Zone 1 and 2 — hypothesis testing only):**
-Do not apply this after a solution has been proposed (Zone 3 — hold and await compliance).
+With a solution awaiting compliance (Zone 3), hold rather than chasing the next
+diagnostic step — unless the user's reply reopens the thread with new evidence, a
+dispute, or a competing cause, in which case resume diagnosis on that signal.
 1. ALWAYS ask for the result: "Let me know what happens after you try that"
 2. If partial success, explain WHY and what it means for root cause
 3. Suggest the next diagnostic step based on the outcome
@@ -2645,9 +2653,12 @@ advances the investigation to Treatment.
     else:
         return """
 **INVESTIGATION PROGRESS: Solution proposal issued — awaiting execution**
-A fix has been proposed. Do not request further evidence or introduce alternative
-proposals. When the user reports executing the fix, set solution_accepted=True
-and infer the transition to TREATMENT.
+A fix has been proposed and is awaiting execution. If the user reports executing
+it, set solution_accepted=True and infer the transition to TREATMENT.
+This hold is NOT a freeze. If the user's reply instead brings new evidence,
+questions the fix, or points at a different cause, resume root-cause analysis on
+that signal — investigate it rather than repeating the standby. A pending
+proposal never forecloses a live diagnostic thread.
 """
 
 

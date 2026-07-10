@@ -3443,16 +3443,23 @@ class ProposedAction(BaseModel):
         ),
     )
 
-    superseded_reason: Optional[Literal["reproposal", "license_lost"]] = Field(
+    superseded_reason: Optional[
+        Literal["reproposal", "license_lost", "stale_pending"]
+    ] = Field(
         default=None,
         description=(
             "Why the engine superseded this action: 'reproposal' (a newer "
             "SOLUTION offer replaced it) or 'license_lost' (the established-"
             "cause license that admitted the offer fell — demotion, "
-            "retraction, MECE hold, or proxy decay). Closed vocabulary: the "
-            "value feeds the solution_offer_superseded_total metric label. "
-            "Forensic field; the context builder renders only pending "
-            "actions."
+            "retraction, MECE hold, or proxy decay) — both SOLUTION-only and "
+            "feeding the solution_offer_superseded_total metric label; or "
+            "'stale_pending' (a shadowed DIAGNOSTIC ask retired when a "
+            "SOLUTION it predated was withdrawn, so it cannot resurface in "
+            "<pending_action> — feeds pending_action_superseded_stale_total "
+            "instead; MITIGATION is cause-independent and never retired this "
+            "way). Closed "
+            "vocabulary keeps metric-label cardinality bounded. Forensic "
+            "field; the context builder renders only pending actions."
         ),
     )
 

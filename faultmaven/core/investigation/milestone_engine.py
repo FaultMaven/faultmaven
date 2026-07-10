@@ -68,6 +68,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_status_changed_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
+    pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
@@ -329,6 +330,47 @@ def _supersede_pending_solution_offers(
     return count
 
 
+def _retire_stale_pending_after_withdrawal(case: Case, *, before_turn: int) -> int:
+    """Retire stale DIAGNOSTIC pending asks shadowed by a withdrawn SOLUTION (INV-33).
+
+    The ``<pending_action>`` render (context_builder: newest pending action of
+    ANY type) shows one action at a time — the SOLUTION offer, while it stands,
+    shadows any earlier ask beneath it. When that offer is WITHDRAWN on license
+    loss (the cause fell, the case is back in active diagnosis), the render
+    falls through to a shadowed ask and resurfaces it as the current compliance
+    target — an ask the investigation already moved past. Retire the shadowed
+    DIAGNOSTIC asks (pending, proposed AT OR BEFORE ``before_turn`` = the
+    withdrawn offer's turn) so compliance detection reads a clean slate and the
+    LLM forms a fresh ask against the re-opened diagnosis, informed by the
+    evidence that just knocked the cause down. Asks proposed AFTER the offer are
+    a live thread and stand.
+
+    DIAGNOSTIC-ONLY by design. A DIAGNOSTIC ask has no compliance gate (it never
+    transitions to ``accepted``), so retiring one is a pure display cleanup with
+    zero functional loss — the stale pre-fix evidence request is exactly what
+    goes obsolete when new evidence retracts the cause. A pending MITIGATION is
+    NOT retired: a workaround is cause-INDEPENDENT symptom relief the user may
+    still execute, so its liveness survives solution withdrawal (INV-32) and its
+    reappearance as the top pending ask is correct, not stale. Scoped to the
+    withdrawal path deliberately: acceptance keeps the case in TREATMENT, where
+    ``<pending_action>`` is not the compliance surface (TREATMENT verifies the
+    executed fix, not a pending ask), so a shadowed ask there is lower-stakes.
+    """
+    count = 0
+    for action in case.proposed_actions:
+        if (
+            action.action_type == InvestigationActionType.DIAGNOSTIC
+            and action.state == "pending"
+            and action.proposed_in_turn <= before_turn
+        ):
+            action.state = "superseded"
+            action.superseded_reason = "stale_pending"
+            action.superseded_in_turn = case.current_turn
+            pending_action_superseded_stale_total.inc()
+            count += 1
+    return count
+
+
 def _withdraw_unlicensed_solution_offers(
     case: Case, metadata: dict[str, Any] | None = None
 ) -> int:
@@ -380,9 +422,25 @@ def _withdraw_unlicensed_solution_offers(
     """
     if _solution_cause_validated(case):
         return 0
+    # Capture the newest pending SOLUTION turn BEFORE supersession flips state —
+    # it is the shadow cutoff for INV-33 stale-ask retirement below.
+    withdrawn_cutoff = max(
+        (
+            a.proposed_in_turn
+            for a in case.proposed_actions
+            if a.action_type == InvestigationActionType.SOLUTION
+            and a.state == "pending"
+        ),
+        default=None,
+    )
     count = _supersede_pending_solution_offers(case, reason="license_lost")
     if not count:
         return 0
+    # INV-33: retire non-SOLUTION asks the withdrawn offer shadowed, so the
+    # <pending_action> render cannot resurface a stale earlier ask now that the
+    # SOLUTION on top of it is gone.
+    if withdrawn_cutoff is not None:
+        _retire_stale_pending_after_withdrawal(case, before_turn=withdrawn_cutoff)
     logger.warning(
         f"Withdrew {count} pending SOLUTION offer(s) for case {case.case_id}: "
         f"the established-cause license fell "
