@@ -196,3 +196,31 @@ absence_confirmation_link_stripped_total = Counter(
     "confirmation must never mint the CONFIRMED grade. One increment per "
     "stripped link.",
 )
+
+# §7.2 refute-side confidence discipline (#656). A hedged counterfactual
+# is ingested and kept as ORDINARY refuting evidence — this counts how often
+# the model itself hedges the strongest evidence grade. A sustained rate is an
+# elicitation signal (the model reports failed fixes it does not trust), not a
+# truth problem: the decisive-power gate is what protects the conclusion.
+counterfactual_refute_hedged_total = Counter(
+    "faultmaven_counterfactual_refute_hedged_total",
+    "A REFUTES link on a causal_absence evidence row arrived below the "
+    "stance-confidence bar at chain-emission ingest — kept as ordinary "
+    "refuting evidence but denied decisive (§7.2) force. One increment per "
+    "link created.",
+)
+
+# #656 bearing check at the resolution confirm-stamp. One increment per
+# candidate row refused because its content bears on a DIFFERENT chain than
+# the root being confirmed (frame-shared tokens below the bar, elsewhere-shared
+# at/above it). Rate is bounded by refused-rows-per-stamp × stamp evaluations
+# (a retried RESOLVED execution re-evaluates and re-counts — refusal leaves no
+# marker on the case); any sustained rate means confirmations are being
+# recorded against the wrong candidate cause — inspect before trusting
+# CONFIRMED-grade harvests from affected deployments.
+absence_confirmation_bearing_rejected_total = Counter(
+    "faultmaven_absence_confirmation_bearing_rejected_total",
+    "A qualifying causal_absence row was refused as the resolution "
+    "confirmation because its content bears on a different chain than the "
+    "root being confirmed — one increment per refused row.",
+)

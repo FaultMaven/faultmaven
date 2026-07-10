@@ -32,6 +32,7 @@ from faultmaven.core.investigation.cause_assurance import (
     conclusion_overclaims,
     confirm_root_from_resolution_absence,
     grade_cause_assurance,
+    has_resolution_confirmation,
 )
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
@@ -42,7 +43,6 @@ from faultmaven.modules.case.contracts import (
     CaseAction,
     CaseState,
     CauseState,
-    EvidenceCategory,
     VerificationStatus,
 )
 
@@ -120,19 +120,27 @@ def _cause_identified(case: "Case") -> bool:
 
 
 def _has_causal_absence(case: "Case") -> bool:
-    """Whether a ``causal_absence_evidence`` row is on the case.
+    """Whether a QUALIFYING ``causal_absence_evidence`` row is on the case
+    (``cause_assurance.has_resolution_confirmation`` — the SAME METADATA bar
+    the confirm-stamp's candidate filter uses, so the gate can never call a
+    case confirmable on a row the stamp refuses for metadata; the stamp's
+    additional content-bearing refusal deliberately does NOT bind the gate —
+    a mis-citable row still evidences that the user confirmed resolution).
 
     This is the ground-truth signal that the root cause was confirmed
     ELIMINATED — not merely that the symptom was relieved (a mitigation /
     failover / traffic-shift produces ``symptom_absence_evidence`` while the
     cause persists). It is the discriminator between RESOLVED (cause gone) and
     CLOSED-with-documented-solution (stabilized, deferred, or unfixed). See
-    investigation-flow-redesign.md §11 and intent-resolution.md §8.
+    investigation-lifecycle-logic.md ("Gate strictness — absence-driven") and
+    the methodology doc §9.5 (INV-30).
+
+    Qualification matters (#656): the bare any-row read this replaced
+    counted the ENGINE's own M6 failed-fix DISCONFIRMATION rows — so a failed
+    fix satisfied "confirmation the problem is now resolved" — and premature
+    "it's stable" rows from fix windows that later failed.
     """
-    return any(
-        getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-        for e in (case.evidence or [])
-    )
+    return has_resolution_confirmation(case)
 
 
 logger = logging.getLogger(__name__)
@@ -634,9 +642,10 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     has_cause = _cause_identified(case)
     has_solution = bool(case.solutions and len(case.solutions) > 0)
     has_evidence = bool(case.evidence and len(case.evidence) > 0)
-    has_resolution_confirmation = _has_causal_absence(case)
+    # Named to avoid shadowing the imported has_resolution_confirmation().
+    resolution_confirmed = _has_causal_absence(case)
 
-    if has_resolution_confirmation:
+    if resolution_confirmed:
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
             message="",

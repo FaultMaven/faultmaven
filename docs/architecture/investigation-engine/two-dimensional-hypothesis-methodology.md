@@ -557,8 +557,12 @@ the unobservable-cause path only); the **engine** owns every guard it can check.
 every non-survivor is *absolutely* excluded — before stamping
 `validation_method=DEDUCTIVE`. Guard #3's "absolute" bar is itself engine-computed:
 `derive_node_states` drives a sibling's `belief` to `0` **only** on a counterfactual
-(absence-based) refutation, so a merely-correlational net-refute stays above
-`DEDUCTIVE_EXCLUSION_MAX_BELIEF` and blocks the deduction. A mis-asserted
+(absence-based) refutation declared at `stance_confidence >=
+CAUSAL_STANCE_CONFIDENCE_MIN` (a self-HEDGED counterfactual is ordinary refuting
+evidence, not the decisive grade — the refute-side twin of the §7.1 support
+filter; INV-30), so a merely-correlational net-refute — or a hedged
+counterfactual — stays above `DEDUCTIVE_EXCLUSION_MAX_BELIEF` and blocks the
+deduction. A mis-asserted
 exhaustiveness therefore cannot fabricate a validation on its own — the differential
 must have genuinely collapsed — and guard #4 (counterfactual before RESOLVED, and
 harvest is RESOLVED-only) is the downstream backstop against a missed family.
@@ -604,6 +608,18 @@ It must **not** freeze the old conclusion as "verified" nor free-associate an
 unrelated new theory. (This is the precise failure in [§10](#10-worked-example):
 the user disproved the NetworkPolicy chain at turn 28 and the agent neither
 demoted it nor refuted it — it pivoted to an unrelated log warning.)
+
+A counterfactual REFUTES link carries this **decisive** force only when the
+model declares it at `stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN` — the
+refute-side twin of the §7.1 support filter (INV-30): every stance is an LLM
+self-claim, and a self-hedged "I think the fix didn't work" must not
+single-handedly refute a node, zero a sibling's belief for proof-by-exclusion
+(§7.1.1 guard #3), or demote the identified cause (M6). A hedged
+absence-REFUTES still counts as *ordinary* refuting evidence (it feeds the
+`refutes > supports` tally and `_net_refuted`); the engine's own M6 refutation
+links carry no declared confidence and are decisive by construction. Hedged
+arrivals are counted at ingest (`counterfactual_refute_hedged_total`) — an
+elicitation signal, not a truth problem.
 
 Distinguish two failure modes before resuming:
 
@@ -815,6 +831,58 @@ now" row emitted mid-rollout (observed live) must not upgrade the grade. With
 several simultaneously-validated roots the engine never guesses which cause
 the fix removed — the case stays `MECHANISTIC` pending arbitration; a
 REFUTES-linked absence row (a failed fix) never flips to confirmation.
+
+Which rows may stand as a confirmation at all is ONE shared definition
+(`resolution_confirmation_rows`, INV-30): non-engine-authored (the engine only
+mints absence rows as M6 failed-fix **dis**confirmations), not itself a
+failed-fix disconfirmation (`_disconfirmation_row_ids` — REFUTES-linked, on
+either belief axis, to the cause the **engine marked** disconfirmed; a
+REFUTES link to a *sibling* is proof-by-exclusion, so the natural dual-use
+emission "the fix worked, so it wasn't X" stays confirmable — a blanket
+REFUTES-linked exclusion regressed READY to NEEDS_INFO right after the user
+confirmed), and at-or-after the latest **engine-known** failed-fix
+disconfirmation (`latest_disconfirmation_turn` = the newest engine-authored
+M6 row — a premature "stable" row from a fix window the engine saw fail
+confirms nothing). The window is authorship-keyed and `>=` on purpose: node
+pruning can orphan the engine row's REFUTES link (the window must survive
+that); an LLM exclusion note on a sibling recorded *after* a legitimate
+confirmation must not retroactively mask it; and the mixed single-turn shape
+("the restart didn't fix it, but correcting the config did") stamps the
+failed fix and the genuine confirmation at the SAME turn — masking that
+confirmation would strand the resolve behind an ask the user just answered.
+The engine marker is reliable because M6 mints its row even when the model
+already recorded the failure with its own decisive refute
+(`_attach_engine_refutation` idempotence is scoped to the ENGINE's own row —
+suppressing the mint left the window unset and re-qualified stale premature
+rows). A failed fix the engine never saw (the cause was never grounded, so
+M6 never fired) sets no window and marks no rows — accepted self-claim
+trust; the RESOLVED handshake and the stamp's per-root refutation window +
+bearing check still guard the truth surface. The resolution-readiness gate
+and the closure→resolve pivot read the same predicate — before this, the
+gate read READY off ANY absence row, including the engine's own
+disconfirmations, so a *failed* fix satisfied "confirmation the problem is
+now resolved".
+
+The stamp adds two root-scoped bars on top of the metadata bar. The
+**per-root refutation window** (`_root_disconfirmation_turn`, strict `>`):
+the cited row must be NEWER than any refutation recorded against the root
+being confirmed — any author, any confidence. A hedged self-claimed failed
+fix does not demote the root (§7.2), but the top grade is never minted from
+a row recorded at-or-before it; only the user's strictly-newer post-refute
+gone⇒gone completes `CONFIRMED`. And **content-level bearing**
+(`_select_bearing_row`): the citation is the NEWEST candidate not
+affirmatively **about a different chain** (≥2 shared content tokens with
+another chain's statements while <2 with the frame — the root statement, its
+mechanism rungs, its attached hypotheses, the problem anchors — is refused,
+`absence_confirmation_bearing_rejected_total`). Recency beats specificity:
+an older frame-echoing row (premature rows echo frame tokens by
+construction) never outranks the user's actual latest confirmation, however
+terse — a generic "user confirms it's working" row is fine, because the
+handshake is the trust bar and a terse row must not strand a count-held root
+at `NO_ROOT` (the INV-29 rescue). This is a mis-citation guard, not a trust
+bar. Refusal never blocks the resolution itself; the grade stays honest
+(`MECHANISTIC` when a validated root stands, `NO_ROOT` on the count-held
+shape, where the held root stays INCONCLUSIVE and no conclusion is minted).
 
 The grade is **persisted** per turn on `InvestigationProgress.cause_assurance`
 (the `verification_status` pattern — rides the progress blob, no migration).

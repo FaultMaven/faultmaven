@@ -495,6 +495,95 @@ def test_ordinary_refute_does_not_suppress_decisive_attach():
     )
 
 
+def test_hedged_node_counterfactual_does_not_demote_identified_cause():
+    """INV-30 refute side, M6 node-side trigger: a self-HEDGED absence-REFUTES
+    on the root is not decisive — the identified cause stands (against equal
+    validated support) and the conclusion is NOT retracted."""
+    case, root, hyp = _chain_case()
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="pool exhausted",
+        mechanism="leak",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+    )
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    absent = _evidence("ev_absent_hedged", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    case.evidence.append(absent)
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=absent.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="not sure the fix helped",
+            linked_at_turn=case.current_turn,
+            stance_confidence=0.4,
+        )
+    )
+    _recompute_cause_state_from_chain(case)
+    # 2 supports vs 1 hedged refute: not decisive, not net-refuted — stands.
+    assert root.node_state == NodeState.VALIDATED
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.root_cause_conclusion is not None
+
+
+def test_hedged_counterfactual_does_not_suppress_decisive_attach():
+    """INV-30 refute side: a pre-existing HEDGED absence-REFUTES must not
+    satisfy ``_attach_engine_refutation``'s idempotence check — when M6 fires,
+    the engine still attaches its own DECISIVE refutation."""
+    from faultmaven.core.investigation.causal_graph import _attach_engine_refutation
+
+    hedged_row = _evidence("ev_hedged_row", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    root = _root(support_label="ev_root_support")
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=hedged_row.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="uncertain failed fix",
+            linked_at_turn=2,
+            stance_confidence=0.3,
+        )
+    )
+    case = _case(nodes=[root], evidence=[_evidence("ev_root_support"), hedged_row])
+    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    engine_rows = [e for e in case.evidence if e.collected_by == "engine"]
+    assert len(engine_rows) == 1  # attached its own decisive refutation
+    # And that decisive engine link now suppresses a SECOND attach (idempotent).
+    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    assert len([e for e in case.evidence if e.collected_by == "engine"]) == 1
+
+
+def test_llm_decisive_refute_does_not_suppress_engine_marker():
+    """Reviewed window-hole regression: the engine row is the durable
+    failed-fix MARKER the disconfirmation window keys on — 'M6 mints exactly
+    one engine row per disconfirmation' must hold even when the LLM already
+    recorded the failure with its own DECISIVE refute (suppressing the mint
+    left the window at -1 and re-qualified stale premature rows). Idempotence
+    is scoped to the ENGINE's own row."""
+    from faultmaven.core.investigation.causal_graph import _attach_engine_refutation
+    from faultmaven.core.investigation.cause_assurance import (
+        latest_disconfirmation_turn,
+    )
+
+    llm_fail = _evidence("ev_llm_fail", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    root = _root(support_label="ev_root_support")
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=llm_fail.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="fix applied, D persists",
+            linked_at_turn=2,
+        )
+    )
+    case = _case(nodes=[root], evidence=[_evidence("ev_root_support"), llm_fail])
+    assert latest_disconfirmation_turn(case) == -1  # no engine marker yet
+    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    engine_rows = [e for e in case.evidence if e.collected_by == "engine"]
+    assert len(engine_rows) == 1
+    assert latest_disconfirmation_turn(case) == case.current_turn  # window set
+    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    assert len([e for e in case.evidence if e.collected_by == "engine"]) == 1
+
+
 def test_one_chain_demoted_other_standing_stays_identified():
     """Two chains; one is counterfactually disconfirmed, the other's root stays
     validated → the case remains IDENTIFIED via the standing chain."""
@@ -1307,9 +1396,12 @@ def test_stamp_ignores_engine_authored_absence_rows():
 
 
 def test_stamp_ignores_rows_from_before_a_failed_fix():
-    """A premature 'it's stable' row recorded before a fix window that later
-    FAILED (a REFUTES-linked absence row) must not confirm a later fix; a row
-    newer than the disconfirmation may."""
+    """A premature 'it's stable' row recorded before a fix window the ENGINE
+    saw fail (an M6 engine-authored disconfirmation row exists at a later
+    turn) must not confirm a later fix; a row at-or-after the disconfirmation
+    may. (INV-30: the window is keyed on ENGINE M6 rows — an LLM sibling
+    refutation link deliberately does not mask earlier confirmations, so a
+    late exclusion note cannot regress an already-confirmable case.)"""
     from faultmaven.core.investigation.cause_assurance import (
         confirm_root_from_resolution_absence,
     )
@@ -1318,9 +1410,11 @@ def test_stamp_ignores_rows_from_before_a_failed_fix():
     _recompute_cause_state_from_chain(case)
     premature = _absence_row("ev_premature2", 3)
     failed_fix = _absence_row("ev_failed_fix2", 5)
+    object.__setattr__(failed_fix, "collected_by", "engine")
     case.evidence += [premature, failed_fix]
-    # The failed fix disconfirmed a SIBLING cause (a REFUTES-linked absence on
-    # the target root would refute it and moot the stamp).
+    # The M6 row is REFUTES-linked where the failed fix landed (a sibling
+    # here — a REFUTES-linked absence on the target root would refute it and
+    # moot the stamp).
     other = _root("cn_00000000fa11")
     case.causal_nodes[other.node_id] = other
     other.evidence_links.append(

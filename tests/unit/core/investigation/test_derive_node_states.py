@@ -199,6 +199,74 @@ def test_counterfactual_absence_refutes_decisively_over_support():
     assert n.node_state == NodeState.REFUTED
 
 
+def test_hedged_counterfactual_refute_is_not_decisive():
+    """INV-30 refute side: a self-HEDGED absence-REFUTES (below
+    CAUSAL_STANCE_CONFIDENCE_MIN) loses the §7.2 decisive power — against an
+    equal causal SUPPORTS the node is a correlational TIE (INCONCLUSIVE), not
+    REFUTED — and it must not zero the node's belief (which would let
+    proof-by-exclusion count the node as absolutely excluded)."""
+    sup = _evidence("ev_sup_h", EvidenceCategory.CAUSAL_EVIDENCE)
+    absent = _evidence("ev_absent_h", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    n = _node(
+        _nid(0x81),
+        links=[
+            _link("ev_sup_h", EvidenceStance.SUPPORTS),
+            _link("ev_absent_h", EvidenceStance.REFUTES, stance_confidence=0.4),
+        ],
+    )
+    case = _case([n], evidence=[sup, absent])
+    derive_node_states(case)
+    assert n.node_state == NodeState.INCONCLUSIVE
+    assert n.belief == 0.5  # untouched — no absolute exclusion from a hedge
+
+
+def test_hedged_counterfactual_still_counts_as_ordinary_refute():
+    """The hedge withdraws DECISIVE force only: alone (refutes > supports) a
+    hedged absence-REFUTES still refutes through the ordinary net bar."""
+    absent = _evidence("ev_absent_o", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    n = _node(
+        _nid(0x82),
+        links=[_link("ev_absent_o", EvidenceStance.REFUTES, stance_confidence=0.4)],
+    )
+    case = _case([n], evidence=[absent])
+    derive_node_states(case)
+    assert n.node_state == NodeState.REFUTED
+
+
+def test_unset_confidence_counterfactual_refute_stays_decisive():
+    """None confidence (the contract default is 1.0, but reloaded rows can
+    carry NULL) reads as full confidence — decisive, unchanged behavior."""
+    sup = _evidence("ev_sup_n", EvidenceCategory.CAUSAL_EVIDENCE)
+    absent = _evidence("ev_absent_n", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    refute = _link("ev_absent_n", EvidenceStance.REFUTES)
+    object.__setattr__(refute, "stance_confidence", None)  # the reloaded-NULL shape
+    n = _node(
+        _nid(0x83),
+        links=[_link("ev_sup_n", EvidenceStance.SUPPORTS), refute],
+    )
+    case = _case([n], evidence=[sup, absent])
+    derive_node_states(case)
+    assert n.node_state == NodeState.REFUTED
+    assert n.belief == 0.0  # absolute exclusion — decisive counterfactual
+
+
+def test_explicit_zero_confidence_counterfactual_is_not_decisive():
+    """An EXPLICIT 0.0 is a declared no-confidence link — filtered, same as
+    the SUPPORTS side."""
+    sup = _evidence("ev_sup_z", EvidenceCategory.CAUSAL_EVIDENCE)
+    absent = _evidence("ev_absent_z", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    n = _node(
+        _nid(0x84),
+        links=[
+            _link("ev_sup_z", EvidenceStance.SUPPORTS),
+            _link("ev_absent_z", EvidenceStance.REFUTES, stance_confidence=0.0),
+        ],
+    )
+    case = _case([n], evidence=[sup, absent])
+    derive_node_states(case)
+    assert n.node_state == NodeState.INCONCLUSIVE
+
+
 def test_no_evidence_stays_candidate():
     n = _node(_nid(5))
     case = _case([n])
@@ -1149,3 +1217,36 @@ def test_hedged_only_block_labeled_and_annotated_distinctly():
     assert root.node_state == NodeState.INCONCLUSIVE
     counter.labels.assert_called_with(reason="hedged_only")
     assert root_support_block_reasons(case) == {root.node_id: BLOCK_REASON_HEDGED}
+
+
+def test_hedged_counterfactual_does_not_evict_root_from_block_classifier():
+    """INV-30 refute-side consequence, pinned deliberately: a HEDGED
+    absence-REFUTES no longer marks 'refuted territory', so a root held only
+    by the count bar stays block-classified (count-held-eligible → the
+    RESOLVED handshake may later complete it). A DECISIVE counterfactual
+    still evicts it."""
+    from faultmaven.core.investigation.causal_graph import (
+        BLOCK_REASON_COUNT,
+        root_support_block_reasons,
+    )
+
+    sup = _evidence("ev_ch1", EvidenceCategory.CAUSAL_EVIDENCE)
+    sup2 = _evidence("ev_ch2", EvidenceCategory.CAUSAL_EVIDENCE)
+    absent = _evidence("ev_ch_abs", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    root = _node(
+        _nid(0xF3),
+        node_type=NodeType.ROOT,
+        links=[
+            _link("ev_ch1", EvidenceStance.SUPPORTS),
+            _link("ev_ch2", EvidenceStance.SUPPORTS, stance_confidence=0.4),
+            _link("ev_ch_abs", EvidenceStance.REFUTES, stance_confidence=0.3),
+        ],
+    )
+    case = _case([root], evidence=[sup, sup2, absent])
+    # 1 qualifying support (the hedged one filters), 2 supports > 1 refute,
+    # hedged counterfactual -> NOT refuted territory -> count-blocked.
+    assert root_support_block_reasons(case) == {root.node_id: BLOCK_REASON_COUNT}
+
+    # Raise the refute to decisive: the root leaves the classifier entirely.
+    root.evidence_links[2] = _link("ev_ch_abs", EvidenceStance.REFUTES)
+    assert root_support_block_reasons(case) == {}

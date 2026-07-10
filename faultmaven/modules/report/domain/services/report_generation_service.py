@@ -564,10 +564,42 @@ class ReportGenerationService:
         if rcc and getattr(rcc, "evidence_basis", None):
             cited_ids = list(rcc.evidence_basis)
 
+        # INV-30 polarity guard on BOTH branches (the evidence_basis list is
+        # LLM-authored and can cite anything): an absence row renders as
+        # "confirming" only when it qualifies as a resolution confirmation —
+        # engine-authored M6 rows are failed-fix DISCONFIRMATIONS (the
+        # opposite polarity) and premature rows from a failed fix window
+        # confirm nothing. Same shared predicate as the readiness gate and
+        # the confirm-stamp (function-local import: the _assurance_note
+        # precedent for report → core.investigation reads).
+        from faultmaven.core.investigation.cause_assurance import (
+            resolution_confirmation_rows,
+        )
+
+        qualified_absence_ids = {
+            getattr(e, "evidence_id", None) for e in resolution_confirmation_rows(case)
+        }
+
+        def _confirming_polarity(ev) -> bool:
+            if getattr(getattr(ev, "category", None), "value", None) != (
+                "causal_absence_evidence"
+            ):
+                return True
+            return getattr(ev, "evidence_id", None) in qualified_absence_ids
+
+        cited: List = []
         if cited_ids:
             ev_by_id = {getattr(ev, "evidence_id", ""): ev for ev in evidence_items}
-            cited = [ev_by_id[i] for i in cited_ids if i in ev_by_id]
-        else:
+            cited = [
+                ev_by_id[i]
+                for i in cited_ids
+                if i in ev_by_id and _confirming_polarity(ev_by_id[i])
+            ]
+        if not cited:
+            # Category fallback — also taken when the polarity filter emptied
+            # the cited list (an LLM-authored evidence_basis can cite ONLY
+            # disqualified absence rows; the section must then fall back to
+            # the tagged rows rather than silently vanish).
             cited = [
                 ev
                 for ev in evidence_items
@@ -576,6 +608,7 @@ class ReportGenerationService:
                 # "fix worked at the cause level" signal (causal_absence_evidence,
                 # which supersedes the removed legacy ``solution_evidence``).
                 and ev.category.value in ("causal_evidence", "causal_absence_evidence")
+                and _confirming_polarity(ev)
             ]
 
         if cited:
