@@ -885,7 +885,8 @@ def test_pre_cap_verified_engine_mirror_corrects_down():
 
 def test_llm_authored_verified_rcc_is_not_touched_by_the_cap():
     """The M2 cap governs the ENGINE's mirror only: an LLM-authored conclusion
-    is never rewritten here (its retraction lifecycle is #656 P2.3) — the
+    is never rewritten here (its retraction lifecycle is the LLM-conclusion
+    follow-up tracked on #656) — the
     over-claim is surfaced via the persisted grade + the seam warning instead."""
     case, root, hyp = _chain_case()
     own = RootCauseConclusion(

@@ -28,7 +28,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 from uuid import uuid4
 
 # Module initialization
@@ -301,34 +301,19 @@ def _determine_action_type(
 
 
 # ProposedAction states that count as a LIVE offer for the solution_proposed
-# derivation (P2.1, #656 DF-3): 'pending' is an offer awaiting execution;
-# 'accepted' is an executed fix (a historical fact — never withdrawn).
-# 'superseded' and 'rejected' are out of liveness.
-_LIVE_OFFER_STATES = ("pending", "accepted")
-
-
-def _live_solution_offer_exists(case: Case) -> bool:
-    """True iff a live SOLUTION offer stands (P2.1 derivation input).
-
-    MITIGATION/DIAGNOSTIC actions never feed ``solution_proposed`` — the
-    indicator tracks permanent-fix offers only (same population the 3F
-    write-once set covered, minus the offers that have left liveness).
-    """
-    return any(
-        a.action_type == InvestigationActionType.SOLUTION
-        and a.state in _LIVE_OFFER_STATES
-        for a in case.proposed_actions
-    )
-
-
-def _supersede_pending_solution_offers(case: Case, *, reason: str) -> int:
+def _supersede_pending_solution_offers(
+    case: Case, *, reason: Literal["reproposal", "license_lost"]
+) -> int:
     """Mark every PENDING SOLUTION offer superseded; return the count.
 
     Only pending offers are touched: an ACCEPTED offer records that the user
     executed the fix — a fact supersession cannot unmake (its truth surface
     is the M6 failed-fix machinery, not offer liveness). MITIGATION and
     DIAGNOSTIC actions are out of scope (they never fed ``solution_proposed``
-    and mitigations are not licensed by an established cause).
+    and mitigations are not licensed by an established cause). ``reason`` is
+    a closed vocabulary (typed here AND on the model field) because it feeds
+    the ``solution_offer_superseded_total`` metric label — a free-form string
+    would grow label cardinality silently.
     """
     count = 0
     for action in case.proposed_actions:
@@ -347,14 +332,17 @@ def _supersede_pending_solution_offers(case: Case, *, reason: str) -> int:
 def _withdraw_unlicensed_solution_offers(
     case: Case, metadata: dict[str, Any] | None = None
 ) -> int:
-    """Re-check the M5 license on standing PENDING solution offers (P2.1).
+    """Re-check the M5 license on standing PENDING solution offers (INV-32).
 
-    A SOLUTION offer is admitted only while a cause is established (the M5
-    creation gate, ``_solution_cause_validated``). This is the same predicate
-    re-checked at recompute time, after this turn's demotions/retractions have
-    settled: when the license has fallen (M6 failed-fix demotion, conclusion
-    retraction, MECE hold), the pending offer is WITHDRAWN — superseded, out
-    of the ``<pending_action>`` context block and the ``solution_proposed``
+    A SOLUTION offer is admitted only while a cause is established — the M5
+    creation gate, ``_solution_cause_validated``, called here VERBATIM so the
+    creation gate, this liveness re-check, and the deferred-close gate can
+    never diverge on what "established" means. Re-checked at recompute time,
+    after this turn's demotions/retractions have settled: when the license
+    has fallen (M6 failed-fix demotion, conclusion retraction, MECE hold, or
+    the working-conclusion proxy dropping below its bar — e.g. stagnation
+    decay), the pending offer is WITHDRAWN — superseded, out of the
+    ``<pending_action>`` context block and the ``solution_proposed``
     derivation — rather than kept standing as "awaiting execution" for a
     cause the engine no longer asserts (#656 DF-3: the frame latch).
 
@@ -363,28 +351,34 @@ def _withdraw_unlicensed_solution_offers(
     referencing a proposal the user can no longer see as pending. The notice
     is PREPENDED: the turn record truncates feedback head-first, and on messy
     turns (exactly when withdrawals happen) earlier accumulators can push a
-    tail-appended notice past the cap.
+    tail-appended notice past the cap. The notice deliberately does NOT name
+    a mechanism — the license can fall to a demotion, a retraction, a MECE
+    hold, or plain confidence decay on the working-conclusion proxy, and the
+    engine cannot always tell which from here.
 
     Known timing edges (documented, accepted):
 
-    - The ``working_conclusion`` proxy leg of ``_cause_identified`` reads the
-      PREVIOUS turn's conclusion (regeneration runs after this recompute), so
-      a license resting solely on it clears on the FOLLOWING turn's recompute
-      — one-turn lag. The prompt frame still exits same-turn regardless: the
+    - The ``working_conclusion`` proxy leg reads the PREVIOUS turn's
+      conclusion (regeneration runs after this recompute), so a license
+      resting solely on it clears on the FOLLOWING turn's recompute —
+      one-turn lag. The prompt frame still exits same-turn regardless: the
       Zone-3-pending conjunction requires ``cause_state == IDENTIFIED``,
       which the demotion drops in this same recompute. cause_state / RCC /
       contest falls withdraw same-turn.
+    - The reverse composition — M5 admits on the PRIOR turn's truth, this
+      re-check reads the settled truth — means an offer emitted in the very
+      turn that knocks its cause down is admitted then withdrawn SAME TURN
+      (pinned; the engine must not end a turn presenting a fix for a cause
+      it no longer asserts). The assistant's already-delivered prose may
+      still describe that fix for one turn; the next turn's context carries
+      this notice and no ``<pending_action>`` block.
     - A standing LLM-authored RootCauseConclusion keeps the license through a
       MECE hold (trust boundary — the engine withholds only its OWN
-      assertions; LLM-conclusion lifecycle is P2.3), so the MECE trigger
-      withdraws only licenses resting on cause_state / the engine mirror /
-      the working-conclusion proxy.
+      assertions; LLM-conclusion retraction is the follow-up tracked on
+      #656), so the MECE trigger withdraws only licenses resting on
+      cause_state / the engine mirror / the working-conclusion proxy.
     """
-    # Local import keeps M5's creation gate and this liveness re-check on ONE
-    # predicate (see _solution_cause_validated for the cycle rationale).
-    from faultmaven.core.investigation.terminal_transitions import _cause_identified
-
-    if _cause_identified(case):
+    if _solution_cause_validated(case):
         return 0
     count = _supersede_pending_solution_offers(case, reason="license_lost")
     if not count:
@@ -402,19 +396,44 @@ def _withdraw_unlicensed_solution_offers(
         },
     )
     if metadata is not None:
-        current = metadata.get("system_feedback", "") or ""
-        notice = (
-            "SYSTEM: Your pending SOLUTION proposal was withdrawn because the "
-            "root cause it targeted is no longer established (demoted or "
-            "retracted). Re-ground the root cause with evidence before "
-            "re-proposing a permanent fix, or propose a temporary mitigation "
-            "(WORKAROUND) instead."
+        _add_system_feedback(
+            metadata,
+            "SYSTEM: Your pending SOLUTION proposal was withdrawn because "
+            "the root cause it targeted is no longer established. Re-ground "
+            "the root cause with evidence before re-proposing a permanent "
+            "fix, or propose a temporary mitigation (WORKAROUND) instead.",
+            # Prepend (see docstring): truncation keeps the head.
+            prepend=True,
         )
-        # Prepend (see docstring): truncation keeps the head.
-        metadata["system_feedback"] = "\n".join(
-            part for part in (notice, current) if part
-        ).strip()
     return count
+
+
+def _add_system_feedback(
+    metadata: dict[str, Any], message: str, *, prepend: bool = False
+) -> None:
+    """Accumulate a system notice for the next turn's prompt context.
+
+    ``prepend`` puts the notice at the HEAD: the turn record truncates
+    feedback head-first, so a notice that must survive a messy turn (many
+    accumulators active) goes in front. Default is chronological append.
+    """
+    current = metadata.get("system_feedback", "") or ""
+    parts = (message, current) if prepend else (current, message)
+    metadata["system_feedback"] = "\n".join(p for p in parts if p).strip()
+
+
+# Gate signal → the ProposedAction type it may register against (INV-32
+# type-matched compliance). ONE table consumed by both the guards in
+# ``_apply_stage_gate_signals`` and the acceptance targeting in
+# ``_apply_stage_gate_side_effects`` — the mapping previously lived in three
+# hand-written sites, and a gate added to one but not another recreates the
+# any-type misattribution this table exists to prevent. ``mitigation_verified``
+# is deliberately absent: verification accepts no action (its action left
+# pending at the accept step).
+_GATE_ACTION_TYPE: dict[str, InvestigationActionType] = {
+    "solution_accepted": InvestigationActionType.SOLUTION,
+    "mitigation_accepted": InvestigationActionType.MITIGATION,
+}
 
 
 def _apply_stage_gate_side_effects(
@@ -442,11 +461,11 @@ def _apply_stage_gate_side_effects(
     This replaces the old compliance_detector.py logic — the LLM now
     detects compliance per Framework §4.1.
     """
-    target_types = []
-    if "solution_accepted" in completed_gates:
-        target_types.append(InvestigationActionType.SOLUTION)
-    if "mitigation_accepted" in completed_gates:
-        target_types.append(InvestigationActionType.MITIGATION)
+    target_types = [
+        action_type
+        for gate, action_type in _GATE_ACTION_TYPE.items()
+        if gate in completed_gates
+    ]
 
     for target_type in target_types:
         pending_action = None
@@ -521,6 +540,178 @@ def _apply_stage_gate_side_effects(
 
     metadata["compliance_detected"] = True
     metadata["progress_made"] = True
+
+
+def _apply_stage_gate_signals(
+    case: Case,
+    m: Any,
+    user_message: str,
+    metadata: dict[str, Any],
+) -> None:
+    """Apply stage-gate compliance signals (Framework §4.1).
+
+    Runs AFTER the solutions step of ``_apply_investigation_updates`` so the
+    guards see ProposedActions created THIS turn: the prompt's KB-resolution
+    flow mandates SolutionToAdd + ``solution_accepted`` in ONE response, and
+    evaluating these signals before the solutions step deterministically
+    rejected that bundle (the guard read a pre-solutions snapshot) while
+    telling the LLM to re-propose what it had just proposed.
+
+    Idempotency FIRST, guards second: a re-emitted, already-registered signal
+    is absorbed silently — LLMs re-assert standing booleans, and rejecting
+    the re-emission produced false "was not registered" feedback that invited
+    a redundant re-proposal.
+
+    Type-matched guards (INV-32, via ``_GATE_ACTION_TYPE``): a gate registers
+    only against a pending action of ITS type — the old any-type check let
+    ``solution_accepted`` pass against a lone pending DIAGNOSTIC and
+    manufacture a permanent accepted-ladder latch, and let a mitigation
+    report register against a 3C/3D-downgraded DIAGNOSTIC, defeating the
+    downgrade contract (the gate prevents REGISTERING, not the action
+    happening in the user's environment). Rejections surface via
+    ``system_feedback``. When the mitigation ACCEPT signal is rejected,
+    same-turn VERIFY is suppressed under the SAME notice — processing it
+    would fire the ordering guard's "set BOTH in the same response" advice,
+    directly contradicting the rejection it accompanies.
+    """
+    p = case.progress
+
+    def _has_pending(action_type: InvestigationActionType) -> bool:
+        return any(
+            a.state == "pending" and a.action_type == action_type
+            for a in case.proposed_actions
+        )
+
+    # --- solution_accepted --------------------------------------------
+    if getattr(m, "solution_accepted", False):
+        if p.solution_accepted:
+            pass  # already registered — idempotent re-emission, silent
+        elif not _has_pending(_GATE_ACTION_TYPE["solution_accepted"]):
+            logger.warning(
+                f"Rejected stage-gate milestone 'solution_accepted' for case "
+                f"{case.case_id}: no pending SOLUTION ProposedAction exists"
+            )
+            _add_system_feedback(
+                metadata,
+                "SYSTEM: 'solution_accepted' was not registered — no "
+                "SOLUTION proposal is currently pending (it may have been "
+                "withdrawn or superseded since it was made). If the user "
+                "executed a fix and the root cause stands established, "
+                "re-propose the fix as a SolutionToAdd this turn and set the "
+                "milestone when the user confirms against the standing "
+                "proposal; if the problem is already resolved, record the "
+                "confirming causal_absence evidence instead.",
+            )
+        else:
+            p.solution_accepted = True
+            metadata["milestones_completed"].append("solution_accepted")
+
+    # --- mitigation signals (redesign R2: materialize progress.mitigation;
+    # the milestone NAMEs still enter milestones_completed for telemetry) ---
+    stab_accepted_signal = bool(getattr(m, "mitigation_accepted", False))
+    stab_verified_signal = bool(getattr(m, "mitigation_verified", False))
+
+    if stab_accepted_signal and p.mitigation is not None and p.mitigation.accepted:
+        # Already registered. Single-mitigation model (INV-24): a SECOND
+        # workaround's execution cannot re-enter the gate ladder. Surface
+        # that when a pending MITIGATION stands (the rendered
+        # MILESTONE_TO_SET affordance is dead for it — a silent drop leaves
+        # the LLM re-emitting forever); a bare re-emission with nothing
+        # pending is absorbed silently.
+        stab_accepted_signal = False
+        if _has_pending(InvestigationActionType.MITIGATION):
+            _add_system_feedback(
+                metadata,
+                "SYSTEM: 'mitigation_accepted' was not re-registered — the "
+                "case's single mitigation record already registered "
+                "acceptance (no mitigation re-entry, INV-24). Treat the "
+                "executed workaround as part of the standing mitigation: "
+                "record its outcome as evidence, and set "
+                "mitigation_verified only when the situation is confirmed "
+                "stable.",
+            )
+    elif stab_accepted_signal and not _has_pending(InvestigationActionType.MITIGATION):
+        logger.warning(
+            f"Rejected mitigation_accepted for case {case.case_id}: "
+            f"no pending MITIGATION ProposedAction exists"
+        )
+        notice = (
+            "SYSTEM: 'mitigation_accepted' was not registered — no "
+            "MITIGATION proposal is currently pending. A mitigation "
+            "registers only against a standing WORKAROUND proposal grounded "
+            "in symptom evidence; file the symptom evidence and re-propose "
+            "the workaround (SolutionToAdd, solution_type=WORKAROUND) "
+            "before setting the milestone."
+        )
+        stab_accepted_signal = False
+        if stab_verified_signal and (p.mitigation is None or not p.mitigation.accepted):
+            # Same-turn verify presupposes the acceptance just rejected —
+            # suppress it under the SAME notice rather than letting the
+            # ordering guard below add contradictory retry advice.
+            stab_verified_signal = False
+            notice += (
+                " The same applies to 'mitigation_verified' emitted this "
+                "turn — it presupposes the acceptance that was not "
+                "registered."
+            )
+        _add_system_feedback(metadata, notice)
+
+    if stab_accepted_signal:
+        if p.mitigation is None:
+            # proposed_at_turn = the turn the latest workaround
+            # ProposedAction was proposed, else current_turn.
+            proposed_turn = case.current_turn
+            for action in reversed(case.proposed_actions):
+                if action.action_type == InvestigationActionType.MITIGATION:
+                    proposed_turn = action.proposed_in_turn
+                    break
+            p.mitigation = MitigationRecord(proposed_at_turn=proposed_turn)
+        if not p.mitigation.accepted:
+            p.mitigation.accepted = True
+            metadata["milestones_completed"].append("mitigation_accepted")
+
+    if stab_verified_signal:
+        # Ordering guard: verification presupposes acceptance. If accept
+        # wasn't signalled (now or earlier), reject and surface via
+        # system_feedback for retry, instead of crashing the turn on the
+        # record validator.
+        if p.mitigation is None or not p.mitigation.accepted:
+            logger.warning(
+                f"Rejected mitigation 'mitigation_verified' for case "
+                f"{case.case_id}: prerequisite 'mitigation_accepted' is "
+                f"not set (state-machine ordering)."
+            )
+            _add_system_feedback(
+                metadata,
+                "MILESTONE ORDER ERROR: You set mitigation_verified=True "
+                "without first setting mitigation_accepted=True. "
+                "Verification presupposes acceptance — set "
+                "mitigation_accepted=True (based on the user's confirmation "
+                "signals) before mitigation_verified=True. Set BOTH "
+                "milestones in the same response if both happened this "
+                "turn, OR set mitigation_accepted=True first and verify on "
+                "a follow-up turn after the user confirms.",
+            )
+            metadata.setdefault("validation_repairs", []).append(
+                "Rejected mitigation_verified "
+                "(prerequisite mitigation_accepted not set)"
+            )
+        elif not p.mitigation.verified:
+            p.mitigation.verified = True
+            p.mitigation.completed_at_turn = case.current_turn
+            metadata["milestones_completed"].append("mitigation_verified")
+
+    # --- side effects (Framework §4.1): mark the type-matched pending
+    # ProposedAction accepted + ActionAttempt audit ----------------------
+    stage_gate_completed = {
+        "mitigation_accepted",
+        "mitigation_verified",
+        "solution_accepted",
+    } & set(metadata["milestones_completed"])
+    if stage_gate_completed:
+        _apply_stage_gate_side_effects(
+            case, stage_gate_completed, user_message, metadata
+        )
 
 
 def _is_context_length_error(exc: Exception) -> bool:
@@ -1082,14 +1273,13 @@ def _recompute_assessment_state(
       ``IDENTIFIED`` iff a standing chain root is VALIDATED; NOT sticky (it
       follows the root's evidence-derived truth, so M6 drops it on its own).
     - ``solution_proposed`` / ``solution_state`` are DERIVED from live
-      SOLUTION offers each recompute (P2.1, #656 DF-3 — the write-once latch
-      dissolved): first the M5 license is re-checked (pending offers whose
-      established-cause license fell this turn are withdrawn), then
-      ``solution_proposed`` = a live offer stands OR the gate ladder has
-      advanced (``solution_accepted``/``solution_verified`` are forward-only
-      facts — the user executed a fix — so the validator's ordering
-      invariants hold by construction). ``solution_state`` mirrors it
-      (``SELECTED``/``UNKNOWN``; ``CANDIDATES`` remains reserved).
+      SOLUTION offers each recompute (INV-32, #656 DF-3 — the write-once
+      latch dissolved): first the M5 license is re-checked (pending offers
+      whose established-cause license fell this turn are withdrawn), then
+      the pair is derived by the SHARED
+      ``terminal_transitions.derive_solution_surface`` (also called by the
+      resolution finalizer and the CLOSED executor — one definition, no
+      terminal drift).
     - ``verification_status``: the grounding × progress join
       (``assess_verification_status``), computed LAST so it reads the grade the
       cause_state recompute (including its deductive-exclusion stamp) just
@@ -1107,17 +1297,16 @@ def _recompute_assessment_state(
     # confirmation (terminal_transitions._execute_resolved_transition).
     _recompute_cause_state_from_chain(case, exclusion_survivors=exclusion_survivors)
 
-    # P2.1 (#656 DF-3): solution_proposed is DERIVED, not latched. Runs AFTER
-    # the cause recompute so the license re-check reads this turn's settled
-    # truth (a root demoted or a conclusion retracted above withdraws the
-    # pending offer in the same turn). Accepted/verified are forward-only
-    # gate facts and keep the indicator True (state_validator ordering).
-    _withdraw_unlicensed_solution_offers(case, metadata)
-    offer_live = (
-        p.solution_accepted or p.solution_verified or _live_solution_offer_exists(case)
+    # INV-32 (#656 DF-3): solution_proposed is DERIVED, not latched. Runs
+    # AFTER the cause recompute so the license re-check reads this turn's
+    # settled truth (a root demoted or a conclusion retracted above withdraws
+    # the pending offer in the same turn).
+    from faultmaven.core.investigation.terminal_transitions import (
+        derive_solution_surface,
     )
-    p.solution_proposed = offer_live
-    p.solution_state = SolutionState.SELECTED if offer_live else SolutionState.UNKNOWN
+
+    _withdraw_unlicensed_solution_offers(case, metadata)
+    derive_solution_surface(case)
 
     # Assurance grade + verification status LAST — after the cause_state
     # recompute above has run derive_node_states + the deductive-exclusion
@@ -1267,15 +1456,12 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
         return
     # INV-32: the closure message asserts "the root cause and fix are
     # documented" — that claim needs the SAME established-cause license the
-    # fix offer needed. Solution records are monotone (never withdrawn), so
+    # fix offer needed (the M5 wrapper, verbatim — three gates, ONE
+    # predicate). Solution records are monotone (never withdrawn), so
     # without this gate a case whose cause fell THIS turn (offer just
     # withdrawn license_lost, feedback telling the LLM to re-ground) would be
     # proposed for closure citing the disconfirmed cause in the same breath.
-    from faultmaven.core.investigation.terminal_transitions import (
-        _cause_identified,
-    )
-
-    if not _cause_identified(case):
+    if not _solution_cause_validated(case):
         return
     # Don't clobber an in-flight handshake, and never on a terminal case.
     if getattr(case, "pending_transition", None) or case.is_terminal:
@@ -6946,19 +7132,12 @@ class MilestoneEngine:
             p = case.progress
             # Only set to True (never revert).
             #
-            # LOAD-BEARING ORDER: ``mitigation_accepted`` MUST come before
-            # ``mitigation_verified``. The ordering-rejection guard below
-            # relies on this iteration order so that when the LLM emits
-            # both milestones in one response, ``mitigation_accepted``
-            # is applied first and the prerequisite check for
-            # ``mitigation_verified`` then passes. Reordering this list
-            # (alphabetical sort, regrouping) would silently shift the
-            # same-turn case onto the rejection path. See the ordering
-            # guard inside the loop below.
-            # Mitigation signals (mitigation_accepted / mitigation_verified)
-            # are NOT plain progress booleans anymore (redesign R2). They are
-            # routed into progress.mitigation below, after the generic loop.
-            # The LLM-facing MilestoneUpdates field NAMES are unchanged.
+            # STAGE-GATE SIGNALS ARE NOT APPLIED HERE. ``solution_accepted``
+            # and the mitigation pair are compliance signals whose guards
+            # must see the ProposedActions created by THIS turn's solutions
+            # step (the prompt's KB-resolution flow mandates SolutionToAdd +
+            # solution_accepted in one response) — they are applied by
+            # ``_apply_stage_gate_signals`` AFTER step 5 below.
             milestone_fields = [
                 # Progress indicators (LLM context, non-stage-driving)
                 "symptom_verified",
@@ -6966,31 +7145,7 @@ class MilestoneEngine:
                 # solution_proposed — engine-derived from live SOLUTION offers
                 #   at the assessment recompute (INV-32), never LLM-set
                 # solution_verified — requires User-Agent Handshake
-                # Stage-gate milestones (LLM detects user compliance — Framework §4.1)
-                "solution_accepted",
             ]
-            stage_gate_fields = {
-                "solution_accepted",
-            }
-
-            # Guard: a stage-gate milestone requires a pending ProposedAction
-            # OF THE GATE'S TYPE (no hallucinated compliance; INV-32
-            # hardening — the old any-type check let solution_accepted pass
-            # against a lone pending DIAGNOSTIC and manufacture a permanent
-            # accepted-ladder latch, and let a mitigation report register
-            # against a downgraded DIAGNOSTIC, defeating the 3C/3D downgrade
-            # contract: the gate prevents REGISTERING, not the action
-            # happening in the user's environment).
-            has_pending_solution_action = any(
-                a.state == "pending"
-                and a.action_type == InvestigationActionType.SOLUTION
-                for a in case.proposed_actions
-            )
-            has_pending_mitigation_action = any(
-                a.state == "pending"
-                and a.action_type == InvestigationActionType.MITIGATION
-                for a in case.proposed_actions
-            )
 
             # NOTE (redesign R1): the cause-identification signal
             # ``root_cause_identified`` → ``cause_state=IDENTIFIED`` is a TRUTH
@@ -7002,33 +7157,6 @@ class MilestoneEngine:
 
             for field in milestone_fields:
                 if getattr(m, field, False):
-                    # Guard: reject stage-gate milestones if no pending action
-                    # of the matching type stands. Surfaced via
-                    # system_feedback (not silent): the offer may have been
-                    # withdrawn/superseded since the user left to execute it
-                    # (INV-32), and the LLM must know why the milestone did
-                    # not register instead of re-emitting it every turn.
-                    if field in stage_gate_fields and not has_pending_solution_action:
-                        logger.warning(
-                            f"Rejected stage-gate milestone '{field}' for case "
-                            f"{case.case_id}: no pending SOLUTION "
-                            f"ProposedAction exists"
-                        )
-                        current_feedback = metadata.get("system_feedback") or ""
-                        metadata["system_feedback"] = (
-                            f"{current_feedback}\n"
-                            f"SYSTEM: '{field}' was not registered — no "
-                            "SOLUTION proposal is currently pending (it may "
-                            "have been withdrawn or superseded since it was "
-                            "made). If the user executed a fix and the root "
-                            "cause stands established, re-propose the fix as "
-                            "a SolutionToAdd this turn and set the milestone "
-                            "when the user confirms against the standing "
-                            "proposal; if the problem is already resolved, "
-                            "record the confirming causal_absence evidence "
-                            "instead."
-                        ).strip()
-                        continue
                     # R1: the LLM's grounded "root_cause_identified" signal
                     # maps to the engine-owned cause_state enum, never a raw
                     # bool field. cause_state is recomputed each turn (see
@@ -7044,103 +7172,6 @@ class MilestoneEngine:
                     if not getattr(p, field, False):
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
-
-            # Mitigation signals (redesign R2): the LLM still emits the
-            # ``mitigation_accepted`` / ``mitigation_verified`` MilestoneUpdates
-            # fields (compliance detection); the engine materializes the
-            # progress.mitigation record from them rather than setting
-            # progress booleans. The milestone NAMEs are still appended to
-            # ``milestones_completed`` (telemetry symbol unchanged).
-            stab_accepted_signal = bool(getattr(m, "mitigation_accepted", False))
-            stab_verified_signal = bool(getattr(m, "mitigation_verified", False))
-
-            if stab_accepted_signal or stab_verified_signal:
-                # Guard: the ACCEPT signal requires a pending MITIGATION
-                # ProposedAction (no hallucinated compliance; type-matched —
-                # a downgraded DIAGNOSTIC or a pending SOLUTION must not
-                # register a mitigation, per the 3D downgrade contract). The
-                # VERIFY signal deliberately needs no pending action: its
-                # prerequisite is the accepted mitigation record (ordering
-                # guard below) — the action already left pending at the
-                # accept step, so requiring one here rejected every
-                # accept-then-verify-later flow.
-                if stab_accepted_signal and not has_pending_mitigation_action:
-                    logger.warning(
-                        f"Rejected mitigation_accepted for case "
-                        f"{case.case_id}: no pending MITIGATION "
-                        f"ProposedAction exists"
-                    )
-                    current_feedback = metadata.get("system_feedback") or ""
-                    metadata["system_feedback"] = (
-                        f"{current_feedback}\n"
-                        "SYSTEM: 'mitigation_accepted' was not registered — "
-                        "no MITIGATION proposal is currently pending. A "
-                        "mitigation registers only against a standing "
-                        "WORKAROUND proposal grounded in symptom evidence; "
-                        "file the symptom evidence and re-propose the "
-                        "workaround (SolutionToAdd, solution_type=WORKAROUND) "
-                        "before setting the milestone."
-                    ).strip()
-                    stab_accepted_signal = False
-                if stab_accepted_signal or stab_verified_signal:
-                    if stab_accepted_signal:
-                        if p.mitigation is None:
-                            # proposed_at_turn = the turn the latest workaround
-                            # ProposedAction was proposed, else current_turn.
-                            proposed_turn = case.current_turn
-                            for action in reversed(case.proposed_actions):
-                                if (
-                                    action.action_type
-                                    == InvestigationActionType.MITIGATION
-                                ):
-                                    proposed_turn = action.proposed_in_turn
-                                    break
-                            p.mitigation = MitigationRecord(
-                                proposed_at_turn=proposed_turn
-                            )
-                        if not p.mitigation.accepted:
-                            p.mitigation.accepted = True
-                            metadata["milestones_completed"].append(
-                                "mitigation_accepted"
-                            )
-
-                    if stab_verified_signal:
-                        # Ordering guard: verification presupposes acceptance.
-                        # If accept wasn't signalled (now or earlier), reject and
-                        # surface to the LLM via system_feedback for retry,
-                        # instead of crashing the turn on the record validator.
-                        if p.mitigation is None or not p.mitigation.accepted:
-                            logger.warning(
-                                f"Rejected mitigation 'mitigation_verified' "
-                                f"for case {case.case_id}: prerequisite "
-                                f"'mitigation_accepted' is not set "
-                                f"(state-machine ordering)."
-                            )
-                            current_feedback = metadata.get("system_feedback") or ""
-                            metadata["system_feedback"] = (
-                                f"{current_feedback}\n"
-                                "MILESTONE ORDER ERROR: You set "
-                                "mitigation_verified=True without first setting "
-                                "mitigation_accepted=True. Verification "
-                                "presupposes acceptance — set "
-                                "mitigation_accepted=True (based on the user's "
-                                "confirmation signals) before "
-                                "mitigation_verified=True. Set BOTH milestones "
-                                "in the same response if both happened this "
-                                "turn, OR set mitigation_accepted=True first "
-                                "and verify on a follow-up turn after the user "
-                                "confirms."
-                            ).strip()
-                            metadata.setdefault("validation_repairs", []).append(
-                                "Rejected mitigation_verified "
-                                "(prerequisite mitigation_accepted not set)"
-                            )
-                        elif not p.mitigation.verified:
-                            p.mitigation.verified = True
-                            p.mitigation.completed_at_turn = case.current_turn
-                            metadata["milestones_completed"].append(
-                                "mitigation_verified"
-                            )
 
             if m.root_cause_likelihood is not None:
                 p.root_cause_likelihood = m.root_cause_likelihood
@@ -7188,21 +7219,6 @@ class MilestoneEngine:
                     await self._prefetch_kb_context(
                         case, root_cause_query, "root_cause"
                     )
-
-            # Stage-gate side effects (Framework §4.1)
-            # When the LLM sets a stage-gate milestone, apply corresponding
-            # side effects: mark the pending ProposedAction as accepted and
-            # create an ActionAttempt audit record.
-            stage_gate_completed = {
-                "mitigation_accepted",
-                "mitigation_verified",
-                "solution_accepted",
-            } & set(metadata["milestones_completed"])
-
-            if stage_gate_completed:
-                _apply_stage_gate_side_effects(
-                    case, stage_gate_completed, user_message, metadata
-                )
 
         # 2. Add Evidence
         # Post-010: every Evidence row comes from the LLM declaring an
@@ -7575,7 +7591,7 @@ class MilestoneEngine:
                         "evidence."
                     )
 
-                # P2.1 (#656 DF-3): a NEW permanent-fix offer replaces any
+                # INV-32 (#656 DF-3): a NEW permanent-fix offer replaces any
                 # standing pending one — the newest proposal is THE offer
                 # (the context builder and compliance detection already key
                 # on the most recent pending action; without supersession the
@@ -7596,9 +7612,17 @@ class MilestoneEngine:
                 case.proposed_actions.append(proposed_action)
 
                 # solution_proposed is DERIVED at the end-of-turn assessment
-                # recompute from live SOLUTION offers (P2.1) — the former 3F
-                # write-once set here is gone; this new pending offer flips
-                # the indicator True in the same turn via the derivation.
+                # recompute from live SOLUTION offers (INV-32) — the former
+                # 3F write-once set here is gone; this new pending offer
+                # flips the indicator True in the same turn via the
+                # derivation.
+
+        # 5b. Stage-gate compliance signals (Framework §4.1) — AFTER the
+        # solutions step so the guards see actions created this turn (the
+        # prompt's KB-resolution flow emits SolutionToAdd + solution_accepted
+        # in ONE response; see _apply_stage_gate_signals).
+        if updates.milestones:
+            _apply_stage_gate_signals(case, updates.milestones, user_message, metadata)
 
         # 6. Journal Entries (append-only investigation memory)
         if hasattr(updates, "journal_entries") and updates.journal_entries:

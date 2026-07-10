@@ -1,6 +1,6 @@
 """INV-32: ``solution_proposed`` reflects a LIVE fix offer, never a latch.
 
-P2.1 of the #656 systemic correction (DF-3, the frame latch): the indicator is
+The #656 offer-liveness correction (DF-3, the frame latch): the indicator is
 engine-DERIVED at the end-of-turn assessment recompute from SOLUTION-typed
 ``ProposedAction`` liveness (``pending``/``accepted``) plus the forward-only
 gate ladder (``solution_accepted``/``solution_verified``). Two supersession
@@ -32,7 +32,6 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
-    _live_solution_offer_exists,
     _recompute_assessment_state,
     _supersede_pending_solution_offers,
     _withdraw_unlicensed_solution_offers,
@@ -44,6 +43,9 @@ from faultmaven.core.investigation.prompts.templates import (
     _get_diagnosis_focus_emphasis,
 )
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
+from faultmaven.core.investigation.terminal_transitions import (
+    derive_solution_surface,
+)
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
@@ -356,20 +358,29 @@ class TestHelpers:
         )
 
     def test_liveness_reads_pending_and_accepted_solutions_only(self):
+        # derive_solution_surface is THE one liveness spelling (shared by the
+        # recompute, the resolution finalizer, and the CLOSED executor).
         case = _make_case(established=False)
-        assert _live_solution_offer_exists(case) is False
+
+        def _derived(case):
+            derive_solution_surface(case)
+            return case.progress.solution_proposed
+
+        assert _derived(case) is False
         case.proposed_actions.append(
             self._offer(action_type=InvestigationActionType.DIAGNOSTIC)
         )
         case.proposed_actions.append(
             self._offer(action_type=InvestigationActionType.MITIGATION)
         )
-        assert _live_solution_offer_exists(case) is False
+        assert _derived(case) is False
         case.proposed_actions.append(self._offer(state="superseded"))
         case.proposed_actions.append(self._offer(state="rejected"))
-        assert _live_solution_offer_exists(case) is False
+        assert _derived(case) is False
+        assert case.progress.solution_state == SolutionState.UNKNOWN
         case.proposed_actions.append(self._offer(state="accepted"))
-        assert _live_solution_offer_exists(case) is True
+        assert _derived(case) is True
+        assert case.progress.solution_state == SolutionState.SELECTED
 
     def test_supersede_touches_only_pending_solutions(self):
         case = _make_case(established=False)
@@ -411,7 +422,8 @@ class TestZoneFrameFollowsDerivation:
 
     def test_live_offer_with_identified_cause_still_holds_frame(self):
         # While the license stands and the offer is live, the pending frame
-        # is correct (its yields under contradiction are P2.2, not P2.1).
+        # is correct (its yields under contradiction are the zone-exit
+        # follow-up tracked on #656, not this change).
         case = _make_case(established=False)
         p = case.progress
         p.symptom_verified = True
@@ -668,7 +680,7 @@ class TestTerminalSolutionStateMirror:
         # Both resolve surfaces stamp the ladder BEFORE the finalizer and no
         # recompute runs on a terminal case — the blob must not read
         # solution_proposed=True x solution_state=unknown (observed live in
-        # the P2.1 sim gate).
+        # the #656 offer-liveness sim gate).
         from faultmaven.core.investigation.terminal_transitions import (
             finalize_resolution_truth_surface,
         )
@@ -679,4 +691,191 @@ class TestTerminalSolutionStateMirror:
         case.progress.solution_verified = True
         assert case.progress.solution_state == SolutionState.UNKNOWN
         finalize_resolution_truth_surface(case)
+        assert case.progress.solution_state == SolutionState.SELECTED
+
+
+# ---------------------------------------------------------------------------
+# Stage-gate signals run AFTER the solutions step (same-turn bundles register)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestSameTurnGateBundles:
+    async def test_same_turn_solution_and_accept_registers(self):
+        # The KB-resolution flow mandates SolutionToAdd + solution_accepted
+        # in ONE response; the guard must see the action created this turn.
+        case = _make_case()
+        updates = _Updates(
+            solutions_to_add=_solution_updates().solutions_to_add,
+            milestones=MilestoneUpdates(solution_accepted=True),
+        )
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(case, updates, metadata)
+
+        assert case.progress.solution_accepted is True
+        assert "solution_accepted" in metadata["milestones_completed"]
+        sol_actions = [
+            a
+            for a in case.proposed_actions
+            if a.action_type == InvestigationActionType.SOLUTION
+        ]
+        assert len(sol_actions) == 1
+        assert sol_actions[0].state == "accepted"
+        assert case.action_attempts[-1].action_id == sol_actions[0].action_id
+        assert "was not registered" not in metadata.get("system_feedback", "")
+        assert case.progress.solution_proposed is True
+
+    async def test_same_turn_workaround_and_mitigation_accept_registers(self):
+        # Mitigation analog: retro same-turn workaround registration (the
+        # user already executed it; the LLM formalizes both in one turn).
+        case = _make_case()  # symptom evidence present → no 3D downgrade
+        updates = _Updates(
+            solutions_to_add=_workaround_updates().solutions_to_add,
+            milestones=MilestoneUpdates(mitigation_accepted=True),
+        )
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(case, updates, metadata)
+
+        assert case.progress.mitigation is not None
+        assert case.progress.mitigation.accepted is True
+        assert "mitigation_accepted" in metadata["milestones_completed"]
+        mit_actions = [
+            a
+            for a in case.proposed_actions
+            if a.action_type == InvestigationActionType.MITIGATION
+        ]
+        assert mit_actions and mit_actions[0].state == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# Idempotency first: re-emitted registered signals are absorbed silently
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestIdempotentReemission:
+    async def test_registered_solution_accepted_reemission_is_silent(self):
+        case = _make_case()
+        eng = _make_engine()
+        # Turn N: register through the real pipeline.
+        await eng._apply_investigation_updates(
+            case,
+            _Updates(
+                solutions_to_add=_solution_updates().solutions_to_add,
+                milestones=MilestoneUpdates(solution_accepted=True),
+            ),
+            _meta(),
+        )
+        assert case.progress.solution_accepted is True
+        # Turn N+1: the LLM re-asserts the standing boolean (no pending
+        # SOLUTION remains). Must absorb silently — the old order injected
+        # a false "was not registered ... re-propose" instruction.
+        metadata = _meta()
+        await eng._apply_investigation_updates(
+            case,
+            _Updates(milestones=MilestoneUpdates(solution_accepted=True)),
+            metadata,
+        )
+        assert "system_feedback" not in metadata or not metadata["system_feedback"]
+        assert case.progress.solution_accepted is True
+        assert "solution_accepted" not in metadata["milestones_completed"]
+
+
+# ---------------------------------------------------------------------------
+# Coherent mitigation rejection: same-turn verify suppressed, one notice
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestMitigationRejectionCoherence:
+    async def test_rejected_accept_suppresses_same_turn_verify(self):
+        # Both signals, no pending MITIGATION, no record: ONE notice covers
+        # both; the ordering guard's contradictory "set BOTH in the same
+        # response" advice must NOT fire; no stale record gets verified.
+        case = _make_case()
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(
+            case,
+            _milestone_updates(mitigation_accepted=True, mitigation_verified=True),
+            metadata,
+        )
+        fb = metadata.get("system_feedback", "")
+        assert "'mitigation_accepted' was not registered" in fb
+        assert "The same applies to 'mitigation_verified'" in fb
+        assert "MILESTONE ORDER ERROR" not in fb
+        assert case.progress.mitigation is None
+
+    async def test_second_workaround_reentry_gets_feedback(self):
+        # Single-mitigation model (INV-24): a pending second workaround's
+        # accept cannot re-enter the ladder — the drop must not be silent
+        # (the rendered MILESTONE_TO_SET affordance is dead for it).
+        case = _make_case()
+        case.progress.mitigation = MitigationRecord(proposed_at_turn=2, accepted=True)
+        second = _inject_action(case, InvestigationActionType.MITIGATION, turn=6)
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(
+            case, _milestone_updates(mitigation_accepted=True), metadata
+        )
+        assert "was not re-registered" in metadata.get("system_feedback", "")
+        assert second.state == "pending"
+        assert "mitigation_accepted" not in metadata["milestones_completed"]
+
+    async def test_bare_mitigation_accept_reemission_is_silent(self):
+        # Re-emission with nothing pending is the idempotent case — silent.
+        case = _make_case()
+        case.progress.mitigation = MitigationRecord(proposed_at_turn=2, accepted=True)
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(
+            case, _milestone_updates(mitigation_accepted=True), metadata
+        )
+        assert not metadata.get("system_feedback")
+
+
+# ---------------------------------------------------------------------------
+# CLOSED-family terminal coherence (shared derive, no forced ladder)
+# ---------------------------------------------------------------------------
+
+
+class TestClosedFamilySolutionSurface:
+    def test_closed_executor_derives_fresh_pair(self):
+        from faultmaven.core.investigation.terminal_transitions import (
+            _execute_closed_transition,
+        )
+
+        # Withdrawn offer + stale persisted True: the close must freeze the
+        # DERIVED truth, not the stale flag (old code latched SELECTED via
+        # monotone case.solutions).
+        case = _make_case(established=False)
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="withdrawn fix",
+                proposed_in_turn=3,
+                state="superseded",
+                superseded_reason="license_lost",
+            )
+        )
+        case.progress.solution_proposed = True  # stale
+        _execute_closed_transition(case, "u1", "closed_unresolved")
+        assert case.state == CaseState.CLOSED
+        assert case.progress.solution_proposed is False
+        assert case.progress.solution_state == SolutionState.UNKNOWN
+
+    def test_closed_with_standing_pending_offer_reads_selected(self):
+        from faultmaven.core.investigation.terminal_transitions import (
+            _execute_closed_transition,
+        )
+
+        case = _make_case(established=False)
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="documented, unexecuted fix",
+                proposed_in_turn=3,
+            )
+        )
+        _execute_closed_transition(case, "u1", "closed_after_investigation")
+        assert case.progress.solution_proposed is True
         assert case.progress.solution_state == SolutionState.SELECTED

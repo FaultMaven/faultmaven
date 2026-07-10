@@ -43,6 +43,7 @@ from faultmaven.modules.case.contracts import (
     CaseAction,
     CaseState,
     CauseState,
+    InvestigationActionType,
     SolutionState,
     VerificationStatus,
 )
@@ -211,12 +212,43 @@ def finalize_resolution_truth_surface(case: "Case") -> bool:
             )
     # INV-32 terminal coherence: both resolve surfaces stamp the solution
     # ladder BEFORE calling this finalizer, and no per-turn recompute runs on
-    # a terminal case — without this mirror the blob would read
+    # a terminal case — without a fresh derivation the blob would read
     # solution_proposed=True × solution_state=unknown (observed live in the
-    # P2.1 sim gate).
-    if case.progress.solution_proposed:
-        case.progress.solution_state = SolutionState.SELECTED
+    # #656 offer-liveness sim gate).
+    derive_solution_surface(case)
     return stamped
+
+
+def derive_solution_surface(case: "Case") -> None:
+    """THE ONE derivation of the solution truth pair (INV-32).
+
+    ``solution_proposed`` is True iff a live SOLUTION offer stands
+    (``pending`` = awaiting execution; ``accepted`` = executed fix, a
+    historical fact) OR the gate ladder has advanced
+    (``solution_accepted``/``solution_verified`` are forward-only compliance
+    facts, so the state_validator orderings hold by construction).
+    ``solution_state`` mirrors it (``SELECTED``/``UNKNOWN``; ``CANDIDATES``
+    reserved). MITIGATION/DIAGNOSTIC actions never feed the pair.
+
+    Single definition by design: the per-turn assessment recompute, the
+    resolution finalizer above, and the CLOSED executor all call this — a
+    hand-mirrored copy is how terminal surfaces previously diverged on
+    terminal truth (this module's own finalizer lesson, re-learned when the
+    first cut mirrored only the RESOLVED family and CLOSED blobs froze
+    stale).
+    """
+    p = case.progress
+    offer_live = (
+        p.solution_accepted
+        or p.solution_verified
+        or any(
+            a.action_type == InvestigationActionType.SOLUTION
+            and a.state in ("pending", "accepted")
+            for a in case.proposed_actions
+        )
+    )
+    p.solution_proposed = offer_live
+    p.solution_state = SolutionState.SELECTED if offer_live else SolutionState.UNKNOWN
 
 
 def derive_closure_reason(case: "Case") -> str:
@@ -587,6 +619,15 @@ def _execute_closed_transition(case: Case, user_id: str, closure_reason: str):
         f"User {user_id} confirmed closure for case {case.case_id}. "
         f"Executing {from_state.value} → CLOSED transition."
     )
+
+    # INV-32 terminal coherence for the CLOSED family: no per-turn recompute
+    # runs after this, and a 0b-confirmed close can arrive with the pair
+    # stale from a recompute that predates the confirmation. Same shared
+    # derivation as the resolve surfaces — CLOSED does NOT force the ladder
+    # (nothing was executed/confirmed), it freezes the derived truth: a
+    # standing pending offer reads SELECTED, a withdrawn one honestly does
+    # not (the documented fix lives on the monotone Solution rows).
+    derive_solution_surface(case)
 
     now = datetime.now(UTC)
     case.atomic_update(
