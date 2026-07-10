@@ -1745,8 +1745,8 @@ evidence directly. You may do several in one turn if the evidence supports it.
    - State impact: whether the fix is reversible or not, and its blast radius
      (single pod, cluster, database, shared service).
    - Emit a SolutionToAdd record in solutions_to_add describing the fix (description,
-     solution_type, estimated_impact, risks, commands). The backend automatically sets
-     solution_proposed=True when it processes this record — you do NOT set it in
+     solution_type, estimated_impact, risks, commands). The backend derives
+     solution_proposed=True from the standing proposal — you do NOT set it in
      milestones. No evidence_to_add record is needed for the proposal itself.
    - Do not request further evidence after root_cause_identified = True. Propose the
      fix and hold — do not add diagnostic asks alongside a solution proposal.
@@ -2090,12 +2090,12 @@ REQUIRED EMISSIONS IN THE SAME TURN:
 4. **`state_updates.milestones.solution_accepted`** — set to True (the
    user applied the proposed fix; their confirmation is the compliance
    signal). The engine handles the other two gate milestones automatically:
-   `solution_proposed` is set when the engine processes the SolutionToAdd
-   record from step 3, and `solution_verified` is set when the user
-   confirms the proposed_transition in step 6 below (see
+   `solution_proposed` is derived by the engine from the standing
+   SolutionToAdd proposal from step 3, and `solution_verified` is set when
+   the user confirms the proposed_transition in step 6 below (see
    investigation-lifecycle-logic.md §1.4.1). Do NOT set those two
    yourself — `MilestoneUpdates` rejects `solution_verified`, and
-   `solution_proposed` would double-set.
+   `solution_proposed` is engine-derived.
 
 5. **`state_updates.evidence_to_add`** — the `causal_absence_evidence` row that
    lets the case RESOLVE. The user's "it worked" IS the source:
@@ -2657,7 +2657,7 @@ def _select_diagnosis_block(case: Case) -> str:
     Post-redesign there is no path fork: the diagnostic machinery
     (hypothesis formulation + evidence-needs) runs as a single
     opportunistic flow. Stage guidance is selected by the assessment
-    variables (``symptom_verified`` / ``cause_state`` / ``solution_state``)
+    variables (``symptom_verified`` / ``cause_state`` / ``solution_proposed``)
     via ``_get_diagnosis_focus_emphasis`` — not by a prospective path
     choice. The focus emphasis is prepended to ``_RCA_DIAGNOSIS_BLOCK``,
     which carries the hypothesis-evidence ordering mandate

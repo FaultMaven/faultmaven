@@ -565,8 +565,11 @@ class InvestigationProgress(BaseModel):
     solution_proposed: bool = Field(
         default=False,
         description=(
-            "Set programmatically when ProposedAction with action_type=SOLUTION "
-            "is created. Not directly set by LLM."
+            "Engine-derived at the assessment recompute (INV-32): True iff a "
+            "LIVE ProposedAction with action_type=SOLUTION stands (state "
+            "pending/accepted) or the gate ladder advanced (solution_accepted/"
+            "solution_verified). Not set by LLM; not a write-once latch — a "
+            "superseded or license-lost offer drops it."
         ),
     )
 

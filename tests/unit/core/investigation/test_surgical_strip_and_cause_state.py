@@ -143,12 +143,28 @@ class TestSolutionStateDerivation:
 
 
 class TestDeferredImplementationClose:
-    """Follow-on A: solution_feasible=DEFERRED proposes CLOSE-with-documented-solution."""
+    """Follow-on A: solution_feasible=DEFERRED proposes CLOSE-with-documented-solution.
 
-    def _case(self, *, feasible, solution_proposed, pending=None, terminal=False):
+    INV-32: the proposal additionally requires the established-cause license
+    (the closure message asserts "the root cause and fix are documented") —
+    positive cases set cause_state=IDENTIFIED; a case whose cause fell must
+    NOT be proposed for closure on its monotone Solution records.
+    """
+
+    def _case(
+        self,
+        *,
+        feasible,
+        solution_proposed,
+        pending=None,
+        terminal=False,
+        cause_identified=True,
+    ):
         progress = InvestigationProgress()
         progress.solution_feasible = feasible
         progress.solution_proposed = solution_proposed
+        if cause_identified:
+            progress.cause_state = CauseState.IDENTIFIED
         case = SimpleNamespace(
             progress=progress,
             solutions=[],
@@ -156,8 +172,28 @@ class TestDeferredImplementationClose:
             is_terminal=terminal,
             state=CaseState.INVESTIGATING,
             case_id="case_test",
+            root_cause_conclusion=None,
+            working_conclusion=None,
         )
         return case
+
+    def test_no_proposal_when_cause_license_fell(self):
+        # The monotone Solution record survives a license_lost withdrawal;
+        # the close proposal must not cite it while no cause stands (INV-32).
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED,
+            solution_proposed=False,
+            cause_identified=False,
+        )
+        case.solutions = [SimpleNamespace(solution_id="sol_x")]
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert "transition_proposed" not in meta
+        assert case.pending_transition is None
 
     def test_no_proposal_when_feasible_now(self):
         from faultmaven.core.investigation.milestone_engine import (

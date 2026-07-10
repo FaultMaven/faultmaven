@@ -37,10 +37,13 @@ from faultmaven.core.investigation.milestone_engine import (
     _supersede_pending_solution_offers,
     _withdraw_unlicensed_solution_offers,
 )
+from faultmaven.core.investigation.prompts.context_builder import (
+    build_investigation_context,
+)
 from faultmaven.core.investigation.prompts.templates import (
     _get_diagnosis_focus_emphasis,
 )
-from faultmaven.core.investigation.schemas import SolutionToAdd
+from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
@@ -51,10 +54,12 @@ from faultmaven.modules.case.domain.models import (
     EvidenceSourceType,
     InquiryData,
     InvestigationActionType,
+    MitigationRecord,
     ProposedAction,
     RootCauseConclusion,
     SolutionState,
     SolutionType,
+    WorkingConclusion,
 )
 
 pytestmark = pytest.mark.unit
@@ -413,3 +418,241 @@ class TestZoneFrameFollowsDerivation:
         p.cause_state = CauseState.IDENTIFIED
         p.solution_proposed = True
         assert "awaiting execution" in _get_diagnosis_focus_emphasis(p)
+
+
+# ---------------------------------------------------------------------------
+# Same-turn create-then-withdraw (M5 reads prior truth; recompute reads fresh)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestSameTurnCreateThenWithdraw:
+    async def test_offer_admitted_on_stale_license_is_withdrawn_same_turn(self):
+        # M5 admits on the PRIOR turn's cause_state (flat IDENTIFIED, no
+        # graph); the end-of-turn recompute re-derives cause_state from the
+        # empty graph and the license re-check withdraws the offer in the
+        # SAME turn — the engine never ends a turn presenting a fix for a
+        # cause it no longer asserts.
+        case = _make_case(established=False)
+        case.progress.cause_state = CauseState.IDENTIFIED
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(
+            case, _solution_updates(), metadata
+        )
+        assert _pending_solutions(case) == []
+        withdrawn = [a for a in case.proposed_actions if a.state == "superseded"]
+        assert len(withdrawn) == 1
+        assert withdrawn[0].superseded_reason == "license_lost"
+        assert case.progress.solution_proposed is False
+        assert "withdrawn" in metadata.get("system_feedback", "")
+
+
+# ---------------------------------------------------------------------------
+# Working-conclusion-proxy license leg (incl. the MECE-contest gate)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkingConclusionLicense:
+    def _case_with_pending_offer(self) -> Case:
+        case = _make_case(established=False)
+        case.progress.symptom_verified = True
+        case.working_conclusion = WorkingConclusion(
+            statement="the pool is exhausted",
+            reasoning="observed stuck queries holding all slots",
+            likelihood=0.65,
+        )
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="raise the pool ceiling",
+                proposed_in_turn=4,
+            )
+        )
+        return case
+
+    def test_wc_proxy_license_keeps_offer(self):
+        case = self._case_with_pending_offer()
+        _recompute_assessment_state(case, metadata={})
+        assert len(_pending_solutions(case)) == 1
+        assert case.progress.solution_proposed is True
+
+    def test_mece_contest_gates_wc_proxy_and_withdraws(self):
+        # Under a STANDING §7.1.2 contest the working-conclusion proxy stops
+        # counting as a known cause (INV-31), so a license resting solely on
+        # it falls and the pending offer is withdrawn. Exercised at the
+        # withdrawal helper: the full recompute re-derives the contest flag
+        # from the graph, and a real contest needs >=2 validated DISTINCT
+        # roots — that composition is pinned in test_mece_arbitration.py;
+        # here we pin that the withdrawal honors the flag's license gate.
+        case = self._case_with_pending_offer()
+        case.progress.cause_identification_contested = True
+        count = _withdraw_unlicensed_solution_offers(case, metadata={})
+        assert count == 1
+        assert _pending_solutions(case) == []
+        withdrawn = [a for a in case.proposed_actions if a.state == "superseded"]
+        assert withdrawn and withdrawn[0].superseded_reason == "license_lost"
+
+    def test_withdrawal_notice_is_prepended(self):
+        # The turn record truncates feedback head-first; the notice must
+        # survive a turn whose earlier accumulators already wrote feedback.
+        case = self._case_with_pending_offer()
+        case.progress.cause_identification_contested = True
+        metadata = {"system_feedback": "EARLIER ACCUMULATED FEEDBACK"}
+        assert _withdraw_unlicensed_solution_offers(case, metadata=metadata) == 1
+        fb = metadata["system_feedback"]
+        assert fb.startswith("SYSTEM: Your pending SOLUTION proposal was withdrawn")
+        assert "EARLIER ACCUMULATED FEEDBACK" in fb
+
+
+# ---------------------------------------------------------------------------
+# <pending_action> context block follows liveness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestPendingActionContextBlock:
+    async def test_withdrawn_offer_leaves_pending_action_block(self):
+        case = _make_case()
+        await _make_engine()._apply_investigation_updates(
+            case, _solution_updates(), _meta()
+        )
+        ctx = build_investigation_context(case, "status?")
+        assert "<pending_action>" in "\n".join(str(v) for v in ctx.values())
+
+        case.root_cause_conclusion = None
+        _recompute_assessment_state(case, metadata={})
+        ctx_after = build_investigation_context(case, "status?")
+        assert "<pending_action>" not in "\n".join(str(v) for v in ctx_after.values())
+
+
+# ---------------------------------------------------------------------------
+# Reproposal never touches mitigation offers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestReproposalSparesMitigation:
+    async def test_new_solution_supersedes_solution_but_not_mitigation(self):
+        case = _make_case()
+        eng = _make_engine()
+        await eng._apply_investigation_updates(case, _workaround_updates(), _meta())
+        await eng._apply_investigation_updates(case, _solution_updates(), _meta())
+        await eng._apply_investigation_updates(
+            case, _solution_updates("Apply the corrected fix"), _meta()
+        )
+        assert len(_pending_solutions(case)) == 1
+        assert any(
+            a.action_type == InvestigationActionType.MITIGATION and a.state == "pending"
+            for a in case.proposed_actions
+        )
+        superseded = [a for a in case.proposed_actions if a.state == "superseded"]
+        assert len(superseded) == 1
+        assert superseded[0].action_type == InvestigationActionType.SOLUTION
+
+
+# ---------------------------------------------------------------------------
+# Type-matched stage-gate guards (INV-32 companion hardening)
+# ---------------------------------------------------------------------------
+
+
+def _milestone_updates(**kwargs) -> _Updates:
+    return _Updates(milestones=MilestoneUpdates(**kwargs))
+
+
+def _inject_action(case: Case, action_type, *, turn: int = 3) -> ProposedAction:
+    action = ProposedAction(
+        case_id=case.case_id,
+        action_type=action_type,
+        description=f"{action_type.value} action",
+        proposed_in_turn=turn,
+    )
+    case.proposed_actions.append(action)
+    return action
+
+
+@pytest.mark.asyncio
+class TestTypeMatchedStageGates:
+    async def test_solution_accepted_rejected_without_pending_solution(self):
+        # A lone pending DIAGNOSTIC (e.g. an M5-downgraded proposal) must not
+        # satisfy solution_accepted — the old any-type guard let it through
+        # and the derivation would have manufactured a permanent ladder latch.
+        case = _make_case()
+        diag = _inject_action(case, InvestigationActionType.DIAGNOSTIC)
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(
+            case, _milestone_updates(solution_accepted=True), metadata
+        )
+        assert case.progress.solution_accepted is False
+        assert diag.state == "pending"
+        assert "solution_accepted" not in metadata["milestones_completed"]
+        assert "was not registered" in metadata.get("system_feedback", "")
+
+    async def test_solution_accepted_targets_the_solution_not_newest_pending(self):
+        case = _make_case()
+        sol = _inject_action(case, InvestigationActionType.SOLUTION, turn=3)
+        diag = _inject_action(case, InvestigationActionType.DIAGNOSTIC, turn=4)
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(
+            case, _milestone_updates(solution_accepted=True), metadata
+        )
+        assert case.progress.solution_accepted is True
+        assert sol.state == "accepted"
+        assert diag.state == "pending"
+        assert case.action_attempts[-1].action_id == sol.action_id
+        assert case.progress.solution_proposed is True
+
+    async def test_mitigation_accepted_rejected_without_pending_mitigation(self):
+        case = _make_case()
+        sol = _inject_action(case, InvestigationActionType.SOLUTION)
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(
+            case, _milestone_updates(mitigation_accepted=True), metadata
+        )
+        assert case.progress.mitigation is None
+        assert sol.state == "pending"
+        assert "was not registered" in metadata.get("system_feedback", "")
+
+    async def test_mitigation_verified_needs_no_pending_action(self):
+        # Accept-then-verify-later: the mitigation action left pending at the
+        # accept step; the verify signal keys on the accepted record, not on
+        # a pending action (the old any-type guard rejected this flow when no
+        # unrelated pending action happened to exist).
+        case = _make_case()
+        case.progress.mitigation = MitigationRecord(proposed_at_turn=2, accepted=True)
+        metadata = _meta()
+        await _make_engine()._apply_investigation_updates(
+            case, _milestone_updates(mitigation_verified=True), metadata
+        )
+        assert case.progress.mitigation.verified is True
+        assert "mitigation_verified" in metadata["milestones_completed"]
+
+
+# ---------------------------------------------------------------------------
+# Persistence mechanism pin (the repos' exact blob seam)
+# ---------------------------------------------------------------------------
+
+
+class TestSupersededStampsSerialization:
+    def test_model_json_round_trip_preserves_stamps(self):
+        # Both repositories persist proposed_actions via
+        # model_dump(mode="json") and rebuild via ProposedAction(**a) — pin
+        # that seam for the new stamps (full-DB round-trip lives in
+        # tests/integration/test_case_repository_integration.py).
+        import json
+
+        action = ProposedAction(
+            case_id="case_x",
+            action_type=InvestigationActionType.SOLUTION,
+            description="fix it",
+            proposed_in_turn=2,
+            state="superseded",
+            superseded_in_turn=5,
+            superseded_reason="license_lost",
+        )
+        rebuilt = ProposedAction(
+            **json.loads(json.dumps(action.model_dump(mode="json")))
+        )
+        assert rebuilt.state == "superseded"
+        assert rebuilt.superseded_in_turn == 5
+        assert rebuilt.superseded_reason == "license_lost"

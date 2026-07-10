@@ -228,7 +228,8 @@ class MilestoneUpdates(BaseModel):
     symptom_verified: Optional[bool] = None
     root_cause_identified: Optional[bool] = None
     root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
-    # solution_proposed removed (3F) — set programmatically at ProposedAction creation
+    # solution_proposed removed (3F) — engine-derived from live SOLUTION
+    # offers at the assessment recompute (INV-32), never LLM-set
     root_cause_method: Optional[
         Literal[
             "direct_analysis",
