@@ -99,6 +99,24 @@ rate(faultmaven_hypothesis_likelihood_capped_no_evidence_total[24h])
 
 Matrix row: INV-29 in `investigation-invariants.md`; methodology §7.1 (*Independent-support bar*).
 
+## INV-30: absence-trust discipline telemetry
+
+- `faultmaven_counterfactual_refute_hedged_total` — a REFUTES link on a `causal_absence` row arrived below the stance-confidence bar at chain-emission ingest. The link is kept as ordinary refuting evidence but denied decisive (§7.2) force: it cannot single-handedly refute a node, zero a sibling's belief for proof-by-exclusion, or demote the identified cause. One increment per link created (absence-row links are never overwritten, so creation is the one stable event).
+- `faultmaven_absence_confirmation_bearing_rejected_total` — at RESOLVED execution, a metadata-qualified `causal_absence` row was refused as the confirmation citation because its content bears on a **different** chain than the root being confirmed. One increment per refused row; the stamp runs once per resolution, so the rate is bounded by resolutions.
+
+**Healthy shape.** Both near zero. A sustained hedged-refute rate is an *elicitation* signal — the model keeps reporting failed fixes it does not trust — not a truth problem (the decisive-power gate is what protects the conclusion). Any sustained bearing-rejection rate means confirmations are being recorded against the wrong candidate cause; inspect affected cases before trusting their `CONFIRMED`-grade harvests.
+
+```promql
+# Hedged counterfactuals: elicitation drift if sustained.
+rate(faultmaven_counterfactual_refute_hedged_total[24h])
+
+# Bearing refusals at the stamp: should be ~zero; each event is one
+# resolution whose confirmation row talked about a different chain.
+rate(faultmaven_absence_confirmation_bearing_rejected_total[24h])
+```
+
+Matrix row: INV-30 in `investigation-invariants.md`; methodology §7.3 (decisive counterfactual force) and §9.5 (confirmation-row qualification + bearing).
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:

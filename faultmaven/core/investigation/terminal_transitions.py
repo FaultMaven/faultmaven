@@ -32,6 +32,7 @@ from faultmaven.core.investigation.cause_assurance import (
     conclusion_overclaims,
     confirm_root_from_resolution_absence,
     grade_cause_assurance,
+    has_resolution_confirmation,
 )
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
@@ -42,7 +43,6 @@ from faultmaven.modules.case.contracts import (
     CaseAction,
     CaseState,
     CauseState,
-    EvidenceCategory,
     VerificationStatus,
 )
 
@@ -120,7 +120,10 @@ def _cause_identified(case: "Case") -> bool:
 
 
 def _has_causal_absence(case: "Case") -> bool:
-    """Whether a ``causal_absence_evidence`` row is on the case.
+    """Whether a QUALIFYING ``causal_absence_evidence`` row is on the case
+    (``cause_assurance.has_resolution_confirmation`` — the SAME metadata bar
+    the confirm-stamp's candidate filter uses, so the gate can never call a
+    case confirmable on a row the stamp refuses).
 
     This is the ground-truth signal that the root cause was confirmed
     ELIMINATED — not merely that the symptom was relieved (a mitigation /
@@ -128,11 +131,13 @@ def _has_causal_absence(case: "Case") -> bool:
     cause persists). It is the discriminator between RESOLVED (cause gone) and
     CLOSED-with-documented-solution (stabilized, deferred, or unfixed). See
     investigation-flow-redesign.md §11 and intent-resolution.md §8.
+
+    Qualification matters (#656 P1.4): the bare any-row read this replaced
+    counted the ENGINE's own M6 failed-fix DISCONFIRMATION rows — so a failed
+    fix satisfied "confirmation the problem is now resolved" — and premature
+    "it's stable" rows from fix windows that later failed.
     """
-    return any(
-        getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-        for e in (case.evidence or [])
-    )
+    return has_resolution_confirmation(case)
 
 
 logger = logging.getLogger(__name__)

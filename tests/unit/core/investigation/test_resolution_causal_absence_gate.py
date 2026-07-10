@@ -19,7 +19,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     assess_closure_readiness,
     assess_resolution_readiness,
 )
-from faultmaven.modules.case.contracts import EvidenceCategory
+from faultmaven.modules.case.contracts import EvidenceCategory, EvidenceStance
 
 
 def _case(*, cats=(), solutions=1, cause=True):
@@ -215,3 +215,80 @@ class TestClosurePivotMatchesResolutionBar:
             _case(cats=[EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE], solutions=1)
         )
         assert r.verdict != ClosureReadiness.SUGGEST_RESOLVE
+
+
+class TestConfirmationRowQualification:
+    """INV-30 gate side (#656 P1.4): the READY bar and the close→resolve pivot
+    count only QUALIFYING absence rows (``resolution_confirmation_rows``) —
+    non-engine-authored and newer than the latest failed-fix disconfirmation.
+    Regression: before the shared predicate, the ENGINE's own M6 failed-fix
+    DISCONFIRMATION row satisfied "confirmation the problem is now resolved",
+    so a case whose fix had just FAILED read resolution-READY.
+    """
+
+    @staticmethod
+    def _absence(*, collected_by="llm", turn=6, evidence_id="ev_a"):
+        return SimpleNamespace(
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            collected_by=collected_by,
+            collected_at_turn=turn,
+            evidence_id=evidence_id,
+        )
+
+    def test_engine_m6_disconfirmation_row_is_not_ready(self):
+        case = _case(cats=[])
+        case.evidence = [self._absence(collected_by="engine")]
+        r = assess_resolution_readiness(case)
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+        assert "confirmation the problem is now resolved" in r.missing
+
+    def test_engine_m6_disconfirmation_row_does_not_pivot_close(self):
+        case = _case(cats=[])
+        case.evidence = [self._absence(collected_by="engine")]
+        r = assess_closure_readiness(case)
+        assert r.verdict != ClosureReadiness.SUGGEST_RESOLVE
+
+    @staticmethod
+    def _with_failed_fix_window(premature_turn, fresh_turn=None):
+        """A premature absence row, a failed-fix disconfirmation (REFUTES-linked
+        absence row at turn 5), and optionally a fresh post-failure row."""
+        case = _case(cats=[])
+        disconfirm = SimpleNamespace(
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            collected_by="llm",
+            collected_at_turn=5,
+            evidence_id="ev_failed",
+        )
+        rows = [
+            TestConfirmationRowQualification._absence(
+                turn=premature_turn, evidence_id="ev_premature"
+            ),
+            disconfirm,
+        ]
+        if fresh_turn is not None:
+            rows.append(
+                TestConfirmationRowQualification._absence(
+                    turn=fresh_turn, evidence_id="ev_fresh"
+                )
+            )
+        case.evidence = rows
+        case.causal_nodes = {
+            "cn_1": SimpleNamespace(
+                evidence_links=[
+                    SimpleNamespace(
+                        stance=EvidenceStance.REFUTES, evidence_id="ev_failed"
+                    )
+                ]
+            )
+        }
+        return case
+
+    def test_premature_row_from_failed_fix_window_is_not_ready(self):
+        case = self._with_failed_fix_window(premature_turn=4)
+        r = assess_resolution_readiness(case)
+        assert r.verdict == ResolutionReadiness.NEEDS_INFO
+
+    def test_fresh_confirmation_after_failed_fix_is_ready(self):
+        case = self._with_failed_fix_window(premature_turn=4, fresh_turn=6)
+        r = assess_resolution_readiness(case)
+        assert r.verdict == ResolutionReadiness.READY

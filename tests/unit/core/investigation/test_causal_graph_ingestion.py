@@ -507,6 +507,83 @@ def test_ingest_strips_llm_supports_link_on_absence_evidence():
     assert EvidenceStance.REFUTES in stances  # disconfirmation accepted
 
 
+def test_ingest_counts_hedged_counterfactual_refutes_once():
+    """INV-30 refute side: a REFUTES link on an absence row arriving below the
+    stance-confidence bar is KEPT (ordinary refuting evidence) but metered —
+    once, at creation (absence-row links are never overwritten, so a
+    re-emission is a no-op that must not double count). A confident
+    counterfactual is never counted."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    from faultmaven.modules.case.contracts import (
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+        EvidenceStance,
+    )
+
+    case = _case()
+    seed_problem_node(case)
+    for i, ev_id in enumerate(["ev_aaaaaaaaaaa2", "ev_aaaaaaaaaaa3"]):
+        case.evidence.append(
+            Evidence(
+                evidence_id=ev_id,
+                summary=f"fix attempt {i} outcome observation",
+                primary_purpose="diagnosis",
+                category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                collected_by="llm",
+                collected_at_turn=2,
+                collected_at=datetime.now(timezone.utc),
+            )
+        )
+
+    def _emit(confidence):
+        return ingest_emitted_chain(
+            case,
+            nodes_to_add=[
+                SimpleNamespace(
+                    statement="kernel conntrack table saturation drops packets",
+                    node_type="root",
+                    produces="D",
+                    and_group=None,
+                )
+            ],
+            edges_to_add=[],
+            node_evidence=[
+                SimpleNamespace(
+                    node_ref="new_index_0",
+                    evidence_id="ev_aaaaaaaaaaa2",
+                    stance="refutes",
+                    reasoning="fix applied, unsure it took",
+                    stance_confidence=confidence,
+                ),
+                SimpleNamespace(
+                    node_ref="new_index_0",
+                    evidence_id="ev_aaaaaaaaaaa3",
+                    stance="refutes",
+                    reasoning="second fix failed for sure",
+                    stance_confidence=0.9,
+                ),
+            ],
+            current_turn=case.current_turn,
+        )
+
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "counterfactual_refute_hedged_total"
+    ) as counter:
+        _emit(0.4)  # hedged -> counted once; confident sibling link -> not
+        _emit(0.4)  # re-emission: absence links never overwritten, no event
+    assert counter.inc.call_count == 1
+    node = next(n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT)
+    kept = [
+        link for link in node.evidence_links if link.stance == EvidenceStance.REFUTES
+    ]
+    assert len(kept) == 2  # both links kept — the hedge only demotes force
+
+
 def _causal_row(ev_id, summary):
     from datetime import datetime, timezone
 

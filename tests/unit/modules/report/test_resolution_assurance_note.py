@@ -147,6 +147,30 @@ async def test_confirmed_conclusion_renders_without_note():
 
 
 @pytest.mark.asyncio
+async def test_engine_disconfirmation_row_not_cited_as_confirming_evidence():
+    """INV-30: an engine-authored absence row is an M6 failed-fix
+    DISCONFIRMATION — the opposite polarity; the Confirming Evidence fallback
+    (no ``evidence_basis`` on the conclusion) must not render it."""
+    case = _resolved_case(with_root=True, confirmed=False)
+    case.evidence.append(
+        Evidence(
+            evidence_id="ev_cccccccccccc",
+            summary="Counterfactual disconfirmation (M6): fix failed",
+            primary_purpose="failed-treatment disconfirmation",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="engine",
+            collected_at_turn=3,
+            collected_at=datetime(2026, 7, 4, 11, 30, 0, tzinfo=UTC),
+        )
+    )
+    service = ReportGenerationService()
+    summary = await service._generate_resolution_summary(case, {"duration": "2h"})
+    assert "Counterfactual disconfirmation" not in summary
+    assert "## Confirming Evidence" in summary  # the causal row still cites
+
+
+@pytest.mark.asyncio
 async def test_note_recomputes_grade_ignoring_stale_persisted_default():
     """A terminal case whose blob predates the persisted grade (NO_ROOT default) and whose
     graph carries a confirmed root must render clean — the note follows the

@@ -24,8 +24,12 @@ imports and re-exports it.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from faultmaven.core.investigation.lifecycle_metrics import (
+    absence_confirmation_bearing_rejected_total,
+)
 from faultmaven.modules.case.contracts import (
     CauseAssuranceGrade,
     ConfidenceLevel,
@@ -46,10 +50,17 @@ __all__ = [
     "ENGINE_RCC_AUTHOR",
     "MECHANISTIC_RCC_LIKELIHOOD",
     "CauseAssuranceGrade",
+    "cached_content_tokens",
     "conclusion_overclaims",
     "confirm_root_from_resolution_absence",
+    "content_tokens",
+    "counterfactual_link_decisive",
     "evidence_category_map",
     "grade_cause_assurance",
+    "has_resolution_confirmation",
+    "latest_disconfirmation_turn",
+    "problem_anchor_statements",
+    "resolution_confirmation_rows",
     "root_counterfactually_confirmed",
 ]
 
@@ -96,6 +107,164 @@ def evidence_category_map(case: "Case") -> dict:
     return {e.evidence_id: getattr(e, "category", None) for e in case.evidence}
 
 
+# ---------------------------------------------------------------------------
+# Statement/content tokenization — the ONE lexical vocabulary every comparison
+# reader shares (restatement guard, evidence-independence mirror, orphan
+# re-attach, and the absence-bearing check below). Lives here (the shared leaf)
+# because both ``causal_graph`` and this module need it and causal_graph
+# imports this module; causal_graph re-binds the private aliases so its call
+# sites and the calibration tests keep their names.
+# ---------------------------------------------------------------------------
+
+# Function/filler words dropped before comparing two statements. This is the
+# GENERAL base list; the sim analyzer may EXTEND it with scenario-specific noise
+# words (e.g. a recurring service name) for its own runs — those deliberately
+# stay out of the engine, which must not bake any one scenario's vocabulary in.
+_RESTATEMENT_STOPWORDS = {
+    "a",
+    "an",
+    "the",
+    "is",
+    "are",
+    "was",
+    "were",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "for",
+    "and",
+    "or",
+    "that",
+    "this",
+    "it",
+    "its",
+    "by",
+    "with",
+    "as",
+    "from",
+    "has",
+    "have",
+    "had",
+    "be",
+    "been",
+    "into",
+    "not",
+    "but",
+    "which",
+    "when",
+    "then",
+    "so",
+    "new",
+    "version",
+    "service",
+    "application",
+}
+
+
+def _stem(token: str) -> str:
+    """Collapse common English inflections so morphological variants of the same
+    word match (``leaks``/``leaking`` → ``leak``; ``connections`` → ``connection``;
+    ``caches`` → ``cache``). Deliberately CONSERVATIVE so it cannot merge UNRELATED
+    words into a coincidental shared token (which could push an orphan past the T1
+    STRONG + 2-token guard into a wrong auto-attach — the campaign's
+    NO-INCORRECT-CONCLUSION line):
+
+    - ``-ing``/``-ed`` strip only when the stem is 4+ chars, so short silent-e
+      collisions never form (``caring``→``caring`` not ``car``; ``coding`` stays).
+    - plurals strip a SINGLE trailing ``-s`` (Porter step-1a style), so silent-e
+      nouns keep their ``e`` (``caches``→``cache``, ``nodes``→``node``) and
+      ``-ss``/``-us``/``-is`` (``process``, ``status``, ``basis``) are left alone —
+      that ``-s`` is not a plural marker.
+
+    Single-``-s`` stripping cannot merge two *unrelated* words (they would have to
+    differ only by a trailing ``s``, i.e. be the same word). Tokens with non-alpha
+    chars (ids, dotted names, paths) are left untouched."""
+    if not token.isalpha() or len(token) <= 3:
+        return token
+    for suf in ("ing", "ed"):
+        if token.endswith(suf) and len(token) - len(suf) >= 4:
+            return token[: -len(suf)]
+    if token.endswith("ies") and len(token) > 4:
+        return token[:-3] + "y"
+    if (
+        token.endswith("s")
+        and not token.endswith(("ss", "us", "is"))
+        and len(token) - 1 >= 3
+    ):
+        return token[:-1]
+    return token
+
+
+def content_tokens(text: str) -> set[str]:
+    """Lowercased, STEMMED content tokens (filler words dropped) for comparing
+    whether two statements describe the same cause. Stopwords are dropped before
+    stemming so the stopword list stays readable (plain words)."""
+    raw = "".join(
+        c.lower() if (c.isalnum() or c in ".-_:/") else " " for c in (text or "")
+    )
+    return {
+        _stem(t) for t in raw.split() if len(t) >= 2 and t not in _RESTATEMENT_STOPWORDS
+    }
+
+
+# Tokenization bound for evidence CONTENT comparison: ``summary`` is capped at
+# 500 chars by the model but ``extract`` is an UNBOUNDED verbatim slice — the
+# per-character tokenizer over a 20KB log extract, swept several times per turn
+# on the async path, is the event-loop-blocking shape that produced the cloud
+# liveness kills (#651). The first 4000 chars carry ample discriminating signal
+# for a Jaccard comparison.
+_TOKENIZE_MAX_CHARS = 4000
+
+
+@lru_cache(maxsize=4096)
+def cached_content_tokens(text: str) -> frozenset[str]:
+    """Memoized tokenizer for immutable evidence content: the same rows are
+    re-tokenized by every derive pass, every context build, and every
+    count-held consult — identical text always yields identical tokens, so
+    pay the per-character cost once per row, not per sweep."""
+    return frozenset(content_tokens(text[:_TOKENIZE_MAX_CHARS]))
+
+
+def problem_anchor_statements(case: "Case") -> list[str]:
+    """The case's problem-frame statements: the PROBLEM node D's statement plus
+    the verified symptom statement (they can differ — D is chain-anchored, the
+    symptom is inquiry-anchored). Shared by the §7.1 restatement guard (the
+    statements a ROOT must add explanatory depth OVER) and the absence-bearing
+    frame below. Empty when neither exists (both consumers are then inert)."""
+    anchors = [
+        n.statement
+        for n in case.causal_nodes.values()
+        if n.node_type == NodeType.PROBLEM and n.statement
+    ]
+    symptom = getattr(
+        getattr(case, "problem_verification", None), "symptom_statement", None
+    )
+    if symptom:
+        anchors.append(symptom)
+    return anchors
+
+
+def counterfactual_link_decisive(link) -> bool:
+    """Whether an absence-backed REFUTES link carries DECISIVE (§7.2 strongest
+    grade) force: declared at ``stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN``.
+    The refute-side twin of the §7.1 support filter (INV-29): every stance is an
+    LLM self-claim, and a self-HEDGED counterfactual must not single-handedly
+    refute a node, zero a sibling's belief for proof-by-exclusion (§7.1.1 guard
+    #3 — a hedged refute enabling a deductive validation of the survivor is a
+    conclusion-grade action), or demote the identified cause (M6). A hedged
+    absence-REFUTES still counts as ORDINARY refuting evidence (it feeds
+    ``refutes > supports`` and ``_net_refuted``) — the decisive single-shot
+    power is what the confidence bar gates. ``None`` reads as unset → full
+    confidence (the engine's own M6 links carry no declared confidence and are
+    decisive by construction); an EXPLICIT 0.0 stays filtered."""
+    confidence = getattr(link, "stance_confidence", None)
+    if confidence is None:
+        confidence = 1.0
+    return confidence >= CAUSAL_STANCE_CONFIDENCE_MIN
+
+
 def _validated_roots(case: "Case") -> list["CausalNode"]:
     """The case's VALIDATED root nodes — the only harvest-relevant unit (§7 never
     harvests an intermediate rung or a candidate)."""
@@ -125,6 +294,190 @@ def root_counterfactually_confirmed(
         == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
         for link in node.evidence_links
     )
+
+
+# ---------------------------------------------------------------------------
+# Resolution-confirmation row qualification (§9.5) — the ONE definition of
+# "an absence row that can stand as a resolution confirmation", shared by the
+# resolution-readiness gate, the closure→resolve pivot (both in
+# ``terminal_transitions``) and the confirm-stamp's candidate filter below.
+# Before this was shared, the stamp carried the discipline and the gate did
+# not: the gate read READY off the mere existence of ANY causal_absence row —
+# including the ENGINE's own M6 failed-fix DISCONFIRMATION rows (minted by
+# ``causal_graph._attach_engine_refutation``), so a failed fix satisfied the
+# gate's "confirmation the problem is now resolved". The exact
+# trust-the-self-claim residual #656 tracks (P1.4).
+# ---------------------------------------------------------------------------
+
+
+def latest_disconfirmation_turn(case: "Case") -> int:
+    """The turn of the NEWEST failed-fix disconfirmation: the max
+    ``collected_at_turn`` over causal_absence rows carrying a REFUTES link on
+    any node (engine M6 rows always do; an LLM-recorded failed-fix row does per
+    the prompt contract). ``-1`` when none. Confidence-blind by design: even a
+    HEDGED refutation marks its fix window as failed for CONFIRMATION purposes
+    — the conservative direction for a gate (fewer premature READYs), distinct
+    from the decisive-refutation bar (``counterfactual_link_decisive``)."""
+    refutes_linked = {
+        link.evidence_id
+        for node in (getattr(case, "causal_nodes", None) or {}).values()
+        for link in node.evidence_links
+        if link.stance == EvidenceStance.REFUTES
+    }
+    if not refutes_linked:
+        return -1
+    return max(
+        (
+            getattr(e, "collected_at_turn", 0) or 0
+            for e in (getattr(case, "evidence", None) or [])
+            if getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            and e.evidence_id in refutes_linked
+        ),
+        default=-1,
+    )
+
+
+def resolution_confirmation_rows(case: "Case") -> list:
+    """The case's causal_absence rows eligible to CONFIRM a resolution:
+
+    - Not engine-authored: the engine only mints absence rows as failed-fix
+      DISCONFIRMATIONS (M6) — a disconfirmation must never read as the
+      confirmation it disproves (and node pruning can orphan the REFUTES link,
+      so authorship is checked, not link presence).
+    - Strictly newer than the latest failed-fix disconfirmation: a premature
+      "it's stable" row from a fix window that later FAILED must not confirm
+      anything afterward. This also excludes every REFUTES-linked row itself
+      (a row is never newer than its own disconfirmation turn).
+
+    Content-level bearing on a specific root is the stamp's additional,
+    root-scoped concern (``_select_bearing_row``); this predicate is the
+    case-level metadata bar the readiness gate shares."""
+    last_disconfirm = latest_disconfirmation_turn(case)
+    return [
+        e
+        for e in (getattr(case, "evidence", None) or [])
+        if getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+        and getattr(e, "collected_by", None) != "engine"
+        and (getattr(e, "collected_at_turn", 0) or 0) > last_disconfirm
+    ]
+
+
+def has_resolution_confirmation(case: "Case") -> bool:
+    """Whether a QUALIFYING resolution-confirmation row is on the case — the
+    resolution gate's READY bar and the closure→resolve pivot's trigger (both
+    previously satisfied by ANY absence row, including the engine's own M6
+    disconfirmations)."""
+    return bool(resolution_confirmation_rows(case))
+
+
+# An absence row BEARS on a statement corpus when it shares at least this many
+# content tokens with it — the same substantive-overlap floor the T1
+# orphan-reattach uses (a 1-token containment is a coincidence, not bearing).
+# Calibration home: test_absence_bearing_calibration.py.
+_BEARING_MIN_SHARED_TOKENS = 2
+
+
+def _row_content_tokens(row) -> frozenset[str]:
+    """An evidence row's content tokens: the LLM-declared ``summary`` plus the
+    verbatim ``extract`` slice when present (same content definition as the
+    §7.1 independence mirror), bounded and memoized."""
+    text = " ".join(
+        part
+        for part in (getattr(row, "summary", None), getattr(row, "extract", None))
+        if part
+    )
+    return cached_content_tokens(text)
+
+
+def _select_bearing_row(case: "Case", root: "CausalNode", candidates: list):
+    """Pick the confirmation row to cite for ``root`` — the content-level
+    bearing check (#656 P1.4, the residual the stamp docstring deferred).
+
+    Frame = what the confirmation may legitimately talk about: the target
+    root's statement, its mechanism (the nodes its chain reaches on the way to
+    ``D``), its standing hypotheses, and the problem anchors ("the DNS errors
+    stopped after the fix" confirms gone⇒gone without naming the cause).
+    Elsewhere = the rest of the graph: other chains' node statements and their
+    hypotheses — the corpus a mis-picked row would actually be about.
+
+    Three classes per row, judged on shared content tokens:
+
+    - **frame-bearing** (≥2 shared with the frame) — preferred; newest wins.
+    - **generic** (bears on nothing) — acceptable: the RESOLVED handshake is
+      the confirmation signal, the row is its documentation, and a terse
+      "user confirms it's working" row must not strand a count-held root at
+      NO_ROOT (the P1.3 rescue). Newest wins when no frame-bearing row exists.
+    - **bears-elsewhere** (≥2 shared with another chain, <2 with the frame) —
+      REFUSED (counter ``absence_confirmation_bearing_rejected_total``): a row
+      affirmatively about a DIFFERENT candidate cause must not be cited as
+      this root's gone⇒gone proof (NO INCORRECT CONCLUSION). Refusal keeps the
+      case MECHANISTIC — it never blocks the resolution itself.
+
+    Returns None when every candidate is refused."""
+    frame: set[str] = set()
+    for anchor in problem_anchor_statements(case):
+        frame |= content_tokens(anchor)
+    frame |= content_tokens(root.statement or "")
+    own_root_ids = {root.node_id} | _chain_descendant_ids(case, root.node_id)
+    for nid in own_root_ids:
+        node = case.causal_nodes.get(nid)
+        if node is not None and node.node_type != NodeType.PROBLEM:
+            frame |= content_tokens(node.statement or "")
+    for h in case.hypotheses.values():
+        if h is not None and h.statement and h.root_node_id == root.node_id:
+            frame |= content_tokens(h.statement)
+    elsewhere_sets: list[set[str]] = []
+    for node in case.causal_nodes.values():
+        if node.node_type == NodeType.PROBLEM or node.node_id in own_root_ids:
+            continue
+        toks = content_tokens(node.statement or "")
+        if toks:
+            elsewhere_sets.append(toks)
+    for h in case.hypotheses.values():
+        if (
+            h is not None
+            and h.statement
+            and h.root_node_id
+            and h.root_node_id != root.node_id
+        ):
+            toks = content_tokens(h.statement)
+            if toks:
+                elsewhere_sets.append(toks)
+
+    frame_bearing: list = []
+    generic: list = []
+    for row in candidates:
+        row_tokens = _row_content_tokens(row)
+        if len(row_tokens & frame) >= _BEARING_MIN_SHARED_TOKENS:
+            frame_bearing.append(row)
+        elif any(
+            len(row_tokens & other) >= _BEARING_MIN_SHARED_TOKENS
+            for other in elsewhere_sets
+        ):
+            absence_confirmation_bearing_rejected_total.inc()
+        else:
+            generic.append(row)
+    pool = frame_bearing or generic
+    if not pool:
+        return None
+    return max(pool, key=lambda e: e.collected_at_turn or 0)
+
+
+def _chain_descendant_ids(case: "Case", root_id: str) -> set[str]:
+    """Node ids the target root's chain reaches (transitive cause→effect
+    closure) — its MECHANISM rungs. Bounded breadth-first walk over the case
+    edges; a malformed cyclic graph terminates via the visited set."""
+    descendants: set[str] = set()
+    frontier = [root_id]
+    while frontier:
+        current = frontier.pop()
+        for edge in case.causal_edges or []:
+            if edge.cause_node_id == current:
+                nxt = edge.effect_node_id
+                if nxt not in descendants and nxt != root_id:
+                    descendants.add(nxt)
+                    frontier.append(nxt)
+    return descendants
 
 
 _CONFIRMATION_REASON = (
@@ -190,20 +543,22 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
       root held for any OTHER reason (restating, net-refuted, AND-gate, no
       qualifying causal support) never qualifies.
 
-    Row selection — order-independent and windowed:
+    Row selection — order-independent, windowed, and bearing-checked:
 
     - Repositories load ``case.evidence`` newest-first, in-memory construction
       appends oldest-first — so selection keys on ``collected_at_turn`` (the
       NEWEST qualifying row), never on list position.
-    - Engine-authored rows never qualify: the engine only mints absence rows
-      as failed-fix disconfirmations (M6), and node pruning can orphan their
-      REFUTES link — a laundered disconfirmation must not become confirmation.
-    - Rows at or before the latest failed-fix disconfirmation never qualify: a
-      premature "it's stable" row from a fix window that later FAILED must not
-      confirm a different, later fix.
+    - The case-level metadata bar is the SHARED
+      ``resolution_confirmation_rows`` predicate (non-engine-authored, newer
+      than the latest failed-fix disconfirmation) — the same bar the
+      resolution-readiness gate reads, so the gate can never call a case
+      confirmable on a row the stamp would refuse for metadata.
     - Only rows with NO existing node link anywhere qualify (an already-linked
-      row's bearing is decided). Content-level bearing of the row on THIS root
-      is the separate causal-absence bearing check tracked on #656.
+      row's bearing is decided).
+    - Content-level bearing on THIS root (``_select_bearing_row``, #656 P1.4):
+      a frame-bearing row is preferred, a generic row is accepted (the
+      handshake is the signal), and a row affirmatively about a DIFFERENT
+      chain is refused.
     - Idempotent: a root already counterfactually confirmed is left alone.
 
     On success, an ENGINE-authored conclusion mirror naming this root is
@@ -247,33 +602,19 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
     if root_counterfactually_confirmed(root, cat_by_id):
         return False
 
-    linked_ids: set = set()
-    refutes_linked: set = set()
-    for node in case.causal_nodes.values():
-        for link in node.evidence_links:
-            linked_ids.add(link.evidence_id)
-            if link.stance == EvidenceStance.REFUTES:
-                refutes_linked.add(link.evidence_id)
-    last_disconfirm_turn = max(
-        (
-            e.collected_at_turn or 0
-            for e in case.evidence
-            if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-            and e.evidence_id in refutes_linked
-        ),
-        default=-1,
-    )
+    linked_ids = {
+        link.evidence_id
+        for node in case.causal_nodes.values()
+        for link in node.evidence_links
+    }
     candidates = [
-        e
-        for e in case.evidence
-        if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-        and e.evidence_id not in linked_ids
-        and getattr(e, "collected_by", None) != "engine"
-        and (e.collected_at_turn or 0) > last_disconfirm_turn
+        e for e in resolution_confirmation_rows(case) if e.evidence_id not in linked_ids
     ]
     if not candidates:
         return False
-    absence_row = max(candidates, key=lambda e: e.collected_at_turn or 0)
+    absence_row = _select_bearing_row(case, root, candidates)
+    if absence_row is None:
+        return False
 
     root.evidence_links.append(
         NodeEvidenceLink(

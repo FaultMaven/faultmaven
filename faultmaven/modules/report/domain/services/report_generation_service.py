@@ -576,6 +576,13 @@ class ReportGenerationService:
                 # "fix worked at the cause level" signal (causal_absence_evidence,
                 # which supersedes the removed legacy ``solution_evidence``).
                 and ev.category.value in ("causal_evidence", "causal_absence_evidence")
+                # Engine-authored absence rows are M6 failed-fix
+                # DISCONFIRMATIONS — the opposite polarity; a failed fix must
+                # not render under "Confirming Evidence".
+                and not (
+                    ev.category.value == "causal_absence_evidence"
+                    and getattr(ev, "collected_by", None) == "engine"
+                )
             ]
 
         if cited:

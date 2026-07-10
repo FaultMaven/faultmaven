@@ -26,14 +26,20 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+# The statement/content tokenizer moved to ``cause_assurance`` (the shared
+# leaf — the absence-bearing check there needs it and cannot import this
+# module); the private aliases keep this module's call sites and the
+# calibration tests' import paths stable. ``_stem`` is re-exported solely for
+# its stemming-contract unit pins.
 from faultmaven.core.investigation.cause_assurance import (
     CAUSAL_STANCE_CONFIDENCE_MIN,
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     MECHANISTIC_RCC_LIKELIHOOD,
+    _stem,  # noqa: F401
+    counterfactual_link_decisive,
     register_graph_hooks,
     root_counterfactually_confirmed,
 )
@@ -41,11 +47,21 @@ from faultmaven.core.investigation.cause_assurance import (
     ENGINE_RCC_AUTHOR as _ENGINE_RCC_AUTHOR,
 )
 from faultmaven.core.investigation.cause_assurance import (
+    cached_content_tokens as _cached_content_tokens,
+)
+from faultmaven.core.investigation.cause_assurance import (
+    content_tokens as _content_tokens,
+)
+from faultmaven.core.investigation.cause_assurance import (
     evidence_category_map as _evidence_category_map,
+)
+from faultmaven.core.investigation.cause_assurance import (
+    problem_anchor_statements as _problem_anchor_statements,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_link_stripped_total,
+    counterfactual_refute_hedged_total,
     root_validation_blocked_restatement_total,
     root_validation_blocked_support_count_total,
 )
@@ -267,9 +283,14 @@ def _node_evidence_tally(
     CAUSAL_EVIDENCE-backed SUPPORTS links BEFORE the confidence filter/dedup
     (metrics attribution only: "blocked by the INV-29 bar" vs "never causally
     supported"). ``counterfactual_refutes`` is the subset of REFUTES links
-    backed by ``CAUSAL_ABSENCE_EVIDENCE`` — a counterfactual disconfirmation
-    (the cause was addressed yet ``D`` persisted), the §7.2 strongest grade,
-    which refutes DECISIVELY (it is not outweighed by correlational support).
+    backed by ``CAUSAL_ABSENCE_EVIDENCE`` AND declared at ``stance_confidence
+    >= CAUSAL_STANCE_CONFIDENCE_MIN`` (``counterfactual_link_decisive`` — the
+    refute-side twin of the SUPPORTS filter: a self-hedged counterfactual is
+    ordinary refuting evidence, not the decisive grade) — a counterfactual
+    disconfirmation (the cause was addressed yet ``D`` persisted), the §7.2
+    strongest grade, which refutes DECISIVELY (it is not outweighed by
+    correlational support). A hedged absence-REFUTES still counts in
+    ``refutes``.
     """
     supports = refutes = raw_causal_links = counterfactual_refutes = 0
     causal_support_ev_ids: list[str] = []
@@ -293,9 +314,10 @@ def _node_evidence_tally(
                     causal_support_ev_ids.append(link.evidence_id)
         elif link.stance == EvidenceStance.REFUTES:
             refutes += 1
-            if (
-                evidence_by_id[link.evidence_id]
-                == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            if evidence_by_id[
+                link.evidence_id
+            ] == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE and counterfactual_link_decisive(
+                link
             ):
                 counterfactual_refutes += 1
     return (
@@ -305,24 +327,6 @@ def _node_evidence_tally(
         raw_causal_links,
         counterfactual_refutes,
     )
-
-
-# Tokenization bound for evidence CONTENT comparison: ``summary`` is capped at
-# 500 chars by the model but ``extract`` is an UNBOUNDED verbatim slice — the
-# per-character tokenizer over a 20KB log extract, swept several times per turn
-# on the async path, is the event-loop-blocking shape that produced the cloud
-# liveness kills (#651). The first 4000 chars carry ample discriminating signal
-# for a Jaccard comparison.
-_TOKENIZE_MAX_CHARS = 4000
-
-
-@lru_cache(maxsize=4096)
-def _cached_content_tokens(text: str) -> frozenset[str]:
-    """Memoized tokenizer for immutable evidence content: the same rows are
-    re-tokenized by every derive pass, every context build, and every
-    count-held consult — identical text always yields identical tokens, so
-    pay the per-character cost once per row, not per sweep."""
-    return frozenset(_content_tokens(text[:_TOKENIZE_MAX_CHARS]))
 
 
 def _causal_evidence_tokens(case: Case) -> dict[str, frozenset[str]]:
@@ -504,24 +508,6 @@ def support_count_held_root_ids(case: Case) -> set[str]:
     }
 
 
-def _problem_anchor_statements(case: Case) -> list[str]:
-    """The statements a ROOT must add explanatory depth OVER: the PROBLEM node
-    D's statement plus the verified symptom statement (they can differ — D is
-    chain-anchored, the symptom is inquiry-anchored). Empty when neither exists
-    (the restatement guard is then inert)."""
-    anchors = [
-        n.statement
-        for n in case.causal_nodes.values()
-        if n.node_type == NodeType.PROBLEM and n.statement
-    ]
-    symptom = getattr(
-        getattr(case, "problem_verification", None), "symptom_statement", None
-    )
-    if symptom:
-        anchors.append(symptom)
-    return anchors
-
-
 def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
     """§7.1 restatement guard predicate (single-node form; ``_restating_root_ids``
     is the batch form — keep their semantics identical): a ROOT whose statement
@@ -637,11 +623,13 @@ def derive_node_states(case: Case) -> bool:
     Per non-PROBLEM node (the PROBLEM node ``D`` is the engine-owned anchor and
     is left untouched):
 
-    - **REFUTED** — a counterfactual disconfirmation bears on it (any
-      ``CAUSAL_ABSENCE_EVIDENCE`` REFUTES link — §7.2 strongest grade, decisive),
-      OR its links net-refute it ``refutes > supports`` (strict; a correlational
-      tie is INCONCLUSIVE, not a disproof). ``validation_method=NONE``,
-      ``actionable=False``.
+    - **REFUTED** — a counterfactual disconfirmation bears on it (a
+      ``CAUSAL_ABSENCE_EVIDENCE`` REFUTES link at ``stance_confidence >=
+      CAUSAL_STANCE_CONFIDENCE_MIN`` — §7.2 strongest grade, decisive; a
+      self-hedged one is ordinary refuting evidence, the refute-side twin of
+      the §7.1 SUPPORTS filter), OR its links net-refute it ``refutes >
+      supports`` (strict; a correlational tie is INCONCLUSIVE, not a
+      disproof). ``validation_method=NONE``, ``actionable=False``.
     - **VALIDATED** — not refuted, causally grounded, net-supporting
       (``supports > refutes``), every AND-set feeding it is fully VALIDATED
       (M7 proof, strict), AND — for a ROOT — its statement carries novel content
@@ -1234,6 +1222,16 @@ def ingest_emitted_chain(
             stance_confidence=emitted_confidence,
         )
         if existing_idx is None:
+            # §7.2 refute-side calibration signal: a hedged counterfactual is
+            # kept (ordinary refuting evidence) but will not carry decisive
+            # force — count it once, at creation (absence-row links are never
+            # overwritten, so create-time is the one stable event).
+            if (
+                fresh.stance == EvidenceStance.REFUTES
+                and cat_by_id.get(ev_id) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+                and not counterfactual_link_decisive(fresh)
+            ):
+                counterfactual_refute_hedged_total.inc()
             node.evidence_links.append(fresh)
         elif cat_by_id.get(ev_id) != EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
             node.evidence_links[existing_idx] = fresh
@@ -1329,11 +1327,17 @@ _DISCONFIRMATION_REASON = (
 def _node_has_counterfactual_refute(
     node: CausalNode, cat_by_id: dict[str, EvidenceCategory | None]
 ) -> bool:
-    """Does the node carry a REFUTES link backed by ``CAUSAL_ABSENCE_EVIDENCE`` —
-    a counterfactual disconfirmation (the §7.2 strongest grade)?"""
+    """Does the node carry a DECISIVE REFUTES link backed by
+    ``CAUSAL_ABSENCE_EVIDENCE`` — a counterfactual disconfirmation (the §7.2
+    strongest grade)? Same confidence bar as the tally
+    (``counterfactual_link_decisive``): a self-hedged counterfactual neither
+    triggers the M6 node-side demotion here nor — via the idempotence check in
+    ``_attach_engine_refutation`` — suppresses the engine from attaching its
+    own decisive refutation when M6 does fire."""
     return any(
         link.stance == EvidenceStance.REFUTES
         and cat_by_id.get(link.evidence_id) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+        and counterfactual_link_decisive(link)
         for link in node.evidence_links
     )
 
@@ -1683,98 +1687,6 @@ ROOT_NOVELTY_MIN_FRACTION = 0.3
 # root contains each source hypothesis but mutually mirrors none — jaccard
 # ~0.33 — so the incident is still caught).
 _FRAME_OWNER_JACCARD = 0.6
-
-# Function/filler words dropped before comparing two statements. This is the
-# GENERAL base list; the sim analyzer may EXTEND it with scenario-specific noise
-# words (e.g. a recurring service name) for its own runs — those deliberately
-# stay out of the engine, which must not bake any one scenario's vocabulary in.
-_RESTATEMENT_STOPWORDS = {
-    "a",
-    "an",
-    "the",
-    "is",
-    "are",
-    "was",
-    "were",
-    "of",
-    "to",
-    "in",
-    "on",
-    "at",
-    "for",
-    "and",
-    "or",
-    "that",
-    "this",
-    "it",
-    "its",
-    "by",
-    "with",
-    "as",
-    "from",
-    "has",
-    "have",
-    "had",
-    "be",
-    "been",
-    "into",
-    "not",
-    "but",
-    "which",
-    "when",
-    "then",
-    "so",
-    "new",
-    "version",
-    "service",
-    "application",
-}
-
-
-def _stem(token: str) -> str:
-    """Collapse common English inflections so morphological variants of the same
-    word match (``leaks``/``leaking`` → ``leak``; ``connections`` → ``connection``;
-    ``caches`` → ``cache``). Deliberately CONSERVATIVE so it cannot merge UNRELATED
-    words into a coincidental shared token (which could push an orphan past the T1
-    STRONG + 2-token guard into a wrong auto-attach — the campaign's
-    NO-INCORRECT-CONCLUSION line):
-
-    - ``-ing``/``-ed`` strip only when the stem is 4+ chars, so short silent-e
-      collisions never form (``caring``→``caring`` not ``car``; ``coding`` stays).
-    - plurals strip a SINGLE trailing ``-s`` (Porter step-1a style), so silent-e
-      nouns keep their ``e`` (``caches``→``cache``, ``nodes``→``node``) and
-      ``-ss``/``-us``/``-is`` (``process``, ``status``, ``basis``) are left alone —
-      that ``-s`` is not a plural marker.
-
-    Single-``-s`` stripping cannot merge two *unrelated* words (they would have to
-    differ only by a trailing ``s``, i.e. be the same word). Tokens with non-alpha
-    chars (ids, dotted names, paths) are left untouched."""
-    if not token.isalpha() or len(token) <= 3:
-        return token
-    for suf in ("ing", "ed"):
-        if token.endswith(suf) and len(token) - len(suf) >= 4:
-            return token[: -len(suf)]
-    if token.endswith("ies") and len(token) > 4:
-        return token[:-3] + "y"
-    if (
-        token.endswith("s")
-        and not token.endswith(("ss", "us", "is"))
-        and len(token) - 1 >= 3
-    ):
-        return token[:-1]
-    return token
-
-
-def _content_tokens(text: str) -> set[str]:
-    """Lowercased, STEMMED content tokens (filler words dropped) for comparing
-    whether two statements describe the same cause. Stopwords are dropped before
-    stemming so the stopword list stays readable (plain words)."""
-    raw = "".join(
-        c.lower() if (c.isalnum() or c in ".-_:/") else " " for c in (text or "")
-    )
-    return {
-        _stem(t) for t in raw.split() if len(t) >= 2 and t not in _RESTATEMENT_STOPWORDS
-    }
 
 
 def restatement_score(a: str, b: str) -> float:
