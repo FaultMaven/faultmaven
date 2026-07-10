@@ -613,10 +613,13 @@ _CONFIRMATION_REASON = (
 _GRAPH_HOOKS: dict = {}
 
 
-def register_graph_hooks(*, support_count_held_root_ids, derive_node_states) -> None:
+def register_graph_hooks(
+    *, support_count_held_root_ids, derive_node_states, distinct_cause_clusters
+) -> None:
     """Called once from ``causal_graph`` at module import."""
     _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
     _GRAPH_HOOKS["derive"] = derive_node_states
+    _GRAPH_HOOKS["distinct_clusters"] = distinct_cause_clusters
 
 
 def _graph_hooks() -> dict:
@@ -652,9 +655,12 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
       an orphan validated node whose hypothesis decayed to RETIRED without
       disproof must not veto the user's confirmation of the standing cause.
     - Otherwise all validated roots (the weak-model chain-without-hypothesis
-      shape). With several candidates either way (an unarbitrated MECE
-      violation) the engine never guesses which cause the fix removed — the
-      case stays MECHANISTIC pending arbitration.
+      shape). Several candidate nodes either way are first collapsed to
+      DISTINCT causes (§7.1.2 ``distinct_cause_clusters``: duplicate emissions
+      and same-causal-line roots are ONE cause — the ancestor-most member is
+      the cited origin); with several distinct causes remaining (an
+      unarbitrated MECE violation) the engine never guesses which cause the
+      fix removed — the case stays MECHANISTIC pending arbitration.
     - With NO validated root at all: the COUNT-HELD roots (§7.1/INV-29 —
       really causally supported and blocked only by the independent-support
       bar, ``causal_graph.support_count_held_root_ids``). The user's gone⇒gone
@@ -727,9 +733,38 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
     targets = [n for n in candidate_roots if n.node_id in standing_root_ids]
     if not targets:
         targets = candidate_roots
-    if len(targets) != 1:
-        return False
-    root = targets[0]
+    if len(targets) == 1:
+        root = targets[0]
+    else:
+        # §7.1.2 MECE arbitration: several candidate NODES are a coherence
+        # violation only when they are several DISTINCT causes. Duplicates and
+        # same-causal-line roots collapse to ONE cluster — the user's gone⇒gone
+        # handshake is not ambiguous about the CAUSE there, and a duplicate
+        # emission must not veto it (the INV-29 stamp-veto lesson). A genuine
+        # multi-cluster contest still refuses: the engine never guesses which
+        # cause the fix removed — the case stays MECHANISTIC pending
+        # arbitration.
+        clusters = _graph_hooks()["distinct_clusters"](
+            case, {n.node_id for n in targets}
+        )
+        if len(clusters) != 1:
+            return False
+        # Representative: the ancestor-most member (the causal line's true
+        # origin — on a deepened chain the fix's confirmed removal is asserted
+        # of the origin, not its consequence); duplicates tie → stable id
+        # order.
+        members = sorted(clusters[0])
+        origins = [
+            nid
+            for nid in members
+            if not any(
+                nid in _chain_descendant_ids(case, other)
+                for other in members
+                if other != nid
+            )
+        ]
+        by_id = {n.node_id: n for n in targets}
+        root = by_id[(origins or members)[0]]
     cat_by_id = evidence_category_map(case)
     if root_counterfactually_confirmed(root, cat_by_id):
         return False

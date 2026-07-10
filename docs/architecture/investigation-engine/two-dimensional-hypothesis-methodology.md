@@ -498,9 +498,8 @@ sibling-frame dilution bound).
 filler-padded restatements read as novel and pass; a disjunction root in a
 case with no standing hypotheses passes; dense same-domain sibling frames can
 DELAY (never permanently block) a terse mechanism root's validation. The
-guard is one layer of the #656 defense; the independent-support bar (above)
-and the assurance-grade caps (§9.5) are the layers that have landed, MECE
-arbitration is tracked on #656.
+guard is one layer of the #656 defense, beside the independent-support bar
+(above), the assurance-grade caps (§9.5), and MECE arbitration (§7.1.2).
 
 ### 7.1.1 Deductive validation (proof by exclusion)
 
@@ -566,6 +565,57 @@ deduction. A mis-asserted
 exhaustiveness therefore cannot fabricate a validation on its own — the differential
 must have genuinely collapsed — and guard #4 (counterfactual before RESOLVED, and
 harvest is RESOLVED-only) is the downstream backstop against a missed family.
+
+### 7.1.2 MECE arbitration — simultaneous validation is a coherence violation
+
+Roots are mutually-exclusive origins (S2): at most one can be the real cause.
+So **more than one simultaneously-validated DISTINCT root** does not mean "we
+proved several causes" — it means the evidence has **not discriminated** yet
+(each root cleared its own §7.1 bar, but nothing separated them). This is the
+forward mirror of the §7.1.1 exclusion collapse: just as proof-by-exclusion
+concludes only when the differential has collapsed to one survivor, forward
+validation concludes at case level only when one distinct cause stands.
+
+While contested, the engine **holds case-level identification** — never the
+node states:
+
+- `cause_state` reads **CANDIDATES** (the honest state: several candidates),
+  never IDENTIFIED; the persisted `cause_identification_contested` flag and
+  the `cause_identification_held_mece_total` block-event counter make the
+  standing hold queryable per turn.
+- The **engine conclusion mirror is withheld** (`retract_stale_engine_rcc`
+  clears one naming a contested root): asserting ONE of several
+  equally-validated exclusive causes is an arbitrary pick, not a reflection.
+  An LLM-authored conclusion is never touched (its lifecycle is tracked on
+  #656 P2.3).
+- Each contested root keeps its evidence-derived VALIDATED standing (the §7.1
+  entry-bar lesson: re-adjudicating settled nodes is what causes flap), and
+  the context builder renders the discrimination ask inline on the contested
+  roots.
+
+**What is NOT a contest** (`distinct_cause_clusters` collapses these before
+counting):
+
+- **Duplicate emission** — near-identical root statements (mutual mirror at
+  `_ROOT_DISTINCT_JACCARD`) are ONE cause recorded twice. Holding on them
+  would deadlock: no evidence can ever discriminate a statement from its own
+  restatement (NO-COLLAPSE). An unjudgeably-short statement merges with
+  nothing — the safe failure is holding, never concluding on an arbitrary
+  pick.
+- **A deepened chain** — two ROOT-typed nodes on one causal path (either
+  direction) are one line of explanation at two depths, not a differential.
+- **A counterfactually confirmed root** (§7.2 top grade, engine-only
+  producer) settles the contest outright: the gone⇒gone confirmation IS the
+  discrimination, so validated siblings never hold a proven cause hostage.
+
+The hold is escapable exactly the way the methodology says a differential
+resolves: **discriminating evidence** (a decisive refute on the alternatives —
+M6 or counterfactual), a **counterfactual confirmation** of one root, or the
+duplicates merging. Resolution itself is never blocked — the RESOLVED gate
+keys on the confirmation row, and the confirm-stamp applies the same
+clustering (a duplicate/deepened-line node shape never vetoes the user's
+handshake; a genuine multi-cause contest stays refused and the case
+terminates MECHANISTIC, honestly).
 
 ### 7.2 Two grades of root-cause confidence
 
@@ -754,10 +804,13 @@ variables, milestones, and confidence stay consistent.
 `cause_state` derivation aligns to chain / node states:
 
 - **IDENTIFIED** — some chain's **root node is validated**, mechanistically (§7.1)
-  or deductively (§7.1.1). This is mechanistic grade; it unlocks solution work.
+  or deductively (§7.1.1), **and the validated root is uncontested** (§7.1.2 —
+  several simultaneously-validated distinct roots hold at CANDIDATES pending
+  discrimination). This is mechanistic grade; it unlocks solution work.
 - **CANDIDATES** — ≥2 ACTIVE chains (preserves the existing ≥2-active derivation,
   [§2.5 decision 4](./investigation-lifecycle-logic.md#25-design-decisions-and-open-follow-ons),
-  now counting chains).
+  now counting chains), a live INCONCLUSIVE root, a validated root awaiting
+  symptom verification, or the §7.1.2 MECE-contested hold.
 - **UNKNOWN** — otherwise.
 - **AND gate:** a chain's root cannot be validated until *every* AND-member on its
   path is validated (S1 symmetric proof), so `IDENTIFIED` is never reached on a
@@ -827,10 +880,14 @@ executor) links an unlinked absence row to the **sole** standing validated
 root (the confirm-side twin of the M6 failed-fix refute stamp) and
 re-persists the grade. The row's mere appearance during investigation never
 confirms anything — it is an LLM self-claim, and a premature "it's stable
-now" row emitted mid-rollout (observed live) must not upgrade the grade. With
-several simultaneously-validated roots the engine never guesses which cause
-the fix removed — the case stays `MECHANISTIC` pending arbitration; a
-REFUTES-linked absence row (a failed fix) never flips to confirmation.
+now" row emitted mid-rollout (observed live) must not upgrade the grade.
+Several candidate NODES are first collapsed to DISTINCT causes (§7.1.2
+`distinct_cause_clusters` — a duplicate emission or a deepened chain is one
+cause, cited at its ancestor-most origin, and never vetoes the user's
+handshake); with several **distinct** causes remaining the engine never
+guesses which one the fix removed — the case stays `MECHANISTIC` pending
+arbitration; a REFUTES-linked absence row (a failed fix) never flips to
+confirmation.
 
 Which rows may stand as a confirmation at all is ONE shared definition
 (`resolution_confirmation_rows`, INV-30): non-engine-authored (the engine only

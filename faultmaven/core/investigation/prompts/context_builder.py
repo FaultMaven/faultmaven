@@ -33,6 +33,7 @@ from faultmaven.core.investigation.causal_graph import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
     BLOCK_REASON_MIRROR,
+    mece_contested_root_ids,
     root_support_block_reasons,
 )
 from faultmaven.core.investigation.evidence_need_surfacing import (
@@ -2552,8 +2553,24 @@ def _build_causal_graph_block(case: Case) -> str:
         ),
     }
 
+    # §7.1.2 MECE arbitration: contested roots (several simultaneously-
+    # validated, mutually-exclusive causes) get the discrimination ask
+    # rendered inline — without it the model sees several [root/validated]
+    # lines, reads the cause as settled, and never runs the test that
+    # separates them. A node is either contested (VALIDATED) or count-held
+    # (INCONCLUSIVE), never both, so one note slot suffices.
+    contested_ids = mece_contested_root_ids(case)
+    mece_note = (
+        " — one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: "
+        "cause identification is HELD until discriminating evidence refutes "
+        "the alternatives (at most one can be the real cause)"
+    )
+
     def _node_line(indent: str, n) -> str:
-        note = recovery_notes.get(block_reasons.get(n.node_id), "")
+        if n.node_id in contested_ids:
+            note = mece_note
+        else:
+            note = recovery_notes.get(block_reasons.get(n.node_id), "")
         return (
             f"{indent}{n.node_id} [{n.node_type.value}/{n.node_state.value}] "
             f"{_stmt(n.statement)}{note}"

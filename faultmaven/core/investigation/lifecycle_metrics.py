@@ -197,6 +197,24 @@ absence_confirmation_link_stripped_total = Counter(
     "stripped link.",
 )
 
+# §7.1.2 MECE arbitration (#656 P1.5). One increment per transition INTO the
+# hold — the recompute where cause_state would otherwise have read IDENTIFIED
+# but >=2 simultaneously-validated DISTINCT standing roots (duplicates and
+# same-causal-line roots collapsed; a counterfactually confirmed root settles
+# the contest) held it at CANDIDATES pending discrimination. Edge-triggered on
+# the persisted progress flag, never per turn while the hold stands. Healthy
+# systems sit near zero; a sustained rate means the model keeps validating
+# competing exclusive causes without discriminating between them (an
+# elicitation/search problem — the hold is doing its job; the context builder
+# renders the discrimination ask on the contested roots).
+cause_identification_held_mece_total = Counter(
+    "faultmaven_cause_identification_held_mece_total",
+    "Cause identification was HELD at CANDIDATES by MECE arbitration — "
+    ">=2 simultaneously-validated DISTINCT chain roots with no "
+    "discriminating evidence (§7.1.2); one increment per transition into "
+    "the hold.",
+)
+
 # §7.2 refute-side confidence discipline (#656). A hedged counterfactual
 # is ingested and kept as ORDINARY refuting evidence — this counts how often
 # the model itself hedges the strongest evidence grade. A sustained rate is an

@@ -42,6 +42,7 @@ from faultmaven.core.investigation.causal_graph import (
     derive_node_states,
     ingest_emitted_chain,
     is_chain_root_validated,
+    mece_contested_root_ids,
     prune_abandoned_nodes,
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
@@ -60,6 +61,7 @@ from faultmaven.core.investigation.hypothesis_manager import (
     create_hypothesis_manager,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
+    cause_identification_held_mece_total,
     engine_owned_affordance_served_total,
     evidence_need_created_total,
     evidence_need_id_dropped_total,
@@ -788,8 +790,10 @@ def _recompute_cause_state_from_chain(
 
     ``IDENTIFIED`` iff some live hypothesis's chain ROOT is VALIDATED from real
     rung evidence (``derive_node_states`` + ``any_chain_root_validated``) **AND
-    the symptom is verified** (the cause-identification anchor) — never from a flat
-    assertion.
+    the symptom is verified** (the cause-identification anchor) **AND the
+    validated root is UNCONTESTED** (§7.1.2 MECE arbitration: >1 simultaneously-
+    validated distinct roots is a coherence violation — hold at CANDIDATES
+    pending discrimination) — never from a flat assertion.
     The chain is load-bearing: a cause reaches IDENTIFIED only by emitting a chain,
     grounding its root, AND having established the evidence-grounded verified
     symptom that anchors it. A validated root without ``symptom_verified`` holds
@@ -852,6 +856,37 @@ def _recompute_cause_state_from_chain(
     # no owner for the stale mirror). LLM-authored conclusions are untouched.
     retract_stale_engine_rcc(case)
     root_validated = any_chain_root_validated(case)
+    # §7.1.2 MECE arbitration (#656 P1.5): >1 simultaneously-validated DISTINCT
+    # standing roots is a coherence violation (S2 — at most one origin can be
+    # the cause), so identification is HELD at CANDIDATES pending
+    # discrimination — the forward mirror of the §7.1.1 exclusion collapse.
+    # Node states are untouched (each root's evidence rules it); duplicates and
+    # same-causal-line roots collapse to one cause; a counterfactually
+    # confirmed root settles the contest. The engine mirror on a contested root
+    # was already retracted above (retract_stale_engine_rcc), so no consumer
+    # keeps reading an arbitrary pick.
+    contested_ids = mece_contested_root_ids(case)
+    held_by_contest = bool(contested_ids) and p.symptom_verified
+    if held_by_contest and not p.cause_identification_contested:
+        # Block-event semantics (one increment per transition INTO the hold),
+        # edge-triggered on the persisted flag like the M2 over-claim seam.
+        cause_identification_held_mece_total.inc()
+        logger.warning(
+            "MECE arbitration hold: case=%s turn=%s — %d simultaneously-"
+            "validated distinct roots (%s); cause_state held at CANDIDATES "
+            "pending discriminating evidence",
+            case.case_id,
+            case.current_turn,
+            len(contested_ids),
+            sorted(contested_ids),
+            extra={
+                "event": "cause_identification_mece_hold",
+                "case_id": case.case_id,
+                "turn": case.current_turn,
+                "contested_root_ids": sorted(contested_ids),
+            },
+        )
+    p.cause_identification_contested = held_by_contest
     # The evidence-grounded VERIFIED SYMPTOM is the anchor for cause
     # identification: IDENTIFIED requires ``symptom_verified``. A validated chain
     # root WITHOUT a verified symptom is held at CANDIDATES (never flapped to
@@ -859,7 +894,7 @@ def _recompute_cause_state_from_chain(
     # RootCauseConclusion is synthesized. This gates CAUSE IDENTIFICATION only —
     # not runbook retrieval / early triage, which engage before the symptom is
     # verified.
-    if root_validated and p.symptom_verified:
+    if root_validated and p.symptom_verified and not contested_ids:
         p.cause_state = CauseState.IDENTIFIED
         # Case invariant: IDENTIFIED requires a positive likelihood + a method.
         # Floor them (the LLM's own higher confidence still wins where applied).
@@ -878,8 +913,10 @@ def _recompute_cause_state_from_chain(
         or any_chain_root_inconclusive(case)
     ):
         # CANDIDATES covers: ≥2 active hypotheses, an INCONCLUSIVE live root (the
-        # soft floor), AND a validated root still awaiting symptom verification —
-        # the anchor exists structurally but is not yet grounded.
+        # soft floor), a validated root still awaiting symptom verification —
+        # the anchor exists structurally but is not yet grounded — AND the
+        # §7.1.2 MECE-contested hold (several validated roots, none arbitrated:
+        # honest state is "several candidates", not "identified").
         p.cause_state = CauseState.CANDIDATES
     else:
         p.cause_state = CauseState.UNKNOWN
@@ -1044,6 +1081,7 @@ def _log_grounding_assessment(case: "Case") -> None:
                 "causal_nodes": nodes,
                 "seam_divergence": seam_divergence,
                 "seam_overclaim": seam_overclaim,
+                "mece_contested": p.cause_identification_contested,
             },
         )
     except Exception:  # noqa: BLE001 - observability must never break the turn

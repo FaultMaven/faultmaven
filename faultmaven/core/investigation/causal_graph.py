@@ -1401,6 +1401,133 @@ def any_chain_root_validated(case: Case) -> bool:
     )
 
 
+# §7.1.2 MECE arbitration (#656 P1.5): Jaccard at/above which two ROOT
+# statements are ONE cause recorded twice (duplicate emission), not competing
+# explanations. Same value as the other mirror bars but deliberately its own
+# knob: root-statement identity is a different comparison from evidence
+# independence or frame ownership, separately calibrated.
+_ROOT_DISTINCT_JACCARD = 0.6
+
+
+def _descendant_node_ids(node_id: str, edges: list[CausalEdge]) -> set[str]:
+    """All nodes reachable from ``node_id`` along cause→effect edges.
+    Iterative; a malformed cyclic graph terminates via the visited set."""
+    descendants: set[str] = set()
+    frontier = [node_id]
+    while frontier:
+        current = frontier.pop()
+        for edge in edges:
+            if edge.cause_node_id == current:
+                nxt = edge.effect_node_id
+                if nxt not in descendants and nxt != node_id:
+                    descendants.add(nxt)
+                    frontier.append(nxt)
+    return descendants
+
+
+def distinct_cause_clusters(case: Case, root_ids) -> list[set[str]]:
+    """Cluster ROOT node ids into DISTINCT-cause groups (§7.1.2, MECE
+    arbitration). Two roots are the SAME cause — one cluster — when:
+
+    - their statements are MUTUAL mirrors (``_ROOT_DISTINCT_JACCARD``): the
+      duplicate-emission shape, one cause recorded as two nodes (the model
+      re-stated an existing root instead of referencing its ``cn_`` id); or
+    - one lies on the other's causal path (directed reachability, either
+      direction): a DEEPENED chain — "log rotation broken" → "disk full" is one
+      line of explanation at two depths, not a differential (S2 competition is
+      between ORIGINS, not between a cause and its own consequence).
+
+    Grouping is the transitive closure (connected components) of those two
+    relations, iterated in sorted-id order so the result is order-invariant
+    across dict/DB orderings. A root whose statement yields no content tokens
+    merges with nothing on the mirror relation — conservative by design: an
+    unjudgeable statement stays a DISTINCT cause, and the safe direction under
+    NO-INCORRECT-CONCLUSION is holding identification, never concluding on an
+    arbitrary pick.
+    """
+    members = sorted(rid for rid in root_ids if rid in case.causal_nodes)
+    if len(members) <= 1:
+        return [set(members)] if members else []
+    tokens = {
+        rid: _cached_content_tokens(case.causal_nodes[rid].statement or "")
+        for rid in members
+    }
+    edges = case.causal_edges or []
+    desc = {rid: _descendant_node_ids(rid, edges) for rid in members}
+
+    parent = {rid: rid for rid in members}
+
+    def _find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a: str, b: str) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            # Deterministic: the lexically-smaller representative wins.
+            lo, hi = (ra, rb) if ra < rb else (rb, ra)
+            parent[hi] = lo
+
+    for i, a in enumerate(members):
+        for b in members[i + 1 :]:
+            if (
+                b in desc[a]
+                or a in desc[b]
+                or _mutual_mirror(tokens[a], tokens[b], _ROOT_DISTINCT_JACCARD)
+            ):
+                _union(a, b)
+
+    clusters: dict[str, set[str]] = {}
+    for rid in members:
+        clusters.setdefault(_find(rid), set()).add(rid)
+    return [clusters[key] for key in sorted(clusters)]
+
+
+def mece_contested_root_ids(case: Case) -> set:
+    """§7.1.2 MECE arbitration (#656 P1.5): the VALIDATED standing-chain roots
+    that stand as simultaneously-validated DISTINCT causes — a coherence
+    violation under S2 (roots are mutually-exclusive origins; at most one can
+    be the cause, so "several are simultaneously proven" means the evidence has
+    not discriminated yet). Returns the union of the contested roots' ids, or
+    empty when identification is uncontested.
+
+    - Only roots of STANDING hypotheses count — the same population that
+      grounds ``cause_state=IDENTIFIED`` (``any_chain_root_validated``) and the
+      same standing preference the confirm-stamp applies: an orphan validated
+      node whose hypothesis decayed never contests the standing cause.
+    - Duplicates and same-causal-line roots collapse first
+      (``distinct_cause_clusters``): a duplicate emission is not a
+      differential, and holding on one would deadlock — no evidence can ever
+      discriminate a statement from its own restatement (NO-COLLAPSE).
+    - A counterfactually CONFIRMED root (M2 top grade, engine-only producer)
+      settles the contest outright: the gone⇒gone confirmation IS the
+      discrimination, so validated siblings never hold a proven cause hostage.
+
+    This predicate HOLDS case-level identification only (the mirror of the
+    §7.1.1 exclusion collapse: forward validation concludes only when the
+    differential has collapsed to one cause). Node states are untouched —
+    each root's VALIDATED standing is ruled by its own evidence (§7.1 entry-bar
+    lesson: re-adjudicating settled nodes is what causes flap).
+    """
+    nodes = case.causal_nodes
+    root_ids = {
+        h.root_node_id
+        for h in _standing_hypotheses(case)
+        if h.root_node_id and _state(h.root_node_id, nodes) == NodeState.VALIDATED
+    }
+    if len(root_ids) < 2:
+        return set()
+    cat_by_id = _evidence_category_map(case)
+    if any(root_counterfactually_confirmed(nodes[rid], cat_by_id) for rid in root_ids):
+        return set()
+    clusters = distinct_cause_clusters(case, root_ids)
+    if len(clusters) < 2:
+        return set()
+    return set().union(*clusters)
+
+
 def synthesize_rcc_from_validated_root(case: Case) -> bool:
     """§9.3 — when the cause is grounded via a VALIDATED chain root but no
     ``RootCauseConclusion`` is recorded, mirror the validated chain into a minimal
@@ -1538,9 +1665,14 @@ def retract_stale_engine_rcc(case: Case) -> bool:
     chain, so when the chain's root demotes (e.g. the §7.1 restatement guard on
     a pre-guard persisted case, or an evidence tie) the mirror must not outlive
     it: readiness/report readers key on the RCC's presence and would otherwise
-    keep asserting a conclusion nothing grounds. LLM-authored conclusions are
-    NEVER touched here (their retraction lifecycle is a separate concern —
-    tracked on #656). Returns True if it cleared one.
+    keep asserting a conclusion nothing grounds. Likewise cleared when the named
+    root, though still validated, is MECE-CONTESTED (§7.1.2): a mirror asserting
+    ONE of several simultaneously-validated exclusive causes is an arbitrary
+    pick, not a reflection — the engine withholds its conclusion pending
+    discrimination, and the mirror re-mints automatically when the contest
+    resolves. LLM-authored conclusions are NEVER touched here (their retraction
+    lifecycle is a separate concern — tracked on #656). Returns True if it
+    cleared one.
     """
     rcc = case.root_cause_conclusion
     if rcc is None or getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR:
@@ -1550,8 +1682,9 @@ def retract_stale_engine_rcc(case: Case) -> bool:
         prior
         and prior.state in _STANDING_HYP_STATES
         and is_chain_root_validated(prior, case.causal_nodes)
+        and prior.root_node_id not in mece_contested_root_ids(case)
     ):
-        return False  # still faithfully mirrors a standing validated root
+        return False  # still faithfully mirrors a standing UNCONTESTED root
     case.root_cause_conclusion = None
     return True
 
@@ -1888,4 +2021,5 @@ def resolve_orphan_chains(case: Case) -> list[dict]:
 register_graph_hooks(
     support_count_held_root_ids=support_count_held_root_ids,
     derive_node_states=derive_node_states,
+    distinct_cause_clusters=distinct_cause_clusters,
 )

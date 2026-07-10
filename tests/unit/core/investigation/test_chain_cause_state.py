@@ -76,7 +76,11 @@ def _evidence(
 
 
 def _root(
-    node_id="cn_000000000001", *, support_label=None, support_labels=None
+    node_id="cn_000000000001",
+    *,
+    support_label=None,
+    support_labels=None,
+    statement="the root cause",
 ) -> CausalNode:
     labels = list(support_labels or ([support_label] if support_label else []))
     links = [
@@ -90,7 +94,7 @@ def _root(
     ]
     return CausalNode(
         node_id=node_id,
-        statement="the root cause",
+        statement=statement,
         node_type=NodeType.ROOT,
         node_state=NodeState.CANDIDATE,
         validation_method=ValidationMethod.NONE,
@@ -1209,11 +1213,20 @@ def test_stamp_never_confirms_from_a_refutes_linked_absence_row():
 
 
 def _two_validated_root_case():
-    """Two root→D chains, both empirically validated — the unarbitrated
-    multi-root shape shared by the MECE stamp guard, the mirror-selection
-    tests, and the orphan-preference test."""
-    rA = _root("cn_00000000000a", support_labels=["ev_sa", "ev_sa2"])
-    rB = _root("cn_00000000000b", support_labels=["ev_sb", "ev_sb2"])
+    """Two root→D chains, both empirically validated, with DISTINCT cause
+    statements (no mutual mirror, no path relation — a genuine §7.1.2 MECE
+    contest) — the unarbitrated multi-root shape shared by the MECE stamp
+    guard, the mirror-selection tests, and the orphan-preference test."""
+    rA = _root(
+        "cn_00000000000a",
+        support_labels=["ev_sa", "ev_sa2"],
+        statement="deploy removed the connection release call so connections leak",
+    )
+    rB = _root(
+        "cn_00000000000b",
+        support_labels=["ev_sb", "ev_sb2"],
+        statement="pool max size undersized for peak checkout traffic",
+    )
     case = _case(
         nodes=[rA, rB],
         evidence=[
@@ -1297,9 +1310,14 @@ def test_mirror_repoints_to_the_confirmed_sibling_root():
 
 
 def test_level_only_correction_keeps_the_prior_root():
-    """Pre-cap VERIFIED mirror on unconfirmed B (A also validated, neither
-    confirmed): the correction fixes the LEVEL but keeps naming B."""
-    case, rA, rB, hA, hB = _two_root_case_with_mirror_on_b()
+    """Pre-cap VERIFIED mirror on unconfirmed B (duplicate root A also
+    validated — ONE cause as two nodes, so identification is NOT contested,
+    §7.1.2): the correction fixes the LEVEL but keeps naming B, never
+    silently swapping to first-in-dict A."""
+    case, rA, rB, hA, hB = _two_validated_root_case()
+    # Make the two roots DUPLICATES (mutual-mirror statements): a duplicate
+    # emission is one cause, so the mirror survives and only its level corrects.
+    rA.statement = "pool max size undersized for peak checkout traffic"
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause=rB.statement,
         mechanism="Directly produces the observed problem.",
@@ -1569,8 +1587,16 @@ def test_stamp_holds_when_two_roots_are_count_held():
         confirm_root_from_resolution_absence,
     )
 
-    rA = _root("cn_0000000000c1", support_label="ev_cha")
-    rB = _root("cn_0000000000c2", support_label="ev_chb")
+    rA = _root(
+        "cn_0000000000c1",
+        support_label="ev_cha",
+        statement="deploy removed the connection release call so connections leak",
+    )
+    rB = _root(
+        "cn_0000000000c2",
+        support_label="ev_chb",
+        statement="pool max size undersized for peak checkout traffic",
+    )
     case = _case(nodes=[rA, rB], evidence=[_evidence("ev_cha"), _evidence("ev_chb")])
     d = seed_problem_node(case)
     case.causal_edges = [
