@@ -1460,31 +1460,15 @@ def _cluster_relations(case: Case, root_ids) -> tuple[list, dict]:
     return members, desc
 
 
-def distinct_cause_clusters(case: Case, root_ids) -> list[set[str]]:
-    """Cluster ROOT node ids into DISTINCT-cause groups (§7.1.2, MECE
-    arbitration). Two roots are the SAME cause — one cluster — when:
-
-    - their statements are MUTUAL mirrors (``_ROOT_DISTINCT_JACCARD``): the
-      duplicate-emission shape, one cause recorded as two nodes (the model
-      re-stated an existing root instead of referencing its ``cn_`` id); or
-    - one lies on the other's LIVE causal path (``_live_descendant_ids``,
-      either direction): a DEEPENED chain — "log rotation broken" → "disk
-      full" is one line of explanation at two depths, not a differential (S2
-      competition is between ORIGINS, not between a cause and its own
-      consequence). A path through a REFUTED rung does NOT connect: the link
-      is disproven, so the endpoints are genuine competitors.
-
-    Grouping is the transitive closure (connected components) of those two
-    relations, iterated in sorted-id order so the result is order-invariant
-    across dict/DB orderings. A root whose statement yields no content tokens
-    merges with nothing on the mirror relation — conservative by design: an
-    unjudgeable statement stays a DISTINCT cause, and the safe direction under
-    NO-INCORRECT-CONCLUSION is holding identification, never concluding on an
-    arbitrary pick.
-    """
+def _distinct_cause_partition(case: Case, root_ids) -> tuple[list, dict]:
+    """One relations pass behind §7.1.2: (clusters, live-descendant map).
+    Shared by ``distinct_cause_clusters`` and ``sole_cluster_origin`` so the
+    stamp's origin pick reads the SAME reachability its cluster count was
+    built from (recomputing relations per consumer is both wasted work and a
+    divergence seam)."""
     members, desc = _cluster_relations(case, root_ids)
     if not members:
-        return []
+        return [], desc
     tokens = {
         rid: _cached_content_tokens(case.causal_nodes[rid].statement or "")
         for rid in members
@@ -1517,39 +1501,65 @@ def distinct_cause_clusters(case: Case, root_ids) -> list[set[str]]:
     clusters: dict[str, set[str]] = {}
     for rid in members:
         clusters.setdefault(_find(rid), set()).add(rid)
-    return [clusters[key] for key in sorted(clusters)]
+    return [clusters[key] for key in sorted(clusters)], desc
 
 
-def cluster_origin_id(case: Case, cluster_ids) -> str | None:
-    """The member of ONE distinct-cause cluster that stands as the cause's
-    ORIGIN — the node the confirm-stamp cites (§7.1.2: on a deepened line the
-    gone⇒gone confirmation is asserted of the origin, not its consequence).
+def distinct_cause_clusters(case: Case, root_ids) -> list[set[str]]:
+    """Cluster ROOT node ids into DISTINCT-cause groups (§7.1.2, MECE
+    arbitration). Two roots are the SAME cause — one cluster — when:
 
-    Selection, deterministic and matched to the SAME live reachability the
-    clustering used (a divergent traversal here would pick an origin the
-    clustering never considered on-path):
+    - their statements are MUTUAL mirrors (``_ROOT_DISTINCT_JACCARD``): the
+      duplicate-emission shape, one cause recorded as two nodes (the model
+      re-stated an existing root instead of referencing its ``cn_`` id); or
+    - one lies on the other's LIVE causal path (``_live_descendant_ids``,
+      either direction): a DEEPENED chain — "log rotation broken" → "disk
+      full" is one line of explanation at two depths, not a differential (S2
+      competition is between ORIGINS, not between a cause and its own
+      consequence). A path through a REFUTED rung does NOT connect: the link
+      is disproven, so the endpoints are genuine competitors.
 
-    1. members with no live member-ancestor (nothing in the cluster causes
-       them);
-    2. among those, the one with the MOST live in-cluster descendants — an
-       edge-less duplicate of a consequence has none, the true origin heads
-       the line, so a mixed duplicate+deepened cluster still cites the origin;
-    3. lexical id order (pure duplicates are the same statement — any is
-       faithful).
-
-    Returns None for an empty cluster.
+    Grouping is the transitive closure (connected components) of those two
+    relations, iterated in sorted-id order so the result is order-invariant
+    across dict/DB orderings. A root whose statement yields no content tokens
+    merges with nothing on the mirror relation — conservative by design: an
+    unjudgeable statement stays a DISTINCT cause, and the safe direction under
+    NO-INCORRECT-CONCLUSION is holding identification, never concluding on an
+    arbitrary pick.
     """
-    members, desc = _cluster_relations(case, cluster_ids)
-    if not members:
+    return _distinct_cause_partition(case, root_ids)[0]
+
+
+def _origin_of(cluster: set, desc: dict) -> str:
+    """The ORIGIN of one distinct-cause cluster — the node the confirm-stamp
+    cites (§7.1.2: on a deepened line the gone⇒gone confirmation is asserted
+    of the origin, not its consequence): the member with the MOST live
+    in-cluster descendants, lexical id on ties.
+
+    That single sort IS the whole policy — no "has no member-ancestor"
+    pre-filter is needed, because on a DAG a live member-ancestor strictly
+    dominates: if ``r`` live-reaches member ``m`` then ``desc(r) ⊇ desc(m) ∪
+    {m}`` (members are never REFUTED, so paths extend through them), giving
+    ``r`` a strictly higher count. An edge-less duplicate of a consequence has
+    zero descendants and never outranks the line's head; pure duplicates all
+    count zero and tie to stable id order (same statement — any is faithful).
+    A malformed cycle degenerates to the same id-order tie-break.
+    """
+    return sorted(cluster, key=lambda m: (-len(desc[m] & cluster), m))[0]
+
+
+def sole_cluster_origin(case: Case, root_ids) -> "tuple[str, set] | None":
+    """§7.1.2 arbitration entry point for the confirm-stamp, in ONE relations
+    pass: ``None`` unless ``root_ids`` collapse to exactly one distinct cause
+    (an unarbitrated MECE violation — the engine never guesses which cause the
+    fix removed); otherwise ``(origin_id, member_ids)`` — the node to cite and
+    the full cluster the stamp's idempotence and refutation-window checks must
+    range over (a confirmation or failed-fix refute anywhere in the cluster
+    belongs to the CAUSE)."""
+    clusters, desc = _distinct_cause_partition(case, root_ids)
+    if len(clusters) != 1:
         return None
-    member_set = set(members)
-    rootless = [
-        m
-        for m in members
-        if not any(m in desc[other] for other in members if other != m)
-    ]
-    candidates = rootless or members  # cycle fallback: malformed graph only
-    return sorted(candidates, key=lambda m: (-len(desc[m] & member_set), m))[0]
+    cluster = clusters[0]
+    return _origin_of(cluster, desc), set(cluster)
 
 
 def mece_contested_root_ids(case: Case) -> set:
@@ -2113,6 +2123,5 @@ def resolve_orphan_chains(case: Case) -> list[dict]:
 register_graph_hooks(
     support_count_held_root_ids=support_count_held_root_ids,
     derive_node_states=derive_node_states,
-    distinct_cause_clusters=distinct_cause_clusters,
-    cluster_origin_id=cluster_origin_id,
+    sole_cluster_origin=sole_cluster_origin,
 )

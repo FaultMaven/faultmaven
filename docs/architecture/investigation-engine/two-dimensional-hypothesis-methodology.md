@@ -633,8 +633,9 @@ M6 or counterfactual), a **counterfactual confirmation** of one root, or the
 duplicates merging. Resolution itself is never blocked — the RESOLVED gate
 keys on the confirmation row, and the confirm-stamp applies the same
 clustering: a duplicate/deepened-line node shape never vetoes the user's
-handshake — the cited node is the cluster's ORIGIN (`cluster_origin_id`,
-ancestor-most by the same live reachability), idempotence and the per-root
+handshake — the cited node is the cluster's ORIGIN (`sole_cluster_origin`:
+most live in-cluster descendants, by the same reachability the cluster count
+used, in one relations pass), idempotence and the per-root
 refutation window are taken CLUSTER-wide (a confirmation or a failed-fix
 refute anywhere in the cluster belongs to the CAUSE) — while a genuine
 multi-cause contest stays refused and the case terminates MECHANISTIC,

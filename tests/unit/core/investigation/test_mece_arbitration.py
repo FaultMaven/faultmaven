@@ -885,3 +885,63 @@ def test_stamp_never_remints_an_llm_conclusion():
         case.root_cause_conclusion.root_cause
         == "the LLM's own conclusion about the consequence"
     )
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: safe hook degradation + working-conclusion coherence
+# ---------------------------------------------------------------------------
+
+
+def test_stamp_refuses_safely_when_arbitration_hook_is_missing():
+    """The multi-target stamp path degrades to the safe refusal when the graph
+    hook registry is unavailable — never a KeyError that 500s the unguarded
+    RESOLVED-execution path (the importlib cold-start fallback no-ops when
+    causal_graph is already imported, so the registry stays empty)."""
+    from faultmaven.core.investigation import cause_assurance
+
+    case = _specimen_case(members=_SPECIMEN[:2])
+    _recompute_cause_state_from_chain(case)
+    _resolution_absence_row(case)
+    with patch.dict(cause_assurance._GRAPH_HOOKS, {}, clear=True):
+        assert cause_assurance.confirm_root_from_resolution_absence(case) is False
+
+
+def test_working_conclusion_block_carries_contested_note():
+    """§7.1.2 prompt coherence: the working conclusion is the max-likelihood
+    pick over the contested hypotheses — rendered on a contested case it must
+    carry the discrimination note, or the model anchors on the arbitrary pick
+    beside a graph block saying identification is held."""
+    from faultmaven.core.investigation.prompts.context_builder import (
+        build_investigation_context,
+    )
+    from faultmaven.modules.case.contracts import WorkingConclusion
+
+    case = _specimen_case()
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_identification_contested is True
+    case.working_conclusion = WorkingConclusion(
+        statement="the deploy removed the connection release call",
+        likelihood=0.8,
+        reasoning="engine per-turn pick",
+    )
+    ctx = build_investigation_context(case, "user message", max_tokens=8000)
+    assert "mutually-exclusive candidate causes" in ctx["working_conclusion"]
+    assert "DISCRIMINATING" in ctx["working_conclusion"]
+
+
+def test_working_conclusion_block_clean_when_uncontested():
+    from faultmaven.core.investigation.prompts.context_builder import (
+        build_investigation_context,
+    )
+    from faultmaven.modules.case.contracts import WorkingConclusion
+
+    case = _specimen_case(members=_SPECIMEN[:1])
+    _recompute_cause_state_from_chain(case)
+    case.working_conclusion = WorkingConclusion(
+        statement="the deploy removed the connection release call",
+        likelihood=0.8,
+        reasoning="engine per-turn pick",
+    )
+    ctx = build_investigation_context(case, "user message", max_tokens=8000)
+    assert "mutually-exclusive candidate causes" not in ctx["working_conclusion"]
+    assert "the deploy removed the connection release call" in ctx["working_conclusion"]

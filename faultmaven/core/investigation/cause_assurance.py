@@ -617,14 +617,12 @@ def register_graph_hooks(
     *,
     support_count_held_root_ids,
     derive_node_states,
-    distinct_cause_clusters,
-    cluster_origin_id,
+    sole_cluster_origin,
 ) -> None:
     """Called once from ``causal_graph`` at module import."""
     _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
     _GRAPH_HOOKS["derive"] = derive_node_states
-    _GRAPH_HOOKS["distinct_clusters"] = distinct_cause_clusters
-    _GRAPH_HOOKS["cluster_origin"] = cluster_origin_id
+    _GRAPH_HOOKS["sole_cluster_origin"] = sole_cluster_origin
 
 
 def _graph_hooks() -> dict:
@@ -750,32 +748,29 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         # emission must not veto it (the INV-29 stamp-veto lesson). A genuine
         # multi-cluster contest still refuses: the engine never guesses which
         # cause the fix removed — the case stays MECHANISTIC pending
-        # arbitration. Hooks are read defensively (.get, like every other
+        # arbitration. The hook is read defensively (.get, like every other
         # hook consumer here): this sits on the unguarded RESOLVED-execution
         # path, so a missing registration must degrade to the safe refusal,
         # never a KeyError that 500s the transition.
-        clusters_fn = _graph_hooks().get("distinct_clusters")
-        origin_fn = _graph_hooks().get("cluster_origin")
-        if clusters_fn is None or origin_fn is None:
+        arbitrate = _graph_hooks().get("sole_cluster_origin")
+        if arbitrate is None:
             return False
-        clusters = clusters_fn(case, {n.node_id for n in targets})
-        if len(clusters) != 1:
+        resolved = arbitrate(case, {n.node_id for n in targets})
+        if resolved is None:
             return False
-        cluster_ids = set(clusters[0])
-        # The cited node is the cluster's ORIGIN (ancestor-most by the SAME
-        # live reachability the clustering used — on a deepened chain the
-        # fix's confirmed removal is asserted of the origin, not its
-        # consequence; a mixed cluster prefers the member that actually heads
-        # the line over an edge-less duplicate of a consequence). NOTE for
-        # the node-dedup follow-on (#656): this writes the durable
-        # confirmation link onto ONE member of a duplicate cluster — any
-        # later dedup/merge of persisted cases must migrate evidence_links
-        # to the surviving node.
-        origin_id = origin_fn(case, cluster_ids)
-        by_id = {n.node_id: n for n in targets}
-        if origin_id not in by_id:
-            return False
-        root = by_id[origin_id]
+        # The cited node is the cluster's ORIGIN (most live in-cluster
+        # descendants, by the SAME reachability the cluster count used — on a
+        # deepened chain the fix's confirmed removal is asserted of the
+        # origin, not its consequence; a mixed cluster prefers the member
+        # that actually heads the line over an edge-less duplicate of a
+        # consequence). The origin is a member of the cluster, which is a
+        # subset of the target ids, so the lookup cannot miss. NOTE for the
+        # node-dedup follow-on (#656): this writes the durable confirmation
+        # link onto ONE member of a duplicate cluster — any later dedup/merge
+        # of persisted cases must migrate evidence_links to the surviving
+        # node.
+        origin_id, cluster_ids = resolved
+        root = {n.node_id: n for n in targets}[origin_id]
     # Idempotence is CLUSTER-wide: a confirmation anywhere in the cluster is
     # the cause's confirmation (a retried resolve, or a chain deepened after
     # a confirmed resolution, must not stamp the same cause twice under a

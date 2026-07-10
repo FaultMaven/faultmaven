@@ -2797,6 +2797,18 @@ def build_investigation_context(
         conclusion_str += f"REASONING: {wc.reasoning[:1000]}\n"
         if wc.supporting_evidence_ids:
             conclusion_str += f"EVIDENCE: {', '.join(wc.supporting_evidence_ids)}\n"
+        # §7.1.2 coherence: the working conclusion is the max-likelihood pick
+        # over STANDING hypotheses — on a MECE-contested case that is one of
+        # several simultaneously-validated exclusive causes, and rendering it
+        # unqualified beside the graph block's discrimination ask invites the
+        # model to anchor on the pick instead of running the separating test.
+        if getattr(case.progress, "cause_identification_contested", False):
+            conclusion_str += (
+                "NOTE: this is ONE of several simultaneously-validated "
+                "mutually-exclusive candidate causes (see the causal graph) — "
+                "cause identification is HELD; gather DISCRIMINATING evidence "
+                "before treating this statement as the cause.\n"
+            )
         conclusion_str += "</working_conclusion>"
 
     # 5c. Pending ProposedAction (Framework §4.1: LLM needs this to detect compliance)
