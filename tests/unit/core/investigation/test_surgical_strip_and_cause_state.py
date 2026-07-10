@@ -104,11 +104,15 @@ class TestSurgicalStrip:
 
 
 class TestSolutionStateDerivation:
-    """``solution_state`` derivation in ``_recompute_assessment_state``
-    (cause_state derivation itself is exercised by test_chain_cause_state.py)."""
+    """``solution_state`` / ``solution_proposed`` derivation in
+    ``_recompute_assessment_state`` (INV-32; cause_state derivation itself is
+    exercised by test_chain_cause_state.py, offer liveness by
+    test_solution_offer_liveness.py)."""
 
     def _case(self):
         return SimpleNamespace(
+            case_id="case_test",
+            current_turn=3,
             progress=InvestigationProgress(),
             hypotheses={},
             solutions=[],
@@ -116,13 +120,26 @@ class TestSolutionStateDerivation:
             causal_nodes={},
             causal_edges={},
             root_cause_conclusion=None,
+            proposed_actions=[],
         )
 
-    def test_solution_state_selected_when_proposed(self):
+    def test_solution_state_selected_when_ladder_advanced(self):
+        # The gate ladder is a forward-only fact: solution_accepted keeps the
+        # derived pair True/SELECTED even with no live offer standing.
+        case = self._case()
+        case.progress.solution_accepted = True
+        _recompute_assessment_state(case)
+        assert case.progress.solution_state == SolutionState.SELECTED
+        assert case.progress.solution_proposed is True
+
+    def test_solution_state_unknown_when_no_live_offer(self):
+        # A stale persisted True with no live offer and no ladder derives OFF —
+        # the write-once latch is gone (INV-32).
         case = self._case()
         case.progress.solution_proposed = True
         _recompute_assessment_state(case)
-        assert case.progress.solution_state == SolutionState.SELECTED
+        assert case.progress.solution_state == SolutionState.UNKNOWN
+        assert case.progress.solution_proposed is False
 
 
 class TestDeferredImplementationClose:

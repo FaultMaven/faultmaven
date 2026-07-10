@@ -242,8 +242,15 @@ class TestM5SolutionGate:
 
     async def test_solution_allowed_when_cause_identified(self):
         """With a validated root (cause_state IDENTIFIED), the SOLUTION action
-        stands and solution_proposed is set."""
-        case = _make_case(CauseState.IDENTIFIED)
+        stands and solution_proposed derives True.
+
+        The fixture's flat IDENTIFIED is re-derived DOWN by the end-of-turn
+        chain recompute (no graph in this fixture), so the anchored RCC
+        fallback carries the established-cause license through the INV-32
+        liveness re-check — the same fallback the M5 creation gate reads.
+        """
+        case = _make_case(CauseState.IDENTIFIED, with_symptom=True)
+        case.root_cause_conclusion = _rcc()
         eng = _make_engine()
 
         await eng._apply_investigation_updates(

@@ -68,6 +68,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_status_changed_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
+    solution_offer_superseded_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
     CONTEXT_OVERFLOW_PHRASES,
@@ -297,6 +298,104 @@ def _determine_action_type(
         return InvestigationActionType.MITIGATION
 
     return InvestigationActionType.SOLUTION
+
+
+# ProposedAction states that count as a LIVE offer for the solution_proposed
+# derivation (P2.1, #656 DF-3): 'pending' is an offer awaiting execution;
+# 'accepted' is an executed fix (a historical fact — never withdrawn).
+# 'superseded' and 'rejected' are out of liveness.
+_LIVE_OFFER_STATES = ("pending", "accepted")
+
+
+def _live_solution_offer_exists(case: Case) -> bool:
+    """True iff a live SOLUTION offer stands (P2.1 derivation input).
+
+    MITIGATION/DIAGNOSTIC actions never feed ``solution_proposed`` — the
+    indicator tracks permanent-fix offers only (same population the 3F
+    write-once set covered, minus the offers that have left liveness).
+    """
+    return any(
+        a.action_type == InvestigationActionType.SOLUTION
+        and a.state in _LIVE_OFFER_STATES
+        for a in case.proposed_actions
+    )
+
+
+def _supersede_pending_solution_offers(case: Case, *, reason: str) -> int:
+    """Mark every PENDING SOLUTION offer superseded; return the count.
+
+    Only pending offers are touched: an ACCEPTED offer records that the user
+    executed the fix — a fact supersession cannot unmake (its truth surface
+    is the M6 failed-fix machinery, not offer liveness). MITIGATION and
+    DIAGNOSTIC actions are out of scope (they never fed ``solution_proposed``
+    and mitigations are not licensed by an established cause).
+    """
+    count = 0
+    for action in case.proposed_actions:
+        if (
+            action.action_type == InvestigationActionType.SOLUTION
+            and action.state == "pending"
+        ):
+            action.state = "superseded"
+            action.superseded_reason = reason
+            action.superseded_in_turn = case.current_turn
+            solution_offer_superseded_total.labels(reason=reason).inc()
+            count += 1
+    return count
+
+
+def _withdraw_unlicensed_solution_offers(
+    case: Case, metadata: dict[str, Any] | None = None
+) -> int:
+    """Re-check the M5 license on standing PENDING solution offers (P2.1).
+
+    A SOLUTION offer is admitted only while a cause is established (the M5
+    creation gate, ``_solution_cause_validated``). This is the same predicate
+    re-checked at recompute time, after this turn's demotions/retractions have
+    settled: when the license has fallen (M6 failed-fix demotion, conclusion
+    retraction, MECE hold), the pending offer is WITHDRAWN — superseded, out
+    of the ``<pending_action>`` context block and the ``solution_proposed``
+    derivation — rather than kept standing as "awaiting execution" for a
+    cause the engine no longer asserts (#656 DF-3: the frame latch).
+
+    The withdrawal is surfaced to the LLM via ``system_feedback`` so the next
+    turn re-grounds the cause (or proposes a WORKAROUND mitigation) instead of
+    referencing a proposal the user can no longer see as pending.
+    """
+    # Local import keeps M5's creation gate and this liveness re-check on ONE
+    # predicate (see _solution_cause_validated for the cycle rationale).
+    from faultmaven.core.investigation.terminal_transitions import _cause_identified
+
+    if _cause_identified(case):
+        return 0
+    count = _supersede_pending_solution_offers(case, reason="license_lost")
+    if not count:
+        return 0
+    logger.warning(
+        f"Withdrew {count} pending SOLUTION offer(s) for case {case.case_id}: "
+        f"the established-cause license fell "
+        f"(cause_state={case.progress.cause_state.value}, "
+        f"rcc={'set' if case.root_cause_conclusion else 'none'})",
+        extra={
+            "event": "solution_offer_withdrawn",
+            "case_id": case.case_id,
+            "turn": case.current_turn,
+            "withdrawn": count,
+        },
+    )
+    if metadata is not None:
+        current = metadata.get("system_feedback", "") or ""
+        notice = (
+            "SYSTEM: Your pending SOLUTION proposal was withdrawn because the "
+            "root cause it targeted is no longer established (demoted or "
+            "retracted this turn). Re-ground the root cause with evidence "
+            "before re-proposing a permanent fix, or propose a temporary "
+            "mitigation (WORKAROUND) instead."
+        )
+        metadata["system_feedback"] = "\n".join(
+            part for part in (current, notice) if part
+        ).strip()
+    return count
 
 
 def _apply_stage_gate_side_effects(
@@ -935,6 +1034,7 @@ def _recompute_assessment_state(
     *,
     exclusion_survivors: "set[str] | frozenset[str]" = frozenset(),
     rcc_authored_this_turn: bool = False,
+    metadata: "dict[str, Any] | None" = None,
 ) -> None:
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
@@ -947,9 +1047,15 @@ def _recompute_assessment_state(
       ``_recompute_cause_state_from_chain`` (documented at its definition):
       ``IDENTIFIED`` iff a standing chain root is VALIDATED; NOT sticky (it
       follows the root's evidence-derived truth, so M6 drops it on its own).
-    - ``solution_state``: ``SELECTED`` once a permanent SOLUTION has been
-      proposed (or a Solution record exists). ``CANDIDATES`` (multi-solution
-      deliberation) is reserved for a follow-on and not produced here.
+    - ``solution_proposed`` / ``solution_state`` are DERIVED from live
+      SOLUTION offers each recompute (P2.1, #656 DF-3 — the write-once latch
+      dissolved): first the M5 license is re-checked (pending offers whose
+      established-cause license fell this turn are withdrawn), then
+      ``solution_proposed`` = a live offer stands OR the gate ladder has
+      advanced (``solution_accepted``/``solution_verified`` are forward-only
+      facts — the user executed a fix — so the validator's ordering
+      invariants hold by construction). ``solution_state`` mirrors it
+      (``SELECTED``/``UNKNOWN``; ``CANDIDATES`` remains reserved).
     - ``verification_status``: the grounding × progress join
       (``assess_verification_status``), computed LAST so it reads the grade the
       cause_state recompute (including its deductive-exclusion stamp) just
@@ -967,9 +1073,17 @@ def _recompute_assessment_state(
     # confirmation (terminal_transitions._execute_resolved_transition).
     _recompute_cause_state_from_chain(case, exclusion_survivors=exclusion_survivors)
 
-    if p.solution_state != SolutionState.SELECTED:
-        if p.solution_proposed or bool(case.solutions):
-            p.solution_state = SolutionState.SELECTED
+    # P2.1 (#656 DF-3): solution_proposed is DERIVED, not latched. Runs AFTER
+    # the cause recompute so the license re-check reads this turn's settled
+    # truth (a root demoted or a conclusion retracted above withdraws the
+    # pending offer in the same turn). Accepted/verified are forward-only
+    # gate facts and keep the indicator True (state_validator ordering).
+    _withdraw_unlicensed_solution_offers(case, metadata)
+    offer_live = (
+        p.solution_accepted or p.solution_verified or _live_solution_offer_exists(case)
+    )
+    p.solution_proposed = offer_live
+    p.solution_state = SolutionState.SELECTED if offer_live else SolutionState.UNKNOWN
 
     # Assurance grade + verification status LAST — after the cause_state
     # recompute above has run derive_node_states + the deductive-exclusion
@@ -7362,6 +7476,16 @@ class MilestoneEngine:
                         "evidence."
                     )
 
+                # P2.1 (#656 DF-3): a NEW permanent-fix offer replaces any
+                # standing pending one — the newest proposal is THE offer
+                # (the context builder and compliance detection already key
+                # on the most recent pending action; without supersession the
+                # stale siblings linger pending forever and keep the derived
+                # solution_proposed latched). Runs BEFORE the append so the
+                # new offer never supersedes itself.
+                if action_type == InvestigationActionType.SOLUTION:
+                    _supersede_pending_solution_offers(case, reason="reproposal")
+
                 proposed_action = ProposedAction(
                     case_id=case.case_id,
                     action_type=action_type,
@@ -7372,9 +7496,10 @@ class MilestoneEngine:
                 )
                 case.proposed_actions.append(proposed_action)
 
-                # 3F: Set solution_proposed programmatically when SOLUTION action created
-                if action_type == InvestigationActionType.SOLUTION:
-                    case.progress.solution_proposed = True
+                # solution_proposed is DERIVED at the end-of-turn assessment
+                # recompute from live SOLUTION offers (P2.1) — the former 3F
+                # write-once set here is gone; this new pending offer flips
+                # the indicator True in the same turn via the derivation.
 
         # 6. Journal Entries (append-only investigation memory)
         if hasattr(updates, "journal_entries") and updates.journal_entries:
@@ -7420,6 +7545,7 @@ class MilestoneEngine:
             case,
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
             rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
+            metadata=metadata,
         )
 
         # Deferred-implementation disposition: if the fix is known but can't be

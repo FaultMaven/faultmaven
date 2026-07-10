@@ -182,8 +182,11 @@ class InvestigationProgress(BaseModel):
     solution_proposed: bool = Field(
         default=False,
         description=(
-            "Set programmatically when ProposedAction with action_type=SOLUTION "
-            "is created. Not directly set by LLM."
+            "Engine-derived at the assessment recompute (INV-32): True iff a "
+            "LIVE ProposedAction with action_type=SOLUTION stands "
+            "(state pending/accepted) or the gate ladder advanced "
+            "(solution_accepted/solution_verified). Not set by LLM; not a "
+            "write-once latch — a superseded or license-lost offer drops it."
         )
     )
 
@@ -299,7 +302,7 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 |-------------------|-------------|---------------------|
 | `symptom_verified` | 1 | SYMPTOM |
 | grounded cause signal (→ `cause_state = IDENTIFIED`) | 2 | CAUSAL (or a self-naming-error extract) |
-| `solution_proposed` | 0 | (set programmatically when ProposedAction created) |
+| `solution_proposed` | 0 | (engine-derived from live SOLUTION ProposedActions, INV-32) |
 
 **Gate milestones** are NOT evidence-validated — they are set by the LLM in structured output when it detects user compliance with a ProposedAction (Framework §4.2). The mitigation gate signals (still EMITTED as `mitigation_accepted` / `mitigation_verified`) materialize into `progress.mitigation` rather than booleans:
 
@@ -1186,7 +1189,9 @@ class ProposedAction(BaseModel):
     commands: List[str] = Field(default_factory=list, description="Specific commands for the user to execute")
     proposed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     proposed_in_turn: int = Field(description="Turn number when this action was proposed")
-    status: str = Field(default="pending", description="pending | accepted | rejected | superseded")
+    state: str = Field(default="pending", description="pending | accepted | rejected | superseded")
+    superseded_in_turn: Optional[int]  # turn the engine superseded this action (INV-32)
+    superseded_reason: Optional[str]   # 'reproposal' | 'license_lost' (forensic; only pending actions render)
 
 class ActionAttempt(BaseModel):
     """

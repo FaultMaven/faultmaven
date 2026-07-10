@@ -243,3 +243,25 @@ absence_confirmation_bearing_rejected_total = Counter(
     "confirmation because its content bears on a different chain than the "
     "root being confirmed — one increment per refused row.",
 )
+
+# P2.1 (#656 DF-3) offer-liveness discipline. ``solution_proposed`` is derived
+# from live SOLUTION offers each recompute, so an offer leaving liveness is the
+# event that can move the prompt frame back out of "awaiting execution".
+# Labeled by supersession reason so the two populations stay separately
+# actionable: 'reproposal' (a newer SOLUTION offer replaced a standing pending
+# one — routine; a sustained high rate means the model churns fixes without
+# the user executing any) and 'license_lost' (the established-cause license
+# that admitted the offer fell — M6 failed-fix demotion, conclusion
+# retraction, or a MECE hold — and the engine withdrew the now-unlicensed
+# offer rather than keep presenting it as awaiting execution). A sustained
+# 'license_lost' rate means causes are being established and then knocked
+# down after fixes are already on the table — inspect the validation bars
+# upstream, not this withdrawal (it is doing its job).
+solution_offer_superseded_total = Counter(
+    "faultmaven_solution_offer_superseded_total",
+    "A pending SOLUTION ProposedAction was superseded — one increment per "
+    "offer, labeled by reason: 'reproposal' (replaced by a newer SOLUTION "
+    "offer) or 'license_lost' (the established-cause license that admitted "
+    "it fell; the engine withdrew the offer).",
+    labelnames=["reason"],
+)

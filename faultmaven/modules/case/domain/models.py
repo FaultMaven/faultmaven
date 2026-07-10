@@ -3432,6 +3432,26 @@ class ProposedAction(BaseModel):
         description="pending | accepted | rejected | superseded",
     )
 
+    superseded_in_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Turn in which this action was superseded (state='superseded'). "
+            "None while the action is live or if it left liveness another way."
+        ),
+    )
+
+    superseded_reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Why the engine superseded this action: 'reproposal' (a newer "
+            "SOLUTION offer replaced it) or 'license_lost' (the established-"
+            "cause license that admitted the offer fell — M6 demotion, "
+            "conclusion retraction, or a MECE hold). Forensic field; the "
+            "context builder renders only pending actions."
+        ),
+        max_length=200,
+    )
+
     downgrade_reason: Optional[str] = Field(
         default=None,
         description=(

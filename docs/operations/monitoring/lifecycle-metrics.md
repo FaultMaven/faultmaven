@@ -131,6 +131,22 @@ rate(faultmaven_cause_identification_held_mece_total[24h])
 
 Matrix row: INV-31 in `investigation-invariants.md`; methodology §7.1.2 (MECE arbitration).
 
+## INV-32: solution-offer liveness telemetry
+
+- `faultmaven_solution_offer_superseded_total{reason}` — a pending SOLUTION `ProposedAction` left liveness; `solution_proposed` is derived from live offers, so these events are what can move the DIAGNOSIS frame back out of "awaiting execution". One increment per superseded offer, labeled by reason: `reproposal` (a newer SOLUTION offer replaced it — the newest proposal IS the offer) and `license_lost` (the established-cause license that admitted the offer under M5 fell — failed-fix demotion, conclusion retraction, or a MECE hold — and the engine withdrew the offer rather than keep presenting a fix for a cause it no longer asserts).
+
+**Healthy shape.** `reproposal` at a modest rate is routine iteration; a sustained high rate means the model churns fixes the user never executes (elicitation/UX signal). `license_lost` near zero; each event is one case where a cause was established, a fix went on the table, and the cause was then knocked down — the withdrawal is the truth surface working, but a sustained rate says the upstream validation bars are admitting causes that don't survive (inspect INV-27/INV-29/INV-31 telemetry on the same window before suspecting this rule).
+
+```promql
+# Offer churn: fixes replaced before execution.
+rate(faultmaven_solution_offer_superseded_total{reason="reproposal"}[24h])
+
+# Withdrawn licenses: established causes knocked down after a fix was offered.
+rate(faultmaven_solution_offer_superseded_total{reason="license_lost"}[24h])
+```
+
+Matrix row: INV-32 in `investigation-invariants.md`; lifecycle-logic §1.4 (state-update table). Pair with the `solution_offer_withdrawn` WARNING (same event, per-case forensics).
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:
