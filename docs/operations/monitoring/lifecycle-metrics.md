@@ -149,9 +149,9 @@ Matrix row: INV-32 in `investigation-invariants.md`; lifecycle-logic §1.4 (stat
 
 ## INV-33: pending-action hygiene telemetry
 
-- `faultmaven_pending_action_superseded_stale_total` — a shadowed DIAGNOSTIC pending `ProposedAction` was retired (`superseded_reason="stale_pending"`) when a SOLUTION offer it predated was withdrawn on license loss, so it cannot resurface as the `<pending_action>` the LLM reads for compliance. One increment per retired action. MITIGATION is cause-independent (INV-32) and is never retired this way.
+- `faultmaven_pending_action_superseded_stale_total` — a shadowed DIAGNOSTIC pending `ProposedAction` was retired (`superseded_reason="stale_pending"`) when the SOLUTION offer it predated left pending state — WITHDRAWN on license loss OR ACCEPTED into TREATMENT — so it cannot resurface as the `<pending_action>` the LLM reads for compliance. One increment per retired action. MITIGATION is cause-independent (INV-32) and is never retired this way.
 
-**Healthy shape.** This tracks `license_lost` (INV-32): each stale retirement rides on a solution withdrawal, so the rate is bounded above by `license_lost` × (open diagnostic asks per withdrawal). A near-zero rate is normal — most withdrawn offers have no stale diagnostic beneath them. A sustained rate means investigations repeatedly ground → propose → lose the cause with earlier evidence requests still open (read alongside `solution_offer_superseded_total{reason="license_lost"}` on the same window: same admission-bar / decay diagnosis).
+**Healthy shape.** Each stale retirement rides on a solution leaving pending (an acceptance or a `license_lost` withdrawal), so the rate is bounded by those transitions × open-diagnostic-asks-per-transition. A near-zero rate is normal — most offers have no stale diagnostic beneath them (a well-behaved investigation clears diagnostic asks before proposing a fix). A sustained rate means investigations repeatedly reach a fix with earlier evidence requests still open; if it correlates with `solution_offer_superseded_total{reason="license_lost"}` on the same window, read it as the same admission-bar / decay diagnosis.
 
 ```promql
 # Stale diagnostic asks retired on solution withdrawal.

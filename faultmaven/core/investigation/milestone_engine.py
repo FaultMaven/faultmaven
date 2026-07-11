@@ -330,38 +330,37 @@ def _supersede_pending_solution_offers(
     return count
 
 
-def _retire_stale_pending_after_withdrawal(case: Case, *, before_turn: int) -> int:
-    """Retire stale DIAGNOSTIC pending asks shadowed by a withdrawn SOLUTION (INV-33).
+def _retire_shadowed_diagnostic_asks(case: Case, *, before_turn: int) -> int:
+    """Retire stale DIAGNOSTIC pending asks a SOLUTION offer shadowed (INV-33).
 
     The ``<pending_action>`` render (context_builder: newest pending action of
-    ANY type) shows one action at a time — the SOLUTION offer, while it stands,
-    shadows any earlier ask beneath it. When that offer is WITHDRAWN on license
-    loss (the cause fell, the case is back in active diagnosis), the render
-    falls through to a shadowed ask and resurfaces it as the current compliance
-    target — an ask the investigation already moved past. Retire the shadowed
-    DIAGNOSTIC asks (pending, proposed AT OR BEFORE ``before_turn`` = the
-    withdrawn offer's turn) so compliance detection reads a clean slate and the
-    LLM forms a fresh ask against the re-opened diagnosis, informed by the
-    evidence that just knocked the cause down. Asks proposed AFTER the offer are
-    a live thread and stand.
+    ANY type) shows one action at a time — a SOLUTION offer, while it stands,
+    shadows any EARLIER ask beneath it. When that offer LEAVES pending state —
+    WITHDRAWN on license loss (the cause fell, the case is back in active
+    diagnosis) or ACCEPTED (the case moves to TREATMENT to verify the executed
+    fix) — the render falls through to a shadowed ask and resurfaces it as the
+    current compliance target, an ask the investigation already moved past.
+    Retire the shadowed DIAGNOSTIC asks (pending, proposed STRICTLY BEFORE
+    ``before_turn`` = the offer's turn) so compliance detection reads a clean
+    slate. Asks proposed in the offer's OWN turn or AFTER are a live/reopening
+    thread — the de-absolutized Zone-3 prompt (INV-33) now invites a parallel
+    diagnostic when the user reopens the thread — and stand (strict ``<``, the
+    same-turn create-then-withdraw edge preserves the reopened ask).
 
     DIAGNOSTIC-ONLY by design. A DIAGNOSTIC ask has no compliance gate (it never
     transitions to ``accepted``), so retiring one is a pure display cleanup with
     zero functional loss — the stale pre-fix evidence request is exactly what
-    goes obsolete when new evidence retracts the cause. A pending MITIGATION is
-    NOT retired: a workaround is cause-INDEPENDENT symptom relief the user may
-    still execute, so its liveness survives solution withdrawal (INV-32) and its
-    reappearance as the top pending ask is correct, not stale. Scoped to the
-    withdrawal path deliberately: acceptance keeps the case in TREATMENT, where
-    ``<pending_action>`` is not the compliance surface (TREATMENT verifies the
-    executed fix, not a pending ask), so a shadowed ask there is lower-stakes.
+    goes obsolete once the fix is on the table. A pending MITIGATION is NOT
+    retired: a workaround is cause-INDEPENDENT symptom relief the user may still
+    execute, so its liveness survives (INV-32) and its reappearance as the top
+    pending ask is correct, not stale.
     """
     count = 0
     for action in case.proposed_actions:
         if (
             action.action_type == InvestigationActionType.DIAGNOSTIC
             and action.state == "pending"
-            and action.proposed_in_turn <= before_turn
+            and action.proposed_in_turn < before_turn
         ):
             action.state = "superseded"
             action.superseded_reason = "stale_pending"
@@ -436,11 +435,12 @@ def _withdraw_unlicensed_solution_offers(
     count = _supersede_pending_solution_offers(case, reason="license_lost")
     if not count:
         return 0
-    # INV-33: retire non-SOLUTION asks the withdrawn offer shadowed, so the
+    # INV-33: retire the DIAGNOSTIC asks the withdrawn offer shadowed, so the
     # <pending_action> render cannot resurface a stale earlier ask now that the
-    # SOLUTION on top of it is gone.
+    # SOLUTION on top of it is gone. (count>0 ⇒ a pending SOLUTION existed ⇒
+    # withdrawn_cutoff is not None; the max() default only guards the no-op.)
     if withdrawn_cutoff is not None:
-        _retire_stale_pending_after_withdrawal(case, before_turn=withdrawn_cutoff)
+        _retire_shadowed_diagnostic_asks(case, before_turn=withdrawn_cutoff)
     logger.warning(
         f"Withdrew {count} pending SOLUTION offer(s) for case {case.case_id}: "
         f"the established-cause license fell "
@@ -534,6 +534,15 @@ def _apply_stage_gate_side_effects(
         if pending_action is None:
             continue
         pending_action.state = "accepted"
+        # INV-33: a SOLUTION acceptance moves the case to TREATMENT (verify the
+        # executed fix). Retire the DIAGNOSTIC asks the offer shadowed so an
+        # earlier pre-fix ask cannot resurface in <pending_action> once the
+        # accepted SOLUTION (now state="accepted", no longer "pending") stops
+        # covering it — the symmetric twin of the withdrawal-path retirement.
+        if target_type == InvestigationActionType.SOLUTION:
+            _retire_shadowed_diagnostic_asks(
+                case, before_turn=pending_action.proposed_in_turn
+            )
         # Create audit trail
         attempt = ActionAttempt(
             action_id=pending_action.action_id,

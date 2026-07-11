@@ -1779,18 +1779,25 @@ evidence directly. You may do several in one turn if the evidence supports it.
        confirm the documented fix, and let the close proceed.
 
 **COMPLIANCE DETECTION — recognizing that the user executed your proposed action:**
-✅ User provides NEW evidence/output from AFTER the proposed action (logs, metrics, command output)
-✅ User uses past tense: "I ran...", "I applied...", "I deployed..."
-✅ User asks a follow-up specific to the result: "It reduced errors — now what?"
+The signal is EXECUTION of the proposed fix, not merely new data on the case:
+✅ User provides output PRODUCED BY running the fix (post-fix logs, the command's own output, the metric after applying it)
+✅ User uses past tense about the fix itself: "I ran...", "I applied...", "I deployed..."
+✅ User asks a follow-up specific to the fix's result: "It reduced errors — now what?"
 
 When you detect these positive signals for a proposed solution, you MUST set
 solution_accepted=True in your state updates. The stage transition to TREATMENT
 happens only when this variable is set — conversational text alone is not enough.
+A fix that was executed but FAILED is still compliance — set solution_accepted
+and let TREATMENT run the failure analysis; do not keep it pending.
 
 ❌ NOT compliance — do not infer transition:
 - "Thanks, I'll try it" (intent, not execution)
 - User goes silent (absence ≠ execution)
 - User asks clarifying questions about the command itself
+- User brings NEW DIAGNOSTIC evidence WITHOUT executing the fix — a competing
+  cause, a dispute of the fix, or fresh data they gathered instead of running it.
+  This is not post-fix output; it REOPENS diagnosis (INV-33 zone exit). Leave
+  solution_accepted unset, engage the new signal, and resume root-cause analysis.
 
 **EVIDENCE TYPES FOR THIS STAGE:**
 - **symptom_evidence**: Data showing the problem exists (errors, spikes, alerts)

@@ -10,11 +10,12 @@ investigation. Two coupled properties:
       renders ONLY while the solution is pending in DIAGNOSIS — once accepted
       the stage is TREATMENT and it does not render.
 
-  (C) Pending-action hygiene — when a pending SOLUTION is WITHDRAWN on license
-      loss, a stale DIAGNOSTIC ask it shadowed is retired so it cannot resurface
-      as the <pending_action> compliance target. A pending MITIGATION is
-      cause-independent (INV-32) and survives; a DIAGNOSTIC proposed AFTER the
-      offer is a live thread and survives.
+  (B) Pending-action hygiene — when a pending SOLUTION leaves pending state
+      (WITHDRAWN on license loss OR ACCEPTED into TREATMENT), a stale DIAGNOSTIC
+      ask it shadowed is retired so it cannot resurface as the <pending_action>
+      compliance target. A pending MITIGATION is cause-independent (INV-32) and
+      survives; a DIAGNOSTIC proposed in the offer's own turn or AFTER is a
+      live/reopening thread and survives (strict `<` cutoff).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
+    _apply_stage_gate_side_effects,
     _recompute_assessment_state,
 )
 from faultmaven.core.investigation.prompts.templates import (
@@ -44,6 +46,7 @@ from faultmaven.modules.case.domain.models import (
 from tests.unit.core.investigation.test_solution_offer_liveness import (
     _make_case,
     _make_engine,
+    _meta,
     _pending_solutions,
     _solution_updates,
     _workaround_updates,
@@ -133,21 +136,8 @@ class TestTreatmentDoesNotRenderPendingEmphasis:
 
 
 # ---------------------------------------------------------------------------
-# (C) Pending-action hygiene on license-loss withdrawal
+# (B) Pending-action hygiene (withdrawal AND acceptance)
 # ---------------------------------------------------------------------------
-
-
-def _meta() -> dict:
-    return {
-        "milestones_completed": [],
-        "evidence_added": [],
-        "hypotheses_generated": [],
-        "hypotheses_validated": [],
-        "solutions_proposed": [],
-        "evidence_needs_updated": [],
-        "progress_made": False,
-        "status_transitioned": False,
-    }
 
 
 @pytest.mark.asyncio
@@ -222,3 +212,32 @@ class TestPendingActionHygiene:
         _recompute_assessment_state(case, metadata={})  # license stands
         assert _pending_solutions(case) != []
         assert stale.state == "pending"
+
+    async def test_same_turn_diagnostic_survives_withdrawal(self):
+        # Strict `<` cutoff: a DIAGNOSTIC co-emitted in the offer's OWN turn is a
+        # live/reopening thread (the de-absolutized prompt invites it), not a
+        # shadowed pre-fix ask — it must survive the same-turn create-then-
+        # withdraw edge.
+        case = await self._case_with_offer()
+        offer_turn = _pending_solutions(case)[0].proposed_in_turn
+        same_turn = _diagnostic(case, turn=offer_turn, desc="run dig +short")
+        case.root_cause_conclusion = None
+        case.current_turn = offer_turn
+        _recompute_assessment_state(case, metadata={})
+
+        assert _pending_solutions(case) == []  # solution withdrawn
+        assert same_turn.state == "pending"  # reopening thread preserved
+
+    async def test_stale_diagnostic_retired_on_acceptance(self):
+        # Symmetric twin: accepting the SOLUTION (→ TREATMENT) also retires the
+        # DIAGNOSTIC it shadowed, so it cannot resurface in the TREATMENT
+        # <pending_action> once the accepted offer stops covering it.
+        case = await self._case_with_offer()
+        stale = _diagnostic(case, turn=3)
+        offer = _pending_solutions(case)[0]
+        _apply_stage_gate_side_effects(
+            case, {"solution_accepted"}, user_message="I ran it", metadata={}
+        )
+        assert offer.state == "accepted"
+        assert stale.state == "superseded"
+        assert stale.superseded_reason == "stale_pending"
