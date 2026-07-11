@@ -858,11 +858,14 @@ Concretely, the LLM does **not** operate the identification gate:
 - **The conclusion names its cause.** When the LLM authors its
   `RootCauseConclusion`, it sets `names_root_node_id` to the `cn_` root node it
   already emits during chain construction (§5/S3). The engine attributes the
-  conclusion to the hypothesis whose `root_node_id` matches — the authoritative
-  link of §7.6, replacing the lexical scan on the compliant path. This closes the
-  DF-2 residual that the conclusion was authored in a namespace disconnected from
-  the causal graph, so the engine had to reverse-engineer which hypothesis the
-  prose named.
+  conclusion to the STANDING hypothesis rooted there — the authoritative tier of
+  §7.6's link, replacing the lexical scan on the compliant path. It stays
+  *guarded* by the same trust discipline as the lexical tier (a standing
+  hypothesis, never a refuted or retired one, with substantive text overlap), so a
+  stale or mis-copied id cannot attribute the conclusion to the wrong cause and let
+  the retraction lane wipe a valid one. This closes the DF-2 residual that the
+  conclusion was authored in a namespace disconnected from the causal graph, so the
+  engine had to reverse-engineer which hypothesis the prose named.
 
 This section completes the campaign's relocation of guardrail *operation* off LLM
 self-claims (DF-1/DF-2): the same move made for causal-link category (INV-23),

@@ -42,7 +42,6 @@ from faultmaven.core.investigation.causal_graph import (
     derive_node_states,
     ingest_emitted_chain,
     is_chain_root_validated,
-    link_llm_rcc_by_named_node,
     link_llm_rcc_to_cause,
     mece_contested_root_ids,
     prune_abandoned_nodes,
@@ -1174,6 +1173,34 @@ def _investigation_confirmation_suggestions() -> list:
     ]
 
 
+def _kb_prefetch_query_on_identification(
+    prior_cause_state: "CauseState",
+    current_cause_state: "CauseState",
+    root_cause_conclusion,
+    working_conclusion,
+) -> "str | None":
+    """The KB-remediation warm-up query for the ``cause_state``→IDENTIFIED edge.
+
+    Returns the cause text to pre-fetch KB remediation for, but ONLY on the turn
+    ``cause_state`` newly crosses to IDENTIFIED (INV-35) — since cause_state is
+    engine-derived there is no milestone event to hang this on, so the caller
+    passes the pre-recompute value and the post-recompute value and this detects
+    the rising edge. Prefers the LLM conclusion's ``root_cause`` over the working
+    conclusion's ``statement``. Returns None when it is not the edge, or no cause
+    text is available yet.
+    """
+    if (
+        prior_cause_state == CauseState.IDENTIFIED
+        or current_cause_state != CauseState.IDENTIFIED
+    ):
+        return None
+    if root_cause_conclusion and getattr(root_cause_conclusion, "root_cause", None):
+        return root_cause_conclusion.root_cause
+    if working_conclusion and getattr(working_conclusion, "statement", None):
+        return working_conclusion.statement
+    return None
+
+
 def _recompute_cause_state_from_chain(
     case: "Case", *, exclusion_survivors: "set[str] | frozenset[str]" = frozenset()
 ) -> None:
@@ -1222,13 +1249,11 @@ def _recompute_cause_state_from_chain(
          only a counterfactual REFUTED drops it fully.
     """
     p = case.progress
-    # §7.7 / INV-35: authoritative link first — when the LLM named its cause's
-    # root node (names_root_node_id), attribute the conclusion to the hypothesis
-    # rooted there exactly. §7.6 / INV-34: then the lexical fallback links an
-    # id-less conclusion to the standing hypothesis it names. Both run BEFORE the
-    # M6 demotion, so M6 tracks the LLM's actual cause (not a max-likelihood
-    # proxy) and retract_disconfirmed_rcc can reach a disconfirmed LLM conclusion.
-    link_llm_rcc_by_named_node(case)
+    # §7.6 / INV-34 + §7.7 / INV-35: attribute an LLM-authored conclusion to the
+    # standing hypothesis it names — authoritatively when it named its cause's root
+    # node (names_root_node_id), else by lexical fallback. Runs BEFORE the M6
+    # demotion, so M6 tracks the LLM's actual cause (not a max-likelihood proxy)
+    # and retract_disconfirmed_rcc can reach a disconfirmed LLM conclusion.
     link_llm_rcc_to_cause(case)
     demote_disconfirmed_cause_via_evidence(case)
     derive_node_states(case)
@@ -7173,8 +7198,8 @@ class MilestoneEngine:
                 confidence_level=ConfidenceLevel.from_score(rcc.likelihood),
                 # INV-35: attribution hint; the chain nodes/hypotheses this turn
                 # are ingested later (_apply_chain_emission), so the engine
-                # resolves this to validated_hypothesis_id at cause-state
-                # recompute (link_llm_rcc_by_named_node), not here.
+                # resolves this to validated_hypothesis_id at cause-state recompute
+                # (link_llm_rcc_to_cause tier 1), not here.
                 names_root_node_id=getattr(rcc, "names_root_node_id", None),
             )
 
@@ -7715,24 +7740,18 @@ class MilestoneEngine:
             metadata=metadata,
         )
 
-        # KB-remediation pre-fetch on the cause_state→IDENTIFIED edge (INV-35).
-        # cause_state is engine-derived above; fire once, the turn it newly
-        # crosses to IDENTIFIED, to warm KB context for the imminent fix.
-        if (
-            prior_cause_state != CauseState.IDENTIFIED
-            and case.progress.cause_state == CauseState.IDENTIFIED
-        ):
-            root_cause_query = None
-            if case.root_cause_conclusion and getattr(
-                case.root_cause_conclusion, "root_cause", None
-            ):
-                root_cause_query = case.root_cause_conclusion.root_cause
-            elif case.working_conclusion and getattr(
-                case.working_conclusion, "statement", None
-            ):
-                root_cause_query = case.working_conclusion.statement
-            if root_cause_query:
-                await self._prefetch_kb_context(case, root_cause_query, "root_cause")
+        # KB-remediation pre-fetch on the cause_state→IDENTIFIED edge (INV-35):
+        # cause_state is engine-derived above, so this warm-up fires the turn it
+        # newly crosses to IDENTIFIED (in-flight diagnosis — terminal recompute
+        # paths deliberately do not warm KB, the fix has already happened).
+        _kb_query = _kb_prefetch_query_on_identification(
+            prior_cause_state,
+            case.progress.cause_state,
+            case.root_cause_conclusion,
+            case.working_conclusion,
+        )
+        if _kb_query:
+            await self._prefetch_kb_context(case, _kb_query, "root_cause")
 
         # Deferred-implementation disposition: if the fix is known but can't be
         # applied this session, propose CLOSE-with-documented-solution (§3.1 row 3).

@@ -300,7 +300,7 @@ llm_rcc_cause_linked_total = Counter(
 )
 
 
-# INV-35 (#656 P2.4): an LLM-authored RootCauseConclusion was linked to its cause
+# INV-35 (#656): an LLM-authored RootCauseConclusion was linked to its cause
 # AUTHORITATIVELY — the LLM named the cause's cn_ root node (names_root_node_id)
 # and the engine matched it to the hypothesis whose root_node_id equals it, with
 # no lexical guess. This is the primary link; llm_rcc_cause_linked_total is the
