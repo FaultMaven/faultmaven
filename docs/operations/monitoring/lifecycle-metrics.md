@@ -176,6 +176,19 @@ rate(faultmaven_llm_rcc_retracted_disconfirmed_total[24h])
 
 Matrix row: INV-34 in `investigation-invariants.md`; methodology §7.6.
 
+## INV-36: hypothesis-dedup telemetry
+
+- `faultmaven_hypothesis_dedup_skipped_total` — an LLM-emitted `hypotheses_to_add` item was skipped as a duplicate of an existing (any-state) or same-batch hypothesis (the MECE distinctness bar, `statements_name_same_cause`, §7.8). Protects the ≥2-active work gate — the axis that separates `INSUFFICIENT_EVIDENCE` from `NOT_YET_PRODUCTIVE` — from duplicate inflation. One increment per skipped item.
+
+**Healthy shape.** Near zero. A sustained-nonzero rate is **not** a soundness alarm (the dedup already held the gate; nothing wrong was concluded) but a signal that the model is re-emitting causes it already posited — usually because it is not being shown, or not attending to, the standing hypotheses. The recovery is context/prompt-side (strengthen the standing-hypothesis block, or investigate why the model is not reading it), not an engine change. Read it beside work-gate crossing volume: a high skip rate on cases that never cross the gate honestly means the model is spinning on one idea — a `NOT_YET_PRODUCTIVE` shape the dedup now keeps the engine from mistaking for productive work.
+
+```promql
+# Duplicate hypotheses skipped (attend-to-standing-hypotheses signal).
+rate(faultmaven_hypothesis_dedup_skipped_total[24h])
+```
+
+Matrix row: INV-36 in `investigation-invariants.md`; methodology §7.8.
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:

@@ -2102,6 +2102,50 @@ def _substantive_overlap(a: str, b: str) -> bool:
     )
 
 
+def statements_name_same_cause(a: str, b: str) -> bool:
+    """Two hypothesis (or root) statements name the SAME cause: MUTUAL mirrors at
+    the MECE distinctness bar (``_ROOT_DISTINCT_JACCARD``).
+
+    Uses the SYMMETRIC mirror, deliberately NOT ``restatement_score``'s
+    containment: a more-SPECIFIC elaboration of an existing statement scores high
+    on one-way containment but lower on Jaccard, and it is a DISTINCT hypothesis
+    (a real refinement of the differential), not a duplicate. This is the same
+    primitive §7.1.2 uses to fold duplicate roots into one cause — reused so the
+    "same cause" judgment is defined once."""
+    return _mutual_mirror(
+        _content_tokens(a), _content_tokens(b), _ROOT_DISTINCT_JACCARD
+    )
+
+
+def find_duplicate_hypothesis(
+    statement: str,
+    case: "Case",
+    also_against: "list[tuple[str, str]] | None" = None,
+) -> str | None:
+    """Return the id of an EXISTING (or same-batch) hypothesis whose statement
+    names the same cause as ``statement`` (``statements_name_same_cause``), else
+    ``None`` — the INV-36 hypothesis-dedup predicate for ``hypotheses_to_add``.
+
+    ``also_against`` carries ``(id, statement)`` pairs accepted earlier in the
+    SAME emission batch, so two identical hypotheses emitted in one turn are
+    caught before both are minted (the incident's turns-10/11 shape).
+
+    Existing hypotheses are compared regardless of state: a duplicate of even a
+    ``REFUTED``/``RETIRED`` hypothesis must not mint a second record, because the
+    work gate counts ``len(case.hypotheses)`` across all states — a duplicate
+    would spuriously re-satisfy the ≥2-active gate that separates
+    ``INSUFFICIENT_EVIDENCE`` from ``NOT_YET_PRODUCTIVE``. The caller surfaces the
+    matched id to the LLM so a genuine re-examination updates the standing
+    hypothesis rather than cloning it."""
+    for hid, hyp in case.hypotheses.items():
+        if statements_name_same_cause(statement, hyp.statement):
+            return hid
+    for hid, stmt in also_against or ():
+        if statements_name_same_cause(statement, stmt):
+            return hid
+    return None
+
+
 def _referenced_node_ids(case: Case) -> set[str]:
     """Every node id that lies on some hypothesis path or is a hypothesis root —
     the single definition of "load-bearing" used by both the GC and the

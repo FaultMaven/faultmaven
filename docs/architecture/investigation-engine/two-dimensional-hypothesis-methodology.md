@@ -888,6 +888,45 @@ backstop before models ground reliably would strand cases that today resolve via
 the free-text conclusion (a NO-COLLAPSE regression). Tracked as #673 so the
 retirement is deliberate, not forgotten.
 
+### 7.8 One cause, one hypothesis: dedup on `hypotheses_to_add` (INV-36)
+
+The work gate (§5.2) — ≥2 hypotheses across ≥2 categories with ≥2 evidence items
+— is the axis that separates a productive investigation (`INSUFFICIENT_EVIDENCE`,
+real diagnostic work happened) from a stalled one (`NOT_YET_PRODUCTIVE`, the model
+is spinning). It counts `len(case.hypotheses)`. A model that emits the **same
+cause twice** therefore buys itself a spurious gate crossing — two records, or two
+records under two categories, for one idea (observed live: an identical DNS
+hypothesis minted on turns 10 and 11 of the #656 incident).
+
+At the `hypotheses_to_add` apply layer the engine refuses to mint a hypothesis
+whose statement **names the same cause** as one already standing (in **any**
+state — the gate counts refuted and retired hypotheses too) or as an earlier
+sibling in the same emission batch. "Same cause" is the MECE distinctness bar
+reused verbatim (`statements_name_same_cause` → the `_ROOT_DISTINCT_JACCARD`
+mutual mirror of §7.1.2): the judgement that two root statements are one cause is
+defined **once**. Crucially it is the *symmetric* mirror, not one-way
+containment — a more-**specific elaboration** of a standing hypothesis (a real
+refinement of the differential) scores high on containment but below the mutual
+Jaccard bar, so it survives as a distinct hypothesis. The dedup drops only genuine
+restatements; it never silently discards diagnostic work (NO-COLLAPSE).
+
+On a skip the engine surfaces the matched hypothesis id to the LLM via
+`system_feedback` ("this duplicates hypothesis `hyp_…`; update it rather than
+restating it"), so a genuine re-examination flows to `hypotheses_to_update`
+against the standing record instead of cloning it. The skip is **not** counted as
+generation: `hypotheses_generated` (turn-record + turn-outcome progress) stays
+truly-new, so a dedup cannot masquerade as progress and mask the exhaustion
+detector. Positional integrity is preserved by a separate `hyp_emit_order` list
+that records the **canonical** existing id at the skipped item's position, so a
+same-turn `new_index_N` reference (evidence link, hypothesis update, need
+motivator) resolves to the kept hypothesis rather than shifting onto the wrong
+sibling. Telemetry: `faultmaven_hypothesis_dedup_skipped_total`.
+
+*Rejected alternative — dedup by containment (`restatement_score`).* Containment
+would fold a specific elaboration into its more-general parent and drop the
+refinement, trading gate-integrity for lost diagnostic depth. The symmetric mirror
+is the calibrated choice, consistent with how §7.1.2 folds duplicate roots.
+
 ---
 
 ## 8. Resolved Design Decisions

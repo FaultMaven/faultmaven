@@ -1,0 +1,338 @@
+"""§7.8 / INV-36 (#656 P3.3): hypothesis dedup on ``hypotheses_to_add``.
+
+An LLM-emitted hypothesis whose statement names the SAME cause as an existing
+(any-state) or same-batch hypothesis is not minted a second time. Duplicates
+spuriously re-satisfy the ≥2-active work gate — the axis that separates
+``INSUFFICIENT_EVIDENCE`` from ``NOT_YET_PRODUCTIVE`` — so a duplicate must never
+inflate ``len(case.hypotheses)`` (observed live: an identical DNS hypothesis
+minted twice, turns 10/11).
+
+The "same cause" predicate reuses the MECE distinctness bar
+(``statements_name_same_cause`` → ``_ROOT_DISTINCT_JACCARD`` mutual mirror), so a
+more-SPECIFIC elaboration of a standing hypothesis (high one-way containment,
+lower Jaccard) is a DISTINCT refinement and survives — never silently dropped.
+
+Positional integrity: a skip records the CANONICAL existing id in
+``hyp_emit_order`` (not ``hypotheses_generated``) so downstream ``new_index_N``
+refs resolve to the kept hypothesis rather than shifting onto the wrong sibling,
+while telemetry / turn-outcome progress do not count a dedup as generation.
+"""
+
+from unittest.mock import patch
+from uuid import uuid4
+
+import pytest
+
+from faultmaven.core.investigation import milestone_engine
+from faultmaven.core.investigation.causal_graph import (
+    find_duplicate_hypothesis,
+    statements_name_same_cause,
+)
+from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.schemas import (
+    HypothesisToAdd,
+    HypothesisUpdate,
+    InvestigationResponse_Diagnosis,
+)
+from faultmaven.core.investigation.verification_status import work_gate_passed
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseSeverity,
+    CaseState,
+    HypothesisCategory,
+    HypothesisState,
+    InquiryData,
+    ProblemVerification,
+)
+
+pytestmark = pytest.mark.unit
+
+_DSU = InvestigationResponse_Diagnosis.DiagnosisStateUpdate
+
+
+# --------------------------------------------------------------------------
+# Pure predicate calibration — the "same cause" bar
+# --------------------------------------------------------------------------
+
+
+def test_predicate_exact_restatement_is_duplicate():
+    s = "DNS resolution failing because resolv.conf lists too many nameservers"
+    assert statements_name_same_cause(s, s) is True
+
+
+def test_predicate_reordered_synonymless_restatement_is_duplicate():
+    # Same content tokens, reordered — a mutual mirror.
+    a = "connection pool exhausted under load"
+    b = "under load the connection pool exhausted"
+    assert statements_name_same_cause(a, b) is True
+
+
+def test_predicate_elaboration_is_distinct_not_duplicate():
+    """The load-bearing calibration: a more-SPECIFIC elaboration of a standing
+    hypothesis is a real refinement of the differential, NOT a duplicate. It
+    scores high on one-way containment but below the mutual-mirror Jaccard bar,
+    so it survives (never silently dropped)."""
+    general = "DNS resolution failing"
+    specific = (
+        "DNS resolution failing because resolv.conf lists more than three "
+        "nameservers so glibc silently truncates the list and the authoritative "
+        "server is never queried"
+    )
+    assert statements_name_same_cause(general, specific) is False
+
+
+def test_predicate_different_causes_are_distinct():
+    assert (
+        statements_name_same_cause(
+            "DNS resolution failing intermittently",
+            "database connection pool exhausted under peak load",
+        )
+        is False
+    )
+
+
+def test_predicate_empty_statements_never_match():
+    assert statements_name_same_cause("", "") is False
+    assert statements_name_same_cause("DNS failing", "") is False
+
+
+# --------------------------------------------------------------------------
+# find_duplicate_hypothesis — existing (any state) + same-batch
+# --------------------------------------------------------------------------
+
+
+def _case(symptom_verified: bool = True) -> Case:
+    case = Case(
+        case_id=f"case_{uuid4().hex[:12]}",
+        user_id="u",
+        organization_id="o",
+        title="t",
+        description="d",
+        state=CaseState.INVESTIGATING,
+        inquiry=InquiryData(
+            proposed_problem_statement="orders failing",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
+        problem_verification=ProblemVerification(
+            symptom_statement="orders failing", severity=CaseSeverity.HIGH
+        ),
+    )
+    case.current_turn = 5
+    case.progress.symptom_verified = symptom_verified
+    return case
+
+
+def _add_hyp(case: Case, statement: str, category, state=HypothesisState.ACTIVE):
+    mgr = HypothesisManager()
+    h = mgr.create_hypothesis(
+        statement=statement,
+        category=category,
+        initial_likelihood=0.4,
+        current_turn=case.current_turn,
+        state=state,
+    )
+    case.hypotheses[h.hypothesis_id] = h
+    return h
+
+
+def test_find_duplicate_matches_existing_active():
+    case = _case()
+    h = _add_hyp(
+        case, "connection pool exhausted under load", HypothesisCategory.DATABASE
+    )
+    assert (
+        find_duplicate_hypothesis("under load the connection pool exhausted", case)
+        == h.hypothesis_id
+    )
+
+
+def test_find_duplicate_matches_even_terminal_hypothesis():
+    """The work gate counts hypotheses across ALL states, so a duplicate of a
+    terminal (RETIRED/REFUTED) hypothesis would still inflate it — dedup must
+    catch it regardless of state."""
+    case = _case()
+    h = _add_hyp(
+        case,
+        "connection pool exhausted under load",
+        HypothesisCategory.DATABASE,
+        state=HypothesisState.RETIRED,
+    )
+    assert (
+        find_duplicate_hypothesis("under load the connection pool exhausted", case)
+        == h.hypothesis_id
+    )
+
+
+def test_find_duplicate_matches_same_batch_sibling():
+    case = _case()
+    batch = [("hyp_batch1", "connection pool exhausted under load")]
+    assert (
+        find_duplicate_hypothesis(
+            "under load the connection pool exhausted", case, batch
+        )
+        == "hyp_batch1"
+    )
+
+
+def test_find_duplicate_returns_none_for_distinct():
+    case = _case()
+    _add_hyp(case, "connection pool exhausted under load", HypothesisCategory.DATABASE)
+    assert find_duplicate_hypothesis("upstream DNS server unreachable", case) is None
+
+
+# --------------------------------------------------------------------------
+# Apply path — the wired behavior through _apply_investigation_updates
+# --------------------------------------------------------------------------
+
+
+def _engine() -> MilestoneEngine:
+    eng = MilestoneEngine.__new__(MilestoneEngine)
+    eng.hypothesis_manager = HypothesisManager()
+    return eng
+
+
+def _meta() -> dict:
+    return {
+        "milestones_completed": [],
+        "evidence_added": [],
+        "hypotheses_generated": [],
+        "hypotheses_validated": [],
+        "solutions_proposed": [],
+        "progress_made": False,
+        "status_transitioned": False,
+    }
+
+
+def _h2a(statement, category=HypothesisCategory.DATABASE, likelihood=0.4):
+    return HypothesisToAdd(
+        statement=statement, category=category, likelihood=likelihood, rationale="r"
+    )
+
+
+async def test_duplicate_of_standing_hypothesis_not_minted():
+    eng, case = _engine(), _case()
+    existing = _add_hyp(
+        case, "connection pool exhausted under load", HypothesisCategory.DATABASE
+    )
+    meta = _meta()
+    # The counter is a no-op unless ENABLE_METRICS — assert the fire via a mock.
+    with patch.object(milestone_engine, "hypothesis_dedup_skipped_total") as counter:
+        await eng._apply_investigation_updates(
+            case,
+            _DSU(hypotheses_to_add=[_h2a("under load the connection pool exhausted")]),
+            meta,
+        )
+        counter.inc.assert_called_once()
+    # No second record minted; the gate axis is protected.
+    assert len(case.hypotheses) == 1
+    assert existing.hypothesis_id in case.hypotheses
+    # Not counted as generation (a dedup is not diagnostic progress).
+    assert meta["hypotheses_generated"] == []
+    # Feedback names the standing id so the LLM can update it instead.
+    assert existing.hypothesis_id in meta["system_feedback"]
+
+
+async def test_intra_batch_duplicate_minted_once():
+    eng, case = _engine(), _case()
+    meta = _meta()
+    await eng._apply_investigation_updates(
+        case,
+        _DSU(
+            hypotheses_to_add=[
+                _h2a("connection pool exhausted under load"),
+                _h2a("under load the connection pool exhausted"),
+            ]
+        ),
+        meta,
+    )
+    assert len(case.hypotheses) == 1
+    assert len(meta["hypotheses_generated"]) == 1
+
+
+async def test_elaboration_in_same_batch_survives_as_distinct():
+    """Two genuinely distinct hypotheses (a general one and a specific
+    elaboration) both mint — the dedup must not collapse a real refinement."""
+    eng, case = _engine(), _case()
+    meta = _meta()
+    await eng._apply_investigation_updates(
+        case,
+        _DSU(
+            hypotheses_to_add=[
+                _h2a("DNS resolution failing"),
+                _h2a(
+                    "DNS resolution failing because resolv.conf lists more than "
+                    "three nameservers so glibc silently truncates the list and "
+                    "the authoritative server is never queried"
+                ),
+            ]
+        ),
+        meta,
+    )
+    assert len(case.hypotheses) == 2
+
+
+async def test_duplicate_across_categories_does_not_inflate_work_gate():
+    """A duplicate cause re-emitted under a SECOND category would otherwise buy
+    both a hypothesis count AND a category count — exactly the work-gate
+    corruption vector. Dedup ignores category, so the gate stays honest."""
+    eng, case = _engine(), _case()
+    meta = _meta()
+    await eng._apply_investigation_updates(
+        case,
+        _DSU(
+            hypotheses_to_add=[
+                _h2a(
+                    "connection pool exhausted under load", HypothesisCategory.DATABASE
+                ),
+                _h2a(
+                    "under load the connection pool exhausted",
+                    HypothesisCategory.NETWORK,
+                ),
+            ]
+        ),
+        meta,
+    )
+    assert len(case.hypotheses) == 1
+    # Only one hypothesis, one category — the ≥2 work gate is NOT spuriously met.
+    assert work_gate_passed(case) is False
+
+
+async def test_positional_integrity_new_index_resolves_past_skipped_dup():
+    """A dedup skip at emitted index 0 must not shift ``new_index_1`` onto the
+    wrong hypothesis: ``hyp_emit_order`` records the canonical id at position 0
+    and the newly-minted hyp at position 1, and a same-turn ``new_index_1``
+    update lands on the NEW hypothesis (not the standing duplicate)."""
+    eng, case = _engine(), _case()
+    existing = _add_hyp(
+        case, "connection pool exhausted under load", HypothesisCategory.DATABASE
+    )
+    meta = _meta()
+    await eng._apply_investigation_updates(
+        case,
+        _DSU(
+            hypotheses_to_add=[
+                _h2a("under load the connection pool exhausted"),  # index 0 → dup
+                _h2a(
+                    "upstream DNS server unreachable", HypothesisCategory.NETWORK
+                ),  # index 1 → new
+            ],
+            # Reference the SECOND emitted hypothesis by position. REFUTED is
+            # applied synchronously (unlike deferred RETIRED/likelihood), so it
+            # is a clean observable for which hypothesis the ref resolved to.
+            hypotheses_to_update={
+                "new_index_1": HypothesisUpdate(
+                    state=HypothesisState.REFUTED,
+                    refutation_reason="ruled out by DNS trace",
+                )
+            },
+        ),
+        meta,
+    )
+    (new_id,) = [hid for hid in case.hypotheses if hid != existing.hypothesis_id]
+    # Positional list preserved: canonical dup id, then the new hyp.
+    assert meta["hyp_emit_order"] == [existing.hypothesis_id, new_id]
+    # The new_index_1 update reached the NEW hypothesis, not the standing dup.
+    assert case.hypotheses[new_id].state == HypothesisState.REFUTED
+    assert case.hypotheses[existing.hypothesis_id].state == HypothesisState.ACTIVE
