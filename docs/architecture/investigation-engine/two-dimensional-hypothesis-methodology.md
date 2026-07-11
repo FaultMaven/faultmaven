@@ -899,33 +899,54 @@ records under two categories, for one idea (observed live: an identical DNS
 hypothesis minted on turns 10 and 11 of the #656 incident).
 
 At the `hypotheses_to_add` apply layer the engine refuses to mint a hypothesis
-whose statement **names the same cause** as one already standing (in **any**
-state — the gate counts refuted and retired hypotheses too) or as an earlier
-sibling in the same emission batch. "Same cause" is the MECE distinctness bar
-reused verbatim (`statements_name_same_cause` → the `_ROOT_DISTINCT_JACCARD`
-mutual mirror of §7.1.2): the judgement that two root statements are one cause is
-defined **once**. Crucially it is the *symmetric* mirror, not one-way
-containment — a more-**specific elaboration** of a standing hypothesis (a real
-refinement of the differential) scores high on containment but below the mutual
-Jaccard bar, so it survives as a distinct hypothesis. The dedup drops only genuine
-restatements; it never silently discards diagnostic work (NO-COLLAPSE).
+whose statement **duplicates** one already standing or an earlier sibling in the
+same emission batch. The bar (`hypothesis_statements_duplicate`) is deliberately
+**stricter than §7.1.2's fold and fails open**, because deduping *drops* an LLM
+emission for the turn rather than holding it reversibly:
 
-On a skip the engine surfaces the matched hypothesis id to the LLM via
-`system_feedback` ("this duplicates hypothesis `hyp_…`; update it rather than
-restating it"), so a genuine re-examination flows to `hypotheses_to_update`
-against the standing record instead of cloning it. The skip is **not** counted as
-generation: `hypotheses_generated` (turn-record + turn-outcome progress) stays
-truly-new, so a dedup cannot masquerade as progress and mask the exhaustion
-detector. Positional integrity is preserved by a separate `hyp_emit_order` list
-that records the **canonical** existing id at the skipped item's position, so a
-same-turn `new_index_N` reference (evidence link, hypothesis update, need
-motivator) resolves to the kept hypothesis rather than shifting onto the wrong
-sibling. Telemetry: `faultmaven_hypothesis_dedup_skipped_total`.
+- **A near-verbatim bar, not the fold's 0.6.** Duplicate = mutual mirror at
+  `_HYPOTHESIS_DUPLICATE_JACCARD` (0.8), well above the reversible MECE
+  `_ROOT_DISTINCT_JACCARD` (0.6). A genuinely-distinct short statement that
+  differs by one substantive token ("memory leak in *connection* pool" vs "…
+  *cache* pool", Jaccard 0.6) **survives**; the incident's actual duplicate was
+  verbatim-identical (~1.0). It is the *symmetric* mirror, not `restatement_score`
+  containment, so a more-**specific elaboration** of a standing hypothesis (a real
+  refinement) also survives.
+- **A polarity guard.** "not" is a content stopword, so a hypothesis and its
+  negation tokenize identically and would mirror at 1.0. An asymmetric negation
+  cue refuses the dedup — a **disputing** hypothesis is never a duplicate of the
+  claim it contradicts (that would erase the very competing-cause signal §7.1.2 /
+  INV-33 exist to preserve).
+- **Standing causes only.** `REFUTED`/`RETIRED` hypotheses are *not* dedup
+  targets: those states are terminal-immutable and the update path instructs the
+  LLM to "open a NEW hypothesis" to revive a theory — deduping against them would
+  deadlock the revival (re-mint refused here, update refused there). The
+  gate-inflation vector is duplicate *active* records; a revival minting a fresh
+  hypothesis is legitimate work.
 
-*Rejected alternative — dedup by containment (`restatement_score`).* Containment
-would fold a specific elaboration into its more-general parent and drop the
-refinement, trading gate-integrity for lost diagnostic depth. The symmetric mirror
-is the calibrated choice, consistent with how §7.1.2 folds duplicate roots.
+Together these keep the drop conservative: it collapses only genuine
+restatements, never diagnostic work (NO-COLLAPSE). On a skip the engine surfaces
+the matched id via `system_feedback` ("this duplicates `hyp_…`; update it rather
+than restate it"), so a genuine re-examination flows to `hypotheses_to_update`
+against the standing record. The skip is **not** counted as generation:
+`hypotheses_generated` (turn-record + turn-outcome progress) stays truly-new, so a
+dedup cannot masquerade as progress and mask the exhaustion detector. Positional
+integrity is preserved by a separate `hyp_emit_order` list that records the
+**canonical** existing id at the skipped item's slot, so a same-turn `new_index_N`
+reference (evidence link, hypothesis update, need motivator) resolves to the kept
+hypothesis rather than shifting onto the wrong sibling; and if the deduped item
+carried a fresh chain root, that root is re-attributed to the canonical hypothesis
+(`hyp_root_refs` keyed by id) so the emitted chain is not orphaned. Telemetry:
+`faultmaven_hypothesis_dedup_skipped_total`.
+
+*Rejected alternative — reuse the §7.1.2 fold bar (0.6) / dedup by containment.*
+The fold is reversible (both statements stay represented in the graph); this drops
+an emission, so it warrants the stricter, fail-open 0.8 mutual bar. Containment
+would additionally fold a specific elaboration into its more-general parent and
+lose the refinement. *Complementary prevention (routed):* the apply-layer dedup is
+enforcement; the deeper fix for repeated re-emission is showing the LLM its
+standing hypotheses so it never emits a duplicate — a context/prompt change
+tracked separately, not in scope here.
 
 ---
 

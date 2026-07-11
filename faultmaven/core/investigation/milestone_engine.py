@@ -7431,14 +7431,17 @@ class MilestoneEngine:
         #    only — not runbook retrieval / early triage before verification.
         anchored = case.progress.symptom_verified
         # ``hyp_emit_order`` is the positional list ``new_index_N`` refs resolve
-        # against (INV-36). It mirrors the per-item growth of
-        # ``hypotheses_generated`` — including the promoted-CAPTURED prefix —
-        # EXCEPT a dedup skip records the CANONICAL existing id instead of a new
-        # one, so downstream refs (evidence links, updates, need motivators) that
-        # target a skipped duplicate resolve to the kept hypothesis rather than
-        # shifting onto the wrong sibling. ``hypotheses_generated`` stays
-        # truly-new so telemetry / turn-outcome progress do not count a dedup as
-        # generation (a skip is not diagnostic progress — DF-6 exhaustion signal).
+        # against (INV-36). It mirrors ``hypotheses_generated`` per item — SAME
+        # base, including the promoted-CAPTURED prefix that was already the
+        # pre-INV-36 resolution base (the LLM's ``new_index_N`` offset by
+        # ``len(promoted)`` is a pre-existing behavior, preserved verbatim here,
+        # not introduced) — EXCEPT a dedup skip records the CANONICAL existing id
+        # instead of a new one, so downstream refs (evidence links, updates, need
+        # motivators) that target a skipped duplicate resolve to the kept
+        # hypothesis rather than shifting onto the wrong sibling.
+        # ``hypotheses_generated`` stays truly-new so telemetry / turn-outcome
+        # progress do not count a dedup as generation (a skip is not diagnostic
+        # progress — the DF-6 exhaustion signal).
         emit_order: list[str] = metadata.setdefault("hyp_emit_order", [])
         if anchored:
             promoted = HypothesisManager.activate_queued_hypotheses(case)
@@ -7457,15 +7460,24 @@ class MilestoneEngine:
             # (the incident's turns-10/11 shape) — not only against prior turns.
             batch_kept: list[tuple[str, str]] = []
             for h_item in updates.hypotheses_to_add:
-                # INV-36: a statement that names the same cause as an existing
-                # (any-state) or same-batch hypothesis is a duplicate — do not
-                # mint a second record. Duplicates spuriously re-satisfy the
-                # ≥2-active work gate, corrupting the axis that separates
-                # INSUFFICIENT_EVIDENCE from NOT_YET_PRODUCTIVE.
+                # INV-36: a statement that duplicates a standing (non-terminal)
+                # or same-batch hypothesis is not minted a second time —
+                # duplicates spuriously re-satisfy the ≥2-active work gate,
+                # corrupting the axis that separates INSUFFICIENT_EVIDENCE from
+                # NOT_YET_PRODUCTIVE. Terminal (refuted/retired) causes are NOT
+                # dedup targets, so a revival re-enters the differential.
                 dup_id = find_duplicate_hypothesis(h_item.statement, case, batch_kept)
                 if dup_id is not None:
                     emit_order.append(dup_id)
                     hypothesis_dedup_skipped_total.inc()
+                    # If the LLM built a fresh chain for this duplicate, re-root
+                    # the CANONICAL hypothesis onto it (keyed by id; the re-root
+                    # pass only moves a hypothesis when the new chain reaches D)
+                    # so the emitted chain is not orphaned by the skip.
+                    if getattr(h_item, "root_node_ref", None):
+                        metadata.setdefault("hyp_root_refs", {})[
+                            dup_id
+                        ] = h_item.root_node_ref
                     existing = case.hypotheses.get(dup_id)
                     _add_system_feedback(
                         metadata,

@@ -329,8 +329,9 @@ llm_rcc_retracted_disconfirmed_total = Counter(
 
 
 # INV-36 (#656 P3.3): an LLM-emitted hypotheses_to_add item was NOT minted
-# because its statement names the same cause as an existing (any-state) or
-# same-batch hypothesis (the MECE distinctness bar, statements_name_same_cause).
+# because its statement duplicates a standing (non-terminal) or same-batch
+# hypothesis (hypothesis_statements_duplicate — a fail-open 0.8 mutual mirror
+# with a negation-polarity guard, stricter than the §7.1.2 fold).
 # This protects the ≥2-active work gate — the axis that separates
 # INSUFFICIENT_EVIDENCE from NOT_YET_PRODUCTIVE — from duplicate inflation
 # (observed live: an identical DNS hypothesis minted twice, turns 10/11).

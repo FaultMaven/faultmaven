@@ -7,10 +7,11 @@ spuriously re-satisfy the ≥2-active work gate — the axis that separates
 inflate ``len(case.hypotheses)`` (observed live: an identical DNS hypothesis
 minted twice, turns 10/11).
 
-The "same cause" predicate reuses the MECE distinctness bar
-(``statements_name_same_cause`` → ``_ROOT_DISTINCT_JACCARD`` mutual mirror), so a
-more-SPECIFIC elaboration of a standing hypothesis (high one-way containment,
-lower Jaccard) is a DISTINCT refinement and survives — never silently dropped.
+The dedup predicate (``hypothesis_statements_duplicate``) is STRICTER than the
+§7.1.2 fold and FAILS OPEN because a dedup DROPS an LLM emission: a mutual mirror
+at 0.8 (not the fold's 0.6), symmetric (not containment) so a more-SPECIFIC
+elaboration survives, a negation-polarity guard so a dispute is never a
+duplicate, and standing-cause-only so a refuted/retired revival can re-enter.
 
 Positional integrity: a skip records the CANONICAL existing id in
 ``hyp_emit_order`` (not ``hypotheses_generated``) so downstream ``new_index_N``
@@ -26,7 +27,7 @@ import pytest
 from faultmaven.core.investigation import milestone_engine
 from faultmaven.core.investigation.causal_graph import (
     find_duplicate_hypothesis,
-    statements_name_same_cause,
+    hypothesis_statements_duplicate,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
@@ -52,20 +53,22 @@ _DSU = InvestigationResponse_Diagnosis.DiagnosisStateUpdate
 
 
 # --------------------------------------------------------------------------
-# Pure predicate calibration — the "same cause" bar
+# Pure predicate calibration — the dedup ("duplicate statement") bar. The bar
+# is STRICTER than the §7.1.2 fold and FAILS OPEN because a dedup DROPS an LLM
+# emission for the turn.
 # --------------------------------------------------------------------------
 
 
 def test_predicate_exact_restatement_is_duplicate():
     s = "DNS resolution failing because resolv.conf lists too many nameservers"
-    assert statements_name_same_cause(s, s) is True
+    assert hypothesis_statements_duplicate(s, s) is True
 
 
 def test_predicate_reordered_synonymless_restatement_is_duplicate():
-    # Same content tokens, reordered — a mutual mirror.
+    # Same content tokens, reordered — a mutual mirror at 1.0.
     a = "connection pool exhausted under load"
     b = "under load the connection pool exhausted"
-    assert statements_name_same_cause(a, b) is True
+    assert hypothesis_statements_duplicate(a, b) is True
 
 
 def test_predicate_elaboration_is_distinct_not_duplicate():
@@ -79,12 +82,37 @@ def test_predicate_elaboration_is_distinct_not_duplicate():
         "nameservers so glibc silently truncates the list and the authoritative "
         "server is never queried"
     )
-    assert statements_name_same_cause(general, specific) is False
+    assert hypothesis_statements_duplicate(general, specific) is False
+
+
+def test_predicate_short_distinct_siblings_survive():
+    """A DROP action must fail open: two genuinely-distinct short causes that
+    differ by ONE substantive token (Jaccard 0.6, below the 0.8 dedup bar)
+    survive as separate hypotheses. The looser §7.1.2 fold bar (0.6) would have
+    wrongly collapsed them."""
+    assert (
+        hypothesis_statements_duplicate(
+            "memory leak in connection pool", "memory leak in cache pool"
+        )
+        is False
+    )
+
+
+def test_predicate_negation_is_distinct():
+    """A disputing hypothesis is never a duplicate of the claim it contradicts —
+    even though 'not' is a stopword that makes the two tokenize identically. The
+    polarity guard fails open."""
+    assert (
+        hypothesis_statements_duplicate(
+            "connection pool is exhausted", "connection pool is not exhausted"
+        )
+        is False
+    )
 
 
 def test_predicate_different_causes_are_distinct():
     assert (
-        statements_name_same_cause(
+        hypothesis_statements_duplicate(
             "DNS resolution failing intermittently",
             "database connection pool exhausted under peak load",
         )
@@ -93,12 +121,12 @@ def test_predicate_different_causes_are_distinct():
 
 
 def test_predicate_empty_statements_never_match():
-    assert statements_name_same_cause("", "") is False
-    assert statements_name_same_cause("DNS failing", "") is False
+    assert hypothesis_statements_duplicate("", "") is False
+    assert hypothesis_statements_duplicate("DNS failing", "") is False
 
 
 # --------------------------------------------------------------------------
-# find_duplicate_hypothesis — existing (any state) + same-batch
+# find_duplicate_hypothesis — standing (non-terminal) + same-batch
 # --------------------------------------------------------------------------
 
 
@@ -148,12 +176,13 @@ def test_find_duplicate_matches_existing_active():
     )
 
 
-def test_find_duplicate_matches_even_terminal_hypothesis():
-    """The work gate counts hypotheses across ALL states, so a duplicate of a
-    terminal (RETIRED/REFUTED) hypothesis would still inflate it — dedup must
-    catch it regardless of state."""
+def test_find_duplicate_ignores_terminal_hypothesis():
+    """A REFUTED/RETIRED cause is NOT a dedup target: those states are
+    terminal-immutable and the update path instructs the LLM to open a NEW
+    hypothesis to revive the theory — so deduping against them would deadlock the
+    revival. A restatement of a retired cause is allowed to re-mint."""
     case = _case()
-    h = _add_hyp(
+    _add_hyp(
         case,
         "connection pool exhausted under load",
         HypothesisCategory.DATABASE,
@@ -161,7 +190,7 @@ def test_find_duplicate_matches_even_terminal_hypothesis():
     )
     assert (
         find_duplicate_hypothesis("under load the connection pool exhausted", case)
-        == h.hypothesis_id
+        is None
     )
 
 
@@ -336,3 +365,62 @@ async def test_positional_integrity_new_index_resolves_past_skipped_dup():
     # The new_index_1 update reached the NEW hypothesis, not the standing dup.
     assert case.hypotheses[new_id].state == HypothesisState.REFUTED
     assert case.hypotheses[existing.hypothesis_id].state == HypothesisState.ACTIVE
+
+
+async def test_revival_of_refuted_cause_is_minted():
+    """A restatement of a REFUTED cause is NOT deduped — it mints a fresh
+    hypothesis so a revived theory can re-enter the differential (the update path
+    refuses terminal-state changes and instructs exactly this)."""
+    eng, case = _engine(), _case()
+    # Build a REFUTED hypothesis directly (create_hypothesis rejects REFUTED
+    # without a refutation_reason).
+    mgr = HypothesisManager()
+    refuted = mgr.create_hypothesis(
+        statement="connection pool exhausted under load",
+        category=HypothesisCategory.DATABASE,
+        initial_likelihood=0.2,
+        current_turn=case.current_turn,
+        state=HypothesisState.ACTIVE,
+    )
+    refuted.state = HypothesisState.REFUTED
+    refuted.refutation_reason = "pool metrics were flat"
+    case.hypotheses[refuted.hypothesis_id] = refuted
+
+    meta = _meta()
+    await eng._apply_investigation_updates(
+        case,
+        _DSU(hypotheses_to_add=[_h2a("under load the connection pool exhausted")]),
+        meta,
+    )
+    # A new record was minted (not deduped onto the terminal one).
+    assert len(case.hypotheses) == 2
+    assert len(meta["hypotheses_generated"]) == 1
+
+
+async def test_dedup_reroutes_chain_root_ref_to_canonical():
+    """When a deduped item carries a fresh chain root, the canonical hypothesis
+    picks up the root ref (via ``hyp_root_refs`` keyed by its id) so the emitted
+    chain is not orphaned by the skip."""
+    eng, case = _engine(), _case()
+    existing = _add_hyp(
+        case, "connection pool exhausted under load", HypothesisCategory.DATABASE
+    )
+    meta = _meta()
+    await eng._apply_investigation_updates(
+        case,
+        _DSU(
+            hypotheses_to_add=[
+                HypothesisToAdd(
+                    statement="under load the connection pool exhausted",
+                    category=HypothesisCategory.DATABASE,
+                    likelihood=0.4,
+                    rationale="r",
+                    root_node_ref="cn_poolroot",
+                )
+            ]
+        ),
+        meta,
+    )
+    assert len(case.hypotheses) == 1  # deduped
+    # The canonical hypothesis inherits the emitted chain root ref.
+    assert meta["hyp_root_refs"][existing.hypothesis_id] == "cn_poolroot"
