@@ -596,8 +596,11 @@ cause** — never the node states:
   the max-likelihood pick over the very hypotheses under contest — the same
   arbitrary assertion through a side door; that fallback exists to rescue
   under-reporting, and a contest is a deliberate hold, not under-reporting).
-  An **LLM-authored** conclusion is never touched (its lifecycle is tracked
-  on #656).
+  An **LLM-authored** conclusion is **not retracted** (the LLM's stance may yet
+  be borne out — erasing it would be a NO-COLLAPSE breach) but is **read-
+  suppressed**: while contested it likewise stops counting as an identified
+  cause in `_cause_identified`, and re-counts the moment the contest resolves
+  (§7.6 — the LLM-conclusion lifecycle).
 - Each contested root keeps its evidence-derived VALIDATED standing (the §7.1
   entry-bar lesson: re-adjudicating settled nodes is what causes flap), and
   the context builder renders the discrimination ask inline on the contested
@@ -774,6 +777,57 @@ override them.
 | Defensive fix (perm @ intermediate) | accepted permanent workaround (often `rca_infeasible`) | **CLOSED** (`closed_after_investigation`) | symptom_absence |
 | Mitigation (temp @ intermediate) | mitigation insert | buy time → forward → RESOLVED / CLOSED (revert reminder) | symptom_absence (interim) |
 | Loop-break (R9) | mitigate the cycle | **CLOSED** / stabilized | symptom_absence |
+
+### 7.6 The LLM-authored conclusion's lifecycle — retraction ≠ authorship (INV-34)
+
+A `RootCauseConclusion` the LLM writes (`determined_by` = the agent) is the
+LLM's own stance, a **trust boundary**: the engine never authors or overwrites
+it (`synthesize_rcc_from_validated_root` refuses to touch one, and the M2 grade
+labels its confidence at read-time rather than rewriting it, §9.5). But *never
+authoring* it does not mean *never retracting* it. The two guarantees still
+bind the conclusion the engine surfaces to every terminal consumer (the
+disposition/M5 gate, the report, the copilot UI, KB runbook harvesting):
+
+- **Disconfirmation → retract at source (NO-INCORRECT-CONCLUSION).** When the
+  engine has decisive structural evidence the named cause is *wrong* — a
+  counterfactual refute or net-refutation (M6, §7.3) — the conclusion must be
+  `None` for every reader, exactly as an engine mirror is. Retraction is not
+  authorship: it asserts nothing, it clears a proven-wrong assertion.
+- **Contest → read-suppress, don't erase (NO-COLLAPSE).** A MECE contest
+  (§7.1.2) is *not* disconfirmation — the LLM's cause may yet be borne out — so
+  the conclusion is **preserved** but stops counting as identified in
+  `_cause_identified` while contested, and counts again the moment the contest
+  resolves. Erasing a reversible not-yet-arbitrated stance would be a collapse.
+
+The mechanism that makes the retraction lane reach an LLM conclusion is a
+**conservative cause link**. An LLM conclusion arrives as free text with no
+`validated_hypothesis_id`, so the link-based retraction
+(`retract_disconfirmed_rcc`) and the M6 representative-cause pick cannot
+attribute it. Each recompute `link_llm_rcc_to_cause` attributes the conclusion
+to the standing hypothesis it names — but only on a **single unambiguous STRONG
+lexical match** (the orphan-chain T1 discipline: exactly one hypothesis at/above
+`RESTATEMENT_STRONG`, substantive shared-token overlap). A wrong link would
+retract a valid conclusion on an unrelated refutation — itself a collapse — so
+*when unsure, don't link*, and an unattributable free-text conclusion stays the
+documented residual it has always been (no regression). Giving the conclusion a
+cause link is not authorship: the engine writes only *which hypothesis the LLM's
+cause corresponds to*, never the cause text.
+
+Two consequences fall out of the link, not extra machinery:
+
+- **Same-turn re-grounding survives (refresh).** When a fix fails and the LLM
+  re-grounds its conclusion onto a *different* still-standing cause, the link
+  points the M6 trigger at that new cause, so the demotion of the old cause
+  never fires on the conclusion — the max-`initial_likelihood` proxy that used
+  to wipe it is gone.
+- **The retraction is single-truth.** Because the conclusion is retracted at
+  its source, every downstream reader sees one truth; no per-reader
+  disconfirmation guard is needed.
+
+*Known limit (by design):* the link and the contest are LEXICAL, like every
+mirror bar in this family — a synonym-paraphrased conclusion may not link (and
+stays the residual); the conservative bar is calibrated in
+`test_llm_rcc_lifecycle.py`.
 
 ---
 

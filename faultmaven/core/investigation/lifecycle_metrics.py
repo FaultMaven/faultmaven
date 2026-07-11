@@ -282,3 +282,33 @@ pending_action_superseded_stale_total = Counter(
     "retired ('stale_pending') when that offer left pending state (withdrawn or "
     "accepted) so it cannot resurface in <pending_action>. One per retired action.",
 )
+
+
+# INV-34 (#656): an LLM-authored RootCauseConclusion's named cause was
+# conservatively linked (validated_hypothesis_id) to a standing hypothesis at
+# the per-turn recompute — the link that lets the link-based retraction
+# lifecycle (retract_disconfirmed_rcc, the M6 demotion) reach an LLM conclusion
+# whose cause is later disconfirmed. Only a SINGLE unambiguous STRONG lexical
+# match links (the orphan-chain T1 discipline); a sustained near-zero rate is
+# expected once a case's cause is named. One increment per link written.
+llm_rcc_cause_linked_total = Counter(
+    "faultmaven_llm_rcc_cause_linked_total",
+    "An LLM-authored RootCauseConclusion was linked to a standing hypothesis "
+    "(validated_hypothesis_id) by conservative lexical match at recompute, so "
+    "its disconfirmation retraction lifecycle can reach it (§7.6 / INV-34). "
+    "One increment per link written.",
+)
+
+
+# INV-34 (#656): an LLM-authored RootCauseConclusion was RETRACTED at
+# source because its named cause was disconfirmed (counterfactual refute /
+# net-refutation) — the engine never re-authors the conclusion, it only clears a
+# proven-wrong one so no consumer (terminal gate, report, UI, KB harvest)
+# asserts a disproven cause. Distinct from the MECE-contest READ-suppression
+# (reversible, no mutation, counted by cause_identification_held_mece_total). A
+# sustained rate means models keep concluding causes that fixes then disconfirm.
+llm_rcc_retracted_disconfirmed_total = Counter(
+    "faultmaven_llm_rcc_retracted_disconfirmed_total",
+    "An LLM-authored RootCauseConclusion was retracted at source because its "
+    "named cause was disconfirmed (§7.6 / INV-34). One increment per retraction.",
+)

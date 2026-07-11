@@ -63,6 +63,8 @@ from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_link_stripped_total,
     counterfactual_refute_hedged_total,
+    llm_rcc_cause_linked_total,
+    llm_rcc_retracted_disconfirmed_total,
     root_validation_blocked_restatement_total,
     root_validation_blocked_support_count_total,
 )
@@ -1318,7 +1320,83 @@ def retract_disconfirmed_rcc(case: Case) -> bool:
         return False
     hyp = case.hypotheses.get(vhid)
     if hyp is not None and _hypothesis_disconfirmed(hyp):
+        # §7.6 / INV-34: an LLM conclusion linked to its cause (link_llm_rcc_to_cause)
+        # is retracted here just like an engine one when that cause is disconfirmed.
+        if getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR:
+            llm_rcc_retracted_disconfirmed_total.inc()
         case.root_cause_conclusion = None
+        return True
+    return False
+
+
+def link_llm_rcc_to_cause(case: Case) -> bool:
+    """§7.6 / INV-34 — give an LLM-authored ``RootCauseConclusion`` a cause link
+    so the link-based retraction lifecycle can reach it.
+
+    An LLM conclusion arrives as free text with ``validated_hypothesis_id`` unset
+    (the engine never populates it at ingest), so ``retract_disconfirmed_rcc`` and
+    the M6 ``_representative_cause_hypothesis`` cannot attribute it to a cause — a
+    disconfirmed LLM conclusion lingers, and M6's max-``initial_likelihood`` proxy
+    can wipe a re-grounded one that names a DIFFERENT live cause. This pass links
+    the conclusion to the STANDING hypothesis it names, so:
+      * ``retract_disconfirmed_rcc`` retracts it when that cause is disconfirmed
+        (NO-INCORRECT-CONCLUSION — a proven-wrong cause is None for every reader);
+      * the M6 demotion tracks the LLM's ACTUAL named cause, not a proxy, so a
+        re-grounded conclusion on a still-standing cause survives (NO-COLLAPSE).
+
+    Giving the conclusion a cause link is NOT authorship — the engine never writes
+    or overwrites the LLM's ``root_cause`` text (``determined_by`` stays the LLM's,
+    and ``synthesize_rcc_from_validated_root`` still refuses to touch it). It only
+    records which standing hypothesis the LLM's stated cause corresponds to.
+
+    Conservative by the orphan-chain T1 discipline (``resolve_orphan_chains``): a
+    link is written only when EXACTLY ONE standing hypothesis scores
+    ``>= RESTATEMENT_STRONG`` against the conclusion text (so it is also the only
+    one ``>= RESTATEMENT_AMBIGUOUS``) with a substantive shared-token overlap. A
+    wrong link would retract a valid conclusion on an unrelated refutation — a
+    NO-COLLAPSE breach — so "when unsure, don't link" (the unmatched free-text
+    conclusion stays the documented residual it is today). A conclusion already
+    linked to a LIVE hypothesis is left as-is (stable across recomputes); a stale
+    or dangling link is re-resolved. Returns True if it wrote a link.
+    """
+    rcc = case.root_cause_conclusion
+    if rcc is None or getattr(rcc, "determined_by", None) == _ENGINE_RCC_AUTHOR:
+        return False
+    current = getattr(rcc, "validated_hypothesis_id", None)
+    if current and current in case.hypotheses:
+        # Keep a link to a hypothesis that STILL EXISTS — deliberately membership,
+        # not liveness: a REFUTED linked hypothesis must retain the link so
+        # ``retract_disconfirmed_rcc`` retracts the conclusion for that disproven
+        # cause this same recompute; a RETIRED (decayed, not disproven) one keeps
+        # the conclusion as the LLM's standing stance. The LLM resets vhid to None
+        # whenever it re-authors the conclusion text (a fresh RCC object), so the
+        # text and its link never drift apart while both are held here.
+        return False
+    # A dangling link (points at a hypothesis no longer present) is cleared before
+    # we re-resolve: left set, it would make ``_representative_cause_hypothesis``
+    # return None (the ``if vhid`` branch short-circuits the max-likelihood
+    # fallback) and silently disable the M6 demotion for this case. A failed
+    # re-resolve below then correctly leaves it None (proxy fallback restored).
+    if current:
+        rcc.validated_hypothesis_id = None
+    statement = getattr(rcc, "root_cause", None) or ""
+    if not statement:
+        return False
+    scored = [
+        (s, h)
+        for h in _standing_hypotheses(case)
+        if (s := restatement_score(statement, h.statement)) >= RESTATEMENT_AMBIGUOUS
+    ]
+    # Unambiguous match only: the SOLE hypothesis >= AMBIGUOUS must clear STRONG
+    # with a substantive overlap (mirrors resolve_orphan_chains' T1 gate; a
+    # second contender >= AMBIGUOUS means "don't guess").
+    if (
+        len(scored) == 1
+        and scored[0][0] >= RESTATEMENT_STRONG
+        and _substantive_overlap(statement, scored[0][1].statement)
+    ):
+        rcc.validated_hypothesis_id = scored[0][1].hypothesis_id
+        llm_rcc_cause_linked_total.inc()
         return True
     return False
 
@@ -1906,6 +1984,31 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     # Retract the conclusion so the disposition layer cannot keep treating the
     # cause as known; the cause_state itself is re-derived from the (now refuted)
     # root by the caller's derive + recompute.
+    #
+    # §7.6 / INV-34 refresh: for a LINKED conclusion the trigger's ``hyp`` IS the
+    # conclusion's named cause — ``link_llm_rcc_to_cause`` runs earlier this
+    # recompute, so ``_representative_cause_hypothesis`` resolves to the hypothesis
+    # the LLM's conclusion names; a conclusion re-grounded onto a DIFFERENT
+    # still-standing cause points the trigger there and this demotion never fires
+    # on it (the refresh is delivered by the link). RESIDUAL, accepted: an
+    # UNLINKABLE conclusion (ambiguous/paraphrased text, no vhid) leaves the
+    # trigger on the max-``initial_likelihood`` proxy, so if that proxy is the
+    # disconfirmed cause the conclusion is still cleared even when it named a
+    # different cause — the pre-existing NO-INCORRECT-first behavior (never leave a
+    # possibly-disproven conclusion standing on a guess; inferring a
+    # different-cause link lexically would only trade this for the wrong-link
+    # collapse the link bar guards against).
+    rcc = case.root_cause_conclusion
+    # Count only a genuine "named cause was disconfirmed" retraction: the cleared
+    # conclusion was LINKED to the very hypothesis this demotion disconfirmed. A
+    # collateral proxy-path wipe of an unlinkable conclusion is not that event, so
+    # it must not inflate the failed-fix signal (lifecycle-metrics § INV-34).
+    if (
+        rcc is not None
+        and getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR
+        and getattr(rcc, "validated_hypothesis_id", None) == hyp.hypothesis_id
+    ):
+        llm_rcc_retracted_disconfirmed_total.inc()
     case.root_cause_conclusion = None
     p.root_cause_likelihood = 0.0
     return True

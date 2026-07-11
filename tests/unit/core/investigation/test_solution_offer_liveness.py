@@ -508,6 +508,27 @@ class TestWorkingConclusionLicense:
         withdrawn = [a for a in case.proposed_actions if a.state == "superseded"]
         assert withdrawn and withdrawn[0].superseded_reason == "license_lost"
 
+    def test_mece_contest_gates_llm_rcc_license_and_withdraws(self):
+        # INV-34 leak closure: a license resting on an LLM-authored
+        # RootCauseConclusion ALSO falls under a §7.1.2 contest — the LLM
+        # asserting one contested cause is read-suppressed in _cause_identified,
+        # so _solution_cause_validated is False and the pending offer is
+        # withdrawn (previously the LLM conclusion kept the license through the
+        # hold — the trust-boundary leak INV-32/INV-33 flagged).
+        case = _make_case(established=True)  # LLM RCC, not a working conclusion
+        assert case.root_cause_conclusion.determined_by == "agent"
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="raise the pool ceiling",
+                proposed_in_turn=4,
+            )
+        )
+        case.progress.cause_identification_contested = True
+        assert _withdraw_unlicensed_solution_offers(case, metadata={}) == 1
+        assert _pending_solutions(case) == []
+
     def test_withdrawal_notice_is_prepended(self):
         # The turn record truncates feedback head-first; the notice must
         # survive a turn whose earlier accumulators already wrote feedback.

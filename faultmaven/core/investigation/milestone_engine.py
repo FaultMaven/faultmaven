@@ -42,6 +42,7 @@ from faultmaven.core.investigation.causal_graph import (
     derive_node_states,
     ingest_emitted_chain,
     is_chain_root_validated,
+    link_llm_rcc_to_cause,
     mece_contested_root_ids,
     prune_abandoned_nodes,
     resolve_orphan_chains,
@@ -1220,6 +1221,12 @@ def _recompute_cause_state_from_chain(
          only a counterfactual REFUTED drops it fully.
     """
     p = case.progress
+    # §7.6 / INV-34: link an LLM-authored RootCauseConclusion to the standing
+    # hypothesis it names BEFORE the M6 demotion, so M6 tracks the LLM's actual
+    # cause (not a max-likelihood proxy) and retract_disconfirmed_rcc can reach a
+    # disconfirmed LLM conclusion. Conservative single-match link; no-op when the
+    # conclusion is engine-authored, already linked, or ambiguous.
+    link_llm_rcc_to_cause(case)
     demote_disconfirmed_cause_via_evidence(case)
     derive_node_states(case)
     # Deductive validation (§7.1.1, proof-by-exclusion): stamp DEDUCTIVE on any

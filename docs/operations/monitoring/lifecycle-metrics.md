@@ -160,6 +160,22 @@ rate(faultmaven_pending_action_superseded_stale_total[24h])
 
 Matrix row: INV-33 in `investigation-invariants.md`.
 
+## INV-34: LLM-conclusion lifecycle telemetry
+
+- `faultmaven_llm_rcc_cause_linked_total` — an LLM-authored `RootCauseConclusion` was attributed to a standing hypothesis (`validated_hypothesis_id`) by conservative single-STRONG-match lexical link at the per-turn recompute (§7.6). The link is what lets the disconfirmation-retraction lane reach an LLM conclusion. One increment per link written; an already-linked or unattributable conclusion does not count.
+- `faultmaven_llm_rcc_retracted_disconfirmed_total` — an LLM-authored `RootCauseConclusion` was RETRACTED at source because its named cause was disconfirmed (M6 counterfactual refute / net-refutation, §7.3). The engine never re-authors the conclusion; it clears a proven-wrong one so no consumer asserts a disproven cause (NO-INCORRECT-CONCLUSION). Distinct from the MECE-contest READ-suppression, which mutates nothing and is counted by `cause_identification_held_mece_total`.
+
+**Healthy shape.** Both sit near zero once a case's cause is named. A sustained `cause_linked` rate is benign (models re-wording the same cause each turn without a stable link) but a sustained *retracted* rate means models keep concluding causes that fixes then disconfirm — the same failed-fix signal as `solution_offer_superseded_total{reason="license_lost"}`; correlate them. A `cause_linked` rate near zero while cases reach RESOLVED is expected — most conclusions are engine-mirrored or need no retraction. Read `retracted` beside `absence_confirmation_*` and the M6 demotion logs for the disconfirmation story on a given deployment.
+
+```promql
+# LLM conclusions linked to a cause (attribution rate).
+rate(faultmaven_llm_rcc_cause_linked_total[24h])
+# LLM conclusions retracted on disconfirmation (the load-bearing signal).
+rate(faultmaven_llm_rcc_retracted_disconfirmed_total[24h])
+```
+
+Matrix row: INV-34 in `investigation-invariants.md`; methodology §7.6.
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:

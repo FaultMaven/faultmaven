@@ -104,25 +104,33 @@ def _cause_identified(case: "Case") -> bool:
     if not (case.progress and getattr(case.progress, "symptom_verified", False)):
         return False
 
+    # §7.1.2 / INV-34 (#656): while identification is MECE-contested, NO
+    # fallback proxy counts as an identified cause. This gates BOTH proxies:
+    #   * the ENGINE working conclusion (max-likelihood standing hypothesis) — the
+    #     arbitrary pick between competing validated causes the hold withholds;
+    #   * an LLM-authored root_cause_conclusion — the LLM asserting ONE contested
+    #     cause is exactly the over-claim the hold exists to suppress.
+    # This is READ-TIME SUPPRESSION, not retraction: the conclusion is preserved
+    # (informational in the report/UI) and re-counts the moment the contest
+    # resolves — a validated LLM stance may yet be borne out, so erasing it would
+    # be a NO-COLLAPSE breach. Decisive DISCONFIRMATION is the separate, one-way
+    # case, handled at source (retract_disconfirmed_rcc / M6). The primary
+    # cause_state==IDENTIFIED check above already holds at CANDIDATES while
+    # contested; this closes the fallback leak the trust boundary left open.
+    if getattr(case.progress, "cause_identification_contested", False):
+        return False
+
     # A disconfirmed RootCauseConclusion is retracted at its SOURCE
-    # (causal_graph.retract_disconfirmed_rcc, run each turn in the chain
-    # recompute), so by the time we read it here a disproven cause is already
-    # None — every consumer (this gate, the report, the UI, KB runbooks) sees one
-    # truth. No per-reader disconfirmation guard is needed.
+    # (causal_graph.retract_disconfirmed_rcc / the M6 demotion, run each turn in
+    # the chain recompute; an LLM conclusion is linked to its cause by
+    # link_llm_rcc_to_cause so it too is reachable — §7.6/INV-34), so by the time
+    # we read it here a disproven cause is already None — every consumer (this
+    # gate, the report, the UI, KB runbooks) sees one truth. No per-reader
+    # disconfirmation guard is needed.
     if case.root_cause_conclusion and getattr(
         case.root_cause_conclusion, "root_cause", None
     ):
         return True
-    # The working conclusion is ENGINE-generated (max-likelihood standing
-    # hypothesis, every turn) — so while identification is MECE-contested
-    # (§7.1.2) it is exactly the arbitrary pick between competing validated
-    # causes the hold withholds, and must not re-enter through this proxy.
-    # The fallback exists to rescue UNDER-reporting; a contest is a
-    # deliberate hold, not under-reporting. An LLM-authored
-    # root_cause_conclusion (above) still counts — the LLM taking its own
-    # stance is a different trust boundary, tracked on #656.
-    if getattr(case.progress, "cause_identification_contested", False):
-        return False
     return bool(
         case.working_conclusion
         and getattr(case.working_conclusion, "statement", None)
