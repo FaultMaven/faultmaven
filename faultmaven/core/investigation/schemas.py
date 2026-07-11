@@ -226,7 +226,10 @@ class MilestoneUpdates(BaseModel):
 
     # Progress indicators (LLM-settable, non-stage-driving)
     symptom_verified: Optional[bool] = None
-    root_cause_identified: Optional[bool] = None
+    # root_cause_identified removed (INV-35): identification is engine-derived
+    #   from a validated, uncontested chain root (§9.2), never an LLM self-claim.
+    #   The LLM builds and grounds the chain; ``root_cause_likelihood`` carries
+    #   its confidence. There is no self-certification boolean.
     root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
     # solution_proposed removed (3F) — engine-derived from live SOLUTION
     # offers at the assessment recompute (INV-32), never LLM-set
@@ -987,6 +990,15 @@ class RootCauseConclusionUpdate(BaseModel):
     mechanism: str
     evidence_ids: List[str] = Field(default_factory=list)
     likelihood: float = Field(default=0.7, ge=0.0, le=1.0)
+    names_root_node_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The cn_... id of the cause's root node in <causal_graph> (the node "
+            "you rooted the hypothesis on). Lets the engine attribute this "
+            "conclusion to that cause exactly (INV-35). Omit only if the cause "
+            "is not yet a node in the graph."
+        ),
+    )
 
 
 class SolutionToAdd(BaseModel):

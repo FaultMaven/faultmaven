@@ -3886,6 +3886,16 @@ class RootCauseConclusion(BaseModel):
         description="If identified via hypothesis validation, the hypothesis ID",
     )
 
+    names_root_node_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Attribution hint (INV-35): the cn_ root node the LLM named as this "
+            "conclusion's cause. Resolved to validated_hypothesis_id by the "
+            "engine at cause-state recompute (the authoritative link, §7.7); a "
+            "conclusion without it falls back to the lexical scan."
+        ),
+    )
+
     # ============================================================
     # Contributing Factors
     # ============================================================

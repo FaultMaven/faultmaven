@@ -300,14 +300,12 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
         internal_reasoning=InternalReasoning(
             evidence_analyzed=["ev_placeholder"],
             milestone_justifications={
-                "root_cause_identified": "Connection pool config change in v2.1.3 caused leak",
                 "solution_proposed": "Rollback connection pool settings",
                 "solution_accepted": "Configuration reverted; p99 returned to normal",
             },
         ),
         state_updates=InvestigationResponse_Treatment.TreatmentStateUpdate(
             milestones=MilestoneUpdates(
-                root_cause_identified=True,
                 solution_proposed=True,
                 solution_accepted=True,
             ),
@@ -913,16 +911,15 @@ class TestEvidenceAccumulation:
             internal_reasoning=InternalReasoning(
                 evidence_analyzed=["ev_placeholder"],
                 milestone_justifications={
-                    "root_cause_identified": "Connection leak introduced in v2.1.3 deployment at 14:00",
+                    "symptom_verified": "500s confirmed in logs from 14:03",
                 },
             ),
             state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
-                # Grounded emission: a confirmed root cause carries a high
-                # likelihood, not just the bare flag. With root_cause_likelihood
-                # >= 0.7 AND >=1 causal evidence row, the engine grounds the
-                # cause and advances cause_state to IDENTIFIED.
+                # Grounded emission: identification is engine-derived (INV-35),
+                # never an LLM flag. With root_cause_likelihood >= 0.7 AND the
+                # causal evidence grounding the chain root, the engine advances
+                # cause_state to IDENTIFIED.
                 milestones=MilestoneUpdates(
-                    root_cause_identified=True,
                     root_cause_likelihood=0.9,
                 ),
                 evidence_to_add=[

@@ -300,6 +300,20 @@ llm_rcc_cause_linked_total = Counter(
 )
 
 
+# INV-35 (#656 P2.4): an LLM-authored RootCauseConclusion was linked to its cause
+# AUTHORITATIVELY — the LLM named the cause's cn_ root node (names_root_node_id)
+# and the engine matched it to the hypothesis whose root_node_id equals it, with
+# no lexical guess. This is the primary link; llm_rcc_cause_linked_total is the
+# lexical fallback for id-less conclusions. A healthy ratio (named >> linked)
+# means models are naming their cause node as instructed. One increment per link.
+llm_rcc_cause_named_total = Counter(
+    "faultmaven_llm_rcc_cause_named_total",
+    "An LLM-authored RootCauseConclusion was linked to its cause authoritatively "
+    "via names_root_node_id → root_node_id match at recompute (§7.7 / INV-35). "
+    "One increment per link written.",
+)
+
+
 # INV-34 (#656): an LLM-authored RootCauseConclusion was RETRACTED at
 # source because its named cause was disconfirmed (counterfactual refute /
 # net-refutation) — the engine never re-authors the conclusion, it only clears a

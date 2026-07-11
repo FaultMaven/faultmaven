@@ -64,6 +64,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_link_stripped_total,
     counterfactual_refute_hedged_total,
     llm_rcc_cause_linked_total,
+    llm_rcc_cause_named_total,
     llm_rcc_retracted_disconfirmed_total,
     root_validation_blocked_restatement_total,
     root_validation_blocked_support_count_total,
@@ -1329,9 +1330,54 @@ def retract_disconfirmed_rcc(case: Case) -> bool:
     return False
 
 
+def link_llm_rcc_by_named_node(case: Case) -> bool:
+    """§7.7 / INV-35 — authoritative cause link for an LLM conclusion that NAMES
+    its root node (``names_root_node_id``).
+
+    The LLM references the ``cn_`` root node of its cause directly — the same id
+    it emits during chain construction — so the engine attributes the conclusion
+    to the hypothesis whose ``root_node_id`` matches, exactly, with no lexical
+    guess. This is the PRIMARY link; ``link_llm_rcc_to_cause`` is the fallback for
+    a conclusion that arrives without a named node (older turns, a non-compliant
+    model). Run it FIRST so an authoritatively-linked conclusion skips the scan.
+
+    Giving the conclusion a cause link is NOT authorship (see
+    ``link_llm_rcc_to_cause``): the engine records only WHICH hypothesis the LLM's
+    cause corresponds to, never the cause text. Conservative: links only when
+    EXACTLY ONE hypothesis is rooted at the named node — a degenerate multi-match
+    declines, like the fallback's T1 gate. No-op when the conclusion is
+    engine-authored, already linked to a present hypothesis, or names no node.
+    Returns True if it wrote a link.
+    """
+    rcc = case.root_cause_conclusion
+    if rcc is None or getattr(rcc, "determined_by", None) == _ENGINE_RCC_AUTHOR:
+        return False
+    current = getattr(rcc, "validated_hypothesis_id", None)
+    if current and current in case.hypotheses:
+        # Already linked to a present hypothesis — stable across recomputes
+        # (mirrors link_llm_rcc_to_cause; a dangling link is left for the
+        # fallback to clear + re-resolve).
+        return False
+    named = getattr(rcc, "names_root_node_id", None)
+    if not named:
+        return False
+    matches = [
+        h for h in case.hypotheses.values() if getattr(h, "root_node_id", None) == named
+    ]
+    if len(matches) == 1:
+        rcc.validated_hypothesis_id = matches[0].hypothesis_id
+        llm_rcc_cause_named_total.inc()
+        return True
+    return False
+
+
 def link_llm_rcc_to_cause(case: Case) -> bool:
     """§7.6 / INV-34 — give an LLM-authored ``RootCauseConclusion`` a cause link
     so the link-based retraction lifecycle can reach it.
+
+    Fallback to :func:`link_llm_rcc_by_named_node` (INV-35): runs only when the
+    conclusion did not name its root node, or the named node matched no
+    hypothesis. Kept as a lexical bridge for id-less conclusions.
 
     An LLM conclusion arrives as free text with ``validated_hypothesis_id`` unset
     (the engine never populates it at ingest), so ``retract_disconfirmed_rcc`` and

@@ -800,18 +800,22 @@ disposition/M5 gate, the report, the copilot UI, KB runbook harvesting):
   resolves. Erasing a reversible not-yet-arbitrated stance would be a collapse.
 
 The mechanism that makes the retraction lane reach an LLM conclusion is a
-**conservative cause link**. An LLM conclusion arrives as free text with no
-`validated_hypothesis_id`, so the link-based retraction
-(`retract_disconfirmed_rcc`) and the M6 representative-cause pick cannot
-attribute it. Each recompute `link_llm_rcc_to_cause` attributes the conclusion
-to the standing hypothesis it names — but only on a **single unambiguous STRONG
-lexical match** (the orphan-chain T1 discipline: exactly one hypothesis at/above
-`RESTATEMENT_STRONG`, substantive shared-token overlap). A wrong link would
-retract a valid conclusion on an unrelated refutation — itself a collapse — so
-*when unsure, don't link*, and an unattributable free-text conclusion stays the
-documented residual it has always been (no regression). Giving the conclusion a
-cause link is not authorship: the engine writes only *which hypothesis the LLM's
-cause corresponds to*, never the cause text.
+**cause link**. An LLM conclusion arrives with no `validated_hypothesis_id`, so
+the link-based retraction (`retract_disconfirmed_rcc`) and the M6
+representative-cause pick cannot attribute it until it is linked. The link is
+established two ways, authoritative first: **(1)** when the LLM names the cause's
+root node on its conclusion (`names_root_node_id`, §7.7), the engine attributes
+it exactly to the hypothesis whose `root_node_id` matches — no guessing;
+**(2)** as a fallback for a conclusion that arrives without a named node (older
+turns, a non-compliant model), each recompute `link_llm_rcc_to_cause` attributes
+it to the standing hypothesis it names — but only on a **single unambiguous
+STRONG lexical match** (the orphan-chain T1 discipline: exactly one hypothesis
+at/above `RESTATEMENT_STRONG`, substantive shared-token overlap). A wrong link
+would retract a valid conclusion on an unrelated refutation — itself a collapse —
+so *when unsure, don't link*, and an unattributable free-text conclusion stays
+the documented residual it has always been (no regression). Giving the conclusion
+a cause link is not authorship: the engine writes only *which hypothesis the
+LLM's cause corresponds to*, never the cause text.
 
 Two consequences fall out of the link, not extra machinery:
 
@@ -828,6 +832,58 @@ Two consequences fall out of the link, not extra machinery:
 mirror bar in this family — a synonym-paraphrased conclusion may not link (and
 stays the residual); the conservative bar is calibrated in
 `test_llm_rcc_lifecycle.py`.
+
+### 7.7 Cause identification is engine-derived, not LLM-declared (INV-35)
+
+Identification (`cause_state=IDENTIFIED`, §9.2) is an engine derivation from a
+validated, uncontested chain root — it is **never** an LLM self-claim. This is a
+guardrail, not a seizure of the LLM's judgement: the LLM decides *what* the cause
+is (it authors the hypotheses, builds and grounds the chain, states its
+confidence in `root_cause_likelihood`, and names the cause in its conclusion);
+the engine only confirms whether that decision is grounded enough to drive the
+irreversible actions gated on identification (solution work, terminal transition,
+KB harvest). Deciding the cause is the LLM's; certifying the grounding bar is the
+engine's. This is the same trust boundary §7.6 draws for the conclusion, applied
+to the identification signal.
+
+Concretely, the LLM does **not** operate the identification gate:
+
+- **No self-certification signal.** There is no LLM-settable "root cause
+  identified" boolean. The engine recognizes identification when the hypothesis's
+  chain ROOT validates on **two independent causal observations** (§7.1 / INV-29),
+  the symptom is verified, and no rival cause is equally validated (§7.1.2) —
+  never from a flat assertion or a bare confidence number. `root_cause_likelihood`
+  is the LLM's stated confidence; it informs focus and reporting, and does not by
+  itself advance identification.
+- **The conclusion names its cause.** When the LLM authors its
+  `RootCauseConclusion`, it sets `names_root_node_id` to the `cn_` root node it
+  already emits during chain construction (§5/S3). The engine attributes the
+  conclusion to the hypothesis whose `root_node_id` matches — the authoritative
+  link of §7.6, replacing the lexical scan on the compliant path. This closes the
+  DF-2 residual that the conclusion was authored in a namespace disconnected from
+  the causal graph, so the engine had to reverse-engineer which hypothesis the
+  prose named.
+
+This section completes the campaign's relocation of guardrail *operation* off LLM
+self-claims (DF-1/DF-2): the same move made for causal-link category (INV-23),
+support count (INV-29), absence trust (INV-30), and conclusion retraction
+(INV-34) is here made for the identification signal itself, at the prompt/schema
+layer. The prompt teaches the engine's actual model — build and ground the chain,
+the engine confirms — rather than a self-certified boolean the engine had already
+stopped reading.
+
+*Rejected-for-now alternative — derive the conclusion text from the chain.* The
+LLM still authors the conclusion as free text, which persists as a deliberate
+terminal-soundness backstop while models under-build chains (§9.2: `cause_state`
+is a SOFT signal; `_cause_identified` reads the RCC when the chain is
+under-grounded). `names_root_node_id` makes the causal graph the authoritative
+*reference* for the conclusion; making it the authoritative *source* — the engine
+renders the conclusion text from the validated root and dual-authoring (with the
+§7.6 link/retract and INV-25 over-claim reconciliation) is retired — is the
+eventual convergence. It is **gated** on reliable chain-grounding: retiring the
+backstop before models ground reliably would strand cases that today resolve via
+the free-text conclusion (a NO-COLLAPSE regression). Tracked as #673 so the
+retirement is deliberate, not forgotten.
 
 ---
 
@@ -906,6 +962,14 @@ variables, milestones, and confidence stay consistent.
 - **AND gate:** a chain's root cannot be validated until *every* AND-member on its
   path is validated (S1 symmetric proof), so `IDENTIFIED` is never reached on a
   half-proven conjunctive chain.
+
+The LLM never self-declares this state: it builds and grounds the chain and the
+engine derives `cause_state` — there is no LLM-settable "root cause identified"
+signal (§7.7 / INV-35). `cause_state` is a SOFT signal, so under-reporting (a
+correct conclusion whose rung evidence the LLM did not attach) costs only
+prompt-focus accuracy — `terminal_transitions._cause_identified` reads
+`cause_state` OR the `RootCauseConclusion` OR the working conclusion, so terminal
+soundness never rests on the chain alone while models under-build it.
 
 ### 9.3 Milestones & dispositions
 

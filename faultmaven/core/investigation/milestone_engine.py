@@ -42,6 +42,7 @@ from faultmaven.core.investigation.causal_graph import (
     derive_node_states,
     ingest_emitted_chain,
     is_chain_root_validated,
+    link_llm_rcc_by_named_node,
     link_llm_rcc_to_cause,
     mece_contested_root_ids,
     prune_abandoned_nodes,
@@ -1221,11 +1222,13 @@ def _recompute_cause_state_from_chain(
          only a counterfactual REFUTED drops it fully.
     """
     p = case.progress
-    # §7.6 / INV-34: link an LLM-authored RootCauseConclusion to the standing
-    # hypothesis it names BEFORE the M6 demotion, so M6 tracks the LLM's actual
-    # cause (not a max-likelihood proxy) and retract_disconfirmed_rcc can reach a
-    # disconfirmed LLM conclusion. Conservative single-match link; no-op when the
-    # conclusion is engine-authored, already linked, or ambiguous.
+    # §7.7 / INV-35: authoritative link first — when the LLM named its cause's
+    # root node (names_root_node_id), attribute the conclusion to the hypothesis
+    # rooted there exactly. §7.6 / INV-34: then the lexical fallback links an
+    # id-less conclusion to the standing hypothesis it names. Both run BEFORE the
+    # M6 demotion, so M6 tracks the LLM's actual cause (not a max-likelihood
+    # proxy) and retract_disconfirmed_rcc can reach a disconfirmed LLM conclusion.
+    link_llm_rcc_by_named_node(case)
     link_llm_rcc_to_cause(case)
     demote_disconfirmed_cause_via_evidence(case)
     derive_node_states(case)
@@ -7168,6 +7171,11 @@ class MilestoneEngine:
                 evidence_basis=rcc.evidence_ids,
                 likelihood=rcc.likelihood,
                 confidence_level=ConfidenceLevel.from_score(rcc.likelihood),
+                # INV-35: attribution hint; the chain nodes/hypotheses this turn
+                # are ingested later (_apply_chain_emission), so the engine
+                # resolves this to validated_hypothesis_id at cause-state
+                # recompute (link_llm_rcc_by_named_node), not here.
+                names_root_node_id=getattr(rcc, "names_root_node_id", None),
             )
 
         # 1b. v3 KB-Resolution signal: same-turn milestone collapse.
@@ -7219,33 +7227,16 @@ class MilestoneEngine:
             milestone_fields = [
                 # Progress indicators (LLM context, non-stage-driving)
                 "symptom_verified",
-                "root_cause_identified",
+                # cause_state — engine-derived from a validated, uncontested
+                #   chain root at the recompute (§9.2 / INV-35), never LLM-set;
+                #   there is no root_cause_identified self-claim to honor here.
                 # solution_proposed — engine-derived from live SOLUTION offers
                 #   at the assessment recompute (INV-32), never LLM-set
                 # solution_verified — requires User-Agent Handshake
             ]
 
-            # NOTE (redesign R1): the cause-identification signal
-            # ``root_cause_identified`` → ``cause_state=IDENTIFIED`` is a TRUTH
-            # signal and is NEVER rejected by investigation state. The former
-            # path-conditional RCA-milestone ban was the S1 trap mechanism and
-            # has been removed. Whether the diagnostic
-            # *labor* (hypotheses/causal_evidence) runs is gated on cause
-            # uncertainty, handled where those emissions are applied.
-
             for field in milestone_fields:
                 if getattr(m, field, False):
-                    # R1: the LLM's grounded "root_cause_identified" signal
-                    # maps to the engine-owned cause_state enum, never a raw
-                    # bool field. cause_state is recomputed each turn (see
-                    # _recompute_cause_state); here we honor the grounded
-                    # IDENTIFIED signal. The milestone SYMBOL stays
-                    # "root_cause_identified" for downstream maps/telemetry.
-                    if field == "root_cause_identified":
-                        # Engine-owned: cause_state is set by the end-of-turn
-                        # chain recompute (a validated chain root, §9.2), not by
-                        # this LLM milestone signal — skip it here.
-                        continue
                     # Only append if transitioning from False to True
                     if not getattr(p, field, False):
                         setattr(p, field, True)
@@ -7281,22 +7272,10 @@ class MilestoneEngine:
                 if p.root_cause_likelihood == 0.0:
                     p.root_cause_likelihood = m.root_cause_likelihood or 0.8
 
-            # KB pre-fetch: when root_cause_identified is newly completed,
-            # search KB for remediation procedures matching the root cause.
-            if "root_cause_identified" in metadata.get("milestones_completed", []):
-                root_cause_query = None
-                if case.root_cause_conclusion and getattr(
-                    case.root_cause_conclusion, "root_cause", None
-                ):
-                    root_cause_query = case.root_cause_conclusion.root_cause
-                elif case.working_conclusion and getattr(
-                    case.working_conclusion, "statement", None
-                ):
-                    root_cause_query = case.working_conclusion.statement
-                if root_cause_query:
-                    await self._prefetch_kb_context(
-                        case, root_cause_query, "root_cause"
-                    )
+            # KB-remediation pre-fetch is triggered on the cause_state→IDENTIFIED
+            # edge AFTER the end-of-turn chain recompute (INV-35) — cause_state is
+            # engine-derived there, not from any milestone applied in this block.
+            # See the prefetch beside _recompute_assessment_state below.
 
         # 2. Add Evidence
         # Post-010: every Evidence row comes from the LLM declaring an
@@ -7385,24 +7364,10 @@ class MilestoneEngine:
             for result in validation_results:
                 if not result.is_valid:
                     # Revert the milestone — evidence doesn't support the claim.
-                    # ``root_cause_identified`` is no longer a bool field; it maps
-                    # to the engine-derived ``cause_state`` enum.
-                    if result.milestone == "root_cause_identified":
-                        # cause_state is engine-owned (R1) and recomputed at
-                        # end-of-turn from the chain (IDENTIFIED iff a chain root
-                        # is validated, §9.2). If a chain root is already
-                        # validated CASE-WIDE, that recompute will re-derive
-                        # IDENTIFIED — so reverting here would only oscillate the
-                        # state and tear the milestone out of
-                        # ``milestones_completed`` with a misleading
-                        # "insufficient evidence" warning (the validator counts
-                        # current-turn evidence only). Skip the revert; let
-                        # _recompute own it. Only un-identify when no chain root
-                        # is validated case-wide.
-                        if any_chain_root_validated(case):
-                            continue
-                        case.progress.cause_state = CauseState.UNKNOWN
-                    elif hasattr(case.progress, result.milestone):
+                    # cause_state is engine-derived (INV-35) and never appears in
+                    # milestones_completed, so no cause-identification case is
+                    # reverted here; the end-of-turn recompute owns cause_state.
+                    if hasattr(case.progress, result.milestone):
                         setattr(case.progress, result.milestone, False)
                     if result.milestone in metadata["milestones_completed"]:
                         metadata["milestones_completed"].remove(result.milestone)
@@ -7742,12 +7707,32 @@ class MilestoneEngine:
         # now that this turn's hypotheses and solutions are applied (redesign R1).
         # Pass this turn's LLM-certified deductive survivors (resolved in
         # _apply_chain_emission) so proof-by-exclusion can stamp them post-derive.
+        prior_cause_state = case.progress.cause_state
         _recompute_assessment_state(
             case,
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
             rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
             metadata=metadata,
         )
+
+        # KB-remediation pre-fetch on the cause_state→IDENTIFIED edge (INV-35).
+        # cause_state is engine-derived above; fire once, the turn it newly
+        # crosses to IDENTIFIED, to warm KB context for the imminent fix.
+        if (
+            prior_cause_state != CauseState.IDENTIFIED
+            and case.progress.cause_state == CauseState.IDENTIFIED
+        ):
+            root_cause_query = None
+            if case.root_cause_conclusion and getattr(
+                case.root_cause_conclusion, "root_cause", None
+            ):
+                root_cause_query = case.root_cause_conclusion.root_cause
+            elif case.working_conclusion and getattr(
+                case.working_conclusion, "statement", None
+            ):
+                root_cause_query = case.working_conclusion.statement
+            if root_cause_query:
+                await self._prefetch_kb_context(case, root_cause_query, "root_cause")
 
         # Deferred-implementation disposition: if the fix is known but can't be
         # applied this session, propose CLOSE-with-documented-solution (§3.1 row 3).
