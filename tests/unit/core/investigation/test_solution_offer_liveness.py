@@ -392,8 +392,11 @@ class TestHelpers:
             "faultmaven.core.investigation.milestone_engine."
             "solution_offer_superseded_total"
         ) as counter:
-            count = _supersede_pending_solution_offers(case, reason="reproposal")
+            count, newest_turn = _supersede_pending_solution_offers(
+                case, reason="reproposal"
+            )
         assert count == 1
+        assert newest_turn == pending.proposed_in_turn
         assert pending.state == "superseded"
         assert pending.superseded_reason == "reproposal"
         assert pending.superseded_in_turn == case.current_turn

@@ -2633,7 +2633,8 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
     - Zone 1: symptom_verified=False — verify problem exists
     - Zone 2: symptom_verified=True, root_cause_identified=False — root cause analysis
     - Zone 3: root_cause_identified=True, solution_proposed=False — propose fix
-    - Zone 3 pending: solution_proposed=True — awaiting execution, hold
+    - Zone 3 pending: solution_proposed=True — awaiting execution, NON-suppressive
+      hold that yields to root-cause analysis on new evidence/dispute (INV-33)
     """
     if not progress.symptom_verified:
         return """

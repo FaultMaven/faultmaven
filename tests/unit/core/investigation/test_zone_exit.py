@@ -28,6 +28,9 @@ from faultmaven.core.investigation.milestone_engine import (
     _apply_stage_gate_side_effects,
     _recompute_assessment_state,
 )
+from faultmaven.core.investigation.prompts.context_builder import (
+    build_investigation_context,
+)
 from faultmaven.core.investigation.prompts.templates import (
     _RCA_DIAGNOSIS_BLOCK,
     _get_diagnosis_focus_emphasis,
@@ -38,7 +41,6 @@ from faultmaven.modules.case.domain.models import (
     InvestigationActionType,
     InvestigationStage,
     ProposedAction,
-    SolutionState,
 )
 
 # Reuse the INV-32 liveness fixtures (same call site, same established-cause
@@ -106,6 +108,17 @@ class TestZonePendingEmphasis:
             "offer exactly two suggestions — and no others" not in _RCA_DIAGNOSIS_BLOCK
         )
         assert "This hold is not absolute" in _RCA_DIAGNOSIS_BLOCK
+
+    def test_compliance_detection_carveouts_present(self):
+        # Load-bearing (INV-33): without these two carve-outs the softened blocks
+        # collide with "new evidence after the action → solution_accepted" and a
+        # failed-then-new-cause reply can latch TREATMENT (the #656 mode). Pin the
+        # prose so a future prompt edit that drops it fails here, not in prod.
+        # (a) an executed-but-failed fix is still compliance → TREATMENT.
+        assert "still compliance" in _RCA_DIAGNOSIS_BLOCK
+        # (b) new diagnostic evidence gathered WITHOUT executing reopens diagnosis.
+        assert "WITHOUT executing the fix" in _RCA_DIAGNOSIS_BLOCK
+        assert "REOPENS diagnosis" in _RCA_DIAGNOSIS_BLOCK
 
 
 class TestTreatmentDoesNotRenderPendingEmphasis:
@@ -241,3 +254,23 @@ class TestPendingActionHygiene:
         assert offer.state == "accepted"
         assert stale.state == "superseded"
         assert stale.superseded_reason == "stale_pending"
+
+
+@pytest.mark.asyncio
+class TestPendingActionRenderPrefersComplianceBearing:
+    async def test_newer_diagnostic_does_not_mask_pending_solution(self):
+        # INV-33: a parallel DIAGNOSTIC raised AFTER a fix is proposed (now
+        # allowed by de-absolutization) must not win the <pending_action> slot
+        # and drop the solution_accepted compliance cue. The render prefers the
+        # compliance-bearing SOLUTION even though the diagnostic is newer.
+        case = _make_case()
+        await _make_engine()._apply_investigation_updates(
+            case, _solution_updates(), _meta()
+        )
+        assert case.progress.solution_proposed is True
+        _diagnostic(case, turn=case.current_turn + 1, desc="run dig +short")
+        block = "\n".join(
+            str(v) for v in build_investigation_context(case, "any update?").values()
+        )
+        assert "MILESTONE_TO_SET: solution_accepted" in block
+        assert "run dig +short" not in block
