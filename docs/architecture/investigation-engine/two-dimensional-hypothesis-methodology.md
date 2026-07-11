@@ -917,6 +917,10 @@ emission for the turn rather than holding it reversibly:
   cue refuses the dedup — a **disputing** hypothesis is never a duplicate of the
   claim it contradicts (that would erase the very competing-cause signal §7.1.2 /
   INV-33 exist to preserve).
+- **A numeric-discriminator guard.** The similarity tokenizer drops single-digit
+  tokens and stopwords like "version"/"node", so two hypotheses distinguished
+  ONLY by a number ("server 1 down" vs "server 2 down", "version 5" vs
+  "version 6") tokenize identically. Differing digit runs refuse the dedup.
 - **Standing causes only.** `REFUTED`/`RETIRED` hypotheses are *not* dedup
   targets: those states are terminal-immutable and the update path instructs the
   LLM to "open a NEW hypothesis" to revive a theory — deduping against them would
@@ -934,9 +938,12 @@ dedup cannot masquerade as progress and mask the exhaustion detector. Positional
 integrity is preserved by a separate `hyp_emit_order` list that records the
 **canonical** existing id at the skipped item's slot, so a same-turn `new_index_N`
 reference (evidence link, hypothesis update, need motivator) resolves to the kept
-hypothesis rather than shifting onto the wrong sibling; and if the deduped item
-carried a fresh chain root, that root is re-attributed to the canonical hypothesis
-(`hyp_root_refs` keyed by id) so the emitted chain is not orphaned. Telemetry:
+hypothesis rather than shifting onto the wrong sibling. A chain the LLM emitted
+for the duplicate is left to the existing orphan-chain post-pass
+(`resolve_orphan_chains`), which re-attaches it to a **flat** standing hypothesis
+under its own anti-clobber guard (`_hypothesis_lacks_real_chain`); the dedup does
+**not** re-root the canonical itself — doing so would bypass that guard and could
+GC a validated hypothesis's existing chain. Telemetry:
 `faultmaven_hypothesis_dedup_skipped_total`.
 
 *Rejected alternative — reuse the §7.1.2 fold bar (0.6) / dedup by containment.*

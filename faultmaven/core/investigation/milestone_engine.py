@@ -7455,29 +7455,19 @@ class MilestoneEngine:
                 )
         new_hyp_state = HypothesisState.ACTIVE if anchored else HypothesisState.CAPTURED
         if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
-            # (id, statement) of hypotheses minted earlier in THIS batch, so two
-            # identical hypotheses emitted in one turn dedup against each other
-            # (the incident's turns-10/11 shape) — not only against prior turns.
-            batch_kept: list[tuple[str, str]] = []
             for h_item in updates.hypotheses_to_add:
                 # INV-36: a statement that duplicates a standing (non-terminal)
-                # or same-batch hypothesis is not minted a second time —
-                # duplicates spuriously re-satisfy the ≥2-active work gate,
-                # corrupting the axis that separates INSUFFICIENT_EVIDENCE from
-                # NOT_YET_PRODUCTIVE. Terminal (refuted/retired) causes are NOT
-                # dedup targets, so a revival re-enters the differential.
-                dup_id = find_duplicate_hypothesis(h_item.statement, case, batch_kept)
+                # hypothesis is not minted a second time — duplicates spuriously
+                # re-satisfy the ≥2-active work gate, corrupting the axis that
+                # separates INSUFFICIENT_EVIDENCE from NOT_YET_PRODUCTIVE.
+                # Terminal (refuted/retired) causes are NOT dedup targets, so a
+                # revival re-enters the differential. Same-batch duplicates are
+                # caught for free: a sibling minted earlier this turn is already
+                # in ``case.hypotheses`` by the time the next item is checked.
+                dup_id = find_duplicate_hypothesis(h_item.statement, case)
                 if dup_id is not None:
                     emit_order.append(dup_id)
                     hypothesis_dedup_skipped_total.inc()
-                    # If the LLM built a fresh chain for this duplicate, re-root
-                    # the CANONICAL hypothesis onto it (keyed by id; the re-root
-                    # pass only moves a hypothesis when the new chain reaches D)
-                    # so the emitted chain is not orphaned by the skip.
-                    if getattr(h_item, "root_node_ref", None):
-                        metadata.setdefault("hyp_root_refs", {})[
-                            dup_id
-                        ] = h_item.root_node_ref
                     existing = case.hypotheses.get(dup_id)
                     _add_system_feedback(
                         metadata,
@@ -7497,6 +7487,12 @@ class MilestoneEngine:
                         h_item.statement[:60],
                         dup_id,
                     )
+                    # A chain the LLM emitted for the duplicate is left to the
+                    # orphan-chain post-pass (``resolve_orphan_chains``), which
+                    # re-attaches it to a FLAT standing hypothesis under its own
+                    # anti-clobber guard (``_hypothesis_lacks_real_chain``).
+                    # Re-rooting the canonical here would BYPASS that guard and
+                    # could GC a validated hypothesis's existing chain.
                     continue
                 h = self.hypothesis_manager.create_hypothesis(
                     statement=h_item.statement,
@@ -7508,7 +7504,6 @@ class MilestoneEngine:
                 case.hypotheses[h.hypothesis_id] = h
                 metadata["hypotheses_generated"].append(h.hypothesis_id)
                 emit_order.append(h.hypothesis_id)
-                batch_kept.append((h.hypothesis_id, h_item.statement))
                 # Record this hypothesis's chain-root ref keyed by its id, so
                 # chain linking (when enabled) needs no positional zip against
                 # the spec list — robust to any future skip/dedup here.

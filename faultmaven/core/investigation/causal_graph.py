@@ -2154,18 +2154,43 @@ def _has_negation(text: str) -> bool:
     return any(w in _NEGATION_CUES for w in cleaned.split())
 
 
+def _numeric_discriminators(text: str) -> set[str]:
+    """Maximal digit runs in the raw statement. ``_content_tokens`` drops
+    single-digit tokens (len < 2) and stopwords like "version"/"node", so two
+    hypotheses distinguished ONLY by a number ("server 1 down" vs "server 2
+    down", "version 5" vs "version 6") tokenize identically and would mirror at
+    Jaccard 1.0. Preserving the digit runs lets the dedup keep them distinct."""
+    out: set[str] = set()
+    cur: list[str] = []
+    for c in text or "":
+        if c.isdigit():
+            cur.append(c)
+        elif cur:
+            out.add("".join(cur))
+            cur = []
+    if cur:
+        out.add("".join(cur))
+    return out
+
+
 def hypothesis_statements_duplicate(a: str, b: str) -> bool:
-    """Two hypothesis statements are DUPLICATES for INV-36 dedup: same polarity
-    AND MUTUAL mirrors at ``_HYPOTHESIS_DUPLICATE_JACCARD``.
+    """Two hypothesis statements are DUPLICATES for INV-36 dedup: same polarity,
+    same numeric discriminators, AND MUTUAL mirrors at
+    ``_HYPOTHESIS_DUPLICATE_JACCARD``.
 
     The bar is stricter than §7.1.2's fold because deduping DROPS an emission
     rather than holding it — it must fail open. Uses the SYMMETRIC mirror, not
     ``restatement_score``'s containment: a more-SPECIFIC elaboration of a standing
     hypothesis scores high on one-way containment but below the mutual-Jaccard
-    bar, so it stays a DISTINCT refinement of the differential. The polarity guard
-    refuses a dedup when one statement carries a negation cue the other lacks — a
-    dispute is never a duplicate of the claim it contradicts."""
+    bar, so it stays a DISTINCT refinement of the differential. Two fail-open
+    guards refuse a dedup the token mirror alone would wrongly accept: a **polarity
+    guard** (one statement carries a negation cue the other lacks — a dispute is
+    never a duplicate of the claim it contradicts) and a **numeric-discriminator
+    guard** (the statements differ by a number the similarity tokenizer drops —
+    "server 1" vs "server 2")."""
     if _has_negation(a) != _has_negation(b):
+        return False
+    if _numeric_discriminators(a) != _numeric_discriminators(b):
         return False
     return _mutual_mirror(
         _content_tokens(a), _content_tokens(b), _HYPOTHESIS_DUPLICATE_JACCARD
@@ -2182,18 +2207,14 @@ def hypothesis_statements_duplicate(a: str, b: str) -> bool:
 _DEDUP_SKIP_STATES = (HypothesisState.REFUTED, HypothesisState.RETIRED)
 
 
-def find_duplicate_hypothesis(
-    statement: str,
-    case: "Case",
-    also_against: "list[tuple[str, str]] | None" = None,
-) -> str | None:
-    """Return the id of a standing (or same-batch) hypothesis whose statement
-    duplicates ``statement`` (``hypothesis_statements_duplicate``), else
-    ``None`` — the INV-36 dedup predicate for ``hypotheses_to_add``.
+def find_duplicate_hypothesis(statement: str, case: "Case") -> str | None:
+    """Return the id of a standing hypothesis whose statement duplicates
+    ``statement`` (``hypothesis_statements_duplicate``), else ``None`` — the
+    INV-36 dedup predicate for ``hypotheses_to_add``.
 
-    ``also_against`` carries ``(id, statement)`` pairs accepted earlier in the
-    SAME emission batch, so two identical hypotheses emitted in one turn are
-    caught before both are minted (the incident's turns-10/11 shape). Terminal
+    Same-batch duplicates are caught for free: the apply loop inserts each minted
+    hypothesis into ``case.hypotheses`` before the next item is checked, so an
+    earlier sibling this turn is already in the scanned set. Terminal
     (``REFUTED``/``RETIRED``) hypotheses are skipped so a legitimate revival can
     re-enter the differential (see ``_DEDUP_SKIP_STATES``). The caller surfaces
     the matched id to the LLM so a genuine re-examination updates the standing
@@ -2202,9 +2223,6 @@ def find_duplicate_hypothesis(
         if hyp.state in _DEDUP_SKIP_STATES:
             continue
         if hypothesis_statements_duplicate(statement, hyp.statement):
-            return hid
-    for hid, stmt in also_against or ():
-        if hypothesis_statements_duplicate(statement, stmt):
             return hid
     return None
 

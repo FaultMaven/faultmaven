@@ -1,8 +1,8 @@
-"""§7.8 / INV-36 (#656 P3.3): hypothesis dedup on ``hypotheses_to_add``.
+"""§7.8 / INV-36 (#656): hypothesis dedup on ``hypotheses_to_add``.
 
-An LLM-emitted hypothesis whose statement names the SAME cause as an existing
-(any-state) or same-batch hypothesis is not minted a second time. Duplicates
-spuriously re-satisfy the ≥2-active work gate — the axis that separates
+An LLM-emitted hypothesis whose statement duplicates a standing (non-terminal)
+or same-batch hypothesis is not minted a second time. Duplicates spuriously
+re-satisfy the ≥2-active work gate — the axis that separates
 ``INSUFFICIENT_EVIDENCE`` from ``NOT_YET_PRODUCTIVE`` — so a duplicate must never
 inflate ``len(case.hypotheses)`` (observed live: an identical DNS hypothesis
 minted twice, turns 10/11).
@@ -11,7 +11,8 @@ The dedup predicate (``hypothesis_statements_duplicate``) is STRICTER than the
 §7.1.2 fold and FAILS OPEN because a dedup DROPS an LLM emission: a mutual mirror
 at 0.8 (not the fold's 0.6), symmetric (not containment) so a more-SPECIFIC
 elaboration survives, a negation-polarity guard so a dispute is never a
-duplicate, and standing-cause-only so a refuted/retired revival can re-enter.
+duplicate, a numeric-discriminator guard so "server 1" vs "server 2" stay
+distinct, and standing-cause-only so a refuted/retired revival can re-enter.
 
 Positional integrity: a skip records the CANONICAL existing id in
 ``hyp_emit_order`` (not ``hypotheses_generated``) so downstream ``new_index_N``
@@ -110,6 +111,25 @@ def test_predicate_negation_is_distinct():
     )
 
 
+def test_predicate_numeric_discriminator_is_distinct():
+    """Two hypotheses distinguished ONLY by a number the similarity tokenizer
+    drops (single digits, or the stopword 'version') must stay distinct — the
+    numeric-discriminator guard fails open."""
+    assert (
+        hypothesis_statements_duplicate("server 1 is down", "server 2 is down") is False
+    )
+    assert (
+        hypothesis_statements_duplicate(
+            "database version 5 is buggy", "database version 6 is buggy"
+        )
+        is False
+    )
+    # Same number → the guard does not block a genuine restatement.
+    assert (
+        hypothesis_statements_duplicate("server 1 is down", "down is server 1") is True
+    )
+
+
 def test_predicate_different_causes_are_distinct():
     assert (
         hypothesis_statements_duplicate(
@@ -126,7 +146,7 @@ def test_predicate_empty_statements_never_match():
 
 
 # --------------------------------------------------------------------------
-# find_duplicate_hypothesis — standing (non-terminal) + same-batch
+# find_duplicate_hypothesis — standing (non-terminal) hypotheses
 # --------------------------------------------------------------------------
 
 
@@ -191,17 +211,6 @@ def test_find_duplicate_ignores_terminal_hypothesis():
     assert (
         find_duplicate_hypothesis("under load the connection pool exhausted", case)
         is None
-    )
-
-
-def test_find_duplicate_matches_same_batch_sibling():
-    case = _case()
-    batch = [("hyp_batch1", "connection pool exhausted under load")]
-    assert (
-        find_duplicate_hypothesis(
-            "under load the connection pool exhausted", case, batch
-        )
-        == "hyp_batch1"
     )
 
 
@@ -397,10 +406,12 @@ async def test_revival_of_refuted_cause_is_minted():
     assert len(meta["hypotheses_generated"]) == 1
 
 
-async def test_dedup_reroutes_chain_root_ref_to_canonical():
-    """When a deduped item carries a fresh chain root, the canonical hypothesis
-    picks up the root ref (via ``hyp_root_refs`` keyed by its id) so the emitted
-    chain is not orphaned by the skip."""
+async def test_dedup_does_not_reroot_canonical():
+    """A deduped item's ``root_node_ref`` must NOT be recorded against the
+    canonical hypothesis: the re-root pass has no anti-clobber guard, so re-rooting
+    a (possibly validated) canonical onto the duplicate's fresh chain would GC its
+    existing chain. The duplicate's chain is left to ``resolve_orphan_chains``,
+    which re-attaches only FLAT hypotheses under its own guard."""
     eng, case = _engine(), _case()
     existing = _add_hyp(
         case, "connection pool exhausted under load", HypothesisCategory.DATABASE
@@ -422,5 +433,5 @@ async def test_dedup_reroutes_chain_root_ref_to_canonical():
         meta,
     )
     assert len(case.hypotheses) == 1  # deduped
-    # The canonical hypothesis inherits the emitted chain root ref.
-    assert meta["hyp_root_refs"][existing.hypothesis_id] == "cn_poolroot"
+    # The canonical is NOT re-rooted by the dedup (no clobber path).
+    assert existing.hypothesis_id not in meta.get("hyp_root_refs", {})

@@ -328,7 +328,7 @@ llm_rcc_retracted_disconfirmed_total = Counter(
 )
 
 
-# INV-36 (#656 P3.3): an LLM-emitted hypotheses_to_add item was NOT minted
+# INV-36 (#656): an LLM-emitted hypotheses_to_add item was NOT minted
 # because its statement duplicates a standing (non-terminal) or same-batch
 # hypothesis (hypothesis_statements_duplicate — a fail-open 0.8 mutual mirror
 # with a negation-polarity guard, stricter than the §7.1.2 fold).
