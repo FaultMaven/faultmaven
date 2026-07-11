@@ -664,11 +664,13 @@ def test_synthesize_refuses_to_mint_while_contested():
     assert case.root_cause_conclusion is None
 
 
-def test_working_conclusion_proxy_does_not_count_while_contested():
-    """The working conclusion is ENGINE-generated (max-likelihood standing
-    hypothesis) — on a contested case it is the arbitrary pick the hold
-    withholds, so _cause_identified must not read it as a known cause. An
-    LLM-authored conclusion still counts (different trust boundary)."""
+def test_neither_proxy_counts_while_contested():
+    """§7.1.2 / INV-34: while identification is MECE-contested, NEITHER fallback
+    proxy counts as a known cause — not the ENGINE working conclusion (the
+    arbitrary max-likelihood pick the hold withholds) NOR an LLM-authored
+    conclusion (the LLM asserting ONE contested cause is exactly the over-claim
+    the hold suppresses). Read-time suppression: both are preserved and count
+    again once the contest resolves."""
     from faultmaven.core.investigation.terminal_transitions import _cause_identified
     from faultmaven.modules.case.contracts import WorkingConclusion
 
@@ -680,13 +682,18 @@ def test_working_conclusion_proxy_does_not_count_while_contested():
         reasoning="engine-generated per-turn pick",
     )
     assert _cause_identified(case) is False
-    # The LLM's OWN recorded conclusion is a different trust boundary.
+    # An LLM-authored conclusion is ALSO suppressed while contested (P2.3 closed
+    # this trust-boundary leak) — but preserved, not erased.
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="the LLM's own worded conclusion",
         mechanism="as the LLM described it",
         confidence_level=ConfidenceLevel.CONFIDENT,
         likelihood=0.8,
     )
+    assert _cause_identified(case) is False
+    assert case.root_cause_conclusion is not None  # preserved, not retracted
+    # Once the contest resolves, the preserved LLM conclusion counts again.
+    case.progress.cause_identification_contested = False
     assert _cause_identified(case) is True
 
 
