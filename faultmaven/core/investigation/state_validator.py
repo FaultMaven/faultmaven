@@ -101,7 +101,7 @@ class StateValidator:
         - solution_verified requires solution_proposed and solution_accepted
         - solution_accepted requires solution_proposed
         - mitigation_verified requires mitigation_accepted
-        - root_cause_identified should have root_cause_likelihood
+        - cause_state=IDENTIFIED should have root_cause_likelihood
         """
         issues: List[ValidationIssue] = []
 
@@ -155,14 +155,14 @@ class StateValidator:
                 )
             )
 
-        # root_cause_identified should have likelihood
+        # cause_state=IDENTIFIED should have likelihood
         if progress.cause_state == CauseState.IDENTIFIED:
             likelihood = getattr(progress, "root_cause_likelihood", None)
             if likelihood is None or likelihood == 0.0:
                 issues.append(
                     ValidationIssue(
                         code="MILESTONE_INCOMPLETE_001",
-                        message="root_cause_identified=True but root_cause_likelihood is not set",
+                        message="cause_state=IDENTIFIED but root_cause_likelihood is not set",
                         severity=ValidationSeverity.WARNING,
                         field="progress.root_cause_likelihood",
                         suggested_fix="Set root_cause_likelihood to confidence value",

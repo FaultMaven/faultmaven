@@ -64,6 +64,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_link_stripped_total,
     counterfactual_refute_hedged_total,
     llm_rcc_cause_linked_total,
+    llm_rcc_cause_named_total,
     llm_rcc_retracted_disconfirmed_total,
     root_validation_blocked_restatement_total,
     root_validation_blocked_support_count_total,
@@ -1330,47 +1331,47 @@ def retract_disconfirmed_rcc(case: Case) -> bool:
 
 
 def link_llm_rcc_to_cause(case: Case) -> bool:
-    """§7.6 / INV-34 — give an LLM-authored ``RootCauseConclusion`` a cause link
-    so the link-based retraction lifecycle can reach it.
+    """§7.6 / INV-34 + §7.7 / INV-35 — attribute an LLM-authored
+    ``RootCauseConclusion`` to the STANDING hypothesis it names, so the link-based
+    retraction lifecycle (``retract_disconfirmed_rcc``, the M6
+    ``_representative_cause_hypothesis`` pick) can reach it.
 
-    An LLM conclusion arrives as free text with ``validated_hypothesis_id`` unset
-    (the engine never populates it at ingest), so ``retract_disconfirmed_rcc`` and
-    the M6 ``_representative_cause_hypothesis`` cannot attribute it to a cause — a
-    disconfirmed LLM conclusion lingers, and M6's max-``initial_likelihood`` proxy
-    can wipe a re-grounded one that names a DIFFERENT live cause. This pass links
-    the conclusion to the STANDING hypothesis it names, so:
-      * ``retract_disconfirmed_rcc`` retracts it when that cause is disconfirmed
-        (NO-INCORRECT-CONCLUSION — a proven-wrong cause is None for every reader);
-      * the M6 demotion tracks the LLM's ACTUAL named cause, not a proxy, so a
-        re-grounded conclusion on a still-standing cause survives (NO-COLLAPSE).
+    An LLM conclusion arrives with ``validated_hypothesis_id`` unset, so without a
+    link a disconfirmed conclusion lingers and M6's max-``initial_likelihood`` proxy
+    can wipe a re-grounded one that names a DIFFERENT live cause. Two tiers, both
+    guarded by the SAME trust discipline — a STANDING hypothesis (never a refuted or
+    retired one) with substantive shared-token overlap — so neither can attribute a
+    conclusion to a refuted, retired, or textually-unrelated cause. That guard is
+    load-bearing: a wrong link would let ``retract_disconfirmed_rcc`` wipe a valid,
+    just-authored conclusion on an unrelated refutation (a NO-COLLAPSE breach).
+
+      * **Tier 1 — authoritative (INV-35).** When the LLM named its cause's root
+        node (``names_root_node_id``), pick the SINGLE standing hypothesis rooted
+        there — exact identity, no lexical ambiguity resolution — and confirm the
+        conclusion text substantively overlaps it (a coherence rail against a
+        stale or mis-copied id). Counts ``llm_rcc_cause_named_total``.
+      * **Tier 2 — lexical fallback (INV-34).** For an id-less conclusion (older
+        turns, a same-turn root the LLM has no ``cn_`` id for yet, a non-compliant
+        model), scan standing hypotheses by ``restatement_score`` (orphan-chain T1
+        discipline): link only when EXACTLY ONE clears ``RESTATEMENT_STRONG`` (so it
+        is the only one ``>= AMBIGUOUS``) with substantive overlap — "when unsure,
+        don't link". Counts ``llm_rcc_cause_linked_total``.
 
     Giving the conclusion a cause link is NOT authorship — the engine never writes
     or overwrites the LLM's ``root_cause`` text (``determined_by`` stays the LLM's,
     and ``synthesize_rcc_from_validated_root`` still refuses to touch it). It only
-    records which standing hypothesis the LLM's stated cause corresponds to.
-
-    Conservative by the orphan-chain T1 discipline (``resolve_orphan_chains``): a
-    link is written only when EXACTLY ONE standing hypothesis scores
-    ``>= RESTATEMENT_STRONG`` against the conclusion text (so it is also the only
-    one ``>= RESTATEMENT_AMBIGUOUS``) with a substantive shared-token overlap. A
-    wrong link would retract a valid conclusion on an unrelated refutation — a
-    NO-COLLAPSE breach — so "when unsure, don't link" (the unmatched free-text
-    conclusion stays the documented residual it is today). A conclusion already
-    linked to a LIVE hypothesis is left as-is (stable across recomputes); a stale
-    or dangling link is re-resolved. Returns True if it wrote a link.
+    records which standing hypothesis the LLM's stated cause corresponds to. An
+    unattributable conclusion stays the documented residual it has always been (no
+    regression). A conclusion already linked to a PRESENT hypothesis is left stable
+    (membership not liveness — a REFUTED linked hypothesis retains the link so
+    ``retract_disconfirmed_rcc`` acts this recompute); a stale/dangling link is
+    cleared before re-resolving. Returns True if it wrote a link.
     """
     rcc = case.root_cause_conclusion
     if rcc is None or getattr(rcc, "determined_by", None) == _ENGINE_RCC_AUTHOR:
         return False
     current = getattr(rcc, "validated_hypothesis_id", None)
     if current and current in case.hypotheses:
-        # Keep a link to a hypothesis that STILL EXISTS — deliberately membership,
-        # not liveness: a REFUTED linked hypothesis must retain the link so
-        # ``retract_disconfirmed_rcc`` retracts the conclusion for that disproven
-        # cause this same recompute; a RETIRED (decayed, not disproven) one keeps
-        # the conclusion as the LLM's standing stance. The LLM resets vhid to None
-        # whenever it re-authors the conclusion text (a fresh RCC object), so the
-        # text and its link never drift apart while both are held here.
         return False
     # A dangling link (points at a hypothesis no longer present) is cleared before
     # we re-resolve: left set, it would make ``_representative_cause_hypothesis``
@@ -1382,14 +1383,32 @@ def link_llm_rcc_to_cause(case: Case) -> bool:
     statement = getattr(rcc, "root_cause", None) or ""
     if not statement:
         return False
+    standing = list(_standing_hypotheses(case))
+
+    # Tier 1 — authoritative: the LLM named its cause's root node. Restrict to a
+    # SINGLE standing hypothesis rooted there (never a refuted/retired one — that
+    # would let retract_disconfirmed_rcc wipe a just-authored valid conclusion) and
+    # require substantive overlap (a stale or mis-copied id must not mis-attribute).
+    named = getattr(rcc, "names_root_node_id", None)
+    if named:
+        named_matches = [
+            h for h in standing if getattr(h, "root_node_id", None) == named
+        ]
+        if len(named_matches) == 1 and _substantive_overlap(
+            statement, named_matches[0].statement
+        ):
+            rcc.validated_hypothesis_id = named_matches[0].hypothesis_id
+            llm_rcc_cause_named_total.inc()
+            return True
+
+    # Tier 2 — lexical fallback: the SOLE hypothesis >= AMBIGUOUS must clear STRONG
+    # with a substantive overlap (mirrors resolve_orphan_chains' T1 gate; a second
+    # contender >= AMBIGUOUS means "don't guess").
     scored = [
         (s, h)
-        for h in _standing_hypotheses(case)
+        for h in standing
         if (s := restatement_score(statement, h.statement)) >= RESTATEMENT_AMBIGUOUS
     ]
-    # Unambiguous match only: the SOLE hypothesis >= AMBIGUOUS must clear STRONG
-    # with a substantive overlap (mirrors resolve_orphan_chains' T1 gate; a
-    # second contender >= AMBIGUOUS means "don't guess").
     if (
         len(scored) == 1
         and scored[0][0] >= RESTATEMENT_STRONG

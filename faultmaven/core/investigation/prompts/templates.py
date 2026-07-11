@@ -1199,9 +1199,9 @@ You MUST respond with valid JSON matching these fields:
 _DIAGNOSIS_ZONES_PREAMBLE = """\
 **DIAGNOSIS ZONES (reference for the Zone-1/Zone-2/Zone-3 terminology used below):**
 - Zone 1 — Symptom verification: symptom_verified=False. Verify the problem exists.
-- Zone 2 — Root cause analysis: symptom_verified=True, root_cause_identified=False.
+- Zone 2 — Root cause analysis: symptom_verified=True, cause not yet identified.
   Search for cause; form and test hypotheses.
-- Zone 3 — Solution proposal: root_cause_identified=True, solution_proposed=False.
+- Zone 3 — Solution proposal: cause identified, solution_proposed=False.
   Emit a concrete fix and hold for user execution.
 """
 
@@ -1363,17 +1363,16 @@ When evidence reveals a cause, follow this exact sequence — all in ONE turn if
 1. CREATE a hypothesis representing that cause (hypotheses_to_add)
 2. CLASSIFY the evidence as causal_evidence (evidence_to_add)
 3. LINK the evidence to the hypothesis (hypothesis_evidence_links)
-4. When confidence ≥ 0.7 (70% on the 0.0–1.0 scale), set BOTH
-   root_cause_identified=True AND root_cause_likelihood to that confidence value.
+4. Record your confidence in root_cause_likelihood (0.0–1.0).
 
-The likelihood is what grounds the claim: the engine marks the cause identified
-only when root_cause_likelihood ≥ 0.7 is backed by causal_evidence from
-steps 2–3 (or a stated root-cause conclusion). A root cause VALIDATES only on
-TWO INDEPENDENT causal observations — distinct findings from different data,
-not the same fact re-worded — so after the first causal_evidence row, seek a
-second independent confirmation. The bare root_cause_identified
-flag without that grounding does NOT advance the milestone — always emit the
-numeric likelihood with the flag.
+You do NOT declare the cause identified — the engine does, from the causal
+structure you build. It marks the cause identified when the hypothesis's chain
+ROOT validates on TWO INDEPENDENT causal observations — distinct findings from
+different data, not the same fact re-worded — the symptom is verified, and no
+rival cause is equally validated. So after the first causal_evidence row, seek a
+second independent confirmation; one datum, however strong, holds the cause as a
+candidate, not identified. root_cause_likelihood is your stated confidence — it
+does not by itself advance identification.
 
 Never skip step 1. Never classify evidence as causal_evidence without a
 corresponding hypothesis already in hypotheses_to_add or already existing.
@@ -1584,10 +1583,10 @@ variables. Variable type determines which data source to search:
 - **Agent-internal variables** (hypothesis state) — reason from KB and your own
   knowledge. Same as answering a runbook or procedural question: call `kb_qa` to
   find known diagnostic approaches and fix steps.
-- **Data-driven variables** (`symptom_verified`, `root_cause_identified`,
-  `mitigation_verified`) — search the evidence files the user submitted. Same as
-  answering a telemetric question: call `search_file` or `case_evidence_qa` to find
-  facts in logs, metrics, and configs.
+- **Data-driven variables** (`symptom_verified`, the causal evidence that grounds
+  `cause_state`, `mitigation_verified`) — search the evidence files the user
+  submitted. Same as answering a telemetric question: call `search_file` or
+  `case_evidence_qa` to find facts in logs, metrics, and configs.
 - **Confirmation-driven variables** (`user_confirmed_investigation`, `solution_accepted`,
   `solution_verified`, etc.) — no search needed; detect the user's signal directly.
 
@@ -1824,8 +1823,9 @@ supports a specific claim (symptom, cause, mitigation, or solution).
    Use when: TWO OR MORE independent causal observations in hand (distinct
    findings, not the same fact re-worded), mechanism understood, no
    conflicting evidence.
-   In ONE turn: CREATE hypothesis → LINK evidence → SET state=VALIDATED and
-   root_cause_identified=True → propose solution
+   In ONE turn: CREATE hypothesis → LINK evidence to its chain root → SET
+   state=VALIDATED (the engine derives identification from the validated root)
+   → propose solution
 
 **Option B: MULTI-HYPOTHESIS** (root cause unclear)
    Use when: multiple possible causes, weak correlation, need more data.
@@ -2085,6 +2085,10 @@ REQUIRED EMISSIONS IN THE SAME TURN:
      ≤800 chars; verbatim)
    likelihood: 0.85+ (KB-attributed causes with user-confirmed fix are
      high-confidence by construction)
+   names_root_node_id: the cn_... id of that Cause's root node in
+     <causal_graph> (the node you rooted the hypothesis on). This attributes
+     the conclusion to its cause exactly — set it whenever the cause is a node
+     in the graph.
    evidence_ids: include the IDs of the diagnostic evidence rows from
      prior turns that matched the Cause's Indicator entries. Do NOT
      reference the same-turn causal_absence_evidence row — its id is not
@@ -2631,8 +2635,8 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
 
     Four states based on progress milestone state:
     - Zone 1: symptom_verified=False — verify problem exists
-    - Zone 2: symptom_verified=True, root_cause_identified=False — root cause analysis
-    - Zone 3: root_cause_identified=True, solution_proposed=False — propose fix
+    - Zone 2: symptom_verified=True, cause_state != IDENTIFIED — root cause analysis
+    - Zone 3: cause_state == IDENTIFIED, solution_proposed=False — propose fix
     - Zone 3 pending: solution_proposed=True — awaiting execution, NON-suppressive
       hold that yields to root-cause analysis on new evidence/dispute (INV-33)
     """
@@ -2647,8 +2651,8 @@ symptom_verified.
         return """
 **INVESTIGATION PROGRESS: Root cause analysis**
 Symptoms are confirmed. When evaluating evidence, focus on hypotheses
-explaining the root cause. Causal evidence linking changes to symptoms
-advances root_cause_identified.
+explaining the root cause. Two independent causal observations grounding a
+hypothesis's chain root are what let the engine mark the cause identified.
 """
     elif (
         progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed

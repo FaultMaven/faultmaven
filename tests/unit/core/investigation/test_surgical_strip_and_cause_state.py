@@ -53,12 +53,10 @@ def _case(*, evidence=True):
 
 class TestSurgicalStrip:
     def test_unjustified_milestone_is_offending_justified_one_is_preserved(self):
-        """The S1 mechanism: root_cause_identified (unjustified) must not drag
-        a justified mitigation_accepted into the strip."""
-        milestones = MilestoneUpdates(
-            root_cause_identified=True, mitigation_accepted=True
-        )
-        # Only mitigation_accepted is justified; root_cause_identified is not.
+        """The S1 mechanism: a single unjustified milestone (symptom_verified)
+        must not drag a justified mitigation_accepted into the strip."""
+        milestones = MilestoneUpdates(symptom_verified=True, mitigation_accepted=True)
+        # Only mitigation_accepted is justified; symptom_verified is not.
         justifications = {"mitigation_accepted": "User applied the fix (ev_1)"}
 
         is_valid, errors, offending = validate_reasoning_first(
@@ -66,7 +64,7 @@ class TestSurgicalStrip:
         )
 
         assert is_valid is False
-        assert offending == {"root_cause_identified"}
+        assert offending == {"symptom_verified"}
         # mitigation_accepted was justified -> NOT stripped.
         assert "mitigation_accepted" not in offending
 
