@@ -1364,9 +1364,16 @@ def link_llm_rcc_to_cause(case: Case) -> bool:
         return False
     current = getattr(rcc, "validated_hypothesis_id", None)
     if current and current in case.hypotheses:
-        return False  # already linked to a live hypothesis — keep it stable
-    # A dangling link (points at no live hypothesis) is cleared before we try to
-    # re-resolve: left set, it would make ``_representative_cause_hypothesis``
+        # Keep a link to a hypothesis that STILL EXISTS — deliberately membership,
+        # not liveness: a REFUTED linked hypothesis must retain the link so
+        # ``retract_disconfirmed_rcc`` retracts the conclusion for that disproven
+        # cause this same recompute; a RETIRED (decayed, not disproven) one keeps
+        # the conclusion as the LLM's standing stance. The LLM resets vhid to None
+        # whenever it re-authors the conclusion text (a fresh RCC object), so the
+        # text and its link never drift apart while both are held here.
+        return False
+    # A dangling link (points at a hypothesis no longer present) is cleared before
+    # we re-resolve: left set, it would make ``_representative_cause_hypothesis``
     # return None (the ``if vhid`` branch short-circuits the max-likelihood
     # fallback) and silently disable the M6 demotion for this case. A failed
     # re-resolve below then correctly leaves it None (proxy fallback restored).
@@ -1978,15 +1985,29 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     # cause as known; the cause_state itself is re-derived from the (now refuted)
     # root by the caller's derive + recompute.
     #
-    # §7.6 / INV-34 refresh: the DISCONFIRMED cause here IS the conclusion's named
-    # cause — ``link_llm_rcc_to_cause`` runs earlier this recompute, so
-    # ``_representative_cause_hypothesis`` (the trigger) already resolves to the
-    # hypothesis the LLM's conclusion names. A conclusion RE-GROUNDED onto a
-    # DIFFERENT still-standing cause therefore points the trigger at that live
-    # cause and this demotion never fires on it — the refresh is delivered by the
-    # link, so the clear here is unconditional (the named cause is disproven).
+    # §7.6 / INV-34 refresh: for a LINKED conclusion the trigger's ``hyp`` IS the
+    # conclusion's named cause — ``link_llm_rcc_to_cause`` runs earlier this
+    # recompute, so ``_representative_cause_hypothesis`` resolves to the hypothesis
+    # the LLM's conclusion names; a conclusion re-grounded onto a DIFFERENT
+    # still-standing cause points the trigger there and this demotion never fires
+    # on it (the refresh is delivered by the link). RESIDUAL, accepted: an
+    # UNLINKABLE conclusion (ambiguous/paraphrased text, no vhid) leaves the
+    # trigger on the max-``initial_likelihood`` proxy, so if that proxy is the
+    # disconfirmed cause the conclusion is still cleared even when it named a
+    # different cause — the pre-existing NO-INCORRECT-first behavior (never leave a
+    # possibly-disproven conclusion standing on a guess; inferring a
+    # different-cause link lexically would only trade this for the wrong-link
+    # collapse the link bar guards against).
     rcc = case.root_cause_conclusion
-    if rcc is not None and getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR:
+    # Count only a genuine "named cause was disconfirmed" retraction: the cleared
+    # conclusion was LINKED to the very hypothesis this demotion disconfirmed. A
+    # collateral proxy-path wipe of an unlinkable conclusion is not that event, so
+    # it must not inflate the failed-fix signal (lifecycle-metrics § INV-34).
+    if (
+        rcc is not None
+        and getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR
+        and getattr(rcc, "validated_hypothesis_id", None) == hyp.hypothesis_id
+    ):
         llm_rcc_retracted_disconfirmed_total.inc()
     case.root_cause_conclusion = None
     p.root_cause_likelihood = 0.0

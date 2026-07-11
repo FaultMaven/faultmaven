@@ -1,4 +1,4 @@
-"""§7.3 / INV-34 (#656 P2.3) — the LLM-authored RootCauseConclusion lifecycle.
+"""§7.6 / INV-34 (#656) — the LLM-authored RootCauseConclusion lifecycle.
 
 An LLM conclusion arrives as free text with no cause link, so the retraction
 machinery (``retract_disconfirmed_rcc``, the M6 demotion) could not reach it and
@@ -304,9 +304,10 @@ def test_linked_llm_rcc_retracted_when_cause_refuted():
 
 
 def test_unlinked_llm_rcc_survives_refutation_documented_residual():
-    """An unlinkable free-text conclusion has no cause link, so retraction cannot
-    attribute it — it stays, exactly as before P2.3 (no regression, documented
-    residual). NO-COLLAPSE: never guess a link to erase it."""
+    """An unlinkable free-text conclusion has no cause link, so link-based
+    retraction cannot attribute it — it stays (the documented residual, unchanged
+    from the pre-INV-34 behavior; no regression). NO-COLLAPSE: never guess a link
+    to erase it."""
     hyp = _hyp("cn_a", _POOL_LEAK, hypothesis_id="hyp_0000000000aa")
     case = _case(hyps=[hyp])
     case.root_cause_conclusion = _llm_rcc("something the engine cannot map")
@@ -395,8 +396,45 @@ def test_m6_clears_unlinked_conclusion_on_sole_disconfirmed_cause():
             stance_confidence=0.9,
         )
     )
-    assert demote_disconfirmed_cause_via_evidence(case) is True
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "llm_rcc_retracted_disconfirmed_total"
+    ) as counter:
+        assert demote_disconfirmed_cause_via_evidence(case) is True
     assert case.root_cause_conclusion is None
+    # The conclusion was NOT linked to the disconfirmed cause (the max-likelihood
+    # proxy resolved to it), so this collateral wipe is not a "named cause
+    # disconfirmed" event and must not inflate the failed-fix signal.
+    assert counter.inc.call_count == 0
+
+
+def test_m6_proxy_wipe_of_conclusion_linked_elsewhere_not_counted():
+    """A conclusion linked to a DIFFERENT standing cause is protected from M6 (the
+    trigger points at the linked cause, not the proxy) — so it is never wiped and
+    never counted. Pins that the counter tracks only genuine named-cause
+    disconfirmations, not proxy collateral."""
+    case, root_x, hyp_x = _identified_case()
+    hyp_y = _hyp(None, _TRAFFIC_SPIKE, hypothesis_id="hyp_0000000000bb")
+    case.hypotheses[hyp_y.hypothesis_id] = hyp_y
+    case.root_cause_conclusion = _llm_rcc(_TRAFFIC_SPIKE, vhid=hyp_y.hypothesis_id)
+    hyp_x.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=hyp_x.hypothesis_id,
+            evidence_id=_eid("fail"),
+            stance=EvidenceStance.REFUTES,
+            reasoning="fix applied, symptom persists",
+            stance_confidence=0.9,
+        )
+    )
+    with patch(
+        "faultmaven.core.investigation.causal_graph."
+        "llm_rcc_retracted_disconfirmed_total"
+    ) as counter:
+        # Representative resolves to the linked hyp_y (not disconfirmed), so M6
+        # does not fire at all — the conclusion on Y survives.
+        assert demote_disconfirmed_cause_via_evidence(case) is False
+    assert case.root_cause_conclusion is not None
+    assert counter.inc.call_count == 0
 
 
 # ---------------------------------------------------------------------------

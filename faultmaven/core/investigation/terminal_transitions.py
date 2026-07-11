@@ -104,7 +104,7 @@ def _cause_identified(case: "Case") -> bool:
     if not (case.progress and getattr(case.progress, "symptom_verified", False)):
         return False
 
-    # §7.1.2 / INV-34 (#656 P2.3): while identification is MECE-contested, NO
+    # §7.1.2 / INV-34 (#656): while identification is MECE-contested, NO
     # fallback proxy counts as an identified cause. This gates BOTH proxies:
     #   * the ENGINE working conclusion (max-likelihood standing hypothesis) — the
     #     arbitrary pick between competing validated causes the hold withholds;

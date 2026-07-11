@@ -284,7 +284,7 @@ pending_action_superseded_stale_total = Counter(
 )
 
 
-# INV-34 (#656 P2.3): an LLM-authored RootCauseConclusion's named cause was
+# INV-34 (#656): an LLM-authored RootCauseConclusion's named cause was
 # conservatively linked (validated_hypothesis_id) to a standing hypothesis at
 # the per-turn recompute — the link that lets the link-based retraction
 # lifecycle (retract_disconfirmed_rcc, the M6 demotion) reach an LLM conclusion
@@ -300,7 +300,7 @@ llm_rcc_cause_linked_total = Counter(
 )
 
 
-# INV-34 (#656 P2.3): an LLM-authored RootCauseConclusion was RETRACTED at
+# INV-34 (#656): an LLM-authored RootCauseConclusion was RETRACTED at
 # source because its named cause was disconfirmed (counterfactual refute /
 # net-refutation) — the engine never re-authors the conclusion, it only clears a
 # proven-wrong one so no consumer (terminal gate, report, UI, KB harvest)

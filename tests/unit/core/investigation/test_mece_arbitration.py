@@ -682,8 +682,8 @@ def test_neither_proxy_counts_while_contested():
         reasoning="engine-generated per-turn pick",
     )
     assert _cause_identified(case) is False
-    # An LLM-authored conclusion is ALSO suppressed while contested (P2.3 closed
-    # this trust-boundary leak) — but preserved, not erased.
+    # An LLM-authored conclusion is ALSO suppressed while contested (INV-34
+    # closed this trust-boundary leak) — but preserved, not erased.
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="the LLM's own worded conclusion",
         mechanism="as the LLM described it",
