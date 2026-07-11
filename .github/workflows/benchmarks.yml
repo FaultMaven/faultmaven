@@ -94,31 +94,45 @@ jobs:
           script: |
             const fs = require('fs');
 
-            let summary = 'Performance benchmarks completed.\\n\\n';
+            let summary = 'Performance benchmarks completed.\n\n';
 
             try {
               const output = fs.readFileSync('benchmark_output.txt', 'utf8');
-              const lines = output.split('\\n');
+              // Split on real newlines. (A literal '\\n' here would leave the
+              // whole file as a single "line", so one FAILED substring would
+              // embed the entire output into the comment and blow past GitHub's
+              // 65536-char body limit.)
+              const lines = output.split('\n');
 
               // Count passed/failed
               const passed = lines.filter(l => l.includes('PASSED')).length;
-              const failed = lines.filter(l => l.includes('FAILED')).length;
+              const failedLines = lines.filter(l => l.includes('FAILED'));
 
-              summary += `**Results:** ${passed} passed, ${failed} failed\\n\\n`;
+              summary += `**Results:** ${passed} passed, ${failedLines.length} failed\n\n`;
 
-              if (failed > 0) {
-                summary += '### Failed Benchmarks\\n';
-                lines.filter(l => l.includes('FAILED')).forEach(l => {
-                  summary += `- ${l}\\n`;
+              if (failedLines.length > 0) {
+                summary += '### Failed Benchmarks\n';
+                failedLines.slice(0, 50).forEach(l => {
+                  summary += `- ${l.trim()}\n`;
                 });
+                if (failedLines.length > 50) {
+                  summary += `- …and ${failedLines.length - 50} more\n`;
+                }
               }
 
-              summary += '\\nSee artifacts for detailed results.';
+              summary += '\nSee artifacts for detailed results.';
             } catch (error) {
               summary += 'Unable to parse results. Check workflow logs.';
             }
 
-            github.rest.issues.createComment({
+            // Defense in depth: GitHub rejects issue-comment bodies over 65536
+            // chars — cap well under so the step can never 422 regardless of output.
+            const MAX_BODY = 60000;
+            if (summary.length > MAX_BODY) {
+              summary = summary.slice(0, MAX_BODY) + '\n\n…output truncated (see artifacts).';
+            }
+
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
