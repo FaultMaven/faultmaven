@@ -40,6 +40,7 @@ from faultmaven.core.investigation.causal_graph import (
     chain_path_to_problem,
     demote_disconfirmed_cause_via_evidence,
     derive_node_states,
+    find_duplicate_hypothesis,
     ingest_emitted_chain,
     is_chain_root_validated,
     link_llm_rcc_to_cause,
@@ -67,6 +68,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_created_total,
     evidence_need_id_dropped_total,
     evidence_need_status_changed_total,
+    hypothesis_dedup_skipped_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
     pending_action_superseded_stale_total,
@@ -6881,7 +6883,10 @@ class MilestoneEngine:
         feedback: list[str] = []
         for raw_id, upd in updates_dict.items():
             h_id = self._resolve_id_ref(
-                raw_id, metadata.get("hypotheses_generated", []), "hyp"
+                raw_id,
+                metadata.get("hyp_emit_order")
+                or metadata.get("hypotheses_generated", []),
+                "hyp",
             )
             hypothesis = case.hypotheses.get(h_id)
             if hypothesis is None:
@@ -7425,10 +7430,24 @@ class MilestoneEngine:
         #    / UI) until the anchor lands. This gates activation of cause hypotheses
         #    only — not runbook retrieval / early triage before verification.
         anchored = case.progress.symptom_verified
+        # ``hyp_emit_order`` is the positional list ``new_index_N`` refs resolve
+        # against (INV-36). It mirrors ``hypotheses_generated`` per item — SAME
+        # base, including the promoted-CAPTURED prefix that was already the
+        # pre-INV-36 resolution base (the LLM's ``new_index_N`` offset by
+        # ``len(promoted)`` is a pre-existing behavior, preserved verbatim here,
+        # not introduced) — EXCEPT a dedup skip records the CANONICAL existing id
+        # instead of a new one, so downstream refs (evidence links, updates, need
+        # motivators) that target a skipped duplicate resolve to the kept
+        # hypothesis rather than shifting onto the wrong sibling.
+        # ``hypotheses_generated`` stays truly-new so telemetry / turn-outcome
+        # progress do not count a dedup as generation (a skip is not diagnostic
+        # progress — the DF-6 exhaustion signal).
+        emit_order: list[str] = metadata.setdefault("hyp_emit_order", [])
         if anchored:
             promoted = HypothesisManager.activate_queued_hypotheses(case)
             if promoted:
                 metadata["hypotheses_generated"].extend(promoted)
+                emit_order.extend(promoted)
                 logger.info(
                     "Promoted %d queued (CAPTURED) hypotheses to ACTIVE on "
                     "symptom verification",
@@ -7437,6 +7456,44 @@ class MilestoneEngine:
         new_hyp_state = HypothesisState.ACTIVE if anchored else HypothesisState.CAPTURED
         if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
             for h_item in updates.hypotheses_to_add:
+                # INV-36: a statement that duplicates a standing (non-terminal)
+                # hypothesis is not minted a second time — duplicates spuriously
+                # re-satisfy the ≥2-active work gate, corrupting the axis that
+                # separates INSUFFICIENT_EVIDENCE from NOT_YET_PRODUCTIVE.
+                # Terminal (refuted/retired) causes are NOT dedup targets, so a
+                # revival re-enters the differential. Same-batch duplicates are
+                # caught for free: a sibling minted earlier this turn is already
+                # in ``case.hypotheses`` by the time the next item is checked.
+                dup_id = find_duplicate_hypothesis(h_item.statement, case)
+                if dup_id is not None:
+                    emit_order.append(dup_id)
+                    hypothesis_dedup_skipped_total.inc()
+                    existing = case.hypotheses.get(dup_id)
+                    _add_system_feedback(
+                        metadata,
+                        f"Hypothesis '{h_item.statement[:80]}' duplicates "
+                        f"standing hypothesis {dup_id}"
+                        + (
+                            f" ('{existing.statement[:80]}')"
+                            if existing is not None
+                            else ""
+                        )
+                        + " and was not re-added. To revise it, update the "
+                        "existing hypothesis (hypotheses_to_update) with new "
+                        "evidence rather than restating it.",
+                    )
+                    logger.info(
+                        "Deduped hypothesis (INV-36): '%s' matches standing %s",
+                        h_item.statement[:60],
+                        dup_id,
+                    )
+                    # A chain the LLM emitted for the duplicate is left to the
+                    # orphan-chain post-pass (``resolve_orphan_chains``), which
+                    # re-attaches it to a FLAT standing hypothesis under its own
+                    # anti-clobber guard (``_hypothesis_lacks_real_chain``).
+                    # Re-rooting the canonical here would BYPASS that guard and
+                    # could GC a validated hypothesis's existing chain.
+                    continue
                 h = self.hypothesis_manager.create_hypothesis(
                     statement=h_item.statement,
                     category=h_item.category,
@@ -7446,6 +7503,7 @@ class MilestoneEngine:
                 )
                 case.hypotheses[h.hypothesis_id] = h
                 metadata["hypotheses_generated"].append(h.hypothesis_id)
+                emit_order.append(h.hypothesis_id)
                 # Record this hypothesis's chain-root ref keyed by its id, so
                 # chain linking (when enabled) needs no positional zip against
                 # the spec list — robust to any future skip/dedup here.
@@ -7478,7 +7536,8 @@ class MilestoneEngine:
                 # Resolve partial IDs like 'new_index_0' to actual IDs if we just created them
                 h_id = self._resolve_id_ref(
                     link.hypothesis_id_ref,
-                    metadata.get("hypotheses_generated", []),
+                    metadata.get("hyp_emit_order")
+                    or metadata.get("hypotheses_generated", []),
                     "hyp",
                 )
                 e_id = self._resolve_id_ref(
@@ -7820,7 +7879,10 @@ class MilestoneEngine:
             # hypothesis_evidence_links at line ~5927 / 5931).
             resolved_motivators = [
                 self._resolve_id_ref(
-                    hyp_ref, metadata.get("hypotheses_generated", []), "hyp"
+                    hyp_ref,
+                    metadata.get("hyp_emit_order")
+                    or metadata.get("hypotheses_generated", []),
+                    "hyp",
                 )
                 for hyp_ref in (update.motivating_hypothesis_ids or [])
             ]

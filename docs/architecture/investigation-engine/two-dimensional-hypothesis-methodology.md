@@ -888,6 +888,73 @@ backstop before models ground reliably would strand cases that today resolve via
 the free-text conclusion (a NO-COLLAPSE regression). Tracked as #673 so the
 retirement is deliberate, not forgotten.
 
+### 7.8 One cause, one hypothesis: dedup on `hypotheses_to_add` (INV-36)
+
+The work gate (§5.2) — ≥2 hypotheses across ≥2 categories with ≥2 evidence items
+— is the axis that separates a productive investigation (`INSUFFICIENT_EVIDENCE`,
+real diagnostic work happened) from a stalled one (`NOT_YET_PRODUCTIVE`, the model
+is spinning). It counts `len(case.hypotheses)`. A model that emits the **same
+cause twice** therefore buys itself a spurious gate crossing — two records, or two
+records under two categories, for one idea (observed live: an identical DNS
+hypothesis minted on turns 10 and 11 of the #656 incident).
+
+At the `hypotheses_to_add` apply layer the engine refuses to mint a hypothesis
+whose statement **duplicates** one already standing or an earlier sibling in the
+same emission batch. The bar (`hypothesis_statements_duplicate`) is deliberately
+**stricter than §7.1.2's fold and fails open**, because deduping *drops* an LLM
+emission for the turn rather than holding it reversibly:
+
+- **A near-verbatim bar, not the fold's 0.6.** Duplicate = mutual mirror at
+  `_HYPOTHESIS_DUPLICATE_JACCARD` (0.8), well above the reversible MECE
+  `_ROOT_DISTINCT_JACCARD` (0.6). A genuinely-distinct short statement that
+  differs by one substantive token ("memory leak in *connection* pool" vs "…
+  *cache* pool", Jaccard 0.6) **survives**; the incident's actual duplicate was
+  verbatim-identical (~1.0). It is the *symmetric* mirror, not `restatement_score`
+  containment, so a more-**specific elaboration** of a standing hypothesis (a real
+  refinement) also survives.
+- **A polarity guard.** "not" is a content stopword, so a hypothesis and its
+  negation tokenize identically and would mirror at 1.0. An asymmetric negation
+  cue refuses the dedup — a **disputing** hypothesis is never a duplicate of the
+  claim it contradicts (that would erase the very competing-cause signal §7.1.2 /
+  INV-33 exist to preserve).
+- **A numeric-discriminator guard.** The similarity tokenizer drops single-digit
+  tokens and stopwords like "version"/"node", so two hypotheses distinguished
+  ONLY by a number ("server 1 down" vs "server 2 down", "version 5" vs
+  "version 6") tokenize identically. Differing digit runs refuse the dedup.
+- **Standing causes only.** `REFUTED`/`RETIRED` hypotheses are *not* dedup
+  targets: those states are terminal-immutable and the update path instructs the
+  LLM to "open a NEW hypothesis" to revive a theory — deduping against them would
+  deadlock the revival (re-mint refused here, update refused there). The
+  gate-inflation vector is duplicate *active* records; a revival minting a fresh
+  hypothesis is legitimate work.
+
+Together these keep the drop conservative: it collapses only genuine
+restatements, never diagnostic work (NO-COLLAPSE). On a skip the engine surfaces
+the matched id via `system_feedback` ("this duplicates `hyp_…`; update it rather
+than restate it"), so a genuine re-examination flows to `hypotheses_to_update`
+against the standing record. The skip is **not** counted as generation:
+`hypotheses_generated` (turn-record + turn-outcome progress) stays truly-new, so a
+dedup cannot masquerade as progress and mask the exhaustion detector. Positional
+integrity is preserved by a separate `hyp_emit_order` list that records the
+**canonical** existing id at the skipped item's slot, so a same-turn `new_index_N`
+reference (evidence link, hypothesis update, need motivator) resolves to the kept
+hypothesis rather than shifting onto the wrong sibling. A chain the LLM emitted
+for the duplicate is left to the existing orphan-chain post-pass
+(`resolve_orphan_chains`), which re-attaches it to a **flat** standing hypothesis
+under its own anti-clobber guard (`_hypothesis_lacks_real_chain`); the dedup does
+**not** re-root the canonical itself — doing so would bypass that guard and could
+GC a validated hypothesis's existing chain. Telemetry:
+`faultmaven_hypothesis_dedup_skipped_total`.
+
+*Rejected alternative — reuse the §7.1.2 fold bar (0.6) / dedup by containment.*
+The fold is reversible (both statements stay represented in the graph); this drops
+an emission, so it warrants the stricter, fail-open 0.8 mutual bar. Containment
+would additionally fold a specific elaboration into its more-general parent and
+lose the refinement. *Complementary prevention (routed):* the apply-layer dedup is
+enforcement; the deeper fix for repeated re-emission is showing the LLM its
+standing hypotheses so it never emits a duplicate — a context/prompt change
+tracked separately, not in scope here.
+
 ---
 
 ## 8. Resolved Design Decisions

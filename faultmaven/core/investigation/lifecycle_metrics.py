@@ -326,3 +326,22 @@ llm_rcc_retracted_disconfirmed_total = Counter(
     "An LLM-authored RootCauseConclusion was retracted at source because its "
     "named cause was disconfirmed (§7.6 / INV-34). One increment per retraction.",
 )
+
+
+# INV-36 (#656): an LLM-emitted hypotheses_to_add item was NOT minted
+# because its statement duplicates a standing (non-terminal) or same-batch
+# hypothesis (hypothesis_statements_duplicate — a fail-open 0.8 mutual mirror
+# with a negation-polarity guard, stricter than the §7.1.2 fold).
+# This protects the ≥2-active work gate — the axis that separates
+# INSUFFICIENT_EVIDENCE from NOT_YET_PRODUCTIVE — from duplicate inflation
+# (observed live: an identical DNS hypothesis minted twice, turns 10/11).
+# Near-zero is the healthy state; a sustained-nonzero rate means the model is
+# re-emitting causes it already posited (prompt drift, or it is not being shown
+# the standing hypotheses) — a signal to strengthen the standing-hypothesis
+# context rather than a soundness alarm (the dedup already held the gate).
+hypothesis_dedup_skipped_total = Counter(
+    "faultmaven_hypothesis_dedup_skipped_total",
+    "An LLM-emitted hypotheses_to_add item was skipped as a duplicate of an "
+    "existing or same-batch hypothesis (§7.8 / INV-36), protecting the work "
+    "gate from duplicate inflation. One increment per skipped item.",
+)

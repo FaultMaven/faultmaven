@@ -2102,6 +2102,131 @@ def _substantive_overlap(a: str, b: str) -> bool:
     )
 
 
+# Hypothesis dedup (INV-36) fails OPEN — deduping DROPS an LLM emission for the
+# turn, so its bar is deliberately STRICTER than §7.1.2's reversible fold
+# (``_ROOT_DISTINCT_JACCARD`` = 0.6): only a near-verbatim restatement collapses.
+# A genuinely-distinct short statement that differs by one substantive token
+# (e.g. "memory leak in connection pool" vs "... cache pool" → Jaccard 0.6)
+# MUST survive; the actual incident duplicate was verbatim-identical (~1.0).
+_HYPOTHESIS_DUPLICATE_JACCARD = 0.8
+
+# Standalone negation cues (apostrophes stripped before matching, so "isn't" →
+# "isnt"). "not" is a content stopword, so a hypothesis and its negation
+# tokenize IDENTICALLY and would mirror at Jaccard 1.0 — dropping a
+# disputing/competing hypothesis as a "duplicate" of what it contradicts is a
+# NO-COLLAPSE breach. Used ONLY to REFUSE a dedup on asymmetric polarity (fail
+# open); it never causes a dedup.
+_NEGATION_CUES = frozenset(
+    {
+        "not",
+        "no",
+        "never",
+        "without",
+        "none",
+        "nor",
+        "neither",
+        "cannot",
+        "cant",
+        "dont",
+        "doesnt",
+        "didnt",
+        "isnt",
+        "arent",
+        "wasnt",
+        "werent",
+        "wont",
+        "couldnt",
+        "shouldnt",
+        "wouldnt",
+        "non",
+        "unable",
+    }
+)
+
+
+def _has_negation(text: str) -> bool:
+    """True when the raw statement carries a standalone negation cue. Cheap
+    polarity probe for the dedup guard — apostrophes are stripped so contractions
+    match, then the text is split on non-alphanumerics."""
+    cleaned = "".join(
+        c.lower() if c.isalnum() else " " for c in (text or "").replace("'", "")
+    )
+    return any(w in _NEGATION_CUES for w in cleaned.split())
+
+
+def _numeric_discriminators(text: str) -> set[str]:
+    """Maximal digit runs in the raw statement. ``_content_tokens`` drops
+    single-digit tokens (len < 2) and stopwords like "version"/"node", so two
+    hypotheses distinguished ONLY by a number ("server 1 down" vs "server 2
+    down", "version 5" vs "version 6") tokenize identically and would mirror at
+    Jaccard 1.0. Preserving the digit runs lets the dedup keep them distinct."""
+    out: set[str] = set()
+    cur: list[str] = []
+    for c in text or "":
+        if c.isdigit():
+            cur.append(c)
+        elif cur:
+            out.add("".join(cur))
+            cur = []
+    if cur:
+        out.add("".join(cur))
+    return out
+
+
+def hypothesis_statements_duplicate(a: str, b: str) -> bool:
+    """Two hypothesis statements are DUPLICATES for INV-36 dedup: same polarity,
+    same numeric discriminators, AND MUTUAL mirrors at
+    ``_HYPOTHESIS_DUPLICATE_JACCARD``.
+
+    The bar is stricter than §7.1.2's fold because deduping DROPS an emission
+    rather than holding it — it must fail open. Uses the SYMMETRIC mirror, not
+    ``restatement_score``'s containment: a more-SPECIFIC elaboration of a standing
+    hypothesis scores high on one-way containment but below the mutual-Jaccard
+    bar, so it stays a DISTINCT refinement of the differential. Two fail-open
+    guards refuse a dedup the token mirror alone would wrongly accept: a **polarity
+    guard** (one statement carries a negation cue the other lacks — a dispute is
+    never a duplicate of the claim it contradicts) and a **numeric-discriminator
+    guard** (the statements differ by a number the similarity tokenizer drops —
+    "server 1" vs "server 2")."""
+    if _has_negation(a) != _has_negation(b):
+        return False
+    if _numeric_discriminators(a) != _numeric_discriminators(b):
+        return False
+    return _mutual_mirror(
+        _content_tokens(a), _content_tokens(b), _HYPOTHESIS_DUPLICATE_JACCARD
+    )
+
+
+# A revived REFUTED/RETIRED cause is deliberately NOT a dedup target: those
+# states are terminal-immutable (``_apply_hypothesis_updates`` refuses changes
+# and instructs "open a NEW hypothesis if that theory is back in play"), so
+# deduping against them would DEADLOCK the revival — the re-mint refused here and
+# the update refused there, with contradictory guidance. The gate-inflation
+# vector is duplicate ACTIVE/CAPTURED records; a revival minting a fresh
+# hypothesis is legitimate diagnostic work, not spurious inflation.
+_DEDUP_SKIP_STATES = (HypothesisState.REFUTED, HypothesisState.RETIRED)
+
+
+def find_duplicate_hypothesis(statement: str, case: "Case") -> str | None:
+    """Return the id of a standing hypothesis whose statement duplicates
+    ``statement`` (``hypothesis_statements_duplicate``), else ``None`` — the
+    INV-36 dedup predicate for ``hypotheses_to_add``.
+
+    Same-batch duplicates are caught for free: the apply loop inserts each minted
+    hypothesis into ``case.hypotheses`` before the next item is checked, so an
+    earlier sibling this turn is already in the scanned set. Terminal
+    (``REFUTED``/``RETIRED``) hypotheses are skipped so a legitimate revival can
+    re-enter the differential (see ``_DEDUP_SKIP_STATES``). The caller surfaces
+    the matched id to the LLM so a genuine re-examination updates the standing
+    hypothesis rather than cloning it."""
+    for hid, hyp in case.hypotheses.items():
+        if hyp.state in _DEDUP_SKIP_STATES:
+            continue
+        if hypothesis_statements_duplicate(statement, hyp.statement):
+            return hid
+    return None
+
+
 def _referenced_node_ids(case: Case) -> set[str]:
     """Every node id that lies on some hypothesis path or is a hypothesis root —
     the single definition of "load-bearing" used by both the GC and the
