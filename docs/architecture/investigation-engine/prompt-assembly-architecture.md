@@ -120,7 +120,7 @@ TAIL
 5. Maintain a working conclusion at all times
 6. GRACEFUL PIVOT (user can't / won't provide data)
 7. ACKNOWLEDGE CORRECTIONS (user contradicts a prior claim)
-8. CHECK BACK ON SUGGESTED ACTIONS (user reply doesn't reference a prior diagnostic suggestion; exception: Zone 3 compliance hold)
+8. CHECK BACK ON SUGGESTED ACTIONS (user reply doesn't reference a prior diagnostic suggestion; Zone 3 compliance hold treats silence as non-execution, but a substantive new-evidence/dispute reply reopens diagnosis — INV-33)
 9. WORK WITH WHAT YOU GET (catch-all for messy/partial input)
 
 Items 6–9 form a progression: user **can't** → user **contradicts** → user **ignores** → catch-all.
@@ -145,7 +145,7 @@ The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(
 | Zone 1 | `symptom_verified=False` | "Symptom verification pending — search for evidence the problem exists" |
 | Zone 2 | `symptom_verified=True`, `cause_state != IDENTIFIED` | "Root cause analysis — form hypotheses, search for causal evidence" |
 | Zone 3 | `cause_state == IDENTIFIED`, `solution_proposed=False` | "Solution needed — propose a concrete, executable fix" |
-| Zone 3 pending | `solution_proposed=True` | "Solution proposal issued — awaiting execution. Do not request further evidence or introduce alternative proposals." |
+| Zone 3 pending | `solution_proposed=True` | "Solution proposal issued — awaiting execution. Hold for the result; NOT a freeze — new evidence, a dispute, or a competing cause reopens root-cause analysis (INV-33)." |
 
 (The zone conditions now read the engine-derived `cause_state` enum, not the removed `root_cause_identified` boolean.)
 

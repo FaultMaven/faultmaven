@@ -68,6 +68,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_status_changed_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
+    pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
@@ -303,8 +304,14 @@ def _determine_action_type(
 # ProposedAction states that count as a LIVE offer for the solution_proposed
 def _supersede_pending_solution_offers(
     case: Case, *, reason: Literal["reproposal", "license_lost"]
-) -> int:
-    """Mark every PENDING SOLUTION offer superseded; return the count.
+) -> tuple[int, int | None]:
+    """Mark every PENDING SOLUTION offer superseded; return (count, newest_turn).
+
+    ``newest_turn`` is the greatest ``proposed_in_turn`` among the offers just
+    superseded (None when count is 0) — the withdrawal path needs it as the
+    INV-33 shadow cutoff, and this single pass already visits exactly those
+    actions and reads their turn before flipping state, so it is returned here
+    rather than recomputed in a duplicate pre-pass.
 
     Only pending offers are touched: an ACCEPTED offer records that the user
     executed the fix — a fact supersession cannot unmake (its truth surface
@@ -316,15 +323,58 @@ def _supersede_pending_solution_offers(
     would grow label cardinality silently.
     """
     count = 0
+    newest_turn: int | None = None
     for action in case.proposed_actions:
         if (
             action.action_type == InvestigationActionType.SOLUTION
             and action.state == "pending"
         ):
+            if newest_turn is None or action.proposed_in_turn > newest_turn:
+                newest_turn = action.proposed_in_turn
             action.state = "superseded"
             action.superseded_reason = reason
             action.superseded_in_turn = case.current_turn
             solution_offer_superseded_total.labels(reason=reason).inc()
+            count += 1
+    return count, newest_turn
+
+
+def _retire_shadowed_diagnostic_asks(case: Case, *, before_turn: int) -> int:
+    """Retire stale DIAGNOSTIC pending asks a SOLUTION offer shadowed (INV-33).
+
+    The ``<pending_action>`` render (context_builder: newest pending action of
+    ANY type) shows one action at a time — a SOLUTION offer, while it stands,
+    shadows any EARLIER ask beneath it. When that offer LEAVES pending state —
+    WITHDRAWN on license loss (the cause fell, the case is back in active
+    diagnosis) or ACCEPTED (the case moves to TREATMENT to verify the executed
+    fix) — the render falls through to a shadowed ask and resurfaces it as the
+    current compliance target, an ask the investigation already moved past.
+    Retire the shadowed DIAGNOSTIC asks (pending, proposed STRICTLY BEFORE
+    ``before_turn`` = the offer's turn) so compliance detection reads a clean
+    slate. Asks proposed in the offer's OWN turn or AFTER are a live/reopening
+    thread — the de-absolutized Zone-3 prompt (INV-33) now invites a parallel
+    diagnostic when the user reopens the thread — and stand (strict ``<``, the
+    same-turn create-then-withdraw edge preserves the reopened ask).
+
+    DIAGNOSTIC-ONLY by design. A DIAGNOSTIC ask has no compliance gate (it never
+    transitions to ``accepted``), so retiring one is a pure display cleanup with
+    zero functional loss — the stale pre-fix evidence request is exactly what
+    goes obsolete once the fix is on the table. A pending MITIGATION is NOT
+    retired: a workaround is cause-INDEPENDENT symptom relief the user may still
+    execute, so its liveness survives (INV-32) and its reappearance as the top
+    pending ask is correct, not stale.
+    """
+    count = 0
+    for action in case.proposed_actions:
+        if (
+            action.action_type == InvestigationActionType.DIAGNOSTIC
+            and action.state == "pending"
+            and action.proposed_in_turn < before_turn
+        ):
+            action.state = "superseded"
+            action.superseded_reason = "stale_pending"
+            action.superseded_in_turn = case.current_turn
+            pending_action_superseded_stale_total.inc()
             count += 1
     return count
 
@@ -380,9 +430,15 @@ def _withdraw_unlicensed_solution_offers(
     """
     if _solution_cause_validated(case):
         return 0
-    count = _supersede_pending_solution_offers(case, reason="license_lost")
+    count, withdrawn_cutoff = _supersede_pending_solution_offers(
+        case, reason="license_lost"
+    )
     if not count:
         return 0
+    # INV-33: retire the DIAGNOSTIC asks the withdrawn offer shadowed, so the
+    # <pending_action> render cannot resurface a stale earlier ask now that the
+    # SOLUTION on top of it is gone. count>0 ⇒ withdrawn_cutoff is a real turn.
+    _retire_shadowed_diagnostic_asks(case, before_turn=withdrawn_cutoff)
     logger.warning(
         f"Withdrew {count} pending SOLUTION offer(s) for case {case.case_id}: "
         f"the established-cause license fell "
@@ -476,6 +532,21 @@ def _apply_stage_gate_side_effects(
         if pending_action is None:
             continue
         pending_action.state = "accepted"
+        # INV-33: a SOLUTION acceptance moves the case to TREATMENT (verify the
+        # executed fix). Retire the DIAGNOSTIC asks the offer shadowed so an
+        # earlier pre-fix ask cannot resurface in <pending_action> once the
+        # accepted SOLUTION (now state="accepted", no longer "pending") stops
+        # covering it — the symmetric twin of the withdrawal-path retirement.
+        # SOLUTION-scoped, NOT mitigation: accepting a SOLUTION moves the case to
+        # TREATMENT (diagnosis is done, pre-fix asks are stale), but accepting a
+        # MITIGATION keeps it in active diagnosis where a shadowed DIAGNOSTIC is
+        # plausibly still live — retiring it there could drop a real ask. A
+        # genuinely-stale accumulation under a mitigation falls under the general
+        # "DIAGNOSTIC asks carry no lifecycle" boundary INV-33 leaves standing.
+        if target_type == InvestigationActionType.SOLUTION:
+            _retire_shadowed_diagnostic_asks(
+                case, before_turn=pending_action.proposed_in_turn
+            )
         # Create audit trail
         attempt = ActionAttempt(
             action_id=pending_action.action_id,

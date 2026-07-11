@@ -845,7 +845,19 @@ formulate a concrete, executable fix. Provide specific commands for the
 user to run so the investigation can transition to Treatment.
 """
     else:
-        return ""  # solution_proposed=True: pending action context handles this state
+        # solution_proposed=True (Zone-3-pending). A NON-suppressive hold, not a
+        # freeze (INV-33). It names the diagnostic exit rather than forbidding
+        # further evidence — the absolutist "do not request further evidence"
+        # frame stranded the #656 diagnostic thread.
+        return """
+**INVESTIGATION PROGRESS: Solution proposal issued — awaiting execution**
+A fix has been proposed and is awaiting execution. If the user reports
+executing it, set solution_accepted=True and infer the transition to
+TREATMENT. This hold is NOT a freeze: if the user's reply instead brings new
+evidence, questions the fix, or points at a different cause, resume root-cause
+analysis on that signal. A pending proposal never forecloses a live diagnostic
+thread.
+"""
 ```
 
 #### Injection Point
@@ -867,7 +879,7 @@ The focus zone is injected immediately after the stage header, before the standa
 - **No schema change**: The response schema remains `InvestigationResponse_Diagnosis` regardless of focus zone.
 - **No new templates**: The instruction set is still one template with conditional emphasis.
 - **Maps to evidence categories**: Verification zone expects `SYMPTOM_EVIDENCE`, RCA zone expects `CAUSAL_EVIDENCE`, solution zone is triggered programmatically. This aligns with `CATEGORY_MILESTONE_MAP`.
-- **Graceful fallback**: When `solution_proposed=True`, the `pending_action` context already tells the LLM what's expected — no emphasis needed.
+- **Non-suppressive pending hold (INV-33)**: When `solution_proposed=True`, the emphasis holds for the fix's result WITHOUT freezing diagnosis. It names the exit — new evidence, a dispute, or a competing cause reopens root-cause analysis — because the earlier absolutist "do not request further evidence" frame stranded a live diagnostic thread while a fix sat pending (#656). The `pending_action` context supplies the specific proposal; the emphasis supplies the posture. The frame is DIAGNOSIS-only: once `solution_accepted` moves the case to TREATMENT, §8.6 owns the verify/extended-diagnosis prompt and this emphasis does not render.
 
 The proposal should be a specific action ("Run `kubectl rollout restart...`"), not a request for permission ("Would you like me to suggest a fix?"). The user's compliance (executing and submitting results) triggers the inference-based transition to TREATMENT.
 

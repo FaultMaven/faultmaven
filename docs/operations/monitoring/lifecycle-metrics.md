@@ -147,6 +147,19 @@ rate(faultmaven_solution_offer_superseded_total{reason="license_lost"}[24h])
 
 Matrix row: INV-32 in `investigation-invariants.md`; lifecycle-logic §1.4 (state-update table). Pair with the `solution_offer_withdrawn` WARNING (same event, per-case forensics).
 
+## INV-33: pending-action hygiene telemetry
+
+- `faultmaven_pending_action_superseded_stale_total` — a shadowed DIAGNOSTIC pending `ProposedAction` was retired (`superseded_reason="stale_pending"`) when the SOLUTION offer it predated left pending state — WITHDRAWN on license loss OR ACCEPTED into TREATMENT — so it cannot resurface as the `<pending_action>` the LLM reads for compliance. One increment per retired action. MITIGATION is cause-independent (INV-32) and is never retired this way.
+
+**Healthy shape.** Each stale retirement rides on a solution leaving pending (an acceptance or a `license_lost` withdrawal), so the rate is bounded by those transitions × open-diagnostic-asks-per-transition. A near-zero rate is normal — most offers have no stale diagnostic beneath them (a well-behaved investigation clears diagnostic asks before proposing a fix). A sustained rate means investigations repeatedly reach a fix with earlier evidence requests still open; if it correlates with `solution_offer_superseded_total{reason="license_lost"}` on the same window, read it as the same admission-bar / decay diagnosis.
+
+```promql
+# Stale diagnostic asks retired on solution withdrawal.
+rate(faultmaven_pending_action_superseded_stale_total[24h])
+```
+
+Matrix row: INV-33 in `investigation-invariants.md`.
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:

@@ -48,6 +48,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     EntityType,
     EvidenceCategory,
+    InvestigationActionType,
     InvestigationStage,
     NeedObtainability,
     NeedPriority,
@@ -2812,38 +2813,52 @@ def build_investigation_context(
         conclusion_str += "</working_conclusion>"
 
     # 5c. Pending ProposedAction (Framework §4.1: LLM needs this to detect compliance)
+    # Selection (INV-33): prefer the newest COMPLIANCE-BEARING pending action (a
+    # SOLUTION or MITIGATION carries a MILESTONE_TO_SET and drives a stage
+    # transition) over a bare DIAGNOSTIC ask. Since the zone-exit de-absolutization
+    # lets the model raise a parallel diagnostic while a fix is still pending, a
+    # plain newest-pending pick would let that diagnostic mask the fix's
+    # solution_accepted cue and stall the TREATMENT transition on the post-fix
+    # reply. A DIAGNOSTIC (no compliance gate) surfaces only when nothing
+    # compliance-bearing stands pending.
     pending_action_str = ""
     if case.proposed_actions:
-        for action in reversed(case.proposed_actions):
-            if action.state == "pending":
-                action_type_upper = action.action_type.value.upper()
-                pending_action_str = "<pending_action>\n"
-                pending_action_str += f"ACTION_TYPE: {action_type_upper}\n"
-                pending_action_str += f"DESCRIPTION: {action.description}\n"
-                if action.commands:
-                    pending_action_str += "COMMANDS:\n"
-                    for cmd in action.commands:
-                        pending_action_str += f"  - {cmd}\n"
-                pending_action_str += f"PROPOSED_IN_TURN: {action.proposed_in_turn}\n"
-                # Map action type → milestone so the LLM knows exactly what to set
-                if action_type_upper == "MITIGATION":
-                    pending_action_str += (
-                        "MILESTONE_TO_SET: mitigation_accepted (set True when user "
-                        "submits results of executing this mitigation)\n"
-                    )
-                elif action_type_upper == "SOLUTION":
-                    pending_action_str += (
-                        "MILESTONE_TO_SET: solution_accepted (set True when user "
-                        "submits results of executing this solution)\n"
-                    )
-                # Surface engine-issued downgrade reason if present so the
-                # LLM understands why its intent was rewritten and can
-                # recover on this turn (e.g. by gathering the missing
-                # evidence and re-proposing).
-                if getattr(action, "downgrade_reason", None):
-                    pending_action_str += f"ENGINE_NOTE: {action.downgrade_reason}\n"
-                pending_action_str += "</pending_action>"
-                break
+        pending = [a for a in case.proposed_actions if a.state == "pending"]
+        compliance_bearing = [
+            a
+            for a in pending
+            if a.action_type
+            in (InvestigationActionType.SOLUTION, InvestigationActionType.MITIGATION)
+        ]
+        action = (compliance_bearing or pending)[-1] if pending else None
+        if action is not None:
+            action_type_upper = action.action_type.value.upper()
+            pending_action_str = "<pending_action>\n"
+            pending_action_str += f"ACTION_TYPE: {action_type_upper}\n"
+            pending_action_str += f"DESCRIPTION: {action.description}\n"
+            if action.commands:
+                pending_action_str += "COMMANDS:\n"
+                for cmd in action.commands:
+                    pending_action_str += f"  - {cmd}\n"
+            pending_action_str += f"PROPOSED_IN_TURN: {action.proposed_in_turn}\n"
+            # Map action type → milestone so the LLM knows exactly what to set
+            if action_type_upper == "MITIGATION":
+                pending_action_str += (
+                    "MILESTONE_TO_SET: mitigation_accepted (set True when user "
+                    "submits results of executing this mitigation)\n"
+                )
+            elif action_type_upper == "SOLUTION":
+                pending_action_str += (
+                    "MILESTONE_TO_SET: solution_accepted (set True when user "
+                    "submits results of executing this solution)\n"
+                )
+            # Surface engine-issued downgrade reason if present so the
+            # LLM understands why its intent was rewritten and can
+            # recover on this turn (e.g. by gathering the missing
+            # evidence and re-proposing).
+            if getattr(action, "downgrade_reason", None):
+                pending_action_str += f"ENGINE_NOTE: {action.downgrade_reason}\n"
+            pending_action_str += "</pending_action>"
 
     # 6. Conversation History
     # Two modes:
