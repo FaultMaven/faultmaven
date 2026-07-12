@@ -19,7 +19,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
@@ -804,6 +804,51 @@ class CaseService(ICaseService):
         except Exception as e:
             logger.error(f"Failed to list cases for user {user_id}: {e}")
             return []
+
+    async def list_all_cases(
+        self, filters: Optional[CaseListFilter] = None
+    ) -> Tuple[List[CaseSummary], int]:
+        """List cases across ALL users/orgs (platform-admin cross-tenant read).
+
+        Backs the platform-admin case view (ADR-012 D9). Unlike
+        ``list_user_cases`` this passes ``user_id=None`` so the repository
+        drops its per-user WHERE clause and returns every user's cases.
+        Authorization and deployment-mode gating are enforced at the API layer;
+        this method must only be reached for an admin. In cloud/Postgres,
+        Row-Level Security still scopes the result to the caller's org — the
+        API layer blocks cloud until an audited break-glass path exists.
+
+        Returns:
+            Tuple of (case summaries for the page, total match count).
+        """
+        from faultmaven.models.api_models import CaseSummary
+
+        status_filter = filters.state if filters else None
+        limit = filters.limit if filters else 50
+        offset = filters.offset if filters else 0
+
+        try:
+            cases_list, total = await self.repository.list(
+                user_id=None, state=status_filter, limit=limit, offset=offset
+            )
+
+            if filters and not filters.include_empty:
+                cases_list = [c for c in cases_list if c.current_turn > 0]
+
+            summaries = []
+            for case in cases_list:
+                try:
+                    summaries.append(CaseSummary.from_case(case))
+                except Exception as e:
+                    logger.error(
+                        f"Failed to convert case {case.case_id} to summary: {e}"
+                    )
+
+            return summaries, total
+
+        except Exception as e:
+            logger.error(f"Failed to list all cases (admin): {e}")
+            return [], 0
 
     @trace("case_service_search_cases")
     async def search_cases(

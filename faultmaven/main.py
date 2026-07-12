@@ -203,6 +203,7 @@ from .api.middleware.logging import LoggingMiddleware
 
 # Admin routes
 from .api.routes.admin import router as admin_users_router
+from .api.routes.admin_cases import router as admin_cases_router
 from .api.routes.admin_config import router as admin_config_router
 from .api.routes.sessions import router as investigation_sessions_router
 from .infrastructure.observability.tracing import init_opik_tracing
@@ -1240,6 +1241,9 @@ logger.info("✅ Admin user management endpoints added")
 
 app.include_router(admin_config_router)  # prefix already set on router: /api/v1/admin
 logger.info("✅ Admin configuration endpoints added")
+
+app.include_router(admin_cases_router)  # prefix already set on router: /api/v1/admin
+logger.info("✅ Admin cross-tenant case listing endpoint added")
 
 # OAuth router (only if enabled)
 try:

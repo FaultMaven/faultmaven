@@ -7,7 +7,7 @@ following FaultMaven's interface-based dependency injection pattern.
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.modules.case.domain.models import Case, ParticipantRole
 
@@ -418,6 +418,25 @@ class ICaseService(ABC):
 
         Returns:
             List of user's cases
+        """
+        pass
+
+    @abstractmethod
+    async def list_all_cases(
+        self, filters: Optional[CaseListFilter] = None
+    ) -> Tuple[List[CaseSummary], int]:
+        """List cases across ALL users/orgs (platform-admin cross-tenant read).
+
+        Unlike ``list_user_cases``, this is NOT scoped by ``user_id``. It backs
+        the platform-admin case view (ADR-012 D9). Authorization
+        (``require_admin``) and deployment-mode gating are enforced at the API
+        layer — this method must only be reached for an admin.
+
+        Args:
+            filters: Optional filter criteria (state, limit, offset, include_empty)
+
+        Returns:
+            Tuple of (case summaries for the requested page, total match count)
         """
         pass
 
