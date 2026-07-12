@@ -73,6 +73,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_recovered_total,
     narration_overclaim_total,
     pending_action_superseded_stale_total,
+    resolution_cause_leg_total,
     solution_offer_superseded_total,
     work_gate_crossed_total,
 )
@@ -4332,6 +4333,28 @@ class MilestoneEngine:
                 summary_payload, summary_failed = await self._auto_generate_report(
                     case_updated
                 )
+
+            # INV-41 (#673 dual-authoring retirement gate): at each RESOLVED
+            # transition, record which leg of cause-identification licensed it —
+            # the validated chain (cause_state=IDENTIFIED) or the free-text RCC /
+            # working-conclusion backstop — so the per-provider backstop-reliance
+            # rate becomes measurable. That rate is the gate #673's retirement is
+            # blocked on: while it stays non-zero at the INV-39 provider floor,
+            # retiring the free-text conclusion would strand these resolutions.
+            # RESOLVED is terminal/one-way, so this fires exactly once per
+            # resolution — no latch needed. Metric-only, never changes behavior.
+            if (
+                metadata.get("status_transitioned")
+                and case_updated.state == CaseState.RESOLVED
+            ):
+                from faultmaven.core.investigation.terminal_transitions import (
+                    cause_identification_leg,
+                )
+
+                resolution_cause_leg_total.labels(
+                    provider=_resolve_chat_provider_name(self.llm_provider),
+                    leg=cause_identification_leg(case_updated) or "none",
+                ).inc()
 
             logger.info(
                 f"Turn {case_updated.current_turn} processed successfully. "

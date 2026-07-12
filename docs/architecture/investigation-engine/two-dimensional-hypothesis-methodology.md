@@ -890,6 +890,19 @@ backstop before models ground reliably would strand cases that today resolve via
 the free-text conclusion (a NO-COLLAPSE regression). Tracked as #673 so the
 retirement is deliberate, not forgotten.
 
+*The gate is a metric, not prose (INV-41).* "Reliable chain-grounding" is now
+measurable: at each RESOLVED transition the engine records which leg of
+`_cause_identified` licensed the resolution — the chain (`cause_state=IDENTIFIED`),
+or the RCC / working-conclusion **backstop** (with no chain-validated root) —
+via `resolution_cause_leg_total{provider, leg}`. The **backstop-reliance rate**
+(`(rcc + working_conclusion) / all`, per provider) is the retirement gate: while
+it is materially non-zero at the **INV-39 provider floor**, retiring the free-text
+backstop would strand exactly those resolutions. The gate must clear at the
+weakest supported provider, not merely on the best model — otherwise retirement
+is a NO-COLLAPSE regression precisely for the provider floor. Metric-only: it
+never changes engine behavior; it is the observability half of the #673 decision,
+the way INV-39 is for the §5.2 provider floor.
+
 ### 7.8 One cause, one hypothesis: dedup on `hypotheses_to_add` (INV-36)
 
 The work gate (§5.2) — ≥2 hypotheses across ≥2 categories with ≥2 evidence items
