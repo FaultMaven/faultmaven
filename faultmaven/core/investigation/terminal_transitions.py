@@ -34,6 +34,9 @@ from faultmaven.core.investigation.cause_assurance import (
     grade_cause_assurance,
     has_resolution_confirmation,
 )
+from faultmaven.core.investigation.lifecycle_metrics import (
+    close_pivoted_to_resolve_total,
+)
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
 )
@@ -493,6 +496,31 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
 
     pending = case.pending_transition
     to_state = pending["to_state"]
+
+    # Closed-gate resolve-preservation (INV-37): a resolvable case must never
+    # terminally commit to CLOSED. The SUGGEST_RESOLVE pivot (assess_closure_
+    # readiness) already fires at proposal time, but a qualifying causal_absence
+    # can land AFTER the close was proposed — so re-check here, at the single
+    # execution chokepoint, immediately before the close commits. "resolve =
+    # close WITH resolution; close = close WITHOUT resolution": it is always safe
+    # to resolve a case that can be resolved, whichever terminal the user asked
+    # for, and users have no incentive to close a case that qualifies for
+    # resolution. On a hit we DON'T close — we replace the pending close with a
+    # RESOLVED proposal and report that nothing terminal executed (return False);
+    # the caller re-presents the resolve confirmation. Scoped to INVESTIGATING:
+    # RESOLVED is not a valid edge from INQUIRY, and an INQUIRY case cannot carry
+    # a qualifying causal_absence anyway.
+    if to_state == "closed" and case.state == CaseState.INVESTIGATING:
+        closure = assess_closure_readiness(case)
+        if closure.verdict == ClosureReadiness.SUGGEST_RESOLVE:
+            propose_transition(case, to_state="resolved", summary=closure.message)
+            close_pivoted_to_resolve_total.inc()
+            logger.info(
+                f"Case {case.case_id}: pending CLOSE pivoted to RESOLVED at "
+                f"confirm — case is resolvable (SUGGEST_RESOLVE). Resolve-"
+                f"preservation (INV-37): a resolvable case is never closed."
+            )
+            return False
 
     if to_state == "resolved":
         _execute_resolved_transition(case, user_id)

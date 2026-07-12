@@ -189,6 +189,19 @@ rate(faultmaven_hypothesis_dedup_skipped_total[24h])
 
 Matrix row: INV-36 in `investigation-invariants.md`; methodology §7.8.
 
+## INV-37: closed-gate resolve-preservation telemetry
+
+- `faultmaven_close_pivoted_to_resolve_total` — a pending CLOSE was pivoted to a RESOLVED proposal at *confirm* time because the case had become resolvable (`assess_closure_readiness` → `SUGGEST_RESOLVE`) since the close was proposed. The confirm-time guard in `confirm_pending_transition` replaced the pending close with a RESOLVED proposal instead of recording a resolvable case as closed-unresolved. One increment per confirm-time pivot.
+
+**Healthy shape.** Near zero. The proposal-time SUGGEST_RESOLVE pivot already catches the common case (a close requested on an already-resolvable case), so this counter fires only on the narrow window where a qualifying `causal_absence` lands *between* a close proposal and its confirmation. A non-zero value is **not** a soundness alarm — it is the guard doing its job (a resolvable case was kept from closing) — but a rising trend means resolvable cases routinely reach the *close* handshake, worth investigating on the proposal-time path (are close proposals being emitted while resolution was imminent?). It is never evidence the guard is unsound.
+
+```promql
+# Confirm-time close→resolve pivots (resolvable case kept from closing).
+rate(faultmaven_close_pivoted_to_resolve_total[24h])
+```
+
+Matrix row: INV-37 in `investigation-invariants.md`; lifecycle-logic §1.2 (SUGGEST_RESOLVE pivot).
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:

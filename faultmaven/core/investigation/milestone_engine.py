@@ -3132,7 +3132,41 @@ class MilestoneEngine:
                                 },
                             )
 
-                        confirm_pending_transition(case, case.user_id)
+                        executed = confirm_pending_transition(case, case.user_id)
+                        if (
+                            not executed
+                            and (case.pending_transition or {}).get("to_state")
+                            == "resolved"
+                        ):
+                            # INV-37 resolve-preservation: the pending CLOSE
+                            # pivoted to a RESOLVED proposal (the case became
+                            # resolvable). Nothing terminal committed — present
+                            # the resolve confirmation instead of a CLOSED
+                            # report, which would falsely record the case as
+                            # closed-unresolved.
+                            resolve_msg = (
+                                "This case has a fix confirmed to have "
+                                "eliminated the root cause — it qualifies for "
+                                "**resolved** rather than closed. Closing would "
+                                "record it as unresolved and discard the "
+                                "resolution.\n\n" + _build_resolution_confirmation(case)
+                            )
+                            self._record_deterministic_turn(
+                                case, user_message or "", resolve_msg
+                            )
+                            await self.repository.save(case)
+                            return {
+                                "agent_response": resolve_msg,
+                                "suggested_follow_ups": (
+                                    _resolution_confirmation_suggestions()
+                                ),
+                                "case_updated": case,
+                                "metadata": {
+                                    "turn_number": case.current_turn,
+                                    "milestones_completed": [],
+                                    "progress_made": False,
+                                },
+                            }
 
                         # Persist the terminal status before generating the
                         # summary — the Report row FKs to case_id.
@@ -4090,6 +4124,20 @@ class MilestoneEngine:
                     metadata["resolution_needs_info_message"],
                 )
                 follow_ups = metadata["override_suggestions"]
+            elif metadata.get("close_pivoted_to_resolve"):
+                # INV-37 resolve-preservation: the user confirmed a pending
+                # CLOSE, but the case had become resolvable — the confirm-time
+                # guard pivoted it to a RESOLVED proposal. Present the resolve
+                # confirmation (appended below the LLM's reply) so the user
+                # confirms the correct, resolution-preserving terminal.
+                agent_response_text = _prose_with_gate_notice(
+                    response_obj.agent_response,
+                    "This case has a fix confirmed to have eliminated the root "
+                    "cause — it qualifies for **resolved** rather than closed. "
+                    "Closing would record it as unresolved and discard the "
+                    "resolution.\n\n" + _build_resolution_confirmation(case_updated),
+                )
+                follow_ups = _resolution_confirmation_suggestions()
             elif metadata.get("rca_infeasible_closure_message"):
                 # Stage-gate side effect: mitigation_verified + rca_infeasible=True.
                 # Append the engine-built closure proposal below the LLM's
@@ -8481,6 +8529,7 @@ class MilestoneEngine:
                     )
             else:
                 from faultmaven.core.investigation.terminal_transitions import (
+                    ClosureReadiness,
                     cancel_pending_transition,
                     confirm_pending_transition,
                 )
@@ -8498,8 +8547,23 @@ class MilestoneEngine:
                                 "to_state": to_state,
                             },
                         )
-                    confirm_pending_transition(case, case.user_id)
-                    metadata["status_transitioned"] = True
+                    executed = confirm_pending_transition(case, case.user_id)
+                    if executed:
+                        metadata["status_transitioned"] = True
+                    else:
+                        # INV-37 resolve-preservation: the pending CLOSE pivoted
+                        # to a RESOLVED proposal because the case became
+                        # resolvable. Nothing terminal committed — surface the
+                        # resolve confirmation (prose appended below the LLM's
+                        # reply + the canonical resolve DECIDE pair) instead of
+                        # closing. The pending_transition now targets "resolved".
+                        metadata["close_pivoted_to_resolve"] = True
+                        metadata["override_suggestions"] = (
+                            _resolution_confirmation_suggestions()
+                        )
+                        metadata["closure_readiness_verdict"] = (
+                            ClosureReadiness.SUGGEST_RESOLVE
+                        )
                     return case
                 elif self._user_declines_transition(user_message):
                     cancel_pending_transition(case)
