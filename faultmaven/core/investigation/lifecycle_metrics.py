@@ -345,3 +345,20 @@ hypothesis_dedup_skipped_total = Counter(
     "existing or same-batch hypothesis (§7.8 / INV-36), protecting the work "
     "gate from duplicate inflation. One increment per skipped item.",
 )
+
+# INV-37 outcome telemetry (closed-gate resolve-preservation). A pending
+# CLOSE was about to terminally commit, but the case had become resolvable
+# (assess_closure_readiness → SUGGEST_RESOLVE) since the close was proposed;
+# the confirm-time guard pivoted it to a RESOLVED proposal instead of
+# recording a resolvable case as closed-unresolved. One increment per
+# confirm-time pivot. A non-zero value proves the proposal-time SUGGEST_RESOLVE
+# pivot has a late-arriving gap that the terminal-boundary guard is catching;
+# a rising trend means resolvable cases are routinely reaching the close
+# handshake (worth investigating the proposal-time path), not that the guard
+# is unsound.
+close_pivoted_to_resolve_total = Counter(
+    "faultmaven_close_pivoted_to_resolve_total",
+    "A pending CLOSE was pivoted to a RESOLVED proposal at confirm time "
+    "because the case qualified for resolution (§ closed-gate resolve-"
+    "preservation / INV-37). One increment per confirm-time pivot.",
+)
