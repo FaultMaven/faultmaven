@@ -15,81 +15,33 @@ import pytest
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
-from faultmaven.core.preprocessing.models import PreprocessingResult, UnifiedDataType
+from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
+    _DATA_TYPE_TO_SOURCE_TYPE,
     InvestigationService,
     _build_classification_clarification_suggestions,
     _PreprocessedAttachment,
 )
-from faultmaven.modules.case.domain.models import (
-    Evidence,
-    EvidenceCategory,
-    EvidenceSourceType,
-    UploadedFile,
+from faultmaven.modules.case.domain.models import CaseState, EvidenceSourceType
+
+from .conftest import (
+    MockCaseRepository,
+    MockMilestoneEngine,
+    create_sample_case,
+    make_evidence,
+    make_preprocessing_result,
+    make_uploaded_file,
 )
-
-from .conftest import MockCaseRepository, MockMilestoneEngine, create_sample_case
-
-
-def _uploaded_file(
-    file_id: str = "file_aaaaaaaaaaaa",
-    filename: str = "server.log",
-    storage_ref: str | None = "evidence/case_x/server.log",
-    data_type: str | None = "text",
-) -> UploadedFile:
-    return UploadedFile(
-        file_id=file_id,
-        filename=filename,
-        size_bytes=100,
-        storage_ref=storage_ref,
-        uploaded_at_turn=0,
-        data_type=data_type,
-    )
-
-
-def _evidence(
-    evidence_id: str = "ev_aaaaaaaaaaaa",
-    source_file_id: str | None = "file_aaaaaaaaaaaa",
-) -> Evidence:
-    return Evidence(
-        evidence_id=evidence_id,
-        category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        primary_purpose="Test",
-        summary="LLM-authored claim summary",
-        extract="llm extract",
-        source_type=EvidenceSourceType.TEXT,
-        source_file_id=source_file_id,
-        collected_by="user",
-        collected_at=datetime.now(UTC),
-        collected_at_turn=0,
-    )
-
-
-def _preprocessing_result() -> PreprocessingResult:
-    return PreprocessingResult(
-        data_type=UnifiedDataType.LOGS,
-        detailed_data_type=DataType.LOGS_AND_ERRORS,
-        summary="new summary",
-        structural_index="new index content",
-        content_ref=None,
-        content_size_bytes=100,
-        content_type="text/plain",
-        extraction_method="crime_scene",
-        compression_ratio=0.1,
-        extraction_metadata={"evidence_metadata": {}},
-        content_hash="a" * 64,
-        processing_time_ms=5,
-    )
 
 
 def _clarification_target(
     suggested_types: list[str] | None = None,
 ) -> _PreprocessedAttachment:
     return _PreprocessedAttachment(
-        uploaded_file=_uploaded_file(),
+        uploaded_file=make_uploaded_file(),
         classification_failed=True,
         suggested_types=(
             suggested_types
@@ -104,8 +56,8 @@ def _clarification_target(
 def repo_with_case():
     repo = MockCaseRepository()
     case = create_sample_case(user_id="user_owner")
-    case.uploaded_files = [_uploaded_file()]
-    case.evidence = [_evidence()]
+    case.uploaded_files = [make_uploaded_file()]
+    case.evidence = [make_evidence()]
     repo._storage[case.case_id] = case
     return repo, case
 
@@ -113,7 +65,7 @@ def repo_with_case():
 @pytest.fixture
 def preprocessing_service():
     svc = MagicMock()
-    svc.reclassify_evidence = AsyncMock(return_value=_preprocessing_result())
+    svc.reclassify_evidence = AsyncMock(return_value=make_preprocessing_result())
     return svc
 
 
@@ -167,7 +119,7 @@ class TestClarificationEmitterIntent:
         assert suggestions[0].intent["data_type"] == "unstructured_text"
 
     def test_no_failure_emits_nothing(self):
-        ok = _PreprocessedAttachment(uploaded_file=_uploaded_file())
+        ok = _PreprocessedAttachment(uploaded_file=make_uploaded_file())
         assert _build_classification_clarification_suggestions([ok]) == []
 
     def test_typed_choice_matches_via_intent_resolver_fast_path(self):
@@ -241,7 +193,7 @@ class TestHandlerValidation:
         self, service, repo_with_case
     ):
         _, case = repo_with_case
-        case.uploaded_files = [_uploaded_file(storage_ref=None)]
+        case.uploaded_files = [make_uploaded_file(storage_ref=None)]
         with pytest.raises(ValidationException, match="no stored raw content"):
             await service._handle_file_reclassification(
                 case=case,
@@ -311,7 +263,7 @@ class TestHandlerHappyPath:
         # Evidence backed by the file re-aligned; claim content untouched.
         ev = saved.evidence[0]
         assert ev.source_type == EvidenceSourceType.LOGS
-        assert ev.summary == "LLM-authored claim summary"
+        assert ev.summary == "Old summary"
 
         # User + agent messages persisted atomically like any other turn.
         assert saved.message_count == 2
@@ -395,3 +347,45 @@ class TestClarificationTurnWiring:
             if i["type"] == IntentType.FILE_RECLASSIFICATION.value
         )
         assert any(f.file_id == target["file_id"] for f in saved.uploaded_files)
+
+
+class TestTerminalCaseGuard:
+    @pytest.mark.asyncio
+    async def test_reclassification_refused_on_terminal_case(
+        self, service, repo_with_case
+    ):
+        """A stale clarification click (or direct POST) on a resolved case
+        must not rewrite its files/evidence. The other SERVICE intents
+        inherit terminal protection by delegating to engine.process_turn;
+        this handler never reaches the engine, so it must refuse on its
+        own."""
+        _, case = repo_with_case
+        now = datetime.now(UTC)
+        terminal = case.model_copy(
+            update={
+                "state": CaseState.RESOLVED,
+                "resolved_at": now,
+                "closed_at": now,
+                "closure_reason": "resolved",
+            }
+        )
+        with pytest.raises(ValidationException, match="closed case"):
+            await service._handle_file_reclassification(
+                case=terminal,
+                file_id="file_aaaaaaaaaaaa",
+                data_type_value="logs_and_errors",
+            )
+        # Refused before any re-extraction was attempted.
+        service.preprocessing_service.reclassify_evidence.assert_not_called()
+
+
+class TestSourceTypeMapExhaustiveness:
+    @pytest.mark.parametrize("data_type", list(DataType))
+    def test_every_data_type_is_mapped(self, data_type):
+        """_infer_source_type silently defaults to TEXT on a lookup miss —
+        the exact mechanism that hid the issue-27 misclassification (every
+        upload landed as 'text'). Pin the map exhaustive over DataType so a
+        new enum member cannot silently classify as text; the runtime
+        default stays (a miss must not crash a turn), this pin moves the
+        failure to CI."""
+        assert data_type in _DATA_TYPE_TO_SOURCE_TYPE

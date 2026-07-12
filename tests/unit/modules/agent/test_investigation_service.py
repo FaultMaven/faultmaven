@@ -547,11 +547,19 @@ class TestInvestigationServiceIntentDispatch:
             # the client; the dispatch itself routed correctly.
             pass
         except ServiceException as e:
-            # Any ServiceException wrapping "Unknown intent type" is the
-            # regression we are preventing.
+            # Two regression shapes surface as ServiceException (500):
+            # the legacy elif-chain "Unknown intent type" error, and the
+            # SERVICE-dispatch else-branch "has no handler method" (a
+            # dispatch-table entry without a matching elif in
+            # process_turn — the boot check can't see that gap).
             assert "Unknown intent type" not in str(e), (
                 f"IntentType.{intent_value.name} surfaced as 500 with "
                 f"'Unknown intent type'. Dispatch table is incomplete."
+            )
+            assert "has no handler method" not in str(e), (
+                f"IntentType.{intent_value.name} is SERVICE-routed in "
+                f"_INTENT_DISPATCH but has no handler branch in "
+                f"process_turn."
             )
 
     def test_boot_check_rejects_incomplete_dispatch_table(

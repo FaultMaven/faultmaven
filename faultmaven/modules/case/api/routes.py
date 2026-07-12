@@ -2324,6 +2324,12 @@ async def submit_turn(
                     detail="Cannot change status of a closed case.",
                     headers={"x-correlation-id": correlation_id},
                 )
+            if intent_type == "file_reclassification":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot reclassify files on a closed case.",
+                    headers={"x-correlation-id": correlation_id},
+                )
 
         # Build attachments list
         # Every attachment carries source_metadata so the classifier knows the

@@ -77,6 +77,27 @@ def _infer_source_type(data_type: DataType) -> EvidenceSourceType:
     return _DATA_TYPE_TO_SOURCE_TYPE.get(data_type, EvidenceSourceType.TEXT)
 
 
+def _file_row_with_reclassification(
+    file_meta: "UploadedFile",
+    preprocessing_result,
+    new_source_type: EvidenceSourceType,
+) -> "UploadedFile":
+    """UploadedFile row updated with re-extracted preprocessing artifacts.
+
+    Post-010 routing: data_type / summary / structural_index describe the
+    FILE and live on ``uploaded_files``; Evidence rows carry only the
+    LLM-authored claim. Shared by both reclassification paths.
+    """
+    return file_meta.model_copy(
+        update={
+            "data_type": new_source_type.value,
+            "summary": preprocessing_result.summary,
+            "structural_index": preprocessing_result.structural_index,
+        },
+        deep=True,
+    )
+
+
 # Filename extensions and MIME prefixes for content known to be binary.
 # Decoding such content as UTF-8 with errors="replace" produces a string of
 # replacement chars that destroys the original bytes for any downstream
@@ -1329,13 +1350,27 @@ class InvestigationService:
             Result dict with deterministic agent response and updated case.
 
         Raises:
-            ValidationException: missing/unknown intent fields, or the file
-                has no stored raw bytes to re-extract (→ 422).
+            ValidationException: terminal case, missing/unknown intent
+                fields, or the file has no stored raw bytes to re-extract
+                (→ 422).
             NotFoundError: file_id not in this case, or the stored blob is
                 gone from storage (→ 404).
             ServiceException: storage/preprocessing service unavailable
                 (→ 500).
         """
+        # Terminal guard. The other SERVICE intents inherit terminal
+        # protection by delegating to engine.process_turn (which
+        # short-circuits terminal cases to Q&A); this handler never reaches
+        # the engine, so it must refuse mutation itself — a stale
+        # clarification button or a direct POST must not rewrite a closed
+        # case's files/evidence.
+        if case.is_terminal:
+            raise ValidationException(
+                "Cannot reclassify files on a closed case — the "
+                "investigation is terminal; only questions about the case "
+                "are accepted.",
+                {"case_state": case.state.value},
+            )
         if not file_id or not data_type_value:
             raise ValidationException(
                 "file_id and data_type required for file_reclassification intent",
@@ -1374,46 +1409,16 @@ class InvestigationService:
                 "the original bytes.",
                 {"field": "file_id"},
             )
-        if not self.file_storage_service:
-            raise ServiceException(
-                "File storage service unavailable; cannot re-extract"
-            )
-        if not self.preprocessing_service:
-            raise ServiceException(
-                "Preprocessing service unavailable; cannot reclassify"
-            )
-
         # NotFoundError from storage (blob missing) passes through process_turn
         # unwrapped → 404, never a 5xx on a clicked suggestion.
-        raw_bytes = await self.file_storage_service.retrieve_file(file_meta.storage_ref)
-        filename = file_meta.filename or "the uploaded file"
-        if _is_binary_content(filename, file_meta.content_type, raw_bytes):
-            content = _binary_placeholder(
-                filename, file_meta.content_type, len(raw_bytes)
-            )
-        else:
-            content = raw_bytes.decode("utf-8", errors="replace")
-
-        preprocessing_result = await self.preprocessing_service.reclassify_evidence(
-            content=content,
-            filename=filename,
-            user_override=data_type,
-            previous_metadata=None,
+        preprocessing_result, new_source_type = await self._reextract_under_override(
+            file_meta, data_type
         )
-
         previous_type = file_meta.data_type or "unknown"
-        # detailed_data_type is the fine-grained DataType the map is keyed by;
-        # the coarse UnifiedDataType in ``data_type`` never matches its keys.
-        new_source_type = _infer_source_type(preprocessing_result.detailed_data_type)
 
         new_files_list = list(case.uploaded_files)
-        new_files_list[file_index] = file_meta.model_copy(
-            update={
-                "data_type": new_source_type.value,
-                "summary": preprocessing_result.summary,
-                "structural_index": preprocessing_result.structural_index,
-            },
-            deep=True,
+        new_files_list[file_index] = _file_row_with_reclassification(
+            file_meta, preprocessing_result, new_source_type
         )
 
         # Re-align Evidence rows already backed by this file (claim content —
@@ -1425,12 +1430,18 @@ class InvestigationService:
                     update={"source_type": new_source_type}, deep=True
                 )
 
+        # Shallow copy with the replaced collections. ``messages`` gets a
+        # fresh list because process_turn appends the agent message to the
+        # returned case; every other field is only ever reassigned, never
+        # mutated in place, so sharing by reference is safe — and skips
+        # deep-copying the whole case (messages, hypotheses, causal graph)
+        # on a mechanical click path.
         updated_case = case.model_copy(
             update={
                 "uploaded_files": new_files_list,
                 "evidence": new_evidence_list,
-            },
-            deep=True,
+                "messages": list(case.messages),
+            }
         )
 
         EVIDENCE_RECLASSIFICATION_TOTAL.labels(
@@ -1439,6 +1450,7 @@ class InvestigationService:
             trigger="clarification",
         ).inc()
 
+        filename = file_meta.filename or "the uploaded file"
         friendly = _CLARIFICATION_FRIENDLY_NAMES.get(data_type.value, {}).get(
             "long"
         ) or data_type.value.replace("_", " ")
@@ -1688,37 +1700,9 @@ class InvestigationService:
                 resource_id=evidence_id,
                 conflict_reason="no_backing_file",
             )
-        if not self.file_storage_service:
-            raise ServiceException(
-                "File storage service unavailable; cannot re-extract"
-            )
-        if not self.preprocessing_service:
-            raise ServiceException(
-                "Preprocessing service unavailable; cannot reclassify"
-            )
-
-        # Fetch raw bytes + decode. Storage returns bytes; extractors
-        # operate on strings (UTF-8 is the convention per the upload path).
-        # Skip destructive decode for binary evidence (see _is_binary_content).
-        raw_bytes = await self.file_storage_service.retrieve_file(storage_ref)
-        filename = file_meta.filename if file_meta else "evidence"
-        # Reclassify path doesn't carry a separate content_type; rely on filename.
-        if _is_binary_content(filename, None, raw_bytes):
-            content = _binary_placeholder(filename, None, len(raw_bytes))
-            logger.info(
-                "binary evidence: skipping UTF-8 decode on reclassify",
-                extra={"evidence_filename": filename, "size_bytes": len(raw_bytes)},
-            )
-        else:
-            content = raw_bytes.decode("utf-8", errors="replace")
-
-        previous_metadata = evidence.metadata
-
-        preprocessing_result = await self.preprocessing_service.reclassify_evidence(
-            content=content,
-            filename=filename,
-            user_override=data_type,
-            previous_metadata=previous_metadata,
+        # storage_ref non-None (checked above) implies file_meta is present.
+        preprocessing_result, new_source_type = await self._reextract_under_override(
+            file_meta, data_type, previous_metadata=evidence.metadata
         )
 
         # Lift the updated evidence_metadata block from the result.
@@ -1747,27 +1731,15 @@ class InvestigationService:
             ),
             None,
         )
-        # detailed_data_type is the fine-grained DataType the source-type map
-        # is keyed by; the coarse UnifiedDataType in ``data_type`` never
-        # matches its keys (every lookup fell through to TEXT).
         new_files_list = list(case.uploaded_files or [])
         if file_index is not None:
-            new_files_list[file_index] = file_meta.model_copy(
-                update={
-                    "data_type": _infer_source_type(
-                        preprocessing_result.detailed_data_type
-                    ).value,
-                    "summary": preprocessing_result.summary,
-                    "structural_index": preprocessing_result.structural_index,
-                },
-                deep=True,
+            new_files_list[file_index] = _file_row_with_reclassification(
+                file_meta, preprocessing_result, new_source_type
             )
 
         updated_evidence = evidence.model_copy(
             update={
-                "source_type": _infer_source_type(
-                    preprocessing_result.detailed_data_type
-                ),
+                "source_type": new_source_type,
                 "metadata": new_evidence_metadata,
             },
             deep=True,
@@ -1800,6 +1772,67 @@ class InvestigationService:
         )
 
         return updated_evidence
+
+    async def _reextract_under_override(
+        self,
+        file_meta: "UploadedFile",
+        data_type: DataType,
+        previous_metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Retrieve the stored raw bytes behind *file_meta* and re-run
+        preprocessing under ``user_override=data_type``.
+
+        Shared mechanics of both reclassification paths — the PATCH /
+        agent-tool ``reclassify_evidence`` and the clarification-intent
+        ``_handle_file_reclassification``. Callers own target lookup,
+        authorization, terminal/conflict policy, persistence, and
+        response shape.
+
+        Returns:
+            ``(preprocessing_result, new_source_type)`` where the source
+            type is inferred from the result's fine-grained
+            ``detailed_data_type`` (the coarse UnifiedDataType in
+            ``data_type`` never matches the source-type map's keys).
+
+        Raises:
+            ServiceException: storage/preprocessing service unavailable.
+            NotFoundError: stored blob missing from storage.
+        """
+        if not self.file_storage_service:
+            raise ServiceException(
+                "File storage service unavailable; cannot re-extract"
+            )
+        if not self.preprocessing_service:
+            raise ServiceException(
+                "Preprocessing service unavailable; cannot reclassify"
+            )
+
+        # Fetch raw bytes + decode. Storage returns bytes; extractors
+        # operate on strings (UTF-8 is the convention per the upload path).
+        # Skip the destructive decode for binary content (see
+        # _is_binary_content).
+        raw_bytes = await self.file_storage_service.retrieve_file(file_meta.storage_ref)
+        filename = file_meta.filename or "the uploaded file"
+        if _is_binary_content(filename, file_meta.content_type, raw_bytes):
+            content = _binary_placeholder(
+                filename, file_meta.content_type, len(raw_bytes)
+            )
+            logger.info(
+                "binary content: skipping UTF-8 decode on reclassify",
+                extra={"filename": filename, "size_bytes": len(raw_bytes)},
+            )
+        else:
+            content = raw_bytes.decode("utf-8", errors="replace")
+
+        preprocessing_result = await self.preprocessing_service.reclassify_evidence(
+            content=content,
+            filename=filename,
+            user_override=data_type,
+            previous_metadata=previous_metadata,
+        )
+        return preprocessing_result, _infer_source_type(
+            preprocessing_result.detailed_data_type
+        )
 
     @trace("investigation_service_close_case")
     async def close_case(self, case_id: str, user_id: str, closure_reason: str) -> Case:
