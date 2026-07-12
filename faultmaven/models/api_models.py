@@ -526,6 +526,21 @@ class TurnResponse(BaseModel):
         description="Progress transparency state. Present when investigation "
         "has stalled and agent is surfacing milestone dependencies.",
     )
+    cause_assurance: Optional[str] = Field(
+        default=None,
+        description="Engine-derived assurance grade behind the case's identified "
+        "cause (no_root | mechanistic | confirmed), recomputed from the causal "
+        "graph. Present whenever the case has stated a root cause. Lets a "
+        "narration-only client (e.g. Slack) show the #572/INV-28 read-time label "
+        "beside the cause claim carried in agent_response, rather than presenting "
+        "every conclusion at equal certainty.",
+    )
+    cause_overclaim: Optional[bool] = Field(
+        default=None,
+        description="True when the case's conclusion claims 'verified' certainty "
+        "while the assurance grade is below 'confirmed' (conclusion_overclaims "
+        "seam). None when no cause is stated.",
+    )
 
 
 # ============================================================
