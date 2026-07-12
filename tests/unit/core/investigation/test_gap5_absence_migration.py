@@ -75,9 +75,17 @@ def test_presence_categories_still_attribute():
     assert (
         "symptom_verified" in CATEGORY_MILESTONE_MAP[EvidenceCategory.SYMPTOM_EVIDENCE]
     )
+    # Causal evidence attributes to solution_proposed. root_cause_identified is
+    # NOT here (#675 / INV-35): identification is engine-derived from cause_state,
+    # never an LLM-claimed milestone, so it could never be attributed via this
+    # map (its only consumer intersects with MilestoneUpdates, which no longer
+    # carries the removed boolean).
+    assert (
+        "solution_proposed" in CATEGORY_MILESTONE_MAP[EvidenceCategory.CAUSAL_EVIDENCE]
+    )
     assert (
         "root_cause_identified"
-        in CATEGORY_MILESTONE_MAP[EvidenceCategory.CAUSAL_EVIDENCE]
+        not in CATEGORY_MILESTONE_MAP[EvidenceCategory.CAUSAL_EVIDENCE]
     )
 
 

@@ -221,6 +221,52 @@ class TestProgressTransparency:
         assert result is not None
         assert result.pending_milestone == "root_cause_identified"
 
+    def test_pending_milestone_advances_past_identified_cause(self, monitor):
+        """#675 regression: once the engine derives cause_state=IDENTIFIED, the
+        pending milestone must advance to solution_proposed — not stay stuck on
+        root_cause_identified. The old getattr(progress, "root_cause_identified")
+        returned None (the boolean was removed by INV-35) and reported it
+        perpetually pending, so post-identification guidance never advanced.
+        """
+        from faultmaven.modules.case.contracts import CauseState
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test Case",
+            state=CaseState.INVESTIGATING,
+            user_id="user_123",
+            organization_id="org_123",
+            description="Test description",
+            problem_verification=ProblemVerification(
+                symptom_statement="Test symptom", severity="HIGH"
+            ),
+            inquiry=InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                proposed_problem_statement="Test symptom",
+            ),
+            # symptom verified AND cause identified (engine-derived) — the only
+            # DIAGNOSIS milestone left is solution_proposed.
+            progress=InvestigationProgress(
+                symptom_verified=True,
+                cause_state=CauseState.IDENTIFIED,
+                root_cause_likelihood=0.7,
+                root_cause_method="hypothesis_validation",
+            ),
+            turns_without_progress=0,
+        )
+        case.turn_history = [
+            create_turn(1, milestones_completed=["symptom_verified"]),
+            create_turn(2, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_1"]),
+            create_turn(3, outcome=TurnOutcome.DATA_REQUESTED),
+            create_turn(4, outcome=TurnOutcome.DATA_PROVIDED, evidence_added=["ev_2"]),
+        ]
+
+        result = monitor.check_progress(case)
+
+        assert result is not None
+        assert result.pending_milestone == "solution_proposed"
+
 
 # =========================================================================
 # Repair Pattern Tests

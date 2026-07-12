@@ -488,6 +488,56 @@ class TestTransformInvestigating:
         assert result.progress_transparency is not None
         assert result.progress_transparency.cause_assurance == "mechanistic"
 
+    def test_progress_transparency_advances_past_identified_cause(self):
+        """#675 regression on the user-facing path: once cause_state=IDENTIFIED,
+        the surfaced pending milestone advances to solution_proposed — not stuck
+        on root_cause_identified. The old getattr(progress, milestone_name)
+        returned False for the INV-35-removed boolean and reported it perpetually
+        pending in the CaseUIResponse."""
+        from datetime import datetime, timezone
+
+        from faultmaven.modules.case.domain.models import (
+            CauseState,
+            InvestigationProgress,
+            TurnOutcome,
+            TurnProgress,
+        )
+
+        case = _make_investigating_case()
+        # symptom verified AND cause identified (engine-derived); only
+        # solution_proposed remains in DIAGNOSIS.
+        case.progress = InvestigationProgress(
+            symptom_verified=True,
+            cause_state=CauseState.IDENTIFIED,
+            root_cause_likelihood=0.7,
+            root_cause_method="hypothesis_validation",
+        )
+        case.turn_history = [
+            TurnProgress(
+                turn_number=i,
+                timestamp=datetime.now(timezone.utc),
+                milestones_completed=[],
+                evidence_added=[f"ev_{i}"] if i % 2 == 0 else [],
+                hypotheses_generated=[],
+                hypotheses_validated=[],
+                solutions_proposed=[],
+                progress_made=False,
+                outcome=(
+                    TurnOutcome.DATA_PROVIDED
+                    if i % 2 == 0
+                    else TurnOutcome.DATA_REQUESTED
+                ),
+                user_message_summary="test",
+                agent_response_summary="test",
+            )
+            for i in range(6)
+        ]
+
+        result = transform_case_for_ui(case)
+
+        assert result.progress_transparency is not None
+        assert result.progress_transparency.pending_milestone == "solution_proposed"
+
 
 # ============================================================
 # RESOLVED Phase Tests
