@@ -525,6 +525,9 @@ class TestInvestigationServiceIntentDispatch:
             intent_kwargs["action"] = "accept"
         elif intent_value == IntentType.EVIDENCE_NEED:
             intent_kwargs["evidence_need_id"] = "eneed_test12345"
+        elif intent_value == IntentType.FILE_RECLASSIFICATION:
+            intent_kwargs["file_id"] = "file_test12345678"
+            intent_kwargs["data_type"] = "logs_and_errors"
 
         payload = TurnPayload(query="test", intent=QueryIntent(**intent_kwargs))
 
@@ -537,6 +540,11 @@ class TestInvestigationServiceIntentDispatch:
         except ValidationException:
             # NOT_IMPLEMENTED intents (e.g., EVIDENCE_NEED) raise this
             # — 422 to the client, contract gap surfaced honestly.
+            pass
+        except NotFoundError:
+            # A contract-valid intent may reference a resource the sample
+            # case lacks (FILE_RECLASSIFICATION's stub file_id) — 404 to
+            # the client; the dispatch itself routed correctly.
             pass
         except ServiceException as e:
             # Any ServiceException wrapping "Unknown intent type" is the

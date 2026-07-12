@@ -26,6 +26,7 @@ class TestIntentTypeEnum:
             "evidence_need",
             "confirmation",
             "greeting",
+            "file_reclassification",
         }
         assert {t.value for t in IntentType} == expected
 

@@ -247,6 +247,14 @@ def _build_classification_clarification_suggestions(
     `suggested_types` plus a "Something else" fallback. Always emits at least
     the fallback when any classification_failed is present.
 
+    Each suggestion carries an engine-owned ``file_reclassification`` intent
+    (file_id + target DataType) so any client that forwards suggestion intent
+    on click — the cross-client contract — resolves the choice through the
+    structured reclassification handler, never as a free-text turn the LLM
+    might act on literally (e.g. by deep-analyzing the file instead of
+    re-labeling it). The ``payload`` remains the human-readable record of the
+    choice; intent routing takes precedence over it server-side.
+
     Returns an empty list when no classification failure occurred this turn.
     """
     failed = [r for r in preprocess_results if r.classification_failed]
@@ -255,6 +263,14 @@ def _build_classification_clarification_suggestions(
 
     target = failed[0]
     filename = target.attachment_filename or "the uploaded file"
+    file_id = target.uploaded_file.file_id
+
+    def _intent(dt_value: str) -> Dict[str, Any]:
+        return {
+            "type": IntentType.FILE_RECLASSIFICATION.value,
+            "file_id": file_id,
+            "data_type": dt_value,
+        }
 
     suggestions: List[SuggestedActionResponse] = []
     seen: set = set()
@@ -275,9 +291,10 @@ def _build_classification_clarification_suggestions(
                 type="DECIDE",
                 payload=(
                     f'Treat the previously uploaded file ("{filename}") as '
-                    f'{friendly["long"]} and analyze it.'
+                    f'{friendly["long"]}.'
                 ),
                 body=f'Treat as {friendly["long"]}.',
+                intent=_intent(dt_value),
             )
         )
         if len(suggestions) >= 3:
@@ -290,9 +307,10 @@ def _build_classification_clarification_suggestions(
             type="DECIDE",
             payload=(
                 f'Treat the previously uploaded file ("{filename}") as '
-                f"{_CLARIFICATION_FALLBACK_LONG} and try to analyze it."
+                f"{_CLARIFICATION_FALLBACK_LONG}."
             ),
             body=f"Treat as {_CLARIFICATION_FALLBACK_LONG}.",
+            intent=_intent("unstructured_text"),
         )
     )
 
@@ -369,6 +387,11 @@ _INTENT_DISPATCH: Dict[IntentType, _IntentDispatchKind] = {
     IntentType.CONFIRMATION: _IntentDispatchKind.SERVICE,
     IntentType.HYPOTHESIS_ACTION: _IntentDispatchKind.SERVICE,
     IntentType.GREETING: _IntentDispatchKind.SERVICE,
+    # FILE_RECLASSIFICATION resolves a classification_failed upload: the
+    # clarification DECIDE suggestions carry this intent (file_id + target
+    # DataType) and the handler re-runs preprocessing mechanically — no LLM
+    # call, so it can never mistake the choice for an analysis request.
+    IntentType.FILE_RECLASSIFICATION: _IntentDispatchKind.SERVICE,
     IntentType.CONVERSATION: _IntentDispatchKind.ENGINE,
     # EVIDENCE_NEED (renamed from EVIDENCE_REQUEST in Phase 2 of the
     # evidence-needs redesign) is in the IntentType enum and has a
@@ -653,6 +676,12 @@ class InvestigationService:
                     )
                 elif intent_type == IntentType.GREETING:
                     result = await self._handle_greeting(case=case)
+                elif intent_type == IntentType.FILE_RECLASSIFICATION:
+                    result = await self._handle_file_reclassification(
+                        case=case,
+                        file_id=intent.file_id if intent else None,
+                        data_type_value=intent.data_type if intent else None,
+                    )
                 else:
                     # Dispatch table claims SERVICE but there's no handler.
                     # This is a developer error (added entry but not a
@@ -721,11 +750,28 @@ class InvestigationService:
                 agent_response_text = redaction_ctx.reverse(agent_response_text)
 
             # 3b. Store suggestions with intent metadata for next turn's
-            #      intent resolver (bounded choice matching).
+            #      intent resolver (bounded choice matching). Clarification
+            #      suggestions (classification_failed this turn) are built
+            #      here — before the save — so a user who *types* a choice
+            #      ("application logs") instead of clicking resolves to the
+            #      same file_reclassification intent as a click.
+            clarification = _build_classification_clarification_suggestions(
+                preprocess_results
+            )
             raw_follow_ups = result.get("suggested_follow_ups", [])
-            updated_case.last_suggestions = [
-                s for s in raw_follow_ups if s.get("intent")
-            ] or None
+            updated_case.last_suggestions = (
+                [
+                    {
+                        "label": s.label,
+                        "action_type": s.type,
+                        "payload": s.payload,
+                        "body": s.body,
+                        "intent": s.intent,
+                    }
+                    for s in clarification
+                ]
+                + [s for s in raw_follow_ups if s.get("intent")]
+            ) or None
 
             # 4. Save agent response AND user message atomically.
             #    The user message was appended in-memory at step 2 but not
@@ -759,12 +805,10 @@ class InvestigationService:
                 for f in raw_follow_ups
             ]
 
-            # Prepend classification-clarification suggestions when this turn's
-            # attachment hit classification_failed. User-in-the-loop guidance
-            # takes priority over generic follow-up suggestions from the engine.
-            clarification = _build_classification_clarification_suggestions(
-                preprocess_results
-            )
+            # Prepend classification-clarification suggestions (built at 3b)
+            # when this turn's attachment hit classification_failed.
+            # User-in-the-loop guidance takes priority over generic
+            # follow-up suggestions from the engine.
             if clarification:
                 suggested_actions = clarification + suggested_actions
 
@@ -1064,7 +1108,7 @@ class InvestigationService:
         uploaded_file.summary = preprocessing_result.summary
         uploaded_file.structural_index = preprocessing_result.structural_index
         uploaded_file.data_type = _infer_source_type(
-            preprocessing_result.data_type
+            preprocessing_result.detailed_data_type
         ).value
         uploaded_file.coverage_start_ts = preprocessing_result.coverage_start_ts
         uploaded_file.coverage_end_ts = preprocessing_result.coverage_end_ts
@@ -1258,6 +1302,171 @@ class InvestigationService:
             verification_status=verification_status,
             cause_assurance=cause_assurance,
         )
+
+    async def _handle_file_reclassification(
+        self,
+        case: "Case",
+        file_id: Optional[str],
+        data_type_value: Optional[str],
+    ) -> Dict[str, Any]:
+        """Resolve a classification_failed upload by reclassifying its file.
+
+        Engine-owned resolution for the classification-clarification
+        suggestions (see ``_build_classification_clarification_suggestions``):
+        the user's click/typed choice arrives as a ``file_reclassification``
+        intent carrying the UploadedFile ID and the target DataType. The
+        handler re-runs preprocessing under ``user_override`` and updates the
+        file's artifacts — mechanically, with no LLM call, so the choice can
+        never be misread as an analysis request.
+
+        Post-010: preprocessing artifacts (data_type, summary,
+        structural_index) land on the UploadedFile. Any Evidence rows already
+        backed by this file get their ``source_type`` re-aligned; usually
+        there are none at clarification time (Evidence is born later, during
+        INVESTIGATING).
+
+        Returns:
+            Result dict with deterministic agent response and updated case.
+
+        Raises:
+            ValidationException: missing/unknown intent fields, or the file
+                has no stored raw bytes to re-extract (→ 422).
+            NotFoundError: file_id not in this case, or the stored blob is
+                gone from storage (→ 404).
+            ServiceException: storage/preprocessing service unavailable
+                (→ 500).
+        """
+        if not file_id or not data_type_value:
+            raise ValidationException(
+                "file_id and data_type required for file_reclassification intent",
+                {"field": "file_id" if not file_id else "data_type"},
+            )
+        try:
+            data_type = DataType(data_type_value)
+        except ValueError:
+            valid = ", ".join(t.value for t in DataType)
+            raise ValidationException(
+                f"Unknown data_type '{data_type_value}'. Valid: {valid}",
+                {"field": "data_type"},
+            )
+
+        logger.info(
+            f"Processing file reclassification: {file_id} → {data_type.value} "
+            f"for case {case.case_id}"
+        )
+
+        file_index = next(
+            (
+                i
+                for i, uf in enumerate(case.uploaded_files or [])
+                if uf.file_id == file_id
+            ),
+            None,
+        )
+        if file_index is None:
+            raise NotFoundError("UploadedFile", file_id)
+        file_meta = case.uploaded_files[file_index]
+
+        if not file_meta.storage_ref:
+            raise ValidationException(
+                f"Uploaded file {file_id} has no stored raw content — "
+                "reclassification requires re-running the extractor over "
+                "the original bytes.",
+                {"field": "file_id"},
+            )
+        if not self.file_storage_service:
+            raise ServiceException(
+                "File storage service unavailable; cannot re-extract"
+            )
+        if not self.preprocessing_service:
+            raise ServiceException(
+                "Preprocessing service unavailable; cannot reclassify"
+            )
+
+        # NotFoundError from storage (blob missing) passes through process_turn
+        # unwrapped → 404, never a 5xx on a clicked suggestion.
+        raw_bytes = await self.file_storage_service.retrieve_file(file_meta.storage_ref)
+        filename = file_meta.filename or "the uploaded file"
+        if _is_binary_content(filename, file_meta.content_type, raw_bytes):
+            content = _binary_placeholder(
+                filename, file_meta.content_type, len(raw_bytes)
+            )
+        else:
+            content = raw_bytes.decode("utf-8", errors="replace")
+
+        preprocessing_result = await self.preprocessing_service.reclassify_evidence(
+            content=content,
+            filename=filename,
+            user_override=data_type,
+            previous_metadata=None,
+        )
+
+        previous_type = file_meta.data_type or "unknown"
+        # detailed_data_type is the fine-grained DataType the map is keyed by;
+        # the coarse UnifiedDataType in ``data_type`` never matches its keys.
+        new_source_type = _infer_source_type(preprocessing_result.detailed_data_type)
+
+        new_files_list = list(case.uploaded_files)
+        new_files_list[file_index] = file_meta.model_copy(
+            update={
+                "data_type": new_source_type.value,
+                "summary": preprocessing_result.summary,
+                "structural_index": preprocessing_result.structural_index,
+            },
+            deep=True,
+        )
+
+        # Re-align Evidence rows already backed by this file (claim content —
+        # the LLM-authored summary/extract — stays untouched).
+        new_evidence_list = list(case.evidence or [])
+        for i, ev in enumerate(new_evidence_list):
+            if ev.source_file_id == file_id:
+                new_evidence_list[i] = ev.model_copy(
+                    update={"source_type": new_source_type}, deep=True
+                )
+
+        updated_case = case.model_copy(
+            update={
+                "uploaded_files": new_files_list,
+                "evidence": new_evidence_list,
+            },
+            deep=True,
+        )
+
+        EVIDENCE_RECLASSIFICATION_TOTAL.labels(
+            from_type=str(previous_type),
+            to_type=preprocessing_result.data_type.value,
+            trigger="clarification",
+        ).inc()
+
+        friendly = _CLARIFICATION_FRIENDLY_NAMES.get(data_type.value, {}).get(
+            "long"
+        ) or data_type.value.replace("_", " ")
+        agent_response = f'Got it — I\'ve recorded "{filename}" as {friendly}.'
+        if preprocessing_result.summary:
+            agent_response += f"\n\n{preprocessing_result.summary}"
+
+        return {
+            "agent_response": agent_response,
+            "suggested_follow_ups": [
+                {
+                    "label": "Analyze it now",
+                    "action_type": "DECIDE",
+                    "payload": f'Analyze the file "{filename}".',
+                    "body": "Run the analysis with the corrected classification.",
+                }
+            ],
+            "case_updated": updated_case,
+            "metadata": {
+                "progress_made": False,
+                "milestones_completed": [],
+                "file_reclassified": {
+                    "file_id": file_id,
+                    "from_type": str(previous_type),
+                    "to_type": new_source_type.value,
+                },
+            },
+        }
 
     async def _handle_greeting(self, case: "Case") -> Dict[str, Any]:
         """Handle greeting intent without LLM.
@@ -1538,12 +1747,15 @@ class InvestigationService:
             ),
             None,
         )
+        # detailed_data_type is the fine-grained DataType the source-type map
+        # is keyed by; the coarse UnifiedDataType in ``data_type`` never
+        # matches its keys (every lookup fell through to TEXT).
         new_files_list = list(case.uploaded_files or [])
         if file_index is not None:
             new_files_list[file_index] = file_meta.model_copy(
                 update={
                     "data_type": _infer_source_type(
-                        preprocessing_result.data_type
+                        preprocessing_result.detailed_data_type
                     ).value,
                     "summary": preprocessing_result.summary,
                     "structural_index": preprocessing_result.structural_index,
@@ -1553,7 +1765,9 @@ class InvestigationService:
 
         updated_evidence = evidence.model_copy(
             update={
-                "source_type": _infer_source_type(preprocessing_result.data_type),
+                "source_type": _infer_source_type(
+                    preprocessing_result.detailed_data_type
+                ),
                 "metadata": new_evidence_metadata,
             },
             deep=True,
