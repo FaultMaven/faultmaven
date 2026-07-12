@@ -202,6 +202,27 @@ rate(faultmaven_close_pivoted_to_resolve_total[24h])
 
 Matrix row: INV-37 in `investigation-invariants.md`; lifecycle-logic §1.2 (SUGGEST_RESOLVE pivot).
 
+## INV-39: provider-floor work-gate crossing (§5.2)
+
+- `faultmaven_work_gate_crossed_total{provider}` — a case crossed the §5.2 work gate (≥2 hypotheses across ≥2 categories with ≥2 evidence) for the first time, labeled by the CHAT provider driving the investigation. One increment per case (latched on `InvestigationProgress.work_gate_crossed`); a later drop below the gate never re-counts. This is the metric surface for the "provider floor" the design has documented since the insufficient-evidence work: `work_gate_passed` is the observability primitive for whether a *configured* provider gets real diagnostic work across the gate.
+
+**What it is (and isn't).** This is a **provider-health** signal, not a per-case verdict and not an engine gate — it never changes engine behavior. A single honest UNRESOLVED case that never crosses is normal (the case may simply have no groundable cause from available data). The signal is in the crossing rate **normalized by that provider's investigation volume**: a provider carrying heavy investigation traffic but crossing the gate rarely is mis-provisioned (too weak to populate a differential — the incident shape, `gemini-3.1-flash-lite` spinning without ever crossing). Read it beside the boot-time tool-calling capability gate (`config/investigation_capability.py`): that gate catches a provider that *can't* gather evidence at startup; this metric catches, at runtime, a provider that *doesn't* build a differential.
+
+The load-bearing read is a **ratio** — crossings over volume — using the existing per-provider LLM-request counter (`faultmaven_llm_requests_total{provider}`, `infrastructure/observability/tracing.py`) as the volume denominator (there is no per-provider case counter, and this metric deliberately does not add one — the request counter is the available volume signal):
+
+```promql
+# Per-provider crossing rate — the numerator.
+sum by (provider) (rate(faultmaven_work_gate_crossed_total[24h]))
+
+# Provider floor: crossings per unit of that provider's investigation volume.
+# A value near zero for a provider with non-trivial request volume is the
+# mis-provisioning signal.
+  sum by (provider) (rate(faultmaven_work_gate_crossed_total[24h]))
+/ sum by (provider) (rate(faultmaven_llm_requests_total{status="success"}[24h]))
+```
+
+Matrix row: INV-39 in `investigation-invariants.md`; insufficient-evidence-handling §5.2 (provider floor).
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:
