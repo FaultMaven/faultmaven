@@ -393,6 +393,20 @@ class TestNotYetProductivePullback:
         assert gate == "not_yet_productive"
         assert len(affordances) == 2
 
+    def test_pullback_fires_on_the_literal_empty_graph(self):
+        # The truest #656 shape: 0 hypotheses AND 0 evidence (`case_5db5417fe445`
+        # spun with an empty graph). The vacuum reading is invariant to evidence
+        # — `is_stalled` reads only the turn counters and `work_gate_passed` fails
+        # on 0 hypotheses regardless of evidence — so the pull-back still fires.
+        # Pins that the corrective covers the literal empty-graph spin, not only
+        # the evidence-present fixture.
+        case = _hypothesis_vacuum_case()
+        case.evidence = []
+        assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+        assert _hypothesis_vacuum_pending(case) is True
+        gate, _ = engine_owned_affordances(case)
+        assert gate == "not_yet_productive"
+
     def test_no_pullback_before_the_stall_floor(self):
         # NOT_YET_PRODUCTIVE is true from turn 1 (work gate unmet); the pull-back
         # must wait until the vacuum has PERSISTED past the stall thresholds —
