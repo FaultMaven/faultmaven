@@ -356,13 +356,21 @@ class ProgressMonitor:
 
         stage_name = stage.value.upper()
 
+        # Completion is read from the canonical ``completed_milestones`` property,
+        # NOT ``getattr(progress, milestone_name)``. INV-35 removed the
+        # ``root_cause_identified`` boolean (identification is engine-derived from
+        # ``cause_state``) and ``mitigation_verified`` lives on the mitigation
+        # record — so a plain getattr returns None for those and reports them
+        # perpetually pending, stalling post-symptom / post-mitigation guidance
+        # (#675). ``completed_milestones`` maps every milestone name to its real
+        # signal (cause_state, the mitigation record, the bool indicators).
+        completed = set(case.progress.completed_milestones)
+
         for milestone_name, info in MILESTONE_DEPENDENCIES.items():
             if info["stage"] != stage_name:
                 continue
 
-            # Check if this milestone is already completed
-            milestone_value = getattr(case.progress, milestone_name, None)
-            if not milestone_value:
+            if milestone_name not in completed:
                 return (milestone_name, info)
 
         return None

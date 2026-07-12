@@ -233,9 +233,18 @@ def _compute_progress_transparency(
         case.progress.cause_assurance.value if case.progress.cause_assurance else None
     )
 
+    # Completion is read from the canonical ``completed_milestones`` property,
+    # NOT ``getattr(progress, milestone_name)`` (#675): INV-35 removed the
+    # ``root_cause_identified`` boolean (identification is engine-derived from
+    # ``cause_state``) and ``mitigation_verified`` lives on the mitigation
+    # record — a plain getattr returns False for both and would stick the
+    # user-facing pending milestone on root_cause_identified forever after the
+    # cause is identified. ``completed_milestones`` maps every milestone name to
+    # its real signal.
+    completed = set(case.progress.completed_milestones)
     milestones = stage_milestones.get(stage_name, [])
     for milestone_name in milestones:
-        if not getattr(case.progress, milestone_name, False):
+        if milestone_name not in completed:
             return ProgressTransparencyInfo(
                 active=True,
                 pending_milestone=milestone_name,
