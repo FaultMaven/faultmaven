@@ -465,11 +465,26 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
                     root_cause_category = hyp.category.value
                     break
 
+    # Assurance grade for read-time labeling (#572/INV-28): recomputed from the
+    # causal graph, NOT read from the persisted progress.cause_assurance field —
+    # terminal cases never recompute, so the persisted field can read a stale
+    # ``no_root`` default and would falsely discredit a validated conclusion. This
+    # mirrors the report service's ``_assurance_note`` for the same reason.
+    from faultmaven.core.investigation.cause_assurance import (
+        conclusion_overclaims,
+        grade_cause_assurance,
+    )
+
+    cause_grade = grade_cause_assurance(case)
+    cause_overclaim = conclusion_overclaims(case.root_cause_conclusion, cause_grade)
+
     root_cause = RootCauseSummary(
         description=root_cause_desc,
         root_cause_id=root_cause_id,
         category=root_cause_category,
         severity=root_cause_severity,
+        cause_assurance=cause_grade.value,
+        cause_overclaim=cause_overclaim,
     )
 
     # Extract solution from case (if solutions tracked)

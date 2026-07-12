@@ -193,6 +193,22 @@ class RootCauseSummary(BaseModel):
         description="Severity: critical | high | medium | low", max_length=50
     )
 
+    cause_assurance: str = Field(
+        description="Engine-derived assurance grade behind this cause "
+        "(no_root | mechanistic | confirmed), recomputed from the causal graph. "
+        "The read-time label #572/INV-28 requires beside the cause text: only "
+        "'confirmed' is counterfactually verified; 'mechanistic' is identified but "
+        "unconfirmed; 'no_root' was stated by the assistant without graph validation.",
+        max_length=50,
+    )
+
+    cause_overclaim: bool = Field(
+        default=False,
+        description="True when the conclusion claims 'verified' certainty while the "
+        "assurance grade is below 'confirmed' (conclusion_overclaims seam). The "
+        "frontend should surface a caution affordance when set.",
+    )
+
 
 class SolutionSummary(BaseModel):
     """Solution information for RESOLVED phase."""

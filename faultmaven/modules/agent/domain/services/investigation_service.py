@@ -768,6 +768,25 @@ class InvestigationService:
             if clarification:
                 suggested_actions = clarification + suggested_actions
 
+            # Read-time assurance grade for narration-only clients (#572/INV-28):
+            # present whenever the case has stated a root cause, recomputed from
+            # the causal graph so a resolution turn (which never recomputes the
+            # persisted progress field) still carries the true grade beside the
+            # cause claim the LLM wrote into agent_response.
+            turn_cause_assurance = None
+            turn_cause_overclaim = None
+            if updated_case.root_cause_conclusion is not None:
+                from faultmaven.core.investigation.cause_assurance import (
+                    conclusion_overclaims,
+                    grade_cause_assurance,
+                )
+
+                _grade = grade_cause_assurance(updated_case)
+                turn_cause_assurance = _grade.value
+                turn_cause_overclaim = conclusion_overclaims(
+                    updated_case.root_cause_conclusion, _grade
+                )
+
             response = TurnResponse(
                 agent_response=agent_response_text,
                 turn_number=updated_case.current_turn,
@@ -796,6 +815,8 @@ class InvestigationService:
                 progress_transparency=self._build_progress_transparency(
                     result.get("metadata", {}), updated_case
                 ),
+                cause_assurance=turn_cause_assurance,
+                cause_overclaim=turn_cause_overclaim,
             )
 
             logger.info(
