@@ -74,10 +74,11 @@ inquiry_handshake_recovered_total = Counter(
 engine_owned_affordance_served_total = Counter(
     "faultmaven_engine_owned_affordance_served_total",
     "Engine-owned gate affordances served. Labels: gate "
-    "(gate1 | disposition). Counts turns where the engine "
+    "(disposition | gate1 | insufficient_evidence | not_yet_productive). "
+    "Counts turns where the engine "
     "substituted the canonical clickable affordance pair for a pending "
-    "state-machine gate, regardless of LLM compliance with the prompt's "
-    "suggestion-emission directives.",
+    "state-machine gate or mid-investigation reading, regardless of LLM "
+    "compliance with the prompt's suggestion-emission directives.",
     ["gate"],
 )
 
