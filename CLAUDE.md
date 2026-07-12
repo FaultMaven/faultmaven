@@ -738,6 +738,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Admin | `GET /admin/llm/config` | LLM provider status and fallback chain |
 | Admin | `POST /admin/llm/config/test` | Test provider connection |
 | Admin | `GET /admin/config/status` | Environment configuration status |
+| Admin | `GET /admin/cases` | Cross-tenant case list (all users/orgs) — platform-admin only; **standalone only** (403 in cloud until audited break-glass, ADR-012 D9); audited access |
 
 **Health & Metrics Endpoints:**
 
