@@ -422,3 +422,37 @@ narration_overclaim_total = Counter(
     "a wrong disposition reached a terminal surface.",
     ["provider"],
 )
+
+
+# INV-41 (#673 dual-authoring retirement gate, §7.7). #673 — retire the LLM
+# free-text conclusion and derive it from the validated chain — is the design's
+# recorded endpoint, GATED on "reliable chain-grounding". That gate was prose
+# with no instrument. This metric makes it measurable: at each RESOLVED
+# transition, which leg of ``_cause_identified`` licensed the resolution.
+# Labels:
+#   - ``chain`` — cause_state=IDENTIFIED (a validated chain root): healthy, NOT
+#     backstop-reliant.
+#   - ``rcc`` — the LLM free-text ``root_cause_conclusion`` backstop, with no
+#     chain-validated root.
+#   - ``working_conclusion`` — the engine working-conclusion proxy backstop.
+#   - ``none`` — resolved with no identified cause (causal-absence alone).
+# The **backstop-reliance rate** ``(rcc + working_conclusion) / all`` per
+# provider is the #673 retirement gate: while it is materially non-zero at the
+# INV-39 provider floor, retiring the free-text backstop would strand exactly
+# those resolutions (a NO-COLLAPSE regression for the weakest supported
+# provider). Fires ONCE per resolution (RESOLVED is terminal/one-way — no latch
+# needed). Metric-only: it never changes engine behavior; it is the
+# observability half of the #673 decision, as INV-39 is for the §5.2 floor.
+# Read as a trend against per-provider resolution volume, never to the single
+# case — one backstop-reliant resolution is normal; a SUSTAINED rate at the
+# provider floor is the retirement blocker.
+resolution_cause_leg_total = Counter(
+    "faultmaven_resolution_cause_leg_total",
+    "Which leg of cause-identification licensed a RESOLVED transition, labeled by "
+    "CHAT ``provider`` and ``leg`` (chain | rcc | working_conclusion | none). The "
+    "backstop-reliance rate (rcc+working_conclusion)/all per provider is the #673 "
+    "dual-authoring retirement gate (INV-41); it must clear at the INV-39 provider "
+    "floor before the free-text conclusion can be retired. One increment per "
+    "resolution.",
+    ["provider", "leg"],
+)

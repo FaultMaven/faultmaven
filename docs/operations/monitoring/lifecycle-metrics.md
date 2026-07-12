@@ -223,6 +223,25 @@ sum by (provider) (rate(faultmaven_work_gate_crossed_total[24h]))
 
 Matrix row: INV-39 in `investigation-invariants.md`; insufficient-evidence-handling §5.2 (provider floor).
 
+## INV-41: #673 dual-authoring retirement gate (backstop-reliance)
+
+- `faultmaven_resolution_cause_leg_total{provider, leg}` — at each RESOLVED transition, which leg of `_cause_identified` licensed the resolution: `chain` (`cause_state=IDENTIFIED`, a validated chain root — healthy), `rcc` (the LLM free-text `root_cause_conclusion` backstop), `working_conclusion` (the engine working-conclusion proxy backstop), or `none` (resolved on causal-absence alone, no identified cause). One increment per resolution, emitted at the shared resolution finalizer (`finalize_resolution_truth_surface`, called by both the chat executor and the dashboard/API resolve) so every resolve surface is covered. The leg is read **pre-stamp** — before the finalizer's confirm-stamp promotes a count-held/decayed root to IDENTIFIED — so a backstop-licensed resolution is never mislabeled `chain`. Labeled by the CHAT provider (resolved from `settings.llm.provider`).
+
+**What it is (and isn't).** #673 — retire the LLM free-text conclusion and derive it from the validated chain — is the design's recorded endpoint (methodology §7.7), **gated** on "reliable chain-grounding". This metric turns that prose gate into a number. It is **metric-only** — it never changes engine behavior. The load-bearing read is the **backstop-reliance rate** per provider: the fraction of resolutions licensed by a backstop leg (`rcc` + `working_conclusion`) rather than the validated `chain`. Retiring the free-text backstop while that rate is materially non-zero **at the INV-39 provider floor** would strand exactly those resolutions — a NO-COLLAPSE regression for the weakest supported provider. A single backstop-reliant resolution is normal; a **sustained** rate at the floor is the retirement blocker.
+
+```promql
+# Backstop-reliance rate per provider — the #673 retirement gate.
+# Retirement is safe only when this trends to ~0 at the provider floor.
+  sum by (provider) (
+    rate(faultmaven_resolution_cause_leg_total{leg=~"rcc|working_conclusion"}[7d])
+  )
+/ sum by (provider) (rate(faultmaven_resolution_cause_leg_total[7d]))
+```
+
+Read it beside INV-39: INV-39 says whether a provider builds a differential at all; INV-41 says, of the resolutions it does reach, how many still lean on the free-text backstop instead of a validated chain. Both must clear at the provider floor before #673 can proceed.
+
+Matrix row: INV-41 in `investigation-invariants.md`; methodology §7.7 (#673 gate).
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:

@@ -36,6 +36,7 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
+    resolution_cause_leg_total,
 )
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
@@ -60,88 +61,90 @@ from faultmaven.modules.case.contracts import (
 CAUSE_IDENTIFIED_LIKELIHOOD = 0.6
 
 
-def _cause_identified(case: "Case") -> bool:
-    """Whether the root cause is known, per the authoritative signal.
+def cause_identification_leg(case: "Case") -> "str | None":
+    """Which leg of the cause-identification gate is satisfied, or ``None``.
 
-    The engine-derived ``progress.cause_state`` (CauseState.IDENTIFIED) is the
-    truth signal for cause-knowledge — recomputed every turn and never
-    path-stripped (two-dimensional-hypothesis-methodology.md §9.2; the R1
-    cause_state gate is recorded in investigation-invariants.md's
-    INV-17/19/20/21 flow-redesign retirement note, #411). It is the
-    primary check here. The ``root_cause_conclusion`` / ``working_conclusion``
-    fields are kept as a fallback only: the LLM does not always populate the
-    documented conclusion even when the cause IS identified (cause_state is set
-    but root_cause_conclusion is empty), so relying on those proxies alone
-    under-reports a known cause and stalls an otherwise resolvable case. See the
-    k8s-pvc gate failure — the same stale-signal trap the redesign set out to
-    remove.
+    The single source of truth for cause-knowledge. Returns the FIRST satisfied
+    leg, in trust order:
 
-    The two fallback proxies are gated on a **verified symptom**: cause
-    identification is anchored on evidence that the problem exists, so an
-    unanchored conclusion (emitted before the symptom is verified, or left stale
-    after a symptom claim is withdrawn) does not count as a known cause. The
-    primary ``cause_state`` check already implies a verified symptom.
+    - ``"chain"`` — the engine-derived ``progress.cause_state`` is
+      ``IDENTIFIED``: a validated, uncontested chain root. This is the
+      authoritative signal — recomputed every turn and never path-stripped
+      (two-dimensional-hypothesis-methodology.md §9.2; the R1 cause_state gate is
+      recorded in investigation-invariants.md's INV-17/19/20/21 flow-redesign
+      retirement note, #411).
+    - ``"rcc"`` — the LLM-authored ``root_cause_conclusion`` **backstop**: the
+      chain recompute under-reported ``cause_state`` (the LLM grounded the cause
+      without the chain formally validating), but the conclusion names a cause.
+    - ``"working_conclusion"`` — the engine working-conclusion proxy
+      **backstop**: a standing hypothesis above ``CAUSE_IDENTIFIED_LIKELIHOOD``.
+    - ``None`` — no leg; the cause is not known.
 
-    Scope: the anchor is enforced here, at the authoritative gate that drives
-    disposition / the M5 solution gate. Other readers of ``root_cause_conclusion``
-    (the report renderer, the case UI) may surface an unanchored RCC mid-
-    investigation, which is informational only; the one consequential consumer —
-    KB runbook harvesting — runs on RESOLVED cases, by which point the symptom is
-    verified, so it never harvests an unanchored cause. If a non-terminal RCC
-    harvest is ever added, enforce the anchor at RCC production instead.
+    The ``rcc``/``working_conclusion`` legs are kept because the LLM does not
+    always populate the conclusion even when the cause IS identified — relying on
+    the proxies alone under-reports a known cause and stalls an otherwise
+    resolvable case (the k8s-pvc gate failure). Both backstop legs are gated on a
+    **verified symptom** (the evidence-grounded anchor: an unanchored or stale
+    conclusion, emitted before the symptom is verified or left behind after a
+    symptom claim is withdrawn, must not report the cause as known) and suppressed
+    while identification is MECE-contested (§7.1.2 / INV-34: the arbitrary pick
+    between competing validated causes, or an LLM over-claim of ONE contested
+    cause, is READ-suppressed — not retracted — until the contest resolves; a
+    decisively DISCONFIRMED RCC is already ``None`` here, retracted at source via
+    retract_disconfirmed_rcc / the M6 demotion, so every consumer sees one truth).
+    The ``chain`` leg already implies a verified, uncontested cause, so these
+    constraints only bind the backstops.
+
+    The ``chain`` vs ``rcc``/``working_conclusion`` split is exactly the #673
+    dual-authoring retirement gate: a resolution licensed by a backstop leg with
+    no validated chain root is what INV-41's ``resolution_cause_leg_total``
+    measures at the provider floor.
+
+    Scope: enforced here, at the authoritative gate that drives disposition / the
+    M5 solution gate. Other readers of ``root_cause_conclusion`` (the report
+    renderer, the case UI) may surface an unanchored RCC mid-investigation
+    (informational only); the one consequential consumer — KB runbook harvesting —
+    runs on RESOLVED cases (symptom verified), so it never harvests an unanchored
+    cause. If a non-terminal RCC harvest is ever added, enforce the anchor at RCC
+    production instead.
     """
     if (
         case.progress
         and getattr(case.progress, "cause_state", None) == CauseState.IDENTIFIED
     ):
-        return True
+        return "chain"
 
-    # Fallback signals below cover the case where the cause is genuinely known
-    # but the chain recompute under-reported ``cause_state`` (the LLM grounded the
-    # cause without the chain formally validating). They are trusted ONLY once the
-    # symptom is verified: the verified symptom is the evidence-grounded anchor for
-    # cause identification, so an unanchored or stale conclusion — one emitted
-    # before the symptom is verified, or left behind after a symptom claim is
-    # withdrawn — must not report the cause as known and let the resolution /
-    # closure / solution gates diverge from the ``cause_state`` signal. (The
-    # primary ``cause_state == IDENTIFIED`` check above already implies a verified
-    # symptom, so this anchor only constrains the fallbacks.)
+    # Backstop legs are trusted ONLY once the symptom is verified.
     if not (case.progress and getattr(case.progress, "symptom_verified", False)):
-        return False
+        return None
 
-    # §7.1.2 / INV-34 (#656): while identification is MECE-contested, NO
-    # fallback proxy counts as an identified cause. This gates BOTH proxies:
-    #   * the ENGINE working conclusion (max-likelihood standing hypothesis) — the
-    #     arbitrary pick between competing validated causes the hold withholds;
-    #   * an LLM-authored root_cause_conclusion — the LLM asserting ONE contested
-    #     cause is exactly the over-claim the hold exists to suppress.
-    # This is READ-TIME SUPPRESSION, not retraction: the conclusion is preserved
-    # (informational in the report/UI) and re-counts the moment the contest
-    # resolves — a validated LLM stance may yet be borne out, so erasing it would
-    # be a NO-COLLAPSE breach. Decisive DISCONFIRMATION is the separate, one-way
-    # case, handled at source (retract_disconfirmed_rcc / M6). The primary
-    # cause_state==IDENTIFIED check above already holds at CANDIDATES while
-    # contested; this closes the fallback leak the trust boundary left open.
+    # While identification is MECE-contested, NO backstop proxy counts.
     if getattr(case.progress, "cause_identification_contested", False):
-        return False
+        return None
 
-    # A disconfirmed RootCauseConclusion is retracted at its SOURCE
-    # (causal_graph.retract_disconfirmed_rcc / the M6 demotion, run each turn in
-    # the chain recompute; an LLM conclusion is linked to its cause by
-    # link_llm_rcc_to_cause so it too is reachable — §7.6/INV-34), so by the time
-    # we read it here a disproven cause is already None — every consumer (this
-    # gate, the report, the UI, KB runbooks) sees one truth. No per-reader
-    # disconfirmation guard is needed.
     if case.root_cause_conclusion and getattr(
         case.root_cause_conclusion, "root_cause", None
     ):
-        return True
-    return bool(
+        return "rcc"
+    if (
         case.working_conclusion
         and getattr(case.working_conclusion, "statement", None)
         and getattr(case.working_conclusion, "likelihood", 0)
         >= CAUSE_IDENTIFIED_LIKELIHOOD
-    )
+    ):
+        return "working_conclusion"
+    return None
+
+
+def _cause_identified(case: "Case") -> bool:
+    """Whether the root cause is known, per the authoritative signal.
+
+    Thin predicate over :func:`cause_identification_leg` — the cause is known iff
+    some leg (chain / rcc / working_conclusion) is satisfied. Keeping the leg
+    logic in one place means the INV-41 backstop-reliance metric
+    (``resolution_cause_leg_total``) can never disagree with the gate it observes.
+    """
+    return cause_identification_leg(case) is not None
 
 
 def _has_causal_absence(case: "Case") -> bool:
@@ -169,6 +172,27 @@ def _has_causal_absence(case: "Case") -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_resolution_provider() -> str:
+    """CHAT provider label for the INV-41 backstop-reliance metric.
+
+    Resolved from settings — this finalizer runs on both the chat and API resolve
+    surfaces and has no engine handle. This is **label-equivalent** to
+    ``milestone_engine._resolve_chat_provider_name(self.llm_provider)``: in the
+    real deployment ``self.llm_provider`` is the ``LLMRouter`` (no ``provider_name``),
+    so that helper already falls back to ``settings.llm.provider`` — the same value
+    read here. Returns ``"unknown"`` when it cannot resolve, mirroring INV-39.
+    """
+    try:
+        from faultmaven.config.settings import get_settings
+
+        provider = getattr(getattr(get_settings(), "llm", None), "provider", None)
+        if provider is not None:
+            return getattr(provider, "value", None) or str(provider)
+    except Exception:
+        pass
+    return "unknown"
 
 
 def finalize_resolution_truth_surface(case: "Case") -> bool:
@@ -199,6 +223,20 @@ def finalize_resolution_truth_surface(case: "Case") -> bool:
     progress-blob reload and strands the case — caught live in the INV-29
     sim gate).
     """
+    # INV-41 (#673 retirement gate): record which leg of cause-identification
+    # licensed THIS resolution — captured PRE-STAMP, because the confirm-stamp
+    # below promotes a decayed/count-held root to cause_state=IDENTIFIED, which
+    # would relabel a backstop-licensed resolution as "chain" and understate
+    # backstop reliance (biasing the #673 gate toward premature retirement — the
+    # NO-COLLAPSE regression the gate guards). Emitted HERE because this finalizer
+    # is the single chokepoint every RESOLVED executor shares (the chat-side
+    # _execute_resolved_transition and the dashboard/API ApiCaseService.close_case),
+    # so it fires exactly once per resolution across every surface. Metric-only.
+    resolution_cause_leg_total.labels(
+        provider=_resolve_resolution_provider(),
+        leg=cause_identification_leg(case) or "none",
+    ).inc()
+
     stamped = confirm_root_from_resolution_absence(case)
     # The grade set is refreshed UNCONDITIONALLY: the API surface reaches here
     # without a fresh per-turn recompute, so even a no-stamp resolve must not
