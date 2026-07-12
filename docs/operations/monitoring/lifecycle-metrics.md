@@ -50,7 +50,7 @@ The thresholds (`< 0.7`, `> 10`) are starting points — adjust once a baseline 
 
 **Counter:**
 
-- `faultmaven_engine_owned_affordance_served_total{gate}` — increments each turn the engine substituted the canonical affordance pair for a pending gate. Label `gate` takes one of: `gate1`, `gate2`, `gate3`, `disposition`.
+- `faultmaven_engine_owned_affordance_served_total{gate}` — increments each turn the engine substituted the canonical affordance pair for a pending gate. Label `gate` takes one of: `gate1`, `disposition`, `insufficient_evidence` (work-gated stall with no grounded cause), `not_yet_productive` (a persisted 0-hypothesis vacuum — the #656 P3.1 pull-back; INV-38). (Historical labels `gate2`/`gate3` were removed with the path fork, redesign R5.) The two mid-investigation labels are mutually exclusive per turn (0 hypotheses vs the ≥2 work gate).
 
 **Load-bearing queries:**
 

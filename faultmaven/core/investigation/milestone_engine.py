@@ -96,6 +96,7 @@ from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
     assess_verification_status,
     is_progress_stalled,
+    is_stalled,
     work_gate_passed,
 )
 from faultmaven.core.investigation.working_conclusion_generator import (
@@ -1775,6 +1776,95 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     return assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
 
 
+def _hypothesis_vacuum_suggestions() -> list:
+    """Deterministic pull-back affordances for the NOT_YET_PRODUCTIVE vacuum
+    (#656 P3.1, INV-38).
+
+    The engine's half of the corrective is the *moves*; the boundary statement —
+    *why* nothing has grounded — stays model-authored in the prose. These moves
+    pull the investigation back to the basis a hypothesis needs: a precise symptom
+    and a place to look. They are keep-engaging by construction (re-establish the
+    diagnostic direction), never steering toward close — the engine nudging
+    abandonment would be soft-collapse (D4), and the vacuum is the engine's own
+    failure to elicit, not the case's to give up on. Non-clickable FREE_SPEECH:
+    the user supplies the content.
+
+    Distinct from ``_insufficient_evidence_handoff_suggestions``: that fires ABOVE
+    the work gate on a built differential and asks for *discriminating* data; this
+    fires with ZERO hypotheses and asks for the *foundational* symptom framing
+    that lets a first hypothesis form at all.
+    """
+    return [
+        {
+            "label": "Describe the expected vs. observed behavior",
+            "action_type": "FREE_SPEECH",
+            "body": (
+                "The investigation hasn't formed a working theory yet. A sharp "
+                "expected-vs-observed contrast — what should happen, what actually "
+                "happens — gives it a symptom precise enough to hypothesize from."
+            ),
+        },
+        {
+            "label": "Point to where the problem shows up",
+            "action_type": "FREE_SPEECH",
+            "body": (
+                "Name a system, signal, or recent change tied to the problem — a "
+                "concrete place to look seeds the first diagnostic direction."
+            ),
+        },
+    ]
+
+
+def _hypothesis_vacuum_pending(case: "Case") -> bool:
+    """Whether the engine should drive the NOT_YET_PRODUCTIVE pull-back this turn
+    (#656 P3.1, DF-6 gap A — the 0-hypothesis corner of NOT_YET_PRODUCTIVE).
+
+    ``assess_verification_status`` returns ``NOT_YET_PRODUCTIVE`` from turn 1
+    whenever the work gate hasn't passed — too early to act on, which is why that
+    status "drives nothing" today (DF-6). This predicate is the corrective: once
+    the vacuum has PERSISTED past the stall thresholds (``is_stalled`` — the same
+    turn / no-progress floor the insufficient-evidence handoff uses), a case still
+    holding ZERO hypotheses has no diagnostic direction at all, and the engine
+    pulls it back toward symptom / expected-vs-observed clarification so a
+    hypothesis can form. Without this the only nets for a stuck case
+    (insufficient-evidence handoff, exhaustion, deadlock) each require ≥2
+    hypotheses, so a model that never hypothesizes evades every one and spins
+    silently — the #656 empty-graph spin (`case_5db5417fe445`: 0 hypotheses across
+    the whole session, INVESTIGATING for 13 turns).
+
+    Scoped to the true 0-hypothesis VACUUM, not the whole work-gate-failing range:
+    a case holding ≥1 hypothesis already has a diagnostic direction (pulling it
+    back to re-describe the symptom would be wrong — it needs breadth /
+    discrimination, a different and lower-stakes concern), so the corrective is
+    deliberately confined to the vacuum the incident exhibits.
+
+    INVESTIGATING-scoped and ordered LAST beside the insufficient-evidence handoff
+    (both are mid-investigation readings below the state-machine gates); the two
+    are mutually exclusive by construction (this requires 0 hypotheses; that
+    requires the ≥2 work gate). Must be evaluated AFTER the per-turn recompute so
+    the status read is fresh (the same #593 re-derive-after-stamp ordering the
+    sibling handoff requires; the single ``engine_owned_affordances`` call site
+    satisfies it).
+    """
+    if case.state != CaseState.INVESTIGATING:
+        return False
+    # The vacuum is specifically ZERO hypotheses — a case with a direction is not
+    # pulled back. Cheapest discriminator, checked first.
+    if case.hypotheses:
+        return False
+    # Act only once the vacuum has PERSISTED past the stall floor, not on every
+    # early NOT_YET_PRODUCTIVE turn. The declared-data-wall arm of the full
+    # progress axis is vacuous here (it ranges over residual candidates, of which
+    # there are none at 0 hypotheses), so the cheap time arm ``is_stalled`` is the
+    # exact and sufficient stall reading.
+    if not is_stalled(case):
+        return False
+    # Authoritative guard: a 0-hypothesis case that is somehow grounded (a chain
+    # validated with no backing hypothesis) reads HEALTHY/TREATMENT_BLOCKED, not
+    # NOT_YET_PRODUCTIVE, and is not a vacuum — the status join decides.
+    return assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+
+
 def engine_owned_affordances(
     case: "Case", metadata: dict[str, Any] | None = None
 ) -> tuple[str, list] | None:
@@ -1798,11 +1888,15 @@ def engine_owned_affordances(
       - ``"gate1"`` — problem-statement confirmation
       - ``"insufficient_evidence"`` — work-gated stall with no grounded cause
         (code-guarded, always on)
+      - ``"not_yet_productive"`` — persisted 0-hypothesis vacuum; a pull-back to
+        symptom / expected-vs-observed clarification (code-guarded, always on)
 
     The disposition branch sits above gate1 because pending_transition can
-    fire while gate1 is technically open. The insufficient-evidence handoff sits
-    LAST — it is an INVESTIGATING-state reading, so any pending state-machine
-    handshake (disposition, gate1) takes precedence over it.
+    fire while gate1 is technically open. The two mid-investigation readings sit
+    LAST — any pending state-machine handshake (disposition, gate1) takes
+    precedence over them — and are mutually exclusive with each other (the
+    insufficient-evidence handoff needs the ≥2 work gate; the NOT_YET_PRODUCTIVE
+    pull-back needs 0 hypotheses).
     """
     md = metadata or {}
 
@@ -1814,6 +1908,9 @@ def engine_owned_affordances(
 
     if _insufficient_evidence_handoff_pending(case):
         return ("insufficient_evidence", _insufficient_evidence_handoff_suggestions())
+
+    if _hypothesis_vacuum_pending(case):
+        return ("not_yet_productive", _hypothesis_vacuum_suggestions())
 
     return None
 
@@ -4169,12 +4266,13 @@ class MilestoneEngine:
             # Gate 2 and Gate 3, and removes LLM compliance from the
             # correctness path. See INV-01, INV-19, INV-21.
             #
-            # It also drives the insufficient-evidence structured handoff
-            # (code-guarded, always on): a work-gated stall with
-            # no grounded cause. This reads a FRESH grounding grade because it
-            # runs after ``_apply_investigation_updates`` recomputed cause_state
-            # this turn (the #593 re-derive-after-stamp ordering the plan
-            # requires).
+            # It also drives the two mid-investigation correctives (code-guarded,
+            # always on): the insufficient-evidence structured handoff (a
+            # work-gated stall with no grounded cause) and the NOT_YET_PRODUCTIVE
+            # pull-back (a persisted 0-hypothesis vacuum — #656 P3.1). Both read a
+            # FRESH grounding grade because this runs after
+            # ``_apply_investigation_updates`` recomputed cause_state this turn
+            # (the #593 re-derive-after-stamp ordering the plan requires).
             gate_result = engine_owned_affordances(case_updated, metadata)
             if gate_result is not None:
                 gate_name, gate_affordances = gate_result
@@ -4237,6 +4335,10 @@ class MilestoneEngine:
                 if gate_name == "insufficient_evidence":
                     metadata["verification_status"] = (
                         VerificationStatus.INSUFFICIENT_EVIDENCE.value
+                    )
+                elif gate_name == "not_yet_productive":
+                    metadata["verification_status"] = (
+                        VerificationStatus.NOT_YET_PRODUCTIVE.value
                     )
 
             # Closure-ack turn (LLM-driven path): when generation
