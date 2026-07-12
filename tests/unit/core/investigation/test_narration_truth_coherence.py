@@ -124,11 +124,47 @@ def test_true_claim_on_terminal_state_returns_none(state):
     assert _narration_overclaim_notice(case, "Case resolved.") is None
 
 
-def test_pending_handshake_suppresses_second_notice():
-    """A disposition ask is in flight — the gate-override notice already frames
-    the not-yet-terminal state, so INV-40 does not stack a second notice."""
+def test_gate_prose_already_appended_suppresses_notice():
+    """When one of the five prose gate-override branches already appended a
+    state-framing notice this turn (gate_prose_appended=True), INV-40 does not
+    stack a second notice — regardless of whether a transition is pending."""
     case = _case(CaseState.INVESTIGATING, pending_transition={"to_state": "resolved"})
-    assert _narration_overclaim_notice(case, "Case resolved.") is None
+    assert (
+        _narration_overclaim_notice(case, "Case resolved.", gate_prose_appended=True)
+        is None
+    )
+    # Also suppressed with no pending transition (defensive — the flag governs).
+    case2 = _case(CaseState.INVESTIGATING)
+    assert (
+        _narration_overclaim_notice(case2, "Case resolved.", gate_prose_appended=True)
+        is None
+    )
+
+
+def test_pending_proposal_without_gate_prose_still_corrects():
+    """#684 review finding 1: the guard's most probable real-world shape — the
+    LLM narrates "Case resolved." AND emits proposed_transition the same turn, so
+    the suggestions-only override branch mints a pending transition but appends
+    NO prose (gate_prose_appended=False). The over-claim must still be corrected,
+    with pending-aware wording that points at the confirm/decline options."""
+    case = _case(CaseState.INVESTIGATING, pending_transition={"to_state": "resolved"})
+    notice = _narration_overclaim_notice(
+        case, "Case resolved.", gate_prose_appended=False
+    )
+    assert notice is not None
+    lowered = notice.lower()
+    assert "proposed" in lowered  # frames it as not-yet-effective
+    assert "confirm" in lowered  # points at the affordances below
+    # The strictly-worse variant: prose says "resolved" while CLOSE is proposed.
+    case_close = _case(
+        CaseState.INVESTIGATING, pending_transition={"to_state": "closed"}
+    )
+    assert (
+        _narration_overclaim_notice(
+            case_close, "Case resolved.", gate_prose_appended=False
+        )
+        is not None
+    )
 
 
 def test_clean_prose_passes_through():

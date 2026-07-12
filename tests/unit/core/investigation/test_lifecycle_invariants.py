@@ -1669,14 +1669,17 @@ class TestINV15_AgentAdvisorRole:
         """
         source = inspect.getsource(MilestoneEngine._process_turn_impl)
 
-        # The compliance instrumentation block. The phrase tuple was hoisted to
-        # the module-level ``_COMPLETION_PHRASES`` constant (INV-40 reuses the
-        # SAME narrow list for the narration-truth guard); the scan still runs in
-        # ``_process_turn_impl``, now referencing that constant.
-        assert "_COMPLETION_PHRASES" in source, (
-            "INV-15 violation: _process_turn_impl no longer references the "
-            "_COMPLETION_PHRASES compliance scan. The quarterly drift "
-            "review depends on this telemetry."
+        # Pin the LIVE scan line — the telemetry key emitted from the runtime
+        # scan — not a comment or the phrase-list constant. Deleting the scan
+        # would drop this key and fail the test, whereas asserting only
+        # "_COMPLETION_PHRASES" would pass on the explanatory comment alone
+        # (INV-40 hoisted the phrase tuple to a module constant and routes the
+        # scan through _narration_asserts_disposition; the compliance boolean is
+        # the surviving runtime consumer).
+        assert "agent_response_contains_completion_phrase" in source, (
+            "INV-15 violation: _process_turn_impl no longer emits the "
+            "agent_response_contains_completion_phrase compliance scan. The "
+            "quarterly drift review depends on this telemetry."
         )
         assert "transition_compliance" in source, (
             "INV-15 violation: _process_turn_impl no longer emits "

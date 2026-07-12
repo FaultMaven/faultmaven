@@ -2034,40 +2034,65 @@ def _narration_asserts_disposition(agent_text: str | None) -> bool:
 
 
 # INV-40 corrective notice. Appended (never substituted) below over-claiming
-# prose. Written to be true on a false positive too (conditional/quoted prose):
-# "still under investigation" holds whenever the case is non-terminal, so the
-# worst case is a mildly-redundant-but-true notice (§7.9 graceful denial).
+# prose. Both variants are true on a false positive too (conditional/quoted
+# prose): the case IS non-terminal, so the worst case is a mildly-
+# redundant-but-true notice (§7.9 graceful denial).
+#
+# Two wordings because the over-claim reaches the guard in two truth-shapes:
+#   - no pending transition — the plain over-claim (#668's shape): nothing is
+#     even on the table, so point at what resolution requires.
+#   - a transition IS proposed (the LLM narrated "resolved" AND emitted
+#     proposed_transition this turn, the suggestions-only override branch that
+#     appends no gate prose): the claim is premature, not false-forever — the
+#     confirm/decline affordances are right below, so point the user at them.
 _NARRATION_OVERCLAIM_NOTICE = (
     "**Note:** this case is still under investigation — it has not been resolved "
     "or closed. Resolution requires a confirmed root cause and a verified fix; "
     "closure requires an explicit decision to stop. I'll surface the "
     "confirm-to-resolve step when the investigation actually reaches it."
 )
+_NARRATION_OVERCLAIM_NOTICE_PENDING = (
+    "**Note:** this case is not resolved or closed yet — a transition has only "
+    "been *proposed*. It takes effect only when you confirm it using the options "
+    "below."
+)
 
 
-def _narration_overclaim_notice(case, agent_text: str | None) -> str | None:
+def _narration_overclaim_notice(
+    case, agent_text: str | None, *, gate_prose_appended: bool = False
+) -> str | None:
     """Return the INV-40 corrective notice when narration over-claims disposition.
 
     Reconciles the ``_COMPLETION_PHRASES`` scan against engine truth: the notice
     fires only when the LLM asserted an unqualified resolved/closed claim AND the
     engine's state contradicts it — the case is **not** terminal and **no**
-    disposition handshake is already in flight (a pending transition already
-    frames the true state in the transcript, so a second notice would be
-    redundant). Returns ``None`` when there is nothing to correct.
+    prose gate notice was already composed this turn (one of the five
+    ``_prose_with_gate_notice`` override branches, which already frame the
+    not-yet-terminal state; ``gate_prose_appended`` is the caller's signal that
+    one fired). Critically it does **not** suppress on a bare ``pending_transition``:
+    the suggestions-only override branch proposes a transition but appends no
+    prose, so an over-claim there would otherwise stand uncontradicted — the
+    guard's most probable real-world shape (a model confident enough to
+    over-claim is the same one that proposes). The notice wording adapts to
+    whether a proposal is pending. Returns ``None`` when there is nothing to
+    correct.
 
-    Pure over ``case`` + ``agent_text``; the caller appends via
-    ``_prose_with_gate_notice`` and increments ``narration_overclaim_total``.
+    Pure over ``case`` + ``agent_text`` + ``gate_prose_appended``; the caller
+    appends via ``_prose_with_gate_notice`` and increments
+    ``narration_overclaim_total``.
     """
     if not _narration_asserts_disposition(agent_text):
         return None
-    if case.state in (CaseState.RESOLVED, CaseState.CLOSED):
+    if case.is_terminal:
         # The claim is true — a terminal transition executed (or the case was
         # already terminal). Nothing to correct.
         return None
-    if getattr(case, "pending_transition", None):
-        # A disposition ask is active; the gate-override notice already conveys
-        # the real (not-yet-terminal) state. Don't stack a second notice.
+    if gate_prose_appended:
+        # A prose gate notice already frames the real (not-yet-terminal) state
+        # below the LLM's reply; a second notice would be redundant.
         return None
+    if case.pending_transition:
+        return _NARRATION_OVERCLAIM_NOTICE_PENDING
     return _NARRATION_OVERCLAIM_NOTICE
 
 
@@ -4328,6 +4353,14 @@ class MilestoneEngine:
             # _prose_with_gate_notice — never replacing the analysis the user
             # asked for. Gate SUGGESTIONS stay engine-owned replacements.
             # After a needs_info turn, check whether requirements are now met.
+            #
+            # ``gate_prose_appended`` records whether one of the FIVE prose
+            # branches fired: each frames the not-yet-terminal state below the
+            # LLM's reply, so the INV-40 guard suppresses on it. The sixth branch
+            # (override_suggestions) appends NO prose, so the guard must still
+            # fire there (INV-40 — a proposed transition alone does not
+            # contradict a "Case resolved." narration).
+            gate_prose_appended = False
             if metadata.get("resolution_ready_for_confirmation"):
                 agent_response_text = _prose_with_gate_notice(
                     response_obj.agent_response,
@@ -4335,6 +4368,7 @@ class MilestoneEngine:
                     + _build_resolution_confirmation(case_updated),
                 )
                 follow_ups = _resolution_confirmation_suggestions()
+                gate_prose_appended = True
             elif metadata.get("resolution_suggest_close"):
                 # User didn't provide required info — suggest Close instead.
                 agent_response_text = _prose_with_gate_notice(
@@ -4342,6 +4376,7 @@ class MilestoneEngine:
                     metadata["resolution_readiness_message"],
                 )
                 follow_ups = _close_confirmation_suggestions()
+                gate_prose_appended = True
             elif metadata.get("resolution_needs_info_first_pass"):
                 # LLM proposed RESOLVED but readiness check returned NEEDS_INFO.
                 # Append the readiness ask below the LLM's agent_response so
@@ -4352,6 +4387,7 @@ class MilestoneEngine:
                     metadata["resolution_needs_info_message"],
                 )
                 follow_ups = metadata["override_suggestions"]
+                gate_prose_appended = True
             elif metadata.get("close_pivoted_to_resolve"):
                 # INV-37 resolve-preservation: the user confirmed a pending
                 # CLOSE, but the case had become resolvable — the confirm-time
@@ -4365,6 +4401,7 @@ class MilestoneEngine:
                     (case_updated.pending_transition or {}).get("summary", ""),
                 )
                 follow_ups = _resolution_confirmation_suggestions()
+                gate_prose_appended = True
             elif metadata.get("rca_infeasible_closure_message"):
                 # Stage-gate side effect: mitigation_verified + rca_infeasible=True.
                 # Append the engine-built closure proposal below the LLM's
@@ -4375,13 +4412,16 @@ class MilestoneEngine:
                     metadata["rca_infeasible_closure_message"],
                 )
                 follow_ups = metadata["override_suggestions"]
+                gate_prose_appended = True
             elif metadata.get("override_suggestions"):
                 # ProposedTransition was emitted by the LLM this turn (either
                 # detecting solution success or routing user-expressed
                 # transition intent). Replace the LLM's follow-ups with the
                 # canonical confirm/decline pair so all three trigger paths
                 # (UI click, NL via this branch, agent-initiated) converge on
-                # the same deterministic confirmation UX.
+                # the same deterministic confirmation UX. NOTE: no prose is
+                # appended here, so the INV-40 guard below still runs — an
+                # over-claiming narration on this branch is corrected.
                 follow_ups = metadata["override_suggestions"]
 
             # Engine-owned gate affordances. When a state-machine gate is
@@ -4511,8 +4551,14 @@ class MilestoneEngine:
             # lesson). This runs after the summary append above, so a genuine
             # terminal transition (state now RESOLVED/CLOSED) is excluded by
             # construction; the guard fires only on the truth-split.
+            # ``gate_prose_appended`` suppresses the guard on the five branches
+            # that already appended a state-framing gate notice — but NOT on the
+            # suggestions-only override branch, whose bare proposed_transition
+            # leaves an over-claim uncontradicted (the guard's likeliest shape).
             _overclaim_notice = _narration_overclaim_notice(
-                case_updated, agent_response_text
+                case_updated,
+                agent_response_text,
+                gate_prose_appended=gate_prose_appended,
             )
             if _overclaim_notice is not None:
                 agent_response_text = _prose_with_gate_notice(
@@ -4549,9 +4595,9 @@ class MilestoneEngine:
             # alongside this one — don't dilute the transition_compliance
             # tuple. See investigation-lifecycle-logic.md §1.3.1
             # (INV-15 drift note). The scan reuses the module-level
-            # _COMPLETION_PHRASES so the telemetry and the INV-40 guard read the
-            # SAME narrow list (one place to widen deliberately).
-            _agent_text_lower = (agent_response_text or "").lower()
+            # _COMPLETION_PHRASES via _narration_asserts_disposition, so the
+            # telemetry and the INV-40 guard share ONE scan implementation (not
+            # just one phrase list) — no re-implemented any(...) to drift.
             # Capture LLM-vs-engine drift on the proposed-transition path.
             # When the LLM emits to_state=resolved on a thin case, the engine
             # pivots to closed (see _check_automatic_transitions). Recording
@@ -4594,8 +4640,8 @@ class MilestoneEngine:
                             False,
                         )
                     ),
-                    "agent_response_contains_completion_phrase": any(
-                        p in _agent_text_lower for p in _COMPLETION_PHRASES
+                    "agent_response_contains_completion_phrase": (
+                        _narration_asserts_disposition(agent_response_text)
                     ),
                     "status_transitioned": bool(metadata.get("status_transitioned")),
                     # Readiness verdicts explain WHY a proposed transition did
