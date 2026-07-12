@@ -19,7 +19,10 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import _recompute_assessment_state
+from faultmaven.core.investigation.milestone_engine import (
+    _recompute_assessment_state,
+    _resolve_chat_provider_name,
+)
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseSeverity,
@@ -172,6 +175,55 @@ def test_missing_provider_falls_back_to_unknown(counter):
     _recompute_assessment_state(case)  # no provider_name → "unknown"
     assert case.progress.work_gate_crossed is True
     assert _inc_calls(counter, "unknown") == 1
+
+
+class _RawProvider:
+    provider_name = "anthropic"
+
+
+class _EnumProvider:
+    value = "gemini"  # mimics LLMProvider.GEMINI
+
+
+class _RouterLLM:
+    provider = _EnumProvider()
+
+
+class _Router:
+    """Mimics LLMRouter: no provider_name, but a settings.llm.provider enum."""
+
+    class settings:  # noqa: N801 - stub attribute container
+        llm = _RouterLLM()
+
+
+class _RouterStrLLM:
+    provider = "openai"  # a plain string value (defensive)
+
+
+class _RouterStr:
+    class settings:  # noqa: N801
+        llm = _RouterStrLLM()
+
+
+def test_resolve_provider_from_raw_provider():
+    """A raw provider exposes provider_name directly."""
+    assert _resolve_chat_provider_name(_RawProvider()) == "anthropic"
+
+
+def test_resolve_provider_from_router_enum():
+    """The router has no provider_name; fall back to settings.llm.provider.value."""
+    assert _resolve_chat_provider_name(_Router()) == "gemini"
+
+
+def test_resolve_provider_from_router_plain_string():
+    """settings.llm.provider tolerated as a plain string too."""
+    assert _resolve_chat_provider_name(_RouterStr()) == "openai"
+
+
+def test_resolve_provider_none_is_unknown():
+    """A missing/opaque provider resolves to 'unknown', never raises."""
+    assert _resolve_chat_provider_name(None) == "unknown"
+    assert _resolve_chat_provider_name(object()) == "unknown"
 
 
 def test_latch_survives_progress_blob_round_trip():

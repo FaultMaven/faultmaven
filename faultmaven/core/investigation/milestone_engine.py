@@ -1364,6 +1364,30 @@ def _recompute_cause_state_from_chain(
         p.cause_state = CauseState.UNKNOWN
 
 
+def _resolve_chat_provider_name(llm_provider: "Any") -> str:
+    """Best-effort name of the CHAT provider driving the investigation, for the
+    DF-6 provider-floor metric (INV-39).
+
+    In the real deployment ``self.llm_provider`` is the ``LLMRouter``, which has
+    no ``provider_name`` — so fall back to its configured chat provider
+    (``settings.llm.provider``, the ``CHAT_PROVIDER`` the router routes through).
+    A raw provider (unit tests, non-router deployments) exposes ``provider_name``
+    directly. ``settings.llm.provider`` is an ``LLMProvider`` enum (``.value``).
+    Returns ``"unknown"`` when neither resolves — the metric labels the crossing
+    rather than dropping it."""
+    name = getattr(llm_provider, "provider_name", None)
+    if isinstance(name, str) and name:
+        return name
+    chat = getattr(
+        getattr(getattr(llm_provider, "settings", None), "llm", None),
+        "provider",
+        None,
+    )
+    if chat is not None:
+        return getattr(chat, "value", None) or str(chat)
+    return "unknown"
+
+
 def _recompute_assessment_state(
     case: "Case",
     *,
@@ -7968,17 +7992,18 @@ class MilestoneEngine:
         # _apply_chain_emission) so proof-by-exclusion can stamp them post-derive.
         prior_cause_state = case.progress.cause_state
         # Provider identity for the DF-6 provider-floor metric (INV-39), passed
-        # explicitly (not smuggled through the shared metadata dict). Nested
-        # getattr so a partially constructed engine (some unit fixtures omit
-        # llm_provider) degrades to None → the metric labels the crossing
-        # "unknown" rather than raising.
+        # explicitly (not smuggled through the shared metadata dict). Resolved via
+        # the helper because self.llm_provider is the LLMRouter in the real
+        # deployment (no provider_name) — the helper reads the configured chat
+        # provider off it; a partially constructed engine (some fixtures omit
+        # llm_provider) degrades to "unknown" rather than raising.
         _recompute_assessment_state(
             case,
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
             rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
             metadata=metadata,
-            provider_name=getattr(
-                getattr(self, "llm_provider", None), "provider_name", None
+            provider_name=_resolve_chat_provider_name(
+                getattr(self, "llm_provider", None)
             ),
         )
 
