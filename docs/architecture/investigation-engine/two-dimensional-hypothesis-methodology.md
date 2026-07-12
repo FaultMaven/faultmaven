@@ -894,7 +894,11 @@ retirement is deliberate, not forgotten.
 measurable: at each RESOLVED transition the engine records which leg of
 `_cause_identified` licensed the resolution — the chain (`cause_state=IDENTIFIED`),
 or the RCC / working-conclusion **backstop** (with no chain-validated root) —
-via `resolution_cause_leg_total{provider, leg}`. The **backstop-reliance rate**
+via `resolution_cause_leg_total{provider, leg}`. It is captured **pre-stamp** at
+the shared resolution finalizer (`finalize_resolution_truth_surface`, which every
+resolve surface calls), *before* the confirm-stamp retroactively validates the
+root — a post-stamp read would relabel a backstop-licensed resolution as chain
+and hide the very reliance this gate measures. The **backstop-reliance rate**
 (`(rcc + working_conclusion) / all`, per provider) is the retirement gate: while
 it is materially non-zero at the **INV-39 provider floor**, retiring the free-text
 backstop would strand exactly those resolutions. The gate must clear at the

@@ -36,6 +36,7 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
+    resolution_cause_leg_total,
 )
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
@@ -69,7 +70,9 @@ def cause_identification_leg(case: "Case") -> "str | None":
     - ``"chain"`` — the engine-derived ``progress.cause_state`` is
       ``IDENTIFIED``: a validated, uncontested chain root. This is the
       authoritative signal — recomputed every turn and never path-stripped
-      (investigation-flow-redesign.md §4.1 / R1, #411).
+      (two-dimensional-hypothesis-methodology.md §9.2; the R1 cause_state gate is
+      recorded in investigation-invariants.md's INV-17/19/20/21 flow-redesign
+      retirement note, #411).
     - ``"rcc"`` — the LLM-authored ``root_cause_conclusion`` **backstop**: the
       chain recompute under-reported ``cause_state`` (the LLM grounded the cause
       without the chain formally validating), but the conclusion names a cause.
@@ -171,6 +174,27 @@ def _has_causal_absence(case: "Case") -> bool:
 logger = logging.getLogger(__name__)
 
 
+def _resolve_resolution_provider() -> str:
+    """CHAT provider label for the INV-41 backstop-reliance metric.
+
+    Resolved from settings — this finalizer runs on both the chat and API resolve
+    surfaces and has no engine handle. This is **label-equivalent** to
+    ``milestone_engine._resolve_chat_provider_name(self.llm_provider)``: in the
+    real deployment ``self.llm_provider`` is the ``LLMRouter`` (no ``provider_name``),
+    so that helper already falls back to ``settings.llm.provider`` — the same value
+    read here. Returns ``"unknown"`` when it cannot resolve, mirroring INV-39.
+    """
+    try:
+        from faultmaven.config.settings import get_settings
+
+        provider = getattr(getattr(get_settings(), "llm", None), "provider", None)
+        if provider is not None:
+            return getattr(provider, "value", None) or str(provider)
+    except Exception:
+        pass
+    return "unknown"
+
+
 def finalize_resolution_truth_surface(case: "Case") -> bool:
     """The ONE resolution-time truth-surface finalizer, shared by EVERY
     resolve surface (the chat-side ``_execute_resolved_transition`` and the
@@ -199,6 +223,20 @@ def finalize_resolution_truth_surface(case: "Case") -> bool:
     progress-blob reload and strands the case — caught live in the INV-29
     sim gate).
     """
+    # INV-41 (#673 retirement gate): record which leg of cause-identification
+    # licensed THIS resolution — captured PRE-STAMP, because the confirm-stamp
+    # below promotes a decayed/count-held root to cause_state=IDENTIFIED, which
+    # would relabel a backstop-licensed resolution as "chain" and understate
+    # backstop reliance (biasing the #673 gate toward premature retirement — the
+    # NO-COLLAPSE regression the gate guards). Emitted HERE because this finalizer
+    # is the single chokepoint every RESOLVED executor shares (the chat-side
+    # _execute_resolved_transition and the dashboard/API ApiCaseService.close_case),
+    # so it fires exactly once per resolution across every surface. Metric-only.
+    resolution_cause_leg_total.labels(
+        provider=_resolve_resolution_provider(),
+        leg=cause_identification_leg(case) or "none",
+    ).inc()
+
     stamped = confirm_root_from_resolution_absence(case)
     # The grade set is refreshed UNCONDITIONALLY: the API surface reaches here
     # without a fresh per-turn recompute, so even a no-stamp resolve must not

@@ -14,12 +14,15 @@ of-truth invariant that keeps the metric from ever disagreeing with the gate it
 observes.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from faultmaven.core.investigation.terminal_transitions import (
     CAUSE_IDENTIFIED_LIKELIHOOD,
     _cause_identified,
     cause_identification_leg,
+    finalize_resolution_truth_surface,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -193,3 +196,39 @@ def test_cause_identified_agrees_with_leg(case):
     """The gate predicate and the metric's leg reader must never disagree —
     _cause_identified delegates to cause_identification_leg."""
     assert _cause_identified(case) is (cause_identification_leg(case) is not None)
+
+
+# ---------------------------------------------------------------------------
+# Emission wiring — the metric fires at the shared resolution chokepoint,
+# ``finalize_resolution_truth_surface`` (every RESOLVED executor calls it), and
+# reads the leg PRE-stamp so a backstop-licensed resolution isn't relabeled
+# "chain" by the confirm-stamp. See test_chain_cause_state.py for the decisive
+# pre/post-stamp regression that exercises the real confirm-stamp promotion.
+# ---------------------------------------------------------------------------
+
+
+def _leg_calls(counter: MagicMock, leg: str) -> int:
+    return sum(1 for c in counter.labels.call_args_list if c.kwargs.get("leg") == leg)
+
+
+def test_finalize_emits_resolution_cause_leg_once():
+    """The finalizer — the one chokepoint every resolve surface shares — emits
+    the metric exactly once, labeled by the pre-stamp leg. A case licensed by the
+    RCC backstop (verified symptom, RCC present, no validated chain) records
+    ``rcc``. No qualifying absence here, so the stamp doesn't promote — this test
+    pins coverage + labeling; the pre/post-stamp regression lives with the real
+    stamp machinery in test_chain_cause_state.py."""
+    case = _case()
+    case.progress.symptom_verified = True
+    case.root_cause_conclusion = _rcc()
+    assert cause_identification_leg(case) == "rcc"
+
+    with patch(
+        "faultmaven.core.investigation.terminal_transitions.resolution_cause_leg_total",
+        new=MagicMock(),
+    ) as counter:
+        finalize_resolution_truth_surface(case)
+
+    assert counter.labels.call_count == 1
+    assert _leg_calls(counter, "rcc") == 1
+    assert _leg_calls(counter, "chain") == 0

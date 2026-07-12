@@ -1765,3 +1765,44 @@ def test_finalize_covers_hypothesis_less_confirmed_root():
     assert case.root_cause_conclusion is not None  # hyp-less mint
     assert case.root_cause_conclusion.validated_hypothesis_id is None
     type(case.progress)(**case.progress.model_dump())
+
+
+def test_inv41_metric_records_prestamp_leg_not_poststamp_chain():
+    """INV-41 (#673 gate) bias regression: the backstop-reliance metric is
+    captured PRE-stamp, at the shared resolution chokepoint.
+
+    A count-held root is NOT ``cause_state=IDENTIFIED`` at readiness — so the
+    resolution is licensed by the causal-absence confirmation, not a validated
+    chain (pre-stamp leg is ``none``, not ``chain``). The confirm-stamp then
+    promotes the root to IDENTIFIED. If the metric read the leg AFTER the stamp
+    (the bug), every backstop/absence-licensed resolution would be relabeled
+    ``chain``, understating backstop reliance and biasing the #673 retirement
+    gate toward premature green-lighting — the NO-COLLAPSE regression the gate
+    exists to prevent. Driven through the real chat executor
+    (``_execute_resolved_transition``) so it also pins Finding-1 coverage: the
+    metric fires on the standard confirm path, not only the KB collapse."""
+    from unittest.mock import MagicMock, patch
+
+    from faultmaven.core.investigation.terminal_transitions import (
+        _execute_resolved_transition,
+        cause_identification_leg,
+    )
+
+    case, root, hyp = _count_held_case()
+    _standalone_absence(case)
+    pre_leg = cause_identification_leg(case)
+    assert pre_leg != "chain"  # count-held: the root has not validated yet
+
+    with patch(
+        "faultmaven.core.investigation.terminal_transitions."
+        "resolution_cause_leg_total",
+        new=MagicMock(),
+    ) as counter:
+        _execute_resolved_transition(case, "u")
+
+    # The stamp promoted the root: a naive POST-stamp read would say "chain".
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    # ...but the metric recorded the PRE-stamp leg, exactly once.
+    recorded = [c.kwargs.get("leg") for c in counter.labels.call_args_list]
+    assert recorded == [pre_leg or "none"]
+    assert "chain" not in recorded
