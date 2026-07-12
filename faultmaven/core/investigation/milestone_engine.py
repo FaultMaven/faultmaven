@@ -2038,6 +2038,12 @@ def _narration_asserts_disposition(agent_text: str | None) -> bool:
 # prose): the case IS non-terminal, so the worst case is a mildly-
 # redundant-but-true notice (§7.9 graceful denial).
 #
+# Phase-neutral wording. The guard fires on any non-terminal turn — including
+# INQUIRY (intake), which reaches the same response-composition block — so the
+# notice must be true in both INQUIRY and INVESTIGATING. It therefore asserts
+# only "not resolved/closed — still open" (true in every non-terminal phase),
+# NOT "under investigation" (false during intake).
+#
 # Two wordings because the over-claim reaches the guard in two truth-shapes:
 #   - no pending transition — the plain over-claim (#668's shape): nothing is
 #     even on the table, so point at what resolution requires.
@@ -2046,10 +2052,10 @@ def _narration_asserts_disposition(agent_text: str | None) -> bool:
 #     appends no gate prose): the claim is premature, not false-forever — the
 #     confirm/decline affordances are right below, so point the user at them.
 _NARRATION_OVERCLAIM_NOTICE = (
-    "**Note:** this case is still under investigation — it has not been resolved "
-    "or closed. Resolution requires a confirmed root cause and a verified fix; "
-    "closure requires an explicit decision to stop. I'll surface the "
-    "confirm-to-resolve step when the investigation actually reaches it."
+    "**Note:** this case has not been resolved or closed — it is still open. "
+    "Resolving it requires a confirmed root cause and a verified fix; closing it "
+    "requires an explicit decision to stop. I'll surface the confirm-to-resolve "
+    "step when the case actually reaches it."
 )
 _NARRATION_OVERCLAIM_NOTICE_PENDING = (
     "**Note:** this case is not resolved or closed yet — a transition has only "

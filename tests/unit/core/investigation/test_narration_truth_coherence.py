@@ -113,7 +113,21 @@ def test_overclaim_on_investigating_returns_notice():
     case = _case(CaseState.INVESTIGATING)
     notice = _narration_overclaim_notice(case, "Case resolved.")
     assert notice is not None
-    assert "still under investigation" in notice.lower()
+    assert "not been resolved or closed" in notice.lower()
+
+
+def test_overclaim_in_inquiry_notice_is_phase_neutral():
+    """The guard fires on any non-terminal turn, including INQUIRY (intake),
+    which reaches the same response-composition block. The notice must be TRUE
+    in INQUIRY — it must NOT claim the case is 'under investigation' (it is in
+    intake), only that it is not resolved/closed (§7.9 graceful denial holds
+    across phases)."""
+    case = _case(CaseState.INQUIRY)
+    notice = _narration_overclaim_notice(case, "I've closed this as a duplicate.")
+    assert notice is not None
+    lowered = notice.lower()
+    assert "not been resolved or closed" in lowered  # true in INQUIRY
+    assert "under investigation" not in lowered  # would be false in intake
 
 
 @pytest.mark.parametrize("state", [CaseState.RESOLVED, CaseState.CLOSED])
@@ -142,8 +156,8 @@ def test_gate_prose_already_appended_suppresses_notice():
 
 
 def test_pending_proposal_without_gate_prose_still_corrects():
-    """#684 review finding 1: the guard's most probable real-world shape — the
-    LLM narrates "Case resolved." AND emits proposed_transition the same turn, so
+    """The guard's most probable real-world shape — the LLM narrates
+    "Case resolved." AND emits proposed_transition the same turn, so
     the suggestions-only override branch mints a pending transition but appends
     NO prose (gate_prose_appended=False). The over-claim must still be corrected,
     with pending-aware wording that points at the confirm/decline options."""

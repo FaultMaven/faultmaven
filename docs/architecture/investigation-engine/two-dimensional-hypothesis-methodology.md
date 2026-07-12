@@ -982,9 +982,12 @@ closed. The engine does not rewrite the LLM's prose — authorship stays the
 LLM's (§7.6), and destroying the analysis it just wrote repeats the DF-4
 override failure. Instead the engine **appends** a truthful corrective notice
 below the prose, through the same INV-26 composition lane
-(`_prose_with_gate_notice`): the case remains under investigation, and what
-resolution actually requires. The false claim can still be *authored*; it can no
-longer stand *uncontradicted* on the surface the user reads.
+(`_prose_with_gate_notice`): the case is not resolved or closed — it is still
+open — and what resolution actually requires. (The wording is phase-neutral:
+the guard also fires on an INQUIRY over-claim, where "under investigation" would
+itself be false, so the notice asserts only "still open".) The false claim can
+still be *authored*; it can no longer stand *uncontradicted* on the surface the
+user reads.
 
 This generalizes INV-26(b) — "the visible transcript may not contradict the
 applied `state_updates`" — from gate-override turns to disposition claims on
