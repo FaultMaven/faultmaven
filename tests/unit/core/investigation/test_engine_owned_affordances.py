@@ -24,6 +24,7 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
     _gate1_is_pending,
+    _hypothesis_vacuum_pending,
     _insufficient_evidence_handoff_pending,
     engine_owned_affordances,
 )
@@ -341,15 +342,138 @@ class TestInsufficientEvidenceHandoff:
         assert assess_verification_status(case) == VerificationStatus.OPEN
         assert engine_owned_affordances(case) is None
 
-    def test_no_handoff_below_the_work_gate(self):
-        # Stalled but no real diagnostic work → NOT_YET_PRODUCTIVE (a provider-
-        # health fact), never a case-blaming handoff. (Confusable pair 1:
-        # data-wall vs model-produced-nothing.)
+    def test_no_insufficient_evidence_handoff_below_the_work_gate(self):
+        # Stalled but no real diagnostic work → NOT_YET_PRODUCTIVE, NOT
+        # INSUFFICIENT_EVIDENCE (confusable pair 1: data-wall vs
+        # model-produced-nothing). The insufficient-evidence handoff — which
+        # asks for *discriminating* data on a built differential — must never
+        # fire here. (The distinct NOT_YET_PRODUCTIVE pull-back does fire; see
+        # TestNotYetProductivePullback.)
         case = _insufficient_evidence_case()
         case.hypotheses = {}
         case.evidence = []
         assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+        assert _insufficient_evidence_handoff_pending(case) is False
+
+
+def _hypothesis_vacuum_case() -> Case:
+    """An INVESTIGATING case that ``assess_verification_status`` reads as
+    ``NOT_YET_PRODUCTIVE`` AND has PERSISTED there: ZERO hypotheses, not grounded,
+    and stalled past the turn/stall thresholds — the #656 empty-graph spin the
+    pull-back exists to break. Starts from the insufficient-evidence fixture
+    (already stalled + INVESTIGATING + symptom-anchored) and empties the
+    hypothesis layer to drop below the work gate.
+    """
+    case = _insufficient_evidence_case()
+    case.hypotheses = {}
+    return case
+
+
+class TestNotYetProductivePullback:
+    """The engine drives the NOT_YET_PRODUCTIVE pull-back deterministically
+    (#656 P3.1, INV-38) when a case has persisted at a 0-hypothesis vacuum —
+    regardless of LLM compliance. Always on, INVESTIGATING-scoped, lowest
+    precedence (any pending state-machine handshake or the insufficient-evidence
+    handoff wins), and mutually exclusive with that handoff (0 hypotheses vs the
+    ≥2 work gate).
+    """
+
+    def test_fixture_reads_as_not_yet_productive(self):
+        # Guards the test's own premise so the negatives below can't pass
+        # vacuously.
+        case = _hypothesis_vacuum_case()
+        assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+
+    def test_pullback_fires(self):
+        case = _hypothesis_vacuum_case()
+        assert _hypothesis_vacuum_pending(case) is True
+        result = engine_owned_affordances(case)
+        assert result is not None
+        gate, affordances = result
+        assert gate == "not_yet_productive"
+        assert len(affordances) == 2
+
+    def test_no_pullback_before_the_stall_floor(self):
+        # NOT_YET_PRODUCTIVE is true from turn 1 (work gate unmet); the pull-back
+        # must wait until the vacuum has PERSISTED past the stall thresholds —
+        # otherwise it fires on every early turn. (This is why the status alone
+        # "drives nothing"; the stall gate is the corrective's trigger.)
+        case = _hypothesis_vacuum_case()
+        case.turns_without_progress = 1
+        assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+        assert _hypothesis_vacuum_pending(case) is False
         assert engine_owned_affordances(case) is None
+
+    def test_no_pullback_with_a_standing_hypothesis(self):
+        # A case with ≥1 hypothesis has a diagnostic direction — it is NOT a
+        # vacuum. Below the ≥2 work gate it still reads NOT_YET_PRODUCTIVE, but
+        # pulling it back to re-describe the symptom would be wrong (it needs
+        # breadth/discrimination). Scoped OUT by design.
+        from faultmaven.modules.case.contracts import (
+            Hypothesis,
+            HypothesisCategory,
+            HypothesisGenerationMode,
+            HypothesisState,
+        )
+
+        case = _hypothesis_vacuum_case()
+        case.hypotheses = {
+            "hyp_000000000001": Hypothesis(
+                hypothesis_id="hyp_000000000001",
+                statement="the connection pool is exhausted",
+                category=list(HypothesisCategory)[0],
+                state=HypothesisState.CAPTURED,
+                rationale="a reason",
+                generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+                generated_at_turn=1,
+            )
+        }
+        assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+        assert _hypothesis_vacuum_pending(case) is False
+        assert engine_owned_affordances(case) is None
+
+    def test_no_pullback_outside_investigating(self):
+        # The reading is only meaningful mid-investigation. (Statement stays
+        # confirmed so gate1 doesn't fire — isolates the state guard.)
+        case = _hypothesis_vacuum_case()
+        case.state = CaseState.INQUIRY
+        assert _gate1_is_pending(case) is False
+        assert _hypothesis_vacuum_pending(case) is False
+        assert engine_owned_affordances(case) is None
+
+    def test_insufficient_evidence_handoff_takes_precedence(self):
+        # The two mid-investigation correctives are mutually exclusive by
+        # construction, but pin the ordering: a work-gated stall (≥2 hypotheses)
+        # is INSUFFICIENT_EVIDENCE, never the vacuum pull-back.
+        case = _insufficient_evidence_case()  # crosses the work gate
+        assert _hypothesis_vacuum_pending(case) is False
+        gate, _ = engine_owned_affordances(case)
+        assert gate == "insufficient_evidence"
+
+    def test_disposition_override_takes_precedence(self):
+        # A pending state-machine handshake outranks the vacuum reading — the
+        # pull-back sits LAST in the consolidator.
+        case = _hypothesis_vacuum_case()
+        custom = [{"label": "Confirm close", "action_type": "DECIDE", "payload": "x"}]
+        gate, affordances = engine_owned_affordances(
+            case, {"override_suggestions": custom}
+        )
+        assert gate == "disposition"
+        assert affordances == custom
+
+    def test_pullback_affordances_keep_engaging_and_do_not_steer_to_close(self):
+        # The pull-back re-elicits the symptom / a place to look (keep-engaging,
+        # NO-COLLAPSE) — it never nudges abandonment (D4: steering toward close
+        # would be soft-collapse). Non-clickable content moves, no engine intent.
+        _, affordances = engine_owned_affordances(_hypothesis_vacuum_case())
+        assert all(a["action_type"] == "FREE_SPEECH" for a in affordances)
+        assert all("intent" not in a for a in affordances)
+        joined = " ".join(a["label"].lower() for a in affordances)
+        assert (
+            "close" not in joined
+            and "resolve" not in joined
+            and "give up" not in joined
+        )
 
 
 class TestLLMContract:
