@@ -209,7 +209,14 @@ CATEGORY_MILESTONE_MAP = {
         "symptom_verified",  # Confirms problem exists
     ],
     EvidenceCategory.CAUSAL_EVIDENCE: [
-        "root_cause_identified",  # Demonstrates root cause
+        # "root_cause_identified" is NOT here (#675 / INV-35): identification is
+        # engine-derived from the validated causal chain (cause_state), not an
+        # LLM-claimed milestone. The map's only consumer, _infer_milestones,
+        # intersects category-eligible names with this turn's MilestoneUpdates —
+        # and MilestoneUpdates no longer carries root_cause_identified, so the
+        # entry could never be attributed (it attributed to nothing). Causal
+        # evidence's contribution to identification flows through the chain
+        # derivation, not this attribution map.
         "solution_proposed",  # Justifies proposed solution
     ],
     # Absence categories map to [] DELIBERATELY (not an oversight). The
