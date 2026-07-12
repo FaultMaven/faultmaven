@@ -954,3 +954,128 @@ class TestBuildProgressTransparencyVerificationStatus:
         info = svc._build_progress_transparency({}, case)
         assert info is not None
         assert info.cause_assurance == "mechanistic"
+
+
+class TestTurnResponseCauseAssurance:
+    """#572 / INV-28 §3.5: the per-turn response carries the assurance grade
+    beside the cause, so a narration-only client (Slack) can label the cause
+    claim the LLM wrote into agent_response instead of forwarding it bare.
+
+    The grade is recomputed from the causal graph (not the persisted field), so a
+    resolution turn — which never recomputes the persisted progress field — still
+    carries the true grade. Mechanical / LLM-agnostic: graph shape decides.
+    """
+
+    @pytest.fixture
+    def service(self, mock_milestone_engine, mock_case_repository):
+        return InvestigationService(
+            milestone_engine=mock_milestone_engine,
+            case_repository=mock_case_repository,
+        )
+
+    def _case_with_confirmed_root(self, user_id: str) -> Case:
+        from datetime import UTC
+
+        from faultmaven.modules.case.domain.models import (
+            CausalNode,
+            ConfidenceLevel,
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+            EvidenceStance,
+            NodeEvidenceLink,
+            NodeState,
+            NodeType,
+            RootCauseConclusion,
+            ValidationMethod,
+        )
+
+        # Non-terminal (process_turn rejects terminal cases) with an identified,
+        # counterfactually-confirmed cause. State is immaterial to the grade — it
+        # is recomputed from the graph — so the default INQUIRY state, which needs
+        # no confirmed-problem-statement fixture, keeps the builder minimal.
+        case = create_sample_case(user_id=user_id, current_turn=3)
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Connection pool exhausted",
+            mechanism="pool saturation queues requests past the timeout",
+            confidence_level=ConfidenceLevel.CONFIDENT,
+            likelihood=0.8,
+        )
+
+        def _ev(eid, cat):
+            return Evidence(
+                evidence_id=eid,
+                summary="an observed fact",
+                primary_purpose="diagnosis",
+                category=cat,
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                collected_by="u",
+                collected_at_turn=1,
+                collected_at=datetime(2026, 7, 4, 11, 0, 0, tzinfo=UTC),
+            )
+
+        case.evidence = [
+            _ev("ev_aaaaaaaaaaaa", EvidenceCategory.CAUSAL_EVIDENCE),
+            _ev("ev_bbbbbbbbbbbb", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE),
+        ]
+        case.causal_nodes = {
+            "cn_aaaaaaaaaaaa": CausalNode(
+                node_id="cn_aaaaaaaaaaaa",
+                statement="connection pool exhausted",
+                node_type=NodeType.ROOT,
+                node_state=NodeState.VALIDATED,
+                validation_method=ValidationMethod.EMPIRICAL,
+                actionable=True,
+                belief=0.8,
+                generated_at_turn=1,
+                evidence_links=[
+                    NodeEvidenceLink(
+                        evidence_id="ev_aaaaaaaaaaaa",
+                        stance=EvidenceStance.SUPPORTS,
+                        reasoning="pool metrics",
+                        linked_at_turn=1,
+                    ),
+                    NodeEvidenceLink(
+                        evidence_id="ev_bbbbbbbbbbbb",
+                        stance=EvidenceStance.SUPPORTS,
+                        reasoning="removing the cause removed the problem",
+                        linked_at_turn=2,
+                    ),
+                ],
+            )
+        }
+        return case
+
+    @pytest.mark.asyncio
+    async def test_turn_with_identified_cause_carries_grade(
+        self, service, mock_case_repository, sample_user_id, sample_turn_payload
+    ):
+        case = self._case_with_confirmed_root(sample_user_id)
+        await mock_case_repository.save(case)
+
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id=sample_user_id,
+            payload=sample_turn_payload,
+        )
+
+        assert response.cause_assurance == "confirmed"
+        assert response.cause_overclaim is False
+
+    @pytest.mark.asyncio
+    async def test_turn_without_cause_omits_grade(
+        self, service, mock_case_repository, sample_user_id, sample_turn_payload
+    ):
+        # No root_cause_conclusion → nothing to label; fields stay None.
+        case = create_sample_case(user_id=sample_user_id)
+        assert case.root_cause_conclusion is None
+        await mock_case_repository.save(case)
+
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id=sample_user_id,
+            payload=sample_turn_payload,
+        )
+
+        assert response.cause_assurance is None
+        assert response.cause_overclaim is None
