@@ -525,6 +525,9 @@ class TestInvestigationServiceIntentDispatch:
             intent_kwargs["action"] = "accept"
         elif intent_value == IntentType.EVIDENCE_NEED:
             intent_kwargs["evidence_need_id"] = "eneed_test12345"
+        elif intent_value == IntentType.FILE_RECLASSIFICATION:
+            intent_kwargs["file_id"] = "file_test12345678"
+            intent_kwargs["data_type"] = "logs_and_errors"
 
         payload = TurnPayload(query="test", intent=QueryIntent(**intent_kwargs))
 
@@ -538,12 +541,25 @@ class TestInvestigationServiceIntentDispatch:
             # NOT_IMPLEMENTED intents (e.g., EVIDENCE_NEED) raise this
             # — 422 to the client, contract gap surfaced honestly.
             pass
+        except NotFoundError:
+            # A contract-valid intent may reference a resource the sample
+            # case lacks (FILE_RECLASSIFICATION's stub file_id) — 404 to
+            # the client; the dispatch itself routed correctly.
+            pass
         except ServiceException as e:
-            # Any ServiceException wrapping "Unknown intent type" is the
-            # regression we are preventing.
+            # Two regression shapes surface as ServiceException (500):
+            # the legacy elif-chain "Unknown intent type" error, and the
+            # SERVICE-dispatch else-branch "has no handler method" (a
+            # dispatch-table entry without a matching elif in
+            # process_turn — the boot check can't see that gap).
             assert "Unknown intent type" not in str(e), (
                 f"IntentType.{intent_value.name} surfaced as 500 with "
                 f"'Unknown intent type'. Dispatch table is incomplete."
+            )
+            assert "has no handler method" not in str(e), (
+                f"IntentType.{intent_value.name} is SERVICE-routed in "
+                f"_INTENT_DISPATCH but has no handler branch in "
+                f"process_turn."
             )
 
     def test_boot_check_rejects_incomplete_dispatch_table(

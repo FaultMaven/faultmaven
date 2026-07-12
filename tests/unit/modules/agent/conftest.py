@@ -205,3 +205,106 @@ def sample_turn_payload():
         attachments=[],
         intent=QueryIntent(type=IntentType.CONVERSATION),
     )
+
+
+# ============================================================
+# Shared domain-object builders for the reclassification suites
+# (test_investigation_service_reclassify.py and
+# test_file_reclassification_intent.py) — one definition so the two
+# suites exercise the shared handlers against identical fixtures.
+# ============================================================
+
+_SOURCE_TYPE_MAP = {
+    "logs": "logs",
+    "metrics": "metrics",
+    "configuration": "configuration",
+    "structured_config": "configuration",
+    "code": "code",
+    "text": "text",
+}
+
+
+def make_uploaded_file(
+    file_id: str = "file_aaaaaaaaaaaa",
+    filename: str = "server.log",
+    storage_ref: Optional[str] = "evidence/case_x/server.log",
+    data_type: Optional[str] = None,
+):
+    """UploadedFile with the reclassify suites' shared defaults."""
+    from faultmaven.modules.case.domain.models import UploadedFile
+
+    return UploadedFile(
+        file_id=file_id,
+        filename=filename,
+        size_bytes=100,
+        storage_ref=storage_ref,
+        uploaded_at_turn=0,
+        data_type=data_type,
+    )
+
+
+def make_evidence(
+    evidence_id: str = "ev_aaaaaaaaaaaa",
+    data_type: str = "metrics",
+    metadata: Optional[dict] = None,
+    source_file_id: Optional[str] = "file_aaaaaaaaaaaa",
+    source_type=None,
+):
+    """Evidence row with LLM-authored claim fields the handlers must not touch."""
+    from faultmaven.modules.case.domain.models import (
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+    )
+
+    resolved_source_type = (
+        source_type
+        if source_type is not None
+        else EvidenceSourceType(
+            _SOURCE_TYPE_MAP.get(data_type, EvidenceSourceType.METRICS.value)
+        )
+    )
+    return Evidence(
+        evidence_id=evidence_id,
+        category=EvidenceCategory.SYMPTOM_EVIDENCE,
+        primary_purpose="Test",
+        summary="Old summary",
+        extract="old index",
+        source_type=resolved_source_type,
+        source_file_id=source_file_id,
+        collected_by="user",
+        collected_at=datetime.now(timezone.utc),
+        collected_at_turn=0,
+        metadata=metadata,
+    )
+
+
+def make_preprocessing_result(new_data_type=None, metadata: Optional[dict] = None):
+    """PreprocessingResult as returned by reclassify under user_override."""
+    from faultmaven.core.preprocessing.models import (
+        PreprocessingResult,
+        UnifiedDataType,
+    )
+    from faultmaven.models.api import DataType
+
+    if new_data_type is None:
+        new_data_type = DataType.LOGS_AND_ERRORS
+    unified_map = {
+        DataType.LOGS_AND_ERRORS: UnifiedDataType.LOGS,
+        DataType.METRICS_AND_PERFORMANCE: UnifiedDataType.METRICS,
+        DataType.STRUCTURED_CONFIG: UnifiedDataType.CONFIGURATION,
+    }
+    return PreprocessingResult(
+        data_type=unified_map.get(new_data_type, UnifiedDataType.LOGS),
+        detailed_data_type=new_data_type,
+        summary="new summary",
+        structural_index="new index content",
+        content_ref=None,
+        content_size_bytes=100,
+        content_type="text/plain",
+        extraction_method="crime_scene",
+        compression_ratio=0.1,
+        extraction_metadata={"evidence_metadata": metadata or {}},
+        content_hash="a" * 64,
+        processing_time_ms=5,
+    )
