@@ -363,3 +363,34 @@ close_pivoted_to_resolve_total = Counter(
     "because the case qualified for resolution (§ closed-gate resolve-"
     "preservation / INV-37). One increment per confirm-time pivot.",
 )
+
+# DF-6 provider-floor telemetry (§5.2, INV-39). ``work_gate_passed`` is the
+# documented "observability primitive for the per-provider gate-crossing
+# metric": whether a configured provider gets real diagnostic work across the
+# §5.2 work gate (>=2 hypotheses across >=2 categories with >=2 evidence). Until
+# now it had no metric surface — only the status join and one DEBUG log field —
+# so a mis-provisioned model that never crosses (the #656 shape:
+# gemini-3.1-flash-lite spun 13 turns without crossing) produced no fleet
+# signal. This counter is that signal: once per case (latched on
+# ``InvestigationProgress.work_gate_crossed``), labeled by the CHAT provider
+# driving the investigation. Compare its rate against per-provider case volume —
+# a provider with sustained cases but near-zero crossings is at or below the
+# provider floor. It is a provider-HEALTH fact (a mis-provisioning signal,
+# surfaced beside the boot-time tool-calling capability gate in
+# ``config/investigation_capability.py``), NOT a per-case verdict: a single
+# honest UNRESOLVED case that never crosses is normal.
+work_gate_crossed_total = Counter(
+    "faultmaven_work_gate_crossed_total",
+    "A case crossed the §5.2 work gate (>=2 hypotheses across >=2 categories "
+    "with >=2 evidence items) for the first time, labeled by the CHAT provider "
+    "(``provider``) driving the investigation (DF-6 provider floor / INV-39). "
+    "One increment per case — latched, so subsequent turns and a later drop "
+    "below the gate never re-count. A provider with sustained case volume but "
+    "near-zero crossings is mis-provisioned; this is a provider-health fact, "
+    "not a per-case verdict. (Accepted rollout residual: the latch is "
+    "migration-free, so a case that had already crossed before this shipped "
+    "counts its crossing on the next turn it is touched — attributed to that "
+    "turn's provider, not the original one. Bounded to one count per case and "
+    "self-clearing; read the metric as a trend, not to the turn.)",
+    ["provider"],
+)

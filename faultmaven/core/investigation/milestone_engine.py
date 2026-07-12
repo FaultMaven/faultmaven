@@ -73,6 +73,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_recovered_total,
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
+    work_gate_crossed_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
     CONTEXT_OVERFLOW_PHRASES,
@@ -1363,12 +1364,37 @@ def _recompute_cause_state_from_chain(
         p.cause_state = CauseState.UNKNOWN
 
 
+def _resolve_chat_provider_name(llm_provider: "Any") -> str:
+    """Best-effort name of the CHAT provider driving the investigation, for the
+    DF-6 provider-floor metric (INV-39).
+
+    In the real deployment ``self.llm_provider`` is the ``LLMRouter``, which has
+    no ``provider_name`` — so fall back to its configured chat provider
+    (``settings.llm.provider``, the ``CHAT_PROVIDER`` the router routes through).
+    A raw provider (unit tests, non-router deployments) exposes ``provider_name``
+    directly. ``settings.llm.provider`` is an ``LLMProvider`` enum (``.value``).
+    Returns ``"unknown"`` when neither resolves — the metric labels the crossing
+    rather than dropping it."""
+    name = getattr(llm_provider, "provider_name", None)
+    if isinstance(name, str) and name:
+        return name
+    chat = getattr(
+        getattr(getattr(llm_provider, "settings", None), "llm", None),
+        "provider",
+        None,
+    )
+    if chat is not None:
+        return getattr(chat, "value", None) or str(chat)
+    return "unknown"
+
+
 def _recompute_assessment_state(
     case: "Case",
     *,
     exclusion_survivors: "set[str] | frozenset[str]" = frozenset(),
     rcc_authored_this_turn: bool = False,
     metadata: "dict[str, Any] | None" = None,
+    provider_name: "str | None" = None,
 ) -> None:
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
@@ -1426,6 +1452,30 @@ def _recompute_assessment_state(
     # persisted signals derive from the same graph snapshot.
     p.cause_assurance = grade_cause_assurance(case)
     p.verification_status = assess_verification_status(case, grade=p.cause_assurance)
+
+    # DF-6 provider-floor metric (§5.2, INV-39): count the FIRST time this case
+    # crosses the work gate, per CHAT provider. ``work_gate_passed`` is the
+    # documented observability primitive; the ``work_gate_crossed`` latch makes
+    # the count exactly once-per-case (a later drop below the gate never
+    # re-counts, and re-emitting the same hypotheses next turn does not
+    # double-count). ``provider_name`` is supplied by the caller (where the
+    # provider is in scope). Metric-only; it never changes engine behavior.
+    if not p.work_gate_crossed and work_gate_passed(case):
+        p.work_gate_crossed = True
+        provider = provider_name or "unknown"
+        work_gate_crossed_total.labels(provider=provider).inc()
+        logger.info(
+            "work_gate_crossed case=%s turn=%s provider=%s",
+            case.case_id,
+            case.current_turn,
+            provider,
+            extra={
+                "event": "work_gate_crossed",
+                "case_id": case.case_id,
+                "turn": case.current_turn,
+                "provider": provider,
+            },
+        )
 
     # M2 over-claim seam (#656 turn-6 shape): a recorded conclusion claims
     # "verified" while the graph grade lacks counterfactual confirmation. The
@@ -7941,11 +7991,20 @@ class MilestoneEngine:
         # Pass this turn's LLM-certified deductive survivors (resolved in
         # _apply_chain_emission) so proof-by-exclusion can stamp them post-derive.
         prior_cause_state = case.progress.cause_state
+        # Provider identity for the DF-6 provider-floor metric (INV-39), passed
+        # explicitly (not smuggled through the shared metadata dict). Resolved via
+        # the helper because self.llm_provider is the LLMRouter in the real
+        # deployment (no provider_name) — the helper reads the configured chat
+        # provider off it; a partially constructed engine (some fixtures omit
+        # llm_provider) degrades to "unknown" rather than raising.
         _recompute_assessment_state(
             case,
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
             rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
             metadata=metadata,
+            provider_name=_resolve_chat_provider_name(
+                getattr(self, "llm_provider", None)
+            ),
         )
 
         # KB-remediation pre-fetch on the cause_state→IDENTIFIED edge (INV-35):

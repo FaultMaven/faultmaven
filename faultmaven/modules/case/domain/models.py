@@ -654,6 +654,21 @@ class InvestigationProgress(BaseModel):
         ),
     )
 
+    work_gate_crossed: bool = Field(
+        default=False,
+        description=(
+            "Once-per-case latch (DF-6 / INV-39): whether this case has EVER "
+            "crossed the §5.2 work gate (work_gate_passed — >=2 hypotheses "
+            "across >=2 categories with >=2 evidence). Set True at the first "
+            "crossing during INVESTIGATING and never reset (a later drop below "
+            "the gate does not clear it). Drives the per-provider provider-floor "
+            "metric (work_gate_crossed_total) exactly once so a mis-provisioned "
+            "model that never crosses is observable as a fleet-health fact, not "
+            "re-counted per turn. Recomputed each turn; persisted in the "
+            "progress blob (migration-free)."
+        ),
+    )
+
     solution_state: SolutionState = Field(
         default=SolutionState.UNKNOWN,
         description=(
