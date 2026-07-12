@@ -322,6 +322,61 @@ async def test_add_message_roundtrip(pg_repo):
 
 
 @pytest.mark.asyncio
+async def test_get_returns_messages_interleaved_by_created_at(pg_repo):
+    """get() must return case.messages interleaved by created_at, not grouped by role.
+
+    Regression for the Slack/PG transcript bug: aggregating messages with
+    ``json_agg(DISTINCT jsonb_build_object(...))`` over the joined table makes
+    PostgreSQL sort the jsonb objects shortest-key-first — i.e. by ``role`` (the
+    4-char key) — so it returned every 'assistant' message before every 'user'
+    message, and the dashboard's client-side turn counter labelled the leading
+    block "Turn 0". The fix aggregates via a correlated subquery with an explicit
+    ``ORDER BY created_at``. SQLite never hit this (it already ORDER BYs).
+    """
+    session = pg_repo.db
+    org_id = f"org_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_organizations(session, [org_id])
+    await seed_users(session, [user_id])
+    case = _make_case(org_id, user_id)
+    await pg_repo.save(case)
+
+    # Interleaved in time (user, assistant, user, assistant). If the aggregate
+    # grouped by role it would come back [assistant, assistant, user, user].
+    turns = [
+        ("user", "rq1", "2026-06-13T10:00:00+00:00", 1),
+        ("assistant", "ra1", "2026-06-13T10:01:00+00:00", 1),
+        ("user", "rq2", "2026-06-13T10:02:00+00:00", 2),
+        ("assistant", "ra2", "2026-06-13T10:03:00+00:00", 2),
+    ]
+    for role, content, created_at, turn in turns:
+        ok = await pg_repo.add_message(
+            case.case_id,
+            {
+                "message_id": f"msg_{uuid4().hex[:12]}",
+                "turn_number": turn,
+                "role": role,
+                "content": content,
+                "created_at": created_at,
+                "metadata": {},
+            },
+        )
+        assert ok is True
+
+    fetched = await pg_repo.get(case.case_id)
+    mine = [
+        m for m in fetched.messages if m.get("content") in {"rq1", "ra1", "rq2", "ra2"}
+    ]
+    roles = [m.get("role") for m in mine]
+    assert roles == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ], f"transcript not interleaved by created_at (role-grouped regression?): {roles}"
+
+
+@pytest.mark.asyncio
 async def test_add_report_roundtrip_with_timestamptz(pg_repo):
     """add_report() exercises the reports metadata (JSONB) AND
     generated_at/updated_at (TIMESTAMPTZ) casts — the timestamptz arm of the

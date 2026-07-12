@@ -466,9 +466,18 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         '[]'::json
                     ) as uploaded_files_data,
 
-                    -- Case messages (case_messages table; sorted by created_at).
-                    COALESCE(
-                        json_agg(DISTINCT jsonb_build_object(
+                    -- Case messages via a correlated subquery with an explicit
+                    -- ORDER BY (matches the SQLite path's `ORDER BY created_at`).
+                    -- Do NOT fold this back into a `json_agg(DISTINCT ...)` over a
+                    -- joined `case_messages`: DISTINCT makes PostgreSQL sort the
+                    -- aggregated jsonb objects shortest-key-first — i.e. by `role`
+                    -- (the 4-char key) — which returns all 'assistant' messages
+                    -- before all 'user' messages and made the transcript render
+                    -- role-grouped with the leading block mislabeled "Turn 0".
+                    -- The subquery also avoids multiplying this table into the
+                    -- other 1:many joins (smaller cartesian product).
+                    COALESCE((
+                        SELECT json_agg(jsonb_build_object(
                             'message_id', m.message_id,
                             'turn_number', m.turn_number,
                             'role', m.role,
@@ -476,15 +485,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             'created_at', m.created_at,
                             'token_count', m.token_count,
                             'metadata', m.metadata
-                        )) FILTER (WHERE m.message_id IS NOT NULL),
-                        '[]'::json
-                    ) as messages_data
+                        ) ORDER BY m.created_at ASC, m.turn_number ASC)
+                        FROM case_messages m
+                        WHERE m.case_id = c.case_id
+                    ), '[]'::json) as messages_data
 
                 FROM cases c
                 LEFT JOIN hypotheses h ON c.case_id = h.case_id
                 LEFT JOIN solutions s ON c.case_id = s.case_id
                 LEFT JOIN uploaded_files f ON c.case_id = f.case_id
-                LEFT JOIN case_messages m ON c.case_id = m.case_id
                 WHERE c.case_id = :case_id
                 GROUP BY c.case_id
             """)
