@@ -54,9 +54,6 @@ async def list_all_cases(
     state: Optional[CaseState] = Query(None, description="Filter by state"),
     limit: int = Query(50, ge=1, le=200, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
-    include_empty: bool = Query(
-        True, description="Include cases with no conversation (current_turn == 0)"
-    ),
 ) -> CaseListResponse:
     """List cases across all users/orgs for a platform-admin (ADR-012 D9)."""
     settings = get_settings()
@@ -74,9 +71,7 @@ async def list_all_cases(
             ),
         )
 
-    filters = CaseListFilter(
-        state=state, limit=limit, offset=offset, include_empty=include_empty
-    )
+    filters = CaseListFilter(state=state, limit=limit, offset=offset)
     summaries, total = await case_service.list_all_cases(filters)
 
     # Audit the privileged access (ADR-012 D8 "boundary now").
@@ -98,5 +93,7 @@ async def list_all_cases(
         total_count=total,
         limit=limit,
         offset=offset,
-        has_more=(offset + len(summaries)) < total,
+        # Robust to best-effort conversion drops: base "more pages?" on the
+        # requested window vs. the repository's true total, not the rendered count.
+        has_more=(offset + limit) < total,
     )

@@ -588,3 +588,36 @@ class TestLinkSessionToCase:
             await service.link_session_to_case("", "case_abc123abc123")
         with pytest.raises(ValidationException):
             await service.link_session_to_case("sess_abc", "")
+
+
+# ============================================================
+# list_all_cases (admin cross-tenant read, ADR-012 D9)
+# ============================================================
+
+
+class TestListAllCases:
+    """Cross-tenant admin listing: unscoped read, error propagation."""
+
+    @pytest.mark.asyncio
+    async def test_lists_across_all_users_unscoped(self, service, mock_repo):
+        cases = [
+            _make_case(user_id="copilot_user"),
+            _make_case(user_id="slack-agent"),
+        ]
+        mock_repo.list = AsyncMock(return_value=(cases, 2))
+
+        summaries, total = await service.list_all_cases(CaseListFilter())
+
+        # user_id=None → repository drops its per-user WHERE clause.
+        assert mock_repo.list.await_args.kwargs["user_id"] is None
+        assert total == 2
+        assert {s.user_id for s in summaries} == {"copilot_user", "slack-agent"}
+
+    @pytest.mark.asyncio
+    async def test_propagates_repository_error(self, service, mock_repo):
+        # A DB failure must surface (5xx), not be masked as an empty list —
+        # this is a diagnostic admin view.
+        mock_repo.list = AsyncMock(side_effect=RuntimeError("db down"))
+
+        with pytest.raises(RuntimeError):
+            await service.list_all_cases(CaseListFilter())
