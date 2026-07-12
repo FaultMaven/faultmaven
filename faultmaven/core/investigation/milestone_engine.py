@@ -3143,14 +3143,14 @@ class MilestoneEngine:
                             # resolvable). Nothing terminal committed — present
                             # the resolve confirmation instead of a CLOSED
                             # report, which would falsely record the case as
-                            # closed-unresolved.
-                            resolve_msg = (
-                                "This case has a fix confirmed to have "
-                                "eliminated the root cause — it qualifies for "
-                                "**resolved** rather than closed. Closing would "
-                                "record it as unresolved and discard the "
-                                "resolution.\n\n" + _build_resolution_confirmation(case)
-                            )
+                            # closed-unresolved. The pivot's user-facing message
+                            # is the SUGGEST_RESOLVE prose the guard already
+                            # computed and stored on the resolved pending (same
+                            # text the proposal-time pivot shows — one source of
+                            # truth, and it renders the no-record out-of-band-fix
+                            # case correctly, which _build_resolution_confirmation
+                            # does not).
+                            resolve_msg = case.pending_transition["summary"]
                             self._record_deterministic_turn(
                                 case, user_message or "", resolve_msg
                             )
@@ -4127,15 +4127,14 @@ class MilestoneEngine:
             elif metadata.get("close_pivoted_to_resolve"):
                 # INV-37 resolve-preservation: the user confirmed a pending
                 # CLOSE, but the case had become resolvable — the confirm-time
-                # guard pivoted it to a RESOLVED proposal. Present the resolve
-                # confirmation (appended below the LLM's reply) so the user
-                # confirms the correct, resolution-preserving terminal.
+                # guard pivoted it to a RESOLVED proposal. Append (below the
+                # LLM's reply) the SUGGEST_RESOLVE prose the guard already
+                # computed and stored on the resolved pending — the same text
+                # the proposal-time pivot shows, so both pivot paths render one
+                # message.
                 agent_response_text = _prose_with_gate_notice(
                     response_obj.agent_response,
-                    "This case has a fix confirmed to have eliminated the root "
-                    "cause — it qualifies for **resolved** rather than closed. "
-                    "Closing would record it as unresolved and discard the "
-                    "resolution.\n\n" + _build_resolution_confirmation(case_updated),
+                    (case_updated.pending_transition or {}).get("summary", ""),
                 )
                 follow_ups = _resolution_confirmation_suggestions()
             elif metadata.get("rca_infeasible_closure_message"):
@@ -8436,8 +8435,16 @@ class MilestoneEngine:
                     confirm_pending_transition,
                 )
 
-                confirm_pending_transition(case, case.user_id)
-                metadata["status_transitioned"] = True
+                # A KB-resolution collapse always confirms a RESOLVED pending
+                # (the runbook fix worked), and a resolvable close already
+                # pivots at proposal time — so INV-37's confirm-time pivot
+                # cannot fire here today. Still, mirror the transition's actual
+                # outcome (never assert status_transitioned on the False-on-
+                # pivot return) so this stays correct if a close pending ever
+                # reaches this path.
+                metadata["status_transitioned"] = confirm_pending_transition(
+                    case, case.user_id
+                )
                 logger.info(
                     f"KB-Resolution same-turn collapse: confirmed "
                     f"pending transition for case {case.case_id} "

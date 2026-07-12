@@ -481,8 +481,14 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
     """
     Execute a pending transition after user confirmation.
 
-    Returns True if transition was executed, False if no pending transition
-    or if the transition target is unknown.
+    Returns True if a terminal transition was executed. Returns False when
+    nothing terminal executed, which now covers THREE cases: no pending
+    transition, an unknown target, OR an INV-37 resolve-preservation pivot —
+    a pending CLOSE on a resolvable case is replaced with a RESOLVED proposal
+    (`case.pending_transition` is left pointing at the new "resolved" pending)
+    instead of closing. Callers that must re-present a confirmation on the
+    pivot detect it via `not executed and pending_transition["to_state"] ==
+    "resolved"` (see the milestone-engine confirm sites).
 
     Raises:
         ValueError: If case is in an invalid state for the requested transition.

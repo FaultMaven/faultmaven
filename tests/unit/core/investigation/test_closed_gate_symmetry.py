@@ -1,4 +1,4 @@
-"""Confirm-time resolve-preservation for the CLOSED gate (INV-37, #656 P3.4).
+"""Confirm-time resolve-preservation for the CLOSED gate (INV-37, #656).
 
 The resolve gate is protective because RESOLVED asserts a positive
 conclusion ("it's fixed"); the close gate is intentionally thin because
@@ -151,6 +151,31 @@ def test_confirm_pending_close_pivots_to_resolved_when_resolvable():
     # caller re-presents the resolve confirmation.
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "resolved"
+    # The pivot stores the canonical SUGGEST_RESOLVE message as the pending's
+    # summary — the ONE source of truth the callers re-present (matching the
+    # proposal-time pivot), not a re-derived string.
+    assert case.pending_transition["summary"] == assess_closure_readiness(case).message
+
+
+def test_pivot_message_handles_out_of_band_fix_without_record():
+    """An out-of-band fix yields a causal_absence with NO root_cause_conclusion
+    and NO Solution record — still resolvable. The pivot message must be the
+    canonical SUGGEST_RESOLVE prose (which reads gracefully), never a
+    self-contradictory 'Root cause: Not yet identified' rendering."""
+    case = _make_investigating_case()
+    case.progress.symptom_verified = True
+    _attach_causal_absence(case)  # no root cause, no solution on record
+    assert assess_closure_readiness(case).verdict == ClosureReadiness.SUGGEST_RESOLVE
+    propose_transition(case, to_state="closed", summary="Closing as unresolved.")
+
+    with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
+        executed = confirm_pending_transition(case, "user_test")
+
+    assert executed is False
+    assert case.pending_transition["to_state"] == "resolved"
+    msg = case.pending_transition["summary"]
+    assert "qualifies for **resolved**" in msg
+    assert "Not yet identified" not in msg
 
 
 def test_confirm_pending_close_executes_when_not_resolvable():
