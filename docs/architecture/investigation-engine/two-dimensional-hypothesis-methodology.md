@@ -786,7 +786,9 @@ it (`synthesize_rcc_from_validated_root` refuses to touch one, and the M2 grade
 labels its confidence at read-time rather than rewriting it, §9.5). But *never
 authoring* it does not mean *never retracting* it. The two guarantees still
 bind the conclusion the engine surfaces to every terminal consumer (the
-disposition/M5 gate, the report, the copilot UI, KB runbook harvesting):
+disposition/M5 gate, the report, the copilot UI, KB runbook harvesting); the
+user-visible narration is a further guarantee surface for *disposition claims*,
+covered separately in §7.9:
 
 - **Disconfirmation → retract at source (NO-INCORRECT-CONCLUSION).** When the
   engine has decisive structural evidence the named cause is *wrong* — a
@@ -954,6 +956,68 @@ lose the refinement. *Complementary prevention (routed):* the apply-layer dedup 
 enforcement; the deeper fix for repeated re-emission is showing the LLM its
 standing hypotheses so it never emits a duplicate — a context/prompt change
 tracked separately, not in scope here.
+
+### 7.9 Narration-truth coherence — the transcript is a guarantee surface for disposition claims (INV-40)
+
+§7.6 binds the two guarantees to the conclusion the engine *surfaces to every
+terminal consumer* — the disposition/M5 gate, the report, the copilot UI, KB
+harvest. Each of those is engine-derived or engine-gated. But the user does not
+read `cause_state` or the disposition row; the user reads the agent's chat
+message (`agent_response`), and that message is LLM free text on every ordinary
+turn. Nothing in the derive/veto lane inspects it — the §7.6 reconciliation
+machinery reads the structured RootCauseConclusion and the causal graph, never
+prose — so an LLM that narrates *"Case resolved."* while the case stands at
+INVESTIGATING delivers a false disposition claim the user acts on, even though
+every engine surface correctly refused the transition. Both guarantees as §7.6
+scopes them hold in that incident; the user is still told the opposite of the
+truth. That gap is one of *guarantee scope*, not of the reconciliation layer,
+which structurally cannot reach the prose.
+
+The narration channel is therefore a guarantee surface for the one claim class
+where a false statement is a wrong *conclusion* in the sense the product
+promises: **disposition claims** (the case is resolved / closed). On a
+non-terminal turn with no engine-confirmed terminal transition executing, the
+user-visible message never asserts, unqualified, that the case is resolved or
+closed. The engine does not rewrite the LLM's prose — authorship stays the
+LLM's (§7.6), and destroying the analysis it just wrote repeats the DF-4
+override failure. Instead the engine **appends** a truthful corrective notice
+below the prose, through the same INV-26 composition lane
+(`_prose_with_gate_notice`): the case remains under investigation, and what
+resolution actually requires. The false claim can still be *authored*; it can no
+longer stand *uncontradicted* on the surface the user reads.
+
+This generalizes INV-26(b) — "the visible transcript may not contradict the
+applied `state_updates`" — from gate-override turns to disposition claims on
+*any* turn. It reuses the existing narrow `_completion_phrases` scan
+(§1.3.1 / INV-15) unchanged: the same detector, a new consumer
+(state-reconciled, not log-only), so the PR #299 decision to keep that scan
+narrow is untouched. It is a soundness guard in the engine derive/veto lane —
+mechanical (regex + engine state, no model-graded judge), append-only, mutating
+no state and opening no blocking gate — not a behavioral-rule prose validator
+(`agent-behavioral-rules.md` rejects those *as behavioral enforcement*; a
+disposition-truth coherence check is neither style nor methodology compliance,
+and matches that doc's own allowance for a last-resort safety net on genuinely
+capable-model over-claims).
+
+**Graceful denial.** A false positive — the scan fires on conditional or quoted
+prose (*"once you confirm, the case is resolved"*) — degrades to appending a
+notice that is *still true* (the case is currently open): mildly redundant,
+never wrong, never blocking, never state-mutating. NO-COLLAPSE is unthreatened
+(append-only, pre-LLM paths untouched); NO INCORRECT CONCLUSION is strengthened
+(the false claim cannot stand uncontradicted). Precision tuning is therefore not
+load-bearing.
+
+*Rejected alternative — rewrite or suppress the over-claiming prose (repeats the
+DF-4 destroy-work-product failure), or an LLM-graded prose-consistency judge
+(reopens the removed post-generation-validator pattern and violates the
+LLM-agnostic testing invariant).*
+
+*Elicitation companion (frequency, not blast radius).* The guard bounds the
+blast radius of an over-claim; the TREATMENT/verify-turn prompt reduces how
+often one occurs — a user-confirmed fix must elicit the `causal_absence` row +
+`proposed_transition` reliably, even on long context (the #668 incident skipped
+both 3/3 on a long-context haiku turn). Prompt guidance is the frequency lever;
+the engine append is the guarantee.
 
 ---
 

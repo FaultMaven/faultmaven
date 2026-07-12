@@ -394,3 +394,31 @@ work_gate_crossed_total = Counter(
     "self-clearing; read the metric as a trend, not to the turn.)",
     ["provider"],
 )
+
+
+# INV-40 narration-truth coherence (#668, §7.9). Fires when a turn's finalized
+# ``agent_response`` contains a completion phrase (the existing narrow
+# ``_completion_phrases`` scan, INV-15) while the engine's state contradicts it
+# — the case is not terminal AND no terminal transition executed this turn — so
+# the engine appended a corrective notice below the LLM's prose. Before INV-40
+# this over-claim polarity had no metric surface: the boolean died in the
+# ``transition_compliance`` log field (DF-6 lesson — the over-claim polarity must
+# be watched). Labeled by the CHAT provider driving the investigation so the
+# picture composes with the INV-39 provider floor: a false "case resolved"
+# narration is exactly the kind of failure a mis-provisioned / weak model emits
+# under long context (the #668 incident: claude-haiku-4-5, 3/3). Healthy systems
+# sit near zero; a sustained rate on one provider means that model keeps
+# narrating resolution the engine refused — an elicitation/model-capability
+# signal (the guard is holding; the append fired every time), not a soundness
+# alarm. It never blocks a turn or mutates state; interpret against per-provider
+# case volume, never to the individual turn.
+narration_overclaim_total = Counter(
+    "faultmaven_narration_overclaim_total",
+    "A turn's finalized agent_response asserted an unqualified disposition claim "
+    "(completion phrase) the engine's non-terminal state contradicted, so the "
+    "engine appended a corrective notice (§7.9 / INV-40). One increment per turn, "
+    "labeled by the CHAT provider (``provider``) driving the investigation. The "
+    "guard is append-only — a nonzero rate means the model over-claims, not that "
+    "a wrong disposition reached a terminal surface.",
+    ["provider"],
+)

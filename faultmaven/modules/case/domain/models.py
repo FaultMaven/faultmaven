@@ -352,7 +352,8 @@ class CauseState(str, Enum):
     """Engine-derived knowledge state of the root cause (assessment variable).
 
     Recomputed every turn from the LLM's grounded cause-identification signal
-    plus the active-hypothesis count (see investigation-flow-redesign.md R1).
+    plus the active-hypothesis count (R1 cause_state gate, recorded in
+    investigation-invariants.md's INV-17/19/20/21 flow-redesign retirement note).
     NEVER path-stripped — recording a cause the engine legitimately knows is a
     truth signal, not an earned process milestone. Drives whether the diagnostic
     machinery (hypothesis formulation + evidence-needs) runs this turn.
@@ -576,7 +577,9 @@ class InvestigationProgress(BaseModel):
     # ============================================================
     # ASSESSMENT VARIABLES (engine-derived knowledge state)
     # Truth signals, recomputed every turn, NEVER path-stripped.
-    # See investigation-flow-redesign.md §4.1, R1.
+    # See two-dimensional-hypothesis-methodology.md §9.2 (cause_state); the
+    # R1 cause_state gate is recorded in investigation-invariants.md's
+    # INV-17/19/20/21 flow-redesign retirement note.
     # ============================================================
     cause_state: CauseState = Field(
         default=CauseState.UNKNOWN,

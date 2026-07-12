@@ -71,6 +71,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_dedup_skipped_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
+    narration_overclaim_total,
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
     work_gate_crossed_total,
@@ -1988,6 +1989,79 @@ def _prose_with_gate_notice(llm_text: str | None, gate_text: str) -> str:
     if not llm_text:
         return gate_text
     return f"{llm_text}\n\n---\n\n{gate_text}"
+
+
+# INV-40 (§7.9) / INV-15 (§1.3.1): the disposition-completion phrases scanned by
+# BOTH the narration-truth guard (``_narration_overclaim_notice``) and the
+# ``transition_compliance`` telemetry. Module-level so the two read the SAME
+# narrow list — PR #299 ratified keeping this scan narrow (only high-signal
+# transition-completion claims; the broader advisor-role banned list is NOT here
+# because it false-positives in benign context). Adding a phrase widens both the
+# guard and the telemetry; do so deliberately.
+_COMPLETION_PHRASES: tuple[str, ...] = (
+    "case closed",
+    "case is closed",
+    "case is now closed",
+    "marking as resolved",
+    "marking this as resolved",
+    "marking this resolved",
+    "marked as resolved",
+    "case resolved",
+    "case is resolved",
+    "case is now resolved",
+    "i have resolved",
+    "i've resolved",
+    "i have closed",
+    "i've closed",
+)
+
+
+def _narration_asserts_disposition(agent_text: str | None) -> bool:
+    """True if the finalized narration contains a disposition-completion phrase.
+
+    The detector half of INV-40 and the ``transition_compliance`` telemetry —
+    the same narrow ``_COMPLETION_PHRASES`` scan, reused verbatim (INV-15).
+    """
+    lowered = (agent_text or "").lower()
+    return any(p in lowered for p in _COMPLETION_PHRASES)
+
+
+# INV-40 corrective notice. Appended (never substituted) below over-claiming
+# prose. Written to be true on a false positive too (conditional/quoted prose):
+# "still under investigation" holds whenever the case is non-terminal, so the
+# worst case is a mildly-redundant-but-true notice (§7.9 graceful denial).
+_NARRATION_OVERCLAIM_NOTICE = (
+    "**Note:** this case is still under investigation — it has not been resolved "
+    "or closed. Resolution requires a confirmed root cause and a verified fix; "
+    "closure requires an explicit decision to stop. I'll surface the "
+    "confirm-to-resolve step when the investigation actually reaches it."
+)
+
+
+def _narration_overclaim_notice(case, agent_text: str | None) -> str | None:
+    """Return the INV-40 corrective notice when narration over-claims disposition.
+
+    Reconciles the ``_COMPLETION_PHRASES`` scan against engine truth: the notice
+    fires only when the LLM asserted an unqualified resolved/closed claim AND the
+    engine's state contradicts it — the case is **not** terminal and **no**
+    disposition handshake is already in flight (a pending transition already
+    frames the true state in the transcript, so a second notice would be
+    redundant). Returns ``None`` when there is nothing to correct.
+
+    Pure over ``case`` + ``agent_text``; the caller appends via
+    ``_prose_with_gate_notice`` and increments ``narration_overclaim_total``.
+    """
+    if not _narration_asserts_disposition(agent_text):
+        return None
+    if case.state in (CaseState.RESOLVED, CaseState.CLOSED):
+        # The claim is true — a terminal transition executed (or the case was
+        # already terminal). Nothing to correct.
+        return None
+    if getattr(case, "pending_transition", None):
+        # A disposition ask is active; the gate-override notice already conveys
+        # the real (not-yet-terminal) state. Don't stack a second notice.
+        return None
+    return _NARRATION_OVERCLAIM_NOTICE
 
 
 def _build_resolution_confirmation(case) -> str:
@@ -4418,6 +4492,40 @@ class MilestoneEngine:
                     case_updated.turn_history[-1].agent_response = agent_response_text
                     await self.repository.save(case_updated)
 
+            # INV-40 (§7.9): narration-truth coherence guard. The narration
+            # channel (agent_response) is LLM free text and sits outside every
+            # truth surface the §7.6 reconciliation lane reads — so an LLM that
+            # narrates "Case resolved." on a case the engine holds at
+            # INVESTIGATING (the #668 incident, 3/3 on long-context haiku)
+            # delivers a false disposition claim the user acts on. Reconcile the
+            # existing narrow completion-phrase scan against engine truth and,
+            # when it over-claims, APPEND a corrective notice below the LLM's
+            # prose (the INV-26 composition lane, never a substitution — the DF-4
+            # lesson). This runs after the summary append above, so a genuine
+            # terminal transition (state now RESOLVED/CLOSED) is excluded by
+            # construction; the guard fires only on the truth-split.
+            _overclaim_notice = _narration_overclaim_notice(
+                case_updated, agent_response_text
+            )
+            if _overclaim_notice is not None:
+                agent_response_text = _prose_with_gate_notice(
+                    agent_response_text, _overclaim_notice
+                )
+                if case_updated.turn_history:
+                    case_updated.turn_history[-1].agent_response = agent_response_text
+                    await self.repository.save(case_updated)
+                narration_overclaim_total.labels(
+                    provider=_resolve_chat_provider_name(self.llm_provider)
+                ).inc()
+                logger.warning(
+                    "narration_overclaim_corrected",
+                    extra={
+                        "case_id": case_updated.case_id,
+                        "turn": case_updated.current_turn,
+                        "state": case_updated.state.value,
+                    },
+                )
+
             # Compliance instrumentation: per-turn signal on whether the LLM
             # is honoring the transition-handling prompt rules. Used for
             # quarterly drift review across model-version changes and prompt
@@ -4433,23 +4541,9 @@ class MilestoneEngine:
             # separately-tagged "advisor_role_compliance" log signal
             # alongside this one — don't dilute the transition_compliance
             # tuple. See investigation-lifecycle-logic.md §1.3.1
-            # (INV-15 drift note).
-            _completion_phrases = (
-                "case closed",
-                "case is closed",
-                "case is now closed",
-                "marking as resolved",
-                "marking this as resolved",
-                "marking this resolved",
-                "marked as resolved",
-                "case resolved",
-                "case is resolved",
-                "case is now resolved",
-                "i have resolved",
-                "i've resolved",
-                "i have closed",
-                "i've closed",
-            )
+            # (INV-15 drift note). The scan reuses the module-level
+            # _COMPLETION_PHRASES so the telemetry and the INV-40 guard read the
+            # SAME narrow list (one place to widen deliberately).
             _agent_text_lower = (agent_response_text or "").lower()
             # Capture LLM-vs-engine drift on the proposed-transition path.
             # When the LLM emits to_state=resolved on a thin case, the engine
@@ -4494,7 +4588,7 @@ class MilestoneEngine:
                         )
                     ),
                     "agent_response_contains_completion_phrase": any(
-                        p in _agent_text_lower for p in _completion_phrases
+                        p in _agent_text_lower for p in _COMPLETION_PHRASES
                     ),
                     "status_transitioned": bool(metadata.get("status_transitioned")),
                     # Readiness verdicts explain WHY a proposed transition did

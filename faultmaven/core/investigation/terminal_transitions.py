@@ -65,7 +65,9 @@ def _cause_identified(case: "Case") -> bool:
 
     The engine-derived ``progress.cause_state`` (CauseState.IDENTIFIED) is the
     truth signal for cause-knowledge — recomputed every turn and never
-    path-stripped (investigation-flow-redesign.md §4.1 / R1, #411). It is the
+    path-stripped (two-dimensional-hypothesis-methodology.md §9.2; the R1
+    cause_state gate is recorded in investigation-invariants.md's
+    INV-17/19/20/21 flow-redesign retirement note, #411). It is the
     primary check here. The ``root_cause_conclusion`` / ``working_conclusion``
     fields are kept as a fallback only: the LLM does not always populate the
     documented conclusion even when the cause IS identified (cause_state is set

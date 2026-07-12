@@ -1579,8 +1579,9 @@ class TestINV13_AckTurnVsQATurnSuggestions:
 # Drift surfaced during verification:
 #
 #   a. The "light vocabulary check" in the matrix refers to the
-#      ``_completion_phrases`` scan at milestone_engine.py:2602 in
-#      _process_turn_impl. That scan is scoped to transition-completion
+#      module-level ``_COMPLETION_PHRASES`` scan in _process_turn_impl
+#      (the same tuple INV-40's narration-truth guard reuses). That scan
+#      is scoped to transition-completion
 #      claims ("case closed", "marking as resolved") — not the broader
 #      banned-phrase list in _ADVISOR_ROLE_CONSTRAINT ("Let me check",
 #      "I will run", etc.). The check is NARROWER than the prompt rule
@@ -1668,10 +1669,13 @@ class TestINV15_AgentAdvisorRole:
         """
         source = inspect.getsource(MilestoneEngine._process_turn_impl)
 
-        # The compliance instrumentation block
-        assert "_completion_phrases" in source, (
-            "INV-15 violation: _process_turn_impl no longer contains the "
-            "_completion_phrases compliance scan. The quarterly drift "
+        # The compliance instrumentation block. The phrase tuple was hoisted to
+        # the module-level ``_COMPLETION_PHRASES`` constant (INV-40 reuses the
+        # SAME narrow list for the narration-truth guard); the scan still runs in
+        # ``_process_turn_impl``, now referencing that constant.
+        assert "_COMPLETION_PHRASES" in source, (
+            "INV-15 violation: _process_turn_impl no longer references the "
+            "_COMPLETION_PHRASES compliance scan. The quarterly drift "
             "review depends on this telemetry."
         )
         assert "transition_compliance" in source, (
@@ -1679,11 +1683,15 @@ class TestINV15_AgentAdvisorRole:
             "'transition_compliance' telemetry. Drift detection signals "
             "must be preserved."
         )
-        # At least one of the canonical completion phrases must be in
-        # the scanned tuple
+        # At least one of the canonical completion phrases must be in the
+        # module-level tuple the scan reads (INV-15 / INV-40 share it).
+        from faultmaven.core.investigation.milestone_engine import (
+            _COMPLETION_PHRASES,
+        )
+
         canonical_phrases = ["case closed", "marked as resolved"]
-        assert any(phrase in source for phrase in canonical_phrases), (
-            "INV-15 violation: the _completion_phrases tuple appears to "
+        assert any(phrase in _COMPLETION_PHRASES for phrase in canonical_phrases), (
+            "INV-15 violation: the _COMPLETION_PHRASES tuple appears to "
             "have been emptied or replaced with unrecognizable content."
         )
 
