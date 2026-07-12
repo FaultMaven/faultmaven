@@ -19,7 +19,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
@@ -804,6 +804,49 @@ class CaseService(ICaseService):
         except Exception as e:
             logger.error(f"Failed to list cases for user {user_id}: {e}")
             return []
+
+    async def list_all_cases(
+        self, filters: Optional[CaseListFilter] = None
+    ) -> Tuple[List[CaseSummary], int]:
+        """List cases across ALL users/orgs (platform-admin cross-tenant read).
+
+        Backs the platform-admin case view (ADR-012 D9). Unlike
+        ``list_user_cases`` this passes ``user_id=None`` so the repository
+        drops its per-user WHERE clause and returns every user's cases for the
+        requested page, plus the total match count for pagination.
+        Authorization and deployment-mode gating are enforced at the API layer;
+        this method must only be reached for an admin. In cloud/Postgres,
+        Row-Level Security still scopes the result to the caller's org — the
+        API layer blocks cloud until an audited break-glass path exists.
+
+        Repository errors propagate so the API surfaces a 5xx rather than
+        masking a failure as an empty list (this is a diagnostic admin view).
+        Per-case summary conversion is best-effort. ``include_empty`` is not
+        honored here: filtering after the repository already paginated would
+        make ``total_count`` and the page disagree, so the admin view lists
+        every case (empties included) — the operator wants full visibility.
+
+        Returns:
+            Tuple of (case summaries for the page, total match count).
+        """
+        from faultmaven.models.api_models import CaseSummary
+
+        status_filter = filters.state if filters else None
+        limit = filters.limit if filters else 50
+        offset = filters.offset if filters else 0
+
+        cases_list, total = await self.repository.list(
+            user_id=None, state=status_filter, limit=limit, offset=offset
+        )
+
+        summaries: List[CaseSummary] = []
+        for case in cases_list:
+            try:
+                summaries.append(CaseSummary.from_case(case))
+            except Exception as e:
+                logger.error(f"Failed to convert case {case.case_id} to summary: {e}")
+
+        return summaries, total
 
     @trace("case_service_search_cases")
     async def search_cases(

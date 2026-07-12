@@ -1344,6 +1344,29 @@ class DIContainer(BaseDIContainer):
 
                 return paginated_cases
 
+            async def list_all_cases(self, filters=None):
+                """List all in-memory cases as summaries (admin cross-tenant read; degraded double).
+
+                Mirrors ``CaseService.list_all_cases``: returns
+                ``(List[CaseSummary], total)`` so the ``CaseListResponse``
+                response model validates even when this fallback is active.
+                """
+                from faultmaven.models.api_models import CaseSummary
+
+                all_cases = list(self.cases.values())
+                if filters and getattr(filters, "state", None):
+                    all_cases = [c for c in all_cases if c.state == filters.state]
+                total = len(all_cases)
+                limit = getattr(filters, "limit", 50) if filters else 50
+                offset = getattr(filters, "offset", 0) if filters else 0
+                summaries = []
+                for case in all_cases[offset : offset + limit]:
+                    try:
+                        summaries.append(CaseSummary.from_case(case))
+                    except Exception:
+                        pass
+                return summaries, total
+
             async def count_user_cases(self, user_id=None, filters=None):
                 """Count cases for a user with filters - Phase 1: Mirror filtering from list_user_cases"""
                 # Filter cases by user_id if provided
