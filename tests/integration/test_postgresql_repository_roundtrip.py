@@ -377,6 +377,42 @@ async def test_get_returns_messages_interleaved_by_created_at(pg_repo):
 
 
 @pytest.mark.asyncio
+async def test_search_by_case_id_and_title_scoped_to_user(pg_repo):
+    """search() finds cases by case_id AND title, scoped to the caller.
+
+    Regression: the query used ``SELECT DISTINCT c.case_id, … ORDER BY rank,
+    c.updated_at`` — PostgreSQL rejects that ("for SELECT DISTINCT, ORDER BY
+    expressions must appear in select list"), the service swallowed the error
+    and returned ``[]``, so ALL search (title and case-id) silently returned
+    nothing. Also guards user-scoping: it must happen in SQL, not after LIMIT.
+    """
+    session = pg_repo.db
+    org_id = f"org_{uuid4().hex[:8]}"
+    u1 = f"user_{uuid4().hex[:8]}"
+    u2 = f"user_{uuid4().hex[:8]}"
+    await seed_organizations(session, [org_id])
+    await seed_users(session, [u1, u2])
+
+    mine = _make_case(org_id, u1)
+    other = _make_case(org_id, u2)
+    # Same title, different owner — the scoping must come from SQL, not text.
+    object.__setattr__(mine, "title", "Redis eviction storm")
+    object.__setattr__(other, "title", "Redis eviction storm")
+    await pg_repo.save(mine)
+    await pg_repo.save(other)
+
+    # by case_id (the ILIKE branch + the DISTINCT/ORDER BY fix)
+    by_id, _ = await pg_repo.search(query=mine.case_id, user_id=u1)
+    assert [c.case_id for c in by_id] == [mine.case_id]
+
+    # by title, scoped: u1 sees only their own, not u2's same-titled case
+    by_title, _ = await pg_repo.search(query="Redis eviction", user_id=u1)
+    ids = [c.case_id for c in by_title]
+    assert mine.case_id in ids
+    assert other.case_id not in ids
+
+
+@pytest.mark.asyncio
 async def test_add_report_roundtrip_with_timestamptz(pg_repo):
     """add_report() exercises the reports metadata (JSONB) AND
     generated_at/updated_at (TIMESTAMPTZ) casts — the timestamptz arm of the

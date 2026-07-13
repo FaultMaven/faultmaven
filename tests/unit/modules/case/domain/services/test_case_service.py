@@ -542,14 +542,20 @@ class TestSearchCases:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_search_filters_by_user(self, service, mock_repo):
+    async def test_search_scopes_by_user_via_repository(self, service, mock_repo):
+        # Scoping is delegated to the repository's SQL (WHERE user_id = …), not
+        # a Python post-filter — filtering after the repo's LIMIT would drop the
+        # caller's own matches and could leak other users' cases. Assert the
+        # user_id (and limit) reach repository.search.
         case_a = _make_case(user_id="user_a", current_turn=1)
-        case_b = _make_case(user_id="user_b", current_turn=1)
-        mock_repo.search.return_value = ([case_a, case_b], 2)
+        mock_repo.search.return_value = ([case_a], 1)
 
         request = CaseSearchRequest(query="test")
         result = await service.search_cases(request, user_id="user_a")
+
         assert len(result) == 1
+        assert mock_repo.search.await_args.kwargs["user_id"] == "user_a"
+        assert mock_repo.search.await_args.kwargs["limit"] == request.limit
 
     @pytest.mark.asyncio
     async def test_search_returns_empty_on_error(self, service, mock_repo):

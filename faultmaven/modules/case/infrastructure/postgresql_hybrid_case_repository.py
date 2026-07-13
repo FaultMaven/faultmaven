@@ -1496,10 +1496,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
-            # Search query with relevance ranking
-            # Evidence JOIN removed per Principle 3 (Database Boundaries)
+            # Search query with relevance ranking.
+            # Evidence JOIN removed per Principle 3 (Database Boundaries), so
+            # `cases c` has no fan-out and each case_id is already unique — do
+            # NOT re-add `SELECT DISTINCT`: with DISTINCT, PostgreSQL requires
+            # every ORDER BY expression to be in the select list, so
+            # `ORDER BY ..., c.updated_at` raised "for SELECT DISTINCT, ORDER BY
+            # expressions must appear in select list" — which the service caught
+            # and turned into an empty result, silently breaking ALL search
+            # (title and case-id alike).
             search_query = text(f"""
-                SELECT DISTINCT c.case_id,
+                SELECT c.case_id,
                     ts_rank(to_tsvector('english', c.title), plainto_tsquery('english', :query)) as rank
                 FROM cases c
                 {where_sql}
