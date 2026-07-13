@@ -39,16 +39,20 @@ from .conftest import (
 
 def _clarification_target(
     suggested_types: list[str] | None = None,
+    upload_source: str = "file_upload",
+    filename: str = "server.log",
 ) -> _PreprocessedAttachment:
     return _PreprocessedAttachment(
-        uploaded_file=make_uploaded_file(),
+        uploaded_file=make_uploaded_file(
+            filename=filename, upload_source=upload_source
+        ),
         classification_failed=True,
         suggested_types=(
             suggested_types
             if suggested_types is not None
             else ["logs_and_errors", "structured_config"]
         ),
-        attachment_filename="server.log",
+        attachment_filename=filename,
     )
 
 
@@ -121,6 +125,68 @@ class TestClarificationEmitterIntent:
     def test_no_failure_emits_nothing(self):
         ok = _PreprocessedAttachment(uploaded_file=make_uploaded_file())
         assert _build_classification_clarification_suggestions([ok]) == []
+
+    def test_paste_offers_war_room_seeds_first(self):
+        """Pasted text in an incident thread is usually command output or
+        logs (product guidance); a paste that reached clarification has weak
+        content signals by definition, so those choices lead — before the
+        classifier's sub-threshold guesses — and every choice is actionable
+        (DECIDE with a routable intent)."""
+        suggestions = _build_classification_clarification_suggestions(
+            [
+                _clarification_target(
+                    upload_source="text_paste",
+                    filename="Untitled",
+                    suggested_types=["documentation"],
+                )
+            ]
+        )
+        assert [s.intent["data_type"] for s in suggestions] == [
+            "command_output",
+            "logs_and_errors",
+            "documentation",
+            "unstructured_text",
+        ]
+        assert [s.label for s in suggestions] == [
+            "Command output",
+            "Application logs",
+            "Documentation",
+            "Something else",
+        ]
+
+    def test_paste_copy_never_names_the_synthetic_snippet(self):
+        """'Untitled' / 'pasted-content-…' refer to the transport format,
+        not anything the user recognizes — the copy says 'the text you
+        pasted' instead."""
+        for src, name in (
+            ("text_paste", "Untitled"),
+            ("paste", "Untitled"),
+            ("file_upload", "pasted-content-20260713T083214.txt"),
+        ):
+            suggestions = _build_classification_clarification_suggestions(
+                [_clarification_target(upload_source=src, filename=name)]
+            )
+            for s in suggestions:
+                assert "the text you pasted" in s.payload
+                assert name not in s.payload
+
+    def test_paste_seeds_deduplicate_against_classifier_types(self):
+        suggestions = _build_classification_clarification_suggestions(
+            [
+                _clarification_target(
+                    upload_source="text_paste",
+                    suggested_types=["command_output", "metrics_and_performance"],
+                )
+            ]
+        )
+        data_types = [s.intent["data_type"] for s in suggestions]
+        assert data_types.count("command_output") == 1
+        assert data_types == [
+            "command_output",
+            "logs_and_errors",
+            "metrics_and_performance",
+            "unstructured_text",
+        ]
 
     def test_typed_choice_matches_via_intent_resolver_fast_path(self):
         """A user who *types* the label instead of clicking must resolve to
@@ -358,6 +424,76 @@ class TestClarificationTurnWiring:
             if i["type"] == IntentType.FILE_RECLASSIFICATION.value
         )
         assert any(f.file_id == target["file_id"] for f in saved.uploaded_files)
+
+    @pytest.mark.asyncio
+    async def test_paste_turn_speaks_in_the_users_terms(
+        self, repo_with_case, preprocessing_service, file_storage
+    ):
+        """A pasted snippet's synthetic name means nothing to the user: the
+        bridge note and the choices must say 'the text you pasted', and the
+        war-room seeds (command output / logs) must lead the choices
+        (observed on staging, case_10c847556276: 'Untitled' + 'Documentation'
+        read as nonsense)."""
+        repo, case = repo_with_case
+
+        classify_result = MagicMock()
+        classify_result.summary = "preview summary"
+        classify_result.structural_index = "index"
+        classify_result.data_type = UnifiedDataType.TEXT
+        classify_result.detailed_data_type = DataType.UNSTRUCTURED_TEXT
+        classify_result.content_hash = "c" * 64
+        classify_result.extraction_method = "classification_failed"
+        classify_result.extraction_metadata = {"suggested_types": ["documentation"]}
+        classify_result.coverage_start_ts = None
+        classify_result.coverage_end_ts = None
+        preprocessing_service.classify_and_extract = AsyncMock(
+            return_value=classify_result
+        )
+        file_storage.store_file = AsyncMock(
+            return_value={"file_path": "evidence/case_x/blob2.txt"}
+        )
+        file_storage.mark_linked = AsyncMock(return_value=True)
+
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+
+        payload = TurnPayload(
+            query="alert is firing, see paste",
+            attachments=[
+                Attachment(
+                    content=b"NAME READY STATUS RESTARTS AGE\nkube-proxy 1/1 Running",
+                    filename="pasted-content-20260713T083214.txt",
+                    content_type="text/plain",
+                    source_metadata={"source_type": "text_paste"},
+                )
+            ],
+        )
+        response = await service.process_turn(
+            case_id=case.case_id, user_id="user_owner", payload=payload
+        )
+
+        assert "the text you pasted" in response.agent_response
+        assert "pasted-content-" not in response.agent_response
+
+        clar = [
+            a
+            for a in response.suggested_actions
+            if a.intent
+            and a.intent.get("type") == IntentType.FILE_RECLASSIFICATION.value
+        ]
+        assert [a.intent["data_type"] for a in clar] == [
+            "command_output",
+            "logs_and_errors",
+            "documentation",
+            "unstructured_text",
+        ]
+        for a in clar:
+            assert "the text you pasted" in a.payload
+            assert "pasted-content-" not in a.payload
 
 
 class TestTerminalCaseGuard:
