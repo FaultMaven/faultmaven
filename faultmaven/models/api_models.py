@@ -95,6 +95,7 @@ class CaseSummary(BaseModel):
     closed_at: Optional[datetime]
     user_id: str
     organization_id: str
+    source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
     closure_reason: Optional[str]
 
     # Progress indicators
@@ -126,6 +127,7 @@ class CaseSummary(BaseModel):
             closed_at=case.closed_at,
             user_id=case.user_id,
             organization_id=case.organization_id,
+            source=getattr(case, "source", "copilot"),
             closure_reason=case.closure_reason,
             current_turn=case.current_turn,
             milestones_completed=len(case.progress.completed_milestones),
@@ -229,6 +231,10 @@ class CaseListFilter(BaseModel):
     )
 
     state: Optional[CaseState] = Field(default=None, description="Filter by state")
+
+    source: Optional[str] = Field(
+        default=None, description="Filter by case source (copilot | slack | api)"
+    )
 
     created_after: Optional[datetime] = Field(
         default=None, description="Cases created after this date"

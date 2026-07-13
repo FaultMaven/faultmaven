@@ -132,6 +132,16 @@ class TestCreateCase:
         assert case.title.startswith("Case-")
 
     @pytest.mark.asyncio
+    async def test_stamps_source_from_argument(self, service, mock_repo):
+        # Origin (ADR-012) is stamped at creation; the route derives it from the
+        # creator's account_kind and passes it here.
+        mock_repo.list.return_value = ([], 0)
+        slack = await service.create_case(title="T", owner_id="u", source="slack")
+        assert slack.source == "slack"
+        default = await service.create_case(title="T2", owner_id="u")
+        assert default.source == "copilot"
+
+    @pytest.mark.asyncio
     async def test_adds_initial_message(self, service, mock_repo):
         mock_repo.list.return_value = ([], 0)
         case = await service.create_case(

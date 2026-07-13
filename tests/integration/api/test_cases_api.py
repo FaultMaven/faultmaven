@@ -57,6 +57,7 @@ def mock_case():
     mock.case_id = "case_123abc"
     mock.organization_id = "org_456"
     mock.user_id = "user_789"
+    mock.source = "copilot"
     mock.title = "Test Case"
     mock.description = "Test Description"
     mock.state = CaseState.INQUIRY
