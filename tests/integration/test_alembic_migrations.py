@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "e6f7a8b9c0d1"  # current head (024 — drop_node_evidence_provenance)
+HEAD_REVISION = "a7b8c9d0e1f2"  # current head (025 — account_kind + case source)
 
 
 @pytest.fixture(scope="function")
