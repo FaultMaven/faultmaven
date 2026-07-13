@@ -331,6 +331,17 @@ class TestClarificationTurnWiring:
         intents = [a.intent for a in response.suggested_actions if a.intent]
         assert any(i["type"] == IntentType.FILE_RECLASSIFICATION.value for i in intents)
 
+        # Narration bridge: the reply must SAY why the choices are there —
+        # the LLM's own text doesn't know about the classification failure,
+        # and bare "Treat as documentation." bullets under an unrelated
+        # investigation reply read as nonsense (observed on staging,
+        # case_10c847556276).
+        assert "couldn't confidently classify" in response.agent_response
+        assert '"mystery.txt"' in response.agent_response
+        # The note also lands in the persisted transcript.
+        saved_for_note = await repo.get(case.case_id)
+        assert "couldn't confidently classify" in saved_for_note.messages[-1]["content"]
+
         # Persisted for the intent resolver (typed answers).
         saved = await repo.get(case.case_id)
         assert saved.last_suggestions, "clarification must persist for typed answers"
