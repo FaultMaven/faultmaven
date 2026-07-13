@@ -22,7 +22,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import (
     APIRouter,
@@ -638,7 +638,16 @@ async def _di_get_creator_account_kind(
     try:
         user = await user_service.get_user(current_user.user_id)
         return getattr(user, "account_kind", "individual") if user else "individual"
-    except Exception:
+    except Exception as e:
+        # Don't fail case creation on this — but do NOT swallow silently: a
+        # Slack case mislabeled 'copilot' (source is immutable) is otherwise
+        # undetectable.
+        logger.warning(
+            "Could not resolve account_kind for user %s; case source will "
+            "default to 'copilot': %s",
+            getattr(current_user, "user_id", "?"),
+            e,
+        )
         return "individual"
 
 
@@ -747,8 +756,8 @@ async def list_cases(
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
     state: Optional[CaseState] = Query(None, description="Filter by state"),
-    source: Optional[str] = Query(
-        None, description="Filter by case source (copilot | slack | api)"
+    source: Optional[Literal["copilot", "slack", "api"]] = Query(
+        None, description="Filter by case source"
     ),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),

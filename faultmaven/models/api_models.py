@@ -155,6 +155,7 @@ class CaseDetail(BaseModel):
 
     user_id: str
     organization_id: str
+    source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
     closure_reason: Optional[str]
 
     # Progress
@@ -196,6 +197,7 @@ class CaseDetail(BaseModel):
             closed_at=case.closed_at,
             user_id=case.user_id,
             organization_id=case.organization_id,
+            source=getattr(case, "source", "copilot"),
             closure_reason=case.closure_reason,
             current_turn=case.current_turn,
             turns_without_progress=case.turns_without_progress,
