@@ -779,6 +779,24 @@ class InvestigationService:
             clarification = _build_classification_clarification_suggestions(
                 preprocess_results
             )
+            if clarification:
+                # Narration bridge: the clarification suggestions are
+                # engine-emitted, so the LLM's response usually says nothing
+                # about the file it couldn't classify — without this note the
+                # choices ("Treat as documentation.") read as disconnected
+                # nonsense under an unrelated investigation reply. Appended
+                # deterministically so every client gets the same context.
+                failed_att = next(
+                    r for r in preprocess_results if r.classification_failed
+                )
+                clarification_name = (
+                    failed_att.attachment_filename or "the file you shared"
+                )
+                agent_response_text += (
+                    f"\n\nOne more thing — I couldn't confidently classify "
+                    f'"{clarification_name}", so I haven\'t analyzed it yet. '
+                    "How should I treat it?"
+                )
             raw_follow_ups = result.get("suggested_follow_ups", [])
             updated_case.last_suggestions = (
                 [
