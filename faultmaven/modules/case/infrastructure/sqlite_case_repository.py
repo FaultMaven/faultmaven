@@ -1186,6 +1186,7 @@ class SQLiteCaseRepository(CaseRepository):
         state: CaseState | None = None,
         limit: int = 50,
         offset: int = 0,
+        source: str | None = None,
     ) -> tuple[list[Case], int]:
         """List cases with optional filters and pagination.
 
@@ -1212,6 +1213,10 @@ class SQLiteCaseRepository(CaseRepository):
             if state:
                 where_clauses.append("state = :state")
                 params["state"] = state.value
+
+            if source:
+                where_clauses.append("source = :source")
+                params["source"] = source
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -2201,6 +2206,7 @@ class SQLiteCaseRepository(CaseRepository):
                 title = :title,
                 description = :description,
                 state = :state,
+                source = :source,
                 investigation_strategy = :investigation_strategy,
                 current_turn = :current_turn,
                 turns_without_progress = :turns_without_progress,
@@ -2246,7 +2252,7 @@ class SQLiteCaseRepository(CaseRepository):
             insert_query = text("""
                 INSERT INTO cases (
                     case_id, user_id, organization_id, title, description,
-                    state, investigation_strategy, current_turn,
+                    state, source, investigation_strategy, current_turn,
                     turns_without_progress, created_at, updated_at,
                     closure_reason, last_activity_at, resolved_at, closed_at,
                     disposition_eligibility,
@@ -2256,7 +2262,7 @@ class SQLiteCaseRepository(CaseRepository):
                     version
                 ) VALUES (
                     :case_id, :user_id, :organization_id, :title, :description,
-                    :state, :investigation_strategy, :current_turn,
+                    :state, :source, :investigation_strategy, :current_turn,
                     :turns_without_progress, :created_at, :updated_at,
                     :closure_reason, :last_activity_at, :resolved_at, :closed_at,
                     :disposition_eligibility,
@@ -2299,6 +2305,7 @@ class SQLiteCaseRepository(CaseRepository):
             "title": case.title,
             "description": case.description or "",
             "state": case.state.value,
+            "source": case.source,
             "investigation_strategy": case.investigation_strategy.value,
             # Prevention: persist the DERIVED counter so it can never be saved
             # ahead of turn_history (the drift that wedged cases). See
@@ -3302,6 +3309,7 @@ class SQLiteCaseRepository(CaseRepository):
             "case_id": row.case_id,
             "user_id": row.user_id,
             "organization_id": row.organization_id,  # NOT NULL in DB
+            "source": getattr(row, "source", "copilot"),
             "title": row.title,
             "state": CaseState(row.state),
             "action_history": actions_data or [],

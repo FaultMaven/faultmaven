@@ -413,6 +413,33 @@ async def test_search_by_case_id_and_title_scoped_to_user(pg_repo):
 
 
 @pytest.mark.asyncio
+async def test_source_roundtrips_and_filters(pg_repo):
+    """cases.source (ADR-012) persists through save()/get() and filters in list()."""
+    session = pg_repo.db
+    org_id = f"org_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_organizations(session, [org_id])
+    await seed_users(session, [user_id])
+
+    copilot_case = _make_case(org_id, user_id)  # default source='copilot'
+    slack_case = _make_case(org_id, user_id)
+    object.__setattr__(slack_case, "source", "slack")
+    await pg_repo.save(copilot_case)
+    await pg_repo.save(slack_case)
+
+    # Round-trip: source survives save -> get.
+    fetched = await pg_repo.get(slack_case.case_id)
+    assert fetched.source == "slack"
+    assert (await pg_repo.get(copilot_case.case_id)).source == "copilot"
+
+    # list(source=...) filters on the column.
+    slack_only, _ = await pg_repo.list(user_id=user_id, source="slack")
+    ids = [c.case_id for c in slack_only]
+    assert slack_case.case_id in ids
+    assert copilot_case.case_id not in ids
+
+
+@pytest.mark.asyncio
 async def test_add_report_roundtrip_with_timestamptz(pg_repo):
     """add_report() exercises the reports metadata (JSONB) AND
     generated_at/updated_at (TIMESTAMPTZ) casts — the timestamptz arm of the

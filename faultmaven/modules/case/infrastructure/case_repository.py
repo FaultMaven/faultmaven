@@ -97,6 +97,7 @@ class CaseRepository(ABC):
         state: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
+        source: Optional[str] = None,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters.
@@ -805,6 +806,7 @@ class InMemoryCaseRepository(CaseRepository):
         state: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
+        source: Optional[str] = None,
     ) -> tuple[List[Case], int]:
         """List cases with filters."""
         # Filter cases

@@ -88,6 +88,7 @@ class CaseService(ICaseService):
         owner_id: Optional[str] = None,
         session_id: Optional[str] = None,
         initial_message: Optional[str] = None,
+        source: str = "copilot",
     ) -> Case:
         """
         Create a new troubleshooting case
@@ -199,6 +200,7 @@ class CaseService(ICaseService):
                 description=description.strip() if description else "",
                 user_id=owner_id.strip(),
                 organization_id=resolved_org_id,  # Deployment-agnostic org resolution
+                source=source if source in ("copilot", "slack", "api") else "copilot",
             )
 
             # Add initial message if provided (restored from old implementation)
@@ -764,8 +766,9 @@ class CaseService(ICaseService):
         try:
             # Get cases from repository
             status_filter = filters.state if filters else None
+            source_filter = filters.source if filters else None
             cases_list, total = await self.repository.list(
-                user_id=user_id, state=status_filter
+                user_id=user_id, state=status_filter, source=source_filter
             )
 
             # Apply additional filters in service layer (restored from old implementation)
@@ -832,11 +835,16 @@ class CaseService(ICaseService):
         from faultmaven.models.api_models import CaseSummary
 
         status_filter = filters.state if filters else None
+        source_filter = filters.source if filters else None
         limit = filters.limit if filters else 50
         offset = filters.offset if filters else 0
 
         cases_list, total = await self.repository.list(
-            user_id=None, state=status_filter, limit=limit, offset=offset
+            user_id=None,
+            state=status_filter,
+            limit=limit,
+            offset=offset,
+            source=source_filter,
         )
 
         summaries: List[CaseSummary] = []
