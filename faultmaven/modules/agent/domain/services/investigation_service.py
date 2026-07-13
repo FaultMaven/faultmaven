@@ -257,6 +257,44 @@ _CLARIFICATION_FRIENDLY_NAMES: Dict[str, Dict[str, str]] = {
 _CLARIFICATION_FALLBACK_LABEL = "Something else"
 _CLARIFICATION_FALLBACK_LONG = "unstructured text"
 
+# Upload provenances that mean "the user pasted text" rather than picked a
+# file. Both spellings occur on UploadedFile.upload_source (the turns route
+# tags pasted_content as "text_paste"; the documented enum value is "paste").
+_PASTE_SOURCES = {"paste", "text_paste"}
+
+# Choice seeds for paste-provenance clarifications. Pasted text in an incident
+# thread is overwhelmingly command output or logs (product guidance: command
+# output, regardless of content, is usually pasted) — and a paste that reached
+# clarification has, by definition, weak content signals, so the provenance
+# prior outranks the classifier's sub-threshold guesses. Seeds go first; the
+# classifier's own suggestions fill the remaining slots.
+_PASTE_CLARIFICATION_SEEDS = ["command_output", "logs_and_errors"]
+
+
+def _is_paste_upload(target: "_PreprocessedAttachment") -> bool:
+    """True when the clarification target was pasted text, not a chosen file.
+
+    Provenance tag first; the synthetic ``pasted-content-*`` filename is the
+    fallback signal for rows whose tag predates the current values.
+    """
+    uf = target.uploaded_file
+    if (uf.upload_source or "") in _PASTE_SOURCES:
+        return True
+    return (uf.filename or "").startswith("pasted-content-")
+
+
+def _clarification_subject(target: "_PreprocessedAttachment") -> str:
+    """How the clarification copy names the thing being classified.
+
+    A paste's synthetic name ("Untitled", "pasted-content-…") refers to the
+    transport format, not anything the user recognizes — call it what they
+    did: text they pasted. Real files keep their filename.
+    """
+    if _is_paste_upload(target):
+        return "the text you pasted"
+    filename = target.attachment_filename or "the uploaded file"
+    return f'the file you shared ("{filename}")'
+
 
 def _build_classification_clarification_suggestions(
     preprocess_results: List["_PreprocessedAttachment"],
@@ -264,9 +302,15 @@ def _build_classification_clarification_suggestions(
     """Emit DECIDE suggestions when an attachment hit classification_failed.
 
     Per-turn file limit is 1, so we expect at most one classification_failed
-    result. Generates up to 3 type-specific suggestions from the classifier's
-    `suggested_types` plus a "Something else" fallback. Always emits at least
-    the fallback when any classification_failed is present.
+    result. Generates up to 3 type-specific suggestions plus a "Something
+    else" fallback. Always emits at least the fallback when any
+    classification_failed is present.
+
+    Choice sources: for a chosen file, the classifier's ``suggested_types``;
+    for pasted text, the war-room seeds (command output / logs) come first —
+    see ``_PASTE_CLARIFICATION_SEEDS`` — then the classifier's suggestions
+    fill the remaining slots. The copy names the subject the way the user
+    knows it (``_clarification_subject``).
 
     Each suggestion carries an engine-owned ``file_reclassification`` intent
     (file_id + target DataType) so any client that forwards suggestion intent
@@ -283,8 +327,11 @@ def _build_classification_clarification_suggestions(
         return []
 
     target = failed[0]
-    filename = target.attachment_filename or "the uploaded file"
+    subject = _clarification_subject(target)
     file_id = target.uploaded_file.file_id
+    candidates = list(target.suggested_types or [])
+    if _is_paste_upload(target):
+        candidates = _PASTE_CLARIFICATION_SEEDS + candidates
 
     def _intent(dt_value: str) -> Dict[str, Any]:
         return {
@@ -296,7 +343,7 @@ def _build_classification_clarification_suggestions(
     suggestions: List[SuggestedActionResponse] = []
     seen: set = set()
 
-    for dt_value in target.suggested_types or []:
+    for dt_value in candidates:
         if dt_value in seen:
             continue
         seen.add(dt_value)
@@ -310,10 +357,7 @@ def _build_classification_clarification_suggestions(
             SuggestedActionResponse(
                 label=friendly["label"],
                 type="DECIDE",
-                payload=(
-                    f'Treat the previously uploaded file ("{filename}") as '
-                    f'{friendly["long"]}.'
-                ),
+                payload=f'Treat {subject} as {friendly["long"]}.',
                 body=f'Treat as {friendly["long"]}.',
                 intent=_intent(dt_value),
             )
@@ -326,10 +370,7 @@ def _build_classification_clarification_suggestions(
         SuggestedActionResponse(
             label=_CLARIFICATION_FALLBACK_LABEL,
             type="DECIDE",
-            payload=(
-                f'Treat the previously uploaded file ("{filename}") as '
-                f"{_CLARIFICATION_FALLBACK_LONG}."
-            ),
+            payload=f"Treat {subject} as {_CLARIFICATION_FALLBACK_LONG}.",
             body=f"Treat as {_CLARIFICATION_FALLBACK_LONG}.",
             intent=_intent("unstructured_text"),
         )
@@ -782,19 +823,19 @@ class InvestigationService:
             if clarification:
                 # Narration bridge: the clarification suggestions are
                 # engine-emitted, so the LLM's response usually says nothing
-                # about the file it couldn't classify — without this note the
-                # choices ("Treat as documentation.") read as disconnected
-                # nonsense under an unrelated investigation reply. Appended
-                # deterministically so every client gets the same context.
+                # about the content it couldn't classify — without this note
+                # the choices ("Treat as documentation.") read as
+                # disconnected nonsense under an unrelated investigation
+                # reply. Appended deterministically so every client gets the
+                # same context, phrased in the user's terms (a paste is "the
+                # text you pasted", never its synthetic snippet name).
                 failed_att = next(
                     r for r in preprocess_results if r.classification_failed
                 )
-                clarification_name = (
-                    failed_att.attachment_filename or "the file you shared"
-                )
+                subject = _clarification_subject(failed_att)
                 agent_response_text += (
                     f"\n\nOne more thing — I couldn't confidently classify "
-                    f'"{clarification_name}", so I haven\'t analyzed it yet. '
+                    f"{subject}, so I haven't analyzed it yet. "
                     "How should I treat it?"
                 )
             raw_follow_ups = result.get("suggested_follow_ups", [])

@@ -229,6 +229,7 @@ def make_uploaded_file(
     filename: str = "server.log",
     storage_ref: Optional[str] = "evidence/case_x/server.log",
     data_type: Optional[str] = None,
+    upload_source: str = "file_upload",
 ):
     """UploadedFile with the reclassify suites' shared defaults."""
     from faultmaven.modules.case.domain.models import UploadedFile
@@ -240,6 +241,7 @@ def make_uploaded_file(
         storage_ref=storage_ref,
         uploaded_at_turn=0,
         data_type=data_type,
+        upload_source=upload_source,
     )
 
 
