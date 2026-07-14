@@ -29,6 +29,7 @@ from typing import Any, Optional
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     CauseAssuranceGrade,
+    _graph_hooks,
     conclusion_overclaims,
     confirm_root_from_resolution_absence,
     grade_cause_assurance,
@@ -243,12 +244,9 @@ def finalize_resolution_truth_surface(case: "Case") -> bool:
     # never recomputes — so re-project hypothesis states from the just-validated
     # root, or the report would show the hypothesis un-validated beside a CONFIRMED
     # grade (the exact report-Validated ⟺ grade invariant this fix establishes).
-    # Local import: terminal_transitions <-> causal_graph would be a top-level cycle.
-    from faultmaven.core.investigation.causal_graph import (
-        project_hypothesis_states_from_roots,
-    )
-
-    project_hypothesis_states_from_roots(case)
+    # Reached via the graph-hooks registry (not a direct import): terminal_transitions
+    # -> causal_graph would close the cause_assurance/hypothesis_manager import cycle.
+    _graph_hooks()["project_hyp_states"](case)
     # The grade set is refreshed UNCONDITIONALLY: the API surface reaches here
     # without a fresh per-turn recompute, so even a no-stamp resolve must not
     # freeze a stale persisted grade into the terminal blob (idempotent on the

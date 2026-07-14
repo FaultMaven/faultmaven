@@ -618,11 +618,13 @@ def register_graph_hooks(
     support_count_held_root_ids,
     derive_node_states,
     sole_cluster_origin,
+    project_hypothesis_states_from_roots,
 ) -> None:
     """Called once from ``causal_graph`` at module import."""
     _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
     _GRAPH_HOOKS["derive"] = derive_node_states
     _GRAPH_HOOKS["sole_cluster_origin"] = sole_cluster_origin
+    _GRAPH_HOOKS["project_hyp_states"] = project_hypothesis_states_from_roots
 
 
 def _graph_hooks() -> dict:

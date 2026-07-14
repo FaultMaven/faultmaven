@@ -2489,4 +2489,5 @@ register_graph_hooks(
     support_count_held_root_ids=support_count_held_root_ids,
     derive_node_states=derive_node_states,
     sole_cluster_origin=sole_cluster_origin,
+    project_hypothesis_states_from_roots=project_hypothesis_states_from_roots,
 )
