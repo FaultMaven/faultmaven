@@ -198,6 +198,17 @@ absence_confirmation_link_stripped_total = Counter(
     "stripped link.",
 )
 
+hypothesis_support_mirrored_to_root_total = Counter(
+    "faultmaven_hypothesis_support_mirrored_to_root_total",
+    "A hypothesis's flat causal_evidence SUPPORTS link was mirrored onto its "
+    "chain ROOT node's evidence links at chain-emission ingest (#695 B1) — the "
+    "flat hypothesis_evidence and causal_node_evidence axes are otherwise "
+    "disjoint, so grounding recorded only on the hypothesis left its root node "
+    "uncertifiable. One increment per mirrored link; the link is a CANDIDATE "
+    "only (derive_node_states still applies the independence/restatement/"
+    "AND-gate filters).",
+)
+
 # §7.1.2 MECE arbitration (#656). One increment per transition INTO the
 # contest — the recompute where >=2 simultaneously-validated DISTINCT
 # standing roots (duplicates and same-live-causal-line roots collapsed; a

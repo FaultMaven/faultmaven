@@ -45,6 +45,7 @@ from faultmaven.core.investigation.causal_graph import (
     is_chain_root_validated,
     link_llm_rcc_to_cause,
     mece_contested_root_ids,
+    mirror_hypothesis_support_to_root_nodes,
     prune_abandoned_nodes,
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
@@ -7448,6 +7449,30 @@ class MilestoneEngine:
             hyp.path = new_path
             if old_root and old_root != root_id:
                 self._gc_orphan_chain(case, old_path)
+
+        # B1 (#695): mirror each hypothesis's flat causal SUPPORTS links onto its
+        # (now-linked) chain ROOT node. The flat hypothesis_evidence and
+        # causal_node_evidence axes are disjoint, so grounding the LLM recorded
+        # only on the hypothesis left its root node with zero causal support and
+        # uncertifiable. Runs AFTER root_node_id is assigned above and BEFORE the
+        # derive_node_states recompute; provides candidate links only (the
+        # independence/restatement/AND-gate filters still decide validation).
+        mirror_hypothesis_support_to_root_nodes(case, case.current_turn)
+
+        # B2 (#695): resolve the RCC's names_root_node_id placeholder. When the
+        # LLM names its cause's root as a same-turn new_index_N ref, ingest
+        # resolved that ref for nodes/evidence/hypotheses but not for the RCC —
+        # it persisted as the placeholder, and Tier-1 RCC->hypothesis attribution
+        # (link_llm_rcc_to_cause) could never match a real cn_ id, so
+        # validated_hypothesis_id stayed null. Resolve it here against the same
+        # `created` list, on the AUTHORING turn only (the placeholder indexes
+        # THIS turn's emission; a prior-turn placeholder would mis-resolve). A
+        # ref that resolves to a non-root / unknown node becomes None — an honest
+        # "unnamed" that falls through to the Tier-2 lexical fallback.
+        if metadata.get("rcc_authored_this_turn") and case.root_cause_conclusion:
+            named = getattr(case.root_cause_conclusion, "names_root_node_id", None)
+            if named and named.startswith("new_index_"):
+                case.root_cause_conclusion.names_root_node_id = _resolve_root(named)
 
         # Deductive validation (§7.1.1): resolve the ROOT survivors the LLM
         # certified as the sole survivor of an EXHAUSTIVE differential. The
