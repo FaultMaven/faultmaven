@@ -15,7 +15,7 @@ the durable audit table + break-glass workflow are deferred as "tooling later").
 """
 
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.requests import Request
@@ -52,6 +52,9 @@ async def list_all_cases(
     current_user: AuthenticatedUser = Depends(require_admin),
     case_service: ICaseService = Depends(get_case_service),
     state: Optional[CaseState] = Query(None, description="Filter by state"),
+    source: Optional[Literal["copilot", "slack", "api"]] = Query(
+        None, description="Filter by case source"
+    ),
     limit: int = Query(50, ge=1, le=200, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
 ) -> CaseListResponse:
@@ -71,7 +74,7 @@ async def list_all_cases(
             ),
         )
 
-    filters = CaseListFilter(state=state, limit=limit, offset=offset)
+    filters = CaseListFilter(state=state, source=source, limit=limit, offset=offset)
     summaries, total = await case_service.list_all_cases(filters)
 
     # Audit the privileged access (ADR-012 D8 "boundary now").

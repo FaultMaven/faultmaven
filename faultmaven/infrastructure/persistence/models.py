@@ -317,6 +317,9 @@ class UserModel(Base):
     # Local/dev-mode role storage. Cloud mode derives roles from RBAC tables
     # (organization_members → roles). Stores a JSON array, e.g. '["user","admin"]'.
     dev_roles = Column(Text, nullable=True)
+    # Account kind (ADR-012): 'individual' (Copilot + dashboard login) or 'slack'
+    # (a service account, one per workspace). Drives the derived case `source`.
+    account_kind = Column(String(20), nullable=False, server_default="individual")
 
     __table_args__ = (
         UniqueConstraint("sso_provider", "sso_provider_id", name="users_sso_unique"),
@@ -634,6 +637,9 @@ class CaseModel(Base):
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=False, server_default="")
     state = Column(String(50), nullable=False, server_default="inquiry", index=True)
+    # Case origin (ADR-012), derived from the creator's account_kind at creation:
+    # 'copilot' (individual), 'slack' (Slack service account), or 'api'.
+    source = Column(String(20), nullable=False, server_default="copilot", index=True)
 
     # Investigation state (first-class columns; drive milestone engine logic)
     investigation_strategy = Column(Text, nullable=True)

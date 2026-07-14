@@ -22,7 +22,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import (
     APIRouter,
@@ -623,6 +623,34 @@ async def delete_case(
         )
 
 
+async def _di_get_creator_account_kind(
+    raw_request: Request,
+    current_user: UserDTO = Depends(require_authentication),
+) -> str:
+    """Resolve the creating user's ``account_kind`` (ADR-012) for source stamping.
+
+    Best-effort: falls back to ``'individual'`` if the user service is
+    unavailable or the lookup fails, so case creation never depends on it.
+    """
+    user_service = getattr(raw_request.app.state, "user_service", None)
+    if user_service is None:
+        return "individual"
+    try:
+        user = await user_service.get_user(current_user.user_id)
+        return getattr(user, "account_kind", "individual") if user else "individual"
+    except Exception as e:
+        # Don't fail case creation on this — but do NOT swallow silently: a
+        # Slack case mislabeled 'copilot' (source is immutable) is otherwise
+        # undetectable.
+        logger.warning(
+            "Could not resolve account_kind for user %s; case source will "
+            "default to 'copilot': %s",
+            getattr(current_user, "user_id", "?"),
+            e,
+        )
+        return "individual"
+
+
 @router.post("", response_model=CaseSummary, status_code=status.HTTP_201_CREATED)
 @trace("api_create_case")
 async def create_case(
@@ -631,6 +659,7 @@ async def create_case(
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     session_service: ISessionService = Depends(_di_get_session_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
+    creator_account_kind: str = Depends(_di_get_creator_account_kind),
 ) -> CaseSummary:
     """
     Create a new troubleshooting case (v2.0 milestone-based)
@@ -670,13 +699,17 @@ async def create_case(
                     headers={"x-correlation-id": correlation_id},
                 )
 
-        # Create case using new model
+        # Create case using new model. Origin (ADR-012) is derived from the
+        # creator's account kind: a Slack service account → 'slack', otherwise
+        # 'copilot'. Server-derived, not client-provided (not spoofable).
+        source = "slack" if creator_account_kind == "slack" else "copilot"
         case_entity = await case_service.create_case(
             title=request.title,  # Pass None to trigger auto-generation in service
             description=request.description,
             owner_id=current_user.user_id,
             session_id=request.session_id,
             initial_message=request.initial_message,  # Restored from old implementation
+            source=source,
         )
 
         # Set Location header
@@ -723,6 +756,9 @@ async def list_cases(
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
     state: Optional[CaseState] = Query(None, description="Filter by state"),
+    source: Optional[Literal["copilot", "slack", "api"]] = Query(
+        None, description="Filter by case source"
+    ),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     # Changed default to True - new cases should be visible immediately
@@ -759,6 +795,7 @@ async def list_cases(
         filters = CaseListFilter(
             user_id=current_user.user_id,
             state=state,
+            source=source,
             limit=limit,
             offset=offset,
             include_empty=include_empty,
@@ -2322,6 +2359,12 @@ async def submit_turn(
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot change status of a closed case.",
+                    headers={"x-correlation-id": correlation_id},
+                )
+            if intent_type == "file_reclassification":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot reclassify files on a closed case.",
                     headers={"x-correlation-id": correlation_id},
                 )
 

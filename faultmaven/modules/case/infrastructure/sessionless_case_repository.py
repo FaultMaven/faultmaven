@@ -240,6 +240,7 @@ class SessionlessCaseRepository(CaseRepository):
         state: CaseState | None = None,
         limit: int = 50,
         offset: int = 0,
+        source: str | None = None,
     ) -> tuple[list[Case], int]:
         """List cases (filtered by user_id/state).
 

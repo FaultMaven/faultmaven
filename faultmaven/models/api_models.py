@@ -95,6 +95,7 @@ class CaseSummary(BaseModel):
     closed_at: Optional[datetime]
     user_id: str
     organization_id: str
+    source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
     closure_reason: Optional[str]
 
     # Progress indicators
@@ -126,6 +127,7 @@ class CaseSummary(BaseModel):
             closed_at=case.closed_at,
             user_id=case.user_id,
             organization_id=case.organization_id,
+            source=getattr(case, "source", "copilot"),
             closure_reason=case.closure_reason,
             current_turn=case.current_turn,
             milestones_completed=len(case.progress.completed_milestones),
@@ -153,6 +155,7 @@ class CaseDetail(BaseModel):
 
     user_id: str
     organization_id: str
+    source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
     closure_reason: Optional[str]
 
     # Progress
@@ -194,6 +197,7 @@ class CaseDetail(BaseModel):
             closed_at=case.closed_at,
             user_id=case.user_id,
             organization_id=case.organization_id,
+            source=getattr(case, "source", "copilot"),
             closure_reason=case.closure_reason,
             current_turn=case.current_turn,
             turns_without_progress=case.turns_without_progress,
@@ -229,6 +233,10 @@ class CaseListFilter(BaseModel):
     )
 
     state: Optional[CaseState] = Field(default=None, description="Filter by state")
+
+    source: Optional[str] = Field(
+        default=None, description="Filter by case source (copilot | slack | api)"
+    )
 
     created_after: Optional[datetime] = Field(
         default=None, description="Cases created after this date"
@@ -331,6 +339,7 @@ class IntentType(str, Enum):
     EVIDENCE_NEED = "evidence_need"  # User-initiated action on a persistent EvidenceNeed (stays NOT_IMPLEMENTED until a frontend feature requires it)
     CONFIRMATION = "confirmation"  # Yes/No confirmation response
     GREETING = "greeting"  # Heuristic greeting response
+    FILE_RECLASSIFICATION = "file_reclassification"  # Resolve classification_failed: re-run preprocessing on an UploadedFile under a user-chosen DataType
 
 
 class QueryIntent(BaseModel):
@@ -375,6 +384,20 @@ class QueryIntent(BaseModel):
     confirmation_value: Optional[bool] = Field(
         default=None, description="For confirmation: yes/no value"
     )
+    file_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "For file_reclassification: target UploadedFile ID "
+            "(format: ``file_xxxxxxxxxxxx``)."
+        ),
+    )
+    data_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "For file_reclassification: target DataType enum value "
+            "(e.g. 'logs_and_errors', 'structured_config')."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_intent_fields(self):
@@ -393,6 +416,11 @@ class QueryIntent(BaseModel):
         elif self.type == IntentType.CONFIRMATION:
             if self.confirmation_value is None:
                 raise ValueError("confirmation_value required for confirmation intent")
+        elif self.type == IntentType.FILE_RECLASSIFICATION:
+            if not self.file_id or not self.data_type:
+                raise ValueError(
+                    "file_id and data_type required for file_reclassification intent"
+                )
         return self
 
 

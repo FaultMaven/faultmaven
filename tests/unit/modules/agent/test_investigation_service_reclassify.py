@@ -6,13 +6,10 @@ The service uses real objects (Case, Evidence) wired through
 MockCaseRepository so we exercise model_copy semantics.
 """
 
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.preprocessing.models import PreprocessingResult, UnifiedDataType
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -22,98 +19,24 @@ from faultmaven.models.api import DataType
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.case.domain.models import (
-    Evidence,
-    EvidenceCategory,
-    EvidenceSourceType,
-    UploadedFile,
+from faultmaven.modules.case.domain.models import EvidenceSourceType
+
+from .conftest import (
+    MockCaseRepository,
+    MockMilestoneEngine,
+    create_sample_case,
+    make_evidence,
+    make_preprocessing_result,
+    make_uploaded_file,
 )
-
-from .conftest import MockCaseRepository, MockMilestoneEngine, create_sample_case
-
-_SOURCE_TYPE_MAP = {
-    "logs": EvidenceSourceType.LOGS,
-    "metrics": EvidenceSourceType.METRICS,
-    "configuration": EvidenceSourceType.CONFIGURATION,
-    "structured_config": EvidenceSourceType.CONFIGURATION,
-    "code": EvidenceSourceType.CODE,
-    "text": EvidenceSourceType.TEXT,
-}
-
-
-def _evidence(
-    evidence_id: str = "ev_aaaaaaaaaaaa",
-    content_ref: str | None = "evidence/case_x/server.log",
-    data_type: str = "metrics",
-    metadata: dict | None = None,
-    source_file_id: str | None = "file_aaaaaaaaaaaa",
-    source_type: EvidenceSourceType | None = None,
-) -> Evidence:
-    resolved_source_type = (
-        source_type
-        if source_type is not None
-        else _SOURCE_TYPE_MAP.get(data_type, EvidenceSourceType.METRICS)
-    )
-    return Evidence(
-        evidence_id=evidence_id,
-        category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        primary_purpose="Test",
-        summary="Old summary",
-        extract="old index",
-        source_type=resolved_source_type,
-        source_file_id=source_file_id,
-        collected_by="user",
-        collected_at=datetime.now(UTC),
-        collected_at_turn=0,
-        metadata=metadata,
-    )
-
-
-def _uploaded_file(
-    file_id: str = "file_aaaaaaaaaaaa",
-    filename: str = "server.log",
-    storage_ref: str | None = "evidence/case_x/server.log",
-) -> UploadedFile:
-    return UploadedFile(
-        file_id=file_id,
-        filename=filename,
-        size_bytes=100,
-        storage_ref=storage_ref,
-        uploaded_at_turn=0,
-    )
-
-
-def _preprocessing_result_for(
-    new_data_type: DataType = DataType.LOGS_AND_ERRORS,
-    metadata: dict | None = None,
-) -> PreprocessingResult:
-    unified_map = {
-        DataType.LOGS_AND_ERRORS: UnifiedDataType.LOGS,
-        DataType.METRICS_AND_PERFORMANCE: UnifiedDataType.METRICS,
-        DataType.STRUCTURED_CONFIG: UnifiedDataType.CONFIGURATION,
-    }
-    return PreprocessingResult(
-        data_type=unified_map.get(new_data_type, UnifiedDataType.LOGS),
-        detailed_data_type=new_data_type,
-        summary="new summary",
-        structural_index="new index content",
-        content_ref=None,
-        content_size_bytes=100,
-        content_type="text/plain",
-        extraction_method="crime_scene",
-        compression_ratio=0.1,
-        extraction_metadata={"evidence_metadata": metadata or {}},
-        content_hash="a" * 64,
-        processing_time_ms=5,
-    )
 
 
 @pytest.fixture
 def repo_with_case():
     repo = MockCaseRepository()
     case = create_sample_case(user_id="user_owner")
-    case.evidence = [_evidence()]
-    case.uploaded_files = [_uploaded_file()]
+    case.evidence = [make_evidence()]
+    case.uploaded_files = [make_uploaded_file()]
     repo._storage[case.case_id] = case
     return repo, case
 
@@ -122,7 +45,7 @@ def repo_with_case():
 def preprocessing_service():
     svc = MagicMock()
     svc.reclassify_evidence = AsyncMock(
-        return_value=_preprocessing_result_for(
+        return_value=make_preprocessing_result(
             new_data_type=DataType.LOGS_AND_ERRORS,
             metadata={
                 "classification": {
@@ -220,7 +143,7 @@ class TestAuthAndLookup:
         """
         _, case = repo_with_case
         case.evidence = [
-            _evidence(
+            make_evidence(
                 source_file_id=None,
                 source_type=EvidenceSourceType.USER_DESCRIPTION,
             )
@@ -322,14 +245,14 @@ class TestHappyPath:
         Pin per-evidence idempotency so batch-style bugs can't corrupt
         adjacent rows."""
         _, case = repo_with_case
-        other = _evidence(
+        other = make_evidence(
             evidence_id="ev_bbbbbbbbbbbb",
             data_type="structured_config",
             source_file_id="file_bbbbbbbbbbbb",
         )
         case.evidence.append(other)
         case.uploaded_files.append(
-            _uploaded_file(
+            make_uploaded_file(
                 file_id="file_bbbbbbbbbbbb",
                 filename="config.yaml",
                 storage_ref="evidence/case_x/config.yaml",

@@ -4242,6 +4242,11 @@ class Case(BaseModel):
         max_length=36,
     )
 
+    source: Literal["copilot", "slack", "api"] = Field(
+        default="copilot",
+        description="Case origin (ADR-012), stamped at creation from the creator's account_kind",
+    )
+
     title: str = Field(
         description="Short case title for list views and headers (e.g., 'API Performance Issue')",
         min_length=1,

@@ -51,6 +51,11 @@ class User(BaseModel):
     )
     timezone: str = Field("UTC", max_length=50, description="User timezone")
     locale: str = Field("en-US", max_length=10, description="User locale (i18n)")
+    account_kind: str = Field(
+        "individual",
+        max_length=20,
+        description="Account kind (ADR-012): 'individual' or 'slack'",
+    )
 
     # ============================================================
     # Email Verification
@@ -319,6 +324,7 @@ class PostgreSQLUserRepository(UserRepository):
             last_password_change_at=model.last_password_change_at,
             deleted_at=model.deleted_at,
             roles=roles,
+            account_kind=getattr(model, "account_kind", "individual"),
         )
 
     def _domain_to_dict(self, user: User) -> dict:
@@ -354,6 +360,7 @@ class PostgreSQLUserRepository(UserRepository):
             "last_login_at": user.last_login_at,
             "last_password_change_at": user.last_password_change_at,
             "deleted_at": user.deleted_at,
+            "account_kind": getattr(user, "account_kind", "individual"),
             # dev_roles: JSON-serialised role list for local/dev mode. Cloud
             # mode derives roles from RBAC tables; this column is ignored there.
             "dev_roles": __import__("json").dumps(user.roles) if user.roles else None,

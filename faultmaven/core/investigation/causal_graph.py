@@ -63,6 +63,7 @@ from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_link_stripped_total,
     counterfactual_refute_hedged_total,
+    hypothesis_support_mirrored_to_root_total,
     llm_rcc_cause_linked_total,
     llm_rcc_cause_named_total,
     llm_rcc_retracted_disconfirmed_total,
@@ -1245,6 +1246,71 @@ def ingest_emitted_chain(
             node.evidence_links[existing_idx] = fresh
 
     return created
+
+
+def mirror_hypothesis_support_to_root_nodes(case: Case, current_turn: int) -> int:
+    """#695 B1 — surface a hypothesis's flat causal SUPPORTS links onto its chain
+    ROOT node, so the node axis (the sole source of truth for
+    ``derive_node_states`` / ``grade_cause_assurance`` / the runbook gate) sees
+    the grounding the LLM recorded on the hypothesis. Returns the number of node
+    links created. Pure: no I/O, no LLM.
+
+    The flat ``hypothesis_evidence`` axis and the ``causal_node_evidence`` axis
+    are disjoint channels — a SUPPORTS link on a hypothesis is not mirrored onto
+    that hypothesis's root node — so a hypothesis grounded purely on the flat
+    axis leaves its root node with ZERO causal support and can never reach the
+    ROOT validation bar (``ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN`` independent
+    causal supports). This closes that gap.
+
+    Trust boundary (identical to ``ingest_emitted_chain``): mirror ONLY
+      * links whose evidence row is ``CAUSAL_EVIDENCE`` — the only category the
+        ROOT bar counts. Symptom rows bear on ``D``, not the cause; and
+        ``CAUSAL_ABSENCE`` rows are deliberately excluded, so this can never
+        create the absence-SUPPORTS link that would satisfy the engine-reserved
+        counterfactual CONFIRMATION mint;
+      * ``SUPPORTS`` stance (grounding, not refutation);
+      * onto a real ROOT node the hypothesis is attached to.
+    It NEVER overwrites an existing node link — the LLM's explicit
+    ``node_evidence`` emission (or a prior mirror) wins; it only FILLS a missing
+    one, so it is idempotent across turns and repairs historical gaps on replay.
+    The mirrored link is a CANDIDATE only: ``derive_node_states`` still applies
+    the independence / restatement guard / M7 AND-gate, so mirroring cannot
+    manufacture a validation the evidence does not independently support.
+    """
+    if not case.hypotheses or not case.causal_nodes:
+        return 0
+    cat_by_id = _evidence_category_map(case)
+    mirrored = 0
+    for hyp in case.hypotheses.values():
+        root_id = getattr(hyp, "root_node_id", None)
+        if not root_id:
+            continue
+        node = case.causal_nodes.get(root_id)
+        if node is None or node.node_type != NodeType.ROOT:
+            continue
+        existing_ev_ids = {el.evidence_id for el in node.evidence_links}
+        for link in hyp.evidence_links:
+            if link.stance != EvidenceStance.SUPPORTS:
+                continue
+            ev_id = link.evidence_id
+            if cat_by_id.get(ev_id) != EvidenceCategory.CAUSAL_EVIDENCE:
+                continue
+            if ev_id in existing_ev_ids:
+                continue  # explicit node emission (or a prior mirror) wins
+            node.evidence_links.append(
+                NodeEvidenceLink(
+                    evidence_id=ev_id,
+                    stance=EvidenceStance.SUPPORTS,
+                    reasoning=link.reasoning or "mirrored from hypothesis support",
+                    stance_confidence=link.stance_confidence,
+                    linked_at_turn=current_turn,
+                )
+            )
+            existing_ev_ids.add(ev_id)
+            mirrored += 1
+    if mirrored:
+        hypothesis_support_mirrored_to_root_total.inc(mirrored)
+    return mirrored
 
 
 def _net_refuted(hyp: Hypothesis) -> bool:

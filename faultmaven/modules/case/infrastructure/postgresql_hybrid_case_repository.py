@@ -955,6 +955,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         state: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
+        source: Optional[str] = None,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters and pagination.
@@ -989,6 +990,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if state:
                 where_clauses.append("state = :state")
                 params["state"] = state.value
+
+            if source:
+                where_clauses.append("source = :source")
+                params["source"] = source
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
@@ -1496,10 +1501,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
-            # Search query with relevance ranking
-            # Evidence JOIN removed per Principle 3 (Database Boundaries)
+            # Search query with relevance ranking.
+            # Evidence JOIN removed per Principle 3 (Database Boundaries), so
+            # `cases c` has no fan-out and each case_id is already unique — do
+            # NOT re-add `SELECT DISTINCT`: with DISTINCT, PostgreSQL requires
+            # every ORDER BY expression to be in the select list, so
+            # `ORDER BY ..., c.updated_at` raised "for SELECT DISTINCT, ORDER BY
+            # expressions must appear in select list" — which the service caught
+            # and turned into an empty result, silently breaking ALL search
+            # (title and case-id alike).
             search_query = text(f"""
-                SELECT DISTINCT c.case_id,
+                SELECT c.case_id,
                     ts_rank(to_tsvector('english', c.title), plainto_tsquery('english', :query)) as rank
                 FROM cases c
                 {where_sql}
@@ -1921,6 +1933,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 description = :description,
                 investigation_strategy = :investigation_strategy,
                 state = :state,
+                source = :source,
                 closure_reason = :closure_reason,
                 current_turn = :current_turn,
                 turns_without_progress = :turns_without_progress,
@@ -1957,7 +1970,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             insert_query = text(f"""
                 INSERT INTO cases (
                     case_id, user_id, organization_id, title, description, investigation_strategy,
-                    state, closure_reason, current_turn, turns_without_progress,
+                    state, source, closure_reason, current_turn, turns_without_progress,
                     created_at, updated_at, last_activity_at, resolved_at, closed_at,
                     disposition_eligibility,
                     inquiry, problem_verification, working_conclusion,
@@ -1966,7 +1979,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     version
                 ) VALUES (
                     :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
-                    :state, :closure_reason, :current_turn, :turns_without_progress,
+                    :state, :source, :closure_reason, :current_turn, :turns_without_progress,
                     :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :disposition_eligibility,
                     {self._cast('inquiry')}, {self._cast('problem_verification')}, {self._cast('working_conclusion')},
@@ -2010,6 +2023,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "description": case.description or "",
             "investigation_strategy": case.investigation_strategy.value,
             "state": case.state.value,
+            "source": case.source,
             "closure_reason": case.closure_reason,
             # Prevention: persist the DERIVED counter so it can never be saved
             # ahead of turn_history (the drift that wedged cases). See
@@ -3017,6 +3031,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "case_id": row.case_id,
             "user_id": row.user_id,
             "organization_id": row.organization_id,
+            "source": getattr(row, "source", "copilot"),
             "title": row.title,
             "state": CaseState(row.state),
             "action_history": actions_data,
