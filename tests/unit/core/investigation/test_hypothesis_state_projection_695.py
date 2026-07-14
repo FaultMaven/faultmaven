@@ -8,7 +8,9 @@ Invariant: hypothesis VALIDATED ⟺ its chain root node VALIDATED. REFUTED stays
 owned by the explicit/M6 refutation lifecycle and is never projected or clobbered.
 """
 
+import hashlib
 import inspect
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -18,11 +20,15 @@ from faultmaven.core.investigation.causal_graph import (
     project_hypothesis_states_from_roots,
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseState,
     CausalNode,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
@@ -256,3 +262,72 @@ def test_projection_lives_next_to_node_derivation():
     assert (
         project_hypothesis_states_from_roots.__module__ == causal_graph_module.__name__
     )
+
+
+# --------------------------------------------------------------------------- #
+# Item 1 — progress_monitor exhaustion interaction (behavioral, no sim)
+#
+# Exhaustion (_detect_exhaustion) keys on "no VALIDATED hypothesis". With
+# VALIDATED now graph-derived, verify the guard still reads it correctly: a
+# graph-validated root SUPPRESSES the nudge, and a deeply-refuted case with only
+# non-validated hypotheses gets the (advisory, guarantee-safe) handoff nudge.
+# --------------------------------------------------------------------------- #
+
+
+def _evidence(label: str) -> Evidence:
+    return Evidence(
+        evidence_id="ev_" + hashlib.md5(label.encode()).hexdigest()[:12],
+        summary=f"fact-{label}",
+        primary_purpose="diagnosis",
+        category=EvidenceCategory.CAUSAL_EVIDENCE,
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_by="llm",
+        collected_at_turn=2,
+        collected_at=datetime.now(timezone.utc),
+    )
+
+
+def _hyp_cat(state: HypothesisState, category: HypothesisCategory) -> Hypothesis:
+    return Hypothesis(
+        statement=f"theory {category.value}",
+        category=category,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=1,
+        rationale="r",
+        state=state,
+        refutation_reason=("refuted" if state == HypothesisState.REFUTED else None),
+    )
+
+
+def _exhausted_case(hyps) -> Case:
+    case = _case(hyps=hyps)
+    case.current_turn = 12
+    case.turns_without_progress = 6
+    case.evidence = [_evidence("a"), _evidence("b")]
+    return case
+
+
+def test_exhaustion_suppressed_by_a_validated_root():
+    # A graph-validated root projects a VALIDATED hypothesis, which suppresses the
+    # exhaustion nudge — the case has converged, not dead-ended.
+    hyps = [
+        _hyp_cat(HypothesisState.REFUTED, HypothesisCategory.NETWORK),
+        _hyp_cat(HypothesisState.REFUTED, HypothesisCategory.DATABASE),
+        _hyp_cat(HypothesisState.VALIDATED, HypothesisCategory.CONFIG),
+    ]
+    case = _exhausted_case(hyps)
+    assert ProgressMonitor()._detect_exhaustion(case) is False
+
+
+def test_deeply_refuted_case_without_validation_gets_the_nudge():
+    # Accepted (intentional) behavior: with the flat false-positive VALIDATED gone,
+    # a genuinely dead-ended case (broad coverage, multiple refuted, no validated
+    # root) correctly receives the advisory handoff nudge. This is a nudge, not a
+    # state change (guarantee-safe).
+    hyps = [
+        _hyp_cat(HypothesisState.REFUTED, HypothesisCategory.NETWORK),
+        _hyp_cat(HypothesisState.REFUTED, HypothesisCategory.DATABASE),
+        _hyp_cat(HypothesisState.ACTIVE, HypothesisCategory.CONFIG),
+    ]
+    case = _exhausted_case(hyps)
+    assert ProgressMonitor()._detect_exhaustion(case) is True

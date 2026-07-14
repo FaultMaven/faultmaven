@@ -456,14 +456,32 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
 
     if case.root_cause_conclusion:
         root_cause_desc = case.root_cause_conclusion.root_cause
-        # Extract category from validated hypothesis if available
+        # Category/id from the cause hypothesis. Prefer a graph-VALIDATED
+        # hypothesis (post-#695 Defect A, VALIDATED ⟺ its chain root is
+        # validated); else fall back to the hypothesis the conclusion explicitly
+        # NAMED (validated_hypothesis_id), so a conclusion that named its cause
+        # still labels the category even without a fully-validated root (e.g. a
+        # MECHANISTIC grade). Without this fallback, removing the flat-VALIDATED
+        # remnant would silently drop the UI's root-cause category.
+        cause_hyp = None
         if case.hypotheses:
-            # Find the hypothesis that was marked as VALIDATED
-            for hyp in case.hypotheses.values():
-                if hyp.state == HypothesisState.VALIDATED:
-                    root_cause_id = hyp.hypothesis_id
-                    root_cause_category = hyp.category.value
-                    break
+            cause_hyp = next(
+                (
+                    h
+                    for h in case.hypotheses.values()
+                    if h.state == HypothesisState.VALIDATED
+                ),
+                None,
+            )
+            if cause_hyp is None:
+                vhid = getattr(
+                    case.root_cause_conclusion, "validated_hypothesis_id", None
+                )
+                if vhid:
+                    cause_hyp = case.hypotheses.get(vhid)
+        if cause_hyp is not None:
+            root_cause_id = cause_hyp.hypothesis_id
+            root_cause_category = cause_hyp.category.value
 
     # Assurance grade for read-time labeling (#572/INV-28): recomputed from the
     # causal graph, NOT read from the persisted progress.cause_assurance field —
