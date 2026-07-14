@@ -29,6 +29,7 @@ from typing import Any, Optional
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     CauseAssuranceGrade,
+    _graph_hooks,
     conclusion_overclaims,
     confirm_root_from_resolution_absence,
     grade_cause_assurance,
@@ -238,6 +239,19 @@ def finalize_resolution_truth_surface(case: "Case") -> bool:
     ).inc()
 
     stamped = confirm_root_from_resolution_absence(case)
+    # #695 Defect A (terminal gap): a case reaching CONFIRMED via the confirm-stamp
+    # validates its root HERE, outside the per-turn recompute, and a terminal case
+    # never recomputes — so re-project hypothesis states from the just-validated
+    # root, or the report would show the hypothesis un-validated beside a CONFIRMED
+    # grade (the exact report-Validated ⟺ grade invariant this fix establishes).
+    # Reached via the graph-hooks registry (not a direct import): terminal_transitions
+    # -> causal_graph would close the cause_assurance/hypothesis_manager import cycle.
+    # Read defensively (.get, like every other hook consumer): this sits on the
+    # unguarded RESOLVED-execution path, so a missing registration must degrade to
+    # a skipped projection, never a KeyError that 500s the transition.
+    project_hyp_states = _graph_hooks().get("project_hyp_states")
+    if project_hyp_states is not None:
+        project_hyp_states(case)
     # The grade set is refreshed UNCONDITIONALLY: the API surface reaches here
     # without a fresh per-turn recompute, so even a no-stamp resolve must not
     # freeze a stale persisted grade into the terminal blob (idempotent on the

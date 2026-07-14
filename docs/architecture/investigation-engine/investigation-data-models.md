@@ -1656,8 +1656,8 @@ class HypothesisCategory(str, Enum):
 class HypothesisState(str, Enum):
     CAPTURED = "captured"       # Initial state, just recorded
     ACTIVE = "active"           # Under active investigation
-    VALIDATED = "validated"     # likelihood ≥ 0.70 + 2+ supporting evidence
-    REFUTED = "refuted"         # likelihood ≤ 0.20 + 2+ refuting evidence
+    VALIDATED = "validated"     # Derived from the chain ROOT node being VALIDATED (project_hypothesis_states_from_roots — sole producer); no flat likelihood threshold
+    REFUTED = "refuted"         # Explicit refute (user/LLM via refute_hypothesis) or the M6 net-refuted machinery; no flat likelihood threshold
     INCONCLUSIVE = "inconclusive"  # likelihood 0.3–0.5 + stagnant 3+ turns (no evidence change)
     RETIRED = "retired"         # Abandoned without disproof — set by LLM, system thresholds, or user intent (see transition table)
 ```
@@ -1669,9 +1669,9 @@ class HypothesisState(str, Enum):
 | Status | Trigger | Who sets it |
 |---|---|---|
 | `CAPTURED` → `ACTIVE` | LLM starts investigating the hypothesis | LLM (structured output) |
-| `ACTIVE` → `VALIDATED` | likelihood ≥ 0.70 with 2+ supporting evidence links | LLM (structured output) |
-| `ACTIVE` → `VALIDATED` | User clicks a "validate" DECIDE suggestion (`hypothesis_action` intent) | **Engine** (`milestone_engine.py` `hypothesis_action` handler — sets `likelihood = 1.0`) |
-| `ACTIVE` → `REFUTED` | likelihood ≤ 0.20 with 2+ refuting evidence links | LLM (structured output) |
+| `ACTIVE` → `VALIDATED` | Chain ROOT node reaches VALIDATED (2+ independent causal supports, or counterfactual confirmation) | **Engine** — `project_hypothesis_states_from_roots` (sole VALIDATED producer; runs after node-state settling and at the terminal confirm-stamp) |
+| `ACTIVE` (state unchanged) | User clicks a "validate" DECIDE suggestion (`hypothesis_action` intent) | **Engine** — records a strong prior (`likelihood = 1.0`) + feedback; VALIDATED still comes only from the chain root, so the belief is realized once evidence validates that root (the definitive user confirmation is the RESOLVED handshake) |
+| `ACTIVE` → `REFUTED` | LLM structured output (`HypothesisUpdate.status = REFUTED` + `refutation_reason`), or the M6 net-refuted / failed-fix machinery | LLM / **Engine** (`_net_refuted`, `demote_disconfirmed_cause_via_evidence`) |
 | `ACTIVE` → `REFUTED` | User clicks a "refute" DECIDE suggestion (`hypothesis_action` intent) | **Engine** (delegates to `hypothesis_manager.refute_hypothesis(...)` with `reason=user_message`) |
 | `ACTIVE` → `INCONCLUSIVE` | likelihood 0.3–0.5 **and** `iterations_without_progress ≥ 3` | **System-automated** (`hypothesis_manager.py`) |
 | `ACTIVE` → `RETIRED` | LLM judgment: abandoning without disproof (no `refutation_reason` required) | LLM (structured output via `HypothesisUpdate.status = RETIRED`) |
@@ -1680,7 +1680,7 @@ class HypothesisState(str, Enum):
 | `INCONCLUSIVE` → `RETIRED` | Deadlock repair — all hypotheses inconclusive, repair retires them en masse to free the LLM to generate fresh ones | **System-automated** (`progress_monitor.py:691`) |
 | `ACTIVE` → `RETIRED` | User clicks a "retire" DECIDE suggestion (`hypothesis_action` intent) | **Engine** (sets `retirement_reason = user_message`) |
 
-The system-automated `INCONCLUSIVE` and decay-based `RETIRED` transitions run after each evidence update in `HypothesisManager.update_hypothesis()`. They are mechanically applied thresholds, not LLM judgment calls — they prevent stale low-confidence hypotheses from consuming LLM context across turns when no new evidence is advancing them. The user-intent paths (validate / refute / retire) apply the state change **before** LLM processing on the same turn so the agent's reply sees the updated hypothesis and can acknowledge it — see [Choice-Response Resolution §5.2](./choice-response-resolution.md#52-state-transitions-applied-by-the-engine).
+The system-automated `INCONCLUSIVE` and decay-based `RETIRED` transitions run after each evidence update in `HypothesisManager.update_hypothesis()`. They are mechanically applied thresholds, not LLM judgment calls — they prevent stale low-confidence hypotheses from consuming LLM context across turns when no new evidence is advancing them. The user-intent paths apply **before** LLM processing on the same turn so the agent's reply sees the updated hypothesis and can acknowledge it (refute / retire apply the state change directly; validate records a strong prior — `likelihood = 1.0` — since VALIDATED is derived solely from the chain root) — see [Choice-Response Resolution §5.2](./choice-response-resolution.md#52-state-transitions-applied-by-the-engine).
 
 ```python
 class HypothesisGenerationMode(str, Enum):

@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.modules.case.contracts import (
     Case,
@@ -286,17 +287,23 @@ class TestAutoGenerateReportTupleReturn:
 class TestAckTurnFollowUpsOnFailure:
     """G2: ``_select_ack_follow_ups`` returns regen affordance on failure."""
 
-    def test_success_resolved_returns_minimal_suggestions(self):
+    def test_success_resolved_returns_minimal_suggestions(self, monkeypatch):
         from faultmaven.core.investigation.milestone_engine import (
             _resolved_ack_suggestions,
             _select_ack_follow_ups,
         )
 
+        # Runbook affordance is grade-gated (#695 Defect A); pin CONFIRMED so the
+        # MagicMock case yields a deterministic grade for both sides.
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            lambda case: CauseAssuranceGrade.CONFIRMED,
+        )
         case = MagicMock()
         case.state = CaseState.RESOLVED
 
         follow_ups = _select_ack_follow_ups(case, summary_failed=False, remaining=5)
-        assert follow_ups == _resolved_ack_suggestions()
+        assert follow_ups == _resolved_ack_suggestions(case)
 
     def test_success_closed_returns_empty(self):
         from faultmaven.core.investigation.milestone_engine import (
@@ -309,18 +316,23 @@ class TestAckTurnFollowUpsOnFailure:
         follow_ups = _select_ack_follow_ups(case, summary_failed=False, remaining=5)
         assert follow_ups == []
 
-    def test_failure_resolved_includes_regen_and_runbook(self):
-        """G2: failed RESOLVED summary → ack-turn offers regen + runbook."""
+    def test_failure_resolved_includes_regen_and_runbook(self, monkeypatch):
+        """G2: failed RESOLVED summary → ack-turn offers regen + runbook
+        (runbook because the cause is CONFIRMED — #695 Defect A)."""
         from faultmaven.core.investigation.milestone_engine import (
             _resolved_suggestions,
             _select_ack_follow_ups,
         )
 
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            lambda case: CauseAssuranceGrade.CONFIRMED,
+        )
         case = MagicMock()
         case.state = CaseState.RESOLVED
 
         follow_ups = _select_ack_follow_ups(case, summary_failed=True, remaining=5)
-        assert follow_ups == _resolved_suggestions(remaining=5)
+        assert follow_ups == _resolved_suggestions(case, remaining=5)
         labels = [s["label"] for s in follow_ups]
         assert any("regenerate" in label.lower() for label in labels)
 
@@ -389,6 +401,7 @@ class TestRunbookCreationFollowUps:
         # just kicked off conversion). The expected list contains only
         # the regen affordance.
         assert result["suggested_follow_ups"] == _resolved_suggestions(
+            case,
             remaining=await engine._remaining_regens_for(case),
             runbook_already_exists=True,
         )

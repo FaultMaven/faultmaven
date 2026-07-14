@@ -16,7 +16,11 @@ this document defines what the agent is *reasoning about* when it drives them.
 **Core implemented; reasoning-rigor layer partially landed.** The central
 reframe — *a hypothesis is a causal chain, not a single sentence* — is now the
 engine's **actual** model: chain emission is the sole investigation path (the
-flat-sentence model and its transitional flag/bridge scaffolding were removed),
+flat-sentence structure and its transitional flag/bridge scaffolding were removed
+in #487–#507; the flat VALIDATED/REFUTED state transition — a validation remnant
+that silently coexisted with the graph until it surfaced on a solved case — was
+removed in #695 (Defect A), making the causal graph the sole producer of a
+VALIDATED hypothesis, enforced by `test_projection_is_the_sole_source_writer_of_validated`),
 and `cause_state` is derived from a validated chain root rather than asserted.
 The data-model and engine surface in [§9](#9-engine-alignment) landed across
 PRs #487–#507. What is built versus still design-intent:

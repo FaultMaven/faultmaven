@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
 from faultmaven.core.investigation.milestone_engine import (
     GENERATE_RUNBOOK_PAYLOAD,
     REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
@@ -85,30 +86,51 @@ class TestClosedRegenLabel:
 
 
 class TestRunbookCap:
-    def test_runbook_offered_when_not_yet_generated(self):
-        suggestions = _resolved_suggestions(remaining=2, runbook_already_exists=False)
+    @pytest.fixture
+    def confirmed(self, monkeypatch):
+        # The runbook affordance is gated on grade == CONFIRMED (#695 Defect A);
+        # these cap/label tests exercise the cap, so pin the grade to CONFIRMED.
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            lambda case: CauseAssuranceGrade.CONFIRMED,
+        )
+
+    def test_runbook_offered_when_not_yet_generated(self, confirmed):
+        suggestions = _resolved_suggestions(
+            object(), remaining=2, runbook_already_exists=False
+        )
         labels = [s["label"] for s in suggestions]
         assert "Generate runbook from this case" in labels
 
-    def test_runbook_dropped_when_already_exists(self):
-        suggestions = _resolved_suggestions(remaining=2, runbook_already_exists=True)
+    def test_runbook_dropped_when_already_exists(self, confirmed):
+        suggestions = _resolved_suggestions(
+            object(), remaining=2, runbook_already_exists=True
+        )
         labels = [s["label"] for s in suggestions]
         assert "Generate runbook from this case" not in labels
         # Regen affordance still present (independent cap).
         assert "Regenerate resolution summary" in labels
 
-    def test_default_offers_runbook(self):
-        # The default value of the new parameter must preserve the
-        # legacy behaviour (always offer runbook) so callers that have
-        # not yet been migrated continue working.
-        suggestions = _resolved_suggestions(remaining=2)
+    def test_runbook_suppressed_when_not_confirmed(self, monkeypatch):
+        # #695 Defect A: a MECHANISTIC/NO_ROOT cause would make the runbook
+        # affordance refuse, so it is not offered (the regen affordance, which
+        # is grade-independent, still is).
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            lambda case: CauseAssuranceGrade.MECHANISTIC,
+        )
+        suggestions = _resolved_suggestions(object(), remaining=2)
         labels = [s["label"] for s in suggestions]
-        assert "Generate runbook from this case" in labels
+        assert "Generate runbook from this case" not in labels
+        assert "Regenerate resolution summary" in labels
 
-    def test_runbook_suggestion_payload_unchanged(self):
-        s = _runbook_suggestion()
+    def test_runbook_suggestion_payload_unchanged(self, confirmed):
+        s = _runbook_suggestion(object())
+        assert s is not None
         assert s["payload"] == GENERATE_RUNBOOK_PAYLOAD
 
-    def test_both_caps_exhausted_yields_empty_list(self):
-        suggestions = _resolved_suggestions(remaining=0, runbook_already_exists=True)
+    def test_both_caps_exhausted_yields_empty_list(self, confirmed):
+        suggestions = _resolved_suggestions(
+            object(), remaining=0, runbook_already_exists=True
+        )
         assert suggestions == []

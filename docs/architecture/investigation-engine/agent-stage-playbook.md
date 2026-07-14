@@ -276,7 +276,7 @@ DIAGNOSIS has three internal zones. Zone membership is determined by the diagnos
 | ----- | ------- | ----------- |
 | `CAPTURED` | Just recorded, not yet under investigation | — |
 | `ACTIVE` | Under active investigation | — |
-| `VALIDATED` | likelihood ≥ 0.70 + 2+ supporting evidence | Enables the grounded cause signal (`cause_state = IDENTIFIED`) |
+| `VALIDATED` | Derived when the hypothesis's chain ROOT node is VALIDATED (2+ independent causal supports, or counterfactual confirmation) — the sole producer; no flat likelihood threshold | Enables the grounded cause signal (`cause_state = IDENTIFIED`) |
 | `REFUTED` | Evidence directly disproves it | Requires `refutation_reason` citing specific evidence |
 | `INCONCLUSIVE` | likelihood 0.3–0.5, stagnant 3+ turns without new evidence | Set by progress monitor |
 | `RETIRED` | Abandoned without disproof | No reason required |

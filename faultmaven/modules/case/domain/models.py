@@ -4662,13 +4662,6 @@ class Case(BaseModel):
         ]
 
     @property
-    def validated_hypotheses(self) -> List[Hypothesis]:
-        """Get validated hypotheses (found root cause)"""
-        return [
-            h for h in self.hypotheses.values() if h.state == HypothesisState.VALIDATED
-        ]
-
-    @property
     def warnings(self) -> List[Dict[str, Any]]:
         """
         Get active warnings for UI display.

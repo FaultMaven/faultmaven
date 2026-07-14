@@ -630,6 +630,27 @@ class TestTransformResolved:
         assert result.root_cause.root_cause_id == hyp.hypothesis_id
         assert result.root_cause.category == "config"
 
+    def test_resolved_root_cause_category_from_rcc_named_hypothesis(self):
+        # #695 Defect A item 2: after removing the flat-VALIDATED remnant, a
+        # conclusion that NAMED its cause (validated_hypothesis_id) must still
+        # label the UI category even when no hypothesis is in the VALIDATED state
+        # (e.g. a MECHANISTIC grade) — the RCC-named fallback, not silently None.
+        case = _make_resolved_case()
+        hyp = _make_hypothesis(state=HypothesisState.ACTIVE, likelihood=0.8)
+        case.hypotheses[hyp.hypothesis_id] = hyp
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Config drift",
+            confidence_level=ConfidenceLevel.VERIFIED,
+            likelihood=0.95,
+            mechanism="TTL changed",
+            validated_hypothesis_id=hyp.hypothesis_id,
+        )
+
+        result = transform_case_for_ui(case)
+
+        assert result.root_cause.root_cause_id == hyp.hypothesis_id
+        assert result.root_cause.category == "config"
+
 
 # ============================================================
 # CLOSED Phase Tests

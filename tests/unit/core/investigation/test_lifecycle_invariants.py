@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
+from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.terminal_transitions import (
     _execute_resolved_transition,
@@ -1463,16 +1464,21 @@ class TestINV13_AckTurnVsQATurnSuggestions:
     test_transition_alignment.py.
     """
 
-    def test_inv13_resolved_ack_offers_runbook_only_no_regen(self):
-        """``_resolved_ack_suggestions()`` returns the runbook affordance
+    def test_inv13_resolved_ack_offers_runbook_only_no_regen(self, monkeypatch):
+        """``_resolved_ack_suggestions(case)`` returns the runbook affordance
         only — NO regen card. Regen beside a freshly-rendered summary
-        on the ack turn would be noise.
+        on the ack turn would be noise. (Runbook is offered here because the
+        cause is CONFIRMED — #695 Defect A gates it on the grade.)
         """
         from faultmaven.core.investigation.milestone_engine import (
             _resolved_ack_suggestions,
         )
 
-        suggestions = _resolved_ack_suggestions()
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            lambda case: CauseAssuranceGrade.CONFIRMED,
+        )
+        suggestions = _resolved_ack_suggestions(object())
         labels = [s["label"] for s in suggestions]
 
         # Exactly the runbook affordance, nothing else
@@ -1489,14 +1495,18 @@ class TestINV13_AckTurnVsQATurnSuggestions:
             f"subsequent terminal Q&A turns. See §1.7.3."
         )
 
-    def test_inv13_resolved_qa_offers_both_regen_and_runbook(self):
-        """``_resolved_suggestions()`` (for terminal Q&A turns on RESOLVED
-        cases) returns both the regen affordance and the runbook
-        affordance.
+    def test_inv13_resolved_qa_offers_both_regen_and_runbook(self, monkeypatch):
+        """``_resolved_suggestions(case)`` (for terminal Q&A turns on RESOLVED
+        cases) returns both the regen affordance and the runbook affordance
+        (runbook offered because the cause is CONFIRMED — #695 Defect A).
         """
         from faultmaven.core.investigation.milestone_engine import _resolved_suggestions
 
-        suggestions = _resolved_suggestions(remaining=5)
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            lambda case: CauseAssuranceGrade.CONFIRMED,
+        )
+        suggestions = _resolved_suggestions(object(), remaining=5)
         labels = [s["label"] for s in suggestions]
 
         assert any("regenerate" in label.lower() for label in labels), (
@@ -1541,7 +1551,7 @@ class TestINV13_AckTurnVsQATurnSuggestions:
             "generation. See §1.7.3."
         )
 
-    def test_inv13_ack_and_qa_suggestion_sets_differ(self):
+    def test_inv13_ack_and_qa_suggestion_sets_differ(self, monkeypatch):
         """The whole point of the asymmetry: ack-turn and Q&A-turn
         suggestion sets for RESOLVED are NOT equal. The ack set is a
         proper subset of the Q&A set (runbook only vs regen+runbook).
@@ -1551,8 +1561,12 @@ class TestINV13_AckTurnVsQATurnSuggestions:
             _resolved_suggestions,
         )
 
-        ack = _resolved_ack_suggestions()
-        qa = _resolved_suggestions(remaining=5)
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
+            lambda case: CauseAssuranceGrade.CONFIRMED,
+        )
+        ack = _resolved_ack_suggestions(object())
+        qa = _resolved_suggestions(object(), remaining=5)
 
         assert ack != qa, (
             "INV-13 violation: closure-ack and terminal-Q&A return the "

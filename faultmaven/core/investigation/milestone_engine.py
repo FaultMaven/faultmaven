@@ -46,6 +46,7 @@ from faultmaven.core.investigation.causal_graph import (
     link_llm_rcc_to_cause,
     mece_contested_root_ids,
     mirror_hypothesis_support_to_root_nodes,
+    project_hypothesis_states_from_roots,
     prune_abandoned_nodes,
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
@@ -1372,6 +1373,14 @@ def _recompute_cause_state_from_chain(
     else:
         p.cause_state = CauseState.UNKNOWN
 
+    # #695 Defect A: derive hypothesis VALIDATED from its chain root's final
+    # node_state — the sole producer of a VALIDATED hypothesis. Runs LAST, after
+    # the whole node-state settling (derive_node_states + the validate_by_exclusion
+    # re-derive above) AND the M6 demotion, so it reads final node states and
+    # cannot resurrect a just-REFUTED hypothesis. Keeps hypothesis.state, the
+    # report bucket, the grade, and cause_state on ONE determination.
+    project_hypothesis_states_from_roots(case)
+
 
 def _resolve_chat_provider_name(llm_provider: "Any") -> str:
     """Best-effort name of the CHAT provider driving the investigation, for the
@@ -2276,8 +2285,18 @@ REGENERATE_CLOSURE_SUMMARY_PAYLOAD = (
 GENERATE_RUNBOOK_PAYLOAD = "Generate a runbook from this resolved case"
 
 
-def _runbook_suggestion() -> dict:
-    """The runbook-generation DECIDE suggestion (RESOLVED-only)."""
+def _runbook_suggestion(case) -> dict | None:
+    """The runbook-generation DECIDE suggestion (RESOLVED-only), gated on cause
+    assurance so no button is offered whose only outcome is a refusal (#695
+    Defect A item 3). The auto-generate path (convert-from-case) harvests a cause
+    ONLY when it is CONFIRMED — counterfactually borne out; for MECHANISTIC /
+    NO_ROOT the readiness gate would refuse, so the affordance is suppressed
+    rather than offered-then-denied. Returns None when not offerable. (The manual
+    POST /knowledge/runbooks/create path still exists for those cases; adding a
+    redirect affordance is a separate suggestion-contract change, out of scope.)
+    """
+    if grade_cause_assurance(case) != CauseAssuranceGrade.CONFIRMED:
+        return None
     return {
         "label": "Generate runbook from this case",
         "action_type": "DECIDE",
@@ -2306,15 +2325,17 @@ def _regenerate_resolution_summary_suggestion(remaining: int) -> dict | None:
     }
 
 
-def _resolved_ack_suggestions() -> list:
+def _resolved_ack_suggestions(case) -> list:
     """Suggestions for the resolution-acknowledgment turn.
 
     The summary was just generated and is rendered inline above in this
     same agent reply — offering "Regenerate" beside it would be noise.
-    Only the forward action (runbook) is offered here. Regen is reserved
-    for subsequent terminal Q&A turns via ``_resolved_suggestions``.
+    Only the forward action (runbook) is offered here, and only when the
+    cause is CONFIRMED (else the runbook affordance would refuse — #695). Regen
+    is reserved for subsequent terminal Q&A turns via ``_resolved_suggestions``.
     """
-    return [_runbook_suggestion()]
+    runbook = _runbook_suggestion(case)
+    return [runbook] if runbook is not None else []
 
 
 def _select_ack_follow_ups(case, summary_failed: bool, remaining: int) -> list:
@@ -2340,16 +2361,18 @@ def _select_ack_follow_ups(case, summary_failed: bool, remaining: int) -> list:
     """
     if summary_failed:
         if case.state == CaseState.RESOLVED:
-            return _resolved_suggestions(remaining)
+            return _resolved_suggestions(case, remaining)
         if case.state == CaseState.CLOSED:
             return _closed_suggestions(case, remaining)
         return []
     if case.state == CaseState.RESOLVED:
-        return _resolved_ack_suggestions()
+        return _resolved_ack_suggestions(case)
     return []
 
 
-def _resolved_suggestions(remaining: int, runbook_already_exists: bool = False) -> list:
+def _resolved_suggestions(
+    case, remaining: int, runbook_already_exists: bool = False
+) -> list:
     """Suggestions for terminal Q&A turns on a RESOLVED case.
 
     Both the regen affordance and the runbook affordance are offered.
@@ -2359,8 +2382,9 @@ def _resolved_suggestions(remaining: int, runbook_already_exists: bool = False) 
 
     Each affordance has its own cap and is dropped silently when exhausted:
       - Regen: per-type ``MAX_REGENERATIONS`` (drives ``remaining``).
-      - Runbook: one generation per case. After a draft has been written
-        the suggestion is hidden; the user iterates on it via the
+      - Runbook: one generation per case, and only when the cause is CONFIRMED
+        (else the affordance would refuse — #695 Defect A). After a draft has
+        been written the suggestion is hidden; the user iterates on it via the
         Dashboard Drafts editor (no re-roll from chat).
     """
     suggestions: list = []
@@ -2368,7 +2392,9 @@ def _resolved_suggestions(remaining: int, runbook_already_exists: bool = False) 
     if regen is not None:
         suggestions.append(regen)
     if not runbook_already_exists:
-        suggestions.append(_runbook_suggestion())
+        runbook = _runbook_suggestion(case)
+        if runbook is not None:
+            suggestions.append(runbook)
     return suggestions
 
 
@@ -2790,7 +2816,7 @@ class MilestoneEngine:
         remaining = await self._remaining_regens_for(case)
         if case.state == CaseState.RESOLVED:
             runbook_exists = await self._case_has_runbook_draft(case)
-            follow_ups = _resolved_suggestions(remaining, runbook_exists)
+            follow_ups = _resolved_suggestions(case, remaining, runbook_exists)
         else:
             follow_ups = _closed_suggestions(case, remaining)
 
@@ -2898,7 +2924,9 @@ class MilestoneEngine:
             # generation, so re-offering it would race the background
             # task and risk a duplicate draft.
             remaining = await self._remaining_regens_for(case)
-            follow_ups = _resolved_suggestions(remaining, runbook_already_exists=True)
+            follow_ups = _resolved_suggestions(
+                case, remaining, runbook_already_exists=True
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to initiate runbook creation for case {case.case_id}: {e}",
@@ -3102,7 +3130,7 @@ class MilestoneEngine:
             remaining = await self._remaining_regens_for(case)
             runbook_exists = await self._case_has_runbook_draft(case)
             follow_ups = follow_ups + _resolved_suggestions(
-                remaining, runbook_already_exists=runbook_exists
+                case, remaining, runbook_already_exists=runbook_exists
             )
 
         return {
@@ -3950,9 +3978,29 @@ class MilestoneEngine:
                                 reason=user_message or "User refuted",
                             )
                         elif action == "validate":
-                            hypothesis.state = HypothesisState.VALIDATED
+                            # #695 Defect A: a user "validate" intent records a
+                            # strong PRIOR, not a validation-by-assertion. The
+                            # single model derives VALIDATED from the chain root's
+                            # evidence (project_hypothesis_states_from_roots); a
+                            # bare assertion cannot mint it (the causal-node model
+                            # forbids validation by assertion). The user's
+                            # definitive confirmation is the RESOLVED handshake
+                            # (the confirm-stamp), not this mid-investigation
+                            # signal. Surface the new semantics so the affordance
+                            # does not read as a silent no-op.
                             hypothesis.likelihood = 1.0
                             hypothesis.last_updated_turn = case.current_turn
+                            current_fb = metadata.get("system_feedback", "") or ""
+                            metadata["system_feedback"] = "\n".join(
+                                [
+                                    current_fb,
+                                    f"Recorded your strong belief in hypothesis "
+                                    f"{hypothesis_id}. It is marked validated once "
+                                    f"its cause chain is confirmed by evidence — "
+                                    f"link supporting evidence to its root to get "
+                                    f"there.",
+                                ]
+                            ).strip()
                         elif action == "retire":
                             hypothesis.state = HypothesisState.RETIRED
                             hypothesis.retirement_reason = (

@@ -1564,6 +1564,58 @@ def any_chain_root_validated(case: Case) -> bool:
     )
 
 
+def project_hypothesis_states_from_roots(case: Case) -> bool:
+    """#695 Defect A — derive each hypothesis's VALIDATED state from its chain
+    ROOT node's ``node_state``. This is the SOLE producer of a VALIDATED
+    hypothesis (the flat likelihood-threshold transition was removed). Returns
+    True if any state changed.
+
+    Invariant: a hypothesis reads ``VALIDATED`` ⟺ its chain root node is
+    ``VALIDATED``. Because ``grade_cause_assurance`` returns ``NO_ROOT`` ⟺ no
+    validated root node, this makes the report's "Validated" bucket, the cause
+    grade, the runbook gate, and ``cause_state`` resolve to ONE determination —
+    they can no longer disagree (the #695 divergence).
+
+    Scope is VALIDATED only:
+      * a STANDING (ACTIVE/VALIDATED) hypothesis whose root node is VALIDATED
+        becomes VALIDATED;
+      * a VALIDATED hypothesis whose root is no longer VALIDATED reverts to
+        ACTIVE (a stale projection — e.g. the root lost validation to an
+        evidence tie or the restatement guard on a pre-guard persisted case).
+    ``REFUTED``/``RETIRED`` are NEVER touched: refutation is owned by the
+    explicit lifecycle (``refute_hypothesis`` / M6 ``_net_refuted`` / an
+    explicit user-or-LLM refute), which is already evidence-grounded and can
+    legitimately refute a hypothesis whose root node is not itself REFUTED. A
+    hypothesis with no ``root_node_id`` can never be VALIDATED — the graph is
+    emission-only, so there is no flat validation floor.
+
+    Ordering (load-bearing): run AFTER node-state settling — ``derive_node_states``
+    INCLUDING the ``validate_by_exclusion`` re-derive — and AFTER the M6 demotion,
+    so it reads final node states and cannot resurrect a just-REFUTED hypothesis
+    to ACTIVE. Called at both settle points: the per-turn assessment recompute and
+    the terminal confirm-stamp (a case reaching CONFIRMED via
+    ``confirm_root_from_resolution_absence`` never recomputes, so its hypothesis
+    must be re-projected there or the report would show it un-validated beside a
+    CONFIRMED grade).
+    """
+    changed = False
+    for hyp in case.hypotheses.values():
+        # Only ACTIVE/VALIDATED are projection targets — CAPTURED (not yet
+        # active), REFUTED, and RETIRED are owned by other lifecycle paths and
+        # must never be overwritten here (the REFUTED no-clobber rule).
+        if hyp.state not in (HypothesisState.ACTIVE, HypothesisState.VALIDATED):
+            continue
+        root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
+        root_validated = root is not None and root.node_state == NodeState.VALIDATED
+        if root_validated and hyp.state != HypothesisState.VALIDATED:
+            hyp.state = HypothesisState.VALIDATED
+            changed = True
+        elif not root_validated and hyp.state == HypothesisState.VALIDATED:
+            hyp.state = HypothesisState.ACTIVE
+            changed = True
+    return changed
+
+
 # §7.1.2 MECE arbitration (#656): Jaccard at/above which two ROOT
 # statements are ONE cause recorded twice (duplicate emission), not competing
 # explanations. Same value as the other mirror bars but deliberately its own
@@ -2437,4 +2489,5 @@ register_graph_hooks(
     support_count_held_root_ids=support_count_held_root_ids,
     derive_node_states=derive_node_states,
     sole_cluster_origin=sole_cluster_origin,
+    project_hypothesis_states_from_roots=project_hypothesis_states_from_roots,
 )
