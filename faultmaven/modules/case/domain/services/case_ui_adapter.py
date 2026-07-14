@@ -478,7 +478,17 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
                     case.root_cause_conclusion, "validated_hypothesis_id", None
                 )
                 if vhid:
-                    cause_hyp = case.hypotheses.get(vhid)
+                    named = case.hypotheses.get(vhid)
+                    # Only a STANDING hypothesis (ACTIVE/VALIDATED — matching
+                    # causal_graph._STANDING_HYP_STATES) may label the resolved
+                    # root cause. A named hypothesis since REFUTED/RETIRED (or a
+                    # not-yet-active CAPTURED one) is not a cause and must not
+                    # supply the UI category.
+                    if named is not None and named.state in (
+                        HypothesisState.ACTIVE,
+                        HypothesisState.VALIDATED,
+                    ):
+                        cause_hyp = named
         if cause_hyp is not None:
             root_cause_id = cause_hyp.hypothesis_id
             root_cause_category = cause_hyp.category.value

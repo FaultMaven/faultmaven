@@ -178,7 +178,7 @@ The engine handler (`milestone_engine.py:2520–2554`) dispatches on `intent_dat
 | Action | State change | Mechanism |
 |---|---|---|
 | `refute` | Hypothesis → `REFUTED`, refutation reason recorded | `hypothesis_manager.refute_hypothesis(hypothesis=…, current_turn=…, refuting_evidence_ids=[], reason=user_message or "User refuted")` |
-| `validate` | Hypothesis → `VALIDATED`, `likelihood = 1.0`, `last_updated_turn` bumped | Direct field assignment (no manager method — validation is just a confidence pin) |
+| `validate` | Records a strong prior — `likelihood = 1.0`, `last_updated_turn` bumped, `system_feedback` appended — but **does not** set `VALIDATED` | Direct field assignment. VALIDATED is derived solely from the chain root (`project_hypothesis_states_from_roots`); a bare assertion cannot mint it, so the user's belief is realized once evidence validates the root. The definitive user confirmation is the RESOLVED handshake. |
 | `retire` | Hypothesis → `RETIRED`, `retirement_reason` recorded, `last_updated_turn` bumped | Direct field assignment |
 
 After the state change the handler **falls through** to normal LLM processing so the agent can acknowledge the action in its reply. The `hypothesis_action_applied` metadata flag lets downstream logging and telemetry distinguish "user explicitly acted on hypothesis" from "agent inferred a status change from prose."

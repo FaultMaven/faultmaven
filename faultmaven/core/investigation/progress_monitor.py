@@ -59,6 +59,23 @@ from faultmaven.modules.case.contracts import (
 logger = logging.getLogger(__name__)
 
 
+# Hypothesis states that count as a "spent" theory — one that was pursued and is
+# no longer standing — for exhaustion/anchoring work-gates. RETIRED is included
+# alongside REFUTED/INCONCLUSIVE (#695 Defect A): removing the flat-likelihood
+# REFUTED transition means a decaying disproven theory now retires at
+# ``likelihood < 0.3`` (``_check_state_transition``) before it could ever land
+# REFUTED, so a spent theory that used to be counted here as REFUTED now lands
+# RETIRED. Counting RETIRED keeps the exhaustion/anchoring tallies whole. Kept
+# module-local (like ``causal_graph._STANDING_HYP_STATES``) and single-sourced so
+# every consumer shares one definition. NOT the deadlock signal, which is
+# specifically "all still INCONCLUSIVE" (untouched).
+_SPENT_HYP_STATES = (
+    HypothesisState.REFUTED,
+    HypothesisState.INCONCLUSIVE,
+    HypothesisState.RETIRED,
+)
+
+
 # =============================================================================
 # Stage-Gate Milestones (trigger stage transitions)
 # =============================================================================
@@ -499,15 +516,13 @@ class ProgressMonitor:
         """
         Detect if agent is stuck testing same hypothesis category.
 
-        Triggers if 4+ hypotheses in same category are REFUTED or INCONCLUSIVE.
+        Triggers if 4+ hypotheses in same category are spent (REFUTED,
+        INCONCLUSIVE, or RETIRED — see ``_SPENT_HYP_STATES``).
         """
         category_counts: dict[str, int] = {}
 
         for hypothesis in case.hypotheses.values():
-            if hypothesis.state in (
-                HypothesisState.REFUTED,
-                HypothesisState.INCONCLUSIVE,
-            ):
+            if hypothesis.state in _SPENT_HYP_STATES:
                 cat = (
                     hypothesis.category.value
                     if hasattr(hypothesis.category, "value")
@@ -599,7 +614,7 @@ class ProgressMonitor:
         for h in case.hypotheses.values():
             cat = h.category.value if hasattr(h.category, "value") else str(h.category)
             categories_explored.add(cat)
-            if h.state in (HypothesisState.REFUTED, HypothesisState.INCONCLUSIVE):
+            if h.state in _SPENT_HYP_STATES:
                 refuted_count += 1
 
         evidence_count = len(case.evidence)
@@ -740,7 +755,7 @@ class ProgressMonitor:
         for h in case.hypotheses.values():
             cat = h.category.value if hasattr(h.category, "value") else str(h.category)
             categories_explored.add(cat)
-            if h.state in (HypothesisState.REFUTED, HypothesisState.INCONCLUSIVE):
+            if h.state in _SPENT_HYP_STATES:
                 refuted_count += 1
 
         return RepairAction(
@@ -816,10 +831,7 @@ class ProgressMonitor:
         category_counts: dict[str, int] = {}
 
         for hypothesis in case.hypotheses.values():
-            if hypothesis.state in (
-                HypothesisState.REFUTED,
-                HypothesisState.INCONCLUSIVE,
-            ):
+            if hypothesis.state in _SPENT_HYP_STATES:
                 cat = (
                     hypothesis.category.value
                     if hasattr(hypothesis.category, "value")

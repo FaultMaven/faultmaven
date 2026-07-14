@@ -331,3 +331,33 @@ def test_deeply_refuted_case_without_validation_gets_the_nudge():
     ]
     case = _exhausted_case(hyps)
     assert ProgressMonitor()._detect_exhaustion(case) is True
+
+
+def test_retired_hypotheses_count_as_spent_toward_exhaustion():
+    # #695 Defect A: removing the flat-likelihood REFUTED transition means a
+    # decaying disproven theory now RETIRES (likelihood < 0.3) before it could
+    # ever land REFUTED. A spent theory that used to be counted here as REFUTED
+    # now lands RETIRED, so RETIRED must count toward the exhaustion tally
+    # (_SPENT_HYP_STATES) — otherwise a genuinely dead-ended case (its theories
+    # decayed out rather than sharply refuted) would silently stop tripping the
+    # handoff nudge. Under the pre-fix two-state count this asserts False.
+    hyps = [
+        _hyp_cat(HypothesisState.RETIRED, HypothesisCategory.NETWORK),
+        _hyp_cat(HypothesisState.RETIRED, HypothesisCategory.DATABASE),
+        _hyp_cat(HypothesisState.ACTIVE, HypothesisCategory.CONFIG),
+    ]
+    case = _exhausted_case(hyps)
+    assert ProgressMonitor()._detect_exhaustion(case) is True
+
+
+def test_validated_root_suppresses_exhaustion_even_with_retired_theories():
+    # Other direction: counting RETIRED as spent must NOT cause a premature
+    # handoff on a case that actually converged. A graph-validated root still
+    # suppresses the nudge even when other theories have retired.
+    hyps = [
+        _hyp_cat(HypothesisState.RETIRED, HypothesisCategory.NETWORK),
+        _hyp_cat(HypothesisState.RETIRED, HypothesisCategory.DATABASE),
+        _hyp_cat(HypothesisState.VALIDATED, HypothesisCategory.CONFIG),
+    ]
+    case = _exhausted_case(hyps)
+    assert ProgressMonitor()._detect_exhaustion(case) is False
