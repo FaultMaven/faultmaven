@@ -238,6 +238,17 @@ def finalize_resolution_truth_surface(case: "Case") -> bool:
     ).inc()
 
     stamped = confirm_root_from_resolution_absence(case)
+    # #695 Defect A (terminal gap): a case reaching CONFIRMED via the confirm-stamp
+    # validates its root HERE, outside the per-turn recompute, and a terminal case
+    # never recomputes — so re-project hypothesis states from the just-validated
+    # root, or the report would show the hypothesis un-validated beside a CONFIRMED
+    # grade (the exact report-Validated ⟺ grade invariant this fix establishes).
+    # Local import: terminal_transitions <-> causal_graph would be a top-level cycle.
+    from faultmaven.core.investigation.causal_graph import (
+        project_hypothesis_states_from_roots,
+    )
+
+    project_hypothesis_states_from_roots(case)
     # The grade set is refreshed UNCONDITIONALLY: the API surface reaches here
     # without a fresh per-turn recompute, so even a no-stamp resolve must not
     # freeze a stale persisted grade into the terminal blob (idempotent on the

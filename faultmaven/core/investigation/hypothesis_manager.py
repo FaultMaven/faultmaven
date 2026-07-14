@@ -439,12 +439,18 @@ class HypothesisManager:
         hypothesis: Hypothesis,
         turn: int,
     ) -> None:
-        """Check if hypothesis should transition state.
+        """Check the SOFT (likelihood-driven) hypothesis lifecycle transitions.
 
-        Transition criteria:
-        - VALIDATED: likelihood >= 0.70 and at least 2 supporting evidence
-        - REFUTED: likelihood <= 0.20 and at least 2 refuting evidence
-        - INCONCLUSIVE: likelihood between 0.3-0.5 for 3+ turns with no evidence progress
+        VALIDATED and REFUTED are NO LONGER set here (#695 Defect A): validation
+        is derived from the chain root node's state
+        (``project_hypothesis_states_from_roots``, the sole producer of a
+        VALIDATED hypothesis), and refutation is owned by the explicit lifecycle
+        (``refute_hypothesis`` / M6 ``_net_refuted``). The flat likelihood
+        thresholds set neither state independent of the causal graph anymore.
+
+        Remaining soft transitions (prior/anchoring management, kept):
+        - INCONCLUSIVE: likelihood 0.3-0.5 stagnant for 3+ turns
+        - RETIRED: likelihood < 0.3 (low confidence after testing)
 
         Args:
             hypothesis: Hypothesis to check
@@ -454,47 +460,8 @@ class HypothesisManager:
             # Only active hypotheses can be auto-transitioned
             return
 
-        supporting_count = sum(
-            1
-            for link in hypothesis.evidence_links
-            if link.stance == EvidenceStance.SUPPORTS
-        )
-        refuting_count = sum(
-            1
-            for link in hypothesis.evidence_links
-            if link.stance == EvidenceStance.REFUTES
-        )
-
-        # Check for validation
-        if hypothesis.likelihood >= 0.70 and supporting_count >= 2:
-            hypothesis.state = HypothesisState.VALIDATED
-            logger.info(
-                f"Hypothesis VALIDATED: {hypothesis.statement}",
-                extra={
-                    "hypothesis_id": hypothesis.hypothesis_id,
-                    "likelihood": hypothesis.likelihood,
-                    "supporting_evidence": supporting_count,
-                },
-            )
-
-        # Check for refutation
-        elif hypothesis.likelihood <= 0.20 and refuting_count >= 2:
-            hypothesis.refutation_reason = (
-                f"likelihood {hypothesis.likelihood:.2f} with "
-                f"{refuting_count} refuting evidence items"
-            )[:200]
-            hypothesis.state = HypothesisState.REFUTED
-            logger.info(
-                f"Hypothesis REFUTED: {hypothesis.statement}",
-                extra={
-                    "hypothesis_id": hypothesis.hypothesis_id,
-                    "likelihood": hypothesis.likelihood,
-                    "refuting_evidence": refuting_count,
-                },
-            )
-
         # Check for inconclusive: stagnant in gray zone (0.3-0.5) for 3+ turns
-        elif (
+        if (
             0.3 <= hypothesis.likelihood <= 0.5
             and hypothesis.iterations_without_progress >= 3
         ):
@@ -745,30 +712,6 @@ class HypothesisManager:
 
         return sorted_hypotheses[:max_count]
 
-    def get_validated_hypothesis(
-        self,
-        hypotheses: list[Hypothesis],
-    ) -> Hypothesis | None:
-        """Get the validated root cause hypothesis if any
-
-        Args:
-            hypotheses: All hypotheses
-
-        Returns:
-            Validated hypothesis with highest confidence, or None
-        """
-        validated = [
-            h
-            for h in hypotheses
-            if h.state == HypothesisState.VALIDATED and h.likelihood >= 0.7
-        ]
-
-        if not validated:
-            return None
-
-        # Return highest confidence validated hypothesis
-        return max(validated, key=lambda h: h.likelihood)
-
     def get_best_hypothesis(
         self,
         hypotheses: list[Hypothesis],
@@ -803,20 +746,6 @@ class HypothesisManager:
             List of hypotheses in category
         """
         return [h for h in hypotheses if h.category == category]
-
-    def has_validated_hypothesis(
-        self,
-        hypotheses: list[Hypothesis],
-    ) -> bool:
-        """Check if investigation has at least one validated hypothesis
-
-        Args:
-            hypotheses: All hypotheses
-
-        Returns:
-            True if at least one hypothesis is validated
-        """
-        return any(h.state == HypothesisState.VALIDATED for h in hypotheses)
 
 
 def create_hypothesis_manager() -> HypothesisManager:

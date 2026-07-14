@@ -45,6 +45,7 @@ from faultmaven.core.investigation.causal_graph import (
     is_chain_root_validated,
     link_llm_rcc_to_cause,
     mece_contested_root_ids,
+    project_hypothesis_states_from_roots,
     prune_abandoned_nodes,
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
@@ -1370,6 +1371,14 @@ def _recompute_cause_state_from_chain(
         p.cause_state = CauseState.CANDIDATES
     else:
         p.cause_state = CauseState.UNKNOWN
+
+    # #695 Defect A: derive hypothesis VALIDATED from its chain root's final
+    # node_state — the sole producer of a VALIDATED hypothesis. Runs LAST, after
+    # the whole node-state settling (derive_node_states + the validate_by_exclusion
+    # re-derive above) AND the M6 demotion, so it reads final node states and
+    # cannot resurrect a just-REFUTED hypothesis. Keeps hypothesis.state, the
+    # report bucket, the grade, and cause_state on ONE determination.
+    project_hypothesis_states_from_roots(case)
 
 
 def _resolve_chat_provider_name(llm_provider: "Any") -> str:
@@ -3949,9 +3958,29 @@ class MilestoneEngine:
                                 reason=user_message or "User refuted",
                             )
                         elif action == "validate":
-                            hypothesis.state = HypothesisState.VALIDATED
+                            # #695 Defect A: a user "validate" intent records a
+                            # strong PRIOR, not a validation-by-assertion. The
+                            # single model derives VALIDATED from the chain root's
+                            # evidence (project_hypothesis_states_from_roots); a
+                            # bare assertion cannot mint it (the causal-node model
+                            # forbids validation by assertion). The user's
+                            # definitive confirmation is the RESOLVED handshake
+                            # (the confirm-stamp), not this mid-investigation
+                            # signal. Surface the new semantics so the affordance
+                            # does not read as a silent no-op.
                             hypothesis.likelihood = 1.0
                             hypothesis.last_updated_turn = case.current_turn
+                            current_fb = metadata.get("system_feedback", "") or ""
+                            metadata["system_feedback"] = "\n".join(
+                                [
+                                    current_fb,
+                                    f"Recorded your strong belief in hypothesis "
+                                    f"{hypothesis_id}. It is marked validated once "
+                                    f"its cause chain is confirmed by evidence — "
+                                    f"link supporting evidence to its root to get "
+                                    f"there.",
+                                ]
+                            ).strip()
                         elif action == "retire":
                             hypothesis.state = HypothesisState.RETIRED
                             hypothesis.retirement_reason = (
