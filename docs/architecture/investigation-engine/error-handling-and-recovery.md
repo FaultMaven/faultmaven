@@ -546,17 +546,22 @@ class StateValidator:
         issues = []
 
         for hyp_id, hypothesis in case.hypotheses.items():
-            # VALIDATED requires sufficient evidence
-            if hypothesis.state == HypothesisState.VALIDATED:
-                supporting_count = len(hypothesis.supporting_evidence)
-                if supporting_count < 2:
-                    issues.append(ValidationIssue(
-                        code="HYPOTHESIS_STATE_001",
-                        message=f"Hypothesis {hyp_id} is VALIDATED with only {supporting_count} supporting evidence",
-                        severity=ValidationSeverity.WARNING,
-                        field=f"hypotheses.{hyp_id}",
-                        suggested_fix="Require at least 2 supporting evidence items"
-                    ))
+            # VALIDATED is derived from the chain root node (project_hypothesis_states_from_roots
+            # is the sole writer): a hypothesis reads VALIDATED iff its chain ROOT node is
+            # VALIDATED. Assert that invariant via the shared is_chain_root_validated (the same
+            # predicate the projection and synthesize_rcc use) — not the retired flat
+            # "≥2 supporting_evidence" bar — so a node-axis-grounded hypothesis is not
+            # spuriously flagged.
+            if hypothesis.state == HypothesisState.VALIDATED and not is_chain_root_validated(
+                hypothesis, case.causal_nodes
+            ):
+                issues.append(ValidationIssue(
+                    code="HYPOTHESIS_STATE_001",
+                    message=f"Hypothesis {hyp_id} is VALIDATED but its chain root node is not VALIDATED",
+                    severity=ValidationSeverity.WARNING,
+                    field=f"hypotheses.{hyp_id}",
+                    suggested_fix="VALIDATED is derived from the chain root node; only project_hypothesis_states_from_roots may set it"
+                ))
 
         return issues
 
