@@ -23,7 +23,6 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.config.settings import get_settings
 from faultmaven.core.investigation.kb_cause_seeder import (
     SeededRunbook,
     seed_candidate_causes,
@@ -112,6 +111,24 @@ def _cause() -> dict:
     }
 
 
+def _force_seeder_flag(monkeypatch, enabled: bool) -> None:
+    """Force the KB-seeder feature flag on/off robustly.
+
+    ``_select_diagnosis_block`` reads
+    ``get_settings().features.kb_cause_seeder_enabled``. ``get_settings`` is a
+    module-global singleton that another test in the suite may rebuild via
+    ``reset_settings()``; a plain ``monkeypatch.setattr(get_settings().features,
+    ...)`` then patches an instance the code no longer reads. Pin ``get_settings``
+    to one settings object (with the flag set) so the value the code reads is
+    stable regardless of singleton resets mid-suite.
+    """
+    from faultmaven.config import settings as settings_mod
+
+    s = settings_mod.get_settings()
+    monkeypatch.setattr(s.features, "kb_cause_seeder_enabled", enabled)
+    monkeypatch.setattr(settings_mod, "get_settings", lambda: s)
+
+
 @pytest.mark.unit
 class TestSeededCandidateDirectiveSwap:
     """A seeded turn REPLACES the flat directive with the validate/refute one —
@@ -136,7 +153,7 @@ class TestSeededCandidateDirectiveSwap:
         assert "your own hypotheses" in block
 
     def test_seeded_turn_replaces_flat_with_seeded_directive(self, monkeypatch):
-        monkeypatch.setattr(get_settings().features, "kb_cause_seeder_enabled", True)
+        _force_seeder_flag(monkeypatch, True)
         case = _diagnosis_case()
         report = seed_candidate_causes(
             case, [SeededRunbook("rb1", 0.9, [_cause()])], current_turn=1
@@ -149,7 +166,7 @@ class TestSeededCandidateDirectiveSwap:
         assert "that Cause IS your hypothesis" not in block
 
     def test_flag_off_keeps_flat_directive(self, monkeypatch):
-        monkeypatch.setattr(get_settings().features, "kb_cause_seeder_enabled", False)
+        _force_seeder_flag(monkeypatch, False)
         case = _diagnosis_case()
         seed_candidate_causes(
             case, [SeededRunbook("rb1", 0.9, [_cause()])], current_turn=1
@@ -161,7 +178,7 @@ class TestSeededCandidateDirectiveSwap:
     def test_flag_on_no_seeds_keeps_flat_directive(self, monkeypatch):
         # Flag on but no runbook matched → no candidates → flat directive stays
         # (the prompt must not claim candidates exist when none do).
-        monkeypatch.setattr(get_settings().features, "kb_cause_seeder_enabled", True)
+        _force_seeder_flag(monkeypatch, True)
         case = _diagnosis_case()
         block = _select_diagnosis_block(case)
         assert _KB_MATCHED_CAUSE_FLAT in block
