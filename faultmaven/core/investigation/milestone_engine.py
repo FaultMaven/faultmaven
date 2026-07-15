@@ -8801,7 +8801,7 @@ class MilestoneEngine:
         if not get_settings().features.kb_cause_seeder_enabled:
             return
         if not self.knowledge_service or not kb_hits:
-            return
+            return  # no retrieval this turn — a legitimate no-match, not a failure
 
         try:
             from faultmaven.core.investigation.kb_cause_seeder import (
@@ -8830,6 +8830,15 @@ class MilestoneEngine:
                         SeededRunbook(item_id=parent_id, score=score, causes=causes)
                     )
             if not runbooks:
+                # Matched runbook(s) carried no causes record → the flat-prose path
+                # serves them. Logged (not silent) so a legitimate zero-seed is
+                # traceable and cannot be confused with the seeder crashing below.
+                logger.debug(
+                    "KB cause seeder: %d matched runbook(s) carried no causes "
+                    "record for case %s — flat-prose path serves them",
+                    len(ranked),
+                    case.case_id,
+                )
                 return
 
             seed_candidate_causes(
@@ -8839,8 +8848,15 @@ class MilestoneEngine:
                 hypothesis_manager=self.hypothesis_manager,
             )
         except Exception:
-            logger.warning(
-                f"KB cause seeding failed for case {case.case_id}",
+            # A crash here is a SEEDER BUG, not a legitimate no-match. Log at ERROR
+            # with an explicit marker so that, once the flag is on, "investigation
+            # proceeded with zero seeds" from a broken seeder is distinguishable
+            # from the normal no-match path (which returns quietly above) — the
+            # same no-silent-failure goal the skip taxonomy serves.
+            logger.error(
+                "KB cause seeder CRASHED for case %s — investigation proceeds with "
+                "NO structural seeds (this is a seeder bug, not a no-match)",
+                case.case_id,
                 exc_info=True,
             )
 

@@ -38,6 +38,41 @@ priors to test from the first diagnosis turn.
 > causal structure and the runbook id. Reconstructing structure from that prose
 > is the exact double-synthesis the seeder exists to remove.
 
+### Boundary — one-shot, keyed on the *confirmed* problem statement
+
+Seeding fires **exactly once**, at the INQUIRY→INVESTIGATING transition. It does
+**not** re-seed on later turns (the `cause_state → IDENTIFIED` prefetch warms KB
+context but does not seed).
+
+Crucially, it keys on the **confirmed problem statement at symptom-verification
+time**, *not* the raw first message: the transition sets
+`case.description = case.inquiry.proposed_problem_statement`
+(`milestone_engine.py`) — the statement the LLM refines across the INQUIRY phase —
+and *then* prefetches KB on it. So **all INQUIRY-phase symptom scoping is
+captured.** A case that starts vague and is narrowed to a specific symptom during
+INQUIRY seeds the *narrowed* runbook, because the engine stays in INQUIRY until
+the symptom is scoped enough to confirm. (Measured — see below.)
+
+Residual gap (real but narrow): a runbook that becomes retrievable **only** from
+evidence gathered *after* symptom-verification (during INVESTIGATING) is not
+seeded — it is consumed via the flat-prose AUTHORITY path. INQUIRY-phase
+clarification does not hit this; only mid-investigation discovery does.
+
+This one-shot boundary is a deliberate **"seed a starting differential once the
+symptom is scoped, don't re-anchor mid-investigation"** choice — re-seeding after
+the LLM has committed to a line of reasoning carries a real anchoring cost. A
+*guarded* re-seed hook (seed a newly-emerged runbook only while the graph is still
+thin / no cause IDENTIFIED) is a possible follow-on; its value is gated on the
+size of the residual gap.
+
+**Measured (flag-ON, fireworks):** a case opened with a vague "platform degraded,
+services erroring" statement stayed in INQUIRY through generic prompts, then —
+once clarified to an ArgoCD sync failure during INQUIRY — transitioned and
+**seeded the correct ArgoCD runbook** (`kb_c350de1303f6`). So the feared "right
+runbook emerges after scoping → never seeds" case **does not occur for
+INQUIRY-phase scoping**; the residual is confined to post-verification discovery,
+which is narrower than a raw-first-message boundary would be.
+
 ## Data flow
 
 ```text
@@ -322,6 +357,32 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   seeded prior is `VALIDATED` — the behavioral proof that a self-generated
   hypothesis can beat a wrong seeded prior (seeding is a prior, not a gate).
 
-The sim/eval runs strict-enforcement + averaged + cheap model
-(`claude-haiku-4-5`), and must include a misleading-runbook scenario. Model
-variation never changes these engine rules.
+The sim/eval runs strict-enforcement + averaged + a cheap model, and must include
+a misleading-runbook scenario. Model variation never changes these engine rules.
+
+### Enabling gate — required passes before the flag turns on
+
+The flag ships OFF; the mechanically-verified code merges first. Turning it on
+requires the flag-ON sim/eval, **per provider** (the prompt-strength-dependent
+properties are weakest on the BEST_EFFORT model), to clear all of:
+
+1. **No collapse / no incorrect conclusion** — a wrong seed decays + is
+   anchoring-flagged; the engine does not conclude on it.
+2. **No crowd-out** — the LLM keeps generating its own hypotheses.
+3. **No paraphrase-duplication** — ≤ 1 ACTIVE hypothesis per seeded cause.
+4. **Prior-not-gate (3b) — required, and distinct from #1.** No-collapse only
+   proves the wrong seed *dies*; 3b proves the engine still *reaches the right
+   answer* via the LLM's own theory rather than stalling: ∃ a hypothesis whose
+   `root_node_id` ∉ the seeded set with likelihood > the seeded prior, and no
+   seeded prior is `VALIDATED`. This is the positive proof the whole "prior, not
+   gate" claim rests on — it is a gate item, not a nice-to-have.
+
+Plus one **measurement** (not pass/fail — it sizes a follow-on decision):
+
+- **Right runbook emerges only after the initial statement.** A case opened vague,
+  then narrowed to a specific symptom. Measures the one-shot boundary (see
+  "Boundary"). **Run (fireworks):** narrowing *during INQUIRY* still seeds the
+  correct runbook (the confirmed statement carries the scoping), so the residual
+  gap is confined to *post-verification* discovery — smaller than feared. A
+  guarded re-seed hook for that residual remains a possible follow-on; the
+  measurement says it is not urgent.
