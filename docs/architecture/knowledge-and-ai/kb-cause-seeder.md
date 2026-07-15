@@ -175,21 +175,40 @@ measured eval expectation rather than left as a surprise.
 
 ## Prompt alignment (4.4)
 
-When seeding is active the `KNOWLEDGE & RUNBOOK AUTHORITY` block changes the
-LLM's job for a matched runbook: the candidate Cause chains are **already in the
-graph**, so the model **validates or refutes** them against evidence (via
-`hypothesis_evidence_links` / `causal_evidence`) instead of re-emitting
-`hypotheses_to_add` from prose. Re-deriving structure the engine already
-instantiated would double-create causes and re-introduce the double-collapse.
+When seeding is active the `KNOWLEDGE & RUNBOOK AUTHORITY` block's flat "Exactly
+one Cause matches → create a `hypotheses_to_add` record" directive is
+**replaced** (not appended-to) with a validate/refute-the-seeded-candidate
+directive, so a seeded turn reads **one coherent instruction**: the candidate
+Cause chains are already in the graph, so the model **validates or refutes** them
+against evidence (via `hypothesis_evidence_links` / `causal_evidence`) rather than
+re-emitting `hypotheses_to_add` from prose. (An earlier design *appended* a
+superseding override after the flat directive; that shipped two contradictory
+instructions and asked the model to arbitrate "later wins" — replaced here with a
+single directive. The flat directive is sliced from the assembled block by stable
+anchors so the runtime swap is exact and the block stays the single source of
+truth; a drift raises at import.) The replacement preserves the `knowledge_match`
+/ `SolutionToAdd` TREATMENT handoff.
 
-The block frames seeded candidates explicitly as **priors to test, not answers**:
-reject a seeded cause on contradicting evidence, and — critically — keep forming
+The seeded directive frames candidates as **priors to test, not answers**: reject
+a seeded cause on contradicting evidence, and — critically — keep forming
 independent hypotheses for causes the runbook did not cover. This is the one
-place prompt-level over-deference could dent *effectiveness* (an LLM confirming a
-seed instead of testing it, or letting seeds crowd out its own hypothesis
-generation). The mechanical guarantee already bounds the *safety* worst case (a
-deferential LLM still cannot reach VALIDATED without evidence); the prompt
-framing and the eval protect *quality*.
+place prompt-level behaviour could dent *effectiveness*, in two ways, both
+**quality/effectiveness regressions, never soundness breaches** (neither can reach
+VALIDATED without evidence):
+
+- **Over-deference** — the LLM confirms a seed instead of testing it.
+- **Paraphrase-duplication** — a weaker model ignores the directive and emits a
+  `hypotheses_to_add` for a seeded cause with *reworded* text. Node dedup keys on
+  exact-normalized `(node_type, statement)`, so a paraphrase is **not** caught,
+  yielding two ACTIVE `OTHER` hypotheses for one cause (inflating the `OTHER`
+  bucket toward the anchoring threshold, breaking sibling-MECE).
+
+Both are prompt-strength-dependent and weakest on a BEST_EFFORT model
+(`deepseek-v4-flash`, the dev/demo default). The correct envelope is **prompt +
+per-provider eval**, *not* a mechanical semantic-dedup backstop — matching an
+emitted paraphrase against seeded causes is exactly the retired matcher's
+territory (#658 NO-GO). So: no-collapse stays mechanical; no-duplication stays
+prompt-level and is measured per provider (see Verification).
 
 The flat "Exactly one Cause matches → that Cause IS your hypothesis" branch
 remains the behavior when the flag is off, and remains the fallback for
@@ -235,6 +254,13 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   (NO COLLAPSE, NO INCORRECT CONCLUSION). The eval also confirms the engine did
   **not** simply stop exploring — the LLM continues generating its own
   hypotheses (guards the seed-crowd-out quality risk).
+- **No paraphrase-duplication (per-provider, flag-ON sim only):** after a seeded
+  turn, assert **≤ 1 ACTIVE hypothesis per seeded cause** — no second hypothesis
+  whose root competes for a seeded root's coverage. This is the property the
+  mechanical guarantee cannot cover (it is prompt-strength-dependent), so it is a
+  **first-class assertion measured on every provider, including the BEST_EFFORT
+  dev/demo model** where the prompt is weakest — not folded into "no collapse."
+  Deliberately **not** backstopped by mechanical semantic dedup (#658 territory).
 - **Multi-runbook:** an identical-statement cause seeded via two runbooks dedups
   to one node; two distinct roots enter as competing OR-alternative candidates.
 - **Freshness:** a causes-only pack change re-ingests.

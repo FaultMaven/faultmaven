@@ -321,14 +321,27 @@ def test_misleading_seed_decays_and_is_anchoring_flagged():
 
 
 def test_safety_mechanisms_are_provenance_blind():
-    """No safety mechanism (decay, anchoring, failed-fix demotion, state
-    derivation) may branch on seeded provenance. These all live in
-    hypothesis_manager.py and causal_graph.py — assert the provenance key never
-    appears there, so a future edit cannot quietly grant a seed privilege."""
+    """No safety mechanism (confidence decay, anchoring detection, failed-fix
+    demotion, node/hypothesis state derivation, cause_state derivation) may
+    branch on seeded provenance — that is what keeps a seed mechanically
+    indistinguishable from a self-generated hypothesis.
+
+    These mechanisms live in causal_graph.py + hypothesis_manager.py (decay /
+    anchoring / demotion / node+hypothesis state derivation) and milestone_engine.py
+    (cause_state derivation + the per-turn housekeeping loop). Assert the
+    provenance key never appears in any of them, so a future edit cannot quietly
+    grant a seed evidentiary weight.
+
+    INVARIANT MAINTENANCE: this module set must track any move of safety logic.
+    If decay/anchoring/demotion/state-derivation is relocated to another module,
+    add that module here — a whole-file grep is deliberately coarse so the guard
+    can never be silently narrowed below where the safety logic actually lives.
+    """
     import faultmaven.core.investigation.causal_graph as cg
     import faultmaven.core.investigation.hypothesis_manager as hmmod
+    import faultmaven.core.investigation.milestone_engine as engine
 
-    for module in (cg, hmmod):
+    for module in (cg, hmmod, engine):
         with open(module.__file__, "r", encoding="utf-8") as fh:
             source = fh.read()
         assert SEEDED_FROM_RUNBOOK_KEY not in source, (

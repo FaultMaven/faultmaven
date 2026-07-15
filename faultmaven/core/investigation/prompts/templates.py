@@ -2687,31 +2687,49 @@ proposal never forecloses a live diagnostic thread.
 """
 
 
-# Seeded-candidate override (KB cause seeder). Appended AFTER the base
-# AUTHORITY block only when the seeder has already instantiated a matched
-# runbook's Cause chains as CANDIDATE hypotheses in this case. It supersedes the
-# base "Exactly one Cause matches → create hypotheses_to_add" instruction: the
-# structure already exists, so the LLM tests it against evidence instead of
-# re-deriving it from prose (removing the double-collapse). Priors-to-test
-# framing guards against over-deference (confirming a seed) and crowd-out
-# (letting seeds displace the LLM's own hypotheses).
-_KB_SEEDED_AUTHORITY_OVERRIDE = """
-**SEEDED RUNBOOK CAUSES — OVERRIDE (the engine has already instantiated them):**
-The matched runbook's Cause chains are ALREADY in your `<causal_graph>` as
-CANDIDATE hypotheses (each rationale reads "Seeded from runbook …"). They are
-**priors to test, not answers.** Therefore, for a Cause the runbook covers:
-□ Do NOT emit a `hypotheses_to_add` record for it — it already exists. Emitting a
-  paraphrase would duplicate the cause.
-□ Instead, link evidence to the existing candidate: `hypothesis_evidence_links`
-  (SUPPORTS / REFUTES) and `causal_evidence` on its rung nodes.
-□ A seeded candidate whose Indicators conflict with the evidence: REFUTE it
-  (state=REFUTED + refutation_reason). Do not leave a contradicted prior standing.
-□ Never confirm a seeded cause on partial or absent evidence — a runbook match is
-  a lead, not proof. An unsupported seed will decay on its own; your job is to
-  test it, not defend it.
-□ KEEP forming your own independent hypotheses for anything the runbook did NOT
-  cover. The seeds are a starting differential, not a ceiling — do not let them
-  crowd out causes the evidence points to.
+# Seeded-candidate AUTHORITY rewrite (KB cause seeder). Rather than APPEND a
+# contradicting override after the flat "matched Cause → create hypotheses_to_add"
+# directive (two directives the model must arbitrate), we conditionally REPLACE
+# that one directive when the seeder has already instantiated the matched runbook's
+# Cause chains as CANDIDATE hypotheses — so a seeded turn reads ONE coherent
+# instruction. The flat directive is sliced out of the assembled block by stable
+# anchors (no hand-transcription: the source of truth stays the block itself), so
+# the runtime replace is exact and guaranteed to hit once. A drift in the anchors
+# raises loudly at import.
+_MATCHED_CAUSE_ANCHOR_START = "  - **Exactly one Cause matches:**"
+_MATCHED_CAUSE_ANCHOR_END = "  - **Two or more Causes"
+
+
+def _slice_matched_cause_directive(block: str) -> str:
+    """Extract the exact 'Exactly one Cause matches' bullet from the block."""
+    start = block.index(_MATCHED_CAUSE_ANCHOR_START)
+    end = block.index(_MATCHED_CAUSE_ANCHOR_END, start)
+    return block[start:end]
+
+
+# The flat directive verbatim (flag-off / prose-only sources). Sliced, not
+# transcribed — identical bytes to what appears in _RCA_DIAGNOSIS_BLOCK.
+_KB_MATCHED_CAUSE_FLAT = _slice_matched_cause_directive(_RCA_DIAGNOSIS_BLOCK)
+
+# Its coherent replacement for a seeded turn: the matched Cause is ALREADY a
+# CANDIDATE hypothesis in the graph, so validate/refute it against evidence
+# rather than re-create it. Preserves the knowledge_match / SolutionToAdd
+# TREATMENT handoff, adds priors-to-test framing (anti over-deference) and an
+# explicit keep-your-own-hypotheses clause (anti crowd-out). Trailing blank line
+# matches the sliced directive so the surrounding list spacing is preserved.
+_KB_MATCHED_CAUSE_SEEDED = """  - **Exactly one Cause matches:** its chain is ALREADY in your `<causal_graph>`
+    as a CANDIDATE hypothesis (rationale reads "Seeded from runbook …") — a prior
+    to TEST, not an answer. Do NOT create a `hypotheses_to_add` record for it;
+    that duplicates the cause. Instead link evidence to the existing candidate
+    (`hypothesis_evidence_links` SUPPORTS/REFUTES; `causal_evidence` on its rungs).
+    Never confirm it on partial or absent evidence — a runbook match is a lead,
+    not proof; an unsupported seed decays on its own, so test it rather than
+    defend it. When evidence genuinely supports it, emit `knowledge_match` in
+    state_updates (match_type / match_likelihood / match_summary /
+    suggested_solution) so the TREATMENT-stage KB-RESOLUTION VARIANT can
+    direct-copy it, and propose its fix via a SolutionToAdd record. KEEP forming
+    your own hypotheses for any cause the runbook did NOT cover — the seeds are a
+    starting differential, not a ceiling.
 """
 
 
@@ -2728,9 +2746,10 @@ def _select_diagnosis_block(case: Case) -> str:
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``).
 
     When the KB cause seeder is enabled AND has seeded candidates into this
-    case's graph, the seeded-candidate override is appended so the LLM
-    validates/refutes the pre-instantiated structure instead of re-deriving it
-    from prose. Flag off (or no seeds this case): byte-identical to before.
+    case's graph, the flat "matched Cause → create hypotheses_to_add" directive
+    is REPLACED (not appended-to) with the validate/refute-the-seeded-candidate
+    directive, so the seeded turn sees a single coherent instruction. Flag off
+    (or no seeds this case): byte-identical to before.
     """
     focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
@@ -2745,7 +2764,7 @@ def _select_diagnosis_block(case: Case) -> str:
         )
 
         if case_has_seeded_candidates(case):
-            block += _KB_SEEDED_AUTHORITY_OVERRIDE
+            block = block.replace(_KB_MATCHED_CAUSE_FLAT, _KB_MATCHED_CAUSE_SEEDED, 1)
     return block
 
 

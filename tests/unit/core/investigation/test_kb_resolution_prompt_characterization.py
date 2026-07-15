@@ -29,7 +29,8 @@ from faultmaven.core.investigation.kb_cause_seeder import (
     seed_candidate_causes,
 )
 from faultmaven.core.investigation.prompts.templates import (
-    _KB_SEEDED_AUTHORITY_OVERRIDE,
+    _KB_MATCHED_CAUSE_FLAT,
+    _KB_MATCHED_CAUSE_SEEDED,
     _RCA_DIAGNOSIS_BLOCK,
     _select_diagnosis_block,
 )
@@ -112,19 +113,29 @@ def _cause() -> dict:
 
 
 @pytest.mark.unit
-class TestSeededCandidateOverride:
-    """The seeded-candidate override supersedes the flat mapping when enabled."""
+class TestSeededCandidateDirectiveSwap:
+    """A seeded turn REPLACES the flat directive with the validate/refute one —
+    a single coherent instruction, never two contradictory ones."""
 
-    def test_override_block_frames_seeds_as_priors_to_test(self):
-        block = _KB_SEEDED_AUTHORITY_OVERRIDE
-        assert "priors to test" in block
-        assert "Do NOT emit a `hypotheses_to_add`" in block
+    def test_flat_directive_is_sliced_verbatim_from_the_block(self):
+        # Drift guard: the sliced flat directive must exist in the block exactly,
+        # or the runtime replace would silently no-op. Anchors changing raises at
+        # import; this pins the content too.
+        assert _KB_MATCHED_CAUSE_FLAT
+        assert _KB_MATCHED_CAUSE_FLAT in _RCA_DIAGNOSIS_BLOCK
+        assert "hypotheses_to_add" in _KB_MATCHED_CAUSE_FLAT
+
+    def test_seeded_directive_frames_priors_and_forbids_recreation(self):
+        block = _KB_MATCHED_CAUSE_SEEDED
+        assert "prior" in block and "TEST" in block
+        assert "Do NOT create a `hypotheses_to_add`" in block
         assert "hypothesis_evidence_links" in block
-        assert "REFUTE" in block
-        # Anti-crowd-out: keep forming independent hypotheses.
-        assert "independent hypotheses" in block
+        # Preserves the TREATMENT handoff.
+        assert "knowledge_match" in block
+        # Anti-crowd-out: keep forming your own hypotheses.
+        assert "your own hypotheses" in block
 
-    def test_override_appended_when_flag_on_and_candidates_seeded(self, monkeypatch):
+    def test_seeded_turn_replaces_flat_with_seeded_directive(self, monkeypatch):
         monkeypatch.setattr(get_settings().features, "kb_cause_seeder_enabled", True)
         case = _diagnosis_case()
         report = seed_candidate_causes(
@@ -132,21 +143,26 @@ class TestSeededCandidateOverride:
         )
         assert report.seeded_anything
         block = _select_diagnosis_block(case)
-        assert _KB_SEEDED_AUTHORITY_OVERRIDE in block
+        # Seeded directive present; flat directive GONE — no contradiction.
+        assert _KB_MATCHED_CAUSE_SEEDED in block
+        assert _KB_MATCHED_CAUSE_FLAT not in block
+        assert "that Cause IS your hypothesis" not in block
 
-    def test_override_absent_when_flag_off(self, monkeypatch):
+    def test_flag_off_keeps_flat_directive(self, monkeypatch):
         monkeypatch.setattr(get_settings().features, "kb_cause_seeder_enabled", False)
         case = _diagnosis_case()
         seed_candidate_causes(
             case, [SeededRunbook("rb1", 0.9, [_cause()])], current_turn=1
         )
         block = _select_diagnosis_block(case)
-        assert _KB_SEEDED_AUTHORITY_OVERRIDE not in block
+        assert _KB_MATCHED_CAUSE_FLAT in block
+        assert _KB_MATCHED_CAUSE_SEEDED not in block
 
-    def test_override_absent_when_flag_on_but_no_seeds(self, monkeypatch):
-        # Flag on but no runbook matched → no candidates → no override (the prompt
-        # must not claim candidates exist when none do).
+    def test_flag_on_no_seeds_keeps_flat_directive(self, monkeypatch):
+        # Flag on but no runbook matched → no candidates → flat directive stays
+        # (the prompt must not claim candidates exist when none do).
         monkeypatch.setattr(get_settings().features, "kb_cause_seeder_enabled", True)
         case = _diagnosis_case()
         block = _select_diagnosis_block(case)
-        assert _KB_SEEDED_AUTHORITY_OVERRIDE not in block
+        assert _KB_MATCHED_CAUSE_FLAT in block
+        assert _KB_MATCHED_CAUSE_SEEDED not in block
