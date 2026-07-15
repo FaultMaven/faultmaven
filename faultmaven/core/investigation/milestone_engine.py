@@ -85,6 +85,9 @@ from faultmaven.core.investigation.llm_error_handler import (
 from faultmaven.core.investigation.progress_monitor import (
     ProgressMonitor,
 )
+from faultmaven.core.investigation.prompts.context_builder import (
+    structural_index_is_searchable,
+)
 from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
@@ -260,14 +263,15 @@ def _has_searchable_material(case: Case) -> bool:
     extracts a slice), so on the evidence-*delivering* turn the searchable
     material lives on ``uploaded_files`` — ``bool(case.evidence)`` alone
     would be False and wrongly leave ``tool_choice=auto`` (#708). The
-    >10-char threshold mirrors the context builder's rule for rendering a
-    file as ``searchable="true"``, so a forced-DA turn is guaranteed a real
-    search target and the tool loop cannot crash for lack of one.
+    searchability test is the context builder's own
+    ``structural_index_is_searchable`` (single source of truth for the
+    ``searchable="true"`` threshold), so a forced-DA turn is guaranteed a
+    real search target and the tool loop cannot crash for lack of one.
     """
     if getattr(case, "evidence", None):
         return True
     return any(
-        uf.structural_index and len(uf.structural_index.strip()) > 10
+        structural_index_is_searchable(uf.structural_index)
         for uf in getattr(case, "uploaded_files", None) or []
     )
 
