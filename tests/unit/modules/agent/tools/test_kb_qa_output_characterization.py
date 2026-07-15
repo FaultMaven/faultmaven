@@ -125,6 +125,7 @@ class TestAnswerFromKBRelaysProseWithSources:
         )
 
         # The tool hands the engine a single prose blob with a citation line —
-        # NOT structured cause nodes. This is the shape Phase 4 will augment.
+        # NOT structured cause nodes. This is the shape that structured
+        # cause-node seeding will replace.
         assert "Flush the cache." in rendered
         assert "Sources: CoreDNS Failures" in rendered
