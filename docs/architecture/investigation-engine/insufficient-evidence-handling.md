@@ -104,6 +104,17 @@ and is validated by simulation rather than a toggle:
 
 The calibration eval (`test_verification_status.py`) is the deterministic firing-precision signal — it covers the §5.5 confusable pairs and the known slow-but-live time-arm false positive (documented as accepted: non-terminal, self-dissolving). Because the handoff ships as a soundness fix rather than a toggle, its false-positive *rate* on real trajectories is measured by simulation and issues are captured incrementally, not gated behind a flag.
 
+### 3.6 Accepted recall limit — terse-only fragmentation
+
+One under-certification case is accepted **by design** rather than handled toward a conclusion. When the model emits a cause as several *terse duplicate root nodes* and scatters the evidence, no single root clears the §7.1 independent-support bar and the restatement guard holds the duplicates, so a genuinely-solved case terminates at `NO_ROOT`. This is a **recall** limit, not a soundness or liveness failure (methodology §7.1 known-limit; the engine-side closer was evaluated and closed won't-fix in #699). Its disposition is fail-safe:
+
+- **Resolves normally** — the RESOLVED gate keys on the user's confirmed fix (a `causal_absence` row), not on the grade, so the case is neither left unresolved nor deadlocked.
+- **Honestly under-certified** — the report shows the assistant's stated cause with the "not validated in the causal analysis" assurance note; post-#695 the hypothesis reads `ACTIVE`, so there is no "validated" contradiction.
+- **Not harvested** — only `CONFIRMED` causes seed runbooks, so no unverified cause enters the KB; the auto-runbook affordance is suppressed and the manual create path remains.
+- **Handed off, never stuck** — if such a case never resolves, the exhaustion detector (§3.1) drives a structured handoff rather than looping.
+
+The single cost is a knowledge-flywheel miss: a case that could have become a runbook does not, because the graph could not certify which fragment is the cause. Frequency falls with model capability and KB coverage (both reduce fragmentation); the certification bar itself never moves (the LLM-agnostic invariant).
+
 ---
 
 ## 4. Motivating limitations and how they are now addressed
