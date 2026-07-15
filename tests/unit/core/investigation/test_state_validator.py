@@ -15,6 +15,7 @@ from faultmaven.core.investigation.state_validator import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    CausalNode,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -24,7 +25,10 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     InquiryData,
     InvestigationProgress,
+    NodeState,
+    NodeType,
     ProblemVerification,
+    ValidationMethod,
 )
 
 
@@ -160,14 +164,8 @@ class TestStateConsistency:
 class TestHypothesisStates:
     """Test hypothesis lifecycle validation."""
 
-    def test_validated_with_insufficient_evidence(self, validator, base_case):
-        """VALIDATED hypothesis should have at least 2 supporting evidence."""
-        from faultmaven.modules.case.contracts import (
-            EvidenceStance,
-            HypothesisEvidenceLink,
-        )
-
-        hyp = Hypothesis(
+    def _validated_hyp(self, root_node_id):
+        return Hypothesis(
             hypothesis_id="hyp_123456789012",
             statement="Test hypothesis",
             category=HypothesisCategory.CODE,
@@ -175,23 +173,65 @@ class TestHypothesisStates:
             generated_at_turn=1,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC,
             rationale="Test hypothesis",
+            root_node_id=root_node_id,
         )
-        # Add only 1 supporting evidence
-        hyp.evidence_links.append(
-            HypothesisEvidenceLink(
-                hypothesis_id="hyp_123456789012",
-                evidence_id="ev_1",
-                stance=EvidenceStance.SUPPORTS,
-                reasoning="Test evidence",
-                stance_confidence=0.8,
-            )
+
+    def _root(self, node_id, node_state):
+        return CausalNode(
+            node_id=node_id,
+            statement="root cause",
+            node_type=NodeType.ROOT,
+            node_state=node_state,
+            validation_method=(
+                ValidationMethod.EMPIRICAL
+                if node_state == NodeState.VALIDATED
+                else ValidationMethod.NONE
+            ),
+            belief=0.9 if node_state == NodeState.VALIDATED else 0.5,
+            actionable=True,
+            generated_at_turn=1,
         )
-        base_case.hypotheses = {"hyp_123456789012": hyp}
+
+    def test_validated_with_missing_root_node_warns(self, validator, base_case):
+        """VALIDATED hypothesis with no chain root node at all violates the graph
+        invariant and warns."""
+        base_case.hypotheses = {"hyp_123456789012": self._validated_hyp(None)}
 
         issues = validator._validate_hypothesis_states(base_case)
         warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
 
         assert any(i.code == "HYPOTHESIS_STATE_001" for i in warnings)
+
+    def test_validated_with_non_validated_root_node_warns(self, validator, base_case):
+        """VALIDATED hypothesis whose chain root node EXISTS but is not itself
+        VALIDATED (here: CANDIDATE) violates the graph invariant and warns — the
+        node_state check, not merely root presence."""
+        base_case.causal_nodes = {
+            "cn_0123456789ab": self._root("cn_0123456789ab", NodeState.CANDIDATE)
+        }
+        base_case.hypotheses = {
+            "hyp_123456789012": self._validated_hyp("cn_0123456789ab")
+        }
+
+        issues = validator._validate_hypothesis_states(base_case)
+        warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
+
+        assert any(i.code == "HYPOTHESIS_STATE_001" for i in warnings)
+
+    def test_validated_with_validated_root_node_no_warn(self, validator, base_case):
+        """A graph-validated hypothesis (chain root node VALIDATED) does NOT warn,
+        even with fewer than 2 flat supporting-evidence links — grounding is on the
+        node axis. This is the case the retired flat "≥2 supporting" bar false-fired."""
+        base_case.causal_nodes = {
+            "cn_0123456789ab": self._root("cn_0123456789ab", NodeState.VALIDATED)
+        }
+        base_case.hypotheses = {
+            "hyp_123456789012": self._validated_hyp("cn_0123456789ab")
+        }
+
+        issues = validator._validate_hypothesis_states(base_case)
+
+        assert not any(i.code == "HYPOTHESIS_STATE_001" for i in issues)
 
     def test_refuted_without_refuting_evidence(self, validator, base_case):
         """REFUTED hypothesis should have refuting evidence."""
