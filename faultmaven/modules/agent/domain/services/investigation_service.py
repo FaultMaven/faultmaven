@@ -406,6 +406,31 @@ class _PreprocessedAttachment:
     attachment_filename: Optional[str] = None
 
 
+def _turn_delivers_evidence_bearing_attachment(
+    preprocess_results: List["_PreprocessedAttachment"],
+) -> bool:
+    """True when this turn carried an attachment that was successfully
+    classified and extracted into non-trivial content.
+
+    Such a turn must drive Directed Analysis even under a generic cover
+    message ("here's the logs"): ``classify_query`` only sees the message
+    string, so the entity-free cover note routes to TRIAGE and lets the
+    agent skip evidence analysis (#708). The strong signals live in the
+    file, which the preprocessor already characterized. Excludes
+    ``classification_failed`` uploads (awaiting user clarification) and
+    empty/unanalyzable placeholders (no structural content to search); the
+    >10-char threshold mirrors the one the context builder uses to render a
+    file as ``searchable``.
+    """
+    for r in preprocess_results:
+        if r.classification_failed:
+            continue
+        structural_index = r.uploaded_file.structural_index
+        if structural_index and len(structural_index.strip()) > 10:
+            return True
+    return False
+
+
 # ============================================================
 # Intent dispatch
 # ============================================================
@@ -579,6 +604,8 @@ class InvestigationService:
             # ── STEP 1: PRE-LLM DATA INGESTION ──
             # Classify query for scenario-driven processing mode
             from faultmaven.modules.agent.domain.services.query_classifier import (
+                ProcessingMode,
+                QueryClassification,
                 classify_query,
             )
 
@@ -608,6 +635,34 @@ class InvestigationService:
                     )
                     preprocess_results.append(result)
                     uploaded_files_this_turn.append(result.uploaded_file)
+
+            # #708: a fresh evidence-bearing upload must drive Directed
+            # Analysis even when the accompanying message is a generic cover
+            # note. classify_query only sees the message text, so a cover note
+            # ("here's the logs") with no inline entities routes to TRIAGE and
+            # lets the agent skip evidence analysis. Re-route to DA using the
+            # attachment signal the preprocessor already produced. This is
+            # channel-agnostic (Copilot pasted-content and Slack file uploads
+            # flow through the same path) and composes with the Slack agent's
+            # message_to_text alert-flattening, which already carries alert
+            # entities in the query text. query_mode threads to the engine and
+            # drives force_tools (tool_choice=required); DA subsumes triage.
+            if (
+                classification.mode == ProcessingMode.TRIAGE
+                and _turn_delivers_evidence_bearing_attachment(preprocess_results)
+            ):
+                classification = QueryClassification(
+                    mode=ProcessingMode.DIRECTED_ANALYSIS,
+                    detected_entities=classification.detected_entities,
+                    confidence=0.8,
+                )
+                processing_mode = classification.mode.value
+                logger.info(
+                    "Query re-routed TRIAGE→DIRECTED_ANALYSIS on case %s turn %s: "
+                    "fresh evidence-bearing attachment (#708)",
+                    case_id,
+                    next_turn,
+                )
 
             # Determine query (explicit or implicit)
             query = payload.query

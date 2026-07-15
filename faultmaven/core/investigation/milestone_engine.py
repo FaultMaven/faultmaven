@@ -251,6 +251,27 @@ def _case_has_symptom_evidence(case: Case) -> bool:
     return any(e.category == EvidenceCategory.SYMPTOM_EVIDENCE for e in case.evidence)
 
 
+def _has_searchable_material(case: Case) -> bool:
+    """True when the case holds content the ``search_file`` tool can target.
+
+    Two sources: any Evidence row (existing claim-anchored evidence), or any
+    uploaded file with a non-trivial structural index. Post-010, a fresh
+    upload creates an ``UploadedFile`` (not an Evidence row until the LLM
+    extracts a slice), so on the evidence-*delivering* turn the searchable
+    material lives on ``uploaded_files`` — ``bool(case.evidence)`` alone
+    would be False and wrongly leave ``tool_choice=auto`` (#708). The
+    >10-char threshold mirrors the context builder's rule for rendering a
+    file as ``searchable="true"``, so a forced-DA turn is guaranteed a real
+    search target and the tool loop cannot crash for lack of one.
+    """
+    if getattr(case, "evidence", None):
+        return True
+    return any(
+        uf.structural_index and len(uf.structural_index.strip()) > 10
+        for uf in getattr(case, "uploaded_files", None) or []
+    )
+
+
 def _solution_cause_validated(case: Case) -> bool:
     """M5 gate predicate: is the cause established enough to register a SOLUTION?
 
@@ -4065,14 +4086,23 @@ class MilestoneEngine:
                 else None
             )
 
-            # Classify query for processing mode (structural index role tagging)
-            from faultmaven.modules.agent.domain.services.query_classifier import (
-                classify_query,
-            )
+            # Processing mode for prompt framing (structural-index role
+            # tagging). Prefer the authoritative query_mode the service already
+            # computed — it factors in a fresh evidence-bearing attachment and
+            # re-routes a generic cover message to DIRECTED_ANALYSIS (#708).
+            # Fall back to a local text classification for engine entry points
+            # that don't thread query_mode (tests, direct calls). Keeping the
+            # prompt mode and the force_tools mode in sync avoids framing the
+            # turn as TRIAGE while tools are forced for DIRECTED_ANALYSIS.
+            processing_mode = (intent_data or {}).get("query_mode")
+            if not processing_mode:
+                from faultmaven.modules.agent.domain.services.query_classifier import (
+                    classify_query,
+                )
 
-            classification = classify_query(
-                user_message, has_attachments=bool(case.evidence)
-            )
+                processing_mode = classify_query(
+                    user_message, has_attachments=bool(case.evidence)
+                ).mode.value
 
             # Phase 4c — prefetch entity highlights from the Phase 4
             # ``case_entities`` registry when the feature is on. When
@@ -4112,7 +4142,7 @@ class MilestoneEngine:
                     kb_results=None,
                     provider_name=provider_name,
                     model_name=model_name,
-                    processing_mode=classification.mode.value,
+                    processing_mode=processing_mode,
                     entity_highlights=entity_highlights_block,
                     tools_available=tools_available,
                 )
@@ -4147,22 +4177,29 @@ class MilestoneEngine:
             # The LLM decides which tool to invoke based on the user's question.
             #
             # tool_choice varies by query mode:
-            # - directed_analysis + evidence: "required" — LLM must search evidence
+            # - directed_analysis + searchable material: "required" — LLM must
+            #   search evidence
             # - all other turns: "auto" — LLM decides whether to use tools
+            #
+            # Searchable material is Evidence rows OR fresh uploaded files
+            # (post-010, a delivering turn has only an UploadedFile, not yet an
+            # Evidence row — ``bool(case.evidence)`` alone would leave the
+            # evidence-delivering turn on tool_choice=auto and let the agent
+            # skip analysis, #708). ``_has_searchable_material`` guarantees a
+            # real search target so forcing tools cannot crash the loop.
             #
             # Safety net: when a pending_transition exists, the user is in a
             # confirmation flow. Don't force tool_choice=required — the user's
             # message is a confirmation/decline that may have fallen through
             # pattern matching (typed instead of clicked). Forcing tools crashes
             # the tool loop when the LLM has nothing to search for.
-            query_mode = (intent_data or {}).get("query_mode")
             has_pending = (
                 hasattr(case, "pending_transition") and case.pending_transition
             )
             if self.investigation_tools:
                 force_tools = (
-                    query_mode == "directed_analysis"
-                    and bool(case.evidence)
+                    processing_mode == "directed_analysis"
+                    and _has_searchable_material(case)
                     and not has_pending
                 )
                 da_tools = self._build_da_tool_schemas()
