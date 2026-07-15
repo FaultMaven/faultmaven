@@ -106,8 +106,6 @@ For the data-type × backend × deployment breakdown, see:
 │     filtered by metadata: scope, owner_id, team_id)                  │
 │   - faultmaven_runbooks: Runbook similarity search (report_type,     │
 │     domain metadata — used for "this looks like runbook X")          │
-│   - knowledge_items: Knowledge module items (organization_id,        │
-│     item_type, category — used by KnowledgeSearchService)            │
 │   Lifecycle: permanent — backed up, never wiped.                     │
 │                                                                        │
 │ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/):│

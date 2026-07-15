@@ -1371,10 +1371,6 @@ class EmbeddingSettings(BaseSettings):
         default="./data/chroma-kb",
         description="Directory for ChromaDB KB persistence",
     )
-    chroma_collection_name: str = Field(
-        default="knowledge_items",
-        description="ChromaDB collection name for knowledge items",
-    )
 
     # Indexing Job
     indexing_batch_size: int = Field(
