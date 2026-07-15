@@ -160,6 +160,81 @@ async def test_rls_blocks_reads_without_context(limited_engine, two_orgs):
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
+async def test_login_by_username_resolves_under_limited_role_without_org_context(
+    limited_engine, superuser_engine
+):
+    """Pre-auth login reads ``users`` before any org context is established.
+
+    ``users`` is deliberately NOT in the RLS-tenanted set (migration 018 — it
+    is keyed by ``enterprise_id``, not ``organization_id``), so the login
+    lookup must resolve as the limited, non-owner ``faultmaven_app``-style role
+    even with NO / a mismatched ``app.current_org_id``. This pins the invariant
+    that the #703 per-operation RLS scoping (a fresh ``get_db_session()`` per
+    op re-applies ``app.current_org_id``) does not gate the pre-auth login path.
+
+    Runs the REAL login code path: ``PostgreSQLUserRepository.get_by_username``.
+    """
+    from datetime import datetime, timezone
+
+    from faultmaven.infrastructure.persistence.user_repository import (
+        PostgreSQLUserRepository,
+        User,
+    )
+    from tests.utils import seed_default_enterprise
+
+    uid = f"login_user_{uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc)
+    # Seed as superuser (bypasses RLS). Use a real email TLD — the domain User
+    # model's EmailStr rejects reserved TLDs like `.local`, and get_by_username
+    # hydrates the row back into User on read.
+    su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
+    async with su_maker() as session:
+        await seed_default_enterprise(session)
+        await PostgreSQLUserRepository(session).save(
+            User(
+                user_id=uid,
+                username=uid,
+                email=f"{uid}@example.com",
+                display_name=uid,
+                created_at=now,
+                updated_at=now,
+                roles=["user"],
+            )
+        )
+
+    try:
+        maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+
+        # (a) No org context set at all — the true pre-auth state. A tenanted
+        #     table would be fail-closed here; users must still resolve.
+        async with maker() as session:
+            user = await PostgreSQLUserRepository(session).get_by_username(uid)
+            assert user is not None and user.username == uid, (
+                "login-by-username must resolve under the limited role with no "
+                "org context (users is not tenant-scoped)"
+            )
+
+        # (b) A mismatched org context set — the login read must still resolve,
+        #     proving users is not filtered by app.current_org_id.
+        async with maker() as session:
+            await session.execute(
+                text("SELECT set_config('app.current_org_id', :o, true)"),
+                {"o": f"org_absent_{uuid4().hex[:8]}"},
+            )
+            user = await PostgreSQLUserRepository(session).get_by_username(uid)
+            assert (
+                user is not None
+            ), "users read must not be tenant-filtered under a mismatched org scope"
+    finally:
+        async with su_maker() as session:
+            await session.execute(
+                text("DELETE FROM users WHERE user_id = :u"), {"u": uid}
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
 async def test_rls_enabled_and_policy_present(superuser_engine):
     """Structural: RLS is enabled and the tenant-isolation policy exists on a
     representative sample of tenanted tables."""

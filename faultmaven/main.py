@@ -843,18 +843,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Phase 2 monitoring cleanup failed (non-critical): {e}")
 
-    # Release user_store's owned AsyncSession (when DatabaseUserStore is in
-    # use) and dispose the canonical async engine. Without these, the
-    # AsyncSession created in container.providers.infrastructure
-    # ._create_user_store leaked on every app shutdown, surfacing as
-    # "non-checked-in connection" SAWarnings during GC.
-    user_store = getattr(app.state, "user_store", None)
-    if user_store is not None and hasattr(user_store, "aclose"):
-        try:
-            await user_store.aclose()
-        except Exception as e:
-            logger.warning(f"User store close failed (non-critical): {e}")
-
+    # Dispose the canonical async engine. The user store no longer owns a
+    # session (sessionless repository per #703), so there is nothing to
+    # release here beyond the engine below.
     try:
         from .infrastructure.persistence.database import close_database
 

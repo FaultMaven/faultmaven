@@ -25,77 +25,37 @@ class DatabaseUserStore:
     Manages user accounts using UserRepository (SQLite/PostgreSQL).
     Adapts between DevUser (auth model) and User (repository model).
 
-    Role persistence strategy (by deployment mode):
-    - Local mode (AUTH_MODE=local): roles stored in the ``dev_roles`` TEXT
-      column (JSON array) on the users table. This is the canonical role
-      source for local deployments. RBAC join tables are NOT populated in
-      local mode and must not be relied on.
-    - Cloud mode (AUTH_MODE=oauth): roles derived from RBAC tables
-      (organization_members → roles). The ``dev_roles`` column exists but
-      is ignored in this path.
+    Role persistence strategy:
+    - Roles are stored in the ``dev_roles`` TEXT column (JSON array) on the
+      users table and flow straight into the JWT ``roles`` claim, in BOTH
+      ``AUTH_MODE=local`` and ``AUTH_MODE=oauth``. There is currently no
+      login/token-issuance path that derives roles from the RBAC join tables
+      (``organization_members → roles``); the only ``get_member_role`` reader
+      is the inert ``TENANT_PROVIDER=multi`` seam (membership checks, not the
+      role claim). So ``dev_roles`` is canonical today regardless of auth mode.
+    - Deriving the cloud role claim from RBAC tables is designed but NOT wired.
+      When that lands, ``assign_role``/``remove_role`` (which write ``dev_roles``)
+      must move to the RBAC path or be gated. Tracked in #706.
 
     Storage backends:
     - SQLite (local deployment via DATABASE_URL)
     - PostgreSQL (cloud deployment)
     """
 
-    def __init__(self, user_repository: UserRepository, db_session=None):
+    def __init__(self, user_repository: UserRepository):
         """Initialize database user store
 
         Args:
-            user_repository: UserRepository instance (SQLite or PostgreSQL)
-            db_session: Optional AsyncSession owned by this store. When
-                provided, the store releases it via aclose() at shutdown
-                to avoid the "non-checked-in connection" SAWarning that
-                fires when an AsyncSession is GC'd without being closed.
-                Optional for backward-compat with callers that manage
-                session lifecycle themselves.
+            user_repository: UserRepository instance. In production this is a
+                SessionlessUserRepository, which opens a fresh session per
+                operation — the store holds no session and has nothing to
+                release at shutdown (#703).
         """
         self.user_repository = user_repository
-        self._db_session = db_session
 
         # Validation patterns
         self.email_pattern = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
         self.username_pattern = re.compile(r"^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$")
-
-    async def aclose(self) -> None:
-        """Release the owned AsyncSession, if any.
-
-        Call from lifespan shutdown so SQLAlchemy doesn't see a non-
-        checked-in connection at GC time. No-op when no session was
-        passed to __init__ (caller manages lifecycle).
-
-        Also clears the repository's session reference so the closed
-        session can be GC'd promptly — otherwise the user_repository
-        holds onto self.db until process exit, and SQLAlchemy fires a
-        non-checked-in warning when the AdaptedConnection wrapper is
-        finally GC'd during interpreter teardown.
-        """
-        if self._db_session is not None:
-            try:
-                await self._db_session.close()
-            finally:
-                self._db_session = None
-                # Repository holds the same session via self.db; clear
-                # that reference too so the connection wrapper isn't
-                # kept alive into process teardown.
-                #
-                # Invariant: this is safe ONLY because aclose() runs at
-                # lifespan shutdown, AFTER FastAPI has stopped accepting
-                # requests. Every UserRepository call site uses self.db
-                # (self.db.execute, self.db.commit, ...); a post-shutdown
-                # request path that touched the repository would
-                # AttributeError. By design — there's no graceful-drain
-                # phase. If one is added later, this clear must move to
-                # AFTER drain completes.
-                #
-                # hasattr guard: PostgreSQLUserRepository exposes
-                # .db (the canonical SQLAlchemy-backed repo), but the
-                # UserRepository protocol does not require it. In-memory
-                # or non-SQLAlchemy implementations have no .db to
-                # clear, and this method must be a no-op for them.
-                if hasattr(self.user_repository, "db"):
-                    self.user_repository.db = None
 
     def _user_to_devuser(self, user: User) -> DevUser:
         """Convert User (repository model) to DevUser (auth model)"""
