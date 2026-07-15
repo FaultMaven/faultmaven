@@ -549,17 +549,26 @@ The code defines four scope values (`PERSONAL`, `TEAM`, `ORGANIZATION`, `GLOBAL`
 
 ### `VerificationLevel` (trust/authority system)
 
-`KnowledgeItem` carries a `VerificationLevel` integer enum (`EXPERIMENTAL=0`, `COMMUNITY=1`, `ADMIN_VERIFIED=2`) that tracks the authority of the knowledge's source. This is separate from the frontmatter `status` field (lifecycle: `draft` → `verified` → `stale` → `deprecated`). The two systems model different things: `status` tracks a document's editorial lifecycle; `VerificationLevel` tracks who validated the underlying knowledge. They are not yet reconciled — the four-signal reranker reads frontmatter `status` values, not `VerificationLevel`.
+`KnowledgeItem` carries a `VerificationLevel` integer enum (`EXPERIMENTAL=0`, `COMMUNITY=1`, `ADMIN_VERIFIED=2`) that tracks the authority of the knowledge's source. This is separate from the frontmatter `status` field (lifecycle: `draft` → `verified` → `stale` → `deprecated`). The two model **different axes** and are deliberately not merged:
 
-### Reasoning-Context Retrieval APIs
+- **`status` is the ranking signal.** The four-signal reranker reads frontmatter `status` (verified +0.40 / draft −0.10 / deprecated −0.30). This is the *editorial lifecycle* of a document and is what tunes retrieval relevance.
+- **`verification_level` is source provenance only.** It records *who validated* the underlying knowledge (experimental / community / admin-verified) and is surfaced as a trust label in the API/UI (`is_admin_verified`, `/knowledge` responses). It is intentionally **not** a reranker input — provenance should not, on its own, reorder retrieval; a stale admin-verified runbook must still decay by `status`.
 
-Two higher-level retrieval methods on `KnowledgeService` support LLM reasoning workflows. Neither is surfaced via an API endpoint; they are called internally by services that need pre-curated knowledge before starting a reasoning chain.
+So there is one ranking authority (`status`) and one provenance record (`verification_level`); they are complementary, not competing.
 
-**`search_with_reasoning_context(query, session_id, reasoning_type)`** — adjusts retrieval parameters and result framing based on `reasoning_type` (`diagnostic` | `analytical` | `strategic` | `creative`). Falls back to `search_knowledge()` when `AdvancedKnowledgeRetrieval` is unavailable. Returns an enriched result dict that includes `retrieval_strategy`, `confidence_score`, `reasoning_insights`, `knowledge_gaps`, and `search_expansion_paths` alongside the matched documents.
+### Reasoning-Context Retrieval APIs — Superseded (removed)
 
-**`curate_knowledge_for_reasoning(reasoning_type, session_id)`** — runs multiple searches using type-specific search terms (e.g. `diagnostic` → "error", "problem", "solution", "troubleshoot") and assembles curated knowledge by category. Returns a dict keyed by `knowledge_type`. Used to pre-populate an agent's context before starting a reasoning chain.
-
-Both methods delegate to `AdvancedKnowledgeRetrieval` (multi-level caching: L1 in-memory LRU, L2 result store) when it is available. Neither enforces the scope safety invariant — they call `_vector_store.search()` directly without a user-scoped `where` clause, which means they currently read across all scopes. Scoped equivalents are a planned improvement.
+An earlier `AdvancedKnowledgeRetrieval` subsystem and two `KnowledgeService`
+entry points (`search_with_reasoning_context`, `curate_knowledge_for_reasoning`,
+plus `discover_related_knowledge`) offered "reasoning-context" retrieval with
+multi-level caching and query expansion. They were **never wired to a live
+caller**: the sole internal call target (`_execute_optimized_retrieval`) invoked
+a method (`search_with_context`) that did not exist on `AdvancedKnowledgeRetrieval`,
+so every call raised `AttributeError` and fell through to a fallback that hardcoded
+`scope=global` — a scope-safety bypass. The subsystem and its dead entry points
+have been removed; live retrieval goes through `search_knowledge()` /
+`search_documents()` (scope-enforcing) and the agent's `answer_from_kb` tool
+(`hybrid_search`). See [vector-retrieval-architecture.md](./vector-retrieval-architecture.md).
 
 ---
 

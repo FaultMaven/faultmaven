@@ -1,11 +1,12 @@
-"""Knowledge Search Service for semantic and hybrid search.
+"""Knowledge Item Indexing Service.
 
-This service orchestrates the full search workflow for the RAG system,
-combining embedding generation, vector similarity search, and text search.
+Orchestrates indexing of knowledge items into the vector store: embedding
+generation via the embedding service, vector-store writes, usage tracking, and
+indexing statistics. Query-time retrieval is handled elsewhere
+(``KnowledgeVectorStore`` for the agent's ``answer_from_kb`` path and
+``KnowledgeService.search_knowledge``); this service does not perform search.
 
 Features:
-- Semantic search using vector similarity
-- Hybrid search combining semantic + full-text results
 - Knowledge item indexing (embedding generation + vector store)
 - Usage tracking (mark items as retrieved)
 - Indexing statistics
@@ -14,12 +15,11 @@ Usage:
     from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
 
     service = KnowledgeSearchService(knowledge_repo, embedding_service, vector_store)
-    results = await service.semantic_search("error handling", organization_id, n_results=10)
-    results = await service.hybrid_search("database timeout", organization_id)
+    await service.index_items_batch(items)
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import (
     EmbeddingException,
@@ -28,7 +28,6 @@ from faultmaven.exceptions import (
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
-    KnowledgeItemType,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
@@ -38,20 +37,20 @@ logger = logging.getLogger(__name__)
 
 
 class KnowledgeSearchService:
-    """Service for searching knowledge base with hybrid search.
+    """Service for indexing knowledge items into the vector store.
 
-    This service orchestrates the full search workflow:
-    - Semantic search: Generate query embedding, search vector store
-    - Hybrid search: Combine semantic + text search with weighted scores
+    This service orchestrates the indexing workflow:
     - Indexing: Generate embeddings and add to vector store
     - Usage tracking: Mark items as retrieved
+    - Indexing statistics
+
+    Query-time retrieval is not performed here — see ``KnowledgeVectorStore``
+    and ``KnowledgeService.search_knowledge``.
 
     Attributes:
         knowledge_repo: Repository for knowledge item persistence
         embedding_service: Service for generating embeddings
-        vector_store: Service for vector storage and search
-        semantic_weight: Default weight for semantic search in hybrid mode
-        text_weight: Default weight for text search in hybrid mode
+        vector_store: Service for vector storage
     """
 
     def __init__(
@@ -59,17 +58,13 @@ class KnowledgeSearchService:
         knowledge_repo: KnowledgeItemRepository,
         embedding_service: Any,
         vector_store: Any,
-        semantic_weight: float = 0.7,
-        text_weight: float = 0.3,
     ):
-        """Initialize knowledge search service.
+        """Initialize knowledge indexing service.
 
         Args:
             knowledge_repo: Repository for knowledge item persistence
             embedding_service: Service for generating embeddings (required)
-            vector_store: Service for vector storage and search (required)
-            semantic_weight: Default weight for semantic search (0.0-1.0)
-            text_weight: Default weight for text search (0.0-1.0)
+            vector_store: Service for vector storage (required)
 
         Raises:
             ValueError: If required dependencies are not provided
@@ -84,271 +79,6 @@ class KnowledgeSearchService:
 
         self.embedding_service = embedding_service
         self.vector_store = vector_store
-
-        self.semantic_weight = semantic_weight
-        self.text_weight = text_weight
-
-    async def semantic_search(
-        self,
-        query: str,
-        organization_id: str,
-        n_results: int = 10,
-        item_type: Optional[KnowledgeItemType] = None,
-        category: Optional[str] = None,
-        mark_retrieved: bool = True,
-    ) -> List[Tuple[KnowledgeItem, float]]:
-        """Semantic search using vector similarity.
-
-        Workflow:
-        1. Generate embedding for query
-        2. Search vector store for similar items
-        3. Fetch full KnowledgeItem objects from repository
-        4. Mark items as retrieved (usage tracking)
-        5. Return sorted by similarity
-
-        Args:
-            query: Search query text
-            organization_id: Organization to search within
-            n_results: Number of results to return
-            item_type: Optional filter by item type
-            category: Optional filter by category
-            mark_retrieved: Whether to mark items as retrieved
-
-        Returns:
-            List of (KnowledgeItem, similarity_score) tuples sorted by similarity
-
-        Raises:
-            EmbeddingException: If embedding generation fails
-            VectorStoreException: If vector search fails
-            KnowledgeBaseException: If item retrieval fails
-        """
-        return await self._semantic_search_impl(
-            query,
-            organization_id,
-            n_results,
-            item_type,
-            category,
-            mark_retrieved,
-        )
-
-    async def _semantic_search_impl(
-        self,
-        query: str,
-        organization_id: str,
-        n_results: int,
-        item_type: Optional[KnowledgeItemType],
-        category: Optional[str],
-        mark_retrieved: bool,
-    ) -> List[Tuple[KnowledgeItem, float]]:
-        """Internal implementation of semantic search."""
-        # Step 1: Generate embedding for query
-        try:
-            query_embedding = await self.embedding_service.generate_embedding(query)
-        except EmbeddingException:
-            raise
-        except Exception as e:
-            raise KnowledgeBaseException(
-                f"Failed to generate query embedding: {e}",
-                details={"query": query[:100], "error_type": type(e).__name__},
-            ) from e
-
-        # Step 2: Build filters
-        filters = {}
-        if item_type:
-            filters["item_type"] = item_type.value
-        if category:
-            filters["category"] = category
-
-        # Step 3: Search vector store
-        try:
-            vector_results = await self.vector_store.search_similar(
-                query_embedding=query_embedding,
-                organization_id=organization_id,
-                n_results=n_results,
-                filters=filters if filters else None,
-            )
-        except VectorStoreException:
-            raise
-        except Exception as e:
-            raise KnowledgeBaseException(
-                f"Failed to search vector store: {e}",
-                details={
-                    "organization_id": organization_id,
-                    "error_type": type(e).__name__,
-                },
-            ) from e
-
-        # Step 4: Fetch full KnowledgeItem objects
-        results: List[Tuple[KnowledgeItem, float]] = []
-        for result in vector_results:
-            item_id = result["item_id"]
-            distance = result.get("distance", 0.0)
-            # Convert distance to similarity (for cosine: similarity = 1 - distance)
-            similarity = 1.0 - distance if distance is not None else 0.0
-
-            try:
-                item = await self.knowledge_repo.get_by_id(item_id)
-                if item:
-                    # Step 5: Mark as retrieved
-                    if mark_retrieved:
-                        item.mark_retrieved()
-                        await self.knowledge_repo.update(item)
-
-                    results.append((item, similarity))
-            except Exception as e:
-                logger.warning(f"Failed to fetch item {item_id}: {e}")
-                continue
-
-        logger.info("Metric: semantic_search_performed")
-
-        return results
-
-    async def hybrid_search(
-        self,
-        query: str,
-        organization_id: str,
-        n_results: int = 10,
-        semantic_weight: Optional[float] = None,
-        text_weight: Optional[float] = None,
-        item_type: Optional[KnowledgeItemType] = None,
-        category: Optional[str] = None,
-        mark_retrieved: bool = True,
-    ) -> List[Tuple[KnowledgeItem, float]]:
-        """Hybrid search combining semantic + full-text search.
-
-        Uses weighted score combination:
-        - Semantic similarity: 70% (default)
-        - Full-text relevance: 30% (default)
-
-        Args:
-            query: Search query text
-            organization_id: Organization to search within
-            n_results: Number of results to return
-            semantic_weight: Weight for semantic similarity (0.0-1.0)
-            text_weight: Weight for full-text search (0.0-1.0)
-            item_type: Optional filter by item type
-            category: Optional filter by category
-            mark_retrieved: Whether to mark items as retrieved
-
-        Returns:
-            List of (KnowledgeItem, combined_score) tuples sorted by score
-
-        Raises:
-            EmbeddingException: If embedding generation fails
-            VectorStoreException: If vector search fails
-            KnowledgeBaseException: If item retrieval fails
-        """
-        return await self._hybrid_search_impl(
-            query,
-            organization_id,
-            n_results,
-            semantic_weight,
-            text_weight,
-            item_type,
-            category,
-            mark_retrieved,
-        )
-
-    async def _hybrid_search_impl(
-        self,
-        query: str,
-        organization_id: str,
-        n_results: int,
-        semantic_weight: Optional[float],
-        text_weight: Optional[float],
-        item_type: Optional[KnowledgeItemType],
-        category: Optional[str],
-        mark_retrieved: bool,
-    ) -> List[Tuple[KnowledgeItem, float]]:
-        """Internal implementation of hybrid search."""
-        # Use default weights if not provided
-        sem_weight = (
-            semantic_weight if semantic_weight is not None else self.semantic_weight
-        )
-        txt_weight = text_weight if text_weight is not None else self.text_weight
-
-        # Normalize weights
-        total_weight = sem_weight + txt_weight
-        if total_weight > 0:
-            sem_weight = sem_weight / total_weight
-            txt_weight = txt_weight / total_weight
-
-        # Get semantic search results (fetch more for better coverage)
-        semantic_results = await self._semantic_search_impl(
-            query=query,
-            organization_id=organization_id,
-            n_results=n_results * 2,  # Fetch more for merging
-            item_type=item_type,
-            category=category,
-            mark_retrieved=False,  # We'll mark later
-        )
-
-        # Get text search results
-        try:
-            text_results = await self.knowledge_repo.search_by_text(
-                organization_id=organization_id,
-                query=query,
-                item_type=item_type,
-                limit=n_results * 2,
-            )
-        except Exception as e:
-            logger.warning(f"Text search failed, using semantic only: {e}")
-            text_results = []
-
-        # Combine results with weighted scores
-        item_scores: Dict[str, Dict[str, Any]] = {}
-
-        # Add semantic results with normalized scores
-        max_semantic_score = max((s for _, s in semantic_results), default=1.0)
-        for item, score in semantic_results:
-            normalized_score = (
-                score / max_semantic_score if max_semantic_score > 0 else 0
-            )
-            item_scores[item.item_id] = {
-                "item": item,
-                "semantic_score": normalized_score * sem_weight,
-                "text_score": 0.0,
-            }
-
-        # Add text results with position-based scores
-        # Text search doesn't return scores, so use position-based scoring
-        for i, item in enumerate(text_results):
-            position_score = 1.0 - (i / max(len(text_results), 1))
-            if item.item_id in item_scores:
-                item_scores[item.item_id]["text_score"] = position_score * txt_weight
-            else:
-                item_scores[item.item_id] = {
-                    "item": item,
-                    "semantic_score": 0.0,
-                    "text_score": position_score * txt_weight,
-                }
-
-        # Calculate combined scores and sort
-        combined_results: List[Tuple[KnowledgeItem, float]] = []
-        for data in item_scores.values():
-            combined_score = data["semantic_score"] + data["text_score"]
-            combined_results.append((data["item"], combined_score))
-
-        # Sort by combined score descending
-        combined_results.sort(key=lambda x: x[1], reverse=True)
-
-        # Limit to n_results
-        combined_results = combined_results[:n_results]
-
-        # Mark as retrieved
-        if mark_retrieved:
-            for item, _ in combined_results:
-                try:
-                    item.mark_retrieved()
-                    await self.knowledge_repo.update(item)
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to mark item {item.item_id} as retrieved: {e}"
-                    )
-
-        logger.info("Metric: hybrid_search_performed")
-
-        return combined_results
 
     async def index_item(self, item: KnowledgeItem) -> None:
         """Index a knowledge item (generate embedding + add to vector store).

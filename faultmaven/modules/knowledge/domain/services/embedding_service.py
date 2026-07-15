@@ -2,8 +2,9 @@
 
 This service provides text embedding generation capabilities for the
 RAG (Retrieval-Augmented Generation) system. The canonical model is BGE-M3
-(1024 dims) loaded via model_cache. This service is part of the
-KnowledgeSearchService path which is currently superseded — see
+(1024 dims) loaded via model_cache. It is consumed by the knowledge indexing
+path (`KnowledgeSearchService` indexing + `KnowledgeIndexingJob`); query-time
+embedding for live retrieval goes through `model_cache` directly — see
 vector-retrieval-architecture.md §7 for details.
 
 Features:

@@ -278,7 +278,8 @@ class KnowledgeItemRepository(ABC):
         The actual vector search is delegated to the VectorStoreService.
         This is a non-abstract method with a default implementation that
         returns an empty list - actual vector search should use
-        KnowledgeSearchService.semantic_search() instead.
+        KnowledgeVectorStore (agent ``answer_from_kb`` path) or
+        KnowledgeService.search_knowledge() instead.
 
         Args:
             query_embedding: Query embedding vector
@@ -290,7 +291,8 @@ class KnowledgeItemRepository(ABC):
             List of (KnowledgeItem, distance) tuples sorted by similarity
         """
         # Default implementation returns empty list
-        # Vector search should be performed via KnowledgeSearchService
+        # Vector search should be performed via KnowledgeVectorStore /
+        # KnowledgeService.search_knowledge
         return []
 
 
