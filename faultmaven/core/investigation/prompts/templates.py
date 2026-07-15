@@ -2687,6 +2687,34 @@ proposal never forecloses a live diagnostic thread.
 """
 
 
+# Seeded-candidate override (KB cause seeder). Appended AFTER the base
+# AUTHORITY block only when the seeder has already instantiated a matched
+# runbook's Cause chains as CANDIDATE hypotheses in this case. It supersedes the
+# base "Exactly one Cause matches → create hypotheses_to_add" instruction: the
+# structure already exists, so the LLM tests it against evidence instead of
+# re-deriving it from prose (removing the double-collapse). Priors-to-test
+# framing guards against over-deference (confirming a seed) and crowd-out
+# (letting seeds displace the LLM's own hypotheses).
+_KB_SEEDED_AUTHORITY_OVERRIDE = """
+**SEEDED RUNBOOK CAUSES — OVERRIDE (the engine has already instantiated them):**
+The matched runbook's Cause chains are ALREADY in your `<causal_graph>` as
+CANDIDATE hypotheses (each rationale reads "Seeded from runbook …"). They are
+**priors to test, not answers.** Therefore, for a Cause the runbook covers:
+□ Do NOT emit a `hypotheses_to_add` record for it — it already exists. Emitting a
+  paraphrase would duplicate the cause.
+□ Instead, link evidence to the existing candidate: `hypothesis_evidence_links`
+  (SUPPORTS / REFUTES) and `causal_evidence` on its rung nodes.
+□ A seeded candidate whose Indicators conflict with the evidence: REFUTE it
+  (state=REFUTED + refutation_reason). Do not leave a contradicted prior standing.
+□ Never confirm a seeded cause on partial or absent evidence — a runbook match is
+  a lead, not proof. An unsupported seed will decay on its own; your job is to
+  test it, not defend it.
+□ KEEP forming your own independent hypotheses for anything the runbook did NOT
+  cover. The seeds are a starting differential, not a ceiling — do not let them
+  crowd out causes the evidence points to.
+"""
+
+
 def _select_diagnosis_block(case: Case) -> str:
     """DIAGNOSIS-stage prompt assembly (unified opportunistic flow).
 
@@ -2698,11 +2726,26 @@ def _select_diagnosis_block(case: Case) -> str:
     choice. The focus emphasis is prepended to ``_RCA_DIAGNOSIS_BLOCK``,
     which carries the hypothesis-evidence ordering mandate
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``).
+
+    When the KB cause seeder is enabled AND has seeded candidates into this
+    case's graph, the seeded-candidate override is appended so the LLM
+    validates/refutes the pre-instantiated structure instead of re-deriving it
+    from prose. Flag off (or no seeds this case): byte-identical to before.
     """
     focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
     # Teach lazy backward expansion (the engine ingests the emitted chain).
     block += _CHAIN_EMISSION_BLOCK
+
+    from faultmaven.config.settings import get_settings
+
+    if get_settings().features.kb_cause_seeder_enabled:
+        from faultmaven.core.investigation.kb_cause_seeder import (
+            case_has_seeded_candidates,
+        )
+
+        if case_has_seeded_candidates(case):
+            block += _KB_SEEDED_AUTHORITY_OVERRIDE
     return block
 
 

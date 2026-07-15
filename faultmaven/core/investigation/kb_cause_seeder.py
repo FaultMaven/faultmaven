@@ -110,6 +110,19 @@ class _NodeSpec:
     and_group: Optional[str] = None
 
 
+def case_has_seeded_candidates(case: "Case") -> bool:
+    """True if any causal node in the case was seeded from a runbook.
+
+    Used to gate the seeded-candidate AUTHORITY prompt variant: the prompt must
+    only tell the LLM "candidates are already in your graph" when that is
+    actually true this case (the flag can be on while no runbook matched).
+    """
+    return any(
+        SEEDED_FROM_RUNBOOK_KEY in (node.metadata or {})
+        for node in case.causal_nodes.values()
+    )
+
+
 def seed_candidate_causes(
     case: "Case",
     runbooks: list[SeededRunbook],
