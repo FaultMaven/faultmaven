@@ -107,8 +107,10 @@ class TestAnswerFromKBRelaysProseWithSources:
         # The synthesizer was consulted, and its prose is relayed verbatim.
         llm_router.route.assert_called_once()
         assert result["answer"] == "Do the runbook steps."
-        # Sources are the runbook titles pulled from chunk metadata (deduped).
-        assert result["sources"] == ["CoreDNS Failures", "Pod CrashLoop"]
+        # Sources are the deduplicated runbook titles pulled from chunk
+        # metadata. answer_question builds them via list(set(...)), so the
+        # set of titles is the contract — iteration order is not guaranteed.
+        assert set(result["sources"]) == {"CoreDNS Failures", "Pod CrashLoop"}
         assert result["chunk_count"] == 2
 
     @pytest.mark.asyncio
