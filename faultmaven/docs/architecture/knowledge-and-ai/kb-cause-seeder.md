@@ -1,0 +1,206 @@
+# KB Cause Seeder — structural KB → engine cohesion
+
+Every shipped runbook carries a machine-readable causal-graph record at
+`knowledge_items.metadata["causes"]` (produced by the KB pack builder, persisted
+verbatim by ingestion). The investigation engine speaks the *same* causal-graph
+grammar — a hypothesis is a `root → … → D` chain over the case's single causal
+DAG. The **KB cause seeder** closes the gap between them: when KB retrieval
+surfaces a runbook whose causes align with the current case, the engine
+instantiates that runbook's Cause chains directly as **CANDIDATE** nodes, edges,
+and hypotheses in the case graph — instead of the LLM re-deriving one flat
+hypothesis from retrieved prose.
+
+This makes the `metadata["causes"]` investment pay off and removes a lossy
+double-synthesis (`kb_qa` prose synthesis → engine prose re-summary). It is a
+**prior, not a gate**: a seeded cause is a strong hypothesis to test, never a
+grounded conclusion. It is explicitly *not* the retired runbook-cause matcher
+(that was a deterministic grounding/validation arm, NO-GO'd in #658); the seeder
+grants **zero evidentiary privilege** — a seeded candidate is validated only by
+real case evidence, decays when unsupported, and is anchoring-flagged and demoted
+exactly like a self-generated hypothesis.
+
+Shipped dark behind `FAULTMAVEN_KB_CAUSE_SEEDER` (default off).
+
+---
+
+## Where it runs
+
+The seeder is **engine-driven and deterministic** — no LLM call. It hooks the
+single moment the engine already retrieves KB for a fresh symptom: the
+symptom-verified transition into INVESTIGATING (`_transition_to_investigating` →
+`_prefetch_kb_context`, `milestone_engine.py`). This is exactly where the
+AUTHORITY prompt already says KB search happens "ONCE at the start of Zone 2,
+before forming hypotheses independently." Seeding here gives the LLM structured
+priors to test from the first diagnosis turn.
+
+> Rejected alternative — intercept the `kb_qa` tool output. The tool collapses
+> retrieval to a prose blob plus a `Sources:` title line, discarding both the
+> causal structure and the runbook id. Reconstructing structure from that prose
+> is the exact double-synthesis the seeder exists to remove.
+
+## Data flow
+
+```
+symptom_verified ─► _transition_to_investigating
+                     └─► _prefetch_kb_context          (existing: search_knowledge)
+                          └─► seed_candidate_causes_from_kb(case, hits, kb_item_repo, turn)   ◄── NEW, flag-gated
+                               1. ensure D            seed_problem_node(case)
+                               2. pick runbooks       distinct parent_document_id, top-N by score
+                               3. load causes         kb_item_repo.get_by_id(id).metadata["causes"]
+                               4. select causes       skip fallback; rank by evidence alignment; cap MAX_SEEDED_CAUSES
+                               5. instantiate         ingest_emitted_chain(...)  +  create_hypothesis(...)
+```
+
+### 1. Source identity (4.2)
+
+The seeder needs the matched runbook's id to load its causes. Today that identity
+is lost: chunk metadata carries `parent_document_id` (== the `knowledge_items`
+row id holding `metadata["causes"]`), but `SearchResult` mislabels the *chunk* id
+as `document_id` (a `result.get("id")` fallback) and the engine keeps no id at
+all.
+
+Fix: add `parent_document_id` to `SearchResult`, populate it from
+`metadata["parent_document_id"]` in `KnowledgeService.search_knowledge`, and
+preserve it on the `case.kb_context` entries the prefetch stores. This is a plain
+correctness fix (it also stops the chunk-id-as-document-id mislabel) and runs
+regardless of the seeder flag.
+
+### 2–3. Runbook and cause selection (multi-runbook merge rule — 4.3)
+
+Retrieval routinely returns several runbooks and each runbook has many Causes.
+Left unbounded, seeding would flood the graph and trip anchoring detection (≥4
+active hypotheses in one category reads as fixation). The bounds:
+
+- **Cap runbooks:** dedup hits by `parent_document_id`, take the top-N distinct
+  runbooks by rerank score (`KB_SEEDER_MAX_RUNBOOKS`, default 2). Retrieval has
+  already done the semantic alignment at runbook granularity.
+- **Skip fallback causes:** a `is_fallback_cause: true` Cause (`### Cause Z:
+  Unidentified`) has an empty chain — nothing to instantiate.
+- **Rank causes by evidence alignment:** score each remaining Cause by
+  deterministic token overlap of its `cause_statement` + `rung_indicators`
+  against the case's symptom statement and current evidence text. This selects
+  *which* priors are worth seeding — it grants **no** confidence; it is not the
+  grounding matcher.
+- **Cap total seeded causes:** across all runbooks, seed at most
+  `KB_SEEDER_MAX_CAUSES` (default 3). Kept below the anchoring condition-1
+  threshold (4) so seeding alone never manufactures a false anchoring signal.
+- **Dedup across runbooks:** the same cause retrieved via two runbooks seeds
+  once — handled for free by `ingest_emitted_chain`, which reuses a node on
+  exact-normalized `(node_type, statement)`. Near-duplicate roots are reconciled
+  by the existing MECE arbitration (`distinct_cause_clusters`, Jaccard 0.6).
+- **Distinct roots compete as OR-alternatives:** pack `chain_edges` carry no
+  `and_group`, so seeded predecessors enter as independent OR-alternative sibling
+  causes — never silently merged into one Cause. Evidence separates them.
+
+### 4–5. Instantiation
+
+For each selected Cause the seeder reuses the engine's own graph constructors —
+it does not open a second write path:
+
+1. `seed_problem_node(case)` — idempotently ensures the single PROBLEM node `D`
+   from the verified symptom. The Cause's `problem` rung maps to this existing
+   `D`; it is never re-created (`ingest_emitted_chain` rejects PROBLEM specs).
+2. `ingest_emitted_chain(case, node_specs, edge_specs, node_evidence=[], turn)` —
+   the sole causal-graph builder. `chain_nodes` (root/intermediate) become node
+   specs; `chain_edges` become the `produces` wiring (`root → s1 → … → D`).
+   Nodes are minted as `NodeState.CANDIDATE`, `validation_method=NONE`.
+3. `HypothesisManager.create_hypothesis(statement=cause_statement, category=OTHER,
+   initial_likelihood=…, current_turn=turn, generation_mode=OPPORTUNISTIC,
+   state=ACTIVE, rationale="Seeded from runbook <item_id> (Cause <letter>:
+   <name>)")` — then resolve `root_node_id` + `path` to the seeded root and `D`,
+   and insert into `case.hypotheses`.
+
+`create_hypothesis` caps the prior at `NEW_HYPOTHESIS_MAX_PRIOR = 0.5`, so a
+runbook asserting high certainty still enters at ≤ 0.5 — the same ceiling as a
+self-generated hypothesis. The climb past the IDENTIFIED gate is earned only by
+linked case evidence or chain validation.
+
+**Provenance.** No first-class "seeded" field exists on `CausalNode` (the
+`causal_node_evidence.provenance` column was dropped in migration 024 with the
+#658 matcher NO-GO, so KB origin carries no runtime privilege by construction).
+The seeder records origin in two read surfaces only: the hypothesis `rationale`
+(rendered into prompt context and observability) and
+`CausalNode.metadata["seeded_from_runbook"]` (the runbook `item_id`, for tests
+and logging). Neither grants any evidentiary weight.
+
+**Category.** A Cause record carries no `HypothesisCategory`; there is no reliable
+signal to derive one, so seeded hypotheses default to `OTHER`. The
+`KB_SEEDER_MAX_CAUSES = 3` cap keeps this from tripping anchoring condition 1 on
+its own.
+
+## Guarantee: no evidentiary privilege, no anchoring (4.1)
+
+A seeded chain is a *strong prior*, and a strong prior is precisely what can
+anchor an LLM toward a wrong theory it then rationalizes — the
+NO-COLLAPSE-UNDER-PRESSURE failure mode. The seeder is designed so a seeded prior
+is **mechanically indistinguishable** from a self-generated one to every safety
+mechanism:
+
+| Mechanism | How the seeded candidate is subject to it |
+|---|---|
+| Prior cap | `create_hypothesis` clamps to `≤ 0.5` — no head start. |
+| Confidence decay (`0.85^iterations`) | Seeded hypotheses are ACTIVE with `iterations_without_progress=0` and empty `evidence_links`; an unsupported seed's counter climbs and it decays each turn via the existing housekeeping loop — no special-casing. |
+| Anchoring detection | Counts and can retire seeded candidates identically (`detect_anchoring` reads `category`/`iterations`/`likelihood`, not origin). |
+| Failed-fix demotion (M6) | A disproved seed flows through the same `refute_hypothesis` / counterfactual-demotion path. |
+| VALIDATED | Unreachable by the seeder. `derive_node_states` (nodes) and `project_hypothesis_states_from_roots` (hypotheses) are the sole VALIDATED writers, and Pydantic validators reject a hand-set VALIDATED node lacking a method/actionable flag. |
+
+The seeder writes **candidates only**. It never sets likelihood above the prior
+cap, never links evidence, never sets VALIDATED. Anchoring and decay are the
+backstop: a misleading runbook's seeded cause receives no supporting evidence,
+decays, is anchoring-flagged, and is demoted — the engine does not conclude.
+
+## Prompt alignment (4.4)
+
+When seeding is active the `KNOWLEDGE & RUNBOOK AUTHORITY` block changes the
+LLM's job for a matched runbook: the candidate Cause chains are **already in the
+graph**, so the model **validates or refutes** them against evidence (via
+`hypothesis_evidence_links` / `causal_evidence`) instead of re-emitting
+`hypotheses_to_add` from prose. Re-deriving structure the engine already
+instantiated would double-create causes and re-introduce the double-collapse.
+
+The flat "Exactly one Cause matches → that Cause IS your hypothesis" branch
+remains the behavior when the flag is off, and remains the fallback for
+**prose-only** sources (converted drafts without a `causes` record) even when the
+flag is on.
+
+## Freshness (4.5)
+
+The ingestion idempotency gate hashes only the runbook markdown, so a pack change
+that edits `causes` while leaving the markdown byte-identical is skipped — the
+live consumer would read stale structure. With the seeder as a real runtime
+reader this is now load-bearing: the skip branch additionally compares the
+persisted `metadata["causes"]` against the pack's causes and re-ingests on
+divergence.
+
+## Configuration
+
+| Flag | Default | Effect |
+|---|---|---|
+| `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | `false` | Gates seeder invocation **and** the AUTHORITY prompt variant. Kill switch — disables in prod without rollback. |
+| `KB_SEEDER_MAX_RUNBOOKS` | `2` | Distinct runbooks seeded per retrieval, top by score. |
+| `KB_SEEDER_MAX_CAUSES` | `3` | Total causes seeded per turn (kept < anchoring threshold). |
+
+The `parent_document_id` surfacing (4.2) and the causes-freshness comparison
+(4.5) are plain correctness fixes and run regardless of the flag; the KB schema
+and the `causes` record are unchanged whether the flag is on or off.
+
+## Verification
+
+Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
+
+- Given a known runbook + matching evidence, the graph is seeded with the
+  expected candidate nodes (root/intermediate), edges wired `root → … → D`, and a
+  hypothesis whose `root_node_id`/`path` head at the seeded root — all CANDIDATE,
+  likelihood ≤ 0.5, no VALIDATED.
+- **Misleading runbook:** a wrong seeded prior with no supporting evidence decays
+  across turns and is anchoring-flagged/demoted; the engine reaches no conclusion
+  (NO COLLAPSE, NO INCORRECT CONCLUSION).
+- **Multi-runbook:** an identical-statement cause seeded via two runbooks dedups
+  to one node; two distinct roots enter as competing OR-alternative candidates.
+- **Freshness:** a causes-only pack change re-ingests.
+- **Flag off:** the seeder is a no-op; the flat KB-resolution prompt path is
+  unchanged.
+
+The sim/eval runs strict-enforcement + averaged + cheap model
+(`claude-haiku-4-5`), and must include a misleading-runbook scenario. Model
+variation never changes these engine rules.
