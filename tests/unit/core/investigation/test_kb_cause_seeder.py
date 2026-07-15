@@ -22,6 +22,7 @@ from faultmaven.core.investigation.kb_cause_seeder import (
     MAX_SEEDED_CAUSES,
     SEEDED_FROM_RUNBOOK_KEY,
     SeededRunbook,
+    SkipClass,
     seed_candidate_causes,
 )
 from faultmaven.modules.case.contracts import (
@@ -279,6 +280,69 @@ def test_provenance_marked_on_seeded_nodes():
     assert len(seeded) == 2
     h = next(iter(case.hypotheses.values()))
     assert "rb1" in (h.rationale or "")
+
+
+# ---------------------------------------------------------------------------
+# Observable skip (4.8a): no silent drop; class-aware "contributed nothing" alarm
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_cause_records_intentional_skip_no_alarm():
+    case = _case()
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [_cause("Z", fallback=True)])], current_turn=1
+    )
+    assert not report.seeded_anything
+    assert len(report.skipped) == 1
+    s = report.skipped[0]
+    assert s.skip_class == SkipClass.INTENTIONAL
+    assert s.item_id == "rb1" and s.cause_letter == "Z"
+    # A fallback-only runbook is expected, not a quality problem.
+    assert report.runbooks_contributing_nothing() == []
+
+
+def test_malformed_cause_records_quality_drop_and_alarms():
+    case = _case()
+    bad = _cause("A")
+    # Break the chain head: intermediate-first (no root) — a real cause the
+    # seeder cannot instantiate.
+    bad["chain_nodes"] = [
+        {"ref": "s1", "node_type": "intermediate", "statement": "no root here"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [bad])], current_turn=1)
+    assert not report.seeded_anything
+    assert len(report.skipped) == 1
+    assert report.skipped[0].skip_class == SkipClass.QUALITY_DROP
+    # Zero-seed runbook with a genuine quality drop → the actionable alarm fires.
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
+def test_dedup_skip_is_benign_no_alarm():
+    shared = dict(root_stmt="root shared: identical fault")
+    rbs = [
+        _runbook("rb1", [_cause("A", **shared)], score=0.9),
+        _runbook("rb2", [_cause("B", **shared)], score=0.8),
+    ]
+    case = _case()
+    report = seed_candidate_causes(case, rbs, current_turn=1)
+    assert "rb1" in report.runbooks_used
+    dedup = [s for s in report.skipped if s.skip_class == SkipClass.BENIGN_DEDUP]
+    assert len(dedup) == 1 and dedup[0].item_id == "rb2"
+    # rb2 seeded nothing, but for a benign (dedup) reason → NOT alarmed.
+    assert report.runbooks_contributing_nothing() == []
+
+
+def test_runbook_that_seeded_something_is_not_alarmed_despite_a_quality_drop():
+    good = _cause("A", root_stmt="good root cause")
+    bad = _cause("B")
+    bad["chain_nodes"] = []  # no nodes → quality drop
+    case = _case()
+    report = seed_candidate_causes(case, [_runbook("rb1", [good, bad])], current_turn=1)
+    assert report.seeded_anything and "rb1" in report.runbooks_used
+    assert any(s.skip_class == SkipClass.QUALITY_DROP for s in report.skipped)
+    # rb1 contributed a candidate, so it is not flagged as "contributed nothing".
+    assert report.runbooks_contributing_nothing() == []
 
 
 # ---------------------------------------------------------------------------

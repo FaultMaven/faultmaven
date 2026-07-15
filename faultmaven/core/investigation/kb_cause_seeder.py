@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
 from faultmaven.core.investigation.causal_graph import (
@@ -87,6 +88,46 @@ class SeededRunbook:
     causes: list[dict]
 
 
+class SkipClass(str, Enum):
+    """Why a matched runbook's cause was not seeded — so a zero-seed is never
+    silent, and the 'runbook contributed nothing' alarm can distinguish a real
+    quality problem from normal, expected non-seeding."""
+
+    INTENTIONAL = "intentional"
+    """Fallback (`Z`/`[Default]`) cause — never a candidate root by design."""
+
+    BENIGN_DEDUP = "benign_dedup"
+    """Root already seeded — a second retrieved runbook overlapping on a cause
+    the first already seeded. Normal and correct; not an alarm."""
+
+    QUALITY_DROP = "quality_drop"
+    """A real cause the seeder could not instantiate (no chain, non-root head,
+    bad node_type, empty statement, ingest produced nothing). The observability
+    signal — a matched runbook silently contributing less than it should."""
+
+
+@dataclass
+class SkippedCause:
+    """One not-seeded cause, class-tagged. Keyed on (item_id, cause_letter) —
+    the cause record has no stable id, and a runbook never uses a letter twice."""
+
+    item_id: str
+    cause_letter: str
+    skip_class: SkipClass
+    reason: str
+
+
+def _skip(
+    item_id: str, cause: dict, skip_class: SkipClass, reason: str
+) -> "SkippedCause":
+    return SkippedCause(
+        item_id=item_id,
+        cause_letter=str(cause.get("cause_letter", "?")),
+        skip_class=skip_class,
+        reason=reason,
+    )
+
+
 @dataclass
 class SeedReport:
     """What a seeding pass produced (for observability + tests)."""
@@ -94,10 +135,26 @@ class SeedReport:
     seeded_hypothesis_ids: list[str] = field(default_factory=list)
     seeded_node_ids: list[str] = field(default_factory=list)
     runbooks_used: list[str] = field(default_factory=list)
+    skipped: list[SkippedCause] = field(default_factory=list)
 
     @property
     def seeded_anything(self) -> bool:
         return bool(self.seeded_hypothesis_ids)
+
+    def runbooks_contributing_nothing(self) -> list[str]:
+        """item_ids of matched runbooks that seeded nothing for a QUALITY-DROP
+        reason — the actionable 'matched runbook contributed nothing' signal.
+
+        A runbook whose only skips are benign dedup or the fallback cause is NOT
+        flagged (a second runbook overlapping an already-seeded cause is normal).
+        Caveat: a runbook never entered because the ``max_causes`` budget was
+        already spent produces no skip record and is not covered here — that
+        zero-contribution is benign (budget, not quality)."""
+        seeded = set(self.runbooks_used)
+        quality_drop = {
+            s.item_id for s in self.skipped if s.skip_class == SkipClass.QUALITY_DROP
+        }
+        return sorted(quality_drop - seeded)
 
 
 @dataclass
@@ -151,12 +208,15 @@ def seed_candidate_causes(
     hm = hypothesis_manager or create_hypothesis_manager()
 
     for runbook in runbooks[:max_runbooks]:
+        # Budget spent: remaining runbooks are not entered, so they leave no skip
+        # record. That zero-contribution is benign (budget, not a quality drop)
+        # and is deliberately NOT alarmed — see runbooks_contributing_nothing().
         if len(report.seeded_hypothesis_ids) >= max_causes:
             break
         for cause in runbook.causes or []:
             if len(report.seeded_hypothesis_ids) >= max_causes:
                 break
-            hyp_id, new_node_ids = _seed_one_cause(
+            hyp_id, new_node_ids, skip = _seed_one_cause(
                 case, runbook.item_id, cause, current_turn, hm, d_id
             )
             if hyp_id is not None:
@@ -164,14 +224,27 @@ def seed_candidate_causes(
                 report.seeded_node_ids.extend(new_node_ids)
                 if runbook.item_id not in report.runbooks_used:
                     report.runbooks_used.append(runbook.item_id)
+            elif skip is not None:
+                report.skipped.append(skip)
 
+    contributed_nothing = report.runbooks_contributing_nothing()
+    if contributed_nothing:
+        logger.warning(
+            "KB cause seeder: %d matched runbook(s) contributed no candidate for "
+            "case %s despite matching — a real cause could not be instantiated "
+            "(quality-drop): %s",
+            len(contributed_nothing),
+            getattr(case, "case_id", "?"),
+            contributed_nothing,
+        )
     if report.seeded_anything:
         logger.info(
             "KB cause seeder: seeded %d candidate cause(s) from %d runbook(s) "
-            "for case %s",
+            "for case %s (%d cause(s) skipped)",
             len(report.seeded_hypothesis_ids),
             len(report.runbooks_used),
             getattr(case, "case_id", "?"),
+            len(report.skipped),
         )
     return report
 
@@ -183,10 +256,21 @@ def _seed_one_cause(
     current_turn: int,
     hm: HypothesisManager,
     d_id: str,
-) -> tuple[Optional[str], list[str]]:
-    """Seed one Cause's chain. Returns (hypothesis_id | None, new_node_ids)."""
+) -> tuple[Optional[str], list[str], Optional[SkippedCause]]:
+    """Seed one Cause's chain.
+
+    Returns ``(hypothesis_id, new_node_ids, skip)``: on success the id + node ids
+    with ``skip=None``; on a no-seed the class-tagged ``SkippedCause`` so no drop
+    is silent (4.8a). The fallback cause is an INTENTIONAL skip; a real cause the
+    seeder can't instantiate is a QUALITY_DROP; the double-seed guard is a
+    BENIGN_DEDUP.
+    """
     if cause.get("is_fallback_cause"):
-        return None, []  # fallback cause has no chain to instantiate
+        return (
+            None,
+            [],
+            _skip(item_id, cause, SkipClass.INTENTIONAL, "fallback cause (no chain)"),
+        )
 
     chain_nodes = cause.get("chain_nodes") or []
     chain_edges = cause.get("chain_edges") or []
@@ -195,14 +279,30 @@ def _seed_one_cause(
     # single engine-seeded D (ingest_emitted_chain rejects PROBLEM specs).
     non_problem = [n for n in chain_nodes if n.get("node_type") != "problem"]
     if not non_problem:
-        return None, []
+        return (
+            None,
+            [],
+            _skip(item_id, cause, SkipClass.QUALITY_DROP, "no root/intermediate nodes"),
+        )
 
     # The chain must be authored root-first (root → … → problem).
     try:
         if NodeType(non_problem[0].get("node_type")) != NodeType.ROOT:
-            return None, []
+            return (
+                None,
+                [],
+                _skip(
+                    item_id, cause, SkipClass.QUALITY_DROP, "chain head is not a root"
+                ),
+            )
     except ValueError:
-        return None, []
+        return (
+            None,
+            [],
+            _skip(
+                item_id, cause, SkipClass.QUALITY_DROP, "unrecognized head node_type"
+            ),
+        )
 
     problem_refs = {
         n.get("ref") for n in chain_nodes if n.get("node_type") == "problem"
@@ -218,11 +318,19 @@ def _seed_one_cause(
     for node in non_problem:
         statement = (node.get("statement") or "").strip()
         if not statement:
-            return None, []  # CausalNode rejects an empty statement
+            return (
+                None,
+                [],
+                _skip(item_id, cause, SkipClass.QUALITY_DROP, "empty node statement"),
+            )
         try:
             node_type = NodeType(node.get("node_type"))
         except ValueError:
-            return None, []
+            return (
+                None,
+                [],
+                _skip(item_id, cause, SkipClass.QUALITY_DROP, "unrecognized node_type"),
+            )
         effect_ref = produces_by_ref.get(node.get("ref"))
         if effect_ref in problem_refs or effect_ref == "D":
             produces = "D"
@@ -240,7 +348,13 @@ def _seed_one_cause(
 
     ordered = [cid for cid in created if cid]
     if not ordered or created[0] is None:
-        return None, []
+        return (
+            None,
+            [],
+            _skip(
+                item_id, cause, SkipClass.QUALITY_DROP, "ingest produced no root node"
+            ),
+        )
     root_id = created[0]  # chain is root-first, so the first minted node is root
 
     # Don't double-seed: if a hypothesis already heads at this (possibly reused)
@@ -249,7 +363,11 @@ def _seed_one_cause(
         h.root_node_id for h in case.hypotheses.values() if h.root_node_id
     }
     if root_id in existing_roots:
-        return None, []
+        return (
+            None,
+            [],
+            _skip(item_id, cause, SkipClass.BENIGN_DEDUP, "root already seeded"),
+        )
 
     # Provenance on NEWLY-minted nodes only — never overwrite a reused
     # (self-generated) node's origin. Read surface only.
@@ -276,4 +394,4 @@ def _seed_one_cause(
     hypothesis.path = [*ordered, d_id]
     case.hypotheses[hypothesis.hypothesis_id] = hypothesis
 
-    return hypothesis.hypothesis_id, new_node_ids
+    return hypothesis.hypothesis_id, new_node_ids, None

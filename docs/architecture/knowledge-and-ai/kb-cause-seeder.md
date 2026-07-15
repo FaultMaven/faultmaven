@@ -134,6 +134,43 @@ signal to derive one, so seeded hypotheses default to `OTHER`. The
 `KB_SEEDER_MAX_CAUSES = 3` cap keeps this from tripping anchoring condition 1 on
 its own.
 
+### Observable skip — no silent drop
+
+A matched runbook that seeds nothing must never be *invisible*. Every non-seed is
+recorded as a class-tagged `SkippedCause` on the `SeedReport` (keyed by
+`(item_id, cause_letter)`):
+
+- **`intentional`** — the fallback (`Z`/`[Default]`) cause; never a candidate root
+  by design.
+- **`benign_dedup`** — a root already seeded by an earlier retrieved runbook
+  (overlap); normal and correct.
+- **`quality_drop`** — a *real* cause the seeder could not instantiate (no chain,
+  non-root head, bad `node_type`, empty statement, ingest produced nothing).
+
+The **"matched runbook contributed nothing"** warning fires only when a zero-seed
+runbook has ≥1 `quality_drop` (`runbooks_contributing_nothing()`) — a runbook
+whose only skips are dedup/fallback is *not* alarmed, so two runbooks sharing a
+cause never false-alarm. (A runbook never entered because the `MAX_SEEDED_CAUSES`
+budget was already spent leaves no skip record; that zero is benign — budget, not
+quality.) The shipped corpus has **zero** `quality_drop` shapes (all 549
+non-fallback causes are multi-rung), so this is observability for future/authoring
+drift, not a current defect.
+
+### What the seeder consumes (and what it doesn't)
+
+The seeder reads a cause's `chain_nodes` / `chain_edges` / `cause_statement` /
+`cause_letter` / `cause_name`. It does **not** structurally consume
+`rung_indicators` or `interventions` — those reach the engine only as *prose* for
+the LLM (the AUTHORITY block's per-rung indicator matching, and treatment-stage
+`SolutionToAdd`). So a seeded chain is *topology with the per-rung validation
+signal detached*: the engine leans on the LLM to map evidence to the right rung.
+This is the deepest remaining slice of the write-only-`causes` residue. Making it
+load-bearing — seeding `rung_indicators` as evidence-needs / expected
+`causal_evidence` per rung — is a **recommended, separately-sized follow-on**, its
+go/no-go informed by whether seeded rungs validate well in the eval. (Wiring the
+deterministic `<!-- match -->` predicates is blocked upstream: the pack ships zero
+`predicate`/`exit_code` keys — they are dropped at pack-build.)
+
 ## Guarantee: no evidentiary privilege, no anchoring (4.1)
 
 A seeded chain is a *strong prior*, and a strong prior is precisely what can
@@ -266,6 +303,14 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
 - **Freshness:** a causes-only pack change re-ingests.
 - **Flag off:** the seeder is a no-op; the flat KB-resolution prompt path is
   unchanged.
+- **Observable skip (unit):** a fallback → `intentional` skip (no alarm); a
+  malformed real cause → `quality_drop` skip **and** the "contributed nothing"
+  alarm; a cross-runbook dedup → `benign_dedup` skip (no alarm); a runbook that
+  seeded ≥1 cause is not alarmed even with a `quality_drop` sibling.
+- **Prior-not-gate (3b, flag-ON sim):** at eval end, ∃ a hypothesis whose
+  `root_node_id` ∉ the seeded set with likelihood > the seeded prior, **and** no
+  seeded prior is `VALIDATED` — the behavioral proof that a self-generated
+  hypothesis can beat a wrong seeded prior (seeding is a prior, not a gate).
 
 The sim/eval runs strict-enforcement + averaged + cheap model
 (`claude-haiku-4-5`), and must include a misleading-runbook scenario. Model
