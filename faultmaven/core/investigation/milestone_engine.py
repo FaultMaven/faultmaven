@@ -8778,7 +8778,11 @@ class MilestoneEngine:
                     f"KB pre-fetch ({trigger}): {len(case.kb_context)} matches "
                     f"for case {case.case_id}"
                 )
-            else:
+            elif results:
+                # Got results but none cleared the relevance bar → clear stale
+                # context. When the search returned nothing at all, leave any
+                # existing kb_context untouched (a later trigger's empty search
+                # must not wipe context an earlier trigger established).
                 case.kb_context = None
             return relevant
         except Exception:
@@ -8822,13 +8826,21 @@ class MilestoneEngine:
                 best_score_by_runbook.items(), key=lambda kv: kv[1], reverse=True
             )
 
-            runbooks: list = []
-            for parent_id, score in ranked[:MAX_SEEDED_RUNBOOKS]:
-                causes = await self.knowledge_service.get_runbook_causes(parent_id)
-                if causes:
-                    runbooks.append(
-                        SeededRunbook(item_id=parent_id, score=score, causes=causes)
-                    )
+            # The per-runbook causes lookups are independent — issue them
+            # concurrently (get_runbook_causes catches its own errors → None, so
+            # gather never raises).
+            top = ranked[:MAX_SEEDED_RUNBOOKS]
+            causes_per_runbook = await asyncio.gather(
+                *(
+                    self.knowledge_service.get_runbook_causes(parent_id)
+                    for parent_id, _ in top
+                )
+            )
+            runbooks: list = [
+                SeededRunbook(item_id=parent_id, score=score, causes=causes)
+                for (parent_id, score), causes in zip(top, causes_per_runbook)
+                if causes
+            ]
             if not runbooks:
                 # Matched runbook(s) carried no causes record → the flat-prose path
                 # serves them. Logged (not silent) so a legitimate zero-seed is

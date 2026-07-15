@@ -226,9 +226,31 @@ def seed_candidate_causes(
         for cause in runbook.causes or []:
             if len(report.seeded_hypothesis_ids) >= max_causes:
                 break
-            hyp_id, new_node_ids, skip = _seed_one_cause(
-                case, runbook.item_id, cause, current_turn, hm, d_id
-            )
+            # Guard each cause so one bad cause cannot abort the whole pass or
+            # discard the report: an unexpected error is recorded as a skip (so it
+            # is visible + alarmed) and the loop continues. This keeps the "never
+            # raised" contract true even if _seed_one_cause hits malformed data.
+            try:
+                hyp_id, new_node_ids, skip = _seed_one_cause(
+                    case, runbook.item_id, cause, current_turn, hm, d_id
+                )
+            except Exception:
+                logger.error(
+                    "KB cause seeder: seeding cause %s of runbook %s raised — "
+                    "recording as a skip and continuing",
+                    cause.get("cause_letter", "?"),
+                    runbook.item_id,
+                    exc_info=True,
+                )
+                report.skipped.append(
+                    _skip(
+                        runbook.item_id,
+                        cause,
+                        SkipClass.QUALITY_DROP,
+                        "seeding raised an unexpected error",
+                    )
+                )
+                continue
             if hyp_id is not None:
                 report.seeded_hypothesis_ids.append(hyp_id)
                 report.seeded_node_ids.extend(new_node_ids)
@@ -241,8 +263,8 @@ def seed_candidate_causes(
     if contributed_nothing:
         logger.warning(
             "KB cause seeder: %d matched runbook(s) contributed no candidate for "
-            "case %s despite matching — a real cause could not be instantiated "
-            "(quality-drop): %s",
+            "case %s despite matching — a real cause could not be seeded "
+            "(malformed or unsupported shape; see skip records): %s",
             len(contributed_nothing),
             getattr(case, "case_id", "?"),
             contributed_nothing,
@@ -271,10 +293,10 @@ def _seed_one_cause(
 
     Returns ``(hypothesis_id, new_node_ids, skip)``: on success the id + node ids
     with ``skip=None``; on a no-seed the class-tagged ``SkippedCause`` so no drop
-    is silent (4.8a). The fallback cause is an INTENTIONAL skip; a real cause the
-    seeder can't instantiate is a QUALITY_DROP; a well-formed cause using an
-    unmodeled shape (``and_group``) is an UNSUPPORTED_SHAPE reject (never
-    flattened); the double-seed guard is a BENIGN_DEDUP.
+    is silent. The fallback cause is an INTENTIONAL skip; a real cause the seeder
+    can't instantiate is a QUALITY_DROP; a well-formed cause using an unmodeled
+    shape (``and_group``) is an UNSUPPORTED_SHAPE reject (never flattened); the
+    double-seed guard is a BENIGN_DEDUP.
     """
     if cause.get("is_fallback_cause"):
         return (
@@ -290,12 +312,12 @@ def _seed_one_cause(
     # cause_ref/effect_ref only and defaults every edge's and_group to None, so a
     # co-necessary AND-set (edges sharing (effect, and_group)) would be silently
     # flattened into independent OR-alternatives — turning "A AND B are both
-    # required" into "A OR B", a MECE mis-model. Honor-or-reject (plan 4.3): until
+    # required" into "A OR B", a MECE mis-model. Honor-or-reject: until
     # AND-seeding is built, REJECT such a cause rather than mis-seed it. Zero
     # instances in the shipped pack (and_group = 0/640); the guard exists for the
-    # Phase 5 produce path (converted runbooks generate v4 structure) and future
-    # authoring. Checked on nodes too, since a producer could carry and_group
-    # there (the LLM-facing CausalNodeToAdd schema does).
+    # case→runbook conversion (produce) path (converted runbooks generate v4
+    # structure) and future authoring. Checked on nodes too, since a producer
+    # could carry and_group there (the LLM-facing CausalNodeToAdd schema does).
     if any(e.get("and_group") is not None for e in chain_edges) or any(
         n.get("and_group") is not None for n in chain_nodes
     ):

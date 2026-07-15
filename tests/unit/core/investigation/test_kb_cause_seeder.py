@@ -333,6 +333,23 @@ def test_dedup_skip_is_benign_no_alarm():
     assert report.runbooks_contributing_nothing() == []
 
 
+def test_cause_that_raises_is_recorded_as_skip_and_pass_continues():
+    # A cause that makes _seed_one_cause raise (malformed non-list chain_nodes)
+    # must not abort the pass or discard the report: it is recorded as a skip and
+    # the remaining causes still seed.
+    case = _case()
+    boom = _cause("B")
+    boom["chain_nodes"] = "not-a-list"  # str → n.get() raises inside _seed_one_cause
+    good = _cause("A", root_stmt="good root cause")
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [boom, good])], current_turn=1
+    )
+    assert report.seeded_anything  # the good cause still seeded
+    assert "rb1" in report.runbooks_used
+    raised = [s for s in report.skipped if s.cause_letter == "B"]
+    assert len(raised) == 1 and raised[0].skip_class == SkipClass.QUALITY_DROP
+
+
 def test_and_group_cause_is_rejected_not_flattened():
     # A co-necessary AND-set (edges sharing an and_group) must NOT be silently
     # seeded as OR-alternatives. The seeder rejects it as UNSUPPORTED_SHAPE.

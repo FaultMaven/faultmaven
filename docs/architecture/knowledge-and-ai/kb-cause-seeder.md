@@ -82,11 +82,11 @@ symptom_verified ─► _transition_to_investigating
                                1. ensure D            seed_problem_node(case)
                                2. pick runbooks       distinct parent_document_id, top-N by score
                                3. load causes         kb_item_repo.get_by_id(id).metadata["causes"]
-                               4. select causes       skip fallback; rank by evidence alignment; cap MAX_SEEDED_CAUSES
+                               4. select causes       skip fallback; retrieval/author order; cap MAX_SEEDED_CAUSES
                                5. instantiate         ingest_emitted_chain(...)  +  create_hypothesis(...)
 ```
 
-### 1. Source identity (4.2)
+### 1. Source identity
 
 The seeder needs the matched runbook's id to load its causes. Today that identity
 is lost: chunk metadata carries `parent_document_id` (== the `knowledge_items`
@@ -100,7 +100,7 @@ preserve it on the `case.kb_context` entries the prefetch stores. This is a plai
 correctness fix (it also stops the chunk-id-as-document-id mislabel) and runs
 regardless of the seeder flag.
 
-### 2–3. Runbook and cause selection (multi-runbook merge rule — 4.3)
+### 2–3. Runbook and cause selection (multi-runbook merge rule)
 
 Retrieval routinely returns several runbooks and each runbook has many Causes.
 Left unbounded, seeding would flood the graph and trip anchoring detection (≥4
@@ -187,9 +187,10 @@ recorded as a class-tagged `SkippedCause` on the `SeedReport` (keyed by
   not yet model. Today that is only `and_group` **AND-convergence**: the seeder
   reads `cause_ref`/`effect_ref` and defaults every edge to `and_group=None`, so a
   co-necessary AND-set would be silently flattened to independent OR-alternatives
-  (A∧B → A∨B — a MECE mis-model). It is **rejected, not flattened** (honor-or-reject,
-  plan 4.3) until AND-seeding is built. Zero instances in the pack today; the guard
-  exists for the Phase 5 produce path (converted runbooks generate v4 structure).
+  (A∧B → A∨B — a MECE mis-model). It is **rejected, not flattened**
+  (honor-or-reject) until AND-seeding is built. Zero instances in the pack today;
+  the guard exists for the case→runbook conversion (produce) path (converted
+  runbooks generate v4 structure).
 
 The **"matched runbook contributed nothing"** warning fires when a zero-seed
 runbook has ≥1 *actionable* skip — `quality_drop` **or** `unsupported_shape`
@@ -216,7 +217,7 @@ go/no-go informed by whether seeded rungs validate well in the eval. (Wiring the
 deterministic `<!-- match -->` predicates is blocked upstream: the pack ships zero
 `predicate`/`exit_code` keys — they are dropped at pack-build.)
 
-## Guarantee: no evidentiary privilege, no anchoring (4.1)
+## Guarantee: no evidentiary privilege, no anchoring
 
 A seeded chain is a *strong prior*, and a strong prior is precisely what can
 anchor an LLM toward a wrong theory it then rationalizes — the
@@ -255,7 +256,7 @@ conservative-safe — a safety mechanism firing early costs exploration breadth,
 never a wrong conclusion — but it is a real seed→LLM interaction, asserted as a
 measured eval expectation rather than left as a surprise.
 
-## Prompt alignment (4.4)
+## Prompt alignment
 
 When seeding is active the `KNOWLEDGE & RUNBOOK AUTHORITY` block's flat "Exactly
 one Cause matches → create a `hypotheses_to_add` record" directive is
@@ -297,7 +298,7 @@ remains the behavior when the flag is off, and remains the fallback for
 **prose-only** sources (converted drafts without a `causes` record) even when the
 flag is on.
 
-## Freshness (4.5)
+## Freshness
 
 The ingestion idempotency gate hashes only the runbook markdown, so a pack change
 that edits `causes` while leaving the markdown byte-identical is skipped — the
@@ -314,8 +315,8 @@ divergence.
 | `MAX_SEEDED_RUNBOOKS` | module constant (`kb_cause_seeder.py`) | `2` | Distinct runbooks seeded per retrieval, top by score. |
 | `MAX_SEEDED_CAUSES` | module constant, **derived** | `ANCHORING_SAME_CATEGORY_THRESHOLD − 1` (= `3`) | Total causes seeded per turn. Derived from the anchoring condition-1 constant (not an env var — deriving then overriding would break the coupling guarantee), asserted `< threshold` in a test. |
 
-The `parent_document_id` surfacing (4.2) and the causes-freshness comparison
-(4.5) are plain correctness fixes and run regardless of the flag; the KB schema
+The `parent_document_id` surfacing and the causes-freshness comparison
+are plain correctness fixes and run regardless of the flag; the KB schema
 and the `causes` record are unchanged whether the flag is on or off.
 
 ## Verification
@@ -352,7 +353,7 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   malformed real cause → `quality_drop` skip **and** the "contributed nothing"
   alarm; a cross-runbook dedup → `benign_dedup` skip (no alarm); a runbook that
   seeded ≥1 cause is not alarmed even with a `quality_drop` sibling.
-- **Prior-not-gate (3b, flag-ON sim):** at eval end, ∃ a hypothesis whose
+- **Prior-not-gate (flag-ON sim):** at eval end, ∃ a hypothesis whose
   `root_node_id` ∉ the seeded set with likelihood > the seeded prior, **and** no
   seeded prior is `VALIDATED` — the behavioral proof that a self-generated
   hypothesis can beat a wrong seeded prior (seeding is a prior, not a gate).
@@ -370,8 +371,8 @@ properties are weakest on the BEST_EFFORT model), to clear all of:
    anchoring-flagged; the engine does not conclude on it.
 2. **No crowd-out** — the LLM keeps generating its own hypotheses.
 3. **No paraphrase-duplication** — ≤ 1 ACTIVE hypothesis per seeded cause.
-4. **Prior-not-gate (3b) — required, and distinct from #1.** No-collapse only
-   proves the wrong seed *dies*; 3b proves the engine still *reaches the right
+4. **Prior-not-gate — required, and distinct from #1.** No-collapse only
+   proves the wrong seed *dies*; this proves the engine still *reaches the right
    answer* via the LLM's own theory rather than stalling: ∃ a hypothesis whose
    `root_node_id` ∉ the seeded set with likelihood > the seeded prior, and no
    seeded prior is `VALIDATED`. This is the positive proof the whole "prior, not

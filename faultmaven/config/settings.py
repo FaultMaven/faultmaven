@@ -1431,10 +1431,9 @@ class FeatureSettings(BaseSettings):
         default=False,
         validation_alias="FAULTMAVEN_KB_CAUSE_SEEDER",
         description=(
-            "Phase 4 feature flag: seed retrieved runbook metadata['causes'] "
-            "chains as CANDIDATE causal-graph nodes/hypotheses at the "
-            "symptom-verified transition (+ the seeded-candidate AUTHORITY "
-            "prompt variant)."
+            "Feature flag: seed retrieved runbook metadata['causes'] chains as "
+            "CANDIDATE causal-graph nodes/hypotheses at the symptom-verified "
+            "transition (+ the seeded-candidate AUTHORITY prompt variant)."
         ),
     )
 
