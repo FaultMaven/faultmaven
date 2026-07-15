@@ -27,6 +27,17 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Fail fast if the ADD COLUMN can't get its ACCESS EXCLUSIVE lock quickly.
+    # ADD COLUMN with a constant server_default is metadata-only (no table
+    # rewrite), but it still needs a brief exclusive lock on these hot tables
+    # (`users` is read on every auth check). Without a bound, a stray
+    # idle-in-transaction connection makes the DDL block indefinitely AND queue
+    # every subsequent query behind it (freezing the table) until the deploy's
+    # wait times out. A short lock_timeout turns that into a clean, retryable
+    # failure instead. SQLite ignores the SET (no-op there).
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("SET lock_timeout = '10s'")
+
     op.add_column(
         "users",
         sa.Column(
