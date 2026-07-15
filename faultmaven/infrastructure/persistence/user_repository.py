@@ -290,11 +290,12 @@ class PostgreSQLUserRepository(UserRepository):
     def _model_to_domain(self, model) -> User:
         """Convert UserModel ORM instance to User domain object.
 
-        In local/dev mode, roles come from the `dev_roles` TEXT column
-        (JSON array). In cloud mode, roles are derived from RBAC tables
-        (organization_members → roles); those callers should use the
-        dedicated org-repository query path rather than relying on this
-        field.
+        Roles come from the `dev_roles` TEXT column (JSON array) in BOTH auth
+        modes today — no login/token path currently derives them from the RBAC
+        tables (organization_members → roles). Deriving the cloud role claim
+        from RBAC is designed but not yet wired; when it lands, callers that
+        need effective cloud roles should use the org-repository query path
+        rather than this field. Tracked in #706.
         """
         import json
 
@@ -524,3 +525,90 @@ class PostgreSQLUserRepository(UserRepository):
         result = await self.db.execute(stmt)
         await self.db.commit()
         return result.rowcount > 0
+
+
+# ============================================================
+# Sessionless Wrapper (Production DI)
+# ============================================================
+
+
+class SessionlessUserRepository(UserRepository):
+    """Sessionless user repository that opens a session per operation.
+
+    Holds NO session instance. Each method acquires a fresh session via
+    ``get_db_session()`` — the context manager commits on success, rolls
+    back on error, and always closes — then delegates to a per-call
+    ``PostgreSQLUserRepository`` bound to that session.
+
+    This follows Architectural Design Principle 5 (Composition Root — no
+    shared session state), mirroring ``SessionlessCaseRepository``. It is
+    the fix for the idle-in-transaction leak (#703): the previous wiring
+    handed a single process-lifetime ``AsyncSession`` to a singleton store,
+    and the read methods never committed/closed, so PostgreSQL left the
+    backing connection ``idle in transaction`` indefinitely. Per-operation
+    sessions end every transaction promptly, avoid sharing one AsyncSession
+    across concurrent requests, and re-apply the RLS tenant scope per op.
+    """
+
+    async def save(self, user: User) -> User:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).save(user)
+
+    async def get(self, user_id: str) -> Optional[User]:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).get(user_id)
+
+    async def get_by_username(self, username: str) -> Optional[User]:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).get_by_username(username)
+
+    async def get_by_email(self, email: str) -> Optional[User]:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).get_by_email(email)
+
+    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).list(
+                limit=limit, offset=offset
+            )
+
+    async def list_users(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        is_active: Optional[bool] = None,
+    ) -> tuple[List[User], int]:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).list_users(
+                limit=limit, offset=offset, is_active=is_active
+            )
+
+    async def update(self, user: User) -> User:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).update(user)
+
+    async def create(self, user: User) -> User:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).create(user)
+
+    async def delete(self, user_id: str) -> bool:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).delete(user_id)

@@ -364,7 +364,6 @@ def create_auth_service(
 def create_user_service(
     auth_service: Any,
     redis_client: Any | None,
-    db_session: Any | None,
     settings: FaultMavenSettings,
 ) -> Any | None:
     """Create user service for user management.
@@ -388,14 +387,19 @@ def create_user_service(
     try:
         from faultmaven.infrastructure.persistence.user_repository import (
             InMemoryUserRepository,
-            PostgreSQLUserRepository,
+            SessionlessUserRepository,
         )
         from faultmaven.modules.auth.domain.services.user_service import UserService
 
-        # Use PostgreSQL if db_session available, else InMemory for development
-        if db_session:
-            user_repo = PostgreSQLUserRepository(db_session)
-            logger.debug("UserService using PostgreSQLUserRepository")
+        # Use the persistent database when one is configured, else InMemory for
+        # ephemeral/no-database development. Keyed off the configured
+        # DATABASE_URL — NOT a shared session handle. The sessionless repo opens
+        # a fresh session per operation (Principle 5, #703 fix); it never holds
+        # a process-lifetime session that could leak idle-in-transaction.
+        database_url = settings.database.database_url or ""
+        if database_url and database_url != ":memory:":
+            user_repo = SessionlessUserRepository()
+            logger.debug("UserService using SessionlessUserRepository")
         else:
             user_repo = InMemoryUserRepository()
             logger.debug("UserService using InMemoryUserRepository (development)")
@@ -621,7 +625,6 @@ def register_services(container: BaseDIContainer) -> None:
     case_repository = getattr(container, "case_repository", None)
     session_store = container.get_service("session_store")
     case_vector_store = getattr(container, "case_vector_store", None)
-    db_session = getattr(container, "db_session", None)
     vector_store = container.get_service("vector_store")
     knowledge_ingester = getattr(container, "knowledge_ingester", None)
     redis_client = getattr(container, "redis_client", None)
@@ -632,7 +635,7 @@ def register_services(container: BaseDIContainer) -> None:
     container._register_service("auth_service", auth_service)
 
     # User Service (Composition Root: auth_service injected via constructor)
-    user_service = create_user_service(auth_service, redis_client, db_session, settings)
+    user_service = create_user_service(auth_service, redis_client, settings)
     container.user_service = user_service
     if user_service:
         container._register_service("user_service", user_service)
