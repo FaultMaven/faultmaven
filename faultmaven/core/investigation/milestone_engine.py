@@ -272,6 +272,28 @@ def _has_searchable_material(case: Case) -> bool:
     )
 
 
+def _should_force_tools(
+    processing_mode: Optional[str], case: Case, has_pending: bool
+) -> bool:
+    """Decide ``tool_choice=required`` for a generation turn.
+
+    Force Directed-Analysis tools only when all three hold: (a) the turn is
+    classified ``directed_analysis``, (b) the case has searchable material for
+    the tool to target, and (c) the user is not mid-confirmation (a
+    ``pending_transition`` turn is a typed confirm/decline with nothing to
+    search — forcing tools would crash the loop). This is the linchpin of
+    #708: a fresh evidence-bearing upload reroutes to ``directed_analysis``
+    AND satisfies ``_has_searchable_material`` via its UploadedFile, so tools
+    are forced on the delivering turn instead of leaving it on
+    ``tool_choice=auto`` where the agent can skip analysis.
+    """
+    return (
+        processing_mode == "directed_analysis"
+        and _has_searchable_material(case)
+        and not has_pending
+    )
+
+
 def _solution_cause_validated(case: Case) -> bool:
     """M5 gate predicate: is the cause established enough to register a SOLUTION?
 
@@ -4197,10 +4219,8 @@ class MilestoneEngine:
                 hasattr(case, "pending_transition") and case.pending_transition
             )
             if self.investigation_tools:
-                force_tools = (
-                    processing_mode == "directed_analysis"
-                    and _has_searchable_material(case)
-                    and not has_pending
+                force_tools = _should_force_tools(
+                    processing_mode, case, bool(has_pending)
                 )
                 da_tools = self._build_da_tool_schemas()
                 da_context = self._build_tool_context(case, intent_data)
