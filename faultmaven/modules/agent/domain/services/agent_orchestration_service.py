@@ -59,7 +59,11 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,
     classify_query,
 )
-from faultmaven.modules.agent.tools.base import AgentToolRegistry, ToolContext
+from faultmaven.modules.agent.tools.base import (
+    AgentToolRegistry,
+    ToolContext,
+    derive_kb_context_metadata,
+)
 from faultmaven.modules.agent.tools.base import tool_registry as agent_tool_registry
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VECTORIZATION_MAX_SIZE_BYTES,
@@ -455,6 +459,7 @@ class AgentOrchestrationService:
                 case_repository=self.case_repo,
                 execution_id=execution_id,
                 in_memory_case=case,
+                kb_context_metadata=derive_kb_context_metadata(case),
             )
 
             # Execute with retry

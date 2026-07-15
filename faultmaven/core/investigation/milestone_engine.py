@@ -5922,7 +5922,10 @@ class MilestoneEngine:
 
     def _build_tool_context(self, case: Any, intent_data: dict | None = None) -> Any:
         """Build ToolContext for tool execution during DA turns."""
-        from faultmaven.modules.agent.tools.base import ToolContext
+        from faultmaven.modules.agent.tools.base import (
+            ToolContext,
+            derive_kb_context_metadata,
+        )
 
         user_id = (intent_data or {}).get("user_id", "system")
         organization_id = getattr(case, "organization_id", "")
@@ -5948,6 +5951,7 @@ class MilestoneEngine:
             case_repository=self.repository,
             metadata=metadata,
             in_memory_case=case,
+            kb_context_metadata=derive_kb_context_metadata(case),
         )
 
     def _parse_schema_tool_call(

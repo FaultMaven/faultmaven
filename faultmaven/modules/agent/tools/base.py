@@ -18,6 +18,32 @@ from faultmaven.modules.agent.domain.events.execution_events import Tool
 logger = logging.getLogger(__name__)
 
 
+def derive_kb_context_metadata(case: Any) -> Dict[str, str]:
+    """Extract KB-reranker context (service) from a case's problem verification.
+
+    The reranker's metadata signal (``_compute_metadata_score``) exact-matches
+    a chunk's ``domain``/``service`` frontmatter against this context to boost
+    aligned runbooks. We derive ``service`` from the first affected service
+    (mirroring the runbook-conversion mapping ``affected_services[0]``).
+
+    ``domain`` is intentionally omitted: the case has no domain field, and a
+    fabricated/default domain would produce false exact-matches in the
+    reranker. Wire it here in one line if the case model gains a domain signal.
+
+    Duck-typed (``getattr``, no case-model import) to respect module
+    boundaries, matching how the engine reads the case elsewhere.
+    """
+    pv = getattr(case, "problem_verification", None)
+    if not pv:
+        return {}
+
+    ctx: Dict[str, str] = {}
+    services = getattr(pv, "affected_services", None) or []
+    if services and isinstance(services[0], str) and services[0].strip():
+        ctx["service"] = services[0].strip()
+    return ctx
+
+
 @dataclass
 class ToolContext:
     """Context passed to tool execution.
@@ -39,6 +65,10 @@ class ToolContext:
         in_memory_case: Snapshot of the case at turn start (avoids re-fetching
             and works around races where evidence persisted earlier this turn
             isn't yet visible to a fresh repository read).
+        kb_context_metadata: Case context (e.g. affected service) used by the
+            KB reranker's metadata signal to boost domain/service-aligned
+            chunks. Populated from the case's problem verification; empty when
+            no verification data exists yet. Consumed by KBToolAdapter.
     """
 
     session_id: str
@@ -50,6 +80,7 @@ class ToolContext:
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     in_memory_case: Optional[Any] = None
+    kb_context_metadata: Dict[str, str] = field(default_factory=dict)
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
         """Create a new context with the execution ID set."""
@@ -63,6 +94,7 @@ class ToolContext:
             execution_id=execution_id,
             metadata=self.metadata,
             in_memory_case=self.in_memory_case,
+            kb_context_metadata=self.kb_context_metadata,
         )
 
 
