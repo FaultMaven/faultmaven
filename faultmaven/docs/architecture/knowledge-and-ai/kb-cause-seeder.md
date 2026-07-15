@@ -40,7 +40,7 @@ priors to test from the first diagnosis turn.
 
 ## Data flow
 
-```
+```text
 symptom_verified ─► _transition_to_investigating
                      └─► _prefetch_kb_context          (existing: search_knowledge)
                           └─► seed_candidate_causes_from_kb(case, hits, kb_item_repo, turn)   ◄── NEW, flag-gated
@@ -76,14 +76,20 @@ active hypotheses in one category reads as fixation). The bounds:
   already done the semantic alignment at runbook granularity.
 - **Skip fallback causes:** a `is_fallback_cause: true` Cause (`### Cause Z:
   Unidentified`) has an empty chain — nothing to instantiate.
-- **Rank causes by evidence alignment:** score each remaining Cause by
-  deterministic token overlap of its `cause_statement` + `rung_indicators`
-  against the case's symptom statement and current evidence text. This selects
-  *which* priors are worth seeding — it grants **no** confidence; it is not the
-  grounding matcher.
+- **Order causes by the ranking that already exists — no bespoke scorer.** Each
+  `### Cause` is its own retrieval chunk, so retrieval already ranked the causes;
+  where a hit maps back to a specific Cause, seed in that score order. Otherwise
+  fall back to the runbook author's own cause order (causes are authored
+  most-likely-first). A second token-overlap pass re-scoring causes against the
+  symptom would be a weaker re-match of what retrieval already ranked — precisely
+  the matcher-shaped code the #658 NO-GO retired — and would re-import a matcher's
+  eval burden. If per-case cause relevance ever needs improving, the home for it
+  is the retrieval ranker, not the seeder.
 - **Cap total seeded causes:** across all runbooks, seed at most
-  `KB_SEEDER_MAX_CAUSES` (default 3). Kept below the anchoring condition-1
-  threshold (4) so seeding alone never manufactures a false anchoring signal.
+  `KB_SEEDER_MAX_CAUSES`. This is **derived from** the anchoring condition-1
+  threshold (`< N_same_category`), not a hardcoded 3, so a future change to the
+  anchoring threshold cannot silently let the seeder self-anchor — the
+  relationship is asserted in a test.
 - **Dedup across runbooks:** the same cause retrieved via two runbooks seeds
   once — handled for free by `ingest_emitted_chain`, which reuses a node on
   exact-normalized `(node_type, statement)`. Near-duplicate roots are reconciled
@@ -149,6 +155,24 @@ cap, never links evidence, never sets VALIDATED. Anchoring and decay are the
 backstop: a misleading runbook's seeded cause receives no supporting evidence,
 decays, is anchoring-flagged, and is demoted — the engine does not conclude.
 
+**Provenance-blindness invariant (load-bearing).** The whole no-privilege claim
+rests on *nothing branching on origin*. The seeder's provenance markers
+(`node.metadata["seeded_from_runbook"]`, the hypothesis `rationale`) are read
+only by observability and tests. No safety mechanism — confidence decay,
+anchoring detection, failed-fix demotion, node/hypothesis state derivation —
+reads them. This is enforced by a standing invariant test (a grep/AST assertion
+that the decay/anchoring/demotion/derivation code paths never reference the
+provenance keys), so a future edit cannot quietly grant a seed evidentiary
+weight.
+
+**Honest limit — seed↔LLM anchoring interaction.** The `KB_SEEDER_MAX_CAUSES`
+cap stops the seeder *alone* from tripping anchoring condition 1. But seeded
+`OTHER`-category causes and any `OTHER`-category hypothesis the LLM generates can
+still combine to ≥ the threshold and raise an anchoring flag. This is
+conservative-safe — a safety mechanism firing early costs exploration breadth,
+never a wrong conclusion — but it is a real seed→LLM interaction, asserted as a
+measured eval expectation rather than left as a surprise.
+
 ## Prompt alignment (4.4)
 
 When seeding is active the `KNOWLEDGE & RUNBOOK AUTHORITY` block changes the
@@ -157,6 +181,15 @@ graph**, so the model **validates or refutes** them against evidence (via
 `hypothesis_evidence_links` / `causal_evidence`) instead of re-emitting
 `hypotheses_to_add` from prose. Re-deriving structure the engine already
 instantiated would double-create causes and re-introduce the double-collapse.
+
+The block frames seeded candidates explicitly as **priors to test, not answers**:
+reject a seeded cause on contradicting evidence, and — critically — keep forming
+independent hypotheses for causes the runbook did not cover. This is the one
+place prompt-level over-deference could dent *effectiveness* (an LLM confirming a
+seed instead of testing it, or letting seeds crowd out its own hypothesis
+generation). The mechanical guarantee already bounds the *safety* worst case (a
+deferential LLM still cannot reach VALIDATED without evidence); the prompt
+framing and the eval protect *quality*.
 
 The flat "Exactly one Cause matches → that Cause IS your hypothesis" branch
 remains the behavior when the flag is off, and remains the fallback for
@@ -178,7 +211,7 @@ divergence.
 |---|---|---|
 | `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | `false` | Gates seeder invocation **and** the AUTHORITY prompt variant. Kill switch — disables in prod without rollback. |
 | `KB_SEEDER_MAX_RUNBOOKS` | `2` | Distinct runbooks seeded per retrieval, top by score. |
-| `KB_SEEDER_MAX_CAUSES` | `3` | Total causes seeded per turn (kept < anchoring threshold). |
+| `KB_SEEDER_MAX_CAUSES` | derived (`anchoring threshold − 1`, = `3`) | Total causes seeded per turn. Derived from the anchoring condition-1 constant, not hardcoded. |
 
 The `parent_document_id` surfacing (4.2) and the causes-freshness comparison
 (4.5) are plain correctness fixes and run regardless of the flag; the KB schema
@@ -192,9 +225,16 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   expected candidate nodes (root/intermediate), edges wired `root → … → D`, and a
   hypothesis whose `root_node_id`/`path` head at the seeded root — all CANDIDATE,
   likelihood ≤ 0.5, no VALIDATED.
+- **Provenance-blindness:** the decay/anchoring/demotion/state-derivation paths
+  never reference the seeded-provenance keys (invariant grep/AST test).
+- **Cap ↔ anchoring coupling:** `KB_SEEDER_MAX_CAUSES` is strictly below the
+  anchoring condition-1 threshold (asserted against the real constant, so the two
+  cannot silently drift apart).
 - **Misleading runbook:** a wrong seeded prior with no supporting evidence decays
   across turns and is anchoring-flagged/demoted; the engine reaches no conclusion
-  (NO COLLAPSE, NO INCORRECT CONCLUSION).
+  (NO COLLAPSE, NO INCORRECT CONCLUSION). The eval also confirms the engine did
+  **not** simply stop exploring — the LLM continues generating its own
+  hypotheses (guards the seed-crowd-out quality risk).
 - **Multi-runbook:** an identical-statement cause seeded via two runbooks dedups
   to one node; two distinct roots enter as competing OR-alternative candidates.
 - **Freshness:** a causes-only pack change re-ingests.
