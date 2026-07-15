@@ -207,11 +207,11 @@ divergence.
 
 ## Configuration
 
-| Flag | Default | Effect |
-|---|---|---|
-| `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | `false` | Gates seeder invocation **and** the AUTHORITY prompt variant. Kill switch — disables in prod without rollback. |
-| `KB_SEEDER_MAX_RUNBOOKS` | `2` | Distinct runbooks seeded per retrieval, top by score. |
-| `KB_SEEDER_MAX_CAUSES` | derived (`anchoring threshold − 1`, = `3`) | Total causes seeded per turn. Derived from the anchoring condition-1 constant, not hardcoded. |
+| Knob | Kind | Default | Effect |
+|---|---|---|---|
+| `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | env flag | `false` | Gates seeder invocation **and** the AUTHORITY prompt override. Kill switch — disables in prod without rollback. |
+| `MAX_SEEDED_RUNBOOKS` | module constant (`kb_cause_seeder.py`) | `2` | Distinct runbooks seeded per retrieval, top by score. |
+| `MAX_SEEDED_CAUSES` | module constant, **derived** | `ANCHORING_SAME_CATEGORY_THRESHOLD − 1` (= `3`) | Total causes seeded per turn. Derived from the anchoring condition-1 constant (not an env var — deriving then overriding would break the coupling guarantee), asserted `< threshold` in a test. |
 
 The `parent_document_id` surfacing (4.2) and the causes-freshness comparison
 (4.5) are plain correctness fixes and run regardless of the flag; the KB schema
