@@ -161,6 +161,22 @@ class TestComputeMetadataScore:
         )
         assert score == 0.0
 
+    def test_service_match_is_case_insensitive_and_trimmed(self):
+        """Free-text case service ("PostgreSQL") must match curated frontmatter
+        ("postgresql") — a raw == would miss the most common alignment."""
+        score = KnowledgeVectorStore._compute_metadata_score(
+            {"service": "postgresql"},
+            {"service": "  PostgreSQL "},
+        )
+        assert score >= 0.3
+
+    def test_domain_match_is_case_insensitive(self):
+        score = KnowledgeVectorStore._compute_metadata_score(
+            {"domain": "Networking"},
+            {"domain": "networking"},
+        )
+        assert score >= 0.3
+
 
 class TestComputeFreshnessScore:
     """Tests for staleness decay scoring."""
