@@ -23,6 +23,7 @@ Key Improvements over Original:
 
 import hashlib
 import logging
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -51,6 +52,19 @@ from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
+
+# Chunk ids are minted as f"{parent_document_id}_chunk_{i}" (see
+# ``_index_document_in_vector_store``). Recover the parent id when chunk
+# metadata omits ``parent_document_id``.
+_CHUNK_SUFFIX_RE = re.compile(r"_chunk_\d+$")
+
+
+def _strip_chunk_suffix(chunk_id: Optional[str]) -> Optional[str]:
+    """Return the parent document id encoded in a chunk id, or None."""
+    if not chunk_id:
+        return None
+    stripped = _CHUNK_SUFFIX_RE.sub("", chunk_id)
+    return stripped or None
 
 
 class KnowledgeService:
@@ -236,6 +250,14 @@ class KnowledgeService:
                     # Convert to SearchResult models
                     search_results = []
                     for result in results:
+                        result_meta = result.get("metadata") or {}
+                        # Parent runbook identity lives in chunk metadata; it is
+                        # the knowledge_items row holding metadata["causes"]. Fall
+                        # back to stripping the "_chunk_N" suffix off the chunk id
+                        # (id == f"{parent}_chunk_{i}") when metadata omits it.
+                        parent_document_id = result_meta.get(
+                            "parent_document_id"
+                        ) or _strip_chunk_suffix(result.get("id"))
                         search_result = SearchResult(
                             document_id=result.get(
                                 "document_id", result.get("id", "unknown")
@@ -248,6 +270,7 @@ class KnowledgeService:
                                 :200
                             ]
                             + "...",
+                            parent_document_id=parent_document_id,
                         )
                         search_results.append(search_result)
 
@@ -1219,6 +1242,36 @@ class KnowledgeService:
 
         except Exception as e:
             logger.error(f"Failed to get document {document_id}: {e}")
+            return None
+
+    async def get_runbook_causes(self, item_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Return a runbook's structured causal-graph records, or None.
+
+        Loads ``knowledge_items.metadata["causes"]`` for the given row — the
+        machine-readable per-Cause chains the KB cause seeder instantiates as
+        candidate graph nodes. Returns None when the id is unknown, the row has
+        no causes record, or lookup fails (the seeder treats None as "prose-only
+        source, nothing to seed").
+        """
+        try:
+            if not item_id or not self._db_session_factory:
+                return None
+
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
+            )
+
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                item = await repo.get_by_id(item_id)
+
+            if item is None or not item.metadata:
+                return None
+            causes = item.metadata.get("causes")
+            return causes if isinstance(causes, list) else None
+
+        except Exception as e:
+            logger.error(f"Failed to load causes for {item_id}: {e}")
             return None
 
     async def get_semantic_snippet(

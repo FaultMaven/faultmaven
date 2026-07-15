@@ -228,6 +228,43 @@ async def test_bootstrap_re_ingests_changed_runbook(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_re_ingests_on_causes_change_with_unchanged_markdown(
+    tmp_path: Path,
+):
+    """A causes-only pack change (markdown byte-identical) must re-ingest.
+
+    The content hash covers only the markdown; without a causes comparison the
+    stale structured record would survive and the live consumer (KB cause
+    seeder) would read it. So drift in metadata["causes"] alone forces re-ingest.
+    """
+    pack_causes = [{"cause_letter": "A", "cause_name": "New cause"}]
+    pack_dir = _write_pack(tmp_path, causes=pack_causes)
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+    knowledge_service._vector_store = MagicMock()
+    knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+    existing = MagicMock()
+    existing.content = RUNBOOK_MD  # markdown unchanged → content hash matches
+    existing.knowledge_metadata = {
+        "causes": [{"cause_letter": "A", "cause_name": "OLD cause"}]
+    }
+
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=existing),
+        organization_id="org-test",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+
+    assert result.ingested == ["global/example.md"]
+    assert result.skipped_unchanged == []
+    knowledge_service.ingest_runbook.assert_awaited_once()
+    knowledge_service._vector_store.delete_documents_by_parent_id.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_raises_on_zero_chunks(tmp_path: Path):
     """If ingest_runbook reports 0 chunks, the runbook is recorded as failed
     and the orphan-cleanup path runs."""

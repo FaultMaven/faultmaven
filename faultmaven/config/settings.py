@@ -1418,6 +1418,26 @@ class FeatureSettings(BaseSettings):
     enable_multi_agent: bool = Field(default=False)
     enable_workflow_optimization: bool = Field(default=False)
 
+    # KB cause seeder: on the symptom-verified transition, instantiate a
+    # retrieved runbook's metadata["causes"] chains as CANDIDATE causal-graph
+    # nodes/edges/hypotheses (a prior, never VALIDATED without case evidence),
+    # and switch the KNOWLEDGE & RUNBOOK AUTHORITY prompt to the
+    # validate/refute-seeded-candidates variant. When False, the engine keeps the
+    # flat "matched runbook → one hypothesis" prompt path and seeds nothing.
+    # Largest engine-behaviour change touching the no-collapse guarantee — ships
+    # dark; the env var is the prod kill switch. See
+    # docs/architecture/knowledge-and-ai/kb-cause-seeder.md.
+    kb_cause_seeder_enabled: bool = Field(
+        default=False,
+        validation_alias="FAULTMAVEN_KB_CAUSE_SEEDER",
+        description=(
+            "Phase 4 feature flag: seed retrieved runbook metadata['causes'] "
+            "chains as CANDIDATE causal-graph nodes/hypotheses at the "
+            "symptom-verified transition (+ the seeded-candidate AUTHORITY "
+            "prompt variant)."
+        ),
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

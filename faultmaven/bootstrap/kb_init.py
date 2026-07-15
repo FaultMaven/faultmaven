@@ -42,6 +42,7 @@ Idempotency
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from pathlib import Path
@@ -206,12 +207,31 @@ async def _ingest_pack_runbook(
 
     if existing_row is not None:
         existing_hash = hashlib.sha256(existing_row.content.encode("utf-8")).hexdigest()
-        if existing_hash == runbook.content_hash:
+        content_unchanged = existing_hash == runbook.content_hash
+        # The content hash covers only the markdown. ``causes`` is derived from
+        # the markdown but travels separately in metadata, so a pack change that
+        # edits ONLY causes (markdown byte-identical) would hash-match and be
+        # skipped — leaving the live consumer (the KB cause seeder) reading stale
+        # structure. Compare the persisted causes too and re-ingest on drift.
+        existing_meta = existing_row.knowledge_metadata
+        existing_causes = (
+            existing_meta.get("causes") if isinstance(existing_meta, dict) else None
+        )
+        causes_unchanged = _causes_fingerprint(existing_causes) == _causes_fingerprint(
+            runbook.causes
+        )
+        if content_unchanged and causes_unchanged:
             logger.debug(f"Skipping {runbook.relpath}: unchanged")
             return "skipped"
-        logger.info(
-            f"{runbook.relpath}: content changed since last ingest — re-ingesting"
-        )
+        if content_unchanged:
+            logger.info(
+                f"{runbook.relpath}: causes changed (markdown unchanged) — "
+                "re-ingesting"
+            )
+        else:
+            logger.info(
+                f"{runbook.relpath}: content changed since last ingest — re-ingesting"
+            )
         await _delete_existing(runbook.item_id, knowledge_service, db_session_factory)
 
     prechunked = [(c.text, c.embedding) for c in runbook.chunks]
@@ -400,6 +420,15 @@ async def _reconcile_vectors(
     except Exception as exc:
         logger.warning(f"Reconcile: batched orphan delete failed: {exc}")
         return [], orphaned_rows
+
+
+def _causes_fingerprint(causes: Optional[list]) -> str:
+    """Order-stable, key-order-insensitive fingerprint of a causes record.
+
+    Cause order is authoring-significant (kept), but dict key order is not, so
+    ``sort_keys`` lets a semantically-identical re-serialization compare equal.
+    """
+    return json.dumps(causes or [], sort_keys=True, ensure_ascii=False)
 
 
 async def _delete_existing(

@@ -71,6 +71,12 @@ if NEW_HYPOTHESIS_MAX_PRIOR >= CAUSE_IDENTIFIED_LIKELIHOOD:  # pragma: no cover
         f"CAUSE_IDENTIFIED_LIKELIHOOD ({CAUSE_IDENTIFIED_LIKELIHOOD})"
     )
 
+# Anchoring detection condition 1: this many ACTIVE hypotheses in one category
+# reads as fixation on a single line of reasoning. Named so downstream producers
+# of hypotheses (e.g. the KB cause seeder) can bound how many candidates they
+# introduce below this threshold instead of hardcoding a copy of the number.
+ANCHORING_SAME_CATEGORY_THRESHOLD = 4
+
 
 class HypothesisManager:
     """Unified hypothesis lifecycle and confidence management
@@ -593,7 +599,7 @@ class HypothesisManager:
             category_counts[h.category].append(h.hypothesis_id)
 
         for category, hypothesis_ids in category_counts.items():
-            if len(hypothesis_ids) >= 4:
+            if len(hypothesis_ids) >= ANCHORING_SAME_CATEGORY_THRESHOLD:
                 return (
                     True,
                     f"Anchoring: {len(hypothesis_ids)} hypotheses in '{category}' category",

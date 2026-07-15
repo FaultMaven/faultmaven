@@ -8728,50 +8728,119 @@ class MilestoneEngine:
         # Deterministic, code-level — not an LLM tool call decision.
         # Results are stored on the case and injected into context by
         # context_builder so the LLM sees relevant runbooks from turn 1.
-        await self._prefetch_kb_context(case, case.description, "symptom")
+        kb_hits = await self._prefetch_kb_context(case, case.description, "symptom")
+
+        # KB cause seeder (flag-gated): instantiate the matched runbooks'
+        # metadata["causes"] chains as CANDIDATE graph nodes/hypotheses, so the
+        # LLM validates/refutes structured priors instead of re-deriving one flat
+        # hypothesis from prose. Prior, not gate — no evidentiary privilege.
+        await self._seed_candidate_causes_from_kb(case, kb_hits)
 
     async def _prefetch_kb_context(
         self,
         case: "Case",
         query: str,
         trigger: str,
-    ) -> None:
+    ) -> list:
         """Search KB for runbooks matching the query, store on case.
 
         Args:
             case: Case to update
             query: Search query (problem statement or root cause)
             trigger: What triggered this search ("symptom" or "root_cause")
+
+        Returns:
+            The relevance-filtered ``SearchResult`` list (empty on miss/failure),
+            so a caller can act on the matched runbooks — the KB cause seeder
+            reads ``parent_document_id`` off these hits.
         """
         if not self.knowledge_service:
-            return
+            return []
 
         try:
             results = await self.knowledge_service.search_knowledge(
                 query=query, limit=3
             )
-            if results:
+            relevant = [r for r in results or [] if r.score >= 0.3]
+            if relevant:
                 case.kb_context = [
                     {
                         "title": r.title,
                         "summary": r.snippet,
                         "score": r.score,
                         "type": getattr(r, "document_type", "runbook"),
+                        "parent_document_id": getattr(r, "parent_document_id", None),
                         "trigger": trigger,
                     }
-                    for r in results
-                    if r.score >= 0.3  # Minimum relevance threshold
+                    for r in relevant
                 ]
-                if case.kb_context:
-                    logger.info(
-                        f"KB pre-fetch ({trigger}): {len(case.kb_context)} matches "
-                        f"for case {case.case_id}"
-                    )
-                else:
-                    case.kb_context = None
+                logger.info(
+                    f"KB pre-fetch ({trigger}): {len(case.kb_context)} matches "
+                    f"for case {case.case_id}"
+                )
+            else:
+                case.kb_context = None
+            return relevant
         except Exception:
             logger.warning(
                 f"KB pre-fetch ({trigger}) failed for case {case.case_id}",
+                exc_info=True,
+            )
+            return []
+
+    async def _seed_candidate_causes_from_kb(self, case: "Case", kb_hits: list) -> None:
+        """Seed matched runbooks' cause chains as candidate graph nodes (flag-gated).
+
+        Deterministic, engine-driven — no LLM call. Loads ``metadata["causes"]``
+        for the top distinct runbooks the pre-fetch surfaced and instantiates
+        their chains as CANDIDATE nodes/hypotheses (prior, not gate). Best-effort:
+        a failure never breaks the transition.
+        """
+        from faultmaven.config.settings import get_settings
+
+        if not get_settings().features.kb_cause_seeder_enabled:
+            return
+        if not self.knowledge_service or not kb_hits:
+            return
+
+        try:
+            from faultmaven.core.investigation.kb_cause_seeder import (
+                MAX_SEEDED_RUNBOOKS,
+                SeededRunbook,
+                seed_candidate_causes,
+            )
+
+            # Dedup hits to distinct parent runbooks, best score wins; rank by score.
+            best_score_by_runbook: dict[str, float] = {}
+            for hit in kb_hits:
+                parent_id = getattr(hit, "parent_document_id", None)
+                if not parent_id:
+                    continue
+                if hit.score > best_score_by_runbook.get(parent_id, -1.0):
+                    best_score_by_runbook[parent_id] = hit.score
+            ranked = sorted(
+                best_score_by_runbook.items(), key=lambda kv: kv[1], reverse=True
+            )
+
+            runbooks: list = []
+            for parent_id, score in ranked[:MAX_SEEDED_RUNBOOKS]:
+                causes = await self.knowledge_service.get_runbook_causes(parent_id)
+                if causes:
+                    runbooks.append(
+                        SeededRunbook(item_id=parent_id, score=score, causes=causes)
+                    )
+            if not runbooks:
+                return
+
+            seed_candidate_causes(
+                case,
+                runbooks,
+                case.current_turn,
+                hypothesis_manager=self.hypothesis_manager,
+            )
+        except Exception:
+            logger.warning(
+                f"KB cause seeding failed for case {case.case_id}",
                 exc_info=True,
             )
 
