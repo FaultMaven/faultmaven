@@ -22,9 +22,6 @@ modules =
     faultmaven.modules.preprocessing
     # Analytics moved to infrastructure/observability (cross-cutting metrics)
     # Knowledge services (vertical slice module)
-    faultmaven.modules.knowledge.domain.services.search_service
-    faultmaven.modules.knowledge.domain.services.embedding_service
-    faultmaven.modules.knowledge.domain.services.vector_store_service
     faultmaven.modules.knowledge.domain.services.knowledge_service
 
 # ============================================================================

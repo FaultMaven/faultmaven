@@ -8,7 +8,6 @@ Usage:
 
 Examples:
     python -m faultmaven.jobs.run case_cleanup
-    python -m faultmaven.jobs.run knowledge_indexing --organization-id org_123
 
 This enables operational neutrality - jobs can be scheduled by external
 orchestrators (cron, Kubernetes CronJobs, Airflow, etc.) instead of
@@ -25,7 +24,6 @@ from typing import Any, Dict, List, Optional
 # Available jobs registry
 AVAILABLE_JOBS: Dict[str, str] = {
     "case_cleanup": "faultmaven.jobs.case_cleanup",
-    "knowledge_indexing": "faultmaven.jobs.knowledge_indexing_job",
     "storage_cleanup": "faultmaven.modules.agent.jobs.storage_cleanup",
 }
 

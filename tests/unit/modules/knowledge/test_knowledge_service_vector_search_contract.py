@@ -1,7 +1,7 @@
 """Regression tests for the KnowledgeService → KnowledgeVectorStore.search contract.
 
-Both `KnowledgeService` and `AdvancedKnowledgeRetrieval` invoke
-``vector_store.search``. The vector store's signature is
+`KnowledgeService` invokes ``vector_store.search``. The vector store's
+signature is
 
     async def search(
         self,
@@ -11,13 +11,13 @@ Both `KnowledgeService` and `AdvancedKnowledgeRetrieval` invoke
         where: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
 
-Prior to 2026-05-20, all 7 call sites in these two domain services used the
-pre-refactor signature ``search(query, k=..., filters=...)`` — missing the
-required ``collection_name`` and using the wrong kwarg name (`filters` vs
-`where`). Every call raised TypeError, the surrounding try/except swallowed
-it, and FaultMaven silently proceeded without KB context. Several Run 6
-behavioral findings (hallucinated evidence, no alternative hypotheses
-considered, incomplete solutions) traced back to this silent KB failure.
+Prior to 2026-05-20, the call sites used the pre-refactor signature
+``search(query, k=..., filters=...)`` — missing the required
+``collection_name`` and using the wrong kwarg name (`filters` vs `where`).
+Every call raised TypeError, the surrounding try/except swallowed it, and
+FaultMaven silently proceeded without KB context. Several Run 6 behavioral
+findings (hallucinated evidence, no alternative hypotheses considered,
+incomplete solutions) traced back to this silent KB failure.
 
 The bug was invisible to existing tests because they all mock
 ``vector_store.search`` with ``AsyncMock(...)``, which accepts any call
@@ -105,55 +105,6 @@ async def test_knowledge_service_search_uses_real_signature():
     )
 
 
-@pytest.mark.asyncio
-async def test_advanced_retrieval_search_uses_real_signature():
-    """``AdvancedKnowledgeRetrieval`` invokes ``vector_store.search`` twice
-    (initial + expanded). Both calls must use the real signature with a
-    scope filter — the prior pre-refactor calls had neither
-    ``collection_name`` nor any filter at all.
-    """
-    from faultmaven.modules.knowledge.domain.services.advanced_retrieval import (
-        AdvancedKnowledgeRetrieval,
-        RetrievalContext,
-    )
-
-    store = _RecordingMockVectorStore()
-    retrieval = AdvancedKnowledgeRetrieval(vector_store=store)
-
-    ctx = RetrievalContext(
-        session_id="sess_test",
-        query="memory pressure",
-        reasoning_type="diagnostic",
-    )
-
-    # `retrieve_with_reasoning_context` is the public entry; routes through
-    # the search calls we care about. We don't assert on the result shape
-    # — the test is about the call contract.
-    try:
-        await retrieval.retrieve_with_reasoning_context(ctx)
-    except Exception:
-        # If the mock returns no results, downstream may raise; the test is
-        # about the search call signature, not the full pipeline outcome.
-        pass
-
-    assert (
-        len(store.search_calls) >= 1
-    ), "Advanced retrieval did not invoke vector_store.search at all"
-    for call in store.search_calls:
-        assert (
-            call["collection_name"] == KB_COLLECTION
-        ), f"Expected collection_name={KB_COLLECTION!r}, got {call['collection_name']!r}"
-        assert isinstance(call["where"], dict) and call["where"], (
-            "advanced_retrieval calls vector_store.search without a scope "
-            "filter — KnowledgeVectorStore._enforce_scope_invariant rejects "
-            "this at runtime."
-        )
-        assert any(
-            k in call["where"]
-            for k in ("scope", "owner_id", "team_id", "organization_id")
-        )
-
-
 def test_knowledge_vector_store_search_signature_unchanged():
     """If KnowledgeVectorStore.search signature ever changes, this test
     breaks loudly. Any future refactor must update both callers AND this
@@ -169,6 +120,6 @@ def test_knowledge_vector_store_search_signature_unchanged():
     params = [p for p in params if p != "self"]
     assert params == ["collection_name", "query", "k", "where"], (
         f"KnowledgeVectorStore.search signature changed to {params}. "
-        f"If this is intentional, update both callers in "
-        f"knowledge_service.py and advanced_retrieval.py AND this test."
+        f"If this is intentional, update the callers in "
+        f"knowledge_service.py AND this test."
     )

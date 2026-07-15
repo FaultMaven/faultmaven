@@ -11,17 +11,11 @@ from faultmaven.modules.knowledge.domain.models import (
     KnowledgeItemType,
 )
 from faultmaven.modules.knowledge.domain.services import (
-    EmbeddingService,
-    KnowledgeSearchService,
     KnowledgeService,
-    VectorStoreService,
 )
 
 __all__ = [
     # Services
-    "KnowledgeSearchService",
-    "EmbeddingService",
-    "VectorStoreService",
     "KnowledgeService",
     # Models
     "KnowledgeItem",

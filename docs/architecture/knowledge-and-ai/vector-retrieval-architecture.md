@@ -64,11 +64,10 @@ BGE-M3 is the canonical embedding model for both KB ingestion and evidence vecto
 
 | Dimensions | Source | Status |
 | ---------- | ------ | ------ |
-| **1024** | BGE-M3 via `model_cache.get_bge_m3_model()` | **Active** — canonical for both KB and evidence retrieval |
-| 1536 | `text-embedding-3-small` via legacy `KnowledgeSearchService` / `EmbeddingService`; `KnowledgeItem.EMBEDDING_DIMENSIONS = 1536` | **Deprecated** — see §7 notes on `KnowledgeSearchService` |
+| **1024** | BGE-M3 via `model_cache.get_bge_m3_model()` | **Active** — canonical for both KB and evidence retrieval (`KnowledgeItem.EMBEDDING_DIMENSIONS = 1024`) |
 | 384 | ChromaDB default embedding | **Fallback only** — when `sentence-transformers` is unavailable; in-progress evidence cases with 384-dim vectors self-clean on close (no migration needed; see §7) |
 
-The 1024-dim BGE-M3 path is the only one new code should target. The 1536 and 384 values appear in legacy or fallback paths and are not part of the active design.
+The 1024-dim BGE-M3 path is the only one new code should target. The 384 value appears only in the ChromaDB-default fallback path and is not part of the active design.
 
 ---
 
@@ -377,7 +376,7 @@ Both paths fall back gracefully to ChromaDB's default embedding if BGE-M3 is una
 
 ### Superseded Code
 
-**`KnowledgeSearchService`** (`modules/knowledge/domain/services/search_service.py`) — operates on `KnowledgeItem` objects (whole documents), not ChromaDB chunks. Only used by the background `KnowledgeIndexingJob`. The main search path uses `KnowledgeVectorStore` directly.
+**`KnowledgeSearchService` / `EmbeddingService` / `KnowledgeIndexingJob`** — removed. This was the previous-generation document-level indexing writer (external-API embedding via `EmbeddingService`, out-of-process batch job). It was fully superseded by the current writer — inline chunk-level ingest (`_index_document_in_vector_store` → `ContentChunker` + in-process BGE-M3) plus the pre-embedded KB pack at bootstrap — and its CLI job entry could never run. The only writer to `faultmaven_kb` is now `KnowledgeVectorStore.add_documents`.
 
 **`ChromaDBVectorStore.list_documents()` / `get_document()`** — removed. These methods fetched chunks and deduplicated in Python. Replaced by SQLite queries in `KnowledgeService`.
 

@@ -12,11 +12,7 @@ orchestrators (cron, Kubernetes CronJobs, Airflow, etc.) instead of
 being tied to the web process lifecycle.
 """
 
-from faultmaven.jobs.knowledge_indexing_job import KnowledgeIndexingJob
-
 # Job modules are imported dynamically by the runner to avoid circular imports
 # See faultmaven.jobs.run for the CLI interface
 
-__all__ = [
-    "KnowledgeIndexingJob",
-]
+__all__: list[str] = []

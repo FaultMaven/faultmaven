@@ -125,7 +125,10 @@ class KnowledgeItem:
     author: Optional[str] = None
     language: str = "en"
 
-    # Verification status
+    # Source provenance (who validated this knowledge), surfaced as a trust
+    # label in the API/UI. This is NOT a retrieval-ranking input — the reranker
+    # ranks on frontmatter `status` (editorial lifecycle). See
+    # docs/architecture/knowledge-and-ai/knowledge-base-architecture.md.
     verification_level: int = (
         0  # VerificationLevel enum value (0=experimental, 1=community, 2=admin_verified)
     )

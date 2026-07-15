@@ -9,7 +9,7 @@ Section 5.4: Intelligent Report Recommendation
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import List
 
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
@@ -17,7 +17,6 @@ from faultmaven.infrastructure.observability.tracing import trace
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseReport,
     CaseState,
     ReportRecommendation,
     ReportType,
@@ -45,19 +44,14 @@ class ReportRecommendationService:
     def __init__(
         self,
         runbook_kb: RunbookKnowledgeBase,
-        embedding_service: Optional[
-            Any
-        ] = None,  # For future explicit embedding generation
     ):
         """
         Initialize report recommendation service.
 
         Args:
             runbook_kb: RunbookKnowledgeBase for similarity search
-            embedding_service: Optional service for generating embeddings
         """
         self.runbook_kb = runbook_kb
-        self.embedding_service = embedding_service
 
     @trace("get_available_report_types")
     async def get_available_report_types(
@@ -227,7 +221,6 @@ class ReportRecommendationService:
         )
 
         # Return empty list for now - will be handled by ChromaDB
-        # In production implementation, call embedding_service.encode(searchable_text)
         return []
 
     def _generate_runbook_recommendation(

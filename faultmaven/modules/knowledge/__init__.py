@@ -8,9 +8,6 @@ This module owns all knowledge-related functionality for the RAG system:
 
 Public API:
     From domain.services:
-        - KnowledgeSearchService: Main service for knowledge search operations
-        - EmbeddingService: Document embedding service (OpenAI)
-        - VectorStoreService: Vector database operations (ChromaDB)
         - KnowledgeService: Knowledge base management service
 
     From domain.models:
@@ -36,19 +33,10 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
 )
-from faultmaven.modules.knowledge.domain.services.embedding_service import (
-    EmbeddingService,
-)
-from faultmaven.modules.knowledge.domain.services.knowledge_service import (
-    KnowledgeService,
-)
 
 # Domain services
-from faultmaven.modules.knowledge.domain.services.search_service import (
-    KnowledgeSearchService,
-)
-from faultmaven.modules.knowledge.domain.services.vector_store_service import (
-    VectorStoreService,
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    KnowledgeService,
 )
 
 # Infrastructure persistence
@@ -60,9 +48,6 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 
 __all__ = [
     # Services
-    "KnowledgeSearchService",
-    "EmbeddingService",
-    "VectorStoreService",
     "KnowledgeService",
     # Models
     "KnowledgeItem",

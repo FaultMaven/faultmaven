@@ -77,7 +77,6 @@ evidence_client = create_evidence_chromadb_client(settings)  # PersistentClient 
 
 # KB client injected into permanent stores
 ChromaDBVectorStore(client=kb_client, collection_name="faultmaven_kb")
-VectorStoreService(client=kb_client)       # knowledge_items collection
 KnowledgeVectorStore(client=kb_client)     # permanent KB collections
 
 # Evidence client injected into ephemeral store
@@ -121,8 +120,6 @@ CaseVectorStore(client=evidence_client)    # dynamic case_{id} collections
 ### 2.3 Additional Collections
 
 **`faultmaven_runbooks`** — Runbook similarity recommendations (report_type, domain metadata). Used by `RunbookKB` for "this incident looks like runbook X" matching.
-
-**`knowledge_items`** — Knowledge module search service items (organization_id, item_type, category). Used by `KnowledgeSearchService` for hybrid search.
 
 ---
 
