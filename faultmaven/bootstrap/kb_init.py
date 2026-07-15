@@ -7,7 +7,7 @@ and ensures every runbook in it has a row in ``knowledge_items`` and its chunks
 in ChromaDB. Because the pack ships pre-chunked and pre-embedded, ingestion is
 pure SQL + vector writes — **no chunking and no embedding model at startup**, so
 it runs in seconds instead of the ~tens of minutes that on-pod CPU embedding of
-~1244 chunks would take (the rollout-timeout bug; see
+~1319 chunks would take (the rollout-timeout bug; see
 ``docs/working/ANALYSIS-kb-ingestion-perf.md``).
 
 The pack location is configurable (``KB_PACK_DIR``): empty → the baseline pack

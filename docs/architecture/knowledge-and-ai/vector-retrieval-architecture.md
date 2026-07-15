@@ -2,7 +2,7 @@
 
 **Document Type:** Component Specification
 **Version:** 1.0
-**Last Updated:** 2026-04-01
+**Last Updated:** 2026-07-15
 **Status:** Current (post RAG revamp)
 
 ---
@@ -111,7 +111,7 @@ Each candidate chunk is scored across four weighted signals:
 | Status is `deprecated` | -0.30 |
 | Status is `draft` | -0.10 |
 
-**Context metadata: hard filter vs soft boost (not yet implemented).** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The design calls for a `filter_mode` parameter on `hybrid_search()`: `"hard"` adds to the `where` clause, `"soft"` (default) applies as rerank boost only. Currently `context_metadata` only feeds the soft rerank path.
+**Context metadata: hard filter vs soft boost.** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The `filter_mode` parameter on `hybrid_search()` is implemented — `"hard"` adds domain/service to the `where` clause (`_apply_hard_metadata_filter`), `"soft"` (default) applies the rerank boost only. What remains is the *end-to-end wiring*: threading high-confidence context from copilot → API → `KBToolAdapter` so a caller actually selects `"hard"`. Today every live caller uses the soft rerank path.
 
 **Tiebreaking:** When two chunks produce the same weighted score, scope priority breaks the tie: personal > team > global. This ensures a user's own runbook surfaces above a generic global procedure when both are equally relevant.
 
@@ -128,11 +128,11 @@ The latency budget differs by context. During an active incident, an SRE waiting
 
 Currently only the deep path is implemented. The fast path would be a `search_mode="fast"` on `KBConfig` that bypasses Stage 2 reranking and relies on pre-retrieval metadata filtering for precision.
 
-### Dynamic Hybrid Weights (Planned)
+### Dynamic Hybrid Weights
 
-The current reranker weights (40/25/20/15) are fixed. SRE queries vary widely: pasting `CrashLoopBackOff` is a lexical match problem (text weight should dominate), while asking "why is my service slow after deploying the new cache layer" is a semantic problem. A fixed ratio underweights lexical match for the exact-identifier queries that are extremely common in SRE workflows.
+The natural-language reranker weights are 40/25/20/15. SRE queries vary widely: pasting `CrashLoopBackOff` is a lexical match problem (text weight should dominate), while asking "why is my service slow after deploying the new cache layer" is a semantic problem. A fixed ratio would underweight lexical match for the exact-identifier queries that are extremely common in SRE workflows.
 
-Planned approach: detect identifier-like tokens in the query (error codes matching `ERR-\d+`, CamelCase names, dotted names, status codes, file paths) via regex. When present, shift term overlap weight from 25% to 40% and reduce vector similarity from 40% to 25%. No ML needed — pattern detection is sufficient.
+The reranker therefore detects identifier-like tokens in the query (error codes, CamelCase names, dotted names, status codes, file paths) via regex (`_rerank`, `RERANK_WEIGHT_*_ID` constants). When present, it shifts term overlap weight from 25% to 40% and reduces vector similarity from 40% to 25%. No ML needed — pattern detection is sufficient.
 
 ---
 
@@ -312,8 +312,8 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Binary keyword search | **Implemented** | `$contains` via `where_document` — not BM25 |
 | Four-signal reranker | **Implemented** | Vector, term overlap, metadata match, freshness |
 | Dynamic hybrid weights | **Implemented** | Identifier-heavy queries shift term overlap to 40%, vector to 25% |
-| Hard pre-filter mode | **Implemented** | `filter_mode="hard"` injects domain/service into ChromaDB where clause |
-| Fast search mode | **Implemented** | `search_mode="fast"` skips Stage 2 reranking |
+| Hard pre-filter mode | **Implemented (mechanism only)** | `filter_mode="hard"` injects domain/service into the ChromaDB where clause (`_apply_hard_metadata_filter`). Not yet invoked end-to-end — see "Extension context → KB metadata filters" below. |
+| Fast search mode | **Not done** | Declared in the `search_mode` property docstring, but no config returns `"fast"` and nothing dispatches it. Planned low-latency path (§3 Dual Retrieval Paths). |
 | Scope tiebreaking | **Implemented** | personal > team > global secondary sort in `_rerank()` |
 | Staleness-aware synthesis | **Implemented** | `_staleness_note()` + system prompt: "preserve procedural detail" |
 | Scope safety (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search. `_enforce_scope_invariant()` raises `ValueError` on unscoped queries. |
@@ -327,14 +327,14 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Structure-aware KB chunking | **Implemented** | `ContentChunker` — markdown header splits, 100–3000 chars. Wired into all ingestion paths via `_index_document_in_vector_store()`. |
+| Structure-aware KB chunking | **Implemented** | `ContentChunker` — markdown header splits, 100–3000 chars. Used by the conversion-drafts / document ingestion path (`_index_document_in_vector_store()`). The startup bootstrap does **not** chunk: it ingests the KB pack's pre-chunked, pre-embedded vectors directly. |
 | Explicit BGE-M3 embeddings (KB) | **Implemented** | All KB index and query paths use `model_cache.get_bge_m3_model()` (1024 dims). No ChromaDB default embedding in KB paths. |
-| Metadata enrichment | **Implemented** | domain, service, status, severity, symptom_class stored per chunk at ingestion, used in reranker. Also stored in SQLite (`conversion_drafts`) for dashboard filtering. |
+| Metadata enrichment | **Implemented** | domain, service, status, severity, symptom_class stored per chunk at ingestion, used in reranker. The document inventory lives in SQLite: `knowledge_items` for ingested runbooks (built-ins from the pack + activated drafts), `conversion_drafts` for pending (unverified) drafts. |
 | SQLite document inventory | **Implemented** | `list_documents()`, `get_document()`, `delete_document()` use SQLite, not ChromaDB. |
 | Redis removed from KB lifecycle | **Implemented** | No Redis reads or writes for KB documents. SQLite is the sole inventory. |
 | Chunk-aware deletion | **Implemented** | `delete_documents_by_parent_id()` removes all chunks for a document. |
 | Batch activation endpoint | **Implemented** | `POST /knowledge/drafts/verify-batch` — batch activate up to 100 drafts per request. |
-| Dashboard scan-on-mount | **Implemented** | Scan removed from server startup. Dashboard triggers `POST /knowledge/scan` on KB page mount. |
+| Startup KB scan | **Removed** | The server no longer scans a directory on startup — KB ingestion is owned by the bootstrap (KB pack). `POST /knowledge/scan` remains as a manual draft-reconciliation endpoint, not an automatic ingestion path. |
 
 ### Evidence Retrieval
 

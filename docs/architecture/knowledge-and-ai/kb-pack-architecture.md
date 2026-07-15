@@ -2,7 +2,7 @@
 
 **Document Type:** Component Specification
 **Version:** 1.0
-**Last Updated:** 2026-06-09
+**Last Updated:** 2026-07-15
 
 ---
 
@@ -24,7 +24,7 @@ strategy and retrieval mechanics, see
 
 ## Why a pack? (the problem it solves)
 
-The KB contains 59 built-in runbooks → ~1244 structure-aware chunks. Embedding
+The KB contains 91 built-in runbooks → ~1319 structure-aware chunks. Embedding
 those with BGE-M3 on a CPU-limited pod takes **~50–85 minutes** — and it is
 genuinely CPU-FLOPs-bound, so no thread/batch tuning gets it under a startup
 window. The original design ran that embedding **inside the FastAPI lifespan,
@@ -60,7 +60,7 @@ A pack is a directory (transported as `kb-pack-<version>.tar.gz`):
   "version": "<informational, e.g. a date or git sha>",
   "model": "BAAI/bge-m3",
   "dim": 1024,
-  "total_chunks": 1244,
+  "total_chunks": 1319,
   "runbooks": [
     {
       "item_id": "kb_<12 hex>",

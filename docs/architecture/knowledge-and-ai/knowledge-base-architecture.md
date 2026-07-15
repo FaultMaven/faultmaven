@@ -2,7 +2,7 @@
 
 **Document Type:** Component Specification
 **Version:** 9.1
-**Last Updated:** 2026-05-26
+**Last Updated:** 2026-07-15
 
 ---
 
@@ -151,7 +151,7 @@ pack** with the toolkit, and deliver it — no app-image rebuild needed:
 #    faultmaven/resources/knowledge/runbooks/<domain>/<runbook>.md
 
 # 2. Rebuild the pack in faultmaven-kb-toolkit (it reads the public sources):
-kb-build-pack --version 2026-06-09 --tar
+kb-build-pack --version 2026-07-08 --tar
 
 # 3. Vendor it as the committed baseline (or deliver to a running deployment's
 #    KB_PACK_DIR — see kb-pack-architecture.md for local/cloud delivery):
@@ -343,11 +343,11 @@ Adding a new KB tier requires:
 
 ### Ingestion Pipeline
 
-Global-tier ingestion runs automatically at API startup via the **KB bootstrap** (`faultmaven/bootstrap/kb_init.py`). The bootstrap walks `data/knowledge/global/` for `.md` files and ingests each one directly into `knowledge_items` + ChromaDB via `KnowledgeService.ingest_runbook()`. Idempotent: unchanged files are skipped via content-hash comparison on every restart.
+Global-tier ingestion runs automatically at API startup via the **KB bootstrap** (`faultmaven/bootstrap/kb_init.py`). The bootstrap loads the shipped **KB pack** (`faultmaven/bootstrap/kb_pack.py`) and, for each runbook in it, writes a row to `knowledge_items` plus the pack's pre-computed chunk vectors to ChromaDB via `KnowledgeService.ingest_runbook(prechunked=...)`. Because the pack ships pre-chunked and pre-embedded, startup does **no chunking and no embedding** — it is pure SQL + vector writes and completes in seconds. Idempotent: unchanged runbooks are skipped via content-hash comparison on every restart, and runbooks no longer in the pack are pruned from both stores.
 
-Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. The 59 built-in runbooks ship pre-chunked and pre-embedded in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`); on startup the bootstrap ingests them directly — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
+Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. The 91 built-in runbooks ship pre-chunked and pre-embedded in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`); on startup the bootstrap ingests them directly — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
 
-Each ingestion (whether from bootstrap or the conversion-drafts path) triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, embedding, and an atomic write to both stores — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the atomicity contract.
+The **conversion-drafts path** (case-generated / document-converted content, not the pack) is the one that triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, and embedding on ingest; both paths finish with an atomic write to both stores — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the atomicity contract.
 
 ### Files
 

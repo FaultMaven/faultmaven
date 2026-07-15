@@ -40,7 +40,7 @@ Each cross-cutting topic has one canonical document. Other documents reference i
 - **[Knowledge Base Architecture](./knowledge-base-architecture.md)** — KB storage design: single-collection (`faultmaven_kb`), 3-tier scope model, scope safety invariant, access control, ingestion workflow.
 - **[KB Ingestion Architecture](./kb-ingestion-architecture.md)** — The two ingestion paths (startup bootstrap for pre-deployed runbooks; conversion-drafts verify flow for case-generated/uploaded content), atomicity contract, idempotency, and the bug history that drove the current design.
 - **[Vector Retrieval Architecture](./vector-retrieval-architecture.md)** — Shared vector infrastructure: BGE-M3 embeddings, two-stage hybrid search, four-signal reranker, KB vs. evidence chunking strategies, implementation status.
-- **[Runbook Content Architecture](./runbook-content-architecture.md)** — What goes INTO the KB: v3 template (per-Cause subsections), taxonomy, quality gates, lifecycle governance, RAG-optimized authoring rules.
+- **[Runbook Content Architecture](./runbook-content-architecture.md)** — What goes INTO the KB: v4 template (per-Cause subsections), taxonomy, quality gates, lifecycle governance, RAG-optimized authoring rules.
 - **[Document-to-Runbook Conversion](./document-to-runbook-conversion.md)** — Converting uploaded documents into template-compliant runbooks: preprocessing pipeline, `KNOWLEDGE_PROVIDER` LLM, draft management API, Verify workflow.
 
 ## Key Technologies
