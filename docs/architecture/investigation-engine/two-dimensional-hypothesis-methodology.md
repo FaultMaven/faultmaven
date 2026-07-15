@@ -505,6 +505,29 @@ DELAY (never permanently block) a terse mechanism root's validation. The
 guard is one layer of the #656 defense, beside the independent-support bar
 (above), the assurance-grade caps (§9.5), and MECE arbitration (§7.1.2).
 
+*Accepted recall limit — terse-only fragmentation (#695 B3, closed
+won't-fix #699).* Sibling-frame dilution only DELAYS validation while an investigation is
+live, but a case that reaches RESOLVED with the cause emitted **only** as terse
+duplicate roots — none carrying enough independent grounding to clear the ROOT
+bar, each restating its siblings — terminates `NO_ROOT`: the genuinely-solved
+case is **under-certified, not mis-certified**. This is the deliberate recall
+cost of the soundness bar, and it **fails safe** — NO INCORRECT CONCLUSION holds
+(the engine certifies nothing rather than guess which fragment is the cause), the
+case still resolves (the RESOLVED gate keys on the `causal_absence` confirmation,
+not the grade), and nothing is harvested to the KB (harvest requires `CONFIRMED`).
+The two obvious closers were evaluated and rejected as soundness-touching:
+*merging* the duplicate roots (the over-merge trap, §7.1.2 — a paraphrase may be
+a distinct OR-sibling) and *pooling* their support via a lexical same-cause
+relation **pre-validation** (a 0.6-mutual false positive manufactures a wrong
+validation; the confirm-stamp's use of that same relation is safe only because it
+runs *post-validation* and is handshake-gated). A recovery would require a
+*proven pooling-safe* same-cause relation — #699 holds the binding constraints
+and explicitly permits a negative result. **Frequency, not the bar, falls with
+inputs:** a more capable model fragments less and grounds a single root, and
+better KB coverage scaffolds one coherent chain — but per the LLM-agnostic
+invariant the engine never lowers the certification bar for the model, so this
+limit shrinks toward zero as models/coverage improve yet never closes to zero.
+
 ### 7.1.1 Deductive validation (proof by exclusion)
 
 Some root causes are *unobservable in principle* — microsecond race conditions,
