@@ -34,7 +34,7 @@ import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -264,36 +264,6 @@ class KnowledgeItemRepository(ABC):
             List of items ordered by helpfulness score DESC
         """
         pass
-
-    async def search_by_similarity(
-        self,
-        query_embedding: List[float],
-        organization_id: str,
-        n_results: int = 10,
-        item_type: Optional[KnowledgeItemType] = None,
-    ) -> List[Tuple[KnowledgeItem, float]]:
-        """Search by vector similarity (requires vector store integration).
-
-        This method provides a repository-level abstraction for vector search.
-        The actual vector search is delegated to the VectorStoreService.
-        This is a non-abstract method with a default implementation that
-        returns an empty list - actual vector search should use
-        KnowledgeVectorStore (agent ``answer_from_kb`` path) or
-        KnowledgeService.search_knowledge() instead.
-
-        Args:
-            query_embedding: Query embedding vector
-            organization_id: Organization identifier
-            n_results: Number of results to return
-            item_type: Optional filter by item type
-
-        Returns:
-            List of (KnowledgeItem, distance) tuples sorted by similarity
-        """
-        # Default implementation returns empty list
-        # Vector search should be performed via KnowledgeVectorStore /
-        # KnowledgeService.search_knowledge
-        return []
 
 
 class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
