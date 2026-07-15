@@ -1376,20 +1376,6 @@ class EmbeddingSettings(BaseSettings):
         description="ChromaDB collection name for knowledge items",
     )
 
-    # Hybrid Search
-    semantic_search_weight: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=1.0,
-        description="Weight for semantic similarity in hybrid search",
-    )
-    text_search_weight: float = Field(
-        default=0.3,
-        ge=0.0,
-        le=1.0,
-        description="Weight for text search in hybrid search",
-    )
-
     # Indexing Job
     indexing_batch_size: int = Field(
         default=50,
@@ -1397,19 +1383,6 @@ class EmbeddingSettings(BaseSettings):
         le=500,
         description="Batch size for background indexing job",
     )
-
-    @field_validator("text_search_weight")
-    @classmethod
-    def validate_weights(cls, v, info):
-        """Ensure semantic + text weights don't exceed 1.0"""
-        values = info.data
-        semantic_weight = values.get("semantic_search_weight", 0.7)
-        if semantic_weight + v > 1.0:
-            raise ValueError(
-                f"semantic_search_weight ({semantic_weight}) + text_search_weight ({v}) "
-                f"cannot exceed 1.0"
-            )
-        return v
 
     # ML Model Loading Strategy
     lazy_load_ml_models: bool = Field(
