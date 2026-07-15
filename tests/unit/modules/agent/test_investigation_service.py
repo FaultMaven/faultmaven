@@ -24,18 +24,160 @@ from faultmaven.models.api_models import (
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
-from faultmaven.modules.case.domain.models import Case, CaseState
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseSeverity,
+    CaseState,
+    InquiryData,
+    ProblemVerification,
+)
 
 from .conftest import (
     MockCaseRepository,
     MockMilestoneEngine,
     create_sample_case,
+    make_preprocessing_result,
     mock_case_repository,
     mock_milestone_engine,
     sample_case,
     sample_turn_payload,
     sample_user_id,
 )
+
+
+class TestEvidenceBearingRerouteToEngine:
+    """#708: the reroute must reach the engine.
+
+    The two predicates are unit-tested in isolation elsewhere; this pins the
+    propagation linchpin — a generic cover message + an evidence-bearing
+    attachment ends up threading ``query_mode="directed_analysis"`` in the
+    ``intent_data`` the engine receives. A regression that moved the
+    intent_data build above the reroute, or reassigned ``classification``
+    in between, would slip past the isolated predicate tests but fail here.
+
+    The reroute is gated to INVESTIGATING (on INQUIRY a fresh upload is
+    characterized, not forced into directed analysis), so these cases build
+    an INVESTIGATING case; the INQUIRY control pins that gate.
+    """
+
+    def _service(self):
+        engine = MockMilestoneEngine()
+        preprocessing = AsyncMock()
+        preprocessing.classify_and_extract = AsyncMock(
+            return_value=make_preprocessing_result()
+        )
+        service = InvestigationService(
+            milestone_engine=engine,
+            case_repository=MockCaseRepository(),
+            preprocessing_service=preprocessing,
+            file_storage_service=None,
+        )
+        return service, engine
+
+    def _investigating_case(self, user_id: str) -> Case:
+        """An INVESTIGATING case (the reroute's scope). INVESTIGATING requires
+        a confirmed problem statement + investigation commitment."""
+        return Case(
+            case_id=f"case_{uuid4().hex[:12]}",
+            user_id=user_id,
+            organization_id="org_test123",
+            title="Test Case",
+            description="Pods are crashing",
+            state=CaseState.INVESTIGATING,
+            current_turn=2,
+            inquiry=InquiryData(
+                proposed_problem_statement="pods crashing",
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+            ),
+            problem_verification=ProblemVerification(
+                symptom_statement="pods crashing", severity=CaseSeverity.HIGH
+            ),
+        )
+
+    async def _run(self, service, case, user_id, query, attachments):
+        await service.repository.save(case)
+        payload = TurnPayload(query=query, attachments=attachments)
+        await service.process_turn(
+            case_id=case.case_id, user_id=user_id, payload=payload
+        )
+        return service.engine.process_turn.call_args.kwargs["intent_data"]
+
+    @pytest.mark.asyncio
+    async def test_triage_cover_message_plus_attachment_threads_da(self):
+        """The bug shape: 'here's the logs' + a log upload on an INVESTIGATING
+        turn → the engine is called with query_mode=directed_analysis."""
+        service, engine = self._service()
+        user_id = str(uuid4())
+        case = self._investigating_case(user_id)
+        attachment = Attachment(
+            content=b"07:40 ERROR 503 SSLException: Connection reset",
+            filename="user-service.log",
+            content_type="text/plain",
+        )
+
+        intent_data = await self._run(
+            service, case, user_id, "here's the logs", [attachment]
+        )
+
+        engine.process_turn.assert_awaited_once()
+        assert intent_data["query_mode"] == "directed_analysis"
+
+    @pytest.mark.asyncio
+    async def test_knowledge_cover_message_plus_attachment_threads_da(self):
+        """#708 finding #3: a knowledge-phrased cover ('what causes connection
+        resets?') over a fresh upload also reroutes — otherwise the agent
+        answers from general knowledge and skips the uploaded evidence."""
+        service, engine = self._service()
+        user_id = str(uuid4())
+        case = self._investigating_case(user_id)
+        attachment = Attachment(
+            content=b"07:40 ERROR 503 SSLException: Connection reset",
+            filename="user-service.log",
+            content_type="text/plain",
+        )
+
+        intent_data = await self._run(
+            service, case, user_id, "what causes connection resets?", [attachment]
+        )
+
+        engine.process_turn.assert_awaited_once()
+        assert intent_data["query_mode"] == "directed_analysis"
+
+    @pytest.mark.asyncio
+    async def test_cover_message_without_attachment_stays_triage(self):
+        """Control: the same cover message with no attachment stays TRIAGE —
+        proving it is the attachment, not the text, that flips the route."""
+        service, engine = self._service()
+        user_id = str(uuid4())
+        case = self._investigating_case(user_id)
+
+        intent_data = await self._run(service, case, user_id, "here's the logs", [])
+
+        engine.process_turn.assert_awaited_once()
+        assert intent_data["query_mode"] == "triage"
+
+    @pytest.mark.asyncio
+    async def test_inquiry_upload_is_not_rerouted(self):
+        """#708 finding #1: on INQUIRY a fresh upload is NOT forced into DA —
+        the reroute is scoped to INVESTIGATING so problem-framing is not
+        pre-empted."""
+        service, engine = self._service()
+        user_id = str(uuid4())
+        case = create_sample_case(user_id=user_id)  # default INQUIRY
+        assert case.state == CaseState.INQUIRY
+        attachment = Attachment(
+            content=b"07:40 ERROR 503 SSLException: Connection reset",
+            filename="user-service.log",
+            content_type="text/plain",
+        )
+
+        intent_data = await self._run(
+            service, case, user_id, "here's the logs", [attachment]
+        )
+
+        engine.process_turn.assert_awaited_once()
+        assert intent_data["query_mode"] == "triage"
 
 
 class TestInvestigationServiceProcessTurn:

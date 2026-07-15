@@ -113,6 +113,25 @@ STATE_SUMMARY_DIGEST_CHARS = 180
 # Max chars per KB solution in context (prevents verbose runbooks from consuming budget)
 KB_MAX_SOLUTION_CHARS = 800
 
+# Min structural-index length for an uploaded file to count as a searchable
+# target. This is the single source of truth: the context builder renders a
+# file as ``<uploaded_file searchable="true">`` only above this length, and
+# the engine's force_tools guards (``_has_searchable_material`` /
+# ``_turn_delivers_evidence_bearing_attachment``) use the same rule — they
+# must agree, or a forced Directed-Analysis turn could have no rendered search
+# target and the tool loop would crash for lack of one (#708).
+SEARCHABLE_STRUCTURAL_INDEX_MIN_CHARS = 10
+
+
+def structural_index_is_searchable(structural_index: Optional[str]) -> bool:
+    """True when an uploaded file's structural index carries enough content to
+    be a search target. Shared by the context builder's ``searchable`` render
+    and the engine's force_tools guards so the threshold stays in lockstep."""
+    return bool(structural_index) and (
+        len(structural_index) > SEARCHABLE_STRUCTURAL_INDEX_MIN_CHARS
+    )
+
+
 logger = logging.getLogger(__name__)
 
 _TRUNCATION_MARKER = "[...analysis removed for brevity...]"
@@ -1352,7 +1371,7 @@ def _build_evidence_context(
             files_with_content = [
                 uf
                 for uf in case.uploaded_files
-                if uf.structural_index and len(uf.structural_index) > 10
+                if structural_index_is_searchable(uf.structural_index)
             ]
             if files_with_content:
                 result = "<evidence_collected>\n"
@@ -1534,8 +1553,7 @@ def _build_evidence_context(
             if uf.file_id is not None
             and uf.uploaded_at_turn == current_turn
             and str(uf.file_id) not in referenced_file_ids
-            and uf.structural_index
-            and len(uf.structural_index) > 10
+            and structural_index_is_searchable(uf.structural_index)
         ]
         for uf in current_turn_orphans:
             full_entry = _render_orphan_file_block(uf, hash_first_seen, current_turn)
@@ -1754,8 +1772,7 @@ def _build_evidence_context(
                 if uf.file_id is not None
                 and str(uf.file_id) not in referenced_file_ids
                 and str(uf.file_id) not in handled_file_ids
-                and uf.structural_index
-                and len(uf.structural_index) > 10
+                and structural_index_is_searchable(uf.structural_index)
             ),
             key=lambda uf: (uf.uploaded_at_turn or 0, str(uf.file_id)),
             reverse=True,

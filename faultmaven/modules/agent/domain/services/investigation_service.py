@@ -19,6 +19,9 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.prompts.context_builder import (
+    structural_index_is_searchable,
+)
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
 from faultmaven.exceptions import (
@@ -406,6 +409,31 @@ class _PreprocessedAttachment:
     attachment_filename: Optional[str] = None
 
 
+def _turn_delivers_evidence_bearing_attachment(
+    preprocess_results: List["_PreprocessedAttachment"],
+) -> bool:
+    """True when this turn carried an attachment that was successfully
+    classified and extracted into non-trivial content.
+
+    Such a turn must drive Directed Analysis even under a generic cover
+    message ("here's the logs"): ``classify_query`` only sees the message
+    string, so the entity-free cover note routes to TRIAGE and lets the
+    agent skip evidence analysis (#708). The strong signals live in the
+    file, which the preprocessor already characterized. Excludes
+    ``classification_failed`` uploads (awaiting user clarification) and
+    empty/unanalyzable placeholders (no structural content to search); the
+    searchability test is the context builder's own
+    ``structural_index_is_searchable`` so this stays in lockstep with the
+    ``searchable="true"`` render.
+    """
+    for r in preprocess_results:
+        if r.classification_failed:
+            continue
+        if structural_index_is_searchable(r.uploaded_file.structural_index):
+            return True
+    return False
+
+
 # ============================================================
 # Intent dispatch
 # ============================================================
@@ -579,6 +607,8 @@ class InvestigationService:
             # ── STEP 1: PRE-LLM DATA INGESTION ──
             # Classify query for scenario-driven processing mode
             from faultmaven.modules.agent.domain.services.query_classifier import (
+                ProcessingMode,
+                QueryClassification,
                 classify_query,
             )
 
@@ -608,6 +638,49 @@ class InvestigationService:
                     )
                     preprocess_results.append(result)
                     uploaded_files_this_turn.append(result.uploaded_file)
+
+            # #708: a fresh evidence-bearing upload must drive Directed
+            # Analysis even when the accompanying message is a generic cover
+            # note. classify_query only sees the message text, so a cover note
+            # ("here's the logs") with no inline entities routes to TRIAGE —
+            # and a knowledge-phrased cover ("what causes connection resets?")
+            # routes to KNOWLEDGE_QUERY — either of which lets the agent skip
+            # the freshly uploaded evidence. Re-route both to DA using the
+            # attachment signal the preprocessor already produced. This is
+            # channel-agnostic (Copilot pasted-content and Slack file uploads
+            # flow through the same path) and composes with the Slack agent's
+            # message_to_text alert-flattening, which already carries alert
+            # entities in the query text. query_mode threads to the engine and
+            # drives force_tools (tool_choice=required); DA subsumes triage.
+            #
+            # Scoped to INVESTIGATING: on INQUIRY the goal is to frame the
+            # problem, and a fresh upload is characterized via the structural
+            # index, not forced into directed analysis before the problem
+            # statement is confirmed. (Terminal turns never reach the engine's
+            # generation path — they short-circuit to _process_terminal_turn.)
+            _reroute_modes = (ProcessingMode.TRIAGE, ProcessingMode.KNOWLEDGE_QUERY)
+            if (
+                case.state == CaseState.INVESTIGATING
+                and classification.mode in _reroute_modes
+                and _turn_delivers_evidence_bearing_attachment(preprocess_results)
+            ):
+                prior_mode = classification.mode.value
+                classification = QueryClassification(
+                    mode=ProcessingMode.DIRECTED_ANALYSIS,
+                    detected_entities=classification.detected_entities,
+                    confidence=0.8,
+                )
+                # ``classification.mode.value`` threads to the engine via
+                # intent_data["query_mode"] below; the ``processing_mode`` local
+                # is only consumed by preprocessing (already run above), so it
+                # is intentionally not reassigned here.
+                logger.info(
+                    "Query re-routed %s→DIRECTED_ANALYSIS on case %s turn %s: "
+                    "fresh evidence-bearing attachment (#708)",
+                    prior_mode,
+                    case_id,
+                    next_turn,
+                )
 
             # Determine query (explicit or implicit)
             query = payload.query
