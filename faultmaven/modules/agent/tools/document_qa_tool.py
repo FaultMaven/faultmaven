@@ -71,6 +71,7 @@ class DocumentQATool:
         scope_id: Optional[str] = None,
         k: int = 5,
         filters: Optional[Dict[str, Any]] = None,
+        context_metadata: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -80,13 +81,18 @@ class DocumentQATool:
             scope_id: Scoping identifier (case_id, user_id, etc.) or None
             k: Number of chunks to retrieve
             filters: Optional ChromaDB metadata filters
+            context_metadata: Optional case context (domain/service) for
+                metadata-aware reranking. Applied as a soft boost only —
+                aligned chunks score higher but nothing is filtered out.
 
         Returns:
             Formatted answer with citations
         """
         logger.info(f"Query: {question[:100]}, scope_id: {scope_id}")
 
-        result = await self.answer_question(question, scope_id, k, filters)
+        result = await self.answer_question(
+            question, scope_id, k, filters, context_metadata
+        )
 
         # Delegate response formatting to KB config
         return self._kb_config.format_response(
@@ -102,6 +108,7 @@ class DocumentQATool:
         scope_id: Optional[str],
         k: int,
         filters: Optional[Dict[str, Any]] = None,
+        context_metadata: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).
@@ -116,7 +123,9 @@ class DocumentQATool:
 
         # Step 2: Retrieve chunks from vector store (same for all KBs)
         try:
-            chunks = await self._dispatch_search(collection, question, k, filters)
+            chunks = await self._dispatch_search(
+                collection, question, k, filters, context_metadata
+            )
         except Exception as e:
             logger.error(f"Vector store search failed: {e}")
             return {
@@ -251,18 +260,28 @@ Answer:"""
         question: str,
         k: int,
         filters: Optional[Dict[str, Any]],
+        context_metadata: Optional[Dict[str, str]] = None,
     ) -> list:
         """Retrieve chunks per the KB config's search mode.
 
         ``hybrid`` (when the store supports it) → vector + keyword + reranking;
         otherwise pure vector search. Raises on store error — callers decide
         how to degrade.
+
+        ``context_metadata`` (case domain/service) only informs the hybrid
+        reranker's metadata signal and is applied as a soft boost
+        (``filter_mode="soft"``); pure vector search ignores it.
         """
         if self._kb_config.search_mode == "hybrid" and hasattr(
             self._vector_store, "hybrid_search"
         ):
             return await self._vector_store.hybrid_search(
-                collection_name=collection, query=question, k=k, where=filters
+                collection_name=collection,
+                query=question,
+                k=k,
+                where=filters,
+                context_metadata=context_metadata,
+                filter_mode="soft",
             )
         return await self._vector_store.search(
             collection_name=collection, query=question, k=k, where=filters

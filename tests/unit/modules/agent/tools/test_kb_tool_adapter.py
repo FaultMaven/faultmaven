@@ -59,7 +59,38 @@ class TestKBToolAdapter:
             user_id="user_42",
             team_ids=["team_sre", "team_platform"],
             k=5,
+            context_metadata=None,
         )
+
+    @pytest.mark.asyncio
+    async def test_forwards_kb_context_metadata(self, mock_kb_tool):
+        """Case domain/service context reaches the wrapped KB tool so the
+        reranker's metadata signal can boost aligned runbooks."""
+        context = ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            organization_id="org_1",
+            user_id="user_42",
+            kb_context_metadata={"service": "payment-api"},
+        )
+        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
+
+        await adapter.execute_with_context({"question": "test"}, context)
+
+        call_kwargs = mock_kb_tool._arun.call_args.kwargs
+        assert call_kwargs["context_metadata"] == {"service": "payment-api"}
+
+    @pytest.mark.asyncio
+    async def test_empty_kb_context_metadata_forwarded_as_none(
+        self, mock_kb_tool, context
+    ):
+        """No verification context yet → forward None (no spurious boost)."""
+        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
+
+        await adapter.execute_with_context({"question": "test"}, context)
+
+        call_kwargs = mock_kb_tool._arun.call_args.kwargs
+        assert call_kwargs["context_metadata"] is None
 
     @pytest.mark.asyncio
     async def test_passes_user_id_from_context(self, mock_kb_tool, context):

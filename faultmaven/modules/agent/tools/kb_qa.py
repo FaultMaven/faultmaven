@@ -12,7 +12,7 @@ of where they came from.
 """
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
@@ -64,6 +64,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
         user_id: str,
         team_ids: Optional[List[str]] = None,
         k: int = 5,
+        context_metadata: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         Query knowledge base with automatic scope filtering.
@@ -73,12 +74,20 @@ global documentation, your personal runbooks, and your team's shared procedures.
             user_id: Current user ID (for personal scope filtering)
             team_ids: User's team IDs (for team scope filtering)
             k: Number of chunks to retrieve (default: 5)
+            context_metadata: Optional case context (e.g. affected service) for
+                metadata-aware reranking (soft boost only; see DocumentQATool)
 
         Returns:
             Relevant documentation with citations from all accessible scopes
         """
         filters = self._build_scope_filter(user_id, team_ids or [])
-        return await super()._arun(question, scope_id=None, k=k, filters=filters)
+        return await super()._arun(
+            question,
+            scope_id=None,
+            k=k,
+            filters=filters,
+            context_metadata=context_metadata,
+        )
 
     @staticmethod
     def _build_scope_filter(user_id: str, team_ids: List[str]) -> dict:

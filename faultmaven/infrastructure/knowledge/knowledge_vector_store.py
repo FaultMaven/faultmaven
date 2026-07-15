@@ -695,17 +695,26 @@ class KnowledgeVectorStore(BaseExternalClient):
           - Status boost/penalty (frontmatter lifecycle values):
               verified → +0.4, in-review → +0.1
               stale → -0.2, draft → -0.1, deprecated → -0.3
+
+        Domain/service matching is case-insensitive and whitespace-trimmed:
+        the case-side value is free-text (e.g. the LLM's ``affected_services``
+        entry "PostgreSQL"), while chunk frontmatter is curated ("postgresql").
+        A raw ``==`` would miss the most common real-world alignment.
         """
         score = 0.0
 
-        # Domain/service match against case context (if provided)
+        # Domain/service match against case context (if provided). Normalize
+        # both sides so free-text case context matches curated frontmatter.
         if context_metadata:
-            ctx_domain = context_metadata.get("domain", "")
-            ctx_service = context_metadata.get("service", "")
+            ctx_domain = context_metadata.get("domain", "").strip().lower()
+            ctx_service = context_metadata.get("service", "").strip().lower()
 
-            if ctx_domain and chunk_metadata.get("domain") == ctx_domain:
+            chunk_domain = str(chunk_metadata.get("domain", "")).strip().lower()
+            chunk_service = str(chunk_metadata.get("service", "")).strip().lower()
+
+            if ctx_domain and chunk_domain == ctx_domain:
                 score += 0.3
-            if ctx_service and chunk_metadata.get("service") == ctx_service:
+            if ctx_service and chunk_service == ctx_service:
                 score += 0.3
 
         # Runbook lifecycle status → trust signal.

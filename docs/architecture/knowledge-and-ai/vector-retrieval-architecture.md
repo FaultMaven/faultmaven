@@ -30,7 +30,7 @@ Both domains share the same embedding model and ChromaDB instance, but diverge o
 
 FaultMaven's browser extension provides rich implicit context that most RAG systems lack. When an SRE investigates a Kubernetes pod crash, they don't type "show me runbooks for namespace=production, service=payment-gateway." They paste the error and expect the system to figure it out. The extension knows the page, the service, the error class, the technology stack.
 
-**Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose — but wiring it end-to-end requires cross-component integration: copilot page-comprehension → API request body → `ToolContext` fields → `KBToolAdapter` → `hybrid_search()`. This is the highest-leverage remaining integration.
+**Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose. Case-derived context (the affected service from the case's problem verification) is wired end-to-end today as a **soft** rerank boost: the engine derives it (`derive_kb_context_metadata()`), carries it on `ToolContext.kb_context_metadata`, and `KBToolAdapter` threads it through `AnswerFromKB` → `DocumentQATool` → `hybrid_search(context_metadata=…, filter_mode="soft")`. The remaining, higher-confidence integration is the copilot page-comprehension → API request body → `ToolContext` path that would justify the **hard** pre-filter (`filter_mode="hard"`); that cross-repo wiring is deferred.
 
 ```text
 ChromaDB Instance
@@ -110,7 +110,7 @@ Each candidate chunk is scored across four weighted signals:
 | Status is `deprecated` | -0.30 |
 | Status is `draft` | -0.10 |
 
-**Context metadata: hard filter vs soft boost.** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The `filter_mode` parameter on `hybrid_search()` is implemented — `"hard"` adds domain/service to the `where` clause (`_apply_hard_metadata_filter`), `"soft"` (default) applies the rerank boost only. What remains is the *end-to-end wiring*: threading high-confidence context from copilot → API → `KBToolAdapter` so a caller actually selects `"hard"`. Today every live caller uses the soft rerank path.
+**Context metadata: hard filter vs soft boost.** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The `filter_mode` parameter on `hybrid_search()` is implemented — `"hard"` adds domain/service to the `where` clause (`_apply_hard_metadata_filter`), `"soft"` (default) applies the rerank boost only. The **soft** path is wired end-to-end: the engine feeds the case's affected service into `hybrid_search(context_metadata=…, filter_mode="soft")` on every KB retrieval, so the metadata-match signal fires on service alignment rather than status alone. What remains is the **hard** path — threading *high-confidence* context from copilot → API → `KBToolAdapter` so a caller can safely select `"hard"` and drop irrelevant chunks pre-retrieval. Today every live caller uses the soft rerank path. (Domain is not yet supplied by the engine: the case model has no domain field, and a fabricated default would create false exact-matches; only `service` is currently derived.)
 
 **Tiebreaking:** When two chunks produce the same weighted score, scope priority breaks the tie: personal > team > global. This ensures a user's own runbook surfaces above a generic global procedure when both are equally relevant.
 
@@ -163,7 +163,7 @@ The full list of fields stored on each chunk is canonical in [knowledge-base-arc
 | Field | Used by | Purpose |
 | ----- | ------- | ------- |
 | `scope`, `owner_id`, `team_id` | `where` clause | Scope filter (built by `AnswerFromKB`) |
-| `domain`, `service` | Hard pre-filter (`filter_mode="hard"`) + reranker metadata-match signal | Inject into `where` when case context supplies them |
+| `domain`, `service` | Reranker metadata-match signal (soft boost, wired) + hard pre-filter (`filter_mode="hard"`, mechanism only) | `service` fed from the case's `problem_verification.affected_services[0]` as a soft boost; `domain` not yet supplied by the engine |
 | `symptom_class`, `severity` | Reranker metadata-match signal | Boost chunks whose taxonomy aligns with the query's failure-mode classification |
 | `status` | Reranker status weighting | `verified` +0.40, `draft` -0.10, `deprecated` -0.30 |
 | `last_updated` | Reranker freshness signal + synthesis prompt | Half-life decay; `format_chunk_metadata()` injects age warnings into LLM context |
@@ -184,17 +184,17 @@ The synthesis LLM's system prompt (in `UnifiedKBConfig.system_prompt`) explicitl
 Agent calls: answer_from_kb(question)
   │
   ├── KBToolAdapter.execute_with_context()
-  │     Extracts user_id and team_ids from ToolContext
+  │     Extracts user_id, team_ids, and kb_context_metadata from ToolContext
   │
-  ├── AnswerFromKB._arun(question, user_id, team_ids)  # class in kb_qa.py
+  ├── AnswerFromKB._arun(question, user_id, team_ids, context_metadata)  # kb_qa.py
   │     Builds combined $or scope filter
   │
-  ├── DocumentQATool.answer_question()
+  ├── DocumentQATool.answer_question(..., context_metadata)
   │     Detects search_mode="hybrid" from UnifiedKBConfig
   │
-  ├── KnowledgeVectorStore.hybrid_search()
+  ├── KnowledgeVectorStore.hybrid_search(context_metadata, filter_mode="soft")
   │     Stage 1: vector + keyword recall
-  │     Stage 2: rerank with 4-signal scoring
+  │     Stage 2: rerank with 4-signal scoring (metadata match uses context)
   │
   ├── LLMRouter.route() with UnifiedKBConfig.system_prompt
   │     max_tokens=2000, temperature=0.3
@@ -204,7 +204,7 @@ Agent calls: answer_from_kb(question)
         Returns answer with source citations
 ```
 
-**Relay vs synthesis tension:** The design intent is that full procedure detail reaches the user — a compressed paraphrase of a runbook loses the actionable steps. However, the current `DocumentQATool` synthesis prompt instructs the LLM to "be concise and factual," which encourages compression. The relay instruction is applied later in `_format_tool_result()` which wraps the KB result with "Include the detailed content below — do NOT summarize into a single sentence." These two instructions can conflict. The synthesis prompt should be aligned with the relay intent — preserve procedural detail, cite sources accurately, compress only background context.
+**Relay vs synthesis:** Full procedure detail must reach the engine — a compressed paraphrase of a runbook loses the actionable steps. The `DocumentQATool` synthesis prompt is aligned with this relay intent: it instructs the LLM to "preserve procedural detail — include full diagnostic steps, commands, and resolution procedures rather than summarizing them" and to "compress only background context, never actionable steps." `UnifiedKBConfig.system_prompt` reinforces this ("provide step-by-step instructions when procedures are available"), and `_format_tool_result()` wraps the `kb_qa` result with "Preserve key details, diagnostic steps, and resolution procedures — do NOT collapse it into a single sentence." All three now pull in the same direction; the earlier "be concise and factual" instruction that conflicted with relay has been removed.
 
 ---
 
@@ -275,7 +275,7 @@ The `searchable="true"` attribute on evidence XML in the context builder signals
 
 ### KB Tool (`answer_from_kb`)
 
-The design intent is relay — full procedure detail should reach the user. The `_format_tool_result()` wrapper appends "Include the detailed content below — do NOT summarize into a single sentence." However, the inner `DocumentQATool` synthesis prompt says "be concise and factual," creating a tension (see §7 open issues).
+The design intent is relay — full procedure detail should reach the engine. The `_format_tool_result()` wrapper directs the LLM to "Preserve key details, diagnostic steps, and resolution procedures — do NOT collapse it into a single sentence," and the inner `DocumentQATool` synthesis prompt is aligned with it ("preserve procedural detail … compress only background context, never actionable steps"). See §4 "Relay vs synthesis" for the full chain.
 
 Source citations use document titles: `Sources: Kubernetes CrashLoopBackOff, PostgreSQL Connection Pool Exhaustion`.
 
@@ -314,9 +314,10 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Hard pre-filter mode | **Implemented (mechanism only)** | `filter_mode="hard"` injects domain/service into the ChromaDB where clause (`_apply_hard_metadata_filter`). Not yet invoked end-to-end — see "Extension context → KB metadata filters" below. |
 | Fast search mode | **Not done** | Declared in the `search_mode` property docstring, but no config returns `"fast"` and nothing dispatches it. Planned low-latency path (§3 Dual Retrieval Paths). |
 | Scope tiebreaking | **Implemented** | personal > team > global secondary sort in `_rerank()` |
-| Staleness-aware synthesis | **Implemented** | `_staleness_note()` + system prompt: "preserve procedural detail" |
+| Staleness-aware synthesis | **Implemented** | `_staleness_note()` + system prompt: "provide step-by-step instructions when procedures are available" (the "preserve procedural detail" instruction is in the synthesis prompt — see §4 "Relay vs synthesis") |
 | Scope safety (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search. `_enforce_scope_invariant()` raises `ValueError` on unscoped queries. |
-| Extension context → KB metadata filters | **Partially done** | `hybrid_search()` accepts `context_metadata`. Wiring from copilot → API → `KBToolAdapter` incomplete. |
+| Case context → KB soft rerank boost | **Implemented** | Engine derives the affected service (`derive_kb_context_metadata()`) onto `ToolContext.kb_context_metadata`; threaded through `KBToolAdapter` → `AnswerFromKB` → `DocumentQATool` → `hybrid_search(context_metadata=…, filter_mode="soft")`. `service` only; `domain` not yet supplied by the case model. |
+| Copilot high-confidence context → hard pre-filter | **Deferred** | `hybrid_search()` accepts `context_metadata` + `filter_mode="hard"`, but no live caller selects `"hard"`. Requires copilot page-comprehension → API → `KBToolAdapter` cross-repo wiring. |
 | True BM25 | **Not done** | ChromaDB does not expose BM25. Binary `$contains` is a partial substitute. Would need `rank_bm25` lib or separate index. |
 | Cross-encoder reranker | **Not done** | Would add a dedicated reranking model (e.g., `ms-marco-MiniLM`) between retrieval and synthesis. Adds model dependency + latency. |
 | Citation grounding | **Not done** | No post-generation verification that cited chunks support the claims attributed to them. |
