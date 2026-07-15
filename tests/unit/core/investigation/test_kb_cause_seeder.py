@@ -333,6 +333,32 @@ def test_dedup_skip_is_benign_no_alarm():
     assert report.runbooks_contributing_nothing() == []
 
 
+def test_and_group_cause_is_rejected_not_flattened():
+    # A co-necessary AND-set (edges sharing an and_group) must NOT be silently
+    # seeded as OR-alternatives. The seeder rejects it as UNSUPPORTED_SHAPE.
+    case = _case()
+    andc = _cause("A")
+    andc["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": "cause A1"},
+        {"ref": "r2", "node_type": "root", "statement": "cause A2"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "joint effect"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    # A1 AND A2 are both required to produce s1 (same effect + same and_group).
+    andc["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1", "and_group": "g1"},
+        {"cause_ref": "r2", "effect_ref": "s1", "and_group": "g1"},
+        {"cause_ref": "s1", "effect_ref": "D"},
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [andc])], current_turn=1)
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    assert len(report.skipped) == 1
+    assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
+    # An unmodeled real cause that seeds nothing IS actionable (build AND support).
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
 def test_runbook_that_seeded_something_is_not_alarmed_despite_a_quality_drop():
     good = _cause("A", root_stmt="good root cause")
     bad = _cause("B")

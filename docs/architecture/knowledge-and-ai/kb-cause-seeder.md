@@ -96,7 +96,9 @@ active hypotheses in one category reads as fixation). The bounds:
   by the existing MECE arbitration (`distinct_cause_clusters`, Jaccard 0.6).
 - **Distinct roots compete as OR-alternatives:** pack `chain_edges` carry no
   `and_group`, so seeded predecessors enter as independent OR-alternative sibling
-  causes — never silently merged into one Cause. Evidence separates them.
+  causes — never silently merged into one Cause. Evidence separates them. A cause
+  that *does* carry `and_group` (co-necessary AND-convergence) is **rejected**, not
+  flattened — see the `unsupported_shape` skip below.
 
 ### 4–5. Instantiation
 
@@ -146,9 +148,17 @@ recorded as a class-tagged `SkippedCause` on the `SeedReport` (keyed by
   (overlap); normal and correct.
 - **`quality_drop`** — a *real* cause the seeder could not instantiate (no chain,
   non-root head, bad `node_type`, empty statement, ingest produced nothing).
+- **`unsupported_shape`** — a well-formed cause using a structure the seeder does
+  not yet model. Today that is only `and_group` **AND-convergence**: the seeder
+  reads `cause_ref`/`effect_ref` and defaults every edge to `and_group=None`, so a
+  co-necessary AND-set would be silently flattened to independent OR-alternatives
+  (A∧B → A∨B — a MECE mis-model). It is **rejected, not flattened** (honor-or-reject,
+  plan 4.3) until AND-seeding is built. Zero instances in the pack today; the guard
+  exists for the Phase 5 produce path (converted runbooks generate v4 structure).
 
-The **"matched runbook contributed nothing"** warning fires only when a zero-seed
-runbook has ≥1 `quality_drop` (`runbooks_contributing_nothing()`) — a runbook
+The **"matched runbook contributed nothing"** warning fires when a zero-seed
+runbook has ≥1 *actionable* skip — `quality_drop` **or** `unsupported_shape`
+(`runbooks_contributing_nothing()`) — a runbook
 whose only skips are dedup/fallback is *not* alarmed, so two runbooks sharing a
 cause never false-alarm. (A runbook never entered because the `MAX_SEEDED_CAUSES`
 budget was already spent leaves no skip record; that zero is benign — budget, not

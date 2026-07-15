@@ -60,7 +60,14 @@ _CHUNK_SUFFIX_RE = re.compile(r"_chunk_\d+$")
 
 
 def _strip_chunk_suffix(chunk_id: Optional[str]) -> Optional[str]:
-    """Return the parent document id encoded in a chunk id, or None."""
+    """Return the parent document id encoded in a chunk id, or None.
+
+    Fallback only — used when chunk metadata omits ``parent_document_id``.
+    Assumes a parent id does not itself end in ``_chunk_<n>`` (KB item ids are
+    ``kb_<hash>`` slugs, so this holds); a parent literally ending that way would
+    be over-stripped. Behind ``metadata["parent_document_id"]`` in practice, so
+    this path is rarely hit.
+    """
     if not chunk_id:
         return None
     stripped = _CHUNK_SUFFIX_RE.sub("", chunk_id)

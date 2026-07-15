@@ -105,6 +105,11 @@ class SkipClass(str, Enum):
     bad node_type, empty statement, ingest produced nothing). The observability
     signal — a matched runbook silently contributing less than it should."""
 
+    UNSUPPORTED_SHAPE = "unsupported_shape"
+    """A well-formed cause using a structure the seeder does not yet model —
+    today only ``and_group`` AND-convergence. Rejected (not flattened) so a
+    co-necessary A∧B is never silently mis-seeded as an OR-alternative A∨B."""
+
 
 @dataclass
 class SkippedCause:
@@ -142,19 +147,24 @@ class SeedReport:
         return bool(self.seeded_hypothesis_ids)
 
     def runbooks_contributing_nothing(self) -> list[str]:
-        """item_ids of matched runbooks that seeded nothing for a QUALITY-DROP
-        reason — the actionable 'matched runbook contributed nothing' signal.
+        """item_ids of matched runbooks that seeded nothing for an ACTIONABLE
+        reason — the 'matched runbook contributed nothing' signal.
 
-        A runbook whose only skips are benign dedup or the fallback cause is NOT
-        flagged (a second runbook overlapping an already-seeded cause is normal).
-        Caveat: a runbook never entered because the ``max_causes`` budget was
-        already spent produces no skip record and is not covered here — that
-        zero-contribution is benign (budget, not quality)."""
+        Actionable = a real cause the seeder should have handled did not seed:
+        ``quality_drop`` (malformed) or ``unsupported_shape`` (a shape not yet
+        modeled, e.g. ``and_group``). A runbook whose only skips are benign dedup
+        or the fallback cause is NOT flagged (a second runbook overlapping an
+        already-seeded cause is normal). Caveat: a runbook never entered because
+        the ``max_causes`` budget was already spent produces no skip record and is
+        not covered here — that zero-contribution is benign (budget, not quality).
+        """
         seeded = set(self.runbooks_used)
-        quality_drop = {
-            s.item_id for s in self.skipped if s.skip_class == SkipClass.QUALITY_DROP
+        actionable = {
+            s.item_id
+            for s in self.skipped
+            if s.skip_class in (SkipClass.QUALITY_DROP, SkipClass.UNSUPPORTED_SHAPE)
         }
-        return sorted(quality_drop - seeded)
+        return sorted(actionable - seeded)
 
 
 @dataclass
@@ -262,8 +272,9 @@ def _seed_one_cause(
     Returns ``(hypothesis_id, new_node_ids, skip)``: on success the id + node ids
     with ``skip=None``; on a no-seed the class-tagged ``SkippedCause`` so no drop
     is silent (4.8a). The fallback cause is an INTENTIONAL skip; a real cause the
-    seeder can't instantiate is a QUALITY_DROP; the double-seed guard is a
-    BENIGN_DEDUP.
+    seeder can't instantiate is a QUALITY_DROP; a well-formed cause using an
+    unmodeled shape (``and_group``) is an UNSUPPORTED_SHAPE reject (never
+    flattened); the double-seed guard is a BENIGN_DEDUP.
     """
     if cause.get("is_fallback_cause"):
         return (
@@ -274,6 +285,30 @@ def _seed_one_cause(
 
     chain_nodes = cause.get("chain_nodes") or []
     chain_edges = cause.get("chain_edges") or []
+
+    # AND-convergence is not yet modeled. The seeder builds edges from
+    # cause_ref/effect_ref only and defaults every edge's and_group to None, so a
+    # co-necessary AND-set (edges sharing (effect, and_group)) would be silently
+    # flattened into independent OR-alternatives — turning "A AND B are both
+    # required" into "A OR B", a MECE mis-model. Honor-or-reject (plan 4.3): until
+    # AND-seeding is built, REJECT such a cause rather than mis-seed it. Zero
+    # instances in the shipped pack (and_group = 0/640); the guard exists for the
+    # Phase 5 produce path (converted runbooks generate v4 structure) and future
+    # authoring. Checked on nodes too, since a producer could carry and_group
+    # there (the LLM-facing CausalNodeToAdd schema does).
+    if any(e.get("and_group") is not None for e in chain_edges) or any(
+        n.get("and_group") is not None for n in chain_nodes
+    ):
+        return (
+            None,
+            [],
+            _skip(
+                item_id,
+                cause,
+                SkipClass.UNSUPPORTED_SHAPE,
+                "and_group AND-convergence not yet modeled",
+            ),
+        )
 
     # Non-problem rungs become nodes; the "problem" rung maps onto the case's
     # single engine-seeded D (ingest_emitted_chain rejects PROBLEM specs).
