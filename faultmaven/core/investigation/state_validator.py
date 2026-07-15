@@ -28,6 +28,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     HypothesisState,
     InvestigationProgress,
+    NodeState,
 )
 from faultmaven.modules.case.domain.models import CauseState
 
@@ -226,23 +227,33 @@ class StateValidator:
         """
         Validate hypothesis lifecycle states.
 
-        VALIDATED hypotheses should have sufficient supporting evidence.
+        VALIDATED hypotheses must be grounded in a VALIDATED chain root node.
         REFUTED hypotheses should have refuting evidence.
         """
         issues: List[ValidationIssue] = []
 
         for hyp_id, hypothesis in case.hypotheses.items():
-            # VALIDATED requires sufficient evidence
+            # VALIDATED is derived from the chain root (project_hypothesis_states_from_roots
+            # is the sole writer): a hypothesis reads VALIDATED iff its chain ROOT node is
+            # VALIDATED. Assert THAT invariant, not the retired flat "≥2 supporting_evidence"
+            # bar — node-axis grounding means a graph-validated hypothesis legitimately
+            # carries fewer than 2 flat supporting links. A violation here means a writer
+            # other than the projection set VALIDATED (the coherence guard for the sole-writer
+            # invariant).
             if hypothesis.state == HypothesisState.VALIDATED:
-                supporting_count = len(hypothesis.supporting_evidence)
-                if supporting_count < 2:
+                root = (
+                    case.causal_nodes.get(hypothesis.root_node_id)
+                    if hypothesis.root_node_id
+                    else None
+                )
+                if root is None or root.node_state != NodeState.VALIDATED:
                     issues.append(
                         ValidationIssue(
                             code="HYPOTHESIS_STATE_001",
-                            message=f"Hypothesis {hyp_id} is VALIDATED with only {supporting_count} supporting evidence",
+                            message=f"Hypothesis {hyp_id} is VALIDATED but its chain root node is not VALIDATED",
                             severity=ValidationSeverity.WARNING,
                             field=f"hypotheses.{hyp_id}",
-                            suggested_fix="Require at least 2 supporting evidence items",
+                            suggested_fix="VALIDATED is derived from the chain root node; only project_hypothesis_states_from_roots may set it",
                         )
                     )
 
