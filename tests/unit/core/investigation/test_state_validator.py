@@ -15,6 +15,7 @@ from faultmaven.core.investigation.state_validator import (
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    CausalNode,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -24,7 +25,10 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     InquiryData,
     InvestigationProgress,
+    NodeState,
+    NodeType,
     ProblemVerification,
+    ValidationMethod,
 )
 
 
@@ -172,29 +176,42 @@ class TestHypothesisStates:
             root_node_id=root_node_id,
         )
 
-    def _validated_root(self, node_id):
-        from faultmaven.modules.case.contracts import (
-            CausalNode,
-            NodeState,
-            NodeType,
-            ValidationMethod,
-        )
-
+    def _root(self, node_id, node_state):
         return CausalNode(
             node_id=node_id,
             statement="root cause",
             node_type=NodeType.ROOT,
-            node_state=NodeState.VALIDATED,
-            validation_method=ValidationMethod.EMPIRICAL,
-            belief=0.9,
+            node_state=node_state,
+            validation_method=(
+                ValidationMethod.EMPIRICAL
+                if node_state == NodeState.VALIDATED
+                else ValidationMethod.NONE
+            ),
+            belief=0.9 if node_state == NodeState.VALIDATED else 0.5,
             actionable=True,
             generated_at_turn=1,
         )
 
-    def test_validated_without_validated_root_node_warns(self, validator, base_case):
-        """VALIDATED hypothesis whose chain root node is not VALIDATED (here: no
-        root node at all) violates the graph invariant and warns."""
+    def test_validated_with_missing_root_node_warns(self, validator, base_case):
+        """VALIDATED hypothesis with no chain root node at all violates the graph
+        invariant and warns."""
         base_case.hypotheses = {"hyp_123456789012": self._validated_hyp(None)}
+
+        issues = validator._validate_hypothesis_states(base_case)
+        warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
+
+        assert any(i.code == "HYPOTHESIS_STATE_001" for i in warnings)
+
+    def test_validated_with_non_validated_root_node_warns(self, validator, base_case):
+        """VALIDATED hypothesis whose chain root node EXISTS but is not itself
+        VALIDATED (here: CANDIDATE) violates the graph invariant and warns — the
+        node_state check, not merely root presence."""
+        base_case.causal_nodes = {
+            "cn_0123456789ab": self._root("cn_0123456789ab", NodeState.CANDIDATE)
+        }
+        base_case.hypotheses = {
+            "hyp_123456789012": self._validated_hyp("cn_0123456789ab")
+        }
 
         issues = validator._validate_hypothesis_states(base_case)
         warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
@@ -206,7 +223,7 @@ class TestHypothesisStates:
         even with fewer than 2 flat supporting-evidence links — grounding is on the
         node axis. This is the case the retired flat "≥2 supporting" bar false-fired."""
         base_case.causal_nodes = {
-            "cn_0123456789ab": self._validated_root("cn_0123456789ab")
+            "cn_0123456789ab": self._root("cn_0123456789ab", NodeState.VALIDATED)
         }
         base_case.hypotheses = {
             "hyp_123456789012": self._validated_hyp("cn_0123456789ab")

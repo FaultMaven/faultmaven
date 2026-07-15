@@ -23,12 +23,12 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import List, Optional, Tuple
 
+from faultmaven.core.investigation.causal_graph import is_chain_root_validated
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     HypothesisState,
     InvestigationProgress,
-    NodeState,
 )
 from faultmaven.modules.case.domain.models import CauseState
 
@@ -235,27 +235,25 @@ class StateValidator:
         for hyp_id, hypothesis in case.hypotheses.items():
             # VALIDATED is derived from the chain root (project_hypothesis_states_from_roots
             # is the sole writer): a hypothesis reads VALIDATED iff its chain ROOT node is
-            # VALIDATED. Assert THAT invariant, not the retired flat "≥2 supporting_evidence"
-            # bar — node-axis grounding means a graph-validated hypothesis legitimately
-            # carries fewer than 2 flat supporting links. A violation here means a writer
-            # other than the projection set VALIDATED (the coherence guard for the sole-writer
-            # invariant).
-            if hypothesis.state == HypothesisState.VALIDATED:
-                root = (
-                    case.causal_nodes.get(hypothesis.root_node_id)
-                    if hypothesis.root_node_id
-                    else None
-                )
-                if root is None or root.node_state != NodeState.VALIDATED:
-                    issues.append(
-                        ValidationIssue(
-                            code="HYPOTHESIS_STATE_001",
-                            message=f"Hypothesis {hyp_id} is VALIDATED but its chain root node is not VALIDATED",
-                            severity=ValidationSeverity.WARNING,
-                            field=f"hypotheses.{hyp_id}",
-                            suggested_fix="VALIDATED is derived from the chain root node; only project_hypothesis_states_from_roots may set it",
-                        )
+            # VALIDATED. Assert THAT invariant via the shared is_chain_root_validated —
+            # the same predicate the projection and synthesize_rcc use, so the three cannot
+            # drift — not the retired flat "≥2 supporting_evidence" bar (node-axis grounding
+            # means a graph-validated hypothesis legitimately carries fewer than 2 flat
+            # supporting links). A violation here means a writer other than the projection
+            # set VALIDATED (the coherence guard for the sole-writer invariant).
+            if (
+                hypothesis.state == HypothesisState.VALIDATED
+                and not is_chain_root_validated(hypothesis, case.causal_nodes)
+            ):
+                issues.append(
+                    ValidationIssue(
+                        code="HYPOTHESIS_STATE_001",
+                        message=f"Hypothesis {hyp_id} is VALIDATED but its chain root node is not VALIDATED",
+                        severity=ValidationSeverity.WARNING,
+                        field=f"hypotheses.{hyp_id}",
+                        suggested_fix="VALIDATED is derived from the chain root node; only project_hypothesis_states_from_roots may set it",
                     )
+                )
 
             # REFUTED should have refuting evidence
             if hypothesis.state == HypothesisState.REFUTED:
