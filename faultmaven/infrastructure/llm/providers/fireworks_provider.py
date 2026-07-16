@@ -209,5 +209,6 @@ class FireworksProvider(BaseLLMProvider):
         except asyncio.TimeoutError:
             raise LLMException(
                 f"Fireworks API request timed out after {effective_timeout}s "
-                f"(model: {effective_model})"
+                f"(model: {effective_model})",
+                status_code=504,  # gateway timeout — transient/retryable
             )

@@ -346,7 +346,8 @@ class LocalProvider(BaseLLMProvider):
                 )
                 self.logger.debug(f"Timeout error: {e}")
                 raise LLMException(
-                    f"Local LLM request timed out after {self.config.timeout} seconds"
+                    f"Local LLM request timed out after {self.config.timeout} seconds",
+                    status_code=504,  # gateway timeout — transient/retryable
                 )
 
             except Exception as e:

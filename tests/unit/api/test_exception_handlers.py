@@ -493,3 +493,278 @@ class TestQuotaExhaustedHttpException:
         # Non-billing ServiceException and exceptions without details → False.
         assert is_quota_exhausted_service_error(ServiceException("x")) is False
         assert is_quota_exhausted_service_error(ValueError("y")) is False
+
+
+def _wrap(cause: BaseException):
+    """Reproduce the turn service's ``raise ServiceException(...) from e`` wrap."""
+    from faultmaven.exceptions import ServiceException
+
+    try:
+        raise ServiceException(f"Turn processing failed: {cause}") from cause
+    except ServiceException as e:
+        return e
+
+
+class TestLLMServiceErrorHttpException:
+    """Typed LLM-failure → HTTP mapping (replaces the old message-string match).
+
+    Every case wraps the underlying provider failure exactly as the turn service
+    does, so these exercise the real ``__cause__`` chain the classifier walks.
+    """
+
+    def _classify(self, cause, correlation_id="corr-1"):
+        from faultmaven.api.exception_handlers import (
+            llm_service_error_http_exception,
+        )
+
+        return llm_service_error_http_exception(_wrap(cause), correlation_id)
+
+    def _llm(self, message="provider boom", **kwargs):
+        from faultmaven.exceptions import LLMException
+
+        return LLMException(message, **kwargs)
+
+    def test_timeout_504_maps_to_gateway_timeout(self):
+        # The provider now stamps status_code=504 on a timeout.
+        exc = self._classify(self._llm(status_code=504))
+        assert exc.status_code == 504
+        assert exc.headers["x-error-code"] == "LLM_TIMEOUT"
+        assert exc.headers["Retry-After"] == "30"
+
+    def test_regression_timed_out_message_no_longer_500s(self):
+        """The exact string that defeated the old ``"timeout" in msg`` match.
+
+        ``"timed out"`` does not contain ``"timeout"``; before the fix this fell
+        through to a naked 500. With the provider stamping 504 it now classifies
+        as a gateway timeout off typed metadata regardless of the wording.
+        """
+        from faultmaven.exceptions import LLMException
+
+        cause = LLMException(
+            "Fireworks API request timed out after 90s (model: deepseek-v4-flash)",
+            status_code=504,
+        )
+        exc = self._classify(cause)
+        assert exc.status_code == 504
+        assert exc.status_code != 500
+
+    def test_rate_limit_429(self):
+        exc = self._classify(self._llm(status_code=429))
+        assert exc.status_code == 429
+        assert exc.headers["x-error-code"] == "RATE_LIMIT_EXCEEDED"
+        assert exc.headers["Retry-After"] == "60"
+
+    def test_over_capacity_503(self):
+        exc = self._classify(self._llm(status_code=503))
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_OVER_CAPACITY"
+        assert exc.headers["Retry-After"] == "60"
+
+    def test_other_5xx_degrades_to_503_unavailable(self):
+        exc = self._classify(self._llm(status_code=500))
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+        assert exc.headers["Retry-After"] == "60"
+
+    def test_provider_4xx_maps_to_502_no_retry(self):
+        # e.g. Gemini 400 "schema produces too many states" — retrying the same
+        # request fails identically, so NO Retry-After.
+        exc = self._classify(self._llm(status_code=400))
+        assert exc.status_code == 502
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_ERROR"
+        assert "Retry-After" not in exc.headers
+
+    def test_llm_no_status_retryable_flag_respected(self):
+        exc = self._classify(self._llm(retryable=True))
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+        assert exc.headers["Retry-After"] == "30"
+
+    def test_llm_no_status_terminal_maps_to_502(self):
+        # No status code, not retryable (e.g. "returned no choices").
+        exc = self._classify(self._llm())
+        assert exc.status_code == 502
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_ERROR"
+        assert "Retry-After" not in exc.headers
+
+    def test_schema_parse_validation_error_degrades_to_503(self):
+        from pydantic import BaseModel, ValidationError
+
+        class _M(BaseModel):
+            x: int
+
+        try:
+            _M(x="not-an-int")
+        except ValidationError as ve:
+            cause = ve
+        exc = self._classify(cause)
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_INVALID_RESPONSE"
+        assert exc.headers["Retry-After"] == "30"
+
+    def test_json_decode_error_degrades_to_503(self):
+        import json
+
+        try:
+            json.loads("{not json")
+        except json.JSONDecodeError as je:
+            cause = je
+        exc = self._classify(cause)
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_INVALID_RESPONSE"
+
+    def test_billing_via_details_maps_to_402(self):
+        from faultmaven.api.exception_handlers import (
+            llm_service_error_http_exception,
+        )
+        from faultmaven.exceptions import QUOTA_EXHAUSTED, ServiceException
+
+        wrapped = ServiceException("x", details={"error_code": QUOTA_EXHAUSTED})
+        exc = llm_service_error_http_exception(wrapped, "corr-9")
+        assert exc.status_code == 402
+        assert exc.headers["x-error-code"] == QUOTA_EXHAUSTED
+        assert "Retry-After" not in exc.headers
+
+    def test_billing_via_cause_chain_maps_to_402(self):
+        from faultmaven.exceptions import QUOTA_EXHAUSTED
+
+        # LLMException auto-classifies a 402 body as QUOTA_EXHAUSTED.
+        cause = self._llm(status_code=402, message="insufficient_quota")
+        exc = self._classify(cause)
+        assert exc.status_code == 402
+        assert exc.headers["x-error-code"] == QUOTA_EXHAUSTED
+
+    def test_billing_precedence_over_status_code(self):
+        # A billing error must never be mistaken for a transient 429.
+        cause = self._llm(
+            status_code=429, message="You have exceeded your current quota"
+        )
+        exc = self._classify(cause)
+        assert exc.status_code == 402
+
+    def test_unclassifiable_falls_back_to_500_bounded_detail(self):
+        from faultmaven.exceptions import ServiceException
+
+        exc = self._classify(ServiceException("some internal failure"))
+        assert exc.status_code == 500
+        assert exc.headers["x-error-code"] == "SERVICE_ERROR"
+        assert exc.headers["Retry-After"] == "10"
+        assert len(exc.detail) < 260  # bounded, never dumps internals wholesale
+
+    def test_correlation_id_threaded_and_optional(self):
+        with_id = self._classify(self._llm(status_code=429), correlation_id="cid-x")
+        assert with_id.headers["x-correlation-id"] == "cid-x"
+        without = self._classify(self._llm(status_code=429), correlation_id=None)
+        assert "x-correlation-id" not in without.headers
+
+    def test_typed_metadata_found_through_nested_cause(self):
+        # ServiceException → RuntimeError → LLMException: still classified typed.
+        from faultmaven.exceptions import LLMException, ServiceException
+
+        llm = LLMException("boom", status_code=503)
+        try:
+            raise RuntimeError("mid") from llm
+        except RuntimeError as mid:
+            try:
+                raise ServiceException("Turn processing failed") from mid
+            except ServiceException as outer:
+                wrapped = outer
+        from faultmaven.api.exception_handlers import (
+            llm_service_error_http_exception,
+        )
+
+        exc = llm_service_error_http_exception(wrapped, "c")
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_OVER_CAPACITY"
+
+    # --- Engine semantic error_code path (with_retry → MilestoneEngineError) ---
+    # The primary turn path routes LLM calls through LLMErrorHandler.with_retry,
+    # which converts the provider exception to a semantic error_code and re-raises
+    # MilestoneEngineError WITHOUT a __cause__ link to the original — so no
+    # LLMException/ValidationError is reachable on the chain. The code is threaded
+    # onto the wrapper's details["error_code"].
+
+    def _by_engine_code(self, code):
+        from faultmaven.api.exception_handlers import (
+            llm_service_error_http_exception,
+        )
+        from faultmaven.exceptions import ServiceException
+
+        wrapped = ServiceException(
+            "Turn processing failed: Structured output generation failed",
+            details={"error_code": code},
+        )
+        return llm_service_error_http_exception(wrapped, "corr-e")
+
+    def test_engine_retry_exhausted_maps_to_503(self):
+        exc = self._by_engine_code("RETRY_EXHAUSTED")
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+        assert exc.headers["Retry-After"] == "30"
+
+    def test_engine_unknown_error_parse_maps_to_503(self):
+        # UNKNOWN_ERROR is what a schema-parse failure becomes on the retry path.
+        exc = self._by_engine_code("UNKNOWN_ERROR")
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+
+    def test_engine_token_limit_maps_to_503(self):
+        exc = self._by_engine_code("TOKEN_LIMIT")
+        assert exc.status_code == 503
+
+    def test_engine_model_not_found_maps_to_502(self):
+        exc = self._by_engine_code("MODEL_NOT_FOUND")
+        assert exc.status_code == 502
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_ERROR"
+        assert "Retry-After" not in exc.headers
+
+    def test_engine_auth_failed_maps_to_502(self):
+        exc = self._by_engine_code("AUTH_FAILED")
+        assert exc.status_code == 502
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_ERROR"
+
+    def test_engine_code_read_from_cause_chain_error_code(self):
+        # Even without details threading, an error_code on a cause-chain
+        # exception (MilestoneEngineError.error_code) is honored.
+        from faultmaven.api.exception_handlers import (
+            llm_service_error_http_exception,
+        )
+        from faultmaven.exceptions import ServiceException
+
+        class _EngineErr(Exception):
+            def __init__(self, msg, error_code):
+                super().__init__(msg)
+                self.error_code = error_code
+
+        eng = _EngineErr("generation failed", "RETRY_EXHAUSTED")
+        try:
+            raise ServiceException("Turn processing failed") from eng
+        except ServiceException as outer:
+            wrapped = outer
+        exc = llm_service_error_http_exception(wrapped, "c")
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+
+    def test_provider_status_wins_over_engine_code(self):
+        # When a raw LLMException status IS on the chain (direct path), it is more
+        # specific than any threaded engine code and takes precedence.
+        from faultmaven.api.exception_handlers import (
+            llm_service_error_http_exception,
+        )
+        from faultmaven.exceptions import LLMException, ServiceException
+
+        llm = LLMException("rate limited", status_code=429)
+        try:
+            raise ServiceException(
+                "Turn processing failed", details={"error_code": "RETRY_EXHAUSTED"}
+            ) from llm
+        except ServiceException as outer:
+            wrapped = outer
+        exc = llm_service_error_http_exception(wrapped, "c")
+        assert exc.status_code == 429  # provider status beats the engine code
+
+    def test_unknown_engine_code_falls_back_to_500(self):
+        # A code that is neither retryable nor terminal is not silently degraded.
+        exc = self._by_engine_code("SOME_UNMAPPED_CODE")
+        assert exc.status_code == 500
+        assert exc.headers["x-error-code"] == "SERVICE_ERROR"

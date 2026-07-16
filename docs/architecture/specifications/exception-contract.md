@@ -89,6 +89,51 @@ The handlers surface these fields in the response (`resource_type`,
 `duplicate_username` from `duplicate_email` without regex on a
 free-text message.
 
+## LLM Provider Failures (turn endpoints)
+
+An LLM turn can fail deep in a provider call, and reaches the route as a
+`ServiceException` on one of two paths. On the **direct** path the raw
+`LLMException` is chained (`raise ServiceException(...) from e`), so its
+typed `status_code` / `retryable` lives on the `__cause__` chain. On the
+**retry-loop** path (`LLMErrorHandler.with_retry` → `MilestoneEngineError`)
+the provider exception is converted to a semantic `error_code` and
+re-raised without a `__cause__` link — so no provider status is reachable,
+only that code (threaded onto the wrapper's `details["error_code"]`; this
+is `MilestoneEngineError`'s documented cross-layer signal). Route handlers
+must classify off both typed signals via
+`llm_service_error_http_exception(exc, correlation_id)`
+(`api/exception_handlers.py`), never by substring-matching the message.
+Message matching silently mis-routed real failures to a bare 500: a
+provider that raised `"…timed out…"` (which does not contain the
+`"timeout"` substring the old handler looked for), a Gemini `400`, and a
+schema-parse `ValidationError` all fell through — a transient/upstream
+provider condition presented to the user as a FaultMaven bug.
+
+| Signal | HTTP | `x-error-code` | Retry-After |
+|--------|------|----------------|-------------|
+| billing / quota exhausted (`QUOTA_EXHAUSTED`) | 402 | `QUOTA_EXHAUSTED` | — |
+| provider status 429 | 429 | `RATE_LIMIT_EXCEEDED` | 60 |
+| provider status 504 (incl. all provider timeouts) | 504 | `LLM_TIMEOUT` | 30 |
+| provider status 503 | 503 | `LLM_OVER_CAPACITY` | 60 |
+| provider status 5xx (other) | 503 | `LLM_PROVIDER_UNAVAILABLE` | 60 |
+| provider status 4xx (other, e.g. Gemini 400) | 502 | `LLM_PROVIDER_ERROR` | — |
+| `LLMException`, no status, `retryable` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
+| `LLMException`, no status, terminal | 502 | `LLM_PROVIDER_ERROR` | — |
+| engine `RETRY_EXHAUSTED` / `TOKEN_LIMIT` / `UNKNOWN_ERROR` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
+| engine `MODEL_NOT_FOUND` / `AUTH_FAILED` | 502 | `LLM_PROVIDER_ERROR` | — |
+| direct schema-parse failure (`ValidationError` / `JSONDecodeError`) | 503 | `LLM_INVALID_RESPONSE` | 30 |
+| anything else | 500 | `SERVICE_ERROR` | 10 |
+
+The raw provider status (direct path) is more specific than a threaded
+engine code and takes precedence when both are present. A 4xx other than
+429 means the provider rejected *this request* — the identical request
+retried fails identically, so no `Retry-After`. A schema-parse failure
+(direct, or the engine's `UNKNOWN_ERROR` from the retry loop) is retried
+because a BEST_EFFORT model may emit valid JSON on the next attempt. Every
+provider stamps `status_code=504` on a client/read timeout
+(`asyncio.TimeoutError`) so the contract classifies timeouts by typed
+status, not the wording of the message.
+
 ## Service-Layer Usage Example
 
 ```python
