@@ -21,6 +21,7 @@ from faultmaven.core.investigation.kb_cause_seeder import (
     KB_SEED_PRIOR,
     MAX_SEEDED_CAUSES,
     SEEDED_FROM_RUNBOOK_KEY,
+    SEEDED_RATIONALE_PREFIX,
     SeededRunbook,
     SkipClass,
     seed_candidate_causes,
@@ -333,6 +334,41 @@ def test_dedup_skip_is_benign_no_alarm():
     assert report.runbooks_contributing_nothing() == []
 
 
+def test_shared_root_divergent_chain_dedups_without_orphan_nodes():
+    # Two runbooks share a root statement but diverge mid-chain. The second is a
+    # BENIGN_DEDUP — and because the dedup is decided BEFORE ingest, the second
+    # runbook's divergent intermediate must NEVER be minted as an orphan node.
+    rb1 = _runbook(
+        "rb1",
+        [_cause("A", root_stmt="shared root fault", inter_stmt="first path effect")],
+        score=0.9,
+    )
+    rb2 = _runbook(
+        "rb2",
+        [_cause("B", root_stmt="shared root fault", inter_stmt="second path effect")],
+        score=0.8,
+    )
+    case = _case()
+    report = seed_candidate_causes(case, [rb1, rb2], current_turn=1)
+
+    # rb1 seeded; rb2 deduped (benign, not alarmed).
+    assert report.runbooks_used == ["rb1"]
+    dedup = [s for s in report.skipped if s.skip_class == SkipClass.BENIGN_DEDUP]
+    assert len(dedup) == 1 and dedup[0].item_id == "rb2"
+    assert report.runbooks_contributing_nothing() == []
+
+    # The divergent intermediate ("second path effect") was never minted.
+    statements = {n.statement for n in case.causal_nodes.values()}
+    assert "second path effect" not in statements
+
+    # Orphan-free invariant: every non-problem node lies on some hypothesis path.
+    on_a_path = {nid for h in case.hypotheses.values() for nid in (h.path or [])}
+    non_problem_ids = {
+        nid for nid, n in case.causal_nodes.items() if n.node_type != NodeType.PROBLEM
+    }
+    assert non_problem_ids <= on_a_path, "a seeded node is orphaned (off every path)"
+
+
 def test_cause_that_raises_is_recorded_as_skip_and_pass_continues():
     # A cause that makes _seed_one_cause raise (malformed non-list chain_nodes)
     # must not abort the pass or discard the report: it is recorded as a skip and
@@ -373,6 +409,74 @@ def test_and_group_cause_is_rejected_not_flattened():
     assert len(report.skipped) == 1
     assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
     # An unmodeled real cause that seeds nothing IS actionable (build AND support).
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
+def test_second_root_mid_chain_is_rejected_not_seeded():
+    # A chain with a second root (head IS a root, so the head-is-root check
+    # passes) is two chains, not one linear path — reject as UNSUPPORTED_SHAPE
+    # rather than mis-seed it as a linear chain.
+    case = _case()
+    two_roots = _cause("A")
+    two_roots["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": "root one"},
+        {"ref": "r2", "node_type": "root", "statement": "root two"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "shared effect"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    two_roots["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1"},
+        {"cause_ref": "r2", "effect_ref": "s1"},
+        {"cause_ref": "s1", "effect_ref": "D"},
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [two_roots])], current_turn=1)
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
+def test_branching_fork_is_rejected_not_linearized():
+    # A rung that produces two distinct effects (a fork) must NOT be silently
+    # flattened to one arbitrary branch (last-edge-wins). Reject it.
+    case = _case()
+    fork = _cause("A")
+    fork["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": "forking root"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "branch one"},
+        {"ref": "s2", "node_type": "intermediate", "statement": "branch two"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    fork["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1"},
+        {"cause_ref": "root", "effect_ref": "s2"},  # root forks — two effects
+        {"cause_ref": "s1", "effect_ref": "D"},
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [fork])], current_turn=1)
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
+def test_dangling_edge_ref_is_rejected_not_seeded():
+    # An edge whose effect_ref resolves to no node would silently disconnect a
+    # rung. Reject rather than mis-seed a broken chain.
+    case = _case()
+    dangling = _cause("A")
+    dangling["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": "dangling root"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "orphaned effect"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    dangling["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1"},
+        {"cause_ref": "s1", "effect_ref": "ghost"},  # no such node
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [dangling])], current_turn=1)
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
     assert report.runbooks_contributing_nothing() == ["rb1"]
 
 
@@ -429,29 +533,52 @@ def test_misleading_seed_decays_and_is_anchoring_flagged():
 
 def test_safety_mechanisms_are_provenance_blind():
     """No safety mechanism (confidence decay, anchoring detection, failed-fix
-    demotion, node/hypothesis state derivation, cause_state derivation) may
-    branch on seeded provenance — that is what keeps a seed mechanically
-    indistinguishable from a self-generated hypothesis.
+    demotion, node/hypothesis state derivation, cause_state derivation, and the
+    terminal/produce-side conclusion gates) may branch on seeded provenance — that
+    is what keeps a seed mechanically indistinguishable from a self-generated
+    hypothesis.
 
-    These mechanisms live in causal_graph.py + hypothesis_manager.py (decay /
-    anchoring / demotion / node+hypothesis state derivation) and milestone_engine.py
-    (cause_state derivation + the per-turn housekeeping loop). Assert the
-    provenance key never appears in any of them, so a future edit cannot quietly
-    grant a seed evidentiary weight.
+    Two provenance surfaces exist, and BOTH are checked: the node-metadata key
+    (SEEDED_FROM_RUNBOOK_KEY) and the hypothesis rationale text
+    (SEEDED_RATIONALE_PREFIX). Neither literal may appear in any safety module —
+    a mechanism must not sniff origin out of the rationale string either.
+
+    The module set spans consume-side safety (decay / anchoring / demotion /
+    node+hypothesis state derivation in causal_graph + hypothesis_manager;
+    cause_state derivation + the per-turn housekeeping loop in milestone_engine)
+    AND the conclusion/terminal gates a seeded prior must never shortcut
+    (cause_assurance, terminal_transitions, progress_monitor, state_validator,
+    working_conclusion_generator).
 
     INVARIANT MAINTENANCE: this module set must track any move of safety logic.
-    If decay/anchoring/demotion/state-derivation is relocated to another module,
-    add that module here — a whole-file grep is deliberately coarse so the guard
-    can never be silently narrowed below where the safety logic actually lives.
+    If decay/anchoring/demotion/state-derivation/gating is relocated to another
+    module, add that module here — a whole-file grep is deliberately coarse so the
+    guard can never be silently narrowed below where the safety logic actually
+    lives.
     """
     import faultmaven.core.investigation.causal_graph as cg
+    import faultmaven.core.investigation.cause_assurance as cause_assurance
     import faultmaven.core.investigation.hypothesis_manager as hmmod
     import faultmaven.core.investigation.milestone_engine as engine
+    import faultmaven.core.investigation.progress_monitor as progress_monitor
+    import faultmaven.core.investigation.state_validator as state_validator
+    import faultmaven.core.investigation.terminal_transitions as terminal_transitions
+    import faultmaven.core.investigation.working_conclusion_generator as wcg
 
-    for module in (cg, hmmod, engine):
+    for module in (
+        cg,
+        hmmod,
+        engine,
+        cause_assurance,
+        terminal_transitions,
+        progress_monitor,
+        state_validator,
+        wcg,
+    ):
         with open(module.__file__, "r", encoding="utf-8") as fh:
             source = fh.read()
-        assert SEEDED_FROM_RUNBOOK_KEY not in source, (
-            f"{module.__name__} references the seeded-provenance key — a safety "
-            "mechanism must never branch on origin"
-        )
+        for marker in (SEEDED_FROM_RUNBOOK_KEY, SEEDED_RATIONALE_PREFIX):
+            assert marker not in source, (
+                f"{module.__name__} references seed provenance ({marker!r}) — a "
+                "safety mechanism must never branch on origin"
+            )
