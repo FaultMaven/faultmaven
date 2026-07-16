@@ -37,6 +37,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
 from faultmaven.core.investigation.causal_graph import (
+    find_canonical_node_id,
     ingest_emitted_chain,
     seed_problem_node,
 )
@@ -82,6 +83,12 @@ KB_SEED_PRIOR = 0.3
 # Provenance key on a seeded node's metadata (read surface only).
 SEEDED_FROM_RUNBOOK_KEY = "seeded_from_runbook"
 
+# Distinctive prefix of a seeded hypothesis's rationale — the *second* provenance
+# surface (alongside SEEDED_FROM_RUNBOOK_KEY). A read surface only: the
+# provenance-blindness invariant test greps safety modules for this literal too,
+# so a mechanism can never sniff seed origin out of the rationale text either.
+SEEDED_RATIONALE_PREFIX = "Seeded from runbook"
+
 
 @dataclass
 class SeededRunbook:
@@ -110,9 +117,11 @@ class SkipClass(str, Enum):
     signal — a matched runbook silently contributing less than it should."""
 
     UNSUPPORTED_SHAPE = "unsupported_shape"
-    """A well-formed cause using a structure the seeder does not yet model —
-    today only ``and_group`` AND-convergence. Rejected (not flattened) so a
-    co-necessary A∧B is never silently mis-seeded as an OR-alternative A∨B."""
+    """A well-formed cause using a structure the seeder does not yet model: an
+    ``and_group`` AND-convergence, or a non-linear chain (a second root, a
+    branching fork, a dangling edge ref). Rejected (not flattened) so a
+    co-necessary A∧B is never silently mis-seeded as an OR-alternative A∨B, and a
+    branch/fork is never silently linearized to one arbitrary path."""
 
 
 @dataclass
@@ -285,6 +294,92 @@ def seed_candidate_causes(
     return report
 
 
+def _reject_nonlinear_shape(
+    non_problem: list[dict],
+    chain_edges: list[dict],
+    problem_refs: set,
+    ref_to_index: dict,
+) -> Optional[str]:
+    """Reason string if the chain is not a **single linear root→…→D path with
+    every edge resolving**; ``None`` if it is well-formed for linear seeding.
+
+    The seeder models only a linear chain (one root, each rung producing exactly
+    one next rung, terminating at D). These well-formed-but-unmodeled shapes would
+    otherwise be *silently* mis-seeded, so each is rejected:
+
+    - a **second root** mid-chain (the head-is-root check upstream passes, but a
+      later root makes it two chains, not one);
+    - a **branching fork** — a rung with more than one outgoing edge, which
+      ``produces_by_ref``'s last-edge-wins would flatten to one arbitrary branch;
+    - a **convergence/join** — a rung produced by more than one cause (a repeated
+      ``effect_ref``) without an ``and_group``, which is a merge, not a link in a
+      single path (``and_group`` AND-convergence is rejected separately upstream).
+      Convergence *onto D* counts too: ``"D"`` and every problem-node ref denote
+      the one case D node, so they are canonicalized before the merge check — two
+      rungs producing D via different literals is still a join;
+    - a **dangling ref** — an edge whose ``cause_ref``/``effect_ref`` resolves to
+      no node, which would silently leave a rung disconnected;
+    - a **cycle, fragment, or non-D-terminating / inverted chain** — even when
+      every ref appears at most once, the edges may form a disjoint path + cycle,
+      a chain that never reaches D, or a rung off the root→D route. The final
+      reachability walk requires the edges to form exactly one simple path from
+      the head root through every rung, terminating at D.
+
+    Honor-or-reject (same discipline as ``and_group``): REJECT rather than
+    mis-model. Zero instances in the shipped pack; the guard protects the
+    case→runbook conversion (produce) path, where LLM-authored chains are far
+    likelier to branch than the curated corpus, so a shape gap cannot go live the
+    day the flywheel closes.
+    """
+    # Exactly one root: a second root makes this two chains, not a linear one.
+    if sum(1 for n in non_problem if n.get("node_type") == NodeType.ROOT.value) > 1:
+        return "multiple roots (not a single linear chain)"
+
+    # "D" and every problem-node ref denote the single case D node; canonicalize
+    # so a join onto D via different literals is still seen as one effect.
+    def _canon(ref: Optional[str]) -> Optional[str]:
+        return "D" if (ref == "D" or ref in problem_refs) else ref
+
+    # Every edge must resolve on both ends; no rung may fork (produce >1 effect)
+    # nor be a merge point (be produced by >1 cause) — a single linear chain has
+    # each cause_ref and each canonical effect_ref appear at most once.
+    forked: set = set()
+    converged: set = set()
+    produces: dict = {}
+    for edge in chain_edges:
+        cause_ref = edge.get("cause_ref")
+        effect_ref = _canon(edge.get("effect_ref"))
+        if cause_ref not in ref_to_index:
+            return "edge cause_ref does not resolve to a chain node"
+        if not (effect_ref == "D" or effect_ref in ref_to_index):
+            return "edge effect_ref does not resolve to a chain node"
+        if cause_ref in forked:
+            return "branching node (a rung produces more than one effect)"
+        if effect_ref in converged:
+            return "converging node (a rung is produced by more than one cause)"
+        forked.add(cause_ref)
+        converged.add(effect_ref)
+        produces[cause_ref] = effect_ref
+
+    # Reachability: the edges must form exactly one simple path from the head root
+    # through every non-problem rung, terminating at D. The ≤once checks above make
+    # the successor map deterministic, so the walk catches what they cannot —
+    # cycles, disconnected fragments, non-D-terminating and inverted chains.
+    root_ref = non_problem[0].get("ref")
+    visited: set = set()
+    cur = root_ref
+    while cur != "D":
+        if cur in visited:
+            return "cycle in chain (not a single linear path)"
+        if cur not in produces:
+            return "chain does not terminate at the problem (D)"
+        visited.add(cur)
+        cur = produces[cur]
+    if len(visited) != len(non_problem):
+        return "disconnected rung (not every node lies on the root→D path)"
+    return None
+
+
 def _seed_one_cause(
     case: "Case",
     item_id: str,
@@ -299,8 +394,14 @@ def _seed_one_cause(
     with ``skip=None``; on a no-seed the class-tagged ``SkippedCause`` so no drop
     is silent. The fallback cause is an INTENTIONAL skip; a real cause the seeder
     can't instantiate is a QUALITY_DROP; a well-formed cause using an unmodeled
-    shape (``and_group``) is an UNSUPPORTED_SHAPE reject (never flattened); the
-    double-seed guard is a BENIGN_DEDUP.
+    shape (``and_group`` AND-convergence, or a non-linear chain — multiple roots,
+    a branching fork, a dangling edge ref) is an UNSUPPORTED_SHAPE reject (never
+    flattened / mis-seeded); an already-seeded root is a BENIGN_DEDUP.
+
+    The BENIGN_DEDUP check runs **before** ``ingest_emitted_chain`` (via the
+    shared dedup key ``find_canonical_node_id``): a second runbook that shares a
+    root but diverges mid-chain is skipped without first minting the divergent
+    intermediate rungs, so a dedup never leaves orphan nodes/edges in the graph.
     """
     if cause.get("is_fallback_cause"):
         return (
@@ -369,6 +470,17 @@ def _seed_one_cause(
         n.get("ref") for n in chain_nodes if n.get("node_type") == "problem"
     }
     ref_to_index = {n.get("ref"): i for i, n in enumerate(non_problem)}
+
+    # Reject any non-linear shape (second root, branching fork, dangling edge ref)
+    # rather than silently flatten it — same honor-or-reject discipline as the
+    # and_group guard above. Runs before spec-building so a mis-shaped chain never
+    # ingests.
+    nonlinear = _reject_nonlinear_shape(
+        non_problem, chain_edges, problem_refs, ref_to_index
+    )
+    if nonlinear is not None:
+        return (None, [], _skip(item_id, cause, SkipClass.UNSUPPORTED_SHAPE, nonlinear))
+
     produces_by_ref: dict[str, str] = {}
     for edge in chain_edges:
         cause_ref, effect_ref = edge.get("cause_ref"), edge.get("effect_ref")
@@ -403,6 +515,23 @@ def _seed_one_cause(
             _NodeSpec(statement=statement, node_type=node_type, produces=produces)
         )
 
+    # Don't double-seed — BEFORE ingest, so a dedup never mints orphan nodes. A
+    # root whose statement matches an existing node reuses it under ingest's
+    # exact-match dedup (find_canonical_node_id is that same key); if that reused
+    # root already heads a hypothesis, the cause is already represented. Skipping
+    # here (not after ingest) means a second runbook sharing this root but
+    # diverging mid-chain never mints its divergent intermediate rungs as orphans.
+    existing_roots = {
+        h.root_node_id for h in case.hypotheses.values() if h.root_node_id
+    }
+    canonical_root = find_canonical_node_id(case, NodeType.ROOT, specs[0].statement)
+    if canonical_root is not None and canonical_root in existing_roots:
+        return (
+            None,
+            [],
+            _skip(item_id, cause, SkipClass.BENIGN_DEDUP, "root already seeded"),
+        )
+
     before = set(case.causal_nodes)
     # One ingest call per cause keeps new_index_N references local to this chain.
     created = ingest_emitted_chain(case, specs, [], [], current_turn)
@@ -417,18 +546,6 @@ def _seed_one_cause(
             ),
         )
     root_id = created[0]  # chain is root-first, so the first minted node is root
-
-    # Don't double-seed: if a hypothesis already heads at this (possibly reused)
-    # root, the cause is already represented — leave one cause on one node.
-    existing_roots = {
-        h.root_node_id for h in case.hypotheses.values() if h.root_node_id
-    }
-    if root_id in existing_roots:
-        return (
-            None,
-            [],
-            _skip(item_id, cause, SkipClass.BENIGN_DEDUP, "root already seeded"),
-        )
 
     # Provenance on NEWLY-minted nodes only — never overwrite a reused
     # (self-generated) node's origin. Read surface only.
@@ -448,7 +565,9 @@ def _seed_one_cause(
         current_turn=current_turn,
         generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
         state=HypothesisState.ACTIVE,
-        rationale=f"Seeded from runbook {item_id} (Cause {letter}: {name})".strip(),
+        rationale=(
+            f"{SEEDED_RATIONALE_PREFIX} {item_id} (Cause {letter}: {name})".strip()
+        ),
     )
     # Link the hypothesis to its seeded chain (root heads the path; D tails it).
     hypothesis.root_node_id = root_id

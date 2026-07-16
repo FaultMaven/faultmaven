@@ -995,6 +995,25 @@ def _normalize_statement(s: str | None) -> str:
     return " ".join((s or "")[:500].split()).lower()
 
 
+def find_canonical_node_id(
+    case: Case, node_type: NodeType, statement: str | None
+) -> str | None:
+    """The id of the existing node an emitted ``(node_type, statement)`` spec
+    would REUSE under ``ingest_emitted_chain``'s exact-match dedup, or ``None`` if
+    it would mint a fresh node.
+
+    Single source of the dedup key so external callers never drift from ingest's
+    own identity reconciliation. The KB cause seeder uses it to detect — *before*
+    ingesting — that a runbook's root would collapse onto an already-seeded root,
+    so it can skip that cause without first minting orphan intermediate rungs.
+    """
+    key = (node_type, _normalize_statement(statement))
+    for nid, n in case.causal_nodes.items():
+        if (n.node_type, _normalize_statement(n.statement)) == key:
+            return nid
+    return None
+
+
 def ingest_emitted_chain(
     case: Case,
     nodes_to_add: list,

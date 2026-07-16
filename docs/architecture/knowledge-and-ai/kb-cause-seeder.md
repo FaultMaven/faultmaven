@@ -128,14 +128,22 @@ active hypotheses in one category reads as fixation). The bounds:
   anchoring threshold cannot silently let the seeder self-anchor — the
   relationship is asserted in a test.
 - **Dedup across runbooks:** the same cause retrieved via two runbooks seeds
-  once — handled for free by `ingest_emitted_chain`, which reuses a node on
-  exact-normalized `(node_type, statement)`. Near-duplicate roots are reconciled
-  by the existing MECE arbitration (`distinct_cause_clusters`, Jaccard 0.6).
+  once. The check runs **before** `ingest_emitted_chain`, via the shared dedup key
+  `find_canonical_node_id` (the same exact-normalized `(node_type, statement)` key
+  ingest reuses on): if a runbook's root would collapse onto a root that already
+  heads a hypothesis, the cause is skipped `benign_dedup` *without first minting*
+  its chain. This matters when a second runbook shares a root but diverges
+  mid-chain — deciding the dedup after ingest would leave the divergent
+  intermediate rungs as orphan nodes/edges (on no hypothesis path, invisible to
+  the skip taxonomy). Near-duplicate roots are reconciled by the existing MECE
+  arbitration (`distinct_cause_clusters`, Jaccard 0.6).
 - **Distinct roots compete as OR-alternatives:** pack `chain_edges` carry no
   `and_group`, so seeded predecessors enter as independent OR-alternative sibling
   causes — never silently merged into one Cause. Evidence separates them. A cause
-  that *does* carry `and_group` (co-necessary AND-convergence) is **rejected**, not
-  flattened — see the `unsupported_shape` skip below.
+  whose shape the seeder does not model — `and_group` co-necessary AND-convergence,
+  or a non-linear chain (a second root, a branching fork, a convergence/join, a
+  dangling edge ref, or a cycle/fragment/non-`D`-terminating chain) — is
+  **rejected**, not flattened/mis-seeded — see the `unsupported_shape` skip below.
 
 ### 4–5. Instantiation
 
@@ -182,17 +190,38 @@ recorded as a class-tagged `SkippedCause` on the `SeedReport` (keyed by
 - **`intentional`** — the fallback (`Z`/`[Default]`) cause; never a candidate root
   by design.
 - **`benign_dedup`** — a root already seeded by an earlier retrieved runbook
-  (overlap); normal and correct.
+  (overlap); normal and correct. Decided **before** ingest (see *Dedup across
+  runbooks* above), so it never mints orphan nodes.
 - **`quality_drop`** — a *real* cause the seeder could not instantiate (no chain,
   non-root head, bad `node_type`, empty statement, ingest produced nothing).
 - **`unsupported_shape`** — a well-formed cause using a structure the seeder does
-  not yet model. Today that is only `and_group` **AND-convergence**: the seeder
-  reads `cause_ref`/`effect_ref` and defaults every edge to `and_group=None`, so a
-  co-necessary AND-set would be silently flattened to independent OR-alternatives
-  (A∧B → A∨B — a MECE mis-model). It is **rejected, not flattened**
-  (honor-or-reject) until AND-seeding is built. Zero instances in the pack today;
-  the guard exists for the case→runbook conversion (produce) path (converted
-  runbooks generate v4 structure).
+  not yet model, **rejected not flattened** (honor-or-reject). Two families:
+  - `and_group` **AND-convergence**: the seeder reads `cause_ref`/`effect_ref` and
+    defaults every edge to `and_group=None`, so a co-necessary AND-set would be
+    silently flattened to independent OR-alternatives (A∧B → A∨B — a MECE
+    mis-model).
+  - **non-linear chain** — a *second root* mid-chain (two chains, not one linear
+    path); a *branching fork* (a rung with more than one outgoing edge, which
+    `produces_by_ref`'s last-edge-wins would flatten to one arbitrary branch); a
+    *convergence/join* (a rung produced by more than one cause — a repeated
+    `effect_ref` without an `and_group` — which is a merge, not a link in a single
+    path); a *dangling edge ref* (a `cause_ref`/`effect_ref` resolving to no
+    node, silently disconnecting a rung); or a *cycle / fragment /
+    non-`D`-terminating / inverted* chain (edges that satisfy the ≤once checks yet
+    never form a single path from the root to `D`). The guard requires a single
+    linear `root → … → D` chain and enforces it in two parts: (1) each `cause_ref`
+    and each *canonical* `effect_ref` appears at most once — `"D"` and every
+    problem-node ref denote the one case `D` node, so they are canonicalized
+    before the merge check, and a join onto `D` via two different literals is
+    still rejected; (2) a reachability walk from the head root must traverse every
+    rung exactly once and terminate at `D` — catching cycles, disconnected
+    fragments, and chains that never reach `D`, which the ≤once checks alone
+    cannot see.
+
+  All are **0/640** in the shipped pack; the guard exists for the case→runbook
+  conversion (produce) path, where LLM-authored chains are far likelier to branch
+  than the curated corpus — so a shape gap cannot go live the day the flywheel
+  closes.
 
 The **"matched runbook contributed nothing"** warning fires when a zero-seed
 runbook has ≥1 *actionable* skip — `quality_drop` **or** `unsupported_shape`
@@ -247,14 +276,20 @@ the LLM simply **ignores** stays inert at ≤0.5 rather than decaying (see the d
 row above and #713). In no case does the engine conclude on it.
 
 **Provenance-blindness invariant (load-bearing).** The whole no-privilege claim
-rests on *nothing branching on origin*. The seeder's provenance markers
-(`node.metadata["seeded_from_runbook"]`, the hypothesis `rationale`) are read
-only by observability and tests. No safety mechanism — confidence decay,
-anchoring detection, failed-fix demotion, node/hypothesis state derivation —
-reads them. This is enforced by a standing invariant test (a grep/AST assertion
-that the decay/anchoring/demotion/derivation code paths never reference the
-provenance keys), so a future edit cannot quietly grant a seed evidentiary
-weight.
+rests on *nothing branching on origin*. The seeder records origin in two read
+surfaces — `node.metadata["seeded_from_runbook"]` and the hypothesis `rationale`
+(prefix `"Seeded from runbook …"`) — read only by observability and tests. This
+is enforced by a standing invariant test that greps the safety modules for
+**both** markers (the metadata key *and* the rationale-prefix literal), so a
+mechanism cannot sniff origin out of the rationale string either. The checked
+module set spans consume-side safety (decay / anchoring / failed-fix demotion /
+node+hypothesis state derivation in `causal_graph` + `hypothesis_manager`;
+`cause_state` derivation + the per-turn housekeeping loop in `milestone_engine`)
+**and** the conclusion/terminal gates a seeded prior must never shortcut
+(`cause_assurance`, `terminal_transitions`, `progress_monitor`, `state_validator`,
+`working_conclusion_generator`) — a whole-file grep is deliberately coarse so the
+guard can never be silently narrowed below where the safety logic actually lives.
+A future edit cannot quietly grant a seed evidentiary weight.
 
 **Honest limit — seed↔LLM anchoring interaction.** The `KB_SEEDER_MAX_CAUSES`
 cap stops the seeder *alone* from tripping anchoring condition 1. But seeded
@@ -387,6 +422,15 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   INV-36's general standing-hypothesis dedup is not that and already applies.
 - **Multi-runbook:** an identical-statement cause seeded via two runbooks dedups
   to one node; two distinct roots enter as competing OR-alternative candidates.
+  A second runbook sharing a root but diverging mid-chain dedups **without leaving
+  orphan nodes** (skip-before-ingest) — asserted by the orphan-free invariant
+  (every non-problem node lies on some hypothesis path).
+- **Shape guard (unit):** an `and_group` AND-set, a second-root chain, a branching
+  fork, a convergence/join (including a join onto `D` via the `"D"`-vs-problem-ref
+  alias), a dangling edge ref, and a cycle/fragment/non-`D`-terminating chain each
+  reject as `unsupported_shape` (seed nothing, raise the "contributed nothing"
+  alarm) — never silently flattened/linearized; a well-formed linear chain that
+  terminates at `D` via the problem ref still seeds.
 - **Freshness:** a causes-only pack change re-ingests.
 - **Flag off:** the seeder is a no-op; the flat KB-resolution prompt path is
   unchanged.
