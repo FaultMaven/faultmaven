@@ -189,3 +189,12 @@ class SearchResult(BaseModel):
     tags: List[str] = Field(..., description="Document tags")
     score: float = Field(..., description="Search relevance score")
     snippet: str = Field(..., description="Relevant content snippet")
+    parent_document_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Id of the parent knowledge_items row this hit's chunk belongs to "
+            "(== the row holding metadata['causes']). None when the hit carries "
+            "no parent identity. Distinct from document_id, which for a chunk hit "
+            "is the chunk id."
+        ),
+    )

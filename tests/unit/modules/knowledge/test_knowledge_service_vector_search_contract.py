@@ -105,6 +105,70 @@ async def test_knowledge_service_search_uses_real_signature():
     )
 
 
+class _HitReturningStore:
+    """Vector store returning raw hit dicts (id/content/metadata/score)."""
+
+    def __init__(self, hits):
+        self._hits = hits
+
+    async def search(self, collection_name, query, k=5, where=None):
+        return self._hits
+
+
+def _service_with_hits(hits):
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
+
+    tracer = MagicMock()
+    tracer.trace = MagicMock(
+        return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: None)
+    )
+    return KnowledgeService(
+        knowledge_ingester=MagicMock(),
+        sanitizer=MagicMock(asanitize=AsyncMock(side_effect=lambda q: q)),
+        tracer=tracer,
+        vector_store=_HitReturningStore(hits),
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_result_surfaces_parent_document_id_from_metadata():
+    """The matched runbook id (``metadata['parent_document_id']``) survives to
+    ``SearchResult`` — the KB cause seeder loads that row's ``causes``."""
+    service = _service_with_hits(
+        [
+            {
+                "id": "kb_abc123_chunk_0",
+                "content": "chunk text",
+                "metadata": {"parent_document_id": "kb_abc123"},
+                "score": 0.8,
+            }
+        ]
+    )
+    results = await service.search_knowledge("q", limit=5)
+    assert len(results) == 1
+    assert results[0].parent_document_id == "kb_abc123"
+
+
+@pytest.mark.asyncio
+async def test_search_result_parent_id_falls_back_to_chunk_suffix_strip():
+    """When metadata omits the parent id, it is recovered from the chunk id
+    (minted as ``f'{parent}_chunk_{i}'``)."""
+    service = _service_with_hits(
+        [
+            {
+                "id": "kb_def456_chunk_3",
+                "content": "chunk text",
+                "metadata": {},
+                "score": 0.7,
+            }
+        ]
+    )
+    results = await service.search_knowledge("q", limit=5)
+    assert results[0].parent_document_id == "kb_def456"
+
+
 def test_knowledge_vector_store_search_signature_unchanged():
     """If KnowledgeVectorStore.search signature ever changes, this test
     breaks loudly. Any future refactor must update both callers AND this
