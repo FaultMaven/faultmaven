@@ -11,8 +11,12 @@ links no evidence, and it is subject to the same confidence decay, anchoring
 detection, and failed-fix demotion as a self-generated hypothesis. It is *not*
 the retired runbook-cause matcher (a deterministic grounding arm, NO-GO'd in
 #658): seeding grants **zero evidentiary privilege**. VALIDATED is unreachable
-here — ``derive_node_states`` / ``project_hypothesis_states_from_roots`` remain
-the sole VALIDATED writers.
+here — the seeder never invokes a VALIDATED writer. Node VALIDATED is written
+only by ``derive_node_states`` (empirical) and ``validate_by_exclusion``
+(deductive, the #593 exclusion arm — stamps ``DEDUCTIVE`` on a ROOT once ≥2
+siblings are counterfactually refuted); hypothesis VALIDATED is projected from
+those node states by ``project_hypothesis_states_from_roots``. A candidate-only,
+evidence-less seed at ≤0.5 satisfies none of their preconditions.
 
 Provenance markers (``node.metadata["seeded_from_runbook"]`` and the hypothesis
 ``rationale``) are **read surfaces only** — no safety mechanism branches on them

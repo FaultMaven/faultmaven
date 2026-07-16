@@ -16,8 +16,10 @@ double-synthesis (`kb_qa` prose synthesis → engine prose re-summary). It is a
 grounded conclusion. It is explicitly *not* the retired runbook-cause matcher
 (that was a deterministic grounding/validation arm, NO-GO'd in #658); the seeder
 grants **zero evidentiary privilege** — a seeded candidate is validated only by
-real case evidence, decays when unsupported, and is anchoring-flagged and demoted
-exactly like a self-generated hypothesis.
+real case evidence, and is subject to the same confidence decay, anchoring
+detection, and failed-fix demotion as a self-generated hypothesis (an
+engaged-but-unsupported seed decays; an ignored one stays inert at its ≤0.5 prior
+— see the Guarantee section).
 
 Shipped dark behind `FAULTMAVEN_KB_CAUSE_SEEDER` (default off).
 
@@ -228,15 +230,21 @@ mechanism:
 | Mechanism | How the seeded candidate is subject to it |
 |---|---|
 | Prior cap | `create_hypothesis` clamps to `≤ 0.5` — no head start. |
-| Confidence decay (`0.85^iterations`) | Seeded hypotheses are ACTIVE with `iterations_without_progress=0` and empty `evidence_links`; an unsupported seed's counter climbs and it decays each turn via the existing housekeeping loop — no special-casing. |
+| Confidence decay (`0.85^iterations`) | Same treatment as a self-generated hypothesis — no special-casing. Precisely: `iterations_without_progress` climbs only when the LLM *engages* a hypothesis (touches it via `link_evidence`/likelihood update that fails to move likelihood ≥5%), and `apply_likelihood_decay` no-ops while the counter is 0 (`hypothesis_manager.py`). So a seed the LLM **engages and fails to support** decays each turn via the housekeeping loop, exactly like any other stagnant hypothesis; a seed the LLM **never touches** keeps `iterations_without_progress=0` and stays inert at its ≤0.5 prior (it never decays, and stagnation-based anchoring never fires on it). Either way it is harmless: candidate-only, evidence-less, provenance-blind → cannot validate. (Whether an *untouched* ACTIVE hypothesis should also decay is a global engine question, not seeder-specific — filed as #713.) |
 | Anchoring detection | Counts and can retire seeded candidates identically (`detect_anchoring` reads `category`/`iterations`/`likelihood`, not origin). |
 | Failed-fix demotion (M6) | A disproved seed flows through the same `refute_hypothesis` / counterfactual-demotion path. |
-| VALIDATED | Unreachable by the seeder. `derive_node_states` (nodes) and `project_hypothesis_states_from_roots` (hypotheses) are the sole VALIDATED writers, and Pydantic validators reject a hand-set VALIDATED node lacking a method/actionable flag. |
+| VALIDATED | Unreachable by the seeder — it never invokes a VALIDATED writer. Node VALIDATED is written by `derive_node_states` (empirical) **and** `validate_by_exclusion` (deductive — the #593 exclusion arm stamps `DEDUCTIVE` on a ROOT once ≥2 siblings are counterfactually refuted); hypothesis VALIDATED is projected from those node states by `project_hypothesis_states_from_roots`. A candidate-only, evidence-less seed at ≤0.5 satisfies none of their preconditions, and Pydantic validators reject a hand-set VALIDATED node lacking a method/actionable flag. |
 
 The seeder writes **candidates only**. It never sets likelihood above the prior
-cap, never links evidence, never sets VALIDATED. Anchoring and decay are the
-backstop: a misleading runbook's seeded cause receives no supporting evidence,
-decays, is anchoring-flagged, and is demoted — the engine does not conclude.
+cap, never links evidence, never sets VALIDATED. The **primary** guarantee is
+structural, not dynamic: a misleading runbook's seeded cause is a CANDIDATE at
+≤0.5 with no evidence links and no runtime privilege (provenance-blind), so it
+**cannot reach VALIDATED and cannot be concluded on** regardless of what decay or
+anchoring do. Decay and anchoring are the *secondary* backstop and bite only when
+the LLM **engages** the seed and fails to support it (then its stagnation counter
+climbs and it decays/anchoring-flags/demotes like any other hypothesis); a seed
+the LLM simply **ignores** stays inert at ≤0.5 rather than decaying (see the decay
+row above and #713). In no case does the engine conclude on it.
 
 **Provenance-blindness invariant (load-bearing).** The whole no-privilege claim
 rests on *nothing branching on origin*. The seeder's provenance markers
@@ -281,22 +289,45 @@ VALIDATED without evidence):
 
 - **Over-deference** — the LLM confirms a seed instead of testing it.
 - **Paraphrase-duplication** — a weaker model ignores the directive and emits a
-  `hypotheses_to_add` for a seeded cause with *reworded* text. Node dedup keys on
-  exact-normalized `(node_type, statement)`, so a paraphrase is **not** caught,
-  yielding two ACTIVE `OTHER` hypotheses for one cause (inflating the `OTHER`
-  bucket toward the anchoring threshold, breaking sibling-MECE).
+  `hypotheses_to_add` for a seeded cause with *reworded* text. This is **partly
+  backstopped mechanically**: every `hypotheses_to_add` runs through INV-36
+  `find_duplicate_hypothesis` (`causal_graph.py`), a **mutual-Jaccard mirror**
+  (with polarity + numeric-discriminator guards) against standing hypotheses — and
+  the seeded cause *is* a standing ACTIVE hypothesis. A reword **above** the
+  duplicate bar is caught: the re-add is dropped, the emission maps onto the
+  existing seeded hypothesis, and the model is told to update it
+  (`hypotheses_to_update`) rather than clone it. What slips through is only a reword **below** the mutual-Jaccard bar
+  (heavier rephrasing) — INV-36 correctly keeps a genuinely more-specific
+  refinement distinct, so it cannot dedup an aggressive paraphrase without also
+  eating legitimate refinements. Such a slip yields two ACTIVE `OTHER` hypotheses
+  for one cause (inflating the `OTHER` bucket toward the anchoring threshold,
+  breaking sibling-MECE). (Node dedup is separate and exact — keyed on
+  `(node_type, statement)` — and does not catch paraphrases; INV-36 is the
+  hypothesis-level backstop that does, above its bar.)
 
 Both are prompt-strength-dependent and weakest on a BEST_EFFORT model
-(`deepseek-v4-flash`, the dev/demo default). The correct envelope is **prompt +
-per-provider eval**, *not* a mechanical semantic-dedup backstop — matching an
-emitted paraphrase against seeded causes is exactly the retired matcher's
-territory (#658 NO-GO). So: no-collapse stays mechanical; no-duplication stays
+(`deepseek-v4-flash`, the dev/demo default). The correct envelope for the residual
+(below-bar) slip is **prompt + per-provider eval**, *not* a new mechanical
+semantic-dedup backstop tuned to seeded causes — matching an emitted paraphrase
+against the seeded-cause corpus specifically is exactly the retired matcher's
+territory (#658 NO-GO); INV-36's general standing-hypothesis dedup is not that and
+already applies. So: no-collapse stays mechanical; residual no-duplication stays
 prompt-level and is measured per provider (see Verification).
 
-The flat "Exactly one Cause matches → that Cause IS your hypothesis" branch
-remains the behavior when the flag is off, and remains the fallback for
-**prose-only** sources (converted drafts without a `causes` record) even when the
-flag is on.
+The flat "Exactly one Cause matches → that Cause IS your hypothesis" branch is the
+behavior when the flag is off, or in a case that has **never** seeded a candidate.
+Note the swap is **case-sticky, not per-match**: `_select_diagnosis_block` applies
+the seeded directive whenever `case_has_seeded_candidates(case)` is true — for the
+rest of the case's life — not only on the turn a runbook with a `causes` record is
+matched. So once a case has seeded any candidate, a *prose-only* source
+(a converted draft without a `causes` record) matched **later in the same case**
+still receives the seeded "its chain is ALREADY in your graph" directive, which is
+technically inaccurate for that prose-only match. This is a **quality/wording**
+imprecision only — never a soundness issue (the seeded directive still forbids
+confirming on absent evidence, and a prose-matched cause the LLM chooses to add
+enters as an ordinary candidate). A per-match directive would need the block
+assembled with knowledge of *which* source matched this turn; deferred as a
+wording refinement.
 
 ## Freshness
 
@@ -332,18 +363,28 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
 - **Cap ↔ anchoring coupling:** `KB_SEEDER_MAX_CAUSES` is strictly below the
   anchoring condition-1 threshold (asserted against the real constant, so the two
   cannot silently drift apart).
-- **Misleading runbook:** a wrong seeded prior with no supporting evidence decays
-  across turns and is anchoring-flagged/demoted; the engine reaches no conclusion
-  (NO COLLAPSE, NO INCORRECT CONCLUSION). The eval also confirms the engine did
-  **not** simply stop exploring — the LLM continues generating its own
-  hypotheses (guards the seed-crowd-out quality risk).
+- **Misleading runbook:** a wrong seeded prior with no supporting evidence stays a
+  CANDIDATE at ≤0.5 and never reaches VALIDATED, so the engine reaches no
+  conclusion on it (NO COLLAPSE, NO INCORRECT CONCLUSION) — this holds structurally
+  whether or not the LLM engages the seed. When the LLM *does* engage it and fails
+  to support it, it additionally decays across turns and is anchoring-flagged/
+  demoted; when the LLM ignores it, it simply sits inert at ≤0.5 (no decay — see
+  the decay row and #713). The eval also confirms the engine did **not** simply
+  stop exploring — the LLM continues generating its own hypotheses (guards the
+  seed-crowd-out quality risk).
 - **No paraphrase-duplication (per-provider, flag-ON sim only):** after a seeded
   turn, assert **≤ 1 ACTIVE hypothesis per seeded cause** — no second hypothesis
   whose root competes for a seeded root's coverage. This is the property the
   mechanical guarantee cannot cover (it is prompt-strength-dependent), so it is a
   **first-class assertion measured on every provider, including the BEST_EFFORT
   dev/demo model** where the prompt is weakest — not folded into "no collapse."
-  Deliberately **not** backstopped by mechanical semantic dedup (#658 territory).
+  This property is **partly backstopped mechanically** by INV-36
+  `find_duplicate_hypothesis` (a `hypotheses_to_add` paraphrasing a seeded cause
+  *above* the mutual-Jaccard bar is deduped against the standing seeded
+  hypothesis), so a flag-ON ≤1-ACTIVE pass rides on INV-36 plus prompt strength,
+  not prompt strength alone; only *below-bar* rewords depend on the prompt. No new
+  seed-specific semantic-dedup backstop is added (that would be #658 territory);
+  INV-36's general standing-hypothesis dedup is not that and already applies.
 - **Multi-runbook:** an identical-statement cause seeded via two runbooks dedups
   to one node; two distinct roots enter as competing OR-alternative candidates.
 - **Freshness:** a causes-only pack change re-ingests.
@@ -367,8 +408,11 @@ The flag ships OFF; the mechanically-verified code merges first. Turning it on
 requires the flag-ON sim/eval, **per provider** (the prompt-strength-dependent
 properties are weakest on the BEST_EFFORT model), to clear all of:
 
-1. **No collapse / no incorrect conclusion** — a wrong seed decays + is
-   anchoring-flagged; the engine does not conclude on it.
+1. **No collapse / no incorrect conclusion** — a wrong seed never reaches
+   VALIDATED and the engine does not conclude on it (structural: candidate-only,
+   evidence-less, provenance-blind). When the LLM engages the wrong seed it also
+   decays + is anchoring-flagged; an ignored seed stays inert at ≤0.5 rather than
+   decaying (see the decay row and #713) — neither path concludes.
 2. **No crowd-out** — the LLM keeps generating its own hypotheses.
 3. **No paraphrase-duplication** — ≤ 1 ACTIVE hypothesis per seeded cause.
 4. **Prior-not-gate — required, and distinct from #1.** No-collapse only
