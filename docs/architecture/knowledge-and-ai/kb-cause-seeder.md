@@ -431,15 +431,38 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   `root_node_id` ∉ the seeded set with likelihood > the seeded prior, **and** no
   seeded prior is `VALIDATED` — the behavioral proof that a self-generated
   hypothesis can beat a wrong seeded prior (seeding is a prior, not a gate).
+- **Exclusion-under-seeding (flag-ON sim):** with a seeded OR-differential
+  {A,B,C}, refute all-but-one seeded sibling and pressure the engine toward the
+  survivor with no positive evidence and no legitimate exhaustiveness proof — the
+  deductive-exclusion arm (`validate_by_exclusion`) must **not** fabricate a
+  VALIDATED seeded cause. Any seeded root that reaches VALIDATED must carry a real
+  `validation_method`, and if `DEDUCTIVE` its precondition must genuinely hold
+  (≥2 sibling roots absolutely excluded — `REFUTED` at belief ≤
+  `DEDUCTIVE_EXCLUSION_MAX_BELIEF`). Seeding never lowers the exclusion bar; seeded
+  siblings do not bias what exclusion quantifies over (the seeded differential is
+  never engine-certified exhaustive).
 
 The sim/eval runs strict-enforcement + averaged + a cheap model, and must include
 a misleading-runbook scenario. Model variation never changes these engine rules.
 
+The eval is a committed, re-runnable artifact — harness, scenarios, and recorded
+transcripts at [`tests/eval/kb_cause_seeder/`](../../../tests/eval/kb_cause_seeder/)
+(modes `smoke` / `mislead` / `exclusion` / `postturn1`).
+
 ### Enabling gate — required passes before the flag turns on
 
 The flag ships OFF; the mechanically-verified code merges first. Turning it on
-requires the flag-ON sim/eval, **per provider** (the prompt-strength-dependent
-properties are weakest on the BEST_EFFORT model), to clear all of:
+requires the flag-ON sim/eval, on the **hardest provider (BEST_EFFORT)**, to clear
+all of the items below. The bar is the hardest provider, *not* every provider:
+items 1 and 4 are structural (candidate-only, evidence-less, provenance-blind,
+prior-capped) and hold LLM-agnostically by construction; the only
+prompt-strength-dependent items (2, 3) are *weakest* on a BEST_EFFORT model, so a
+pass there is the binding case and a STRICT provider can only do better on them.
+Requiring green on every provider adds cost without assurance beyond the
+weakest-link pass. STRICT-provider runs stay optional cross-checks (see
+[`tests/eval/kb_cause_seeder/README.md`](../../../tests/eval/kb_cause_seeder/README.md)
+for the recorded fireworks pass and the external-wall status of the others). The
+gate items:
 
 1. **No collapse / no incorrect conclusion** — a wrong seed never reaches
    VALIDATED and the engine does not conclude on it (structural: candidate-only,
@@ -448,6 +471,15 @@ properties are weakest on the BEST_EFFORT model), to clear all of:
    decaying (see the decay row and #713) — neither path concludes.
 2. **No crowd-out** — the LLM keeps generating its own hypotheses.
 3. **No paraphrase-duplication** — ≤ 1 ACTIVE hypothesis per seeded cause.
+   This is a *quality* property and the only prompt-strength-dependent gate item,
+   so it is measured **strict + averaged as a pass-rate**, not a single pass. On
+   BEST_EFFORT (`deepseek-v4-flash`) a 2026-07-16 batch measured **7/8** — one run
+   hit the documented below-INV-36-bar paraphrase-duplication (soundness held in
+   that run too). **Whether the measured rate clears this item is a deliberate
+   flag-on judgment**, not a value this eval declares met; the intended envelope
+   for the residual is prompt + per-provider eval (see "Prompt alignment"), and a
+   prompt change is re-measured with the committed harness. Items 1 and 4 do not
+   have this caveat — they hold on every run by construction.
 4. **Prior-not-gate — required, and distinct from #1.** No-collapse only
    proves the wrong seed *dies*; this proves the engine still *reaches the right
    answer* via the LLM's own theory rather than stalling: ∃ a hypothesis whose
