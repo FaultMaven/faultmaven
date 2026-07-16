@@ -504,6 +504,96 @@ def test_dangling_edge_ref_is_rejected_not_seeded():
     assert report.runbooks_contributing_nothing() == ["rb1"]
 
 
+def test_convergence_onto_d_via_ref_alias_is_rejected():
+    # A join whose two producers both terminate at the case D node — one via the
+    # literal "D", one via the problem node's own ref — is still a convergence.
+    # "D" and every problem ref denote the one D node, so the merge check must see
+    # through the aliasing (this is the shape the raw-literal check missed).
+    case = _case()
+    join = _cause("A")
+    join["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": "alias-join root"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "producer one"},
+        {"ref": "s2", "node_type": "intermediate", "statement": "producer two"},
+        {"ref": "P", "node_type": "problem", "statement": "X is failing"},
+    ]
+    join["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1"},
+        {"cause_ref": "s1", "effect_ref": "D"},  # produces D via the literal
+        {"cause_ref": "s2", "effect_ref": "P"},  # produces D via the problem ref
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [join])], current_turn=1)
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
+def test_chain_not_terminating_at_d_is_rejected():
+    # Every ref appears at most once, so the fork/join/dangling checks all pass —
+    # but the root's path dead-ends at s1 and never reaches D. A chain that does
+    # not terminate at the problem is not a root→…→D path; reject it.
+    case = _case()
+    stub = _cause("A")
+    stub["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": "truncated root"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "dead-end rung"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    stub["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1"},  # ends here, never reaches D
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [stub])], current_turn=1)
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
+def test_disconnected_rung_off_the_root_to_d_path_is_rejected():
+    # A rung not on the root→D route (here a self-referential cycle on s2, with the
+    # root's own path reaching D independently) passes every ≤once edge check but
+    # is not a single linear chain. The reachability walk must reject it.
+    case = _case()
+    frag = _cause("A")
+    frag["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": "connected root"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "on-path rung"},
+        {"ref": "s2", "node_type": "intermediate", "statement": "off-path rung"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    frag["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1"},
+        {"cause_ref": "s1", "effect_ref": "D"},
+        {"cause_ref": "s2", "effect_ref": "s2"},  # cycle/fragment off the root path
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [frag])], current_turn=1)
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
+def test_linear_chain_terminating_via_problem_ref_still_seeds():
+    # The valid counterpart to the alias-join rejection: a well-formed linear chain
+    # whose final edge points at the problem node's ref (not the literal "D") must
+    # still seed. Canonicalizing D must not reject legitimate chains.
+    case = _case()
+    good = _cause("A")
+    good["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": "well-formed root"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "the effect"},
+        {"ref": "P", "node_type": "problem", "statement": "X is failing"},
+    ]
+    good["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1"},
+        {"cause_ref": "s1", "effect_ref": "P"},  # terminates at D via the problem ref
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [good])], current_turn=1)
+    assert report.seeded_anything
+    assert len(case.hypotheses) == 1
+
+
 def test_runbook_that_seeded_something_is_not_alarmed_despite_a_quality_drop():
     good = _cause("A", root_stmt="good root cause")
     bad = _cause("B")
@@ -567,6 +657,15 @@ def test_safety_mechanisms_are_provenance_blind():
     (SEEDED_RATIONALE_PREFIX). Neither literal may appear in any safety module —
     a mechanism must not sniff origin out of the rationale string either.
 
+    The grep also bans the provenance SYMBOL NAMES themselves
+    (``SEEDED_FROM_RUNBOOK_KEY``/``SEEDED_RATIONALE_PREFIX``) and the case-level
+    origin helper ``case_has_seeded_candidates``: a module could import the symbol
+    and branch on origin without the literal *value* ever appearing in its source,
+    so the literal-value grep alone is only a tripwire, not a proof. Banning the
+    names closes that gap. (``seed_candidate_causes`` — the write path — is NOT
+    banned: milestone_engine legitimately imports it to *create* seeds, which is
+    not a safety mechanism reading origin.)
+
     The module set spans consume-side safety (decay / anchoring / demotion /
     node+hypothesis state derivation in causal_graph + hypothesis_manager;
     cause_state derivation + the per-turn housekeeping loop in milestone_engine)
@@ -601,7 +700,18 @@ def test_safety_mechanisms_are_provenance_blind():
     ):
         with open(module.__file__, "r", encoding="utf-8") as fh:
             source = fh.read()
-        for marker in (SEEDED_FROM_RUNBOOK_KEY, SEEDED_RATIONALE_PREFIX):
+        # (a) the literal provenance VALUES may not appear inline, and
+        # (b) the provenance SYMBOL NAMES / case-level origin helper may not be
+        #     imported or referenced — a symbol import branches on origin with no
+        #     literal value in the source.
+        banned = (
+            SEEDED_FROM_RUNBOOK_KEY,
+            SEEDED_RATIONALE_PREFIX,
+            "SEEDED_FROM_RUNBOOK_KEY",
+            "SEEDED_RATIONALE_PREFIX",
+            "case_has_seeded_candidates",
+        )
+        for marker in banned:
             assert marker not in source, (
                 f"{module.__name__} references seed provenance ({marker!r}) — a "
                 "safety mechanism must never branch on origin"

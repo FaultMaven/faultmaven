@@ -141,7 +141,8 @@ active hypotheses in one category reads as fixation). The bounds:
   `and_group`, so seeded predecessors enter as independent OR-alternative sibling
   causes — never silently merged into one Cause. Evidence separates them. A cause
   whose shape the seeder does not model — `and_group` co-necessary AND-convergence,
-  or a non-linear chain (a second root, a branching fork, a dangling edge ref) — is
+  or a non-linear chain (a second root, a branching fork, a convergence/join, a
+  dangling edge ref, or a cycle/fragment/non-`D`-terminating chain) — is
   **rejected**, not flattened/mis-seeded — see the `unsupported_shape` skip below.
 
 ### 4–5. Instantiation
@@ -204,10 +205,18 @@ recorded as a class-tagged `SkippedCause` on the `SeedReport` (keyed by
     `produces_by_ref`'s last-edge-wins would flatten to one arbitrary branch); a
     *convergence/join* (a rung produced by more than one cause — a repeated
     `effect_ref` without an `and_group` — which is a merge, not a link in a single
-    path); or a *dangling edge ref* (a `cause_ref`/`effect_ref` resolving to no
-    node, silently disconnecting a rung). The guard requires a single linear
-    `root → … → D` chain — each `cause_ref` and each `effect_ref` at most once,
-    every edge resolving.
+    path); a *dangling edge ref* (a `cause_ref`/`effect_ref` resolving to no
+    node, silently disconnecting a rung); or a *cycle / fragment /
+    non-`D`-terminating / inverted* chain (edges that satisfy the ≤once checks yet
+    never form a single path from the root to `D`). The guard requires a single
+    linear `root → … → D` chain and enforces it in two parts: (1) each `cause_ref`
+    and each *canonical* `effect_ref` appears at most once — `"D"` and every
+    problem-node ref denote the one case `D` node, so they are canonicalized
+    before the merge check, and a join onto `D` via two different literals is
+    still rejected; (2) a reachability walk from the head root must traverse every
+    rung exactly once and terminate at `D` — catching cycles, disconnected
+    fragments, and chains that never reach `D`, which the ≤once checks alone
+    cannot see.
 
   All are **0/640** in the shipped pack; the guard exists for the case→runbook
   conversion (produce) path, where LLM-authored chains are far likelier to branch
@@ -417,9 +426,11 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   orphan nodes** (skip-before-ingest) — asserted by the orphan-free invariant
   (every non-problem node lies on some hypothesis path).
 - **Shape guard (unit):** an `and_group` AND-set, a second-root chain, a branching
-  fork, a convergence/join, and a dangling edge ref each reject as
-  `unsupported_shape` (seed nothing, raise the "contributed nothing" alarm) —
-  never silently flattened/linearized.
+  fork, a convergence/join (including a join onto `D` via the `"D"`-vs-problem-ref
+  alias), a dangling edge ref, and a cycle/fragment/non-`D`-terminating chain each
+  reject as `unsupported_shape` (seed nothing, raise the "contributed nothing"
+  alarm) — never silently flattened/linearized; a well-formed linear chain that
+  terminates at `D` via the problem ref still seeds.
 - **Freshness:** a causes-only pack change re-ingests.
 - **Flag off:** the seeder is a no-op; the flat KB-resolution prompt path is
   unchanged.

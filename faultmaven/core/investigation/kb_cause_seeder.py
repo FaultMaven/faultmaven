@@ -304,8 +304,8 @@ def _reject_nonlinear_shape(
     every edge resolving**; ``None`` if it is well-formed for linear seeding.
 
     The seeder models only a linear chain (one root, each rung producing exactly
-    one next rung, terminating at D). Three well-formed-but-unmodeled shapes would
-    otherwise be *silently* mis-seeded:
+    one next rung, terminating at D). These well-formed-but-unmodeled shapes would
+    otherwise be *silently* mis-seeded, so each is rejected:
 
     - a **second root** mid-chain (the head-is-root check upstream passes, but a
       later root makes it two chains, not one);
@@ -313,9 +313,17 @@ def _reject_nonlinear_shape(
       ``produces_by_ref``'s last-edge-wins would flatten to one arbitrary branch;
     - a **convergence/join** — a rung produced by more than one cause (a repeated
       ``effect_ref``) without an ``and_group``, which is a merge, not a link in a
-      single path (``and_group`` AND-convergence is rejected separately upstream);
+      single path (``and_group`` AND-convergence is rejected separately upstream).
+      Convergence *onto D* counts too: ``"D"`` and every problem-node ref denote
+      the one case D node, so they are canonicalized before the merge check — two
+      rungs producing D via different literals is still a join;
     - a **dangling ref** — an edge whose ``cause_ref``/``effect_ref`` resolves to
-      no node, which would silently leave a rung disconnected.
+      no node, which would silently leave a rung disconnected;
+    - a **cycle, fragment, or non-D-terminating / inverted chain** — even when
+      every ref appears at most once, the edges may form a disjoint path + cycle,
+      a chain that never reaches D, or a rung off the root→D route. The final
+      reachability walk requires the edges to form exactly one simple path from
+      the head root through every rung, terminating at D.
 
     Honor-or-reject (same discipline as ``and_group``): REJECT rather than
     mis-model. Zero instances in the shipped pack; the guard protects the
@@ -327,20 +335,23 @@ def _reject_nonlinear_shape(
     if sum(1 for n in non_problem if n.get("node_type") == NodeType.ROOT.value) > 1:
         return "multiple roots (not a single linear chain)"
 
+    # "D" and every problem-node ref denote the single case D node; canonicalize
+    # so a join onto D via different literals is still seen as one effect.
+    def _canon(ref: Optional[str]) -> Optional[str]:
+        return "D" if (ref == "D" or ref in problem_refs) else ref
+
     # Every edge must resolve on both ends; no rung may fork (produce >1 effect)
     # nor be a merge point (be produced by >1 cause) — a single linear chain has
-    # each cause_ref and each effect_ref appear at most once.
+    # each cause_ref and each canonical effect_ref appear at most once.
     forked: set = set()
     converged: set = set()
+    produces: dict = {}
     for edge in chain_edges:
-        cause_ref, effect_ref = edge.get("cause_ref"), edge.get("effect_ref")
+        cause_ref = edge.get("cause_ref")
+        effect_ref = _canon(edge.get("effect_ref"))
         if cause_ref not in ref_to_index:
             return "edge cause_ref does not resolve to a chain node"
-        if not (
-            effect_ref == "D"
-            or effect_ref in problem_refs
-            or effect_ref in ref_to_index
-        ):
+        if not (effect_ref == "D" or effect_ref in ref_to_index):
             return "edge effect_ref does not resolve to a chain node"
         if cause_ref in forked:
             return "branching node (a rung produces more than one effect)"
@@ -348,6 +359,24 @@ def _reject_nonlinear_shape(
             return "converging node (a rung is produced by more than one cause)"
         forked.add(cause_ref)
         converged.add(effect_ref)
+        produces[cause_ref] = effect_ref
+
+    # Reachability: the edges must form exactly one simple path from the head root
+    # through every non-problem rung, terminating at D. The ≤once checks above make
+    # the successor map deterministic, so the walk catches what they cannot —
+    # cycles, disconnected fragments, non-D-terminating and inverted chains.
+    root_ref = non_problem[0].get("ref")
+    visited: set = set()
+    cur = root_ref
+    while cur != "D":
+        if cur in visited:
+            return "cycle in chain (not a single linear path)"
+        if cur not in produces:
+            return "chain does not terminate at the problem (D)"
+        visited.add(cur)
+        cur = produces[cur]
+    if len(visited) != len(non_problem):
+        return "disconnected rung (not every node lies on the root→D path)"
     return None
 
 
