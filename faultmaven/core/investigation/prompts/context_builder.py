@@ -3055,10 +3055,17 @@ def build_investigation_context(
                         "statement.\n"
                     )
                 else:
+                    # State fact, not a live directive: describe the case as it
+                    # ENTERED this turn (proposed on an earlier turn, unconfirmed),
+                    # never assert present-tense "the user has not confirmed" — that
+                    # is false on the very turn the user confirms, and confirmation
+                    # detection lives in the static TWO-STEP CONFIRMATION prose +
+                    # the user_confirmed_investigation schema field. This block only
+                    # suppresses re-proposing; it adds no confirmation directive.
                     inquiry_state_str += (
-                        "NOT_YET_CONFIRMED: You proposed this problem statement previously. "
-                        "The user has not confirmed it yet. Do NOT re-propose the same statement. "
-                        "Focus on answering the user's current message.\n"
+                        "NOT_YET_CONFIRMED: You already proposed this problem statement "
+                        "on an earlier turn (it was unconfirmed going into this turn). "
+                        "Do NOT re-propose it — respond to the user's current message.\n"
                     )
             inquiry_state_str += "</inquiry_state>"
 

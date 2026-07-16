@@ -833,6 +833,42 @@ class TestContextBuilderConfirmationInjection:
         assert "NOT_YET_CONFIRMED" in context_str
         assert "AWAITING_CONFIRMATION" not in context_str
 
+    def test_not_yet_confirmed_states_prior_turn_fact_not_present_tense(self):
+        """NOT_YET_CONFIRMED must describe the case as it ENTERED the turn, not
+        assert a present-tense "the user has not confirmed it yet" — which is
+        false on the very turn the user confirms and mis-primes the model to
+        keep waiting. The block still suppresses re-proposing and adds NO
+        confirmation-detection directive (detection lives in the static
+        TWO-STEP CONFIRMATION prose + the user_confirmed_investigation schema
+        field)."""
+        from faultmaven.core.investigation.prompts.context_builder import (
+            build_investigation_context,
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test",
+            state=CaseState.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="API timeout errors",
+                problem_statement_confirmed=False,
+            ),
+        )
+
+        context = build_investigation_context(case, user_message="test message")
+        normalized = " ".join(str(context.values()).split())
+
+        # Prior-turn framing present; the false present-tense absolute gone.
+        assert "unconfirmed going into this turn" in normalized
+        assert "has not confirmed it yet" not in normalized, (
+            "NOT_YET_CONFIRMED re-asserts the present-tense 'has not confirmed "
+            "it yet' fact that is false on the confirming turn."
+        )
+
     def test_no_injection_when_confirmed(self):
         """No NOT_YET_CONFIRMED injection when problem statement is confirmed."""
         from faultmaven.core.investigation.prompts.context_builder import (
