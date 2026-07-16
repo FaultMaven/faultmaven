@@ -438,6 +438,15 @@ gate items:
    decaying (see the decay row and #713) — neither path concludes.
 2. **No crowd-out** — the LLM keeps generating its own hypotheses.
 3. **No paraphrase-duplication** — ≤ 1 ACTIVE hypothesis per seeded cause.
+   This is a *quality* property and the only prompt-strength-dependent gate item,
+   so it is measured **strict + averaged as a pass-rate**, not a single pass. On
+   BEST_EFFORT (`deepseek-v4-flash`) a 2026-07-16 batch measured **7/8** — one run
+   hit the documented below-INV-36-bar paraphrase-duplication (soundness held in
+   that run too). **Whether the measured rate clears this item is a deliberate
+   flag-on judgment**, not a value this eval declares met; the intended envelope
+   for the residual is prompt + per-provider eval (see "Prompt alignment"), and a
+   prompt change is re-measured with the committed harness. Items 1 and 4 do not
+   have this caveat — they hold on every run by construction.
 4. **Prior-not-gate — required, and distinct from #1.** No-collapse only
    proves the wrong seed *dies*; this proves the engine still *reaches the right
    answer* via the LLM's own theory rather than stalling: ∃ a hypothesis whose

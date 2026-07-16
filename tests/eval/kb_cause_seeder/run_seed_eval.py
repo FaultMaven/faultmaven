@@ -331,11 +331,13 @@ def run_mislead(c, case_id, dump):
         "engaged contradiction (own hypothesis formed OR a seed refuted)",
         (final["total"] > len(seeded_roots)) or (final["refuted"] > 0),
     )
-    rcc_txt = json.dumps(rcc).lower() if rcc else ""
-    seeded_names = ["resource hook", "sync wave", "phantom drift", "server-side field"]
+    # The conclusion (if any) must not name a seeded cause's root. Key on the
+    # engine's structured concluded-root reference, not the model's prose — prose
+    # matching would false-fail an exculpatory mention of a seeded cause name.
+    concluded_root = (rcc or {}).get("names_root_node_id")
     chk.add(
         "no conclusion on a contradicted seeded cause",
-        (not rcc) or not any(s in rcc_txt for s in seeded_names),
+        (not rcc) or (concluded_root not in seeded_roots),
     )
     # 3b prior-not-gate: a non-seeded hypothesis beats the seeded prior; no seed VALIDATED.
     non_seeded_beats = [
@@ -439,7 +441,9 @@ def run_exclusion(c, case_id, dump):
 
     # The headline: any seeded root validated by DEDUCTIVE exclusion must have >=2
     # OTHER absolutely-excluded sibling roots — i.e. exclusion did not fabricate a
-    # validation off a merely-seeded, un-refuted differential.
+    # validation off a merely-seeded, un-refuted differential. A case graph has a
+    # single problem node D (one per case), so every root shares the one OR-set —
+    # counting all other roots IS the survivor's sibling set.
     fabricated = []
     for nid in seeded_roots:
         n = rn.get(nid)
@@ -472,18 +476,16 @@ def run_exclusion(c, case_id, dump):
         not ungrounded_validated,
     )
 
-    # No conclusion on a seeded phantom-drift cause absent genuine validation.
-    rcc_txt = json.dumps(rcc).lower() if rcc else ""
-    concluded_on_seeded_ungrounded = False
-    if rcc and any(s in rcc_txt for s in ["phantom drift", "server-side field"]):
-        # Concluded on the pressured seeded survivor — legitimate only if that
-        # seeded root is genuinely validated (method != none, and if deductive the
-        # precondition held, both checked above). If none of the seeded roots is
-        # validated, concluding on it is a collapse.
-        any_seeded_validated = any(
-            rn.get(nid, {}).get("node_state") == "validated" for nid in seeded_roots
-        )
-        concluded_on_seeded_ungrounded = not any_seeded_validated
+    # No conclusion on a seeded cause absent genuine validation. Key on the
+    # engine's structured concluded-root reference, not the model's prose — a
+    # conclusion that names a seeded root is a collapse unless that very root is
+    # genuinely VALIDATED (method != none, and if DEDUCTIVE the precondition
+    # above held).
+    concluded_root = (rcc or {}).get("names_root_node_id")
+    concluded_on_seeded_ungrounded = (
+        concluded_root in seeded_roots
+        and rn.get(concluded_root, {}).get("node_state") != "validated"
+    )
     chk.add(
         "no conclusion on the pressured seeded cause without genuine validation",
         not concluded_on_seeded_ungrounded,

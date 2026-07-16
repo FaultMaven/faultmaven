@@ -35,22 +35,39 @@ RESULT: ALL PASS   (exit 0)
 ## mislead — no-collapse / no-crowd-out / <=1 ACTIVE per root / 3b prior-not-gate
 
 Evidence contradicts all three seeded causes and points off-seed (expired
-repo-server Git credentials). The LLM formed its **own** off-seed hypothesis
-(`Git credentials … expired`, likelihood 0.65 > the 0.3 seed prior); the three
-seeded causes stayed CANDIDATE/ACTIVE; the engine concluded on the true off-seed
-cause, not a seeded prior.
+repo-server Git credentials). Across runs the LLM forms its **own** off-seed
+hypothesis (`Git credentials … expired`, likelihood ~0.65 > the 0.3 seed prior);
+the seeded causes stay CANDIDATE (some decay to RETIRED once engaged-and-
+unsupported); the engine concludes on the true off-seed cause, never a seeded
+prior.
 
-```
-final: seeded A/B/C still [active] lik=0.3 ; own git-credentials [captured] lik=0.65
-cause_state=candidates  root_cause_conclusion=set (on the OWN cause, not a seed)
+Because the ≤1-ACTIVE item is **prompt-strength-dependent** (see the design doc's
+"Prompt alignment" — the below-INV-36-bar paraphrase residual), this scenario is
+run **strict + averaged** rather than once. Batch of 8 on this model
+(2026-07-16):
 
-  [PASS] <=1 ACTIVE hypothesis per root every turn (no dup)
-  [PASS] no contradicted seeded cause VALIDATED (any turn)
-  [PASS] engaged contradiction (own hypothesis formed OR a seed refuted)
-  [PASS] no conclusion on a contradicted seeded cause
-  [PASS] 3b: a non-seeded hypothesis beats the seeded prior; no seed VALIDATED
-RESULT: ALL PASS   (exit 0)
+```text
+SOUNDNESS items — 8/8 PASS every run (LLM-agnostic / structural):
+  no contradicted seeded cause VALIDATED (any turn)
+  no conclusion on a contradicted seeded cause   (keyed on names_root_node_id)
+  3b: a non-seeded hypothesis beats the seeded prior; no seed VALIDATED
+
+QUALITY item — <=1 ACTIVE hypothesis per root: 7/8 PASS  (1 paraphrase-dup)
+  The single failure: the LLM emitted its OWN hypothesis paraphrasing seeded
+  Cause C ("server-side field mutation / phantom drift"); node-dedup merged it
+  onto C's root, but a second ACTIVE hypothesis header landed on that root ->
+  2 ACTIVE hypotheses / 1 root. Soundness held in that run too (seeded A/B
+  decayed to RETIRED, no seed VALIDATED, concluded on the true git-creds
+  cause, 3b passed) — a quality/effectiveness miss, not a guarantee breach.
 ```
+
+This is the documented paraphrase-duplication residual materializing on the
+weakest-prompt provider — **the two hard guarantees never fail; the ≤1-ACTIVE
+quality gate is a pass-rate (~7/8 here), not a clean single pass.** The earlier
+single-run "clean pass" was not robust; averaging is why H3 committed this
+harness. Whether that rate clears the enabling gate's item 3 is a **flag-on
+decision** (see README → "The per-provider bar"), not something this eval
+declares met.
 
 ## exclusion — H1 exclusion-under-seeding probe
 

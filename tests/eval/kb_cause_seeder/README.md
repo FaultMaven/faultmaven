@@ -80,11 +80,30 @@ reason, not an expedient one:
   only do better on exactly these. Requiring green on every provider adds cost
   without adding assurance beyond the weakest-link pass.
 
-So the gate passes on **fireworks `deepseek-v4-flash`** (the dev/demo default and
-the weakest-prompt provider). See
+On **fireworks `deepseek-v4-flash`** (the dev/demo default and weakest-prompt
+provider) — see
 [`recorded-runs/2026-07-16-fireworks-deepseek-v4-flash.md`](recorded-runs/2026-07-16-fireworks-deepseek-v4-flash.md):
-all of `smoke` / `mislead` / `exclusion` pass, and `postturn1` confirms the
-one-shot boundary.
+
+- **Gate items 1 and 4 (structural) and the `exclusion` probe: clean pass, every
+  run.** `smoke` is deterministic; `mislead`/`exclusion` never let a seeded cause
+  reach VALIDATED, always conclude on the true off-seed cause, always satisfy 3b.
+  `postturn1` confirms the one-shot boundary.
+- **Gate item 3 (≤1 ACTIVE per seeded cause) is a pass-RATE, not a clean pass.**
+  Run strict + averaged (this is a *quality*, prompt-strength-dependent property —
+  see the design doc's "Prompt alignment"), it measured **7/8** on a 2026-07-16
+  batch: one run hit the documented below-INV-36-bar **paraphrase-duplication**
+  (the LLM re-emitted a reworded copy of a seeded cause → 2 ACTIVE hypotheses on
+  one root). Soundness held in that run too. **An earlier single-run "clean pass"
+  was not robust — averaging is exactly why this harness is now committed.**
+
+**Flag-on decision (open):** whether that ≤1-ACTIVE rate clears enabling-gate
+item 3 is a deliberate, product-level call, not something this eval declares met.
+The design doc's intended envelope for the residual is *prompt + per-provider
+eval* (not a new seed-specific semantic-dedup backstop — that is #658 territory).
+Options if the rate is judged insufficient: (a) accept it (soundness is never at
+risk); (b) strengthen the seeded-directive prompt against paraphrase re-emission;
+(c) revisit whether INV-36's mutual-Jaccard bar should catch more seeded-cause
+rewords. Re-run this harness to re-measure after any prompt change.
 
 STRICT-provider runs remain **optional, non-blocking** cross-checks. When last
 attempted they hit *seeder-independent* external walls, not seeder regressions:
