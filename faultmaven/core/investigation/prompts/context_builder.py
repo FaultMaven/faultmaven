@@ -3055,10 +3055,25 @@ def build_investigation_context(
                         "statement.\n"
                     )
                 else:
+                    # This block fires when a statement was proposed on an
+                    # EARLIER turn and is not yet confirmed. It must not state
+                    # "the user has not confirmed" as a present-tense fact:
+                    # the confirmation is detected FROM the current message, so
+                    # an absolute "not confirmed yet" on the very turn the user
+                    # says "Yes, investigate" suppresses the transition. Weaker
+                    # models (e.g. gpt-4.1-mini) weight this dynamic state block
+                    # over the static TWO-STEP CONFIRMATION prose and never set
+                    # the flag — the INQUIRY-stall observed in Opik traces. So
+                    # instruct confirmation-detection FIRST, then the default.
                     inquiry_state_str += (
-                        "NOT_YET_CONFIRMED: You proposed this problem statement previously. "
-                        "The user has not confirmed it yet. Do NOT re-propose the same statement. "
-                        "Focus on answering the user's current message.\n"
+                        "NOT_YET_CONFIRMED: You proposed this problem statement on an "
+                        "earlier turn; it was unconfirmed as of the PREVIOUS turn. FIRST "
+                        "decide whether the user's CURRENT message confirms it or asks you "
+                        "to proceed (e.g. 'Yes', 'Correct', \"Let's investigate\", 'go "
+                        "ahead', 'please start investigating'). If it does, set "
+                        "user_confirmed_investigation=True — this advances the case; do NOT "
+                        "re-propose or re-present the statement. Otherwise, do NOT re-propose "
+                        "the same statement; focus on answering the user's current message.\n"
                     )
             inquiry_state_str += "</inquiry_state>"
 

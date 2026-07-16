@@ -833,6 +833,54 @@ class TestContextBuilderConfirmationInjection:
         assert "NOT_YET_CONFIRMED" in context_str
         assert "AWAITING_CONFIRMATION" not in context_str
 
+    def test_not_yet_confirmed_instructs_confirmation_detection(self):
+        """NOT_YET_CONFIRMED must tell the LLM to detect confirmation in the
+        CURRENT message and set the transition flag — not just say "don't
+        re-propose".
+
+        Root cause of the gpt-4.1-mini INQUIRY-stall (Opik traces, 2026-07-16):
+        the model proposed a statement, the persona then explicitly confirmed
+        ("Yes, please start investigating now") across ~12 turns, and the model
+        never once set user_confirmed_investigation=True (0/85 INQUIRY spans).
+        The differential signal on the confirming turn was this dynamic block,
+        which asserted "The user has not confirmed it yet" as present-tense fact
+        with no confirmation-detection instruction — weaker models weight it over
+        the static TWO-STEP CONFIRMATION prose and never flip the flag. The block
+        must instruct detection FIRST, then fall back to "don't re-propose"."""
+        from faultmaven.core.investigation.prompts.context_builder import (
+            build_investigation_context,
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test",
+            state=CaseState.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="API timeout errors",
+                problem_statement_confirmed=False,
+            ),
+        )
+
+        context = build_investigation_context(case, user_message="test message")
+        normalized = " ".join(str(context.values()).split())
+
+        # Positive confirmation-detection instruction is present.
+        assert "set user_confirmed_investigation=True" in normalized, (
+            "NOT_YET_CONFIRMED no longer tells the LLM to set the transition "
+            "flag on a confirming current message — re-opens the gpt-4.1-mini "
+            "INQUIRY-stall (never emits user_confirmed_investigation=True)."
+        )
+        # The misleading present-tense absolute must not return: it asserts
+        # "not confirmed" on the very turn the user is confirming.
+        assert "has not confirmed it yet" not in normalized, (
+            "NOT_YET_CONFIRMED re-asserts the present-tense 'has not confirmed "
+            "it yet' fact that suppresses confirmation detection."
+        )
+
     def test_no_injection_when_confirmed(self):
         """No NOT_YET_CONFIRMED injection when problem statement is confirmed."""
         from faultmaven.core.investigation.prompts.context_builder import (
