@@ -212,7 +212,8 @@ class AnthropicProvider(BaseLLMProvider):
         except asyncio.TimeoutError:
             raise LLMException(
                 f"Anthropic API request timed out after {self.config.timeout}s "
-                f"(model: {selected_model})"
+                f"(model: {selected_model})",
+                status_code=504,  # gateway timeout — transient/retryable
             )
 
         # Extract content from Anthropic response format

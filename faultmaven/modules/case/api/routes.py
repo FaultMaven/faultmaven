@@ -43,8 +43,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from faultmaven.api.exception_handlers import (
-    is_quota_exhausted_service_error,
-    quota_exhausted_http_exception,
+    llm_service_error_http_exception,
 )
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id,
@@ -2538,47 +2537,11 @@ async def submit_turn(
             f"Turn processing failed: {e}",
             extra={"correlation_id": correlation_id},
         )
-        error_msg = str(e)
-        # Billing / quota exhaustion → 402 via the shared mapper (one contract
-        # across all LLM-calling endpoints). error_code is threaded through the
-        # engine/service wrap, so the typed check alone is reliable.
-        if is_quota_exhausted_service_error(e):
-            raise quota_exhausted_http_exception(correlation_id)
-
-        if "over capacity" in error_msg.lower() or "503" in error_msg:
-            detail = "AI service temporarily unavailable due to high demand. Please try again."
-            status_code = 503
-            error_code = "LLM_OVER_CAPACITY"
-            retry_after = "60"
-        elif "rate limit" in error_msg.lower() or "429" in error_msg:
-            detail = "Rate limit exceeded. Please wait before sending another message."
-            status_code = 429
-            error_code = "RATE_LIMIT_EXCEEDED"
-            retry_after = "60"
-        elif "timeout" in error_msg.lower():
-            detail = "Request timed out. Please try again."
-            status_code = 504
-            error_code = "LLM_TIMEOUT"
-            retry_after = "30"
-        else:
-            detail = f"Unable to process your message: {error_msg[:200]}"
-            status_code = 500
-            error_code = "SERVICE_ERROR"
-            retry_after = "10"
-
-        headers = {
-            "x-correlation-id": correlation_id,
-            "x-error-code": error_code,
-        }
-        # No Retry-After for billing: retrying won't help until an operator acts.
-        if retry_after is not None:
-            headers["Retry-After"] = retry_after
-
-        raise HTTPException(
-            status_code=status_code,
-            detail=detail,
-            headers=headers,
-        )
+        # Classify off the typed provider metadata (LLMException.status_code /
+        # retryable on the __cause__ chain), not the message string — see
+        # llm_service_error_http_exception. Covers billing (→402), rate limits,
+        # over-capacity, timeouts, provider 4xx/5xx, and schema-parse failures.
+        raise llm_service_error_http_exception(e, correlation_id)
     except Exception as e:
         logger.error(
             f"Unexpected error processing turn: {e}",

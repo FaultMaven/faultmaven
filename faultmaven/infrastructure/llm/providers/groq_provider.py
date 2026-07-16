@@ -238,5 +238,6 @@ class GroqProvider(BaseLLMProvider):
         except asyncio.TimeoutError:
             raise LLMException(
                 f"Groq API request timed out after {self.config.timeout}s "
-                f"(model: {effective_model})"
+                f"(model: {effective_model})",
+                status_code=504,  # gateway timeout — transient/retryable
             )

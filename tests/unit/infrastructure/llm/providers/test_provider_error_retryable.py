@@ -7,6 +7,7 @@ transient server error). The fix removed the override and made 429 retryable in
 the central derivation. These tests exercise the real generate() error paths.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,6 +33,24 @@ def _mock_error_session(status: int):
 
     mock_session = MagicMock()
     mock_session.post = MagicMock(return_value=mock_response)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    return mock_session
+
+
+def _mock_timeout_session():
+    """aiohttp.ClientSession mock whose post() context raises TimeoutError.
+
+    Simulates the aiohttp.ClientTimeout firing inside ``async with
+    session.post(...) as response:`` — the path each provider guards with
+    ``except asyncio.TimeoutError``.
+    """
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError())
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(return_value=mock_ctx)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
     return mock_session
@@ -101,3 +120,25 @@ async def test_429_is_retryable(provider_class, base_url, model):
             await provider.generate("hello")
     assert exc_info.value.status_code == 429
     assert exc_info.value.retryable is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_class,base_url,model", _PROVIDERS)
+async def test_timeout_carries_504_and_is_retryable(provider_class, base_url, model):
+    """A client/read timeout must raise LLMException(status_code=504).
+
+    Regression: providers used to raise a bare ``LLMException("…timed out…")``
+    with no status_code, so ``retryable`` defaulted to False and the message
+    ("timed out") did not contain the ``"timeout"`` substring the API's turn
+    handler string-matched — the failure fell through to a naked 500 instead of a
+    504. Stamping 504 lets both the engine retry loop and the API translate a
+    timeout off typed metadata, not the message.
+    """
+    provider = provider_class(_config(provider_class.__name__, base_url, model))
+    with patch("aiohttp.ClientSession", return_value=_mock_timeout_session()):
+        with pytest.raises(LLMException) as exc_info:
+            await provider.generate("hello")
+    assert exc_info.value.status_code == 504
+    assert exc_info.value.retryable is True
+    assert "timed out" in str(exc_info.value).lower()

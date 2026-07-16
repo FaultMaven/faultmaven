@@ -218,7 +218,8 @@ class CohereProvider(BaseLLMProvider):
         except asyncio.TimeoutError:
             raise LLMException(
                 f"Cohere API request timed out after {self.config.timeout}s "
-                f"(model: {effective_model})"
+                f"(model: {effective_model})",
+                status_code=504,  # gateway timeout — transient/retryable
             )
         except aiohttp.ClientError as e:
             raise LLMException(f"Cohere connection error: {str(e)}", retryable=True)
