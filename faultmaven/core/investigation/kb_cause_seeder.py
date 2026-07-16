@@ -311,22 +311,27 @@ def _reject_nonlinear_shape(
       later root makes it two chains, not one);
     - a **branching fork** — a rung with more than one outgoing edge, which
       ``produces_by_ref``'s last-edge-wins would flatten to one arbitrary branch;
+    - a **convergence/join** — a rung produced by more than one cause (a repeated
+      ``effect_ref``) without an ``and_group``, which is a merge, not a link in a
+      single path (``and_group`` AND-convergence is rejected separately upstream);
     - a **dangling ref** — an edge whose ``cause_ref``/``effect_ref`` resolves to
       no node, which would silently leave a rung disconnected.
 
     Honor-or-reject (same discipline as ``and_group``): REJECT rather than
-    mis-model. Zero instances in the shipped pack (all 3 are 0/640); the guard
-    protects the case→runbook conversion (produce) path, where LLM-authored
-    chains are far likelier to branch than the curated corpus, so a shape gap
-    cannot go live the day the flywheel closes.
+    mis-model. Zero instances in the shipped pack; the guard protects the
+    case→runbook conversion (produce) path, where LLM-authored chains are far
+    likelier to branch than the curated corpus, so a shape gap cannot go live the
+    day the flywheel closes.
     """
     # Exactly one root: a second root makes this two chains, not a linear one.
     if sum(1 for n in non_problem if n.get("node_type") == NodeType.ROOT.value) > 1:
         return "multiple roots (not a single linear chain)"
 
-    # Every edge must resolve on both ends, and no rung may fork (produce >1
-    # effect) — either would silently linearize a non-linear chain.
+    # Every edge must resolve on both ends; no rung may fork (produce >1 effect)
+    # nor be a merge point (be produced by >1 cause) — a single linear chain has
+    # each cause_ref and each effect_ref appear at most once.
     forked: set = set()
+    converged: set = set()
     for edge in chain_edges:
         cause_ref, effect_ref = edge.get("cause_ref"), edge.get("effect_ref")
         if cause_ref not in ref_to_index:
@@ -339,7 +344,10 @@ def _reject_nonlinear_shape(
             return "edge effect_ref does not resolve to a chain node"
         if cause_ref in forked:
             return "branching node (a rung produces more than one effect)"
+        if effect_ref in converged:
+            return "converging node (a rung is produced by more than one cause)"
         forked.add(cause_ref)
+        converged.add(effect_ref)
     return None
 
 

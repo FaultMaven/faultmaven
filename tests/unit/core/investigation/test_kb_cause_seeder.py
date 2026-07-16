@@ -459,6 +459,30 @@ def test_branching_fork_is_rejected_not_linearized():
     assert report.runbooks_contributing_nothing() == ["rb1"]
 
 
+def test_convergence_join_without_and_group_is_rejected():
+    # A rung produced by two distinct causes (a merge / convergence) without an
+    # and_group is not a single linear chain — reject it (single root, so the
+    # multiple-roots guard does NOT fire; the repeated-effect_ref guard must).
+    case = _case()
+    join = _cause("A")
+    join["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": "converge root"},
+        {"ref": "x", "node_type": "intermediate", "statement": "second producer"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "merge point"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    join["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1"},
+        {"cause_ref": "x", "effect_ref": "s1"},  # s1 produced by two causes — a join
+        {"cause_ref": "s1", "effect_ref": "D"},
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [join])], current_turn=1)
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
 def test_dangling_edge_ref_is_rejected_not_seeded():
     # An edge whose effect_ref resolves to no node would silently disconnect a
     # rung. Reject rather than mis-seed a broken chain.

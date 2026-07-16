@@ -200,11 +200,14 @@ recorded as a class-tagged `SkippedCause` on the `SeedReport` (keyed by
     silently flattened to independent OR-alternatives (A∧B → A∨B — a MECE
     mis-model).
   - **non-linear chain** — a *second root* mid-chain (two chains, not one linear
-    path), a *branching fork* (a rung with more than one outgoing edge, which
-    `produces_by_ref`'s last-edge-wins would flatten to one arbitrary branch), or a
-    *dangling edge ref* (a `cause_ref`/`effect_ref` resolving to no node, silently
-    disconnecting a rung). The guard requires a single linear `root → … → D` chain
-    with every edge resolving.
+    path); a *branching fork* (a rung with more than one outgoing edge, which
+    `produces_by_ref`'s last-edge-wins would flatten to one arbitrary branch); a
+    *convergence/join* (a rung produced by more than one cause — a repeated
+    `effect_ref` without an `and_group` — which is a merge, not a link in a single
+    path); or a *dangling edge ref* (a `cause_ref`/`effect_ref` resolving to no
+    node, silently disconnecting a rung). The guard requires a single linear
+    `root → … → D` chain — each `cause_ref` and each `effect_ref` at most once,
+    every edge resolving.
 
   All are **0/640** in the shipped pack; the guard exists for the case→runbook
   conversion (produce) path, where LLM-authored chains are far likelier to branch
@@ -414,8 +417,9 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   orphan nodes** (skip-before-ingest) — asserted by the orphan-free invariant
   (every non-problem node lies on some hypothesis path).
 - **Shape guard (unit):** an `and_group` AND-set, a second-root chain, a branching
-  fork, and a dangling edge ref each reject as `unsupported_shape` (seed nothing,
-  raise the "contributed nothing" alarm) — never silently flattened/linearized.
+  fork, a convergence/join, and a dangling edge ref each reject as
+  `unsupported_shape` (seed nothing, raise the "contributed nothing" alarm) —
+  never silently flattened/linearized.
 - **Freshness:** a causes-only pack change re-ingests.
 - **Flag off:** the seeder is a no-op; the flat KB-resolution prompt path is
   unchanged.
