@@ -22,6 +22,9 @@ pytestmark = pytest.mark.unit
 def test_grammar_patterns_frozen():
     assert g.CAUSES_SECTION_RE.pattern == r"(?ms)^##\s+Causes\s*\n(.*?)(?=^##\s+|\Z)"
     assert g.CAUSE_HEADING_RE.pattern == r"^### Cause ([A-Z]):\s*(.+?)\s*$"
+    assert g.STEP_HEADING_RE.pattern == r"^### Step (\d+):"
+    assert g.INDICATOR_TOKEN_RE.pattern == r"\[(Step \d+|Symptom|Default)\]"
+    assert g.STEP_REF_RE.pattern == r"\[Step (\d+)\]"
     assert g.HTML_COMMENT_RE.pattern == r"<!--.*?-->"
     assert (
         g.INTERVENTION_RE.pattern == r"^\s*[-*+]\s*\*\*([A-Za-z_]+)\*\*\s*\(([^)]*)\)"

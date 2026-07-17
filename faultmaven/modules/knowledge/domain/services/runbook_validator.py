@@ -1,9 +1,22 @@
 """Inline runbook validation and quality scoring (v4 causal-chain schema).
 
-Replicated from faultmaven-kb-toolkit to avoid cross-repo dependency.
-Rules are aligned with the KB Toolkit's RunbookValidator and QualityScorer:
-each `### Cause` declares one ROOT with sub-fields **Statement** / optional
-**Chain** / **Indicators** / quadrant-tagged **Interventions**.
+Replicated from faultmaven-kb-toolkit to avoid cross-repo dependency. Each
+`### Cause` declares one ROOT with sub-fields **Statement** / optional **Chain** /
+**Indicators** / quadrant-tagged **Interventions**.
+
+Cause validation is anchored on the SHARED parse grammar (`runbook_grammar`) — the
+same section, heading, and sub-field regexes the extractor (`runbook_cause_extractor`)
+and the upstream pack builder consume — so a draft this gate PASSES is exactly one
+the extractor can parse into the `metadata["causes"]` records the investigation
+seeder reads. The gate can no longer be looser than the parser it fronts.
+
+The cause-level ERRORS mirror the KB Toolkit's `RunbookValidator`
+(`kb_toolkit/core/validator.py`): strict `### Cause X:` heading; unique letters;
+Cause Z reserved for the `[Default]` fallback; exactly one fallback; a parseable
+Chain when present; quadrant-tagged Interventions; token-anchored Indicators whose
+`[Step N]` references resolve. Only the message-oriented MISSING-vs-EMPTY wording is
+validator-private. Behavioral parity is guarded by the identical test cases in each
+repo's suite (the repos cannot import one another).
 """
 
 import re
@@ -19,9 +32,29 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.cause_grammar import (
     FALLBACK_CAUSE_LETTER,
     FALLBACK_INDICATOR_TOKEN,
+    INTERVENTION_QUADRANTS,
     LEGACY_V3_CAUSE_SUBFIELDS,
+    OPTIONAL_CAUSE_SUBFIELDS,
     QUADRANT_ALTERNATION,
     REQUIRED_CAUSE_SUBFIELDS,
+)
+
+# Shared v4 parse grammar — the SAME regexes + sub-field parser the extractor
+# (``runbook_cause_extractor``) and the upstream pack builder consume. Anchoring
+# the validator's cause enumeration here is what keeps the gate from being looser
+# than the parser it fronts (a draft the gate passes must be one the extractor can
+# parse into the exact ``metadata["causes"]`` records the seeder reads).
+from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
+    CAUSE_HEADING_RE,
+    CAUSES_SECTION_RE,
+    CHAIN_RUNG_RE,
+    CONVERGES_REF,
+    HTML_COMMENT_RE,
+    INDICATOR_TOKEN_RE,
+    INTERVENTION_RE,
+    STEP_HEADING_RE,
+    STEP_REF_RE,
+    parse_cause_subfields,
 )
 
 # =============================================================================
@@ -283,74 +316,100 @@ MAX_TAG_COUNT = 10
 # local literal here — it is a scalar limit, NOT part of the cross-repo authoring
 # VOCABULARY guarded by ``cause_grammar``/``check_vocab_cross_repo.py``.
 MAX_CAUSE_STATEMENT_LENGTH = 300
+# Hard limit on a single Chain **rung** statement. Mirrors the kb-toolkit
+# validator (``config.validation.rung_statement_max_chars``). A local scalar
+# literal, like the Statement limit above — not part of the cross-repo VOCABULARY.
+MAX_CHAIN_RUNG_LENGTH = 300
 
 
 # =============================================================================
-# Cause-block parsing (shared by the per-Cause structural + Statement checks)
+# Cause-block parsing — anchored on the SHARED grammar (``runbook_grammar``)
+#
+# The section scope (``CAUSES_SECTION_RE``), the ``### Cause X:`` heading
+# (``CAUSE_HEADING_RE``), and the sub-field split (``parse_cause_subfields``) are
+# the EXACT ones the extractor + upstream pack builder use. So a draft the gate
+# passes is one the extractor can parse into the same ``metadata["causes"]``
+# records — the gate can no longer accept a Cause shape the extractor silently
+# drops (a stricter heading, a stray-bold-truncated Statement, an out-of-section
+# heading that the gate counts but the parser does not).
 # =============================================================================
 
-_CAUSE_HEADING_RE = re.compile(r"^#{3,}\s+Cause\s+([A-Za-z0-9]+)\s*:", re.MULTILINE)
+# A near-miss cause heading — anything that reads like a Cause heading but is not
+# the strict ``### Cause X: <name>`` form. Used to flag (not silently drop) an
+# ``#### Cause`` / ``### Cause AA`` / ``### Cause A :`` an author likely intended
+# as a Cause. Deliberately loose; ``Cause\b`` will NOT match the ``## Causes``
+# section header itself ("Causes" has no word boundary after "Cause").
+_LOOSE_CAUSE_HEADING_RE = re.compile(r"^[ \t]*#{2,}[ \t]*Cause\b.*$", re.MULTILINE)
 
-# The ``## Causes`` H2 section body — everything up to the next H2 (``## Prevention``)
-# or EOF. ``^##[ \t]`` matches only an H2 boundary; a ``### Cause`` (H3) does not
-# terminate it (its 3rd char is ``#``, not whitespace).
-_CAUSES_SECTION_RE = re.compile(
-    r"^##[ \t]+Causes[ \t]*$(.*?)(?=^##[ \t]|\Z)", re.MULTILINE | re.DOTALL
+# Fenced code block (```...```), stripped before the loose malformed-heading scan
+# so an illustrative heading inside a command example is not a false near-miss.
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+
+# Sub-field boundary set — the schema's required + optional labels, identical to
+# the extractor's (``runbook_cause_extractor._CAUSE_SUBFIELDS``), so a Statement
+# the gate length-checks is byte-for-byte the one the extractor/seeder sees.
+_CAUSE_SUBFIELDS: List[str] = list(REQUIRED_CAUSE_SUBFIELDS) + list(
+    OPTIONAL_CAUSE_SUBFIELDS
 )
 
 
 def _causes_section_body(content: str) -> str:
     """Body of the ``## Causes`` H2 section (up to the next H2 or EOF), or "".
 
-    Scoping cause parsing to this body — mirroring the kb-toolkit validator's
-    section-scoped parse — keeps a ``### Cause``-style heading in ANOTHER section
-    out of cause validation, and stops the LAST cause's block from bleeding into
+    Uses the shared ``CAUSES_SECTION_RE`` so the gate scopes causes to exactly the
+    span the extractor does: a ``### Cause``-style heading in ANOTHER section stays
+    out of cause validation, and the LAST cause's block cannot bleed into
     ``## Prevention`` / ``## Sources`` (which would let a whole-body sub-field scan
     find a required label in a trailing section and mask a genuinely-missing one).
     """
-    m = _CAUSES_SECTION_RE.search(content)
+    m = CAUSES_SECTION_RE.search(content)
     return m.group(1) if m else ""
 
 
-def _cause_field(name: str, body: str) -> str:
-    """Value of a ``**Name:**`` sub-field within one Cause block ("" if absent OR
-    present-but-empty). The value runs up to the next bold ``**Label:**`` (the
-    colon is required, so an inline ``**bold**`` doesn't terminate it), the next
-    ``##``+ heading, or end. ``[ \\t]*`` (not ``\\s*``) so an empty field captures
-    "" rather than swallowing the field that follows it."""
+def _section_body(content: str, heading: str) -> Optional[str]:
+    """Body of an arbitrary ``## <heading>`` H2 section (up to the next H2 or EOF),
+    or ``None`` if the section is absent. Used to resolve ``[Step N]`` references
+    against ``## Diagnostic Steps``."""
     m = re.search(
-        rf"\*\*{re.escape(name)}:\*\*[ \t]*(.*?)(?=\n\s*\*\*[\w ]+:\*\*|\n#{{2,}}\s|\Z)",
-        body,
-        re.DOTALL,
+        rf"^##\s+{re.escape(heading)}\s*\n(.*?)(?=^##\s+|\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
     )
-    return m.group(1).strip() if m else ""
+    return m.group(1) if m else None
 
 
-def _has_cause_field(name: str, body: str) -> bool:
-    """True if the ``**Name:**`` label is present — distinguishes a MISSING
-    sub-field from a present-but-empty one (which ``_cause_field`` both return "")."""
-    return bool(re.search(rf"\*\*{re.escape(name)}:\*\*", body))
+def _cause_fields(body: str) -> Dict[str, str]:
+    """Parse one Cause block's ``**Field:**`` sub-fields with the shared parser.
+
+    Returns ``{label: value}`` for every label PRESENT in the block (value stripped;
+    ``""`` when present-but-empty). A missing label is simply absent from the dict —
+    so the caller keeps the message-oriented MISSING-vs-EMPTY distinction while the
+    field boundaries match the extractor exactly (splitting only on the four schema
+    labels, so a stray ``**Note:**`` no longer truncates a Statement before the
+    length gate)."""
+    return parse_cause_subfields(body, _CAUSE_SUBFIELDS)
 
 
 def _iter_cause_blocks(content: str):
-    """Yield ``(letter, body)`` for each ``### Cause X:`` block WITHIN the
-    ``## Causes`` section. Each block ends at the next ``### Cause`` heading or the
-    section end — so a block never absorbs a later ``##`` section, and a
-    ``### Cause``-style heading outside ``## Causes`` is not treated as a cause."""
+    """Yield ``(letter, name, body)`` for each strict ``### Cause X:`` block WITHIN
+    the ``## Causes`` section, using the shared ``CAUSE_HEADING_RE``. A heading that
+    is not the strict form (``#### Cause``, ``### Cause AA``, ``### Cause A :``) is
+    NOT yielded here — the extractor drops it too; it is surfaced separately by
+    ``_flag_malformed_cause_headings``."""
     body = _causes_section_body(content)
-    heads = list(_CAUSE_HEADING_RE.finditer(body))
+    heads = list(CAUSE_HEADING_RE.finditer(body))
     for i, h in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
-        yield h.group(1), body[h.end() : end]
+        yield h.group(1), h.group(2).strip(), body[h.end() : end]
 
 
-def _is_fallback_cause(letter: str, body: str) -> bool:
-    """The fallback Cause carries ``[Default]`` in its Indicators or the reserved
-    letter Z — the same scoping the matcher's fallback detection uses."""
-    return (
-        FALLBACK_INDICATOR_TOKEN in _cause_field("Indicators", body)
-        or letter.upper() == FALLBACK_CAUSE_LETTER
-    )
+def _cause_is_fallback(fields: Dict[str, str]) -> bool:
+    """The fallback Cause is the one whose **Indicators** carry ``[Default]`` — the
+    SAME key the extractor uses to set ``is_fallback_cause`` (``[Default]`` only,
+    NOT the letter Z). Keying on ``[Default]`` alone is what lets the validator
+    catch a ``### Cause Z:`` that OMITS ``[Default]`` (which the extractor would seed
+    as a real candidate root, not a fallback)."""
+    return FALLBACK_INDICATOR_TOKEN in fields.get("Indicators", "")
 
 
 # =============================================================================
@@ -391,6 +450,12 @@ class RunbookValidator:
 
         # Gate 2b: per-Cause Statement invariants (the match surface; #545)
         self._validate_cause_statements(content, errors, warnings)
+
+        # Gate 2c: per-Cause graph shape (heading form, duplicate/reserved letters,
+        # exactly-one fallback, parseable Chain, quadrant-tagged Interventions,
+        # token-anchored Indicators) — ERROR parity with the kb-toolkit validator so
+        # a passing draft parses into the causes the seeder consumes.
+        self._validate_cause_graph(content, errors, warnings)
 
         # Content quality checks
         self._validate_quality(content, warnings)
@@ -516,21 +581,17 @@ class RunbookValidator:
             if not re.search(pattern, content, re.MULTILINE):
                 errors.append(f"Missing required section: {section}")
 
-        # ## Causes must have at least one ### Cause subsection (anchor consistent
-        # with the required-section gate + _CAUSES_SECTION_RE).
+        # ## Causes must have at least one ### Cause subsection. Scanned
+        # SECTION-SCOPED with the shared strict ``CAUSE_HEADING_RE`` (not a loose
+        # whole-content scan) so an example ``### Cause`` heading in another section
+        # cannot satisfy this gate while the extractor parses zero causes.
         if re.search(r"^##[ \t]+Causes[ \t]*$", content, re.MULTILINE):
-            cause_subsections = re.findall(r"^###+ Cause\s+\w", content, re.MULTILINE)
-            if not cause_subsections:
+            if not CAUSE_HEADING_RE.search(_causes_section_body(content)):
                 errors.append(
                     "## Causes section must contain at least one ### Cause subsection"
                 )
-            # Fallback cause (Cause Z with [Default] indicator) is a quality warning
-            if FALLBACK_INDICATOR_TOKEN not in content:
-                warnings.append(
-                    f"No fallback Cause with {FALLBACK_INDICATOR_TOKEN} indicator "
-                    f"found — add a '### Cause {FALLBACK_CAUSE_LETTER}: Unidentified' "
-                    f"with {FALLBACK_INDICATOR_TOKEN} indicator"
-                )
+            # NOTE: the fallback-Cause requirement is now an ERROR in
+            # _validate_cause_graph (Gate 2c), not a warning here.
             # v4: each ### Cause carries Statement / Indicators / Interventions
             # (Chain optional); interventions are quadrant-tagged. Per-Cause
             # presence/emptiness is enforced (as ERRORs) in _validate_cause_subfields
@@ -564,13 +625,14 @@ class RunbookValidator:
         ``Interventions`` passed if any *other* Cause had one) — now blocked per
         Cause, matching the generation path that authors the corpus.
         """
-        for letter, body in _iter_cause_blocks(content):
+        for letter, _name, body in _iter_cause_blocks(content):
             label = f"Cause {letter}"
+            fields = _cause_fields(body)
             for sub in REQUIRED_CAUSE_SUBFIELDS:
-                if not _has_cause_field(sub, body):
+                if sub not in fields:
                     errors.append(f"{label}: missing required **{sub}:** sub-field")
                     continue
-                value = _cause_field(sub, body)
+                value = fields[sub]
                 if not value:
                     errors.append(f"{label}: **{sub}:** sub-field is empty")
                 elif sub == "Statement" and len(value) > MAX_CAUSE_STATEMENT_LENGTH:
@@ -584,23 +646,324 @@ class RunbookValidator:
     ) -> None:
         """Match-surface invariants (#545) on NON-FALLBACK Cause Statements.
 
-        Drop the fallback Cause (``[Default]`` in its *Indicators*, or letter Z —
-        it is not a match surface), collect each remaining Cause's non-empty
-        ``**Statement:**``, and run the shared ``check_cause_statement_invariants``
-        (no ``[Step N]`` leak; siblings mutually discriminative). Missing/empty
-        Statements are owned by ``_validate_cause_subfields`` (Gate 2a); an empty
-        one is simply skipped here (a non-empty Statement is needed for the check).
+        Drop the fallback Cause (``[Default]`` in its *Indicators* — the SAME key
+        the extractor uses, NOT the letter Z, so a mis-lettered ``### Cause Z:``
+        without ``[Default]`` is still checked), collect each remaining Cause's
+        non-empty ``**Statement:**``, and run the shared
+        ``check_cause_statement_invariants`` (no ``[Step N]`` leak; siblings mutually
+        discriminative). Missing/empty Statements are owned by
+        ``_validate_cause_subfields`` (Gate 2a); an empty one is simply skipped here
+        (a non-empty Statement is needed for the check).
         """
         statements: List[tuple] = []
-        for letter, body in _iter_cause_blocks(content):
-            if _is_fallback_cause(letter, body):
+        for letter, _name, body in _iter_cause_blocks(content):
+            fields = _cause_fields(body)
+            if _cause_is_fallback(fields):
                 continue  # fallback Cause — not a match surface
-            stmt = _cause_field("Statement", body)
+            stmt = fields.get("Statement", "")
             if stmt:
                 statements.append((letter, stmt))
         errs, warns = check_cause_statement_invariants(statements)
         errors.extend(errs)
         warnings.extend(warns)
+
+    def _validate_cause_graph(
+        self, content: str, errors: List[str], warnings: List[str]
+    ) -> None:
+        """Per-Cause graph-shape checks (Gate 2c) — ERROR parity with kb-toolkit.
+
+        Ports the structural errors the backend gate was missing, each guarding a
+        way a runbook could pass validation yet parse into wrong/zero causes for the
+        seeder: a malformed heading the extractor drops; a duplicate letter; a
+        real Cause on the reserved letter Z (which the extractor would seed as a
+        candidate root); a missing/duplicate ``[Default]`` fallback; a Chain present
+        but unparseable; an Intervention with no/invalid quadrant tag; an Indicator
+        entry with no ``[Step N]``/``[Symptom]``/``[Default]`` token or an unresolved
+        ``[Step N]``. Coarse, section-scoped parse (same span as the extractor).
+        """
+        body = _causes_section_body(content)
+        if not body:
+            return  # a missing ## Causes section is flagged by _validate_structure
+
+        # Near-miss headings the extractor silently drops (surfaced, not skipped).
+        self._flag_malformed_cause_headings(body, errors)
+
+        causes = list(_iter_cause_blocks(content))
+        if not causes:
+            return  # "no ### Cause subsection" is flagged by _validate_structure
+
+        diagnostic_steps = self._collect_step_numbers(content)
+        letters_seen: Dict[str, str] = {}
+        real_count = 0
+        fallback_count = 0
+        for letter, name, cbody in causes:
+            label = f"Cause {letter}"
+            if letter in letters_seen:
+                errors.append(
+                    f"Duplicate Cause letter '{letter}' "
+                    f"(already used for: {letters_seen[letter]})"
+                )
+            letters_seen[letter] = name
+
+            fields = _cause_fields(cbody)
+            indicator_text = fields.get("Indicators", "")
+            is_fallback = _cause_is_fallback(fields)
+            if is_fallback:
+                fallback_count += 1
+                if letter.upper() != FALLBACK_CAUSE_LETTER:
+                    warnings.append(
+                        f"{label}: fallback Cause (uses {FALLBACK_INDICATOR_TOKEN}) "
+                        f"should be named 'Cause {FALLBACK_CAUSE_LETTER}' for convention"
+                    )
+            else:
+                real_count += 1
+                if letter.upper() == FALLBACK_CAUSE_LETTER:
+                    errors.append(
+                        f"{label}: Cause {FALLBACK_CAUSE_LETTER} is reserved for the "
+                        f"{FALLBACK_INDICATOR_TOKEN} fallback; real Causes must use A-Y"
+                    )
+
+            valid_refs = self._validate_chain(
+                label, fields.get("Chain", ""), errors, warnings
+            )
+            self._validate_interventions(
+                label, fields.get("Interventions", ""), valid_refs, errors, warnings
+            )
+            self._validate_indicator_field(
+                label, indicator_text, diagnostic_steps, is_fallback, errors, warnings
+            )
+
+        if real_count == 0:
+            errors.append(
+                "## Causes must contain at least one real ### Cause (A-Y) in "
+                f"addition to the {FALLBACK_INDICATOR_TOKEN} fallback"
+            )
+        if fallback_count == 0:
+            errors.append(
+                "## Causes must contain a fallback Cause whose Indicator includes "
+                f"{FALLBACK_INDICATOR_TOKEN} (conventionally "
+                f"### Cause {FALLBACK_CAUSE_LETTER}: Unidentified)"
+            )
+        elif fallback_count > 1:
+            errors.append(
+                f"## Causes contains {fallback_count} Causes with "
+                f"{FALLBACK_INDICATOR_TOKEN}; exactly one fallback is required"
+            )
+
+    def _flag_malformed_cause_headings(
+        self, causes_body: str, errors: List[str]
+    ) -> None:
+        """ERROR on a heading that reads like a Cause but is not the strict
+        ``### Cause X: <name>`` form (``#### Cause``, ``### Cause AA``,
+        ``### Cause A :``, lowercase/numeric letter, empty name). The extractor
+        matches ONLY the strict form, so any near-miss is silently dropped — this
+        converts that silent drop into an actionable error.
+
+        Fenced code blocks are stripped first so an illustrative ``#### Cause`` in
+        an Intervention's command example is not mistaken for a malformed heading
+        (a false block); a genuine ``### Cause`` in a fence is parsed as a cause by
+        the extractor anyway, so it is not a near-miss to flag."""
+        scan = _CODE_FENCE_RE.sub("", HTML_COMMENT_RE.sub("", causes_body))
+        for m in _LOOSE_CAUSE_HEADING_RE.finditer(scan):
+            line = m.group(0).strip()
+            if not CAUSE_HEADING_RE.match(line):
+                errors.append(
+                    f"Malformed Cause heading {line!r}: expected "
+                    f"'### Cause X: <name>' (H3 '###', a single uppercase letter A-Z, "
+                    f"then ':' immediately after the letter, then a non-empty name). "
+                    f"The extractor silently drops any other form."
+                )
+
+    def _validate_chain(
+        self,
+        label: str,
+        chain_text: str,
+        errors: List[str],
+        warnings: List[str],
+    ) -> set:
+        """Tolerant validation of an optional **Chain** ladder (root -> ... -> D).
+
+        Returns the node refs this Cause declares (chain rungs plus the always-valid
+        ``root``/``D``) for cross-checking intervention targets. Absence is legal (a
+        degenerate root->D chain). When present it must parse to ``<ref>:`` rungs — a
+        Chain with none is a hard error (the pack builder would drop it); softer
+        issues (missing root/D, overlong rung) warn."""
+        valid_refs = {"root", "D"}
+        chain_text = HTML_COMMENT_RE.sub("", chain_text)
+        if not chain_text.strip():
+            return valid_refs
+        rungs = CHAIN_RUNG_RE.findall(chain_text)
+        if not rungs:
+            errors.append(
+                f"{label}: **Chain** is present but has no `<ref>:` rungs "
+                "(use `root:`, `s1:`, ... `D:`); omit Chain for a degenerate chain"
+            )
+            return valid_refs
+        refs = []
+        for ref, stmt in rungs:
+            if ref == CONVERGES_REF:
+                continue  # convergence directive, not a node
+            refs.append(ref)
+            if len(stmt.strip()) > MAX_CHAIN_RUNG_LENGTH:
+                warnings.append(
+                    f"{label}: Chain rung '{ref}' is {len(stmt.strip())} chars "
+                    f"(>{MAX_CHAIN_RUNG_LENGTH})"
+                )
+        valid_refs.update(refs)
+        if "root" not in refs:
+            warnings.append(f"{label}: **Chain** has no `root:` rung")
+        if "D" not in refs:
+            warnings.append(
+                f"{label}: **Chain** has no `D:` terminal rung "
+                "(points at Symptom Recognition)"
+            )
+        return valid_refs
+
+    def _validate_interventions(
+        self,
+        label: str,
+        interventions_text: str,
+        valid_refs: set,
+        errors: List[str],
+        warnings: List[str],
+    ) -> None:
+        """Each intervention bullet must carry a valid quadrant tag and target a
+        node the Cause declares. Missing/invalid quadrant is a hard error; an
+        off-chain target ref, or a missing per-fix Verification/Risk/Duration, warns.
+        Emptiness is already owned by the required-sub-field check (Gate 2a)."""
+        if not interventions_text.strip():
+            return
+        marks = list(INTERVENTION_RE.finditer(interventions_text))
+        if not marks:
+            errors.append(
+                f"{label}: **Interventions** has no quadrant-tagged entry "
+                f"(`- **<quadrant>** (<ref>): ...`; quadrants: "
+                f"{', '.join(sorted(INTERVENTION_QUADRANTS))})"
+            )
+            return
+        for m in marks:
+            quadrant, ref = m.group(1), m.group(2).strip()
+            if quadrant not in INTERVENTION_QUADRANTS:
+                errors.append(
+                    f"{label}: intervention quadrant '{quadrant}' is not valid "
+                    f"({', '.join(sorted(INTERVENTION_QUADRANTS))})"
+                )
+            if ref and ref != CONVERGES_REF and ref not in valid_refs:
+                warnings.append(
+                    f"{label}: intervention targets node '{ref}', which is not a "
+                    "Chain rung or `root`/`D`"
+                )
+        # Per-intervention: each fix carries its own Verification; a `mitigation`
+        # declares Risk + Duration. Slice the field at each bullet so one fix's
+        # fields don't satisfy the check for another.
+        for i, m in enumerate(marks):
+            end = (
+                marks[i + 1].start() if i + 1 < len(marks) else len(interventions_text)
+            )
+            block = interventions_text[m.start() : end]
+            if "**Verification:**" not in block:
+                warnings.append(
+                    f"{label}: a `{m.group(1)}` intervention has no **Verification:**"
+                )
+            if m.group(1) == "mitigation":
+                for needed in ("Risk", "Duration"):
+                    if f"**{needed}:**" not in block:
+                        warnings.append(
+                            f"{label}: a `mitigation` intervention should declare "
+                            f"**{needed}:**"
+                        )
+        if "```" not in interventions_text and self._looks_command_based(
+            interventions_text
+        ):
+            warnings.append(
+                f"{label}: **Interventions** has no fenced code block; fixes are "
+                "usually command-based"
+            )
+
+    def _validate_indicator_field(
+        self,
+        label: str,
+        indicator_text: str,
+        diagnostic_steps: set,
+        is_fallback: bool,
+        errors: List[str],
+        warnings: List[str],
+    ) -> None:
+        """Each Indicator entry must carry a ``[Step N]``/``[Symptom]``/``[Default]``
+        token, and a ``[Step N]`` must resolve to a real ``## Diagnostic Steps``
+        step. The fallback Cause's entries should be ``[Default]``. Emptiness is
+        owned by the required-sub-field check (Gate 2a)."""
+        entries = self._indicator_lines(indicator_text)
+        if not entries:
+            text = indicator_text.strip()
+            if text:
+                entries = [text]
+        for entry in entries:
+            if not INDICATOR_TOKEN_RE.findall(entry):
+                errors.append(
+                    f"{label}: Indicator entry has no [Step N] / [Symptom] / "
+                    f"[Default] token: {entry!r}"
+                )
+                continue
+            for step_ref in STEP_REF_RE.findall(entry):
+                step_num = int(step_ref)
+                if step_num not in diagnostic_steps:
+                    errors.append(
+                        f"{label}: Indicator references [Step {step_num}] which does "
+                        "not exist in ## Diagnostic Steps"
+                    )
+        if is_fallback:
+            for entry in entries:
+                if FALLBACK_INDICATOR_TOKEN not in entry:
+                    warnings.append(
+                        f"{label}: fallback Cause Indicator entries should be "
+                        f"{FALLBACK_INDICATOR_TOKEN}; got: {entry!r}"
+                    )
+
+    def _collect_step_numbers(self, content: str) -> set:
+        """The set of ``### Step N:`` numbers declared in ## Diagnostic Steps."""
+        body = _section_body(content, "Diagnostic Steps")
+        if body is None:
+            return set()
+        return {int(m.group(1)) for m in STEP_HEADING_RE.finditer(body)}
+
+    @staticmethod
+    def _indicator_lines(indicator_text: str) -> List[str]:
+        """Bullet entries of an Indicators field, HTML comments stripped and leading
+        bullet markers removed — the same lines the pack builder sees."""
+        indicator_text = HTML_COMMENT_RE.sub("", indicator_text)
+        lines: List[str] = []
+        for raw in indicator_text.splitlines():
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            if stripped[:2] in {"- ", "* ", "+ "}:
+                stripped = stripped[2:].strip()
+            elif (
+                stripped[0] in {"-", "*", "+"}
+                and len(stripped) > 1
+                and stripped[1] == " "
+            ):
+                stripped = stripped[2:].strip()
+            lines.append(stripped)
+        return lines
+
+    @staticmethod
+    def _looks_command_based(body: str) -> bool:
+        """Cheap heuristic to suppress the no-code-block warning when a fix is
+        genuinely procedural ("escalate to vendor", "failover")."""
+        non_command_phrases = (
+            "escalate",
+            "contact",
+            "failover",
+            "out of scope",
+            "out of runbook scope",
+            "n/a",
+            "diagnostic only",
+            "manual",
+        )
+        body_lower = body.lower()
+        return not any(p in body_lower for p in non_command_phrases)
 
     def _validate_quality(self, content: str, warnings: List[str]) -> None:
         content_body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, flags=re.DOTALL)

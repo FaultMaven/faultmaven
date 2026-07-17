@@ -779,7 +779,7 @@ This endpoint:
 3. Atomically ingests the runbook via `KnowledgeService.ingest_runbook()` — creates the `knowledge_items` row AND writes ChromaDB chunks. If either step fails, the SQL row is rolled back and a 500 is returned; the draft stays in `DRAFT` state.
 4. Only after ingestion succeeds, commits `dm.status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` in `conversion_drafts`.
 
-**Flywheel closure (cause extraction).** The extractor is the produce-side counterpart of the KB pack builder's `_extract_causes` (`faultmaven-kb-toolkit`); both are anchored on the same v4 parse grammar (`runbook_grammar`, a verbatim mirror of the upstream `kb_toolkit/core/runbook_grammar.py`), so a converted runbook seeds the same *shape* of candidate a shipped one does. A golden cross-check test pins the extractor byte-for-byte to the builder's output. Extraction is deliberately wired **here, at the human-verification gate** — not inside `ingest_runbook` — so the anonymous/experimental `upload_document` path never feeds unverified content to the seeder. Two produce-side subtleties the seeder handles: a Cause that omits the optional **Chain** sub-field (a simple one-step cause) is synthesized into a degenerate `root → D` chain and seeded as a single candidate (rather than dropped); malformed or non-linear chains are rejected by the seeder's shape guard, never mis-seeded. A runbook with no `## Causes` section carries `metadata["causes"] = None` (nothing to seed).
+**Flywheel closure (cause extraction).** The extractor is the produce-side counterpart of the KB pack builder's `_extract_causes` (`faultmaven-kb-toolkit`); both are anchored on the same v4 parse grammar (`runbook_grammar`, a verbatim mirror of the upstream `kb_toolkit/core/runbook_grammar.py`), so a converted runbook seeds the same *shape* of candidate a shipped one does. A golden cross-check test pins the extractor byte-for-byte to the builder's output. The `RunbookValidator` gate that runs *before* extraction is anchored on the **same** shared grammar (see §12.1), so a draft the gate passes always yields the `## Causes` records the seeder consumes — the gate can no longer accept a Cause shape the extractor silently drops (a stricter heading, a stray-bold-truncated Statement, a mis-lettered `### Cause Z:` that omits `[Default]`). Extraction is deliberately wired **here, at the human-verification gate** — not inside `ingest_runbook` — so the anonymous/experimental `upload_document` path never feeds unverified content to the seeder. Two produce-side subtleties the seeder handles: a Cause that omits the optional **Chain** sub-field (a simple one-step cause) is synthesized into a degenerate `root → D` chain and seeded as a single candidate (rather than dropped); malformed or non-linear chains are rejected by the seeder's shape guard, never mis-seeded. A runbook with no `## Causes` section carries `metadata["causes"] = None` (nothing to seed).
 
 > **Scope caveat (runtime loop).** Populating `metadata["causes"]` is *necessary* but not by itself *sufficient* for the loop to run: the Phase-4 seeder's retrieval (`_prefetch_kb_context` → `search_knowledge`) currently defaults to **global scope**, while chat case→runbook conversions default to **personal** scope. So a personal/team-scoped verified runbook carries the record but is not retrieved by the seeder — the loop closes today only for **globally-published** runbooks. Whether personal/team runbooks should seed the owner's own future investigations (owner-aware prefetch) or only globally-vetted knowledge should seed (a trust gate) is a recorded product decision tracked separately.
 
@@ -1314,35 +1314,33 @@ The conversion endpoint is NOT idempotent -- each upload creates a new conversio
 
 ### 12.1 Validation Integration
 
-The `ConversionService` invokes the KB Toolkit's `RunbookValidator` programmatically. The toolkit is imported as a Python package, not called as a CLI subprocess.
+The `ConversionService` invokes an **in-repo replica** of the KB Toolkit's `RunbookValidator` — `faultmaven.modules.knowledge.domain.services.runbook_validator` — so the backend takes no cross-repo dependency on `faultmaven-kb-toolkit` at runtime. The replica's cause validation is anchored on the **shared parse grammar** (`runbook_grammar`, the same regexes + sub-field parser the extractor and the upstream pack builder use), so a draft the gate PASSES is exactly one the extractor can parse into the `metadata["causes"]` records the seeder consumes — the gate can no longer be looser than the parser it fronts. Its cause-level ERRORS mirror the upstream validator (strict `### Cause X:` heading; unique letters; Cause Z reserved for the `[Default]` fallback; exactly one fallback; parseable Chain; quadrant-tagged Interventions; token-anchored Indicators whose `[Step N]` refs resolve). Behavioral parity is guarded by the identical test cases in each repo's suite.
 
 ```python
-from kb_toolkit.config.config import KBConfig
-from kb_toolkit.core.validator import RunbookValidator
+from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    QualityScorer,
+    RunbookValidator,
+)
 
 class ConversionService:
     def __init__(self, ...):
-        self._kb_config = KBConfig.load()
-        self._validator = RunbookValidator(self._kb_config)
+        self._validator = RunbookValidator()
+        self._scorer = QualityScorer()
 
-    def _validate_draft(self, file_path: Path) -> ValidationResult:
-        """Run Gate 1 (metadata) and Gate 2 (structure) on generated runbook."""
-        result = self._validator.validate_file(file_path)
-        return ValidationResult(
-            passed=result["passed"],
-            errors=result["errors"],
-            warnings=result["warnings"],
-        )
+    # Validation runs on the draft markdown content (verify_draft, scan, etc.):
+    #   result = self._validator.validate_content(content)
+    #   -> ValidationResult(passed, errors, warnings)
 ```
 
 ### 12.2 Quality Scoring Integration
 
 ```python
-from kb_toolkit.core.quality import QualityScorer
+# QualityScorer is the same in-repo replica module as RunbookValidator (§12.1).
+from faultmaven.modules.knowledge.domain.services.runbook_validator import QualityScorer
 
 class ConversionService:
     def __init__(self, ...):
-        self._scorer = QualityScorer(self._kb_config)
+        self._scorer = QualityScorer()
 
     def _score_draft(self, file_path: Path) -> QualityScore:
         """Score generated runbook quality."""

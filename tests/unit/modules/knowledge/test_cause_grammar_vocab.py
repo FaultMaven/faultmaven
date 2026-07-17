@@ -140,14 +140,20 @@ class TestValidatorUsesVocabulary:
         )
         assert any("quadrant" in w for w in self._structure_warnings(content))
 
-    def test_missing_fallback_warns(self):
+    def test_missing_fallback_blocks(self):
+        # A missing [Default] fallback is now an ERROR (Gate 2c), matching the
+        # upstream validator and the conversion prompt contract — not a warning.
         content = (
             "## Causes\n\n"
             "### Cause A: x\n"
             "**Statement:** s\n**Indicators:**\n- root: [Step 1] y\n"
             "**Interventions:**\n- **remediation** (root): fix.\n"
         )
-        assert any("fallback Cause" in w for w in self._structure_warnings(content))
+        v = RunbookValidator()
+        errors: list[str] = []
+        warnings: list[str] = []
+        v._validate_cause_graph(content, errors, warnings)
+        assert any("fallback Cause" in e for e in errors)
 
     def test_legacy_v3_subfield_warns(self):
         content = (
