@@ -366,6 +366,7 @@ class TestMalformedCauseHeadingsBlock:
             "### Cause 1: Numeric letter",  # digit
             "### Cause A : Space before colon",  # space before colon
             "### Cause A:",  # empty name
+            "  ### Cause A: Indented",  # indented — extractor anchors at column 0
         ],
     )
     def test_near_miss_heading_flagged(self, heading):

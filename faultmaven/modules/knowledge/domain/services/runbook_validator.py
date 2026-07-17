@@ -765,10 +765,13 @@ class RunbookValidator:
         the extractor anyway, so it is not a near-miss to flag."""
         scan = _CODE_FENCE_RE.sub("", HTML_COMMENT_RE.sub("", causes_body))
         for m in _LOOSE_CAUSE_HEADING_RE.finditer(scan):
-            line = m.group(0).strip()
-            if not CAUSE_HEADING_RE.match(line):
+            # Compare with LEADING whitespace preserved: the strict grammar (and the
+            # extractor) anchor the heading at column 0, so an INDENTED ``### Cause``
+            # is a near-miss the extractor drops too — stripping first would hide it.
+            raw = m.group(0).rstrip()
+            if not CAUSE_HEADING_RE.match(raw):
                 errors.append(
-                    f"Malformed Cause heading {line!r}: expected "
+                    f"Malformed Cause heading {raw.strip()!r}: expected "
                     f"'### Cause X: <name>' (H3 '###', a single uppercase letter A-Z, "
                     f"then ':' immediately after the letter, then a non-empty name). "
                     f"The extractor silently drops any other form."
