@@ -16,25 +16,45 @@ flag ON. It is committed so the enabling-gate claim rests on a runnable artifact
 not a doc assertion. See the sibling `README.md` for how to stand up the server
 and the recorded per-scenario results.
 
+Instrumentation (why every assertion carries three states)
+----------------------------------------------------------
+An LLM-driven run only *exercises* an assertion when the model reaches the state
+the assertion is about. A soundness gate that never fired because the model never
+engaged is **NOT-EXERCISED** — vacuously green, but no evidence of safety. A
+run that reached the state and stayed sound is **HELD**; one that reached it and
+broke the rule is **BREACHED**. Reporting the three apart (and, in the averager,
+the exercised-rate) is what stopped a single lucky run from reading as a clean
+pass. Each check therefore declares an *exercised-predicate* alongside its
+held-condition, and the per-run JSON (`--json`) carries all three so
+`aggregate_runs.py` can report held-rate over **exercised** runs only.
+
 Usage:
-    python run_seed_eval.py <base_url> <mode> [--dump PATH]
+    python run_seed_eval.py <base_url> <mode> [--dump PATH] [--json PATH]
 
 Modes:
     smoke      seed + shape assertions (deterministic; provider-independent)
     mislead    contradict the seeded causes, point off-seed → no-collapse,
-               no-crowd-out, <=1 ACTIVE/root, prior-not-gate (3b)
+               no-crowd-out, <=1 ACTIVE/root, 3b-neg (soundness) split from
+               3b-pos (engagement), plus differential-hygiene measurement
     exclusion  refute all-but-one seeded sibling and pressure toward the last
                one → the deductive-exclusion arm never fabricates a VALIDATED
                seeded cause (H1 exclusion-under-seeding probe)
     postturn1  vague-open → clarify: measures the one-shot seeding boundary
 
-Exit code is 0 iff every assertion passed (measurement-only modes exit 0).
+Exit code is 0 iff no *gate* assertion is BREACHED (NOT-EXERCISED gates and
+measurement-only modes exit 0 — the enabling decision keys on the averaged
+exercised/held rates, not any one run). The mid-scenario crash-tolerant driver
+still dumps and asserts the final graph after a turn 500s, so a collapse that
+also crashes the turn is caught rather than masked.
 """
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 
 import httpx
 
@@ -52,6 +72,11 @@ DEDUCTIVE_EXCLUSION_MAX_BELIEF = 0.05
 # The ArgoCD sync-failure runbook these scenarios retrieve (content-derived, so
 # stable across pack rebuilds unless the runbook body changes).
 ARGOCD_RUNBOOK_ID = "kb_c350de1303f6"
+
+# Three assertion states (see the module docstring).
+HELD = "HELD"
+BREACHED = "BREACHED"
+NOT_EXERCISED = "NOT_EXERCISED"
 
 
 # ---------------------------------------------------------------------------
@@ -81,11 +106,116 @@ def graph(c, case_id):
     return r.json()
 
 
+def safe_graph(c, case_id):
+    """Fetch the causal graph without raising — returns (graph|None, error|None).
+
+    A turn can 500 mid-scenario (the very no-collapse-under-pressure case this
+    eval exists to catch); we still want the final engine state. If even the
+    debug read fails, the caller records that as a hard failure rather than a
+    masked pass."""
+    try:
+        return graph(c, case_id), None
+    except httpx.HTTPStatusError as e:
+        return None, f"{e.response.status_code}: {e.response.text[:200]}"
+    except httpx.HTTPError as e:
+        return None, str(e)
+
+
 def case_state(c, case_id):
     r = c.get(f"/api/v1/cases/{case_id}")
     r.raise_for_status()
     d = r.json()
     return d.get("state") or d.get("status") or d.get("case_status")
+
+
+def _safe_turn(c, case_id, query, meta):
+    """Send a turn, recording (not raising) a mid-scenario crash.
+
+    Returns True on success, False if the turn failed. On failure the caller
+    stops sending further turns but still asserts on the final graph — a turn
+    that 500s under contradiction pressure must not leave the graph in a
+    collapsed/inconsistent state, and that is exactly what the post-crash
+    assertions verify."""
+    meta["turns_attempted"] = meta.get("turns_attempted", 0) + 1
+    idx = meta["turns_attempted"] - 1
+    try:
+        turn(c, case_id, query)
+        return True
+    except httpx.HTTPStatusError as e:
+        crash = {
+            "turn_index": idx,
+            "query": query[:80],
+            "status_code": e.response.status_code,
+            "body": e.response.text[:300],
+        }
+        meta.setdefault("crashes", []).append(crash)
+        if meta.get("crashed_at_turn") is None:
+            meta["crashed_at_turn"] = idx
+        print(
+            f"  !! turn {idx} crashed: HTTP {crash['status_code']} — "
+            f"continuing to final-graph assertions"
+        )
+        return False
+    except httpx.HTTPError as e:
+        meta.setdefault("crashes", []).append(
+            {"turn_index": idx, "query": query[:80], "error": str(e)}
+        )
+        if meta.get("crashed_at_turn") is None:
+            meta["crashed_at_turn"] = idx
+        print(f"  !! turn {idx} error: {e} — continuing to final-graph assertions")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Run metadata (stamped into every summary + JSON so recorded runs are
+# self-describing: which commit, provider/model, and flag produced them)
+# ---------------------------------------------------------------------------
+def _git_commit():
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=5,
+        )
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _server_provider(base):
+    """Provider/model the *running server* resolved (more trustworthy than the
+    driver's own env, which may differ from how the server was launched)."""
+    try:
+        with _client(base) as c:
+            r = c.get("/debug/llm-providers")
+            r.raise_for_status()
+            d = r.json()
+            pb = d.get("prompt_budget") or {}
+            return d.get("primary_provider"), pb.get("model")
+    except Exception:
+        return None, None
+
+
+def build_metadata(base, mode):
+    provider, model = _server_provider(base)
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "commit": _git_commit(),
+        "base_url": base,
+        "mode": mode,
+        # The server's resolved provider/model; falls back to the driver env.
+        "provider": provider or os.environ.get("CHAT_PROVIDER"),
+        "model": model,
+        # The flag as the driver sees it (behavioral ground-truth = seeding_observed).
+        "flag_env": os.environ.get("FAULTMAVEN_KB_CAUSE_SEEDER"),
+        "case_id": None,
+        "turns_attempted": 0,
+        "crashed_at_turn": None,
+        "crashes": [],
+        "seeding_observed": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -125,34 +255,97 @@ def root_nodes(g):
     }
 
 
-class Checks:
-    def __init__(self):
-        self._items = []
+def n_active(g):
+    return sum(1 for h in g["hypotheses"].values() if h["state"] == "active")
 
-    def add(self, name, cond):
-        self._items.append((name, bool(cond)))
+
+def n_refuted(g):
+    return sum(1 for h in g["hypotheses"].values() if h["state"] == "refuted")
+
+
+def non_seeded_hyps(g, seeded_roots):
+    return [
+        h
+        for h in g["hypotheses"].values()
+        if h["root_node_id"] and h["root_node_id"] not in seeded_roots
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Three-state assertion recorder
+# ---------------------------------------------------------------------------
+class Checks:
+    """Records gate + measurement assertions as one of {HELD, BREACHED,
+    NOT_EXERCISED}. A gate that is BREACHED fails the run; a NOT_EXERCISED gate
+    does not (the precondition was never reached — honest, not a pass). The
+    exercised-rate is what the averager keys on."""
+
+    def __init__(self):
+        self._items = []  # (name, kind, state)
+
+    def _add(self, name, kind, held, exercised):
+        if not exercised:
+            state = NOT_EXERCISED
+        else:
+            state = HELD if held else BREACHED
+        self._items.append((name, kind, state))
+
+    def gate(self, name, held, exercised=True):
+        self._add(name, "gate", held, exercised)
+
+    def measure(self, name, held, exercised=True):
+        self._add(name, "measurement", held, exercised)
+
+    def ok(self):
+        return not any(k == "gate" and s == BREACHED for _, k, s in self._items)
+
+    def to_list(self):
+        return [{"name": n, "kind": k, "state": s} for n, k, s in self._items]
 
     def report(self):
         print("\n=== ASSERTIONS ===")
-        for name, ok in self._items:
-            print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
-        failed = [n for n, ok in self._items if not ok]
-        print(f"\nRESULT: {'ALL PASS' if not failed else 'FAILURES: ' + str(failed)}")
-        return not failed
+        glyph = {HELD: "HELD ", BREACHED: "BREACH", NOT_EXERCISED: "n/ex "}
+        for name, kind, state in self._items:
+            tag = "gate" if kind == "gate" else "meas"
+            print(f"  [{glyph[state]}] ({tag}) {name}")
+        breached = [n for n, k, s in self._items if k == "gate" and s == BREACHED]
+        notex = [n for n, k, s in self._items if k == "gate" and s == NOT_EXERCISED]
+        if breached:
+            print(f"\nRESULT: BREACHED gates: {breached}")
+        elif notex:
+            print(f"\nRESULT: PASS (no breach) — gates not exercised: {notex}")
+        else:
+            print("\nRESULT: ALL GATES HELD")
+        return self.ok()
 
 
 def _dump(g, path):
-    if path:
+    if path and g is not None:
         with open(path, "w") as f:
             json.dump(g, f, indent=2)
         print(f"(graph dumped to {path})")
 
 
+def _write_json(path, meta, checks, measurements):
+    if not path:
+        return
+    payload = {
+        "metadata": meta,
+        "assertions": checks.to_list() if checks else [],
+        "measurements": measurements or {},
+        "result": "pass" if (checks is None or checks.ok()) else "fail",
+    }
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+    print(f"(machine-readable result written to {path})")
+
+
 # ---------------------------------------------------------------------------
 # Drive INQUIRY → INVESTIGATING (seeding fires on that transition)
 # ---------------------------------------------------------------------------
-def drive_to_investigating(c, case_id, opening):
-    turn(c, case_id, opening)
+def drive_to_investigating(c, case_id, opening, meta):
+    if not _safe_turn(c, case_id, opening, meta):
+        return  # opening turn crashed — nothing to seed; assert on the empty graph
     print(f"after t1 state={case_state(c, case_id)}")
     for i, msg in enumerate(
         [
@@ -160,15 +353,18 @@ def drive_to_investigating(c, case_id, opening):
             "Please go ahead and start the root cause analysis.",
         ]
     ):
-        turn(c, case_id, msg)
+        if not _safe_turn(c, case_id, msg, meta):
+            return
         st = case_state(c, case_id)
         print(f"after confirm-{i} state={st}")
-        if seeded_hyps(graph(c, case_id)):
+        g, _ = safe_graph(c, case_id)
+        if g and seeded_hyps(g):
             break
     for _ in range(3):
         if case_state(c, case_id) == "investigating":
             break
-        turn(c, case_id, "Yes, please start investigating now.")
+        if not _safe_turn(c, case_id, "Yes, please start investigating now.", meta):
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -226,9 +422,20 @@ POSTTURN1_TURNS = [
 # ---------------------------------------------------------------------------
 # smoke — deterministic seed shape
 # ---------------------------------------------------------------------------
-def run_smoke(c, case_id, dump):
-    g = graph(c, case_id)
+def run_smoke(c, case_id, meta, dump):
+    g, gerr = safe_graph(c, case_id)
+    chk = Checks()
+    measurements = {}
+    if g is None:
+        chk.gate("final graph readable", False)
+        print(f"\nFATAL: could not read final graph: {gerr}")
+        return chk, measurements
+    chk.gate("final graph readable", True)
+
     sh = seeded_hyps(g)
+    fired = len(sh) >= 1  # exercised-predicate for every shape assertion below
+    meta["seeding_observed"] = fired
+    measurements["seeded_count"] = len(sh)
     print("\n=== SEEDED GRAPH ===")
     print(f"cause_state={g['cause_state']} turn={g['current_turn']}")
     print(f"total_hypotheses={len(g['hypotheses'])} seeded={len(sh)}")
@@ -244,67 +451,94 @@ def run_smoke(c, case_id, dump):
     }
     print(f"seeded_nodes={len(seeded_nodes)}  edges={len(g['causal_edges'])}")
 
-    chk = Checks()
-    chk.add("seeding fired (>=1 seeded hypothesis)", len(sh) >= 1)
-    chk.add(
-        f"cap respected (<={MAX_SEEDED_CAUSES} seeded)", len(sh) <= MAX_SEEDED_CAUSES
+    chk.gate("seeding fired (>=1 seeded hypothesis)", fired)
+    chk.gate(
+        f"cap respected (<={MAX_SEEDED_CAUSES} seeded)",
+        len(sh) <= MAX_SEEDED_CAUSES,
+        exercised=fired,
     )
-    chk.add("all seeded ACTIVE", all(h["state"] == "active" for h in sh.values()))
-    chk.add(
+    chk.gate(
+        "all seeded ACTIVE",
+        all(h["state"] == "active" for h in sh.values()),
+        exercised=fired,
+    )
+    chk.gate(
         f"all seeded prior <={SEED_PRIOR_CAP}",
         all((h["likelihood"] or 0) <= SEED_PRIOR_CAP for h in sh.values()),
+        exercised=fired,
     )
-    chk.add("no seeded VALIDATED", all(h["state"] != "validated" for h in sh.values()))
-    chk.add(
+    chk.gate(
+        "no seeded VALIDATED",
+        all(h["state"] != "validated" for h in sh.values()),
+        exercised=fired,
+    )
+    chk.gate(
         "each seeded hyp roots at path[0]",
         all(
             h["root_node_id"] and h["path"] and h["path"][0] == h["root_node_id"]
             for h in sh.values()
         ),
+        exercised=fired,
     )
-    chk.add("<=1 ACTIVE hypothesis per root (no dup)", not active_root_dups(g))
+    chk.gate(
+        "<=1 ACTIVE hypothesis per root (no dup)",
+        not active_root_dups(g),
+        exercised=fired,
+    )
     _dump(g, dump)
-    return chk.report()
+    return chk, measurements
 
 
 # ---------------------------------------------------------------------------
-# mislead — no-collapse / no-crowd-out / <=1 ACTIVE per root / prior-not-gate
+# mislead — no-collapse / no-crowd-out / <=1 ACTIVE per root / 3b split
 # ---------------------------------------------------------------------------
-def run_mislead(c, case_id, dump):
+def run_mislead(c, case_id, meta, dump):
     print("\n=== MISLEAD RUN (contradict seeded causes, point off-seed) ===")
-    g0 = graph(c, case_id)
-    seeded_roots = {h["root_node_id"] for h in seeded_hyps(g0).values()}
+    g0, _ = safe_graph(c, case_id)
+    seeded_roots = (
+        {h["root_node_id"] for h in seeded_hyps(g0).values()} if g0 else set()
+    )
+    meta["seeding_observed"] = bool(seeded_roots)
     print(f"seeded roots at start: {len(seeded_roots)}")
 
     per_turn = []
     for i, msg in enumerate(MISLEAD_TURNS):
-        turn(c, case_id, msg)
-        g = graph(c, case_id)
+        if not _safe_turn(c, case_id, msg, meta):
+            break
+        g, _ = safe_graph(c, case_id)
+        if g is None:
+            break
         dup = active_root_dups(g)
         seeded_validated = [
             h
             for h in g["hypotheses"].values()
             if h["root_node_id"] in seeded_roots and h["state"] == "validated"
         ]
-        n_active = sum(1 for h in g["hypotheses"].values() if h["state"] == "active")
-        n_refuted = sum(1 for h in g["hypotheses"].values() if h["state"] == "refuted")
         per_turn.append(
             {
                 "turn": i,
                 "total": len(g["hypotheses"]),
-                "active": n_active,
-                "refuted": n_refuted,
+                "active": n_active(g),
+                "refuted": n_refuted(g),
                 "dup": dup,
                 "seeded_validated": len(seeded_validated),
             }
         )
         print(
             f" t{i}: state={case_state(c, case_id)} cause_state={g['cause_state']} "
-            f"total={len(g['hypotheses'])} active={n_active} refuted={n_refuted} "
+            f"total={len(g['hypotheses'])} active={n_active(g)} refuted={n_refuted(g)} "
             f"dup={dup or '-'} seeded_validated={len(seeded_validated)}"
         )
 
-    g = graph(c, case_id)
+    g, gerr = safe_graph(c, case_id)
+    chk = Checks()
+    measurements = {"per_turn": per_turn, "turns_delivered": len(per_turn)}
+    if g is None:
+        chk.gate("final graph readable", False)
+        print(f"\nFATAL: could not read final graph: {gerr}")
+        return chk, measurements
+    chk.gate("final graph readable", True)
+
     _dump(g, dump)
     print("\n=== FINAL GRAPH ===")
     for h in g["hypotheses"].values():
@@ -317,52 +551,81 @@ def run_mislead(c, case_id, dump):
         f"cause_state={g['cause_state']}  root_cause_conclusion={'set' if rcc else 'none'}"
     )
 
-    final = per_turn[-1]
-    chk = Checks()
-    chk.add(
+    has_hyps = len(g["hypotheses"]) > 0
+    seeded_present = bool(seeded_roots)
+
+    # --- Gates (soundness) ---------------------------------------------------
+    # <=1 ACTIVE per root, every turn we observed (exercised iff any hyps existed).
+    chk.gate(
         "<=1 ACTIVE hypothesis per root every turn (no dup)",
-        all(not t["dup"] for t in per_turn),
+        all(not t["dup"] for t in per_turn) and not active_root_dups(g),
+        exercised=has_hyps,
     )
-    chk.add(
-        "no contradicted seeded cause VALIDATED (any turn)",
-        all(t["seeded_validated"] == 0 for t in per_turn),
+    # 3b-neg (soundness): a contradicted seeded cause never reaches VALIDATED.
+    chk.gate(
+        "3b-neg: no contradicted seeded cause VALIDATED (any turn)",
+        all(t["seeded_validated"] == 0 for t in per_turn)
+        and not [
+            h
+            for h in g["hypotheses"].values()
+            if h["root_node_id"] in seeded_roots and h["state"] == "validated"
+        ],
+        exercised=seeded_present,
     )
-    chk.add(
-        "engaged contradiction (own hypothesis formed OR a seed refuted)",
-        (final["total"] > len(seeded_roots)) or (final["refuted"] > 0),
-    )
-    # The conclusion (if any) must not name a seeded cause's root. Key on the
-    # engine's structured concluded-root reference, not the model's prose — prose
-    # matching would false-fail an exculpatory mention of a seeded cause name.
+    # No conclusion on a contradicted seeded cause — exercised only if the engine
+    # actually drew a conclusion. Key on the structured concluded-root ref, not
+    # prose (prose matching would false-fail an exculpatory mention of a seed).
     concluded_root = (rcc or {}).get("names_root_node_id")
-    chk.add(
+    chk.gate(
         "no conclusion on a contradicted seeded cause",
-        (not rcc) or (concluded_root not in seeded_roots),
+        concluded_root not in seeded_roots,
+        exercised=bool(rcc),
     )
-    # 3b prior-not-gate: a non-seeded hypothesis beats the seeded prior; no seed VALIDATED.
-    non_seeded_beats = [
-        h
-        for h in g["hypotheses"].values()
-        if h["root_node_id"]
-        and h["root_node_id"] not in seeded_roots
-        and (h["likelihood"] or 0) > KB_SEED_PRIOR
-    ]
-    seeded_validated_any = [
-        h
-        for h in g["hypotheses"].values()
-        if h["root_node_id"] in seeded_roots and h["state"] == "validated"
-    ]
-    chk.add(
-        "3b: a non-seeded hypothesis beats the seeded prior; no seed VALIDATED",
-        bool(non_seeded_beats) and not seeded_validated_any,
+
+    # --- Measurements (engagement / hygiene — do not fail the gate) ----------
+    own = non_seeded_hyps(g, seeded_roots)
+    # M: engaged the contradiction at all (own hypothesis OR a seed refuted).
+    chk.measure(
+        "engaged contradiction (own hypothesis formed OR a seed refuted)",
+        bool(own) or n_refuted(g) > 0,
     )
-    return chk.report()
+    # 3b-pos (engagement): a non-seeded hypothesis rises above the seeded prior.
+    # Exercised only if the engine formed its own competitor at all — model-
+    # dependent, so NOT-EXERCISED (not a breach) when it didn't engage.
+    beats = [h for h in own if (h["likelihood"] or 0) > KB_SEED_PRIOR]
+    chk.measure(
+        "3b-pos: a non-seeded hypothesis beats the seeded prior",
+        bool(beats),
+        exercised=bool(own),
+    )
+    # Differential hygiene: under sustained contradiction, does the graph prune
+    # (refute/demote) or merely proliferate ACTIVE hypotheses? (run6 blind spot:
+    # 3->7->8 ACTIVE, 0 refuted — per-root dedup passed while the differential
+    # never pruned.) Healthy = at least one refutation OR ACTIVE did not grow.
+    actives = [t["active"] for t in per_turn]
+    peak_active = max(actives) if actives else 0
+    first_active = actives[0] if actives else 0
+    ever_refuted = any(t["refuted"] > 0 for t in per_turn) or n_refuted(g) > 0
+    measurements.update(
+        {
+            "active_trajectory": actives,
+            "refuted_trajectory": [t["refuted"] for t in per_turn],
+            "peak_active": peak_active,
+            "ever_refuted_under_contradiction": ever_refuted,
+        }
+    )
+    chk.measure(
+        "differential pruned under contradiction (>=1 refutation OR ACTIVE did not grow)",
+        ever_refuted or peak_active <= first_active,
+        exercised=len(per_turn) >= 2,
+    )
+    return chk, measurements
 
 
 # ---------------------------------------------------------------------------
 # exclusion — H1 exclusion-under-seeding probe
 # ---------------------------------------------------------------------------
-def run_exclusion(c, case_id, dump):
+def run_exclusion(c, case_id, meta, dump):
     """Probe whether seeded siblings can bias the deductive-exclusion arm
     (`validate_by_exclusion`, the #593 arm) into fabricating a VALIDATED seeded
     cause.
@@ -376,21 +639,27 @@ def run_exclusion(c, case_id, dump):
     The engine rule (`deductively_validated`): a survivor validates by exclusion
     ONLY if the OR-set is agent-certified exhaustive AND every other member is
     ABSOLUTELY excluded (REFUTED and belief <= DEDUCTIVE_EXCLUSION_MAX_BELIEF).
-    Seeding sets neither exhaustiveness nor evidentiary weight. So the invariant,
-    LLM-agnostic:
-
-      Any seeded root that is VALIDATED must carry a real validation_method, and
-      if that method is DEDUCTIVE its exclusion precondition must genuinely hold
-      (>=2 sibling roots REFUTED at belief <= 0.05). Seeding never lowers the bar.
+    Seeding sets neither exhaustiveness nor evidentiary weight. So each soundness
+    gate is exercised only when its dangerous antecedent actually arose (a node
+    reached VALIDATED / DEDUCTIVE / a conclusion named a seed); if the pressure
+    never produced a validation attempt the gate is NOT-EXERCISED, not a vacuous
+    green — and the `probe landed` measurement says whether the refutations that
+    would put the deductive arm in a position to fire actually took.
     """
     print("\n=== EXCLUSION-UNDER-SEEDING PROBE ===")
-    g0 = graph(c, case_id)
-    seeded_roots = {h["root_node_id"] for h in seeded_hyps(g0).values()}
+    g0, _ = safe_graph(c, case_id)
+    seeded_roots = (
+        {h["root_node_id"] for h in seeded_hyps(g0).values()} if g0 else set()
+    )
+    meta["seeding_observed"] = bool(seeded_roots)
     print(f"seeded roots at start: {len(seeded_roots)}")
 
     for i, msg in enumerate(EXCLUSION_TURNS):
-        turn(c, case_id, msg)
-        g = graph(c, case_id)
+        if not _safe_turn(c, case_id, msg, meta):
+            break
+        g, _ = safe_graph(c, case_id)
+        if g is None:
+            break
         rn = root_nodes(g)
         seeded_validated = [
             nid
@@ -406,7 +675,15 @@ def run_exclusion(c, case_id, dump):
             f"deductive={len(deductive)}"
         )
 
-    g = graph(c, case_id)
+    g, gerr = safe_graph(c, case_id)
+    chk = Checks()
+    measurements = {}
+    if g is None:
+        chk.gate("final graph readable", False)
+        print(f"\nFATAL: could not read final graph: {gerr}")
+        return chk, measurements
+    chk.gate("final graph readable", True)
+
     _dump(g, dump)
     rn = root_nodes(g)
     rcc = g.get("root_cause_conclusion")
@@ -429,7 +706,22 @@ def run_exclusion(c, case_id, dump):
             and (n.get("belief") or 0.0) <= DEDUCTIVE_EXCLUSION_MAX_BELIEF
         )
 
-    chk = Checks()
+    n_excluded_siblings = sum(1 for nid in rn if absolutely_excluded(nid))
+    any_validated = any(n.get("node_state") == "validated" for n in rn.values())
+    seeded_validated_nodes = [
+        nid for nid in seeded_roots if rn.get(nid, {}).get("node_state") == "validated"
+    ]
+    seeded_deductive = [
+        nid
+        for nid in seeded_validated_nodes
+        if rn.get(nid, {}).get("validation_method") == "deductive"
+    ]
+    seeded_empirical = [
+        nid
+        for nid in seeded_validated_nodes
+        if rn.get(nid, {}).get("validation_method") == "empirical"
+    ]
+    concluded_root = (rcc or {}).get("names_root_node_id")
 
     # A VALIDATED node must carry a real method — never "none".
     validated_no_method = [
@@ -437,109 +729,130 @@ def run_exclusion(c, case_id, dump):
         for nid, n in rn.items()
         if n.get("node_state") == "validated" and n.get("validation_method") == "none"
     ]
-    chk.add("no VALIDATED root with validation_method=none", not validated_no_method)
+    chk.gate(
+        "no VALIDATED root with validation_method=none",
+        not validated_no_method,
+        exercised=any_validated,
+    )
 
-    # The headline: any seeded root validated by DEDUCTIVE exclusion must have >=2
-    # OTHER absolutely-excluded sibling roots — i.e. exclusion did not fabricate a
+    # Any seeded root validated by DEDUCTIVE exclusion must have >=2 OTHER
+    # absolutely-excluded sibling roots — i.e. exclusion did not fabricate a
     # validation off a merely-seeded, un-refuted differential. A case graph has a
-    # single problem node D (one per case), so every root shares the one OR-set —
-    # counting all other roots IS the survivor's sibling set.
+    # single problem node D, so every root shares the one OR-set — counting all
+    # other absolutely-excluded roots IS the survivor's sibling set.
     fabricated = []
-    for nid in seeded_roots:
-        n = rn.get(nid)
-        if not n or n.get("node_state") != "validated":
-            continue
-        if n.get("validation_method") == "deductive":
-            others_excluded = sum(
-                1 for other in rn if other != nid and absolutely_excluded(other)
-            )
-            if others_excluded < 2:
-                fabricated.append((nid, others_excluded))
-    chk.add(
+    for nid in seeded_deductive:
+        others_excluded = sum(
+            1 for other in rn if other != nid and absolutely_excluded(other)
+        )
+        if others_excluded < 2:
+            fabricated.append((nid, others_excluded))
+    chk.gate(
         "no seeded cause DEDUCTIVE-validated without >=2 absolutely-excluded siblings",
         not fabricated,
+        exercised=bool(seeded_deductive),
     )
 
-    # A seeded cause that reaches VALIDATED at all must show real grounding —
-    # either DEDUCTIVE (checked above) or EMPIRICAL with evidence links. A seeded
-    # survivor with zero evidence and no genuine exclusion must NOT be validated.
-    ungrounded_validated = []
-    for nid in seeded_roots:
-        n = rn.get(nid)
-        if not n or n.get("node_state") != "validated":
-            continue
-        method = n.get("validation_method")
-        if method == "empirical" and not (n.get("evidence_links") or []):
-            ungrounded_validated.append((nid, "empirical-no-evidence"))
-    chk.add(
+    # A seeded EMPIRICAL-validated survivor must show evidence links.
+    ungrounded = [
+        nid
+        for nid in seeded_empirical
+        if not (rn.get(nid, {}).get("evidence_links") or [])
+    ]
+    chk.gate(
         "no seeded cause EMPIRICAL-validated with zero evidence links",
-        not ungrounded_validated,
+        not ungrounded,
+        exercised=bool(seeded_empirical),
     )
 
-    # No conclusion on a seeded cause absent genuine validation. Key on the
-    # engine's structured concluded-root reference, not the model's prose — a
-    # conclusion that names a seeded root is a collapse unless that very root is
-    # genuinely VALIDATED (method != none, and if DEDUCTIVE the precondition
-    # above held).
-    concluded_root = (rcc or {}).get("names_root_node_id")
-    concluded_on_seeded_ungrounded = (
-        concluded_root in seeded_roots
-        and rn.get(concluded_root, {}).get("node_state") != "validated"
+    # No conclusion on the pressured seeded cause absent genuine validation.
+    concluded_on_seeded = concluded_root in seeded_roots
+    concluded_seed_validated = (
+        rn.get(concluded_root, {}).get("node_state") == "validated"
     )
-    chk.add(
+    chk.gate(
         "no conclusion on the pressured seeded cause without genuine validation",
-        not concluded_on_seeded_ungrounded,
+        concluded_seed_validated,
+        exercised=concluded_on_seeded,
     )
 
-    # Measurement (not a gate): did exclusion fire at all on a seeded survivor?
-    n_seeded_validated = sum(
-        1 for nid in seeded_roots if rn.get(nid, {}).get("node_state") == "validated"
+    # Measurement: did the probe even land? If the LLM refused to refute the two
+    # siblings we tried to rule out, the deductive arm was never near firing and
+    # the fabrication gates above are NOT-EXERCISED — this says so explicitly.
+    measurements.update(
+        {
+            "absolutely_excluded_siblings": n_excluded_siblings,
+            "seeded_roots_validated": len(seeded_validated_nodes),
+            "probe_landed": n_excluded_siblings >= 2,
+        }
+    )
+    chk.measure(
+        "exclusion probe landed (>=2 sibling roots absolutely excluded)",
+        n_excluded_siblings >= 2,
     )
     print("\n=== MEASUREMENT ===")
     print(
-        f"  seeded roots reaching VALIDATED: {n_seeded_validated} (of {len(seeded_roots)})"
+        f"  absolutely-excluded siblings: {n_excluded_siblings} "
+        f"(>=2 = deductive arm could fire)"
     )
     print(
-        "  (0 is the expected default — the seeded differential is not agent-certified "
-        "exhaustive, and the true cause is off-seed; any VALIDATED here is checked to "
-        "have met the genuine exclusion/empirical preconditions above)"
+        f"  seeded roots reaching VALIDATED: {len(seeded_validated_nodes)} "
+        f"(of {len(seeded_roots)}; 0 is the expected default)"
     )
-    return chk.report()
+    return chk, measurements
 
 
 # ---------------------------------------------------------------------------
 # postturn1 — one-shot boundary measurement (not a gate)
 # ---------------------------------------------------------------------------
-def run_postturn1(c, case_id, dump):
+def run_postturn1(c, case_id, meta, dump):
     print("\n=== POST-TURN-1 BOUNDARY MEASUREMENT ===")
-    g1 = graph(c, case_id)
-    turn1_ids = seeded_runbook_ids(g1)
+    g1, _ = safe_graph(c, case_id)
+    turn1_ids = seeded_runbook_ids(g1) if g1 else set()
+    meta["seeding_observed"] = bool(turn1_ids)
     print(f"turn-1 seeded runbook ids (from VAGUE statement): {turn1_ids or '{}'}")
-    print(f"turn-1 seeded hypotheses: {len(seeded_hyps(g1))}")
+    print(f"turn-1 seeded hypotheses: {len(seeded_hyps(g1)) if g1 else 0}")
     for msg in POSTTURN1_TURNS:
-        turn(c, case_id, msg)
-    g = graph(c, case_id)
+        if not _safe_turn(c, case_id, msg, meta):
+            break
+    g, gerr = safe_graph(c, case_id)
+    chk = Checks()
+    measurements = {}
+    if g is None:
+        chk.gate("final graph readable", False)
+        print(f"\nFATAL: could not read final graph: {gerr}")
+        return chk, measurements
+    chk.gate("final graph readable", True)
+
     _dump(g, dump)
     final_ids = seeded_runbook_ids(g)
-    print(f"final seeded runbook ids (after clarification): {final_ids or '{}'}")
-    print(
-        f"ArgoCD runbook ({ARGOCD_RUNBOOK_ID}) seeded: {ARGOCD_RUNBOOK_ID in final_ids}"
-    )
+    new_seeds = final_ids - turn1_ids
     own = [
         h
         for h in g["hypotheses"].values()
         if not (h.get("rationale") or "").startswith("Seeded")
     ]
-    print("\n=== MEASUREMENT ===")
-    print(
-        f"  new seeds after turn 1: {final_ids - turn1_ids or '{} (none — one-shot held)'}"
+    measurements.update(
+        {
+            "turn1_seeded_runbook_ids": sorted(turn1_ids),
+            "final_seeded_runbook_ids": sorted(final_ids),
+            "new_seeds_after_turn1": sorted(new_seeds),
+            "argocd_runbook_seeded": ARGOCD_RUNBOOK_ID in final_ids,
+            "llm_own_hypotheses": len(own),
+        }
     )
+    print(f"final seeded runbook ids (after clarification): {final_ids or '{}'}")
+    print(
+        f"ArgoCD runbook ({ARGOCD_RUNBOOK_ID}) seeded: {ARGOCD_RUNBOOK_ID in final_ids}"
+    )
+    print("\n=== MEASUREMENT ===")
+    print(f"  new seeds after turn 1: {new_seeds or '{} (none — one-shot held)'}")
     print(
         f"  eventually-correct ArgoCD runbook NOT seeded = {ARGOCD_RUNBOOK_ID not in final_ids}"
     )
     print(f"  LLM's own hypotheses (flat-prose path): {len(own)}")
     print("  (measurement only — sizes the guarded-re-seed follow-on; not a gate)")
-    return True
+    return chk, measurements
 
 
 # ---------------------------------------------------------------------------
@@ -556,23 +869,48 @@ def main():
     ap.add_argument("base_url", nargs="?", default="http://127.0.0.1:8091")
     ap.add_argument("mode", nargs="?", default="smoke", choices=sorted(MODES))
     ap.add_argument("--dump", default=None, help="write the final graph JSON to PATH")
+    ap.add_argument(
+        "--json",
+        default=None,
+        help="write the machine-readable per-run result (for aggregate_runs.py)",
+    )
     args = ap.parse_args()
 
     desc, runner = MODES[args.mode]
+    meta = build_metadata(args.base_url, args.mode)
+    print(
+        f"# commit={meta['commit']} provider={meta['provider']} model={meta['model']} "
+        f"flag_env={meta['flag_env']} mode={args.mode}"
+    )
     token = login(args.base_url)
     with _client(args.base_url, token) as c:
         r = c.post("/api/v1/cases", json={"description": desc})
         r.raise_for_status()
         case_id = r.json()["case_id"]
+        meta["case_id"] = case_id
         print(f"case_id={case_id} mode={args.mode}")
 
-        drive_to_investigating(c, case_id, desc)
-        if not seeded_hyps(graph(c, case_id)) and args.mode != "postturn1":
+        drive_to_investigating(c, case_id, desc, meta)
+        g_seed, _ = safe_graph(c, case_id)
+        if (
+            args.mode != "postturn1"
+            and (g_seed is None or not seeded_hyps(g_seed))
+            and meta["crashed_at_turn"] is None
+        ):
             print(
                 "\nWARNING: no seeded hypotheses — is the flag ON and a runbook matched?"
             )
 
-        ok = runner(c, case_id, args.dump)
+        chk, measurements = runner(c, case_id, meta, args.dump)
+
+    ok = chk.report() if chk else True
+    print(
+        f"\n# metadata: commit={meta['commit']} provider={meta['provider']} "
+        f"model={meta['model']} flag_env={meta['flag_env']} "
+        f"seeding_observed={meta['seeding_observed']} "
+        f"crashed_at_turn={meta['crashed_at_turn']} case_id={meta['case_id']}"
+    )
+    _write_json(args.json, meta, chk, measurements)
     sys.exit(0 if ok else 1)
 
 

@@ -23,9 +23,15 @@ rules). A run passes iff every assertion passes (exit 0).
 | Mode | Gate item(s) | Kind |
 |---|---|---|
 | `smoke` | seeding fires; cap `<=3`; all CANDIDATE/ACTIVE; prior `<=0.5`; no VALIDATED; no dup | deterministic (provider-independent) |
-| `mislead` | no-collapse; no-crowd-out; `<=1` ACTIVE/root; **3b** prior-not-gate | full guarantee gate |
+| `mislead` | no-collapse; `<=1` ACTIVE/root; **3b-neg** (no seed VALIDATED, soundness) — plus **3b-pos** (a non-seeded hyp beats the prior) and differential-hygiene as *measurements* | full guarantee gate |
 | `exclusion` | deductive-exclusion never fabricates a VALIDATED seeded cause (H1 probe) | soundness gate |
 | `postturn1` | one-shot seeding boundary | measurement (not a gate) |
+
+The old `mislead` **3b** check bundled a soundness half (no seed VALIDATED) with
+an engagement half (a non-seeded hypothesis outranks the prior). They are split:
+**3b-neg** is the soundness *gate*; **3b-pos** is an engagement *measurement* —
+whether the model formed a competitor at all is prompt-dependent, so 3b-pos is
+NOT-EXERCISED (not a breach) on a run where the engine never engaged.
 
 The `exclusion` mode is the **exclusion-under-seeding** probe: it refutes all-but-one
 seeded sibling and pressures the engine to "conclude the survivor by elimination,"
@@ -49,11 +55,20 @@ CHROMADB_KB_PERSIST_DIR=./data/chroma-kb \
 CHROMADB_EVIDENCE_PERSIST_DIR=./data/chroma-evidence \
   python -m uvicorn faultmaven.main:app --host 127.0.0.1 --port 8091
 
-# 2. Drive each scenario (each creates its own case; --dump is optional).
+# 2. Drive each scenario (each creates its own case; --dump/--json are optional).
 python tests/eval/kb_cause_seeder/run_seed_eval.py http://127.0.0.1:8091 smoke
 python tests/eval/kb_cause_seeder/run_seed_eval.py http://127.0.0.1:8091 mislead
 python tests/eval/kb_cause_seeder/run_seed_eval.py http://127.0.0.1:8091 exclusion
 python tests/eval/kb_cause_seeder/run_seed_eval.py http://127.0.0.1:8091 postturn1
+
+# 3. Average a batch. Because an LLM-driven assertion is only meaningful on the
+#    runs that exercised it (see "Instrumentation" below), one run is noisy —
+#    write each run's machine-readable result with --json and aggregate:
+for i in $(seq 1 8); do
+  python tests/eval/kb_cause_seeder/run_seed_eval.py http://127.0.0.1:8091 mislead \
+    --json results/mislead-$i.json
+done
+python tests/eval/kb_cause_seeder/aggregate_runs.py results/mislead-*.json
 ```
 
 The engine constants the assertions key on (`KB_SEED_PRIOR=0.3`,
@@ -61,6 +76,42 @@ The engine constants the assertions key on (`KB_SEED_PRIOR=0.3`,
 are mirrored at the top of `run_seed_eval.py` with source pointers; they are
 stable and documented. `ARGOCD_RUNBOOK_ID` (`kb_c350de1303f6`) is content-derived,
 so stable across pack rebuilds unless the runbook body changes.
+
+## Instrumentation
+
+An LLM-driven run only *exercises* an assertion when the model reaches the state
+the assertion is about. Reporting that faithfully is what stopped a single lucky
+run from reading as a clean pass (the ≤1-ACTIVE property measured 7/8, not 8/8,
+once runs were averaged — see below).
+
+- **Three assertion states, not pass/fail.** Every check declares an
+  *exercised-predicate* alongside its held-condition and records one of **HELD**
+  (reached the state, stayed sound), **BREACHED** (reached it, broke the rule),
+  or **NOT-EXERCISED** (the precondition never arose — vacuously green, *not*
+  evidence of safety). A run exits non-zero only on a BREACHED **gate**;
+  NOT-EXERCISED gates and measurements never fail it. Example exercised-predicates:
+  a `mislead` "no conclusion on a seeded cause" gate is NOT-EXERCISED when the
+  engine drew no conclusion; the `exclusion` fabrication gates are NOT-EXERCISED
+  unless a seeded root actually reached VALIDATED / DEDUCTIVE.
+- **`--json PATH` + `aggregate_runs.py`.** `--json` writes the run's metadata,
+  every assertion's state, and the measurements. `aggregate_runs.py file...`
+  reports **held-rate over *exercised* runs** (`HELD / (HELD + BREACHED)`,
+  excluding NOT-EXERCISED) per assertion, grouped by mode — the honest batch
+  picture the flag-on decision keys on.
+- **Crash-tolerant driver.** A turn that 500s mid-scenario (the very
+  no-collapse-under-pressure case this eval exists to catch) is recorded
+  (`crashed_at_turn`) rather than aborting the run; the driver still dumps and
+  asserts the final graph, so a collapse that *also* crashes the turn is caught
+  instead of masked. If even the debug read fails, that is a hard `final graph
+  readable` breach, not a masked pass.
+- **Self-describing summaries.** Every run stamps commit, the server-resolved
+  provider/model (from `/debug/llm-providers`), the driver's `flag_env`, and the
+  behavioral `seeding_observed` into both the printed summary and the JSON — so a
+  recorded run says exactly which code + provider + flag produced it.
+- **Differential-hygiene measurement (`mislead`).** Reports the ACTIVE/refuted
+  trajectory across turns and flags proliferation-without-refutation (the run6
+  blind spot: 3→7→8 ACTIVE, 0 refuted — per-root dedup passed while the
+  differential never pruned). Measurement, not a gate.
 
 ## The per-provider bar — hardest provider (BEST_EFFORT)
 
@@ -86,15 +137,16 @@ provider) — see
 
 - **Gate items 1 and 4 (structural) and the `exclusion` probe: clean pass, every
   run.** `smoke` is deterministic; `mislead`/`exclusion` never let a seeded cause
-  reach VALIDATED, always conclude on the true off-seed cause, always satisfy 3b.
-  `postturn1` confirms the one-shot boundary.
+  reach VALIDATED, always conclude on the true off-seed cause, always satisfy
+  3b-neg. `postturn1` confirms the one-shot boundary.
 - **Gate item 3 (≤1 ACTIVE per seeded cause) is a pass-RATE, not a clean pass.**
-  Run strict + averaged (this is a *quality*, prompt-strength-dependent property —
-  see the design doc's "Prompt alignment"), it measured **7/8** on a 2026-07-16
-  batch: one run hit the documented below-INV-36-bar **paraphrase-duplication**
-  (the LLM re-emitted a reworded copy of a seeded cause → 2 ACTIVE hypotheses on
-  one root). Soundness held in that run too. **An earlier single-run "clean pass"
-  was not robust — averaging is exactly why this harness is now committed.**
+  Run strict + averaged (via `aggregate_runs.py`; this is a *quality*,
+  prompt-strength-dependent property — see the design doc's "Prompt alignment"),
+  it measured **7/8** on a 2026-07-16 batch: one run hit the documented
+  below-INV-36-bar **paraphrase-duplication** (the LLM re-emitted a reworded copy
+  of a seeded cause → 2 ACTIVE hypotheses on one root). Soundness held in that run
+  too. **An earlier single-run "clean pass" was not robust — averaging is exactly
+  why this harness is now committed.**
 
 **Flag-on decision (open):** whether that ≤1-ACTIVE rate clears enabling-gate
 item 3 is a deliberate, product-level call, not something this eval declares met.
