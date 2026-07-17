@@ -425,12 +425,13 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   A second runbook sharing a root but diverging mid-chain dedups **without leaving
   orphan nodes** (skip-before-ingest) — asserted by the orphan-free invariant
   (every non-problem node lies on some hypothesis path).
-- **Shape guard (unit):** an `and_group` AND-set, a second-root chain, a branching
-  fork, a convergence/join (including a join onto `D` via the `"D"`-vs-problem-ref
-  alias), a dangling edge ref, and a cycle/fragment/non-`D`-terminating chain each
-  reject as `unsupported_shape` (seed nothing, raise the "contributed nothing"
-  alarm) — never silently flattened/linearized; a well-formed linear chain that
-  terminates at `D` via the problem ref still seeds.
+- **Shape guard (unit):** an `and_group` AND-set, a missing/empty node ref, a
+  second-root chain, a branching fork, a convergence/join (including a join onto
+  `D` via the `"D"`-vs-problem-ref alias), a dangling edge ref, and a
+  cycle/fragment/non-`D`-terminating chain each reject as `unsupported_shape`
+  (seed nothing, raise the "contributed nothing" alarm) — never silently
+  flattened/linearized; a well-formed linear chain that terminates at `D` via the
+  problem ref still seeds.
 - **Freshness:** a causes-only pack change re-ingests.
 - **Flag off:** the seeder is a no-op; the flat KB-resolution prompt path is
   unchanged.
