@@ -307,6 +307,11 @@ def _reject_nonlinear_shape(
     one next rung, terminating at D). These well-formed-but-unmodeled shapes would
     otherwise be *silently* mis-seeded, so each is rejected:
 
+    - a **missing/empty node ref** — a non-problem rung with no ``ref`` (``None``
+      or ``""``). It cannot be wired linearly and poisons the resolve checks:
+      ``ref_to_index`` keys ``None``/``""`` as a valid node, so a null-ref edge
+      would "resolve" and pass the walk, then be dropped by ``produces_by_ref``
+      (which skips null-ref edges) — a disconnected/self-referential seed;
     - a **second root** mid-chain (the head-is-root check upstream passes, but a
       later root makes it two chains, not one);
     - a **branching fork** — a rung with more than one outgoing edge, which
@@ -331,6 +336,18 @@ def _reject_nonlinear_shape(
     likelier to branch than the curated corpus, so a shape gap cannot go live the
     day the flywheel closes.
     """
+    # Every non-problem rung must carry a usable string ref. A missing/None or
+    # empty ref cannot be wired linearly, and it silently poisons the resolve
+    # checks below: ``ref_to_index`` keys ``None``/``""`` as a valid node, so an
+    # edge with a null cause_ref/effect_ref would "resolve", pass the walk, then
+    # be dropped by ``produces_by_ref`` (which skips null-ref edges) — minting a
+    # disconnected or self-referential seed. Reject rather than mis-seed. (The
+    # curated pack always refs; LLM-authored produce-path chains may not.)
+    for n in non_problem:
+        ref = n.get("ref")
+        if not isinstance(ref, str) or not ref:
+            return "chain node has a missing or empty ref"
+
     # Exactly one root: a second root makes this two chains, not a linear one.
     if sum(1 for n in non_problem if n.get("node_type") == NodeType.ROOT.value) > 1:
         return "multiple roots (not a single linear chain)"

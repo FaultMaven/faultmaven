@@ -504,6 +504,35 @@ def test_dangling_edge_ref_is_rejected_not_seeded():
     assert report.runbooks_contributing_nothing() == ["rb1"]
 
 
+@pytest.mark.parametrize("bad_ref", [None, ""])
+def test_null_or_empty_node_ref_is_rejected_not_seeded(bad_ref):
+    # A non-problem node with a missing/None or empty ref is a live produce-path
+    # malformation (curated packs always ref; LLM-authored conversions may not).
+    # It silently poisons resolution: ref_to_index keys None/"" as a valid node,
+    # so the edge resolve-checks and reachability walk pass, but produces_by_ref
+    # then drops the null-keyed edge — minting a disconnected/self-referential
+    # seed. The head-is-root check passes (node_type is root), so the shape guard
+    # must reject it explicitly rather than mis-seed.
+    case = _case()
+    bad = _cause("A")
+    bad["chain_nodes"] = [
+        {"ref": bad_ref, "node_type": "root", "statement": "bad-ref root"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "effect"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    bad["chain_edges"] = [
+        {"cause_ref": bad_ref, "effect_ref": "s1"},
+        {"cause_ref": "s1", "effect_ref": "D"},
+    ]
+    report = seed_candidate_causes(case, [_runbook("rb1", [bad])], current_turn=1)
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    # Only the engine-seeded PROBLEM D may exist; no root/intermediate was minted.
+    assert not any(n.node_type != NodeType.PROBLEM for n in case.causal_nodes.values())
+    assert report.skipped[0].skip_class == SkipClass.UNSUPPORTED_SHAPE
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
 def test_convergence_onto_d_via_ref_alias_is_rejected():
     # A join whose two producers both terminate at the case D node — one via the
     # literal "D", one via the problem node's own ref — is still a convergence.
