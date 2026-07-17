@@ -872,7 +872,12 @@ _INTENTIONAL = "intentional"
 _QUALITY_DROP = "quality_drop"
 _UNSUPPORTED = "unsupported_shape"
 
-_PROBLEM_NODE = {"ref": "D", "node_type": "problem", "statement": "X is failing"}
+
+def _problem_node():
+    # A fresh dict per cause (not a shared module constant): the corpus is meant
+    # to be imported and reused by the Phase-5 produce-path eval, so no two
+    # fixtures may alias the same node dict.
+    return {"ref": "D", "node_type": "problem", "statement": "X is failing"}
 
 
 def _cause(letter, chain_nodes, chain_edges, *, is_fallback=False):
@@ -906,7 +911,7 @@ DEGENERATE_CAUSES = [
             "C",
             [
                 {"ref": "s1", "node_type": "intermediate", "statement": "no root here"},
-                _PROBLEM_NODE,
+                _problem_node(),
             ],
             [{"cause_ref": "s1", "effect_ref": "D"}],
         ),
@@ -919,7 +924,7 @@ DEGENERATE_CAUSES = [
             [
                 {"ref": "root", "node_type": "root", "statement": "  "},
                 {"ref": "s1", "node_type": "intermediate", "statement": "effect D"},
-                _PROBLEM_NODE,
+                _problem_node(),
             ],
             [
                 {"cause_ref": "root", "effect_ref": "s1"},
@@ -939,7 +944,7 @@ DEGENERATE_CAUSES = [
                     "statement": "bad type head",
                 },
                 {"ref": "s1", "node_type": "intermediate", "statement": "effect E"},
-                _PROBLEM_NODE,
+                _problem_node(),
             ],
             [
                 {"cause_ref": "root", "effect_ref": "s1"},
@@ -960,7 +965,7 @@ DEGENERATE_CAUSES = [
                     "node_type": "intermediate",
                     "statement": "joint effect F",
                 },
-                _PROBLEM_NODE,
+                _problem_node(),
             ],
             [
                 {"cause_ref": "root", "effect_ref": "s1", "and_group": "g1"},
@@ -982,7 +987,7 @@ DEGENERATE_CAUSES = [
                     "node_type": "intermediate",
                     "statement": "shared effect G",
                 },
-                _PROBLEM_NODE,
+                _problem_node(),
             ],
             [
                 {"cause_ref": "root", "effect_ref": "s1"},
@@ -1000,7 +1005,7 @@ DEGENERATE_CAUSES = [
                 {"ref": "root", "node_type": "root", "statement": "forking root H"},
                 {"ref": "s1", "node_type": "intermediate", "statement": "branch H one"},
                 {"ref": "s2", "node_type": "intermediate", "statement": "branch H two"},
-                _PROBLEM_NODE,
+                _problem_node(),
             ],
             [
                 {"cause_ref": "root", "effect_ref": "s1"},
@@ -1026,7 +1031,7 @@ DEGENERATE_CAUSES = [
                     "node_type": "intermediate",
                     "statement": "merge point I",
                 },
-                _PROBLEM_NODE,
+                _problem_node(),
             ],
             [
                 {"cause_ref": "root", "effect_ref": "s1"},
@@ -1047,7 +1052,7 @@ DEGENERATE_CAUSES = [
                     "node_type": "intermediate",
                     "statement": "orphaned effect J",
                 },
-                _PROBLEM_NODE,
+                _problem_node(),
             ],
             [
                 {"cause_ref": "root", "effect_ref": "s1"},
@@ -1064,7 +1069,7 @@ CONTROL_CAUSE = _cause(
     [
         {"ref": "root", "node_type": "root", "statement": "control root cause"},
         {"ref": "s1", "node_type": "intermediate", "statement": "control effect"},
-        _PROBLEM_NODE,
+        _problem_node(),
     ],
     [
         {"cause_ref": "root", "effect_ref": "s1"},

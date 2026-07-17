@@ -383,7 +383,8 @@ def _service_with_repo(
 
 
 async def test_loader_none_when_item_id_falsy(monkeypatch):
-    svc = _service_with_repo(monkeypatch, item=SimpleNamespace(metadata={"causes": []}))
+    # Empty id short-circuits before the repo is ever consulted.
+    svc = _service_with_repo(monkeypatch)
     assert await svc.get_runbook_causes("") is None
 
 
