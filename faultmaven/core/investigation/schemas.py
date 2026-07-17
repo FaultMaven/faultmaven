@@ -1332,13 +1332,17 @@ class InquiryResponse(BaseInteractionResponse):
         user_confirmed_investigation: bool = Field(
             default=False,
             description=(
-                "Set to True when the user confirms the problem statement. "
-                "Explicit: 'Yes', 'Correct', 'Let's investigate', 'That's right'. "
-                "Implicit (after problem statement was presented): user asks diagnostic "
-                "questions or expresses urgency about the problem. "
-                "Set False when: same turn you first present the problem statement, "
-                "user explicitly disagrees, user submits new data with a question "
-                "(answer the question first), or message is unrelated."
+                "Set to True ONLY when the user EXPLICITLY directs you to proceed "
+                "with the proposed problem statement. Confirming the statement sets "
+                "the investigation's direction, so it requires an explicit go-ahead — "
+                "an affirmative directive such as 'Yes', 'Correct', 'That's right', "
+                "'Let's investigate', 'go ahead', or 'look into this'. "
+                "Set False when: the same turn you first present the problem statement "
+                "(the user must see it before confirming); the user disagrees or "
+                "corrects the statement; the user asks a diagnostic or follow-up "
+                "question or provides more data WITHOUT directing you to proceed "
+                "(answer it and stay in INQUIRY — engagement is not confirmation); "
+                "or the message is unrelated."
             ),
         )
         proposed_transition: Optional[ProposedTransition] = Field(

@@ -1134,3 +1134,43 @@ class TestEngineOwnedGate1OnFirstDetect:
             f"Gate-1-pending first-detect turn did not produce an "
             f"engine-owned confirmation suggestion. follow_ups={follow_ups}"
         )
+
+
+class TestInquiryConfirmationSchemaContract:
+    """Problem-statement confirmation (INQUIRY→INVESTIGATING) is direction-setting,
+    so per the confirmation model it requires EXPLICIT confirmation. Pin that the
+    ``user_confirmed_investigation`` schema field instructs explicit-only and does
+    NOT permit implicit confirmation (diagnostic questions / engagement / urgency).
+
+    The implicit clause was a stranded remnant of a reverted design (05a4347a):
+    the engine (no keyword fallback, auto-confirm disabled even for urgency), the
+    INQUIRY prompt prose, and the transition tests all require explicit — the
+    schema field was the lone outlier. This test keeps the field aligned so the
+    contradiction cannot silently return.
+    """
+
+    def _field_description(self) -> str:
+        from faultmaven.core.investigation.schemas import InquiryResponse
+
+        field = InquiryResponse.InquiryStateUpdate.model_fields[
+            "user_confirmed_investigation"
+        ]
+        return field.description or ""
+
+    def test_requires_explicit_directive(self):
+        desc = self._field_description()
+        assert "EXPLICIT" in desc, (
+            "user_confirmed_investigation must require an explicit directive — "
+            "confirming the problem statement sets the investigation's direction."
+        )
+
+    def test_does_not_permit_implicit_engagement_as_confirmation(self):
+        desc = self._field_description().lower()
+        # The reverted implicit clause must not return: diagnostic questions or
+        # urgency framed as a confirmation trigger.
+        assert "implicit" not in desc, (
+            "The 'Implicit (…): user asks diagnostic questions or expresses "
+            "urgency' clause contradicts the engine/prose/tests and must not "
+            "reappear — engagement is not confirmation of a direction-setting step."
+        )
+        assert "engagement is not confirmation" in desc
