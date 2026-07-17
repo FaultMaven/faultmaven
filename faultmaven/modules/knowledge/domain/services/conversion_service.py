@@ -511,6 +511,37 @@ class ConversionService:
                 error_code=ConversionErrorCode.LLM_UNAVAILABLE,
             )
 
+        # Trust-boundary guard (defense-in-depth for #698). This funnel is the
+        # single point every case→runbook caller passes through; it must not
+        # trust callers to have gated. The service holds the extracted
+        # ``CaseConversionRequest`` DTO, not the Case, so it cannot re-evaluate
+        # the cause-assurance grade here (that stays at the case-holding sites
+        # via ``runbook_conversion_ready``); but it CAN enforce the record half:
+        # a request with no root_cause text would otherwise generate a runbook
+        # whose Resolution silently degrades to a "See solutions below" stub.
+        # Refuse instead — a runbook with no root cause is not reusable knowledge.
+        if not (request.root_cause and request.root_cause.strip()):
+            raise ConversionRejectedError(
+                "This case has no recorded root cause, so it can't be converted "
+                "into a runbook.",
+                error_code=ConversionErrorCode.MISSING_ROOT_CAUSE,
+            )
+
+        # Idempotence guard: never generate a second runbook from a case that
+        # already produced one. A prior conversion with at least one live draft
+        # (DRAFT or VERIFIED) blocks regeneration; a case whose only drafts were
+        # discarded — or whose prior attempt failed with no drafts — is free to
+        # regenerate. The in-flight lock in ``convert_from_case`` covers the
+        # concurrent double-fire race; this covers the sequential repeat (the
+        # first run's persisted job is visible here).
+        existing = await self.get_conversion_by_case(request.case_id, user_id)
+        if existing and existing.has_live_draft():
+            raise ConversionRejectedError(
+                "A runbook draft already exists for this case. View or update it "
+                "in the Dashboard under Knowledge > Drafts.",
+                error_code=ConversionErrorCode.CASE_RUNBOOK_EXISTS,
+            )
+
         conversion_id = generate_conversion_id()
         created_at = datetime.now(timezone.utc)
         warnings: List[str] = []
@@ -524,7 +555,8 @@ class ConversionService:
             symptom_class=request.symptom_class or ["unknown"],
             severity=request.severity,
             symptoms_summary=request.description,
-            resolution_summary=request.root_cause or "See solutions below",
+            # Guaranteed non-empty by the trust-boundary guard above.
+            resolution_summary=request.root_cause,
         )
 
         # Assemble source material text from case context.
@@ -1081,6 +1113,10 @@ class ConversionService:
                     ),
                 )
                 .order_by(ConversionJobModel.created_at.desc())
+                # A case can accrue more than one job (e.g. regenerated after the
+                # prior draft was discarded), so take the latest — a bare
+                # scalar_one_or_none() would raise MultipleResultsFound.
+                .limit(1)
             )
             job = result.scalar_one_or_none()
             if not job:

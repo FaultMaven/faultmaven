@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import pytest
 
-from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
 from faultmaven.core.investigation.milestone_engine import (
     GENERATE_RUNBOOK_PAYLOAD,
     REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
@@ -88,11 +87,13 @@ class TestClosedRegenLabel:
 class TestRunbookCap:
     @pytest.fixture
     def confirmed(self, monkeypatch):
-        # The runbook affordance is gated on grade == CONFIRMED (#695 Defect A);
-        # these cap/label tests exercise the cap, so pin the grade to CONFIRMED.
+        # The runbook affordance is gated on the canonical runbook_conversion_ready
+        # predicate (#695 Defect A / #698 — the offer and the action-time gate share
+        # one predicate). These cap/label tests exercise the cap, so pin the
+        # predicate True (a ready, convertible case).
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
-            lambda case: CauseAssuranceGrade.CONFIRMED,
+            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            lambda case: True,
         )
 
     def test_runbook_offered_when_not_yet_generated(self, confirmed):
@@ -111,13 +112,15 @@ class TestRunbookCap:
         # Regen affordance still present (independent cap).
         assert "Regenerate resolution summary" in labels
 
-    def test_runbook_suppressed_when_not_confirmed(self, monkeypatch):
-        # #695 Defect A: a MECHANISTIC/NO_ROOT cause would make the runbook
-        # affordance refuse, so it is not offered (the regen affordance, which
-        # is grade-independent, still is).
+    def test_runbook_suppressed_when_not_ready(self, monkeypatch):
+        # #695 Defect A / #698: a case the readiness gate would refuse (not
+        # runbook_conversion_ready — e.g. a MECHANISTIC/NO_ROOT cause, or a
+        # CONFIRMED-but-content-thin case) is not offered, so the affordance is
+        # never offered-then-denied (the regen affordance, which is
+        # readiness-independent, still is).
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
-            lambda case: CauseAssuranceGrade.MECHANISTIC,
+            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            lambda case: False,
         )
         suggestions = _resolved_suggestions(object(), remaining=2)
         labels = [s["label"] for s in suggestions]

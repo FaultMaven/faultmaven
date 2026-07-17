@@ -59,6 +59,7 @@ from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
     conclusion_overclaims,
     grade_cause_assurance,
+    runbook_conversion_ready,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
@@ -2333,16 +2334,21 @@ GENERATE_RUNBOOK_PAYLOAD = "Generate a runbook from this resolved case"
 
 
 def _runbook_suggestion(case) -> dict | None:
-    """The runbook-generation DECIDE suggestion (RESOLVED-only), gated on cause
-    assurance so no button is offered whose only outcome is a refusal (#695
-    Defect A item 3). The auto-generate path (convert-from-case) harvests a cause
-    ONLY when it is CONFIRMED — counterfactually borne out; for MECHANISTIC /
-    NO_ROOT the readiness gate would refuse, so the affordance is suppressed
-    rather than offered-then-denied. Returns None when not offerable. (The manual
-    POST /knowledge/runbooks/create path still exists for those cases; adding a
-    redirect affordance is a separate suggestion-contract change, out of scope.)
+    """The runbook-generation DECIDE suggestion (RESOLVED-only), gated on the
+    canonical ``runbook_conversion_ready`` predicate so no button is offered
+    whose only outcome is a refusal (#695 Defect A item 3). The affordance and
+    the action-time readiness gate share one predicate, so the offer boundary and
+    the enforcement boundary cannot drift (#698): a case is offered iff
+    ``assess_runbook_readiness`` would not return NOT_SUITABLE. That means both
+    the soundness half (CONFIRMED cause — counterfactually borne out) and the
+    substance half (a problem definition and an actionable solution) must hold;
+    a CONFIRMED-but-content-thin case is suppressed here rather than
+    offered-then-denied at action time. Returns None when not offerable. (The
+    manual POST /knowledge/runbooks/create path still exists for those cases;
+    adding a redirect affordance is a separate suggestion-contract change, out of
+    scope.)
     """
-    if grade_cause_assurance(case) != CauseAssuranceGrade.CONFIRMED:
+    if not runbook_conversion_ready(case):
         return None
     return {
         "label": "Generate runbook from this case",
@@ -2930,6 +2936,33 @@ class MilestoneEngine:
                 "agent_response": (
                     "Runbook generation is not available at the moment. "
                     "You can create one from the Dashboard instead."
+                ),
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": metadata,
+            }
+
+        # Idempotence — mirror the authoritative guard in the service funnel
+        # (_convert_from_case_impl) so the chat UX returns a clean "already
+        # exists" message instead of firing a background task that then fails
+        # with CASE_RUNBOOK_EXISTS. A case whose only prior drafts were discarded
+        # is free to regenerate.
+        try:
+            existing = await conversion_service.get_conversion_by_case(
+                case.case_id, case.user_id
+            )
+        except Exception as e:
+            existing = None
+            logger.warning(
+                f"Existing-conversion check failed for case {case.case_id}: {e}. "
+                "Proceeding to generate.",
+                extra={"case_id": case.case_id},
+            )
+        if existing and existing.has_live_draft():
+            return {
+                "agent_response": (
+                    "A runbook draft already exists for this case. You can view or "
+                    "update it in the Dashboard under **Knowledge > Drafts**."
                 ),
                 "suggested_follow_ups": [],
                 "case_updated": case,

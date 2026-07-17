@@ -1475,8 +1475,8 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         )
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
-            lambda case: CauseAssuranceGrade.CONFIRMED,
+            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            lambda case: True,
         )
         suggestions = _resolved_ack_suggestions(object())
         labels = [s["label"] for s in suggestions]
@@ -1503,8 +1503,8 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         from faultmaven.core.investigation.milestone_engine import _resolved_suggestions
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
-            lambda case: CauseAssuranceGrade.CONFIRMED,
+            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            lambda case: True,
         )
         suggestions = _resolved_suggestions(object(), remaining=5)
         labels = [s["label"] for s in suggestions]
@@ -1562,8 +1562,8 @@ class TestINV13_AckTurnVsQATurnSuggestions:
         )
 
         monkeypatch.setattr(
-            "faultmaven.core.investigation.milestone_engine.grade_cause_assurance",
-            lambda case: CauseAssuranceGrade.CONFIRMED,
+            "faultmaven.core.investigation.milestone_engine.runbook_conversion_ready",
+            lambda case: True,
         )
         ack = _resolved_ack_suggestions(object())
         qa = _resolved_suggestions(object(), remaining=5)
@@ -1818,14 +1818,14 @@ class TestINV16_LLMSoleAuthorityForMilestoneAdvancement:
 #
 # Source: §4.5.1 line 1971 — "Eligibility: RESOLVED cases only.
 #   CLOSED cases are not eligible regardless of closure_reason."
-# Statement: Runbook generation paths reject non-RESOLVED cases at
-#   both the chat-side dispatcher AND the API endpoint.
-# Enforcement: **Code-guarded at two layers**:
-#   1. Engine: _process_terminal_turn computes
+# Statement: Runbook generation rejects non-RESOLVED cases at the
+#   chat-side dispatcher — the only case→runbook trigger.
+# Enforcement: **Code-guarded at the engine layer**:
+#   Engine: _process_terminal_turn computes
 #      is_runbook_eligible = case.state == CaseState.RESOLVED and
 #      refuses to dispatch the runbook-creation handler otherwise.
-#   2. API: POST /knowledge/convert-from-case returns HTTP 400 when
-#      case_status != "resolved".
+#   (The former API endpoint POST /knowledge/convert-from-case was
+#   removed in Phase 5.1 — case→runbook is chat-initiated only.)
 #
 # No drift surfaced.
 
@@ -1899,45 +1899,6 @@ class TestINV18_RunbookEligibilityResolvedOnly:
 
         engine._handle_runbook_creation.assert_called_once()
         engine._process_terminal_qa.assert_not_called()
-
-    def test_inv18_api_runbook_endpoint_rejects_non_resolved(self):
-        """API layer: ``POST /knowledge/convert-from-case`` must reject
-        cases whose state is not RESOLVED with HTTP 400.
-
-        Static check on the route source. Confirms the gate exists at
-        the API surface independently of the engine-layer dispatcher.
-        """
-        from faultmaven.modules.knowledge.api import conversion_routes
-
-        # Find the route function. It's the only @router.post for
-        # /convert-from-case in the module.
-        source = inspect.getsource(conversion_routes)
-
-        # Locate the convert-from-case endpoint and check it contains
-        # the RESOLVED gate.
-        endpoint_idx = source.find('@router.post("/convert-from-case"')
-        assert endpoint_idx >= 0, (
-            "INV-18 violation: /convert-from-case endpoint not found. "
-            "If the endpoint moved, this test must move with it."
-        )
-
-        # Window the function body — generous to survive minor edits.
-        endpoint_region = source[endpoint_idx : endpoint_idx + 4000]
-
-        # The state gate
-        assert (
-            '"resolved"' in endpoint_region.lower() or "resolved" in endpoint_region
-        ), (
-            "INV-18 violation: /convert-from-case no longer references "
-            "RESOLVED in its eligibility check."
-        )
-        # And it must raise on non-RESOLVED (the 400 state code)
-        assert (
-            "400" in endpoint_region and "Case must be in RESOLVED" in endpoint_region
-        ), (
-            "INV-18 violation: /convert-from-case no longer rejects "
-            "non-RESOLVED cases with HTTP 400."
-        )
 
 
 # ============================================================================
