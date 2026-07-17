@@ -113,7 +113,7 @@ Left unbounded, seeding would flood the graph and trip anchoring detection (≥4
 active hypotheses in one category reads as fixation). The bounds:
 
 - **Cap runbooks:** dedup hits by `parent_document_id`, take the top-N distinct
-  runbooks by rerank score (`KB_SEEDER_MAX_RUNBOOKS`, default 2). Retrieval has
+  runbooks by rerank score (`MAX_SEEDED_RUNBOOKS`, default 2). Retrieval has
   already done the semantic alignment at runbook granularity.
 - **Skip fallback causes:** a `is_fallback_cause: true` Cause (`### Cause Z:
   Unidentified`) has an empty chain — nothing to instantiate.
@@ -127,7 +127,7 @@ active hypotheses in one category reads as fixation). The bounds:
   eval burden. If per-case cause relevance ever needs improving, the home for it
   is the retrieval ranker, not the seeder.
 - **Cap total seeded causes:** across all runbooks, seed at most
-  `KB_SEEDER_MAX_CAUSES`. This is **derived from** the anchoring condition-1
+  `MAX_SEEDED_CAUSES`. This is **derived from** the anchoring condition-1
   threshold (`< N_same_category`), not a hardcoded 3, so a future change to the
   anchoring threshold cannot silently let the seeder self-anchor — the
   relationship is asserted in a test.
@@ -182,7 +182,7 @@ and logging). Neither grants any evidentiary weight.
 
 **Category.** A Cause record carries no `HypothesisCategory`; there is no reliable
 signal to derive one, so seeded hypotheses default to `OTHER`. The
-`KB_SEEDER_MAX_CAUSES = 3` cap keeps this from tripping anchoring condition 1 on
+`MAX_SEEDED_CAUSES = 3` cap keeps this from tripping anchoring condition 1 on
 its own.
 
 ### Observable skip — no silent drop
@@ -295,7 +295,7 @@ node+hypothesis state derivation in `causal_graph` + `hypothesis_manager`;
 guard can never be silently narrowed below where the safety logic actually lives.
 A future edit cannot quietly grant a seed evidentiary weight.
 
-**Honest limit — seed↔LLM anchoring interaction.** The `KB_SEEDER_MAX_CAUSES`
+**Honest limit — seed↔LLM anchoring interaction.** The `MAX_SEEDED_CAUSES`
 cap stops the seeder *alone* from tripping anchoring condition 1. But seeded
 `OTHER`-category causes and any `OTHER`-category hypothesis the LLM generates can
 still combine to ≥ the threshold and raise an anchoring flag. This is
@@ -399,7 +399,7 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   likelihood ≤ 0.5, no VALIDATED.
 - **Provenance-blindness:** the decay/anchoring/demotion/state-derivation paths
   never reference the seeded-provenance keys (invariant grep/AST test).
-- **Cap ↔ anchoring coupling:** `KB_SEEDER_MAX_CAUSES` is strictly below the
+- **Cap ↔ anchoring coupling:** `MAX_SEEDED_CAUSES` is strictly below the
   anchoring condition-1 threshold (asserted against the real constant, so the two
   cannot silently drift apart).
 - **Misleading runbook:** a wrong seeded prior with no supporting evidence stays a

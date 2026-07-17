@@ -1,8 +1,9 @@
 # KB cause-seeder — flag-ON enabling eval
 
 The re-runnable artifact behind the KB cause seeder's **enabling gate**. The
-seeder ships dark (`FAULTMAVEN_KB_CAUSE_SEEDER`, default off); turning it on in a
-deployment requires this flag-ON sim/eval to pass. Design + gate definition:
+seeder is now **on by default** (`FAULTMAVEN_KB_CAUSE_SEEDER`, kill switch — set
+`false` to disable); the flag-on decision was made after this flag-ON sim/eval
+cleared its soundness gate on the hardest provider. Design + gate definition:
 [`docs/architecture/knowledge-and-ai/kb-cause-seeder.md`](../../../docs/architecture/knowledge-and-ai/kb-cause-seeder.md).
 
 It is **not** a CI test — it needs a live server, a real provider key, and the
