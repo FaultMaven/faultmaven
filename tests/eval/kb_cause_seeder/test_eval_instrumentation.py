@@ -157,3 +157,42 @@ def test_tally_mode_defaults_missing_kind_to_gate():
         [{"assertions": [{"name": "x", "state": run_seed_eval.HELD}]}]
     )
     assert rows[0]["kind"] == "gate"
+
+
+# ---------------------------------------------------------------------------
+# smoke-degenerate — in-process, deterministic (runs in CI without a server)
+# ---------------------------------------------------------------------------
+# Unlike the LLM-driven modes, smoke-degenerate drives the REAL seeder in-process
+# on crafted malformed causes, so it is deterministic and DOES belong in CI: it
+# pins that each degenerate shape is rejected with its exact SkipClass and that a
+# control good cause still seeds. (The corpus doubles as the Phase-5 fixture set.)
+def test_smoke_degenerate_classifies_every_bad_cause_and_seeds_control():
+    meta = {}
+    chk, measurements = run_seed_eval.run_smoke_degenerate(meta)
+
+    # All gates held — deterministic, so nothing may be BREACHED or NOT-EXERCISED.
+    assert chk.ok()
+    states = {i["name"]: i["state"] for i in chk.to_list()}
+    assert all(s == run_seed_eval.HELD for s in states.values()), states
+
+    # Corpus covers all three rejection classes; only the control seeds.
+    assert measurements["degenerate_causes"] == 10
+    assert measurements["skips_by_class"] == {
+        "intentional": 1,
+        "quality_drop": 4,
+        "unsupported_shape": 5,
+    }
+    assert measurements["control_seeded"] == 1
+    assert meta["seeding_observed"] is True
+
+
+def test_degenerate_corpus_expectations_are_well_formed():
+    # Every entry maps to a real SkipClass value and uses a distinct cause_letter
+    # (the seeder keys skips on letter; a collision would hide a miss).
+    from faultmaven.core.investigation.kb_cause_seeder import SkipClass
+
+    valid = {c.value for c in SkipClass}
+    letters = [d["cause"]["cause_letter"] for d in run_seed_eval.DEGENERATE_CAUSES]
+    assert len(letters) == len(set(letters))  # no duplicate letters
+    assert all(d["expected"] in valid for d in run_seed_eval.DEGENERATE_CAUSES)
+    assert run_seed_eval.CONTROL_CAUSE["cause_letter"] not in letters

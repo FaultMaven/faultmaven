@@ -26,6 +26,19 @@ rules). A run passes iff every assertion passes (exit 0).
 | `mislead` | no-collapse; `<=1` ACTIVE/root; **3b-neg** (no seed VALIDATED, soundness) — plus **3b-pos** (a non-seeded hyp beats the prior) and differential-hygiene as *measurements* | full guarantee gate |
 | `exclusion` | deductive-exclusion never fabricates a VALIDATED seeded cause (H1 probe) | soundness gate |
 | `postturn1` | one-shot seeding boundary | measurement (not a gate) |
+| `smoke-degenerate` | every malformed cause rejected with its exact SkipClass; runbook seeds nothing + alarms; control good cause still seeds | deterministic, **in-process (no server/LLM)** |
+
+`smoke-degenerate` is the odd one out: it needs **no server, no provider, no
+flag** — it drives ~10 crafted malformed causes (the `DEGENERATE_CAUSES` corpus,
+one per skip reason: fallback / quality-drop / unsupported-shape) straight through
+the REAL seeder in-process and asserts each is rejected with its exact SkipClass,
+the degenerate runbook trips the "contributed nothing" alarm, and a control good
+cause still seeds. Because it is deterministic it is also pinned in CI
+(`test_eval_instrumentation.py`); the corpus doubles as the fixture set the Phase-5
+produce-path eval imports to assert its converted output never emits a bad shape.
+The unit-level seam tests for the retrieval→seeder boundary (the engine wrapper's
+flag gate / dedup / crash-isolation and the `get_runbook_causes` loader) live in
+`tests/unit/core/investigation/test_kb_cause_seeder_seams.py`.
 
 The old `mislead` **3b** check bundled a soundness half (no seed VALIDATED) with
 an engagement half (a non-seeded hypothesis outranks the prior). They are split:
@@ -60,6 +73,10 @@ python tests/eval/kb_cause_seeder/run_seed_eval.py http://127.0.0.1:8091 smoke
 python tests/eval/kb_cause_seeder/run_seed_eval.py http://127.0.0.1:8091 mislead
 python tests/eval/kb_cause_seeder/run_seed_eval.py http://127.0.0.1:8091 exclusion
 python tests/eval/kb_cause_seeder/run_seed_eval.py http://127.0.0.1:8091 postturn1
+
+# smoke-degenerate needs NO server (the base_url arg is ignored) — it drives the
+# crafted bad-cause corpus through the real seeder in-process:
+python tests/eval/kb_cause_seeder/run_seed_eval.py - smoke-degenerate
 
 # 3. Average a batch. Because an LLM-driven assertion is only meaningful on the
 #    runs that exercised it (see "Instrumentation" below), one run is noisy —
