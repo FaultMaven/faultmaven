@@ -58,11 +58,15 @@ __all__ = [
     "counterfactual_link_decisive",
     "evidence_category_map",
     "grade_cause_assurance",
+    "has_actionable_solution",
+    "has_problem_definition",
     "has_resolution_confirmation",
+    "has_root_cause_record",
     "latest_disconfirmation_turn",
     "problem_anchor_statements",
     "resolution_confirmation_rows",
     "root_counterfactually_confirmed",
+    "runbook_conversion_ready",
 ]
 
 # The marker on an engine-synthesized RootCauseConclusion (§9.3) — distinguishes
@@ -983,3 +987,65 @@ def grade_cause_assurance(case: "Case") -> CauseAssuranceGrade:
     ):
         return CauseAssuranceGrade.CONFIRMED
     return CauseAssuranceGrade.MECHANISTIC
+
+
+def has_root_cause_record(case: "Case") -> bool:
+    """True when the case carries a populated ``RootCauseConclusion`` (an RCC row
+    whose ``root_cause`` text is set) — the Root Cause a runbook copies verbatim."""
+    return bool(
+        case.root_cause_conclusion
+        and getattr(case.root_cause_conclusion, "root_cause", None)
+    )
+
+
+def has_problem_definition(case: "Case") -> bool:
+    """True when the case has a verified symptom statement — the source of a
+    runbook's Problem Definition / Symptom Recognition section."""
+    return bool(
+        case.problem_verification
+        and getattr(case.problem_verification, "symptom_statement", None)
+    )
+
+
+def has_actionable_solution(case: "Case") -> bool:
+    """True when at least one solution carries actionable content — commands,
+    implementation steps, or a long-term fix. Without it a generated runbook has
+    no Resolution to offer and the LLM would have to invent one."""
+    for sol in case.solutions or []:
+        if (
+            getattr(sol, "commands", None)
+            or getattr(sol, "implementation_steps", None)
+            or getattr(sol, "longterm_fix", None)
+        ):
+            return True
+    return False
+
+
+def runbook_conversion_ready(case: "Case") -> bool:
+    """The single canonical predicate for auto-converting a case into a runbook.
+
+    True iff the case clears the runbook-conversion critical bar — the same bar
+    ``assess_runbook_readiness`` treats as the NOT_SUITABLE boundary:
+
+    - a verified problem definition (symptom statement), AND
+    - a **CONFIRMED** root cause with a populated ``RootCauseConclusion`` record
+      (``grade_cause_assurance == CONFIRMED`` — counterfactually borne out,
+      gone⇒gone — AND an RCC row), AND
+    - at least one actionable solution.
+
+    This is the ONE source of truth every runbook-conversion gate defers to (the
+    RESOLVED offer affordance, the content-readiness assessment, and the
+    trust-boundary guard) so they cannot drift apart (#698). It is a **prior, not
+    a gate** on the investigation itself: it only decides whether a resolved case
+    is sound and substantial enough that turning it into reusable knowledge won't
+    seed the KB with a wrong or empty cause (NO INCORRECT CONCLUSION at the
+    knowledge layer). The grade half enforces soundness; the problem-definition
+    and actionable-solution halves enforce that the runbook won't be a shell the
+    LLM has to fabricate content for.
+    """
+    return (
+        has_problem_definition(case)
+        and has_root_cause_record(case)
+        and grade_cause_assurance(case) == CauseAssuranceGrade.CONFIRMED
+        and has_actionable_solution(case)
+    )

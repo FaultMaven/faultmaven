@@ -715,7 +715,6 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Knowledge | `GET/POST /knowledge/documents` | Knowledge base CRUD |
 | Knowledge | `POST /knowledge/search` | Semantic search |
 | Knowledge | `POST /knowledge/convert` | Convert document to runbook drafts |
-| Knowledge | `POST /knowledge/convert-from-case` | Generate runbook from resolved case |
 | Knowledge | `POST /knowledge/runbooks/create` | Create runbook manually from template |
 | Knowledge | `GET /knowledge/drafts` | List all draft runbooks |
 | Knowledge | `POST /knowledge/scan` | Manual draft reconciliation (auto-scan removed; ingestion is now owned by startup bootstrap) |

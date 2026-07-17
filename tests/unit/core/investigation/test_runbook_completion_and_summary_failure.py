@@ -10,8 +10,8 @@ Covered behaviors:
   task runs
 - RG1+RG2: ``_run_runbook_conversion`` writes a system message to the case
   transcript on success and on failure (best-effort, never raises)
-- RG4: ``POST /knowledge/convert-from-case`` uses the canonical
-  ``CaseConversionRequest.from_case`` factory (no inline extraction)
+- RG4: the case→runbook chat path (``_handle_runbook_creation``) uses the
+  canonical ``CaseConversionRequest.from_case`` factory (no inline extraction)
 - RG5: missing ``runbook_kb`` is logged at WARNING when dedup is skipped
 """
 
@@ -624,36 +624,38 @@ class TestDedupSkipObservability:
 
 
 # =============================================================================
-# RG4: convert-from-case API uses the canonical factory
+# RG4: case→runbook conversion uses the canonical factory
 # =============================================================================
 
 
-class TestConvertFromCaseAPIUsesFactory:
-    """RG4: ``POST /knowledge/convert-from-case`` uses
-    ``CaseConversionRequest.from_case``.
+class TestCaseConversionUsesFactory:
+    """RG4: the case→runbook path uses ``CaseConversionRequest.from_case``.
 
     Static guard — the inline ~90-line extraction was removed in favor of
-    the canonical factory. A future regression that reintroduces inline
-    extraction would let drift creep back in between this endpoint and
-    the chat-side ``_handle_runbook_creation`` path.
+    the canonical factory. Case→runbook is now chat-initiated only (the dead
+    ``POST /knowledge/convert-from-case`` endpoint was removed in Phase 5.1;
+    the Dashboard is view-only), so the single live extraction site is
+    ``MilestoneEngine._handle_runbook_creation``. A future regression that
+    reintroduces inline extraction there would resurrect the drift this factory
+    exists to kill.
     """
 
-    def test_api_endpoint_uses_from_case_factory(self):
-        from faultmaven.modules.knowledge.api import conversion_routes
+    def test_chat_path_uses_from_case_factory(self):
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
-        source = inspect.getsource(conversion_routes.convert_from_case)
+        source = inspect.getsource(MilestoneEngine._handle_runbook_creation)
         assert "CaseConversionRequest.from_case(" in source, (
-            "RG4 violation: convert-from-case API no longer uses "
+            "RG4 violation: _handle_runbook_creation no longer uses "
             "CaseConversionRequest.from_case factory — inline extraction "
-            "would diverge from the chat-side path."
+            "would reintroduce case→runbook drift."
         )
 
-    def test_api_endpoint_has_no_inline_extraction_markers(self):
+    def test_chat_path_has_no_inline_extraction_markers(self):
         """Pins that the cleanup stayed clean — old inline-extraction
         markers must not return."""
-        from faultmaven.modules.knowledge.api import conversion_routes
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
-        source = inspect.getsource(conversion_routes.convert_from_case)
+        source = inspect.getsource(MilestoneEngine._handle_runbook_creation)
         forbidden_markers = [
             "Root cause — from RootCauseConclusion",
             "Problem description — from ProblemVerification",
@@ -662,5 +664,5 @@ class TestConvertFromCaseAPIUsesFactory:
         for marker in forbidden_markers:
             assert marker not in source, (
                 f"RG4 violation: inline-extraction marker '{marker}' "
-                f"reappeared. Both call sites must use the factory."
+                f"reappeared in the case→runbook path."
             )

@@ -57,6 +57,10 @@ class ConversionErrorCode(str, Enum):
     ALREADY_A_RUNBOOK = "ALREADY_A_RUNBOOK"
     NO_TECHNICAL_CONTENT = "NO_TECHNICAL_CONTENT"
 
+    # Case-conversion errors (case → runbook produce path)
+    MISSING_ROOT_CAUSE = "MISSING_ROOT_CAUSE"
+    CASE_RUNBOOK_EXISTS = "CASE_RUNBOOK_EXISTS"
+
     # LLM errors
     LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
     LLM_PARSE_ERROR = "LLM_PARSE_ERROR"
@@ -223,6 +227,12 @@ class ConversionResponse(BaseModel):
     drafts: List[ConversionDraft]
     warnings: List[str] = Field(default_factory=list)
     created_at: datetime
+
+    def has_live_draft(self) -> bool:
+        """True if any draft is not discarded — i.e. a runbook already exists (or
+        is pending) for this source. The single definition of "already produced a
+        runbook" shared by the case→runbook idempotence guards."""
+        return any(d.status != DraftStatus.DISCARDED for d in self.drafts)
 
 
 # =============================================================================

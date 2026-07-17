@@ -33,7 +33,10 @@ from faultmaven.core.investigation.cause_assurance import (
     conclusion_overclaims,
     confirm_root_from_resolution_absence,
     grade_cause_assurance,
+    has_actionable_solution,
+    has_problem_definition,
     has_resolution_confirmation,
+    has_root_cause_record,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
@@ -1068,10 +1071,7 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
     coverage = {}
 
     # Problem Definition ← problem_verification.symptom_statement + symptom_indicators
-    has_problem_def = bool(
-        case.problem_verification
-        and getattr(case.problem_verification, "symptom_statement", None)
-    )
+    has_problem_def = has_problem_definition(case)
     coverage["problem_definition"] = has_problem_def
 
     # Diagnostic Steps ← evidence summaries + hypotheses tested
@@ -1094,10 +1094,7 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
     coverage["mitigation"] = has_mitigation
 
     # Root Cause Resolution ← root_cause_conclusion + solution with actionable content
-    has_root_cause_record = bool(
-        case.root_cause_conclusion
-        and getattr(case.root_cause_conclusion, "root_cause", None)
-    )
+    rcc_present = has_root_cause_record(case)
     # Harvest counts a cause only when it is CONFIRMED — counterfactually borne
     # out (the cause was removed and the problem went with it, M2 gone⇒gone).
     # Read the single assurance grade once and gate on CONFIRMED explicitly: this
@@ -1110,26 +1107,16 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
     # proof rests on model-mediated refutations plus an asserted-exhaustive
     # differential) into the corpus.
     cause_grade = grade_cause_assurance(case)
-    has_root_cause = (
-        has_root_cause_record and cause_grade == CauseAssuranceGrade.CONFIRMED
-    )
+    has_root_cause = rcc_present and cause_grade == CauseAssuranceGrade.CONFIRMED
     # For the user-facing ask, distinguish the two held shapes: a graph-identified
     # but unconfirmed cause (MECHANISTIC) gets a "confirm it" ask; a record with
     # no validated root (NO_ROOT) falls through to the plain "identify a root
     # cause" ask below.
     root_cause_unverified = (
-        has_root_cause_record and cause_grade == CauseAssuranceGrade.MECHANISTIC
+        rcc_present and cause_grade == CauseAssuranceGrade.MECHANISTIC
     )
-    has_actionable_solution = False
-    if case.solutions:
-        for sol in case.solutions:
-            has_commands = bool(getattr(sol, "commands", None))
-            has_steps = bool(getattr(sol, "implementation_steps", None))
-            has_longterm = bool(getattr(sol, "longterm_fix", None))
-            if has_commands or has_steps or has_longterm:
-                has_actionable_solution = True
-                break
-    coverage["root_cause_resolution"] = has_root_cause and has_actionable_solution
+    actionable_solution = has_actionable_solution(case)
+    coverage["root_cause_resolution"] = has_root_cause and actionable_solution
 
     # Verification ← solution with verification_method
     has_verification = False
@@ -1192,7 +1179,7 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
                 )
             elif not has_root_cause:
                 missing_desc.append("- identified root cause")
-            if not has_actionable_solution:
+            if not actionable_solution:
                 missing_desc.append(
                     "- actionable fix details (commands, steps, or solution description)"
                 )

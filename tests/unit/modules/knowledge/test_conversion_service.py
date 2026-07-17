@@ -23,8 +23,11 @@ import pytest
 
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
+    CaseConversionRequest,
     ConversionErrorCode,
+    ConversionResponse,
     ConversionStatus,
+    DraftStatus,
     FailureModeAnalysis,
     PreprocessingResult,
     RedactionReport,
@@ -1475,3 +1478,91 @@ class TestConversionPromptIsV4:
         desc = RunbookCreateRequest.model_fields["causes"].description or ""
         assert "Interventions" in desc and "Chain" in desc
         assert "Mechanism" not in desc and "Resolution" not in desc
+
+
+# =============================================================================
+# Case→runbook trust-boundary + idempotence guards (5.1 / #698)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestCaseConversionGuards:
+    """Guards inside ``_convert_from_case_impl`` — the single funnel every
+    case→runbook caller passes through. Defense-in-depth: the service holds the
+    extracted DTO, not the Case, so it enforces the record half (root cause
+    present) and the idempotence rule (don't regenerate from a case that already
+    produced a live draft), independent of any caller-side gating."""
+
+    def _request(self, *, root_cause="connection pool exhausted"):
+        return CaseConversionRequest(
+            case_id="case-1",
+            title="API returning 500s",
+            description="Users see intermittent 500s from the API.",
+            root_cause=root_cause,
+        )
+
+    @staticmethod
+    def _existing(*statuses):
+        """A get_conversion_by_case return stub carrying the real
+        ``ConversionResponse.has_live_draft`` behavior over the given draft
+        statuses (so the guard exercises the actual predicate, not a re-impl)."""
+        ns = SimpleNamespace(drafts=[SimpleNamespace(status=s) for s in statuses])
+        ns.has_live_draft = ConversionResponse.has_live_draft.__get__(ns)
+        return ns
+
+    @pytest.mark.asyncio
+    async def test_missing_root_cause_rejected(self, service):
+        with pytest.raises(ConversionRejectedError) as ei:
+            await service._convert_from_case_impl(
+                self._request(root_cause=None), user_id="u1"
+            )
+        assert ei.value.error_code == ConversionErrorCode.MISSING_ROOT_CAUSE
+
+    @pytest.mark.asyncio
+    async def test_blank_root_cause_rejected(self, service):
+        with pytest.raises(ConversionRejectedError) as ei:
+            await service._convert_from_case_impl(
+                self._request(root_cause="   "), user_id="u1"
+            )
+        assert ei.value.error_code == ConversionErrorCode.MISSING_ROOT_CAUSE
+
+    @pytest.mark.asyncio
+    async def test_existing_draft_blocks_regeneration(self, service):
+        service.get_conversion_by_case = AsyncMock(
+            return_value=self._existing(DraftStatus.DRAFT)
+        )
+        with pytest.raises(ConversionRejectedError) as ei:
+            await service._convert_from_case_impl(self._request(), user_id="u1")
+        assert ei.value.error_code == ConversionErrorCode.CASE_RUNBOOK_EXISTS
+
+    @pytest.mark.asyncio
+    async def test_existing_verified_runbook_blocks_regeneration(self, service):
+        service.get_conversion_by_case = AsyncMock(
+            return_value=self._existing(DraftStatus.VERIFIED)
+        )
+        with pytest.raises(ConversionRejectedError) as ei:
+            await service._convert_from_case_impl(self._request(), user_id="u1")
+        assert ei.value.error_code == ConversionErrorCode.CASE_RUNBOOK_EXISTS
+
+    @pytest.mark.asyncio
+    async def test_all_discarded_drafts_allow_regeneration(self, service):
+        # Discarding a prior draft frees the case to regenerate: the exists-guard
+        # must pass. Prove it reaches generation by stubbing the next step.
+        service.get_conversion_by_case = AsyncMock(
+            return_value=self._existing(DraftStatus.DISCARDED)
+        )
+        service._convert_single_failure_mode = AsyncMock(
+            side_effect=RuntimeError("reached generation")
+        )
+        with pytest.raises(RuntimeError, match="reached generation"):
+            await service._convert_from_case_impl(self._request(), user_id="u1")
+
+    @pytest.mark.asyncio
+    async def test_no_prior_conversion_allows_generation(self, service):
+        # service fixture has db_session_factory=None → get_conversion_by_case
+        # returns None → exists-guard passes → reaches generation.
+        service._convert_single_failure_mode = AsyncMock(
+            side_effect=RuntimeError("reached generation")
+        )
+        with pytest.raises(RuntimeError, match="reached generation"):
+            await service._convert_from_case_impl(self._request(), user_id="u1")

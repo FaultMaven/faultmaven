@@ -76,7 +76,6 @@ graph TD
 
     subgraph "API Layer"
         EP[POST /knowledge/convert]
-        EP6[POST /knowledge/convert-from-case]
         EP2[GET /knowledge/conversions/{id}]
         EP7[GET /knowledge/conversions/by-case/{case_id}]
         EP3[PUT /knowledge/conversions/{id}/drafts/{draft_id}]
@@ -139,7 +138,7 @@ Both sources use the same downstream pipeline (LLM generation with canonical tem
 
 | Aspect | Document Source | Case Source |
 |--------|----------------|-------------|
-| **Entry point** | `POST /knowledge/convert` (file upload) | `POST /knowledge/convert-from-case` (case_id) |
+| **Entry point** | `POST /knowledge/convert` (file upload) | Copilot RESOLVED-turn *"Generate runbook from this case"* affordance (chat-only; no HTTP endpoint) |
 | **Preprocessing** | 6-stage pipeline (extract, PII, triage, etc.) | None (case data is already structured) |
 | **Analysis** | LLM identifies failure modes from text | Single failure mode from case root cause |
 | **Source material** | Extracted document text | Assembled from case title, description, root cause, solutions, hypotheses, evidence |
@@ -148,14 +147,13 @@ Both sources use the same downstream pipeline (LLM generation with canonical tem
 
 The `ConversionService.convert_from_case()` method constructs a `FailureModeAnalysis` from the case data and calls `_convert_single_failure_mode()` — the same method used for document-driven conversion. This ensures identical template compliance, validation, and quality scoring.
 
-**Case-data extraction is single-sourced**: both the API endpoint (`POST /knowledge/convert-from-case`) and the chat-side dispatcher (`MilestoneEngine._handle_runbook_creation`) build the `CaseConversionRequest` via the same `CaseConversionRequest.from_case(case, scope=...)` factory in `faultmaven/modules/knowledge/domain/models/conversion.py`. Keeping the two call sites converged on one extraction prevents drift between the Dashboard-initiated and chat-initiated runbook paths.
+**Case-data extraction is single-sourced**: the chat-side dispatcher (`MilestoneEngine._handle_runbook_creation` — the only live case→runbook trigger) builds the `CaseConversionRequest` via the `CaseConversionRequest.from_case(case, scope=...)` factory in `faultmaven/modules/knowledge/domain/models/conversion.py`, never via inline extraction. A static guard test (`TestCaseConversionUsesFactory`) pins this so a future regression can't reintroduce a parallel extraction path.
 
-**Two trigger paths for the Case Source**:
+**One trigger path for the Case Source — chat-initiated (Copilot) only.** On the RESOLVED ack-turn, the agent emits a DECIDE *"Generate runbook from this case"* suggestion (shown iff `runbook_conversion_ready`, §1.1). Clicking submits the precomposed payload, which routes via exact-match dispatch in `_process_terminal_turn` to `_handle_runbook_creation`. That handler runs the pre-flight gates (content readiness + existing-draft idempotence + similarity dedup) synchronously, then kicks off the conversion pipeline as a fire-and-forget background task (`asyncio.create_task` wrapping `_run_runbook_conversion`). The agent reply returns immediately ("Creating your runbook draft…"). When the background task finishes (success, no-drafts, or exception), it appends a `role="system"` completion message to `case.messages` with the outcome — naming the draft on success or a retry hint on failure. The append acquires the per-case lock to avoid interleaving with a concurrent Q&A turn, and notification-write failures are logged but never propagate. See `investigation-lifecycle-logic.md §1.7.3` for the chat-side flow in full.
 
-- **Dashboard-initiated**: user clicks the "Create runbook from this case" button on a RESOLVED case detail page. Frontend calls `POST /knowledge/convert-from-case` and renders the result page directly.
-- **Chat-initiated (Copilot)**: on the RESOLVED ack-turn, the agent emits a DECIDE *"Generate runbook from this case"* suggestion. Clicking submits the precomposed payload, which routes via exact-match dispatch in `_process_terminal_turn` to `_handle_runbook_creation`. The chat-initiated path runs the pre-flight gates (content readiness + deduplication) synchronously, then kicks off the conversion pipeline as a fire-and-forget background task (`asyncio.create_task` wrapping `_run_runbook_conversion`). The agent reply returns immediately ("Creating your runbook draft…"). When the background task finishes (success, no-drafts, or exception), it appends a `role="system"` completion message to `case.messages` with the outcome — naming the draft on success or a retry hint on failure. The append acquires the per-case lock to avoid interleaving with a concurrent Q&A turn, and notification-write failures are logged but never propagate. See `investigation-lifecycle-logic.md §1.7.3` for the chat-side flow in full.
+There is **no Dashboard-initiated case→runbook path**: the Dashboard is view-only for case runbooks, and the former `POST /knowledge/convert-from-case` endpoint was removed in Phase 5.1 (it was dead — it 503'd in production because nothing wired `app.state.case_repository`).
 
-**Case conversion lookup**: `GET /knowledge/conversions/by-case/{case_id}` returns the conversion job and drafts for a specific case, used by the Dashboard Runbook tab.
+**Case conversion lookup**: `GET /knowledge/conversions/by-case/{case_id}` returns the conversion job and drafts for a specific case (used by the Dashboard Runbook tab for viewing).
 
 ### 1.1 Soundness gate: only an authority-grounded cause may seed the KB (§7)
 
@@ -171,8 +169,11 @@ Auto-converting a case into a runbook seeds *reusable* knowledge, so it carries 
 
 Only `CONFIRMED` clears the bar. Validation method never raises the grade — a deductive derivation rests on model-mediated refutations plus an asserted-exhaustive differential, so it stays `MECHANISTIC` without the confirmation. The two held grades are distinguished in the user-facing copy for *different* reasons (confirm the cause vs. identify one).
 
-- **API path** — `POST /knowledge/convert-from-case` rejects a non-`CONFIRMED` case with **HTTP 422** before constructing the `CaseConversionRequest` ([conversion_routes.py](../../../faultmaven/modules/knowledge/api/conversion_routes.py)), directing the user to author it manually via `POST /knowledge/runbooks/create` if the cause is correct.
-- **Chat path** — the *"Generate runbook from this case"* DECIDE suggestion is offered on RESOLVED turns (subject only to "a draft doesn't already exist"), but **acting on it** routes through `_handle_runbook_creation`, which runs `evaluate_runbook_suggestion` → `assess_runbook_readiness` (the grade read via `grade_cause_assurance`). A non-`CONFIRMED` cause returns `NOT_READY` — a "not ready, confirm the cause" message with **no draft side effect** — so clicking never produces a runbook from an unconfirmed cause. The gate is at action time, not suggestion-emission time.
+**One canonical predicate.** The grade is one input to a single source-of-truth predicate, `runbook_conversion_ready(case)` (in `cause_assurance.py`): a case is convertible iff it has a verified problem definition **and** a `CONFIRMED` cause with a populated `RootCauseConclusion` record **and** an actionable solution. Every case→runbook gate defers to it, so the offer boundary and the enforcement boundary cannot drift (#698): the RESOLVED offer affordance (`_runbook_suggestion`) is shown iff the predicate holds — identical to the boundary `assess_runbook_readiness` treats as `NOT_SUITABLE` — so a case is never offered-then-denied. The grade half enforces soundness (no confidently-wrong cause becomes reusable knowledge); the problem-definition and actionable-solution halves enforce that the runbook won't be a shell the LLM has to fabricate content for.
+
+**Case→runbook is chat-initiated only.** There is no case-conversion HTTP endpoint (the dead `POST /knowledge/convert-from-case`, which 503'd in production because nothing wired `app.state.case_repository`, was removed in Phase 5.1). The Dashboard is view-only for case runbooks. The single live trigger is the *"Generate runbook from this case"* DECIDE suggestion on RESOLVED turns; **acting on it** routes through `_handle_runbook_creation`, which runs `evaluate_runbook_suggestion` → `assess_runbook_readiness` (the predicate above) and, on a non-convertible case, returns `NOT_READY` with **no draft side effect**.
+
+**Idempotence (unique runbook per case).** Before generating, both the chat handler and — authoritatively — the service funnel (`_convert_from_case_impl`) call `get_conversion_by_case`: a case that already produced a **live** draft (`DRAFT`/`VERIFIED`) is refused with `CASE_RUNBOOK_EXISTS`, so the same case never yields a second runbook. A case whose only prior drafts were **discarded** (or whose prior attempt failed with no drafts) is free to regenerate. The in-flight lock in `convert_from_case` covers the concurrent double-fire race; this persisted-job check covers the sequential repeat. The funnel additionally rejects a request with no root-cause text (`MISSING_ROOT_CAUSE`) as defense-in-depth — a runbook with no root cause is not reusable knowledge.
 
 > **Rejected alternative:** an earlier gate keyed on the *negative* predicate "cause validated only by fallback support." It returned False for the `NO_ROOT` case (no validated root is not "fallback-only"), so a pure-prose `RootCauseConclusion` slipped through. Gating on the positive top grade closes that hole — a record with no validated root is graded `NO_ROOT`, never `CONFIRMED`.
 
@@ -801,7 +802,6 @@ Implementation: Reuse existing `require_admin` dependency for global scope. Add 
 | 413 | File too large | `{"detail": "File exceeds maximum size of 10MB"}` |
 | 415 | Unsupported file type | `{"detail": "Unsupported file type: image/png. Allowed: ..."}` |
 | 422 | Document not actionable | `{"detail": "Source document does not contain actionable failure modes..."}` |
-| 422 | Case cause not authority-grounded (§1.1; `convert-from-case` only) | `{"detail": "This case's root cause is not backed by a deductively validated root, so it can't be auto-converted into a runbook..."}` |
 | 422 | All drafts failed validation | `{"detail": "Generated runbooks failed quality validation", "validation_errors": [...]}` |
 | 500 | LLM failure after retries | `{"detail": "Document conversion failed. Please try again."}` |
 | 503 | No LLM provider available | `{"detail": "Knowledge provider is not configured or unavailable"}` |

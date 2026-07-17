@@ -121,7 +121,8 @@ def _is_grounded(case: "Case", grade: "CauseAssuranceGrade | None" = None) -> bo
     COUPLING (keep in sync): this makes the join's grounding axis intentionally
     diverge from the raw ``grade_cause_assurance`` readers —
     ``terminal_transitions.assess_runbook_readiness`` (KB harvest gate) and
-    ``knowledge/api/conversion_routes`` (convert-from-case) — for the
+    ``cause_assurance.runbook_conversion_ready`` (the canonical case→runbook
+    offer/enforcement predicate) — for the
     ``CONFIRMED × symptom_verified=False`` state. That divergence is safe **only**
     because both of those readers are gated behind RESOLVED, which requires
     ``_cause_identified`` → ``symptom_verified`` (so the divergent state is
