@@ -1424,11 +1424,14 @@ class FeatureSettings(BaseSettings):
     # and switch the KNOWLEDGE & RUNBOOK AUTHORITY prompt to the
     # validate/refute-seeded-candidates variant. When False, the engine keeps the
     # flat "matched runbook → one hypothesis" prompt path and seeds nothing.
-    # Largest engine-behaviour change touching the no-collapse guarantee — ships
-    # dark; the env var is the prod kill switch. See
-    # docs/architecture/knowledge-and-ai/kb-cause-seeder.md.
+    # On by default: the flag-ON enabling eval cleared its soundness gate on the
+    # hardest provider (candidate-only, evidence-less, provenance-blind seeds
+    # cannot reach VALIDATED or collapse an investigation). The flag is retained
+    # as the prod kill switch (FAULTMAVEN_KB_CAUSE_SEEDER=false) and as the tested
+    # flag-OFF byte-identical no-op path; it is removed only as the final adoption
+    # step. See docs/architecture/knowledge-and-ai/kb-cause-seeder.md.
     kb_cause_seeder_enabled: bool = Field(
-        default=False,
+        default=True,
         validation_alias="FAULTMAVEN_KB_CAUSE_SEEDER",
         description=(
             "Feature flag: seed retrieved runbook metadata['causes'] chains as "

@@ -344,6 +344,39 @@ class TestLLMSettingsMapping:
             assert llm_settings.strict_provider_mode is True
 
 
+class TestFeatureSettingsMapping:
+    """Tests for feature-flag configuration mapping."""
+
+    def test_kb_cause_seeder_enabled_default_on(self):
+        """The KB cause seeder is on by default (the flag-on decision).
+
+        The env var `FAULTMAVEN_KB_CAUSE_SEEDER` is retained only as the kill
+        switch; with it unset the seeder runs. Direct instantiation bypasses the
+        preset system.
+        """
+        from faultmaven.config.settings import FeatureSettings
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FAULTMAVEN_KB_CAUSE_SEEDER", None)
+            features = FeatureSettings()
+
+        assert features.kb_cause_seeder_enabled is True
+
+    def test_kb_cause_seeder_kill_switch_from_env(self):
+        """`FAULTMAVEN_KB_CAUSE_SEEDER=false` is the kill switch — disables the
+        seeder (and the AUTHORITY prompt override) without a rollback."""
+        from faultmaven.config.settings import FeatureSettings
+
+        with patch.dict(
+            os.environ,
+            {"FAULTMAVEN_KB_CAUSE_SEEDER": "false"},
+            clear=False,
+        ):
+            features = FeatureSettings()
+
+        assert features.kb_cause_seeder_enabled is False
+
+
 class TestSettingsSingleton:
     """Tests for settings singleton behavior."""
 

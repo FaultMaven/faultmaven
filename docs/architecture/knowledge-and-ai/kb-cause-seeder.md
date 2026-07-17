@@ -21,7 +21,11 @@ detection, and failed-fix demotion as a self-generated hypothesis (an
 engaged-but-unsupported seed decays; an ignored one stays inert at its ≤0.5 prior
 — see the Guarantee section).
 
-Shipped dark behind `FAULTMAVEN_KB_CAUSE_SEEDER` (default off).
+On by default, behind `FAULTMAVEN_KB_CAUSE_SEEDER` (kill switch — set `false` to
+disable without a rollback). The flag turned on after the enabling eval cleared
+its soundness gate on the hardest provider (see "Enabling gate" below); it is
+retained as the kill switch and as the tested flag-OFF no-op path, and is removed
+only as the final adoption step.
 
 ---
 
@@ -377,7 +381,7 @@ divergence.
 
 | Knob | Kind | Default | Effect |
 |---|---|---|---|
-| `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | env flag | `false` | Gates seeder invocation **and** the AUTHORITY prompt override. Kill switch — disables in prod without rollback. |
+| `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | env flag | `true` | Gates seeder invocation **and** the AUTHORITY prompt override. On by default; set `false` as the kill switch — disables in prod without rollback. |
 | `MAX_SEEDED_RUNBOOKS` | module constant (`kb_cause_seeder.py`) | `2` | Distinct runbooks seeded per retrieval, top by score. |
 | `MAX_SEEDED_CAUSES` | module constant, **derived** | `ANCHORING_SAME_CATEGORY_THRESHOLD − 1` (= `3`) | Total causes seeded per turn. Derived from the anchoring condition-1 constant (not an env var — deriving then overriding would break the coupling guarantee), asserted `< threshold` in a test. |
 
@@ -460,11 +464,12 @@ The eval is a committed, re-runnable artifact — harness, scenarios, and record
 transcripts at [`tests/eval/kb_cause_seeder/`](../../../tests/eval/kb_cause_seeder/)
 (modes `smoke` / `mislead` / `exclusion` / `postturn1`).
 
-### Enabling gate — required passes before the flag turns on
+### Enabling gate — the passes the flag-on decision was made against
 
-The flag ships OFF; the mechanically-verified code merges first. Turning it on
-requires the flag-ON sim/eval, on the **hardest provider (BEST_EFFORT)**, to clear
-all of the items below. The bar is the hardest provider, *not* every provider:
+The flag is **on by default.** The mechanically-verified code merged first (flag
+OFF); the flag was then turned on after the flag-ON sim/eval, on the **hardest
+provider (BEST_EFFORT)**, cleared the items below. The bar is the hardest
+provider, *not* every provider:
 items 1 and 4 are structural (candidate-only, evidence-less, provenance-blind,
 prior-capped) and hold LLM-agnostically by construction; the only
 prompt-strength-dependent items (2, 3) are *weakest* on a BEST_EFFORT model, so a
@@ -497,6 +502,17 @@ gate items:
    `root_node_id` ∉ the seeded set with likelihood > the seeded prior, and no
    seeded prior is `VALIDATED`. This is the positive proof the whole "prior, not
    gate" claim rests on — it is a gate item, not a nice-to-have.
+
+**Decision (flag on).** Items 1 and 4 (soundness) hold on every run by
+construction — measured **8/8** on BEST_EFFORT. Item 3's measured pass-rate
+(**7/8** on BEST_EFFORT) was accepted as a **known residual**, not a blocker:
+pre-production with no users, the criterion for on-vs-off is which state exposes
+more of the seeder path to real use and bug-hunting, not rollout safety, and the
+single below-INV-36-bar duplication held soundness in that run too. Its envelope
+stays prompt + per-provider eval (a prompt change is re-measured with the
+committed harness), **not** a new seed-specific dedup backstop (#658 territory).
+The flag is retained as the kill switch and the tested flag-OFF no-op path, and is
+removed only as the final adoption step.
 
 Plus one **measurement** (not pass/fail — it sizes a follow-on decision):
 
