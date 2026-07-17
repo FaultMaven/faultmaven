@@ -21,7 +21,11 @@ detection, and failed-fix demotion as a self-generated hypothesis (an
 engaged-but-unsupported seed decays; an ignored one stays inert at its ≤0.5 prior
 — see the Guarantee section).
 
-Shipped dark behind `FAULTMAVEN_KB_CAUSE_SEEDER` (default off).
+On by default, behind `FAULTMAVEN_KB_CAUSE_SEEDER` (kill switch — set `false` to
+disable without a rollback). The flag turned on after the enabling eval cleared
+its soundness gate on the hardest provider (see "Enabling gate" below); it is
+retained as the kill switch and as the tested flag-OFF no-op path, and is removed
+only as the final adoption step.
 
 ---
 
@@ -109,7 +113,7 @@ Left unbounded, seeding would flood the graph and trip anchoring detection (≥4
 active hypotheses in one category reads as fixation). The bounds:
 
 - **Cap runbooks:** dedup hits by `parent_document_id`, take the top-N distinct
-  runbooks by rerank score (`KB_SEEDER_MAX_RUNBOOKS`, default 2). Retrieval has
+  runbooks by rerank score (`MAX_SEEDED_RUNBOOKS`, default 2). Retrieval has
   already done the semantic alignment at runbook granularity.
 - **Skip fallback causes:** a `is_fallback_cause: true` Cause (`### Cause Z:
   Unidentified`) has an empty chain — nothing to instantiate.
@@ -123,7 +127,7 @@ active hypotheses in one category reads as fixation). The bounds:
   eval burden. If per-case cause relevance ever needs improving, the home for it
   is the retrieval ranker, not the seeder.
 - **Cap total seeded causes:** across all runbooks, seed at most
-  `KB_SEEDER_MAX_CAUSES`. This is **derived from** the anchoring condition-1
+  `MAX_SEEDED_CAUSES`. This is **derived from** the anchoring condition-1
   threshold (`< N_same_category`), not a hardcoded 3, so a future change to the
   anchoring threshold cannot silently let the seeder self-anchor — the
   relationship is asserted in a test.
@@ -178,7 +182,7 @@ and logging). Neither grants any evidentiary weight.
 
 **Category.** A Cause record carries no `HypothesisCategory`; there is no reliable
 signal to derive one, so seeded hypotheses default to `OTHER`. The
-`KB_SEEDER_MAX_CAUSES = 3` cap keeps this from tripping anchoring condition 1 on
+`MAX_SEEDED_CAUSES = 3` cap keeps this from tripping anchoring condition 1 on
 its own.
 
 ### Observable skip — no silent drop
@@ -291,7 +295,7 @@ node+hypothesis state derivation in `causal_graph` + `hypothesis_manager`;
 guard can never be silently narrowed below where the safety logic actually lives.
 A future edit cannot quietly grant a seed evidentiary weight.
 
-**Honest limit — seed↔LLM anchoring interaction.** The `KB_SEEDER_MAX_CAUSES`
+**Honest limit — seed↔LLM anchoring interaction.** The `MAX_SEEDED_CAUSES`
 cap stops the seeder *alone* from tripping anchoring condition 1. But seeded
 `OTHER`-category causes and any `OTHER`-category hypothesis the LLM generates can
 still combine to ≥ the threshold and raise an anchoring flag. This is
@@ -377,7 +381,7 @@ divergence.
 
 | Knob | Kind | Default | Effect |
 |---|---|---|---|
-| `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | env flag | `false` | Gates seeder invocation **and** the AUTHORITY prompt override. Kill switch — disables in prod without rollback. |
+| `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | env flag | `true` | Gates seeder invocation **and** the AUTHORITY prompt override. On by default; set `false` as the kill switch — disables in prod without rollback. |
 | `MAX_SEEDED_RUNBOOKS` | module constant (`kb_cause_seeder.py`) | `2` | Distinct runbooks seeded per retrieval, top by score. |
 | `MAX_SEEDED_CAUSES` | module constant, **derived** | `ANCHORING_SAME_CATEGORY_THRESHOLD − 1` (= `3`) | Total causes seeded per turn. Derived from the anchoring condition-1 constant (not an env var — deriving then overriding would break the coupling guarantee), asserted `< threshold` in a test. |
 
@@ -395,7 +399,7 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   likelihood ≤ 0.5, no VALIDATED.
 - **Provenance-blindness:** the decay/anchoring/demotion/state-derivation paths
   never reference the seeded-provenance keys (invariant grep/AST test).
-- **Cap ↔ anchoring coupling:** `KB_SEEDER_MAX_CAUSES` is strictly below the
+- **Cap ↔ anchoring coupling:** `MAX_SEEDED_CAUSES` is strictly below the
   anchoring condition-1 threshold (asserted against the real constant, so the two
   cannot silently drift apart).
 - **Misleading runbook:** a wrong seeded prior with no supporting evidence stays a
@@ -461,11 +465,12 @@ The eval is a committed, re-runnable artifact — harness, scenarios, and record
 transcripts at [`tests/eval/kb_cause_seeder/`](../../../tests/eval/kb_cause_seeder/)
 (modes `smoke` / `mislead` / `exclusion` / `postturn1`).
 
-### Enabling gate — required passes before the flag turns on
+### Enabling gate — the passes the flag-on decision was made against
 
-The flag ships OFF; the mechanically-verified code merges first. Turning it on
-requires the flag-ON sim/eval, on the **hardest provider (BEST_EFFORT)**, to clear
-all of the items below. The bar is the hardest provider, *not* every provider:
+The flag is **on by default.** The mechanically-verified code merged first (flag
+OFF); the flag was then turned on after the flag-ON sim/eval, on the **hardest
+provider (BEST_EFFORT)**, cleared the items below. The bar is the hardest
+provider, *not* every provider:
 items 1 and 4 are structural (candidate-only, evidence-less, provenance-blind,
 prior-capped) and hold LLM-agnostically by construction; the only
 prompt-strength-dependent items (2, 3) are *weakest* on a BEST_EFFORT model, so a
@@ -498,6 +503,17 @@ gate items:
    `root_node_id` ∉ the seeded set with likelihood > the seeded prior, and no
    seeded prior is `VALIDATED`. This is the positive proof the whole "prior, not
    gate" claim rests on — it is a gate item, not a nice-to-have.
+
+**Decision (flag on).** Items 1 and 4 (soundness) hold on every run by
+construction — measured **8/8** on BEST_EFFORT. Item 3's measured pass-rate
+(**7/8** on BEST_EFFORT) was accepted as a **known residual**, not a blocker:
+pre-production with no users, the criterion for on-vs-off is which state exposes
+more of the seeder path to real use and bug-hunting, not rollout safety, and the
+single below-INV-36-bar duplication held soundness in that run too. Its envelope
+stays prompt + per-provider eval (a prompt change is re-measured with the
+committed harness), **not** a new seed-specific dedup backstop (#658 territory).
+The flag is retained as the kill switch and the tested flag-OFF no-op path, and is
+removed only as the final adoption step.
 
 Plus one **measurement** (not pass/fail — it sizes a follow-on decision):
 
