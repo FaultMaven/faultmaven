@@ -900,9 +900,14 @@ DEGENERATE_CAUSES = [
         "cause": _cause("A", [], [], is_fallback=True),
     },
     {
+        # A problem-only chain (names D, no root/intermediate rung). NB: an
+        # *empty* chain is no longer a QUALITY_DROP — a chain-less cause with a
+        # Statement now synthesizes a degenerate root→D and seeds; the
+        # "no root/intermediate nodes" drop is reached via a chain that has only
+        # a problem node.
         "label": "no root/intermediate nodes",
         "expected": _QUALITY_DROP,
-        "cause": _cause("B", [], []),
+        "cause": _cause("B", [_problem_node()], []),
     },
     {
         "label": "chain head is not a root",
