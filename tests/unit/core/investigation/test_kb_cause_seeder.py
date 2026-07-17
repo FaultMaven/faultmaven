@@ -626,13 +626,99 @@ def test_linear_chain_terminating_via_problem_ref_still_seeds():
 def test_runbook_that_seeded_something_is_not_alarmed_despite_a_quality_drop():
     good = _cause("A", root_stmt="good root cause")
     bad = _cause("B")
-    bad["chain_nodes"] = []  # no nodes → quality drop
+    # A genuine quality drop: an intermediate-first chain (no root) the seeder
+    # cannot instantiate. (An *empty* chain is no longer a drop — a chain-less
+    # cause with a Statement synthesizes a degenerate root→D; see the
+    # chain-less-synthesis tests below.)
+    bad["chain_nodes"] = [
+        {"ref": "s1", "node_type": "intermediate", "statement": "no root here"},
+        {"ref": "D", "node_type": "problem", "statement": "X is failing"},
+    ]
+    bad["chain_edges"] = [{"cause_ref": "s1", "effect_ref": "D"}]
     case = _case()
     report = seed_candidate_causes(case, [_runbook("rb1", [good, bad])], current_turn=1)
     assert report.seeded_anything and "rb1" in report.runbooks_used
     assert any(s.skip_class == SkipClass.QUALITY_DROP for s in report.skipped)
     # rb1 contributed a candidate, so it is not flagged as "contributed nothing".
     assert report.runbooks_contributing_nothing() == []
+
+
+# ---------------------------------------------------------------------------
+# Chain-less cause — degenerate root→D synthesis (produce-path flywheel)
+# ---------------------------------------------------------------------------
+#
+# RULE-4 makes **Chain** optional for a simple one-step cause; the v4 grammar
+# declares its absence "yields a degenerate root → D chain on ingestion". Such a
+# cause names its root directly in **Statement**, so the seeder synthesizes
+# root→D and seeds ONE candidate rather than dropping it. 0/640 in the shipped
+# pack (every real cause is chained); this is exercised only by the produce side.
+
+
+def test_chainless_cause_synthesizes_root_to_d_and_seeds():
+    case = _case()
+    cause = _cause("A", with_chain=False)  # no chain, but carries a Statement
+    assert cause["chain_nodes"] == []
+    report = seed_candidate_causes(case, [_runbook("rb1", [cause])], current_turn=1)
+
+    assert report.seeded_anything
+    # Exactly one root minted (from the Statement), wired to the engine-seeded D.
+    roots = [n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT]
+    problems = [
+        n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    ]
+    inters = [
+        n for n in case.causal_nodes.values() if n.node_type == NodeType.INTERMEDIATE
+    ]
+    assert len(roots) == 1 and len(problems) == 1 and inters == []
+    pairs = {(e.cause_node_id, e.effect_node_id) for e in case.causal_edges}
+    assert (roots[0].node_id, problems[0].node_id) in pairs
+
+    # One CANDIDATE hypothesis at the seed prior — a lead, never a conclusion.
+    assert len(case.hypotheses) == 1
+    h = next(iter(case.hypotheses.values()))
+    assert h.state == HypothesisState.ACTIVE
+    assert h.likelihood == KB_SEED_PRIOR
+    assert h.root_node_id == roots[0].node_id
+    assert h.path[-1] == problems[0].node_id
+    assert roots[0].node_state == NodeState.CANDIDATE
+    # Provenance recorded (read surface only).
+    assert roots[0].metadata.get(SEEDED_FROM_RUNBOOK_KEY) == "rb1"
+
+
+def test_chainless_cause_does_not_trip_contributed_nothing_alarm():
+    case = _case()
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [_cause("A", with_chain=False)])], current_turn=1
+    )
+    # A chain-less cause seeds, so its runbook is not falsely alarmed.
+    assert report.runbooks_contributing_nothing() == []
+
+
+def test_chainless_cause_without_statement_still_quality_drops():
+    # A cause with neither a chain nor a Statement is genuinely uninstantiable —
+    # synthesis needs the Statement as the root, so this remains a QUALITY_DROP.
+    case = _case()
+    empty = _cause("A", with_chain=False)
+    empty["cause_statement"] = ""
+    report = seed_candidate_causes(case, [_runbook("rb1", [empty])], current_turn=1)
+    assert not report.seeded_anything
+    assert report.skipped[0].skip_class == SkipClass.QUALITY_DROP
+    assert report.runbooks_contributing_nothing() == ["rb1"]
+
+
+def test_chainless_synthesized_seed_is_candidate_only_never_validated():
+    # The synthesized chain is subject to the same soundness invariant: a seeded
+    # prior can never be VALIDATED without case evidence.
+    case = _case()
+    seed_candidate_causes(
+        case, [_runbook("rb1", [_cause("A", with_chain=False)])], current_turn=1
+    )
+    assert all(h.state != HypothesisState.VALIDATED for h in case.hypotheses.values())
+    assert all(
+        n.node_state == NodeState.CANDIDATE
+        for n in case.causal_nodes.values()
+        if n.node_type != NodeType.PROBLEM
+    )
 
 
 # ---------------------------------------------------------------------------

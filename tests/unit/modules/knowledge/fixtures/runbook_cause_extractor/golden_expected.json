@@ -1,0 +1,104 @@
+[
+  {
+    "cause_letter": "A",
+    "cause_name": "Connection pool exhausted",
+    "is_fallback_cause": false,
+    "cause_statement": "All DB connections are checked out and none are returned.",
+    "chain_nodes": [
+      {
+        "ref": "root",
+        "statement": "Connection leak in request handler",
+        "node_type": "root"
+      },
+      {
+        "ref": "s1",
+        "statement": "Pool saturates under load",
+        "node_type": "intermediate"
+      },
+      {
+        "ref": "D",
+        "statement": "Requests block waiting for a connection",
+        "node_type": "problem"
+      }
+    ],
+    "chain_edges": [
+      {
+        "cause_ref": "root",
+        "effect_ref": "s1"
+      },
+      {
+        "cause_ref": "s1",
+        "effect_ref": "D"
+      }
+    ],
+    "rung_indicators": {
+      "root": [
+        "[Step 1] open connections climb monotonically"
+      ],
+      "s1": [
+        "[Step 2] pool wait-time spikes",
+        "[Symptom] 503s under load"
+      ]
+    },
+    "interventions": [
+      {
+        "quadrant": "remediation",
+        "ref": "root",
+        "text": "- **remediation** (root): Fix the leak so connections are returned. **Verification:** pool stabilizes."
+      },
+      {
+        "quadrant": "mitigation",
+        "ref": "s1",
+        "text": "- **mitigation** (s1): Raise pool size temporarily. **Risk:** masks leak. **Duration:** until fix. **Verification:** waits drop."
+      }
+    ]
+  },
+  {
+    "cause_letter": "B",
+    "cause_name": "Downstream timeout cascade",
+    "is_fallback_cause": false,
+    "cause_statement": "A slow downstream holds connections open.",
+    "chain_nodes": [
+      {
+        "ref": "root",
+        "statement": "Downstream latency exceeds client timeout",
+        "node_type": "root"
+      }
+    ],
+    "chain_edges": [
+      {
+        "cause_ref": "root",
+        "effect_ref": "A.s1",
+        "converges": true
+      }
+    ],
+    "rung_indicators": {
+      "root": [
+        "[Symptom] downstream p99 latency high"
+      ]
+    },
+    "interventions": [
+      {
+        "quadrant": "defensive_fix",
+        "ref": "root",
+        "text": "- **defensive_fix** (root): Add a circuit breaker. **Verification:** breaker trips on latency."
+      }
+    ]
+  },
+  {
+    "cause_letter": "Z",
+    "cause_name": "Unidentified",
+    "is_fallback_cause": true,
+    "cause_statement": "Root cause not yet determined.",
+    "chain_nodes": [],
+    "chain_edges": [],
+    "rung_indicators": {},
+    "interventions": [
+      {
+        "quadrant": "mitigation",
+        "ref": "D",
+        "text": "- **mitigation** (D): Capture diagnostics and consult an SME. **Risk:** none. **Duration:** until review. **Verification:** N/A."
+      }
+    ]
+  }
+]

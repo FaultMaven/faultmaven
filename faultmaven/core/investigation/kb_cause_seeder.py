@@ -430,6 +430,27 @@ def _seed_one_cause(
     chain_nodes = cause.get("chain_nodes") or []
     chain_edges = cause.get("chain_edges") or []
 
+    # A v4 Cause may omit **Chain** for a simple one-step cause — the grammar
+    # makes Chain optional and declares that "its absence yields a degenerate
+    # root → D chain on ingestion" (cause_grammar). Such a cause names its root
+    # directly in **Statement**, implying root → D (one hop). Synthesize that
+    # chain here so a one-step cause seeds a single candidate like a chained one,
+    # rather than being dropped as "no root/intermediate nodes" — which would
+    # leave the flywheel's simplest converted causes contributing nothing and
+    # falsely trip runbooks_contributing_nothing(). The D rung carries no
+    # statement (it maps onto the case's engine-seeded D, whose spec ingest
+    # rejects). 0/640 in the shipped pack (every real cause is chained); this
+    # path is exercised only by the produce/conversion side. A cause with
+    # neither a chain nor a Statement is genuinely empty and still QUALITY_DROPs
+    # below.
+    seed_statement = (cause.get("cause_statement") or "").strip()
+    if not chain_nodes and seed_statement:
+        chain_nodes = [
+            {"ref": "root", "statement": seed_statement, "node_type": "root"},
+            {"ref": "D", "statement": "", "node_type": "problem"},
+        ]
+        chain_edges = [{"cause_ref": "root", "effect_ref": "D"}]
+
     # AND-convergence is not yet modeled. The seeder builds edges from
     # cause_ref/effect_ref only and defaults every edge's and_group to None, so a
     # co-necessary AND-set (edges sharing (effect, and_group)) would be silently

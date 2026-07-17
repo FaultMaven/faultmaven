@@ -22,7 +22,7 @@ Both sources produce output compliant with the [Runbook Content Architecture](./
 2. Enforce the "one runbook = one failure mode" rule automatically by detecting and splitting multi-topic source documents.
 3. Maintain quality standards by gating all generated output through the existing `kb-validate` pipeline and quality scorer.
 4. Keep generated runbooks as non-searchable drafts until a human explicitly promotes them to `verified` status.
-5. Close the knowledge flywheel: resolved cases automatically produce draft runbooks for future investigations.
+5. Close the knowledge flywheel: a resolved case produces a draft runbook that, once human-verified, re-enters diagnosis as *structured causal candidates* (not just searchable prose) — its extracted `## Causes` graph record is what the Phase-4 investigation seeder consumes. See §6.6 **Flywheel closure**.
 
 ### Non-Goals
 
@@ -775,8 +775,13 @@ Response: Updated draft object with re-run validation and quality score.
 
 This endpoint:
 1. Updates frontmatter `status` from `draft` to `verified` and sets `verified_by` on the file on disk (so chunk metadata carries `status=verified`).
-2. Atomically ingests the runbook via `KnowledgeService.ingest_runbook()` — creates the `knowledge_items` row AND writes ChromaDB chunks. If either step fails, the SQL row is rolled back and a 500 is returned; the draft stays in `DRAFT` state.
-3. Only after ingestion succeeds, commits `dm.status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` in `conversion_drafts`.
+2. **Extracts the v4 `## Causes` graph record** from the runbook markdown (`runbook_cause_extractor.extract_causes`) and passes it to `ingest_runbook(causes=...)`, so `knowledge_items.metadata["causes"]` is populated for a case-derived runbook exactly as it is for a built-in one from the pack. This closes the knowledge flywheel: the resolved case re-enters diagnosis as *structured candidates* the Phase-4 investigation seeder (`core.investigation.kb_cause_seeder`) consumes, not just prose. See **Flywheel closure** below.
+3. Atomically ingests the runbook via `KnowledgeService.ingest_runbook()` — creates the `knowledge_items` row AND writes ChromaDB chunks. If either step fails, the SQL row is rolled back and a 500 is returned; the draft stays in `DRAFT` state.
+4. Only after ingestion succeeds, commits `dm.status = VERIFIED`, `verified_at`, `verified_by`, `knowledge_item_id` in `conversion_drafts`.
+
+**Flywheel closure (cause extraction).** The extractor is the produce-side counterpart of the KB pack builder's `_extract_causes` (`faultmaven-kb-toolkit`); both are anchored on the same v4 parse grammar (`runbook_grammar`, a verbatim mirror of the upstream `kb_toolkit/core/runbook_grammar.py`), so a converted runbook seeds the same *shape* of candidate a shipped one does. A golden cross-check test pins the extractor byte-for-byte to the builder's output. Extraction is deliberately wired **here, at the human-verification gate** — not inside `ingest_runbook` — so the anonymous/experimental `upload_document` path never feeds unverified content to the seeder. Two produce-side subtleties the seeder handles: a Cause that omits the optional **Chain** sub-field (a simple one-step cause) is synthesized into a degenerate `root → D` chain and seeded as a single candidate (rather than dropped); malformed or non-linear chains are rejected by the seeder's shape guard, never mis-seeded. A runbook with no `## Causes` section carries `metadata["causes"] = None` (nothing to seed).
+
+> **Scope caveat (runtime loop).** Populating `metadata["causes"]` is *necessary* but not by itself *sufficient* for the loop to run: the Phase-4 seeder's retrieval (`_prefetch_kb_context` → `search_knowledge`) currently defaults to **global scope**, while chat case→runbook conversions default to **personal** scope. So a personal/team-scoped verified runbook carries the record but is not retrieved by the seeder — the loop closes today only for **globally-published** runbooks. Whether personal/team runbooks should seed the owner's own future investigations (owner-aware prefetch) or only globally-vetted knowledge should seed (a trust gate) is a recorded product decision tracked separately.
 
 **Atomicity guarantee (changed 2026-05-26):** The DB status flip to `VERIFIED` is the *last* mutation. Previously the status was committed up-front and ingestion failure left half-state rows (status=verified, knowledge_item_id=NULL) which a subsequent KB-page scan would mis-classify and revert. The new ordering eliminates that drift class. See [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the full atomicity contract.
 
