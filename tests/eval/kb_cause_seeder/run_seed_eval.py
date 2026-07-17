@@ -40,6 +40,11 @@ Modes:
                one → the deductive-exclusion arm never fabricates a VALIDATED
                seeded cause (H1 exclusion-under-seeding probe)
     postturn1  vague-open → clarify: measures the one-shot seeding boundary
+    smoke-degenerate
+               in-process, NO server / NO LLM: drives ~10 crafted malformed
+               causes through the REAL seeder and asserts each is rejected with
+               its exact SkipClass, the runbook seeds nothing + alarms, and a
+               control good cause still seeds (the one mode `base_url` is ignored)
 
 Exit code is 0 iff no *gate* assertion is BREACHED (NOT-EXERCISED gates and
 measurement-only modes exit 0 — the enabling decision keys on the averaged
@@ -856,11 +861,325 @@ def run_postturn1(c, case_id, meta, dump):
 
 
 # ---------------------------------------------------------------------------
+# smoke-degenerate — in-process degenerate-corpus check (NO server / NO LLM)
+# ---------------------------------------------------------------------------
+# A curated corpus of malformed causes — one per skip *reason* the seeder rejects
+# — plus a well-formed control. Each entry is (label, cause-record, expected
+# SkipClass.value). These are plain dicts + strings (no engine import), so the
+# Phase-5 produce-path eval can import the corpus to assert its converted output
+# never emits one of these shapes. See the seeder's SkipClass taxonomy.
+_INTENTIONAL = "intentional"
+_QUALITY_DROP = "quality_drop"
+_UNSUPPORTED = "unsupported_shape"
+
+_PROBLEM_NODE = {"ref": "D", "node_type": "problem", "statement": "X is failing"}
+
+
+def _cause(letter, chain_nodes, chain_edges, *, is_fallback=False):
+    return {
+        "cause_letter": letter,
+        "cause_name": f"Cause {letter}",
+        "cause_statement": f"cause {letter} symptom-level statement",
+        "chain_nodes": chain_nodes,
+        "chain_edges": chain_edges,
+        "is_fallback_cause": is_fallback,
+    }
+
+
+# 10 crafted bad causes covering every skip reason (INTENTIONAL / QUALITY_DROP /
+# UNSUPPORTED_SHAPE) — each rejected BEFORE it can mint a node.
+DEGENERATE_CAUSES = [
+    {
+        "label": "fallback cause (no chain)",
+        "expected": _INTENTIONAL,
+        "cause": _cause("A", [], [], is_fallback=True),
+    },
+    {
+        "label": "no root/intermediate nodes",
+        "expected": _QUALITY_DROP,
+        "cause": _cause("B", [], []),
+    },
+    {
+        "label": "chain head is not a root",
+        "expected": _QUALITY_DROP,
+        "cause": _cause(
+            "C",
+            [
+                {"ref": "s1", "node_type": "intermediate", "statement": "no root here"},
+                _PROBLEM_NODE,
+            ],
+            [{"cause_ref": "s1", "effect_ref": "D"}],
+        ),
+    },
+    {
+        "label": "empty node statement",
+        "expected": _QUALITY_DROP,
+        "cause": _cause(
+            "D",
+            [
+                {"ref": "root", "node_type": "root", "statement": "  "},
+                {"ref": "s1", "node_type": "intermediate", "statement": "effect D"},
+                _PROBLEM_NODE,
+            ],
+            [
+                {"cause_ref": "root", "effect_ref": "s1"},
+                {"cause_ref": "s1", "effect_ref": "D"},
+            ],
+        ),
+    },
+    {
+        "label": "unrecognized head node_type",
+        "expected": _QUALITY_DROP,
+        "cause": _cause(
+            "E",
+            [
+                {
+                    "ref": "root",
+                    "node_type": "frobnicate",
+                    "statement": "bad type head",
+                },
+                {"ref": "s1", "node_type": "intermediate", "statement": "effect E"},
+                _PROBLEM_NODE,
+            ],
+            [
+                {"cause_ref": "root", "effect_ref": "s1"},
+                {"cause_ref": "s1", "effect_ref": "D"},
+            ],
+        ),
+    },
+    {
+        "label": "and_group AND-convergence",
+        "expected": _UNSUPPORTED,
+        "cause": _cause(
+            "F",
+            [
+                {"ref": "root", "node_type": "root", "statement": "AND cause F1"},
+                {"ref": "r2", "node_type": "root", "statement": "AND cause F2"},
+                {
+                    "ref": "s1",
+                    "node_type": "intermediate",
+                    "statement": "joint effect F",
+                },
+                _PROBLEM_NODE,
+            ],
+            [
+                {"cause_ref": "root", "effect_ref": "s1", "and_group": "g1"},
+                {"cause_ref": "r2", "effect_ref": "s1", "and_group": "g1"},
+                {"cause_ref": "s1", "effect_ref": "D"},
+            ],
+        ),
+    },
+    {
+        "label": "second root (two chains)",
+        "expected": _UNSUPPORTED,
+        "cause": _cause(
+            "G",
+            [
+                {"ref": "root", "node_type": "root", "statement": "root G one"},
+                {"ref": "r2", "node_type": "root", "statement": "root G two"},
+                {
+                    "ref": "s1",
+                    "node_type": "intermediate",
+                    "statement": "shared effect G",
+                },
+                _PROBLEM_NODE,
+            ],
+            [
+                {"cause_ref": "root", "effect_ref": "s1"},
+                {"cause_ref": "r2", "effect_ref": "s1"},
+                {"cause_ref": "s1", "effect_ref": "D"},
+            ],
+        ),
+    },
+    {
+        "label": "branching fork",
+        "expected": _UNSUPPORTED,
+        "cause": _cause(
+            "H",
+            [
+                {"ref": "root", "node_type": "root", "statement": "forking root H"},
+                {"ref": "s1", "node_type": "intermediate", "statement": "branch H one"},
+                {"ref": "s2", "node_type": "intermediate", "statement": "branch H two"},
+                _PROBLEM_NODE,
+            ],
+            [
+                {"cause_ref": "root", "effect_ref": "s1"},
+                {"cause_ref": "root", "effect_ref": "s2"},
+                {"cause_ref": "s1", "effect_ref": "D"},
+            ],
+        ),
+    },
+    {
+        "label": "convergence/join without and_group",
+        "expected": _UNSUPPORTED,
+        "cause": _cause(
+            "I",
+            [
+                {"ref": "root", "node_type": "root", "statement": "converge root I"},
+                {
+                    "ref": "x",
+                    "node_type": "intermediate",
+                    "statement": "second producer I",
+                },
+                {
+                    "ref": "s1",
+                    "node_type": "intermediate",
+                    "statement": "merge point I",
+                },
+                _PROBLEM_NODE,
+            ],
+            [
+                {"cause_ref": "root", "effect_ref": "s1"},
+                {"cause_ref": "x", "effect_ref": "s1"},
+                {"cause_ref": "s1", "effect_ref": "D"},
+            ],
+        ),
+    },
+    {
+        "label": "dangling edge ref",
+        "expected": _UNSUPPORTED,
+        "cause": _cause(
+            "J",
+            [
+                {"ref": "root", "node_type": "root", "statement": "dangling root J"},
+                {
+                    "ref": "s1",
+                    "node_type": "intermediate",
+                    "statement": "orphaned effect J",
+                },
+                _PROBLEM_NODE,
+            ],
+            [
+                {"cause_ref": "root", "effect_ref": "s1"},
+                {"cause_ref": "s1", "effect_ref": "ghost"},
+            ],
+        ),
+    },
+]
+
+# Well-formed control (root → s1 → D) — proves the seeding path works, so the
+# degenerate runbook's zero-seed is the causes' fault, not a broken harness.
+CONTROL_CAUSE = _cause(
+    "K",
+    [
+        {"ref": "root", "node_type": "root", "statement": "control root cause"},
+        {"ref": "s1", "node_type": "intermediate", "statement": "control effect"},
+        _PROBLEM_NODE,
+    ],
+    [
+        {"cause_ref": "root", "effect_ref": "s1"},
+        {"cause_ref": "s1", "effect_ref": "D"},
+    ],
+)
+
+
+def run_smoke_degenerate(meta):
+    """In-process degenerate-corpus check — the one mode that needs NO server/LLM.
+
+    Drives the crafted malformed causes through the REAL seeder
+    (`seed_candidate_causes` → `ingest_emitted_chain`), asserting: (1) the whole
+    degenerate runbook seeds nothing, (2) each bad cause is rejected with its exact
+    SkipClass, (3) the "matched runbook contributed nothing" actionable alarm
+    fires, and (4) a control good cause still seeds. Deterministic — every gate is
+    exercised, so a NOT-EXERCISED or BREACHED here is a real regression, not model
+    variance. Pre-positions the Phase-5 produce-path fixtures.
+    """
+    from collections import Counter
+    from uuid import uuid4
+
+    from faultmaven.core.investigation.kb_cause_seeder import (
+        SeededRunbook,
+        seed_candidate_causes,
+    )
+    from faultmaven.modules.case.contracts import (
+        Case,
+        CaseSeverity,
+        CaseState,
+        InquiryData,
+        ProblemVerification,
+    )
+
+    def _case():
+        return Case(
+            case_id=f"case_{uuid4().hex[:12]}",
+            user_id="u",
+            organization_id="o",
+            title="t",
+            description="X fails",
+            state=CaseState.INVESTIGATING,
+            inquiry=InquiryData(
+                proposed_problem_statement="X fails",
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+            ),
+            problem_verification=ProblemVerification(
+                symptom_statement="X fails", severity=CaseSeverity.HIGH
+            ),
+            current_turn=1,
+        )
+
+    chk = Checks()
+    print("\n=== SMOKE-DEGENERATE (in-process, no server) ===")
+
+    # --- Pass A: the degenerate runbook seeds nothing, each drop is classified ---
+    case_a = _case()
+    degenerate = [d["cause"] for d in DEGENERATE_CAUSES]
+    report_a = seed_candidate_causes(
+        case_a,
+        [SeededRunbook(item_id="rb_degenerate", score=0.9, causes=degenerate)],
+        current_turn=1,
+        # High cap so every bad cause is visited (none seed, so it never trips).
+        max_causes=len(degenerate) + 1,
+    )
+    chk.gate("degenerate runbook seeds nothing", not report_a.seeded_hypothesis_ids)
+    chk.gate("degenerate runbook adds no hypothesis", not case_a.hypotheses)
+
+    by_letter = {s.cause_letter: s for s in report_a.skipped}
+    for d in DEGENERATE_CAUSES:
+        letter = d["cause"]["cause_letter"]
+        s = by_letter.get(letter)
+        actual = s.skip_class.value if s else "<no skip recorded>"
+        held = s is not None and s.skip_class.value == d["expected"]
+        chk.gate(f"{d['label']} -> {d['expected']}", held)
+        print(f"  [{'ok ' if held else 'BAD'}] {d['label']}: {actual}")
+
+    chk.gate(
+        "actionable-drop alarm fires for the degenerate runbook",
+        report_a.runbooks_contributing_nothing() == ["rb_degenerate"],
+    )
+
+    # --- Pass B: the control good cause still seeds (the path works) ------------
+    case_b = _case()
+    report_b = seed_candidate_causes(
+        case_b,
+        [SeededRunbook(item_id="rb_control", score=0.9, causes=[CONTROL_CAUSE])],
+        current_turn=1,
+    )
+    chk.gate("control cause seeds (path works)", bool(report_b.seeded_hypothesis_ids))
+    chk.gate(
+        "control runbook not falsely alarmed",
+        report_b.runbooks_contributing_nothing() == [],
+    )
+    meta["seeding_observed"] = bool(report_b.seeded_hypothesis_ids)
+
+    measurements = {
+        "degenerate_causes": len(degenerate),
+        "skips_by_class": dict(Counter(s.skip_class.value for s in report_a.skipped)),
+        "control_seeded": len(report_b.seeded_hypothesis_ids),
+    }
+    print(f"\n  skips_by_class={measurements['skips_by_class']}")
+    print(f"  control_seeded={measurements['control_seeded']}")
+    return chk, measurements
+
+
+# ---------------------------------------------------------------------------
 MODES = {
     "smoke": (ARGOCD_DESC, run_smoke),
     "mislead": (ARGOCD_DESC, run_mislead),
     "exclusion": (ARGOCD_DESC, run_exclusion),
     "postturn1": (VAGUE_DESC, run_postturn1),
+    # In-process, deterministic — dispatched specially in main() (no server/LLM).
+    "smoke-degenerate": (None, run_smoke_degenerate),
 }
 
 
@@ -875,6 +1194,29 @@ def main():
         help="write the machine-readable per-run result (for aggregate_runs.py)",
     )
     args = ap.parse_args()
+
+    # smoke-degenerate is in-process (deterministic, no server/LLM): build offline
+    # metadata, run the seeder directly, and skip the HTTP login/create/drive path.
+    if args.mode == "smoke-degenerate":
+        meta = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "commit": _git_commit(),
+            "base_url": None,
+            "mode": args.mode,
+            "provider": None,
+            "model": None,
+            "flag_env": None,
+            "case_id": None,
+            "turns_attempted": 0,
+            "crashed_at_turn": None,
+            "crashes": [],
+            "seeding_observed": None,
+        }
+        print(f"# commit={meta['commit']} mode={args.mode} (in-process)")
+        chk, measurements = run_smoke_degenerate(meta)
+        ok = chk.report()
+        _write_json(args.json, meta, chk, measurements)
+        sys.exit(0 if ok else 1)
 
     desc, runner = MODES[args.mode]
     meta = build_metadata(args.base_url, args.mode)
