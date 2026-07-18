@@ -117,10 +117,11 @@ live at the retrieval seam:
   personal-scoped runbooks, seed that user's *own* future investigations — while
   preserving strict cross-user isolation: the personal condition is keyed on the
   owner's `user_id`, so user B's case can never surface user A's personal
-  runbooks. (Team-scoped KB is a deliberate inert seam: org/team collaboration is
-  Cloud-only and no team service is wired anywhere today, and case→runbook
-  conversion emits only `personal`; when team lands, the owner's team scopes OR
-  into the same filter, mirroring `KnowledgeService.search_documents`.)
+  runbooks. (Team scope is not yet wired: team-membership resolution is unbuilt,
+  so the owner's team_ids cannot be resolved here — the KB QA path resolves an
+  empty team set for the same reason. Team-scoped KB sharing is a Cloud feature
+  being built in (ADR-002); when membership resolution lands, the owner's team
+  scopes OR into the same filter, mirroring `KnowledgeService.search_documents`.)
 - **Trust tier.** `KnowledgeService.get_runbook_causes` refuses the causes record
   of any `EXPERIMENTAL`-tier item, so the seeder never consumes unverified
   knowledge. The produce side already extracts causes only at the

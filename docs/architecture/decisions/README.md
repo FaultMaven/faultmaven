@@ -5,6 +5,7 @@ Records of significant architecture decisions with their context, rationale, and
 ## Records
 
 - **[ADR-001: Monolith Evolution Strategy](./adr-001-monolith-evolution-strategy.md)** — Decision to evolve from `FaultMaven-Mono` toward the current modular monolith
+- **[ADR-002: Team Collaboration Layer](./adr-002-team-collaboration-layer.md)** — Build the Enterprise > Organization > Team sharing layer as a Cloud (multi-tenant) feature; membership-backed team-scoped KB (Proposed)
 
 ## Format
 
