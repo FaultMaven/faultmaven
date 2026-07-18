@@ -79,6 +79,19 @@ load-bearing decisions:
    dead code, just a provider that answers "no teams" honestly. This mirrors how
    organization resolution is already gated by the tenant provider.
 
+   **Hard prerequisite — multi-tenant readiness.** `TENANT_PROVIDER = multi`
+   **cannot boot today**: `providers/tenancy/factory.py` sets
+   `MULTI_TENANT_READY = False` and `create_tenant_provider` fails *closed* on
+   `multi` (raises `TenancyConfigurationError`) because request→organization
+   wiring and full row-level isolation have not shipped. So every Cloud
+   deployment currently runs `single`. Team **Phase 2 onward therefore depends on
+   multi-tenant readiness landing first** (the ADR-010 forward-consolidation P2
+   work: request→org wiring + flipping `MULTI_TENANT_READY` + the RLS posture in
+   the isolation subsection below). Phase 1 (the repository) is pure substrate and
+   can land before that; Phases 2–5 cannot be activated or end-to-end tested until
+   multi is bootable. This dependency, not team code, is the true gate on the
+   Cloud feature going live.
+
 3. **Membership is populated, not assumed.** Read-side resolution is worthless
    until `team_members` has rows. Membership is written through **two sources,
    both landing in `team_members`**: (a) a **Team management API** (dashboard —
@@ -87,23 +100,58 @@ load-bearing decisions:
    maps to a team and workspace membership projects onto `team_members`. (The
    Slack mapping model is an open question — see below.)
 
-4. **Team-scoped KB writes are membership-validated.** Publishing a KB item with
-   `scope="team", team_id=T` requires the caller to be a member of `T` (checked
-   against `team_members`), replacing today's unvalidated free-form `team_id`.
-   This makes team scoping trustworthy before anything reads it.
+4. **Team-scoped KB writes AND verification are membership-validated.** Publishing
+   a KB item with `scope="team", team_id=T` requires the caller to be a member of
+   `T` (checked against `team_members`), replacing today's unvalidated free-form
+   `team_id`. Critically, the **seedability boundary is verification, not
+   ingestion**: `get_runbook_causes` refuses `EXPERIMENTAL` items, so it is the
+   `verify_draft` / `verify_batch` promotion to `COMMUNITY` that actually makes an
+   LLM-authored team runbook seedable to every teammate. Those verify endpoints
+   are **auth-only today** (no scope or membership check). So membership
+   validation must cover the verify path, not just create/convert — it is the
+   real trust gate for team seeding (see Phase 4).
 
 5. **Read resolution is keyed on the right principal.** For KB QA the principal
    is the requesting user; for the **cause-seeder pre-fetch it is the case
-   owner** (`case.user_id` / `case.team_id`), not the session user, so a case
-   seeds from the teams its owner belongs to. Both paths converge on the shared
-   `build_kb_scope_filter(owner_id, team_ids)` helper introduced in R2 — team
-   OR-extends the filter the moment `team_ids` resolves non-empty, so no
-   retrieval-site changes are needed beyond passing the resolved ids.
+   owner**, not the session user. *Which* of the owner's scopes seeds is an open
+   question (see below): all teams the owner belongs to, versus only the case's
+   own team (`cases.team_id` exists) — these diverge for team-originated cases.
+   Both paths converge on the shared `build_kb_scope_filter(owner_id, team_ids)`
+   helper introduced in R2 — team OR-extends the filter the moment `team_ids`
+   resolves non-empty, so no retrieval-site changes are needed beyond passing the
+   resolved ids.
 
 6. **RBAC.** `team_role` on `team_members` carries the role. The concrete role
    set (e.g. member / lead / admin) and the permissions each grants are settled
    with the identity/RBAC direction; this ADR requires only that the repository
    expose membership and role so RBAC can build on it.
+
+### Isolation and RLS (the substrate the OR-filter trusts)
+
+KB reads resolve against **ChromaDB**, which PostgreSQL RLS never sees — so
+`build_kb_scope_filter` is the *only* isolation on the KB read path, and its
+`team_ids` input is therefore security-critical. A single wrong `team_id` in that
+list serves another org's entire team KB. Two facts make this sharp:
+
+- `team_members` (composite PK `(user_id, team_id)`, no `organization_id`) is
+  **not** in the RLS `_TENANTED_TABLES` set (migration 018) and structurally
+  cannot be org-tenanted as it stands; only `teams` carries an RLS policy.
+- Nothing today constrains a `team_members` row to link a user and a team of the
+  **same organization** — the future writers (Phase 3 API, Phase 6 Slack sync)
+  are the only defense.
+
+Decisions this ADR fixes:
+
+- **Same-org membership invariant.** A `team_members` row may link a user and a
+  team only within one organization. Enforced by every writer (Phase 3, Phase 6).
+- **Resolution joins through `teams`.** Membership resolution is
+  `SELECT tm.team_id FROM team_members tm JOIN teams t ON t.team_id = tm.team_id
+  WHERE tm.user_id = :uid`, run under the **limited `faultmaven_app` role** (RLS
+  is bypassed for owner/superuser). The join makes the existing `teams` RLS policy
+  filter cross-org memberships **fail-closed for free**, defending the OR-filter's
+  input even if a bad membership row exists.
+- **`team_members` RLS is an open question** (org column + policy, or rely on the
+  join) — see below; it is the one place this layer may need a new migration.
 
 ---
 
@@ -114,11 +162,15 @@ model (isolated worktree, `lint-imports`, `/code-review`).
 
 ### Phase 1 — Membership resolution (repository)
 
-Concrete `TeamRepository` implementing `ITeamRepository`, modeled on
+Concrete `TeamRepository` implementing the auth-module `ITeamRepository`
+(`modules/auth/domain/models/organization.py` — the ABC that declares
+`list_all_user_team_ids`, the method both consumers call; the second ABC in
+`models/interfaces_user.py` lacks it and should be consolidated), modeled on
 `OrganizationRepository` (`PostgreSQL…` + `Sessionless…` variants).
-`list_all_user_team_ids(user_id)` is `SELECT team_id FROM team_members WHERE
-user_id = :uid`. Unit-tested against the real tables. **No behavior change yet**
-(nothing constructs it) — pure substrate.
+`list_all_user_team_ids(user_id)` **joins through `teams`** (see Isolation and
+RLS) so cross-org memberships fail-closed, and runs under `faultmaven_app`.
+Unit-tested against the real tables. **No behavior change yet** (nothing
+constructs it) — pure substrate.
 
 ### Phase 2 — Wiring, cloud-gated
 
@@ -137,10 +189,15 @@ RBAC-gated, organization-scoped. This is the first path that populates
 
 ### Phase 4 — Team-scoped KB write validation
 
-`/knowledge/convert`, `/runbooks/create`, `/knowledge/scan`, and the conversion
-funnel validate `team_id` against the caller's memberships; reject a team the
-caller is not in. Closes the "any authed user can publish to an arbitrary
-team_id" hole.
+`/knowledge/convert`, `/runbooks/create`, `/knowledge/scan`, and — explicitly —
+the **`verify_draft` / `verify_batch`** promotion validate `team_id` against the
+caller's memberships; reject a team the caller is not in. Verify is called out
+because it is the EXPERIMENTAL→COMMUNITY promotion that makes a team draft
+seedable (Decision 4); leaving it out would let a non-member promote a
+team-scoped draft into the seedable tier — the NO-INCORRECT-CONCLUSION surface
+for teams. Whether verify additionally requires a `team_role` (not just
+membership) is deferred to the RBAC open question. Closes the "any authed user
+can publish/verify to an arbitrary team_id" hole.
 
 ### Phase 5 — Read-side resolution wired end-to-end
 
@@ -199,25 +256,42 @@ membership:
 **The single join point.** Team Phase 5 (team-scoped runbooks become seedable)
 inherits R2's soundness precondition: weakly-gated, LLM-authored runbooks must be
 trust-gated *before* they seed live — and team's blast radius is larger (a bad
-team runbook would seed every teammate, not just its author). Its hard
-preconditions are already done — R1 (validator hardening) + R2 (EXPERIMENTAL
-filter) — plus **team Phase 4** (membership-validated writes, in this ADR). The
-campaign's **R5** (don't let a failed fix's commands land in a runbook) is a
-strong *should-precede* for team Phase 5 given that blast radius; **R4**
-(admin-gated global writes) is a *sibling* of team Phase 4 — the same KB
-write-authorization problem for a different scope — not a prerequisite. So team
-Phase 5 slots in after team Phase 4 and after/with R5. This is a scheduling
-constraint that mirrors R1-before-R2; it changes no campaign objective and no
-campaign ordering. It is synergy, not conflict: team Phase 4 + R4 together
-complete the produce-side write-authorization story (team + global) the campaign
-only half-covers today.
+team runbook would seed every teammate, not just its author). The **hard gate**
+(what preserves NO-INCORRECT-CONCLUSION) is R1 (validator hardening) + R2
+(EXPERIMENTAL filter), both done, + **team Phase 4** (membership-validated writes
+*and verify*, in this ADR). The load-bearing reason that set suffices is the
+seeder's own engine-side property: a seeded cause is a **CANDIDATE-only prior
+with no evidentiary privilege** (`milestone_engine.py`) — subject to the same
+decay, anchoring detection, and evidence-required validation as any hypothesis —
+so even a bad team runbook can bias attention but *cannot conclude*. Beyond the
+hard gate, two campaign units are strong **should-precede** for team Phase 5,
+both because team amplifies the flywheel: **R5** (don't let a failed fix's
+commands land in a runbook) and **R3** (provenance-uniqueness — team sharing
+creates an echo loop where A's seed → B's resolution → B's near-duplicate team
+runbook → C's case; R3 is the guard against laundering a seed back in as new
+knowledge). **R4** (admin-gated global writes) is a *sibling* of team Phase 4 —
+the same KB write-authorization problem for a different scope, sharing the
+`/scan` and verify routes — not a prerequisite; done together they complete the
+produce-side write-authorization story (team + global) the campaign only
+half-covers today. Net: a scheduling constraint that mirrors R1-before-R2,
+changing no campaign objective or ordering.
+
+> **Verified-team-runbook trust tier.** A team-verified draft lands at
+> `COMMUNITY` — the *same* tier as platform-curated pack runbooks — so one
+> teammate's verify click puts an LLM-authored runbook at pack parity for the
+> whole team. This ADR accepts that (membership + the candidate-only property
+> bound the risk); a team-specific sub-tier is a design point deliberately left
+> open (see Open Questions) rather than silently foreclosed.
 
 **Two tracks, one operating model.** Track A (campaign) proceeds on its existing
 order — R3 → R4 → R5 → R6 → R7 → R8/R9 → Phase 6 → Phase 7. Track B (team) runs
 Phase 1 (repo) → 2 (wiring) → 3 (management API) → 4 (write-validation) as pure
 infrastructure whenever there is bandwidth, with team Phase 5 (live seeding)
-gated behind team Phase 4 + R5, and team Phase 6 (Slack) / 7 (cleanup) after. One
-PR-sized unit per session, alternating tracks — the campaign never pauses.
+**hard-gated behind team Phase 4** (and R1/R2, done), **R5 and R3 should-precede**,
+and team Phase 6 (Slack) / 7 (cleanup) after. One PR-sized unit per session,
+alternating tracks — the campaign never pauses. (Note team Phase 2 onward is also
+gated on multi-tenant readiness — see Decision 2 — a dependency outside both
+tracks.)
 
 ---
 
@@ -281,9 +355,26 @@ PR-sized unit per session, alternating tracks — the campaign never pauses.
 2. **Slack mapping cardinality.** Workspace ↔ team 1:1, or does a workspace map
    to an organization with channels/user-groups as teams?
 3. **RBAC role set.** The concrete `team_role` values and their permissions
-   (settled with the identity/RBAC direction).
+   (settled with the identity/RBAC direction) — including whether **verifying** a
+   team draft requires a role beyond membership (Phase 4 / Decision 4).
 4. **Standalone teams.** Confirmed out of scope here (Cloud-only). Revisit only
    if a self-hosted multi-user org needs local teams.
+5. **Multi-tenant readiness (ADR-010 P2).** Team Phases 2–5 depend on
+   `TENANT_PROVIDER = multi` becoming bootable (`MULTI_TENANT_READY`, request→org
+   wiring, RLS). What does Cloud run in the interim, and is that work sequenced
+   ahead of team Phase 2? (Decision 2.)
+6. **`team_members` RLS posture.** Add an `organization_id` column + RLS policy to
+   `team_members` (a new migration), or rely on the join-through-`teams`
+   resolution? The join defends reads for free; the column defends every future
+   writer too. (Isolation and RLS.)
+7. **Seeding principal.** Does the seeder resolve *all* teams the case owner
+   belongs to, or only the case's own `cases.team_id`? These diverge for
+   team-originated cases (ADR-012). (Decision 5.)
+8. **Verified-team-runbook tier.** Accept `COMMUNITY` (pack parity) for
+   team-verified drafts, or introduce a team-specific sub-tier? (Join-point note.)
+9. **Slack sync as an isolation writer.** Phase 6 makes an external system a
+   writer of `team_members` — the table the read-isolation invariant depends on.
+   Its reconciliation model is an isolation concern, not just a consistency one.
 
 ---
 
@@ -296,6 +387,11 @@ PR-sized unit per session, alternating tracks — the campaign never pauses.
 - [Architectural Design Principles](../core-architecture/architectural-design-principles.md)
   — `TENANT_PROVIDER` seam, tenancy tables.
 - [IAM Design](../security/iam-design.md) — organization context and claims.
+- `providers/tenancy/factory.py` — `MULTI_TENANT_READY` gate; ADR-010
+  forward-consolidation P2 (the multi-tenant readiness this depends on).
+- `alembic/versions/…018_rls_tenant_isolation.py` — RLS `_TENANTED_TABLES`
+  (`teams` covered, `team_members` not) and the owner/superuser bypass requiring
+  the `faultmaven_app` role.
 
 ---
 
