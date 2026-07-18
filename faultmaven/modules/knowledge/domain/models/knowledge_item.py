@@ -60,7 +60,7 @@ class KnowledgeScope(str, Enum):
     Values:
         PERSONAL: Visible only to one user (requires owner_id).
         TEAM: Visible to one team (requires team_id).
-        ORGANIZATION: Visible across one workspace (organization_id is
+        ORGANIZATION: Visible across one organization (organization_id is
             the only ownership marker; owner_id and team_id are optional).
         GLOBAL: Platform-wide built-in runbooks (FaultMaven-shipped only).
     """

@@ -11,8 +11,9 @@ Implemented by:
 
 Hierarchy: Enterprise > Organization > Team > User. An enterprise owns
 billing, plan tier, and SSO/SAML config; organizations live underneath it
-as workspaces. Single-tenant deployments (standalone) get one
-default enterprise containing one default organization.
+as customer tenants (the hard data-isolation boundary). Single-tenant
+deployments (standalone) get one default enterprise containing one default
+organization.
 
 Cross-layer parity:
 - ``Enterprise.name``, ``Organization.name``, ``Team.name`` mirror DB
@@ -130,7 +131,7 @@ class Enterprise(BaseModel):
 
 
 class Organization(BaseModel):
-    """Organization (workspace) model. Lives under an enterprise."""
+    """Organization (customer tenant) model. Lives under an enterprise."""
 
     organization_id: str
     enterprise_id: Optional[str] = None

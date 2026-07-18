@@ -4,8 +4,8 @@ Schema is organized into four domains:
 
 - **User domain** — `enterprises`, `users`, `organizations`, `teams` and their
   membership/audit/auth tables. Three-tier tenancy: enterprises (corporate
-  umbrella) → organizations (workspaces, hard isolation boundary) → teams
-  (routing buckets).
+  umbrella) → organizations (customer tenants, hard isolation boundary) →
+  teams (routing buckets).
 - **Case domain** — `cases` and its children: evidence, hypotheses, solutions,
   messages, files, actions, tags, checkpoints, entities, sessions, agent
   executions, tool calls, hypothesis-evidence junction, reports.
@@ -20,7 +20,7 @@ Conventions:
 - Audit columns: `created_at`, `updated_at` (server-default `now()`).
 - `*_by` audit columns are real FKs to `users.user_id` with `ON DELETE SET NULL`.
 - `organization_id` is denormalized onto every case-domain child table for fast
-  RLS without JOINs; `ON DELETE CASCADE` so workspace deletion clears child rows.
+  RLS without JOINs; `ON DELETE CASCADE` so organization deletion clears child rows.
 - `case_id` ON DELETE policy splits by table role:
   * Lifecycle-side (evidence, hypotheses, messages, etc.): `CASCADE` — die with the case.
   * Permanence-side (knowledge_suggestions, conversion_jobs): `SET NULL` — survive case deletion.
@@ -339,9 +339,9 @@ class UserModel(Base):
 
 
 class OrganizationModel(Base):
-    """Workspace: hard data-isolation boundary. Cases never cross organization
-    lines; PostgreSQL RLS enforces this. An organization is owned by an
-    enterprise and contains teams."""
+    """Organization: hard data-isolation boundary (the customer tenant). Cases
+    never cross organization lines; PostgreSQL RLS enforces this. An
+    organization is owned by an enterprise and contains teams."""
 
     __tablename__ = "organizations"
 
@@ -2011,7 +2011,7 @@ class ReportModel(Base):
 
 class KnowledgeItemModel(Base):
     """Knowledge base item (RAG corpus). Scope determines visibility:
-    `personal` (one user), `team` (one team), `organization` (one workspace),
+    `personal` (one user), `team` (one team), `organization` (one tenant),
     `global` (platform-wide built-in runbooks)."""
 
     __tablename__ = "knowledge_items"

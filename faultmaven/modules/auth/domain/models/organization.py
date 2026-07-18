@@ -78,7 +78,7 @@ class AuditCategory(str, Enum):
 
 
 class Organization(BaseModel):
-    """Organization (workspace/tenant) model."""
+    """Organization (customer tenant) model."""
 
     organization_id: str
     name: str = Field(min_length=1)
