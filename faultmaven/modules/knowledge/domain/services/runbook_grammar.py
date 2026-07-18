@@ -17,9 +17,12 @@ LAYER NOTE — three grammar surfaces exist and must agree:
      tags, fallback token), a manual mirror of the kb-toolkit config defaults;
   2. this module — the PARSE grammar (regexes + ``parse_cause_subfields``), a
      manual mirror of ``kb_toolkit/core/runbook_grammar.py``;
-  3. ``runbook_validator`` — the GATE. Its private cause-block helpers are
-     tuned for validation error messages (H3+ tolerance, present-vs-missing
-     sub-field distinction) and are deliberately NOT shared here.
+  3. ``runbook_validator`` — the GATE. It anchors its cause ENUMERATION and
+     sub-field parsing on THIS module (the same ``CAUSE_HEADING_RE`` /
+     ``CAUSES_SECTION_RE`` / ``parse_cause_subfields`` the extractor uses), so a
+     draft the gate passes is exactly one the extractor can parse — the gate can
+     no longer be looser than the parser it fronts. Only its message-oriented
+     present-vs-empty wording is validator-private; the grammar is shared.
 
 The two repos cannot import one another, so (2) is a **manual mirror**. Two
 guards keep it honest: ``test_runbook_grammar`` (frozen-literal drift-guard —
@@ -36,6 +39,18 @@ CAUSES_SECTION_RE = re.compile(r"(?ms)^##\s+Causes\s*\n(.*?)(?=^##\s+|\Z)")
 
 # A ``### Cause X: <name>`` heading inside a markdown block (captures letter + name).
 CAUSE_HEADING_RE = re.compile(r"^### Cause ([A-Z]):\s*(.+?)\s*$", re.MULTILINE)
+
+# A ``### Step N: <title>`` diagnostic-step heading — the step numbers an
+# Indicator's ``[Step N]`` token must resolve to.
+STEP_HEADING_RE = re.compile(r"^### Step (\d+):", re.MULTILINE)
+
+# An Indicator token: ``[Step N]`` (an operator step), ``[Symptom]`` (an observed
+# condition), or ``[Default]`` (the fallback Cause marker).
+INDICATOR_TOKEN_RE = re.compile(r"\[(Step \d+|Symptom|Default)\]")
+
+# A ``[Step N]`` reference inside an Indicator entry (captures N so the validator
+# can resolve it against ``## Diagnostic Steps``).
+STEP_REF_RE = re.compile(r"\[Step (\d+)\]")
 
 # Strip HTML comments (``<!-- match: ... -->`` directives etc.) before parsing
 # rung text — they are authoring annotations, not chain content.

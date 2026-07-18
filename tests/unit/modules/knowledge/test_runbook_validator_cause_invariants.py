@@ -331,3 +331,328 @@ class TestSectionHeaderAnchoring:
     def test_exact_causes_header_accepted(self):
         errors = self._structure_errors(self._full_runbook("## Causes"))
         assert not any("Missing required section" in e for e in errors)
+
+
+# =============================================================================
+# R1 validator hardening — the gate must reject what the extractor silently
+# drops, and carry the upstream kb-toolkit ERRORS the backend gate was missing.
+# =============================================================================
+
+
+def _graph_check(content):
+    v = RunbookValidator()
+    errors, warnings = [], []
+    v._validate_cause_graph(content, errors, warnings)
+    return errors, warnings
+
+
+def _causes(body: str) -> str:
+    """A minimal ``## Causes`` section wrapping ``body`` for the cause-graph gate."""
+    return f"## Causes\n\n{body}"
+
+
+class TestMalformedCauseHeadingsBlock:
+    """A near-miss heading the extractor drops must be surfaced, not silently
+    passed. The strict form is ``### Cause X: <name>`` (H3, single uppercase A-Z,
+    colon immediately after the letter, non-empty name)."""
+
+    @pytest.mark.parametrize(
+        "heading",
+        [
+            "#### Cause A: Wrong heading level",  # H4, extractor is H3-exact
+            "##### Cause A: Even deeper",  # H5
+            "### Cause AA: Double letter",  # multi-char letter
+            "### Cause a: Lowercase letter",  # lowercase
+            "### Cause 1: Numeric letter",  # digit
+            "### Cause A : Space before colon",  # space before colon
+            "### Cause A:",  # empty name
+            "  ### Cause A: Indented",  # indented — extractor anchors at column 0
+        ],
+    )
+    def test_near_miss_heading_flagged(self, heading):
+        errors, _ = _graph_check(
+            _causes(f"{heading}\n**Statement:** x\n**Indicators:**\n- [Symptom] x\n")
+        )
+        assert any("Malformed Cause heading" in e for e in errors), heading
+
+    def test_strict_heading_not_flagged(self):
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: Pool exhaustion\n"
+                "**Statement:** Idle transactions exhaust the pool.\n"
+                "**Indicators:**\n- [Symptom] connections climb\n"
+                "**Interventions:**\n- **remediation** (root): fix. **Verification:** ok.\n\n"
+                "### Cause Z: Unidentified\n"
+                "**Statement:** None match.\n**Indicators:**\n- [Default]\n"
+                "**Interventions:**\n- **mitigation** (D): escalate. "
+                "**Risk:** low. **Duration:** short. **Verification:** n/a.\n"
+            )
+        )
+        assert not any("Malformed Cause heading" in e for e in errors)
+
+    def test_heading_inside_code_fence_not_flagged(self):
+        # An illustrative ``#### Cause`` inside an Intervention command example must
+        # NOT trip the malformed-heading block (false positive).
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: Real\n**Statement:** x.\n**Indicators:**\n- [Symptom] y\n"
+                "**Interventions:**\n- **remediation** (root): apply this.\n\n"
+                "  ```bash\n  # example: #### Cause of the stall\n  echo fix\n  ```\n\n"
+                "  **Verification:** ok.\n\n"
+                "### Cause Z: Unidentified\n**Statement:** None.\n**Indicators:**\n- [Default]\n"
+                "**Interventions:**\n- **mitigation** (D): esc. "
+                "**Risk:** l. **Duration:** s. **Verification:** n/a.\n"
+            )
+        )
+        assert not any("Malformed Cause heading" in e for e in errors)
+
+    def test_causes_section_header_not_flagged_as_malformed(self):
+        # 'Causes' has no word boundary after 'Cause' → the loose detector must
+        # not mistake the ## Causes section header for a malformed cause heading.
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: Real\n**Statement:** x.\n**Indicators:**\n- [Symptom] y\n"
+                "**Interventions:**\n- **remediation** (root): fix. **Verification:** ok.\n\n"
+                "### Cause Z: Unidentified\n**Statement:** None.\n**Indicators:**\n- [Default]\n"
+                "**Interventions:**\n- **mitigation** (D): esc. "
+                "**Risk:** l. **Duration:** s. **Verification:** n/a.\n"
+            )
+        )
+        assert not any("Malformed Cause heading" in e for e in errors)
+
+
+class TestStatementLengthBypassClosed:
+    """The Statement length gate must measure the value the EXTRACTOR sees
+    (bounded only by the four schema labels), not a value truncated at a stray
+    non-schema ``**Label:**``."""
+
+    def test_stray_bold_label_no_longer_truncates_before_length_gate(self):
+        v = RunbookValidator()
+        errors, warnings = [], []
+        # 250 x's up to a stray **Note:** (a non-schema label), then 100 y's up to
+        # **Indicators:**. Old parse stopped at **Note:** (250 chars, under gate);
+        # the shared parse runs to **Indicators:** (>300 chars) → blocks.
+        content = (
+            "## Causes\n\n"
+            "### Cause A: x\n"
+            f"**Statement:** {'x' * 250}\n"
+            f"**Note:** {'y' * 100}\n"
+            "**Indicators:**\n- [Symptom] z\n"
+            "**Interventions:**\n- **remediation** (root): fix. **Verification:** ok.\n"
+        )
+        v._validate_cause_subfields(content, errors, warnings)
+        assert any("Statement is" in e and "(>300)" in e for e in errors)
+
+
+class TestSectionScopedCauseCount:
+    """The '≥1 ### Cause' gate scans the Causes SECTION BODY (strict heading), so
+    an example ``### Cause`` heading in another section cannot satisfy it while the
+    extractor parses zero causes."""
+
+    def _structure_errors(self, content):
+        v = RunbookValidator()
+        errors, warnings = [], []
+        v._validate_structure(content, errors, warnings)
+        return errors
+
+    def test_out_of_section_cause_does_not_satisfy_count(self):
+        content = (
+            "## Symptom Recognition\nx\n## Applicability\nx\n## Diagnostic Steps\nx\n"
+            "## Diagnostic Steps\n### Cause A: illustrative example\nprose\n"
+            "## Causes\n(no real cause here)\n"
+            "## Prevention\nx\n## Sources\n- x\n"
+        )
+        errors = self._structure_errors(content)
+        assert any("at least one ### Cause subsection" in e for e in errors)
+
+
+class TestPortedCauseGraphErrors:
+    """The upstream kb-toolkit cause-graph ERRORS, previously missing from the
+    backend gate."""
+
+    def test_cause_z_without_default_is_reserved_error(self):
+        # Cause Z with a NON-[Default] indicator is a real cause on the reserved
+        # letter — the extractor would seed it as a candidate root.
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: Real\n**Statement:** x.\n**Indicators:**\n- [Symptom] y\n"
+                "**Interventions:**\n- **remediation** (root): fix. **Verification:** ok.\n\n"
+                "### Cause Z: Not actually the fallback\n"
+                "**Statement:** A real cause mis-lettered Z.\n"
+                "**Indicators:**\n- [Symptom] z\n"
+                "**Interventions:**\n- **remediation** (root): fix. **Verification:** ok.\n"
+            )
+        )
+        assert any("reserved for the [Default] fallback" in e for e in errors)
+
+    def test_duplicate_cause_letter_blocks(self):
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: First\n**Statement:** a.\n**Indicators:**\n- [Symptom] y\n"
+                "**Interventions:**\n- **remediation** (root): f. **Verification:** ok.\n\n"
+                "### Cause A: Second\n**Statement:** b.\n**Indicators:**\n- [Symptom] z\n"
+                "**Interventions:**\n- **remediation** (root): f. **Verification:** ok.\n"
+            )
+        )
+        assert any("Duplicate Cause letter 'A'" in e for e in errors)
+
+    def test_missing_fallback_blocks(self):
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: Only cause\n**Statement:** a.\n**Indicators:**\n- [Symptom] y\n"
+                "**Interventions:**\n- **remediation** (root): f. **Verification:** ok.\n"
+            )
+        )
+        assert any("must contain a fallback Cause" in e for e in errors)
+
+    def test_multiple_fallback_blocks(self):
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: One fallback\n**Statement:** a.\n**Indicators:**\n- [Default]\n"
+                "**Interventions:**\n- **mitigation** (D): esc. "
+                "**Risk:** l. **Duration:** s. **Verification:** n/a.\n\n"
+                "### Cause Z: Another fallback\n**Statement:** b.\n**Indicators:**\n- [Default]\n"
+                "**Interventions:**\n- **mitigation** (D): esc. "
+                "**Risk:** l. **Duration:** s. **Verification:** n/a.\n"
+            )
+        )
+        assert any("exactly one fallback is required" in e for e in errors)
+
+    def test_no_real_cause_blocks(self):
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause Z: Unidentified\n**Statement:** None match.\n"
+                "**Indicators:**\n- [Default]\n"
+                "**Interventions:**\n- **mitigation** (D): esc. "
+                "**Risk:** l. **Duration:** s. **Verification:** n/a.\n"
+            )
+        )
+        assert any("at least one real ### Cause" in e for e in errors)
+
+    def test_chain_present_but_unparseable_blocks(self):
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: x\n**Statement:** a.\n"
+                "**Chain:**\nThis is prose with no ref rungs.\n"
+                "**Indicators:**\n- [Symptom] y\n"
+                "**Interventions:**\n- **remediation** (root): f. **Verification:** ok.\n"
+            )
+        )
+        assert any("**Chain** is present but has no" in e for e in errors)
+
+    def test_invalid_intervention_quadrant_blocks(self):
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: x\n**Statement:** a.\n**Indicators:**\n- [Symptom] y\n"
+                "**Interventions:**\n- **not_a_quadrant** (root): f. **Verification:** ok.\n"
+            )
+        )
+        assert any("quadrant 'not_a_quadrant' is not valid" in e for e in errors)
+
+    def test_interventions_without_quadrant_entry_blocks(self):
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: x\n**Statement:** a.\n**Indicators:**\n- [Symptom] y\n"
+                "**Interventions:**\nJust prose, no quadrant-tagged bullet.\n"
+            )
+        )
+        assert any("no quadrant-tagged entry" in e for e in errors)
+
+    def test_indicator_without_token_blocks(self):
+        errors, _ = _graph_check(
+            _causes(
+                "### Cause A: x\n**Statement:** a.\n"
+                "**Indicators:**\n- an observation with no bracketed token\n"
+                "**Interventions:**\n- **remediation** (root): f. **Verification:** ok.\n"
+            )
+        )
+        assert any("has no [Step N] / [Symptom] / [Default] token" in e for e in errors)
+
+    def test_indicator_step_reference_must_resolve(self):
+        content = (
+            "## Diagnostic Steps\n\n### Step 1: Check\nlook\n\n"
+            "## Causes\n\n### Cause A: x\n**Statement:** a.\n"
+            "**Indicators:**\n- [Step 5] references a step that does not exist\n"
+            "**Interventions:**\n- **remediation** (root): f. **Verification:** ok.\n"
+        )
+        errors, _ = _graph_check(content)
+        assert any("[Step 5] which does not exist" in e for e in errors)
+
+
+# A well-formed conversion-shaped runbook (mirrors the conversion prompt template)
+# — the guard that R1 hardening did NOT over-tighten the gate.
+_VALID_RUNBOOK = """---
+id: db-pool-exhaustion
+title: Database Connection Pool Exhaustion
+domain: database
+service: postgresql
+symptom_class:
+  - connection-errors
+severity: high
+scope: global
+version: 1.0.0
+last_updated: 2026-07-17
+verified_by: sterlanyu
+status: verified
+tags:
+  - postgresql
+---
+
+## Symptom Recognition
+Applications report connection timeouts under load.
+
+## Applicability
+PostgreSQL-backed services using a bounded connection pool.
+
+## Diagnostic Steps
+### Step 1: Check active connections
+```bash
+psql -c "select count(*) from pg_stat_activity"
+```
+
+## Causes
+
+### Cause A: Idle transactions exhaust the pool
+**Statement:** Idle-in-transaction sessions hold connections and exhaust the pool.
+**Indicators:**
+- root: [Step 1] open connection count climbs monotonically
+**Interventions:**
+- **remediation** (root): Set a session timeout.
+
+  ```bash
+  ALTER SYSTEM SET idle_in_transaction_session_timeout = '30s';
+  ```
+
+  **Verification:** Re-run Step 1; the connection count stabilizes.
+
+### Cause Z: Unidentified
+**Statement:** None of the documented causes match the observed evidence.
+**Indicators:**
+- [Default]
+**Interventions:**
+- **mitigation** (D): Capture full diagnostics and consult an SME.
+
+  **Risk:** Diagnostic only. **Duration:** Until SME review. **Verification:** N/A.
+
+## Prevention
+- Add connection-pool saturation monitoring.
+
+## Sources
+- vendor docs -- https://example.com/postgres
+"""
+
+
+class TestWellFormedDraftStillPasses:
+    def test_valid_conversion_shaped_runbook_passes(self):
+        result = RunbookValidator().validate_content(_VALID_RUNBOOK)
+        assert result.passed, result.errors
+        assert result.errors == []
+
+    def test_h4_cause_heading_fails_end_to_end(self):
+        broken = _VALID_RUNBOOK.replace(
+            "### Cause A: Idle transactions exhaust the pool",
+            "#### Cause A: Idle transactions exhaust the pool",
+        )
+        result = RunbookValidator().validate_content(broken)
+        assert not result.passed
+        assert any("Malformed Cause heading" in e for e in result.errors)
