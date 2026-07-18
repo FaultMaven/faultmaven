@@ -74,6 +74,29 @@ def _strip_chunk_suffix(chunk_id: Optional[str]) -> Optional[str]:
     return stripped or None
 
 
+def build_kb_scope_filter(
+    owner_id: Optional[str], team_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Build a vector-store ``where`` filter for the KB scopes a principal may read.
+
+    Returns ``global`` ∪ the owner's own ``personal`` ∪ each of the owner's
+    ``team`` scopes, as a ChromaDB ``$or`` (or the bare single condition when
+    only global applies). The personal/team conditions are keyed on the owner's
+    ids, so a filter built for user A can never surface user B's personal (or a
+    non-shared team's) content — this is the single source of truth for KB read
+    isolation, shared by the QA retrieval path (``search_documents``) and the KB
+    cause-seeder pre-fetch (``MilestoneEngine._prefetch_kb_context``).
+    """
+    scope_conditions: List[Dict[str, Any]] = [{"scope": "global"}]
+    if owner_id:
+        scope_conditions.append({"scope": "personal", "owner_id": owner_id})
+    for tid in team_ids or ():
+        scope_conditions.append({"scope": "team", "team_id": tid})
+    return (
+        {"$or": scope_conditions} if len(scope_conditions) > 1 else scope_conditions[0]
+    )
+
+
 class KnowledgeService:
     """Knowledge service using interface dependencies"""
 
@@ -1274,6 +1297,29 @@ class KnowledgeService:
 
             if item is None or not item.metadata:
                 return None
+
+            # Runtime trust invariant: EXPERIMENTAL (AI-generated / unreviewed /
+            # anonymous-upload) knowledge must never seed candidate causes. The
+            # call sites already extract causes only at the human-verification
+            # gate — verify_draft ingests as COMMUNITY, and the anonymous
+            # upload_document path never extracts — but enforcing it here makes
+            # it a runtime invariant: the seeder can never consume an
+            # unverified item's causes record no matter how it was written.
+            # Pack runbooks ship COMMUNITY and verified drafts are COMMUNITY, so
+            # this refuses only the EXPERIMENTAL tier.
+            from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+                VerificationLevel,
+            )
+
+            if (
+                getattr(item, "verification_level", None)
+                == VerificationLevel.EXPERIMENTAL
+            ):
+                logger.debug(
+                    f"Refusing to seed causes from EXPERIMENTAL item {item_id}"
+                )
+                return None
+
             causes = item.metadata.get("causes")
             return causes if isinstance(causes, list) else None
 
@@ -1431,19 +1477,10 @@ class KnowledgeService:
 
         try:
             user_id = getattr(user, "user_id", None) if user else None
-            user_team_ids = set(team_ids or [])
 
-            # Build a ChromaDB $or scope filter covering all accessible tiers
-            scope_conditions: List[Dict] = [{"scope": "global"}]
-            if user_id:
-                scope_conditions.append({"scope": "personal", "owner_id": user_id})
-            for tid in user_team_ids:
-                scope_conditions.append({"scope": "team", "team_id": tid})
-
-            scope_filter: Dict[str, Any] = (
-                {"$or": scope_conditions}
-                if len(scope_conditions) > 1
-                else scope_conditions[0]
+            # Build a ChromaDB $or scope filter covering all accessible tiers.
+            scope_filter: Dict[str, Any] = build_kb_scope_filter(
+                user_id, list(team_ids or [])
             )
 
             if document_type:

@@ -36,8 +36,12 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     ProblemVerification,
 )
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    VerificationLevel,
+)
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
+    build_kb_scope_filter,
 )
 
 pytestmark = pytest.mark.unit
@@ -342,6 +346,119 @@ async def test_wrapper_happy_path_seeds_through_real_seeder(enable_seeder):
 
 
 # ---------------------------------------------------------------------------
+# Scope filter: build_kb_scope_filter — the single source of KB read isolation
+# ---------------------------------------------------------------------------
+
+
+def test_scope_filter_global_only_when_no_owner():
+    assert build_kb_scope_filter(None) == {"scope": "global"}
+    assert build_kb_scope_filter("") == {"scope": "global"}
+
+
+def test_scope_filter_global_union_owner_personal():
+    assert build_kb_scope_filter("user_a") == {
+        "$or": [
+            {"scope": "global"},
+            {"scope": "personal", "owner_id": "user_a"},
+        ]
+    }
+
+
+def test_scope_filter_includes_owner_teams():
+    assert build_kb_scope_filter("user_a", ["t1", "t2"]) == {
+        "$or": [
+            {"scope": "global"},
+            {"scope": "personal", "owner_id": "user_a"},
+            {"scope": "team", "team_id": "t1"},
+            {"scope": "team", "team_id": "t2"},
+        ]
+    }
+
+
+def test_scope_filter_personal_condition_keyed_on_owner_only():
+    # Isolation invariant: the only personal condition is keyed on the given
+    # owner — never another user's id.
+    f = build_kb_scope_filter("user_b", ["t1"])
+    personal = [c for c in f["$or"] if c.get("scope") == "personal"]
+    assert personal == [{"scope": "personal", "owner_id": "user_b"}]
+
+
+# ---------------------------------------------------------------------------
+# Pre-fetch: _prefetch_kb_context — owner-aware scope + cross-user isolation
+# ---------------------------------------------------------------------------
+
+
+class _SearchRecordingStub:
+    """Records the ``filters`` passed to ``search_knowledge`` and returns a
+    configured result list (so the pre-fetch can build ``case.kb_context``)."""
+
+    def __init__(self, results=None):
+        self.results = results or []
+        self.filters_seen = []
+
+    async def search_knowledge(self, query, limit=10, filters=None):
+        self.filters_seen.append(filters)
+        return self.results
+
+
+def _search_hit(score=0.9, parent_id="rb1"):
+    return SimpleNamespace(
+        title="t",
+        snippet="s",
+        score=score,
+        document_type="runbook",
+        parent_document_id=parent_id,
+    )
+
+
+async def test_prefetch_scope_is_global_union_owner_personal():
+    # The pre-fetch must search global PLUS the case owner's own personal KB —
+    # otherwise personal (case-generated) runbooks never seed.
+    ks = _SearchRecordingStub([_search_hit()])
+    engine = _engine(ks)
+    case = _case()  # user_id="u"
+    await engine._prefetch_kb_context(case, "X fails", "symptom")
+
+    assert ks.filters_seen == [
+        {
+            "$or": [
+                {"scope": "global"},
+                {"scope": "personal", "owner_id": "u"},
+            ]
+        }
+    ]
+
+
+async def test_prefetch_personal_condition_keyed_on_this_case_owner():
+    # Cross-user isolation: the personal condition is keyed on THIS case's
+    # owner. A case owned by user_b can only ever surface user_b's personal
+    # runbooks — never another user's.
+    ks = _SearchRecordingStub([_search_hit()])
+    engine = _engine(ks)
+    case = _case()
+    case.user_id = "user_b"
+    await engine._prefetch_kb_context(case, "X fails", "symptom")
+
+    scope_filter = ks.filters_seen[0]
+    personal = [c for c in scope_filter["$or"] if c.get("scope") == "personal"]
+    assert personal == [{"scope": "personal", "owner_id": "user_b"}]
+    # No other user's personal scope leaks in.
+    assert all(c.get("owner_id") in (None, "user_b") for c in scope_filter["$or"])
+
+
+async def test_prefetch_global_only_when_no_owner():
+    # An owner-less case (user_id cleared after account deletion) falls back to
+    # a plain global scope — never an unfiltered cross-tenant read.
+    ks = _SearchRecordingStub([_search_hit()])
+    engine = _engine(ks)
+    case = _case()
+    case.user_id = None
+    await engine._prefetch_kb_context(case, "X fails", "symptom")
+
+    assert ks.filters_seen == [{"scope": "global"}]
+
+
+# ---------------------------------------------------------------------------
 # Loader: get_runbook_causes — stubbed session factory + repository
 # ---------------------------------------------------------------------------
 
@@ -420,9 +537,54 @@ async def test_loader_none_when_causes_not_a_list(monkeypatch):
 async def test_loader_returns_the_causes_list(monkeypatch):
     causes = [{"cause_letter": "A"}, {"cause_letter": "B"}]
     svc = _service_with_repo(
-        monkeypatch, item=SimpleNamespace(metadata={"causes": causes})
+        monkeypatch,
+        item=SimpleNamespace(
+            metadata={"causes": causes},
+            verification_level=VerificationLevel.COMMUNITY,
+        ),
     )
     assert await svc.get_runbook_causes("rb1") == causes
+
+
+async def test_loader_seeds_admin_verified(monkeypatch):
+    # ADMIN_VERIFIED (gold-standard) is trusted → causes returned.
+    causes = [{"cause_letter": "A"}]
+    svc = _service_with_repo(
+        monkeypatch,
+        item=SimpleNamespace(
+            metadata={"causes": causes},
+            verification_level=VerificationLevel.ADMIN_VERIFIED,
+        ),
+    )
+    assert await svc.get_runbook_causes("rb1") == causes
+
+
+async def test_loader_refuses_experimental_item(monkeypatch):
+    # Runtime trust invariant (R2): an EXPERIMENTAL item — AI-generated /
+    # unreviewed / anonymous-upload — must never seed, even when it carries a
+    # well-formed causes record.
+    causes = [{"cause_letter": "A"}]
+    svc = _service_with_repo(
+        monkeypatch,
+        item=SimpleNamespace(
+            metadata={"causes": causes},
+            verification_level=VerificationLevel.EXPERIMENTAL,
+        ),
+    )
+    assert await svc.get_runbook_causes("rb1") is None
+
+
+async def test_loader_refuses_experimental_raw_int_level(monkeypatch):
+    # verification_level is persisted as an int (IntEnum); the refusal must fire
+    # on the raw 0 the repository actually hydrates, not only the enum member.
+    svc = _service_with_repo(
+        monkeypatch,
+        item=SimpleNamespace(
+            metadata={"causes": [{"cause_letter": "A"}]},
+            verification_level=0,
+        ),
+    )
+    assert await svc.get_runbook_causes("rb1") is None
 
 
 async def test_loader_none_on_lookup_error(monkeypatch):
