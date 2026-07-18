@@ -29,7 +29,6 @@ Everything **above the data model is unbuilt**:
   `VectorMetadata`), but `team_id` is **unvalidated free-form** (no membership
   or FK check), and the **read** side always resolves `team_ids = []` because no
   team service is wired.
-- No Slack-workspace ↔ team mapping exists in code.
 
 The consequence surfaced concretely in the KB cause-seeder flywheel (see
 [`kb-cause-seeder.md`](../knowledge-and-ai/kb-cause-seeder.md)): the KB QA
@@ -92,13 +91,19 @@ load-bearing decisions:
    multi is bootable. This dependency, not team code, is the true gate on the
    Cloud feature going live.
 
-3. **Membership is populated, not assumed.** Read-side resolution is worthless
-   until `team_members` has rows. Membership is written through **two sources,
-   both landing in `team_members`**: (a) a **Team management API** (dashboard —
-   create team, add/remove member, list) as the canonical CRUD path, and (b) a
-   **Slack-workspace sync** for Slack-originated tenants, where a Slack workspace
-   maps to a team and workspace membership projects onto `team_members`. (The
-   Slack mapping model is an open question — see below.)
+3. **Membership has a single source of truth: the Team management API.**
+   Read-side resolution is worthless until `team_members` has rows. Those rows are
+   written through **one canonical path — the dashboard Team management API**
+   (create team, add/remove member, list). **Slack is not a membership writer.**
+   The FaultMaven Slack agent is an ordinary API client (it interfaces with the
+   core API exactly as a Copilot user does): its tenancy boundary is *Slack
+   workspace ↔ FaultMaven organization*, and an individual Slack user is
+   *attribution metadata*, not a `team_members` row — unlinked users run under a
+   workspace service identity, and the case always lives in the bound org. So the
+   Slack integration binds workspace→org (a tenancy concern owned by the
+   Slack/cloud side), and never projects Slack membership onto FaultMaven teams.
+   A single writer keeps the isolation invariant (Isolation and RLS) enforceable
+   in one place and removes any cross-source reconciliation.
 
 4. **Team-scoped KB writes AND verification are membership-validated.** Publishing
    a KB item with `scope="team", team_id=T` requires the caller to be a member of
@@ -126,6 +131,33 @@ load-bearing decisions:
    with the identity/RBAC direction; this ADR requires only that the repository
    expose membership and role so RBAC can build on it.
 
+7. **Where the code lives — CE-core seam, `faultmaven-cloud` implementation.**
+   Because teams are a Cloud-only feature, the build follows the existing
+   Community-Edition / Cloud split (CE exposes extension Protocols and inert
+   seams; `faultmaven-cloud` provides the concrete multi-tenant impls and
+   cloud-only routes via env-driven provider factories, the container being sealed
+   after `initialize()`):
+
+   - **CE core (`faultmaven`) owns the *seam*, and only the seam:** the schema
+     (already shipped: `teams` / `team_members`), the `ITeamRepository` /
+     membership-resolver **Protocol**, the `build_kb_scope_filter` helper
+     (already there), and the *enforcement / consumption points* that call the
+     resolver — the KB read paths (`_prefetch_kb_context`, `agent_orchestration`)
+     and the team-scoped write/verify gates. In CE these call the resolver
+     **through the Protocol and degrade safely when it is absent**: Standalone
+     resolves no teams and rejects/ignores `scope="team"`. CE ships nothing that
+     resolves real memberships.
+   - **`faultmaven-cloud` owns the *implementation*:** the concrete
+     `TeamRepository` + `TeamService` (Protocol impls, alongside the existing
+     `multi_tenant_user_repo`), the **Team management API** (a cloud-only route,
+     like org-admin/billing), and the wiring that binds them under
+     `TENANT_PROVIDER=multi`.
+
+   So most of this ADR's *implementation* phases land in `faultmaven-cloud`; CE
+   core's part is limited to defining the Protocol and making its
+   enforcement/consumption points resolver-aware and standalone-safe. (This is a
+   **revision of the earlier "keep it all in core" instinct** — see Alternatives.)
+
 ### Isolation and RLS (the substrate the OR-filter trusts)
 
 KB reads resolve against **ChromaDB**, which PostgreSQL RLS never sees — so
@@ -137,13 +169,13 @@ list serves another org's entire team KB. Two facts make this sharp:
   **not** in the RLS `_TENANTED_TABLES` set (migration 018) and structurally
   cannot be org-tenanted as it stands; only `teams` carries an RLS policy.
 - Nothing today constrains a `team_members` row to link a user and a team of the
-  **same organization** — the future writers (Phase 3 API, Phase 6 Slack sync)
-  are the only defense.
+  **same organization** — the single writer (the Phase 3 management API) is the
+  enforcement point.
 
 Decisions this ADR fixes:
 
 - **Same-org membership invariant.** A `team_members` row may link a user and a
-  team only within one organization. Enforced by every writer (Phase 3, Phase 6).
+  team only within one organization. Enforced by the sole writer (Phase 3).
 - **Resolution joins through `teams`.** Membership resolution is
   `SELECT tm.team_id FROM team_members tm JOIN teams t ON t.team_id = tm.team_id
   WHERE tm.user_id = :uid`, run under the **limited `faultmaven_app` role** (RLS
@@ -158,9 +190,19 @@ Decisions this ADR fixes:
 ## Implementation Strategy
 
 One PR-sized unit per phase, tests required, following the campaign's operating
-model (isolated worktree, `lint-imports`, `/code-review`).
+model (isolated worktree, `lint-imports`, `/code-review`). Each phase is tagged
+by codebase per Decision 7 — **[CE]** = Community-Edition core (`faultmaven`),
+**[cloud]** = `faultmaven-cloud`.
 
-### Phase 1 — Membership resolution (repository)
+### Phase 0 [CE] — Define the resolver Protocol + standalone-safe seams
+
+Define the membership-resolver Protocol in CE (consolidating onto the auth-module
+`ITeamRepository` that declares `list_all_user_team_ids`), and make CE's
+enforcement/consumption points call it through the Protocol with safe fallbacks
+when absent (Standalone: no teams, reject/ignore `scope="team"`). CE ships no
+resolver. This is the only substantial CE-core unit; everything below is cloud.
+
+### Phase 1 [cloud] — Membership resolution (repository)
 
 Concrete `TeamRepository` implementing the auth-module `ITeamRepository`
 (`modules/auth/domain/models/organization.py` — the ABC that declares
@@ -172,22 +214,23 @@ RLS) so cross-org memberships fail-closed, and runs under `faultmaven_app`.
 Unit-tested against the real tables. **No behavior change yet** (nothing
 constructs it) — pure substrate.
 
-### Phase 2 — Wiring, cloud-gated
+### Phase 2 [cloud] — Wiring, cloud-gated
 
-Construct the team service/repository in the DI container and place it on
-`app.state` (mirroring `tenant_provider`), **only under `TENANT_PROVIDER =
-multi`**; Standalone wires `None`. Thread it to the two existing consumers that
-already accept `team_service` (`agent_orchestration_service`, the knowledge
-route) so they stop hard-coding `None`. Still no populated memberships → still
-inert, but now the resolver is live.
+Provide the concrete team resolver to CE's Protocol seam via the env-driven
+provider factory (the sealed-container override pattern), **only under
+`TENANT_PROVIDER = multi`**; Standalone leaves the seam empty. CE's consumers
+(`agent_orchestration_service`, the knowledge route, the prefetch) then resolve
+real teams. Still no populated memberships → still inert, but the resolver is
+live.
 
-### Phase 3 — Team management API (population path)
+### Phase 3 [cloud] — Team management API (population path)
 
-Endpoints to create a team, add/remove members, and list a user's teams —
-RBAC-gated, organization-scoped. This is the first path that populates
-`team_members`. Dashboard consumes it.
+Cloud-only endpoints to create a team, add/remove members, and list a user's
+teams — RBAC-gated, organization-scoped, the sole writer of `team_members`
+(Decision 3). This is the first path that populates memberships. Dashboard
+consumes it.
 
-### Phase 4 — Team-scoped KB write validation
+### Phase 4 [CE gate + cloud resolver] — Team-scoped KB write validation
 
 `/knowledge/convert`, `/runbooks/create`, `/knowledge/scan`, and — explicitly —
 the **`verify_draft` / `verify_batch`** promotion validate `team_id` against the
@@ -199,26 +242,24 @@ for teams. Whether verify additionally requires a `team_role` (not just
 membership) is deferred to the RBAC open question. Closes the "any authed user
 can publish/verify to an arbitrary team_id" hole.
 
-### Phase 5 — Read-side resolution wired end-to-end
+### Phase 5 [CE gate + cloud resolver] — Read-side resolution wired end-to-end
 
-Resolve `team_ids` in the KB QA path (requesting user) and the cause-seeder
-pre-fetch (**case owner**), pass them into `build_kb_scope_filter`. This is the
-step that actually makes team-scoped knowledge readable and closes the team arm
-of the flywheel loop. Cross-tenant isolation tests: a user only ever resolves
-their own teams; a case only ever surfaces its owner's teams.
+Resolve `team_ids` (via the cloud resolver behind the CE Protocol) in the KB QA
+path (requesting user) and the cause-seeder pre-fetch (**case owner**), pass them
+into `build_kb_scope_filter`. This is the step that actually makes team-scoped
+knowledge readable and closes the team arm of the flywheel loop. Cross-tenant
+isolation tests: a user only ever resolves their own teams; a case only ever
+surfaces its owner's teams.
 
-### Phase 6 — Slack workspace ↔ team mapping
-
-Map a Slack workspace to a team and sync workspace membership into
-`team_members`, coordinated with the Slack agent. (Design in a follow-on once
-the mapping model is settled.)
-
-### Phase 7 — Cleanup
+### Phase 6 [CE] — Cleanup
 
 Remove the dangling `TeamRepository` export in
 `modules/auth/infrastructure/repositories/__init__.py`; reconcile CLAUDE.md,
-which advertises team files (`auth/api/teams.py`, `team_service.py`) that will
-now actually exist.
+which advertises team files (`auth/api/teams.py`, `team_service.py`) — note the
+concrete impl now lives in `faultmaven-cloud`, so CE's docs should describe the
+Protocol seam, not the removed-from-CE impl.
+
+(No Slack-sync phase: Slack is not a membership writer — Decision 3.)
 
 > The "Phase N" labels here are this ADR's own build phases, distinct from the
 > KB-remediation campaign's numbered phases (see next section).
@@ -285,10 +326,11 @@ changing no campaign objective or ordering.
 
 **Two tracks, one operating model.** Track A (campaign) proceeds on its existing
 order — R3 → R4 → R5 → R6 → R7 → R8/R9 → Phase 6 → Phase 7. Track B (team) runs
-Phase 1 (repo) → 2 (wiring) → 3 (management API) → 4 (write-validation) as pure
-infrastructure whenever there is bandwidth, with team Phase 5 (live seeding)
+Phase 0 (CE Protocol seam) → 1 (repo) → 2 (wiring) → 3 (management API) → 4
+(write-validation) — Phase 0 in CE core, 1–4 in `faultmaven-cloud` — whenever
+there is bandwidth, with team Phase 5 (live seeding)
 **hard-gated behind team Phase 4** (and R1/R2, done), **R5 and R3 should-precede**,
-and team Phase 6 (Slack) / 7 (cleanup) after. One PR-sized unit per session,
+and team Phase 6 (cleanup) after. One PR-sized unit per session,
 alternating tracks — the campaign never pauses. (Note team Phase 2 onward is also
 gated on multi-tenant readiness — see Decision 2 — a dependency outside both
 tracks.)
@@ -312,12 +354,12 @@ tracks.)
 
 ### Negative
 
-- New surface to build and test (repository, service, wiring, management API,
-  Slack sync) across auth, knowledge, and API layers.
+- New surface to build and test (repository, service, wiring, management API)
+  spanning CE core (the Protocol seam) and `faultmaven-cloud` (the impl).
 - Multi-tenant test coverage is currently thin; team paths need new fixtures
   (organizations with multiple members and teams).
-- Slack-workspace mapping introduces an external source of truth that must stay
-  reconciled with `team_members`.
+- The CE↔cloud split means the seam contract (the resolver Protocol) must stay
+  stable across the Community-Edition pin bumps `faultmaven-cloud` consumes.
 
 ### Mitigation
 
@@ -334,47 +376,58 @@ tracks.)
 
 - **Organization-level sharing only (drop teams).** Rejected: organizations are
   too coarse — the whole company is not the sharing unit; a team that owns a
-  service is. It also contradicts the existing schema and the Slack-workspace
-  model.
+  service is. It also contradicts the existing Enterprise > Organization > Team
+  schema.
 - **Team as a flat tag on KB items (no membership).** Rejected: without a
   membership source of truth, "team" scope cannot be authorized on write or
   resolved on read — it degrades to an unvalidated label, exactly today's hole.
-- **Build the team layer in `faultmaven-cloud` instead of core.** Rejected: the
-  schema, KB scope model, and retrieval seam all live in core; splitting the
-  layer across repos would fragment the isolation invariant. Core carries the
-  inert-by-default multi-tenant seam (per the tenant-provider decision); teams
-  belong with it.
+- **Build the *entire* team layer in CE core.** Rejected (this was the ADR's
+  first instinct). Teams are Cloud-only; putting the concrete repository,
+  service, and management API in CE would ship dead multi-tenant code in the
+  free single-tenant edition. Instead the layer **splits** (Decision 7): CE holds
+  the Protocol seam + enforcement points (the schema, `build_kb_scope_filter`,
+  and the read/write gates already live there and must, since the KB path is
+  CE); `faultmaven-cloud` holds the concrete impl + cloud-only routes, exactly
+  as it already does for `multi_tenant_user_repo` and org-admin routes. The
+  isolation invariant is *not* fragmented — it is defined and enforced in CE (the
+  join-through-`teams` resolution contract, the write/verify gates); cloud only
+  supplies the rows.
+- **Build the *entire* team layer in `faultmaven-cloud`.** Rejected for the
+  mirror reason: the KB read/write enforcement points and `build_kb_scope_filter`
+  are CE code and cannot move to cloud without CE losing the ability to enforce
+  its own scope isolation. The seam must live where the data path lives.
 
 ---
 
 ## Open Questions (to resolve before / during the phases)
 
-1. **Membership source of truth precedence.** When both the management API and
-   Slack sync can write `team_members`, which wins on conflict? Is Slack
-   authoritative for Slack-originated tenants, with the API for the rest?
-2. **Slack mapping cardinality.** Workspace ↔ team 1:1, or does a workspace map
-   to an organization with channels/user-groups as teams?
-3. **RBAC role set.** The concrete `team_role` values and their permissions
-   (settled with the identity/RBAC direction) — including whether **verifying** a
-   team draft requires a role beyond membership (Phase 4 / Decision 4).
-4. **Standalone teams.** Confirmed out of scope here (Cloud-only). Revisit only
-   if a self-hosted multi-user org needs local teams.
-5. **Multi-tenant readiness (ADR-010 P2).** Team Phases 2–5 depend on
+Resolved by this revision (kept for the record): membership has a **single
+writer** (the management API — Decision 3), so there is no source-precedence
+conflict; **Slack is not a membership writer** (the Slack agent is an API client;
+workspace↔org is a tenancy concern), so there is no Slack-mapping cardinality or
+Slack-as-isolation-writer question for teams. The CE↔cloud split is decided
+(Decision 7).
+
+Still open:
+
+1. **Multi-tenant readiness (ADR-010 P2).** Team Phases 2–5 depend on
    `TENANT_PROVIDER = multi` becoming bootable (`MULTI_TENANT_READY`, request→org
    wiring, RLS). What does Cloud run in the interim, and is that work sequenced
    ahead of team Phase 2? (Decision 2.)
-6. **`team_members` RLS posture.** Add an `organization_id` column + RLS policy to
+2. **`team_members` RLS posture.** Add an `organization_id` column + RLS policy to
    `team_members` (a new migration), or rely on the join-through-`teams`
-   resolution? The join defends reads for free; the column defends every future
+   resolution? The join defends reads for free; the column defends the single
    writer too. (Isolation and RLS.)
-7. **Seeding principal.** Does the seeder resolve *all* teams the case owner
+3. **RBAC role set.** The concrete `team_role` values and their permissions
+   (settled with the identity/RBAC direction) — including whether **verifying** a
+   team draft requires a role beyond membership (Phase 4 / Decision 4).
+4. **Seeding principal.** Does the seeder resolve *all* teams the case owner
    belongs to, or only the case's own `cases.team_id`? These diverge for
    team-originated cases (ADR-012). (Decision 5.)
-8. **Verified-team-runbook tier.** Accept `COMMUNITY` (pack parity) for
+5. **Verified-team-runbook tier.** Accept `COMMUNITY` (pack parity) for
    team-verified drafts, or introduce a team-specific sub-tier? (Join-point note.)
-9. **Slack sync as an isolation writer.** Phase 6 makes an external system a
-   writer of `team_members` — the table the read-isolation invariant depends on.
-   Its reconciliation model is an isolation concern, not just a consistency one.
+6. **Standalone teams.** Confirmed out of scope here (Cloud-only). Revisit only
+   if a self-hosted multi-user org needs local teams.
 
 ---
 
