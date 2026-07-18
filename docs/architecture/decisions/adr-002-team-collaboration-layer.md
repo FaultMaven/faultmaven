@@ -163,6 +163,62 @@ Remove the dangling `TeamRepository` export in
 which advertises team files (`auth/api/teams.py`, `team_service.py`) that will
 now actually exist.
 
+> The "Phase N" labels here are this ADR's own build phases, distinct from the
+> KB-remediation campaign's numbered phases (see next section).
+
+---
+
+## Relationship to the KB-remediation campaign
+
+This ADR arose from the KB-remediation campaign (the KB-pipeline overhaul that
+built the cause-seeder and is closing the produce↔consume flywheel). It
+**inserts a parallel track; it does not reorder or remove any campaign
+objective.** The campaign's goal — structured KB actually consumed by the engine,
+the produce↔consume flywheel closed, the pipeline hardened under the two
+soundness guarantees — is fully achievable independent of teams; the team layer
+adds the team-sharing dimension on top.
+
+**Orthogonality.** The campaign's remaining work is consume-side depth (seeded
+causes carrying indicators/interventions into validation/solution), produce-side
+trust (who may publish what; not laundering failed fixes), and engine/ingest
+robustness. The team layer touches a separate concern: the **retrieval scope** of
+the KB read path — *which* runbooks are visible — which R2 already generalized
+behind `build_kb_scope_filter`. No remaining campaign unit depends on team
+membership:
+
+| Remaining campaign unit | Concern | Depends on team? |
+|---|---|---|
+| R3 — provenance-uniqueness offer gate | produce-side offer | No — keys on seed provenance, scope-agnostic |
+| R4 — global verify/scan admin gate | produce-side write-auth | No — same family as team Phase 4, complementary |
+| R5 — solution-outcome annotation | produce-side content trust | No |
+| R6 — ignored-seed decay (#713) | engine housekeeping | No |
+| R7 — latent/quality | ingest/retrieval hygiene | No |
+| R8 / R9 — indicators→needs, interventions→solution | consume-side depth | No |
+| Campaign Phase 6 / 7 | ingest robustness / toolkit hygiene | No |
+
+**The single join point.** Team Phase 5 (team-scoped runbooks become seedable)
+inherits R2's soundness precondition: weakly-gated, LLM-authored runbooks must be
+trust-gated *before* they seed live — and team's blast radius is larger (a bad
+team runbook would seed every teammate, not just its author). Its hard
+preconditions are already done — R1 (validator hardening) + R2 (EXPERIMENTAL
+filter) — plus **team Phase 4** (membership-validated writes, in this ADR). The
+campaign's **R5** (don't let a failed fix's commands land in a runbook) is a
+strong *should-precede* for team Phase 5 given that blast radius; **R4**
+(admin-gated global writes) is a *sibling* of team Phase 4 — the same KB
+write-authorization problem for a different scope — not a prerequisite. So team
+Phase 5 slots in after team Phase 4 and after/with R5. This is a scheduling
+constraint that mirrors R1-before-R2; it changes no campaign objective and no
+campaign ordering. It is synergy, not conflict: team Phase 4 + R4 together
+complete the produce-side write-authorization story (team + global) the campaign
+only half-covers today.
+
+**Two tracks, one operating model.** Track A (campaign) proceeds on its existing
+order — R3 → R4 → R5 → R6 → R7 → R8/R9 → Phase 6 → Phase 7. Track B (team) runs
+Phase 1 (repo) → 2 (wiring) → 3 (management API) → 4 (write-validation) as pure
+infrastructure whenever there is bandwidth, with team Phase 5 (live seeding)
+gated behind team Phase 4 + R5, and team Phase 6 (Slack) / 7 (cleanup) after. One
+PR-sized unit per session, alternating tracks — the campaign never pauses.
+
 ---
 
 ## Consequences
