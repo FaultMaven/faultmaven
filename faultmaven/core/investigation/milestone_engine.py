@@ -8852,8 +8852,31 @@ class MilestoneEngine:
             return []
 
         try:
+            # Owner-aware scope. The pre-fetch (and the seeder it feeds) may
+            # read only what the case OWNER can read: global (platform-curated)
+            # plus the owner's own personal KB. This completes the flywheel
+            # loop — a user's resolved cases, converted to personal runbooks,
+            # seed that user's own future investigations — while preserving
+            # strict cross-user isolation: the personal condition is keyed on
+            # the owner's user_id, so user B's case can never surface user A's
+            # personal runbooks. Without this filter search_knowledge defaults
+            # to global-only, so personal (case-generated) runbooks never seed.
+            #
+            # Team-scoped KB is a deliberate inert seam today: no team service
+            # is wired anywhere (org/team collaboration is a Cloud-only
+            # feature — see agent_orchestration_service, which likewise
+            # resolves an empty team set), and case→runbook conversion emits
+            # only personal-scoped runbooks. When team collaboration lands, pass
+            # the owner's team_ids to build_kb_scope_filter — the same isolation
+            # filter the QA retrieval path (search_documents) uses.
+            from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+                build_kb_scope_filter,
+            )
+
+            owner_id = getattr(case, "user_id", None)
+            scope_filter = build_kb_scope_filter(owner_id)
             results = await self.knowledge_service.search_knowledge(
-                query=query, limit=3
+                query=query, limit=3, filters=scope_filter
             )
             relevant = [r for r in results or [] if r.score >= 0.3]
             if relevant:

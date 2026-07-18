@@ -106,6 +106,29 @@ preserve it on the `case.kb_context` entries the prefetch stores. This is a plai
 correctness fix (it also stops the chunk-id-as-document-id mislabel) and runs
 regardless of the seeder flag.
 
+### 1a. Retrieval scope and trust boundary
+
+The seeder can only seed from runbooks the prefetch surfaces, so two constraints
+live at the retrieval seam:
+
+- **Owner-aware scope.** `_prefetch_kb_context` searches **`global` ∪ the case
+  owner's own `personal` KB** (keyed on `case.user_id`), not global-only. This
+  completes the flywheel loop — a user's resolved cases, converted to
+  personal-scoped runbooks, seed that user's *own* future investigations — while
+  preserving strict cross-user isolation: the personal condition is keyed on the
+  owner's `user_id`, so user B's case can never surface user A's personal
+  runbooks. (Team-scoped KB is a deliberate inert seam: org/team collaboration is
+  Cloud-only and no team service is wired anywhere today, and case→runbook
+  conversion emits only `personal`; when team lands, the owner's team scopes OR
+  into the same filter, mirroring `KnowledgeService.search_documents`.)
+- **Trust tier.** `KnowledgeService.get_runbook_causes` refuses the causes record
+  of any `EXPERIMENTAL`-tier item, so the seeder never consumes unverified
+  knowledge. The produce side already extracts causes only at the
+  human-verification gate (`verify_draft` ingests as `COMMUNITY`; the anonymous
+  `upload_document` path never extracts); this loader check makes it a *runtime*
+  invariant regardless of how the item was written. Pack runbooks and verified
+  drafts are `COMMUNITY`; only the anonymous upload tier is `EXPERIMENTAL`.
+
 ### 2–3. Runbook and cause selection (multi-runbook merge rule)
 
 Retrieval routinely returns several runbooks and each runbook has many Causes.
