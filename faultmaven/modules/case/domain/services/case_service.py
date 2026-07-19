@@ -54,6 +54,8 @@ class CaseService(ICaseService):
         settings: Optional[Any] = None,
         max_cases_per_user: int = 100,
         tenant_provider: Optional[TenantProvider] = None,
+        team_service: Optional[Any] = None,
+        share_repository: Optional[Any] = None,
     ):
         """
         Initialize the Case Service
@@ -65,12 +67,19 @@ class CaseService(ICaseService):
             settings: Configuration settings for the service
             max_cases_per_user: Maximum cases per user
             tenant_provider: Optional tenant provider for deployment-neutral organization context
+            team_service: Optional team-membership resolver (``list_all_user_team_ids``).
+                Unwired in standalone — the shared-case arm then resolves empty.
+            share_repository: Optional ``IShareRepository`` for the case read
+                allowlist (``owned ∪ shared-to-my-teams``, ADR-013 §D4). Both
+                degrade gracefully to owner-only when absent.
         """
         self.repository = case_repository
         self.session_store = session_store
         self.case_vector_store = case_vector_store
         self._settings = settings
         self.tenant_provider = tenant_provider
+        self.team_service = team_service
+        self.share_repository = share_repository
 
         # Use settings values if available, otherwise use parameter defaults
         if settings and hasattr(settings, "case"):
@@ -263,13 +272,18 @@ class CaseService(ICaseService):
             if not case:
                 return None
 
-            # Apply access control if user_id provided
-            # Simple check: must be case owner
+            # Access control: the requester must OWN the case or have it SHARED
+            # to one of their teams (owned ∪ shared-to-my-teams, ADR-013 §D4) —
+            # the single-case gate transitively guarding reports, exports,
+            # analytics, and messages. The shared arm is inert until case shares
+            # exist (U10); in standalone it always resolves empty (owner-only).
             if user_id and case.user_id != user_id:
-                logger.warning(
-                    f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
-                )
-                return None
+                shared_case_ids = await self._resolve_shared_case_ids(user_id)
+                if case_id not in shared_case_ids:
+                    logger.warning(
+                        f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
+                    )
+                    return None
 
             return case
 
@@ -747,6 +761,32 @@ class CaseService(ICaseService):
             return True
 
     @trace("case_service_list_user_cases")
+    async def _resolve_shared_case_ids(self, user_id: Optional[str]) -> List[str]:
+        """Resolve the case ids shared to any of ``user_id``'s teams.
+
+        The "shared-to-my-teams" arm of the case read allowlist (ADR-013 §D4 /
+        ADR-011 D3), the case analogue of ``resolve_shared_kb_ids``. Returns
+        ``[]`` — collapsing the allowlist to owner-only — when there is no
+        principal, no team_service (standalone), no share repository, or the
+        principal belongs to no teams. Degrades gracefully on any resolution
+        error: the owner arm still works, so a share-lookup failure narrows
+        visibility (fail-closed) rather than leaking.
+        """
+        if not user_id or not self.team_service or not self.share_repository:
+            return []
+        try:
+            team_ids = await self.team_service.list_all_user_team_ids(user_id)
+            if not team_ids:
+                return []
+            return await self.share_repository.list_resource_ids(
+                resource_type="case",
+                scope_type="team",
+                scope_ids=team_ids,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Failed to resolve shared case ids for {user_id}: {e}")
+            return []
+
     async def list_user_cases(
         self, user_id: str, filters: Optional[CaseListFilter] = None
     ) -> List[CaseSummary]:
@@ -767,8 +807,15 @@ class CaseService(ICaseService):
             # Get cases from repository
             status_filter = filters.state if filters else None
             source_filter = filters.source if filters else None
+            # owned ∪ shared-to-my-teams (ADR-013 §D4). Resolved in SQL, not
+            # post-filter: paginating the owner-only set and then adding shares
+            # in Python would break the page/total contract.
+            shared_case_ids = await self._resolve_shared_case_ids(user_id)
             cases_list, total = await self.repository.list(
-                user_id=user_id, state=status_filter, source=source_filter
+                user_id=user_id,
+                state=status_filter,
+                source=source_filter,
+                shared_case_ids=shared_case_ids,
             )
 
             # Apply additional filters in service layer (restored from old implementation)
@@ -875,11 +922,14 @@ class CaseService(ICaseService):
             # repository already applied its LIMIT would (a) drop the caller's
             # own matches when other users' cases fill the page, and (b) leak
             # every user's cases if user_id were ever falsy. Passing user_id
-            # down adds `AND c.user_id = :user_id` to the WHERE clause.
+            # down adds `AND c.user_id = :user_id` to the WHERE clause; the
+            # shared-case allowlist widens it to owned ∪ shared-to-my-teams.
+            shared_case_ids = await self._resolve_shared_case_ids(user_id)
             cases_list, total = await self.repository.search(
                 query=search_request.query,
                 user_id=user_id,
                 limit=search_request.limit,
+                shared_case_ids=shared_case_ids,
             )
 
             # Convert to CaseSummary

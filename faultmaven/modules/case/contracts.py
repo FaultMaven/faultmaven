@@ -103,8 +103,15 @@ class ICaseRepository(Protocol):
         limit: int = 50,
         offset: int = 0,
         source: Optional[str] = None,
+        shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List["Case"], int]:
-        """List cases with optional filters."""
+        """List cases with optional filters.
+
+        ``shared_case_ids`` widens the owner-only scope to
+        ``owned ∪ shared-to-my-teams`` (ADR-013 §D4): case ids the requester can
+        read via a team share, resolved from ``resource_shares`` by the caller.
+        Empty/omitted leaves the pre-existing owner-only filter.
+        """
         ...
 
     async def delete(self, case_id: str) -> bool:
@@ -117,8 +124,13 @@ class ICaseRepository(Protocol):
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
         limit: int = 20,
+        shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List["Case"], int]:
-        """Search cases by text query."""
+        """Search cases by text query.
+
+        ``shared_case_ids`` widens the owner-only scope to
+        ``owned ∪ shared-to-my-teams`` (ADR-013 §D4). See ``list``.
+        """
         ...
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:

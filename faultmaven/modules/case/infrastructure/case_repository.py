@@ -98,6 +98,7 @@ class CaseRepository(ABC):
         limit: int = 50,
         offset: int = 0,
         source: Optional[str] = None,
+        shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters.
@@ -109,6 +110,9 @@ class CaseRepository(ABC):
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
+            shared_case_ids: Case ids the requester can read via a team share
+                (ADR-013 §D4). Widens the owner-only scope to
+                ``owned ∪ shared-to-my-teams``; empty leaves owner-only.
 
         Returns:
             Tuple of (cases, total_count)
@@ -319,6 +323,7 @@ class CaseRepository(ABC):
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
         limit: int = 20,
+        shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """
         Search cases by text query.
@@ -329,6 +334,9 @@ class CaseRepository(ABC):
             organization_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
             limit: Maximum results
+            shared_case_ids: Case ids the requester can read via a team share
+                (ADR-013 §D4). Widens the owner-only scope to
+                ``owned ∪ shared-to-my-teams``; empty leaves owner-only.
 
         Returns:
             Tuple of (cases, total_count)
@@ -807,13 +815,19 @@ class InMemoryCaseRepository(CaseRepository):
         limit: int = 50,
         offset: int = 0,
         source: Optional[str] = None,
+        shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """List cases with filters."""
         # Filter cases
         filtered = list(self._cases.values())
 
         if user_id:
-            filtered = [c for c in filtered if c.user_id == user_id]
+            # owned ∪ shared-to-my-teams (ADR-013 §D4). Empty shared set leaves
+            # the owner-only filter unchanged (behavior-neutral until U10).
+            shared = set(shared_case_ids or ())
+            filtered = [
+                c for c in filtered if c.user_id == user_id or c.case_id in shared
+            ]
 
         # No org filter: standalone is single-tenant; cloud isolation is RLS
         # (ADR-006). organization_id param retained for interface symmetry.
@@ -993,9 +1007,11 @@ class InMemoryCaseRepository(CaseRepository):
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
         limit: int = 20,
+        shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """Search cases by text query (simple substring match)."""
         query_lower = query.lower()
+        shared = set(shared_case_ids or ())
 
         # Filter cases
         filtered = []
@@ -1007,8 +1023,9 @@ class InMemoryCaseRepository(CaseRepository):
                 or query_lower in case.case_id.lower()
             ):
 
-                # Apply user filter
-                if user_id and case.user_id != user_id:
+                # Apply user filter: owned ∪ shared-to-my-teams (ADR-013 §D4).
+                # Empty shared set leaves owner-only (behavior-neutral until U10).
+                if user_id and case.user_id != user_id and case.case_id not in shared:
                     continue
 
                 # No org filter: single-tenant standalone; cloud isolation is

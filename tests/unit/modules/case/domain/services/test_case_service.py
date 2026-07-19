@@ -637,3 +637,125 @@ class TestListAllCases:
 
         with pytest.raises(RuntimeError):
             await service.list_all_cases(CaseListFilter())
+
+
+# ============================================================
+# Case read allowlist — owned ∪ shared-to-my-teams (ADR-013 §D4 / U9)
+# ============================================================
+
+
+class TestCaseReadAllowlist:
+    """The ``shared-to-my-teams`` arm of case reads.
+
+    Behavior-neutral until case shares exist (U10): with no team_service /
+    share_repository (standalone) the arm resolves empty and every read stays
+    owner-only.
+    """
+
+    def _shared_service(self, mock_repo, *, teams, shared_ids):
+        team_service = AsyncMock()
+        team_service.list_all_user_team_ids = AsyncMock(return_value=teams)
+        share_repo = AsyncMock()
+        share_repo.list_resource_ids = AsyncMock(return_value=shared_ids)
+        service = CaseService(
+            case_repository=mock_repo,
+            team_service=team_service,
+            share_repository=share_repo,
+        )
+        return service, team_service, share_repo
+
+    @pytest.mark.asyncio
+    async def test_resolve_empty_without_deps(self, service):
+        """Standalone: no team_service/share_repository → empty allowlist."""
+        assert await service._resolve_shared_case_ids("user_123") == []
+
+    @pytest.mark.asyncio
+    async def test_resolve_empty_without_user(self, mock_repo):
+        svc, _, share_repo = self._shared_service(
+            mock_repo, teams=["team_1"], shared_ids=["case_x"]
+        )
+        assert await svc._resolve_shared_case_ids(None) == []
+        share_repo.list_resource_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resolve_empty_when_no_teams(self, mock_repo):
+        svc, _, share_repo = self._shared_service(
+            mock_repo, teams=[], shared_ids=["case_x"]
+        )
+        assert await svc._resolve_shared_case_ids("user_123") == []
+        share_repo.list_resource_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resolve_queries_case_shares(self, mock_repo):
+        svc, team_service, share_repo = self._shared_service(
+            mock_repo, teams=["team_1", "team_2"], shared_ids=["case_x", "case_y"]
+        )
+        result = await svc._resolve_shared_case_ids("user_123")
+        assert result == ["case_x", "case_y"]
+        team_service.list_all_user_team_ids.assert_awaited_once_with("user_123")
+        share_repo.list_resource_ids.assert_awaited_once_with(
+            resource_type="case", scope_type="team", scope_ids=["team_1", "team_2"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_degrades_on_error(self, mock_repo):
+        """A share-lookup failure narrows visibility (fail-closed), never raises."""
+        team_service = AsyncMock()
+        team_service.list_all_user_team_ids = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        share_repo = AsyncMock()
+        svc = CaseService(
+            case_repository=mock_repo,
+            team_service=team_service,
+            share_repository=share_repo,
+        )
+        assert await svc._resolve_shared_case_ids("user_123") == []
+
+    @pytest.mark.asyncio
+    async def test_list_threads_shared_ids_to_repo(self, mock_repo):
+        svc, _, _ = self._shared_service(
+            mock_repo, teams=["team_1"], shared_ids=["case_shared"]
+        )
+        await svc.list_user_cases("user_123", CaseListFilter())
+        assert mock_repo.list.await_args.kwargs["shared_case_ids"] == ["case_shared"]
+
+    @pytest.mark.asyncio
+    async def test_search_threads_shared_ids_to_repo(self, mock_repo):
+        svc, _, _ = self._shared_service(
+            mock_repo, teams=["team_1"], shared_ids=["case_shared"]
+        )
+        await svc.search_cases(CaseSearchRequest(query="db"), "user_123")
+        assert mock_repo.search.await_args.kwargs["shared_case_ids"] == ["case_shared"]
+
+    @pytest.mark.asyncio
+    async def test_get_case_allows_team_shared_non_owner(self, mock_repo):
+        """A non-owner may read a case shared to one of their teams."""
+        case = _make_case(user_id="owner_b")
+        mock_repo.get = AsyncMock(return_value=case)
+        svc, _, _ = self._shared_service(
+            mock_repo, teams=["team_1"], shared_ids=[case.case_id]
+        )
+        result = await svc.get_case(case.case_id, user_id="user_123")
+        assert result is case
+
+    @pytest.mark.asyncio
+    async def test_get_case_denies_unshared_non_owner(self, mock_repo):
+        case = _make_case(user_id="owner_b")
+        mock_repo.get = AsyncMock(return_value=case)
+        svc, _, _ = self._shared_service(
+            mock_repo, teams=["team_1"], shared_ids=["some_other_case"]
+        )
+        assert await svc.get_case(case.case_id, user_id="user_123") is None
+
+    @pytest.mark.asyncio
+    async def test_get_case_owner_short_circuits_without_share_lookup(self, mock_repo):
+        """Owner access must not pay for a share resolution."""
+        case = _make_case(user_id="user_123")
+        mock_repo.get = AsyncMock(return_value=case)
+        svc, team_service, _ = self._shared_service(
+            mock_repo, teams=["team_1"], shared_ids=[]
+        )
+        result = await svc.get_case(case.case_id, user_id="user_123")
+        assert result is case
+        team_service.list_all_user_team_ids.assert_not_awaited()

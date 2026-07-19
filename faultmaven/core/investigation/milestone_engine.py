@@ -2531,6 +2531,8 @@ class MilestoneEngine:
         sanitizer: Any | None = None,
         redis_client: Any | None = None,
         report_service: Any | None = None,
+        team_service: Any | None = None,
+        share_repository: Any | None = None,
     ):
         """Initialize milestone engine.
 
@@ -2556,6 +2558,12 @@ class MilestoneEngine:
             report_service: Optional ReportGenerationService for auto-generating
                 reports on terminal transitions. Fire-and-forget — failure
                 does not block the transition.
+            team_service: Optional team-membership resolver used by the KB
+                seeder pre-fetch to widen the case OWNER's KB read scope with
+                the owner's team-shared runbooks (ADR-013 §D4). None in
+                standalone — the team arm then resolves empty.
+            share_repository: Optional ``IShareRepository`` backing that team
+                arm. Both degrade gracefully to global ∪ owner-personal.
         """
         self.llm_provider = llm_provider
         self.repository = repository
@@ -2568,6 +2576,8 @@ class MilestoneEngine:
         self.sanitizer = sanitizer
         self.redis_client = redis_client
         self.report_service = report_service
+        self.team_service = team_service
+        self.share_repository = share_repository
         self.hypothesis_manager = create_hypothesis_manager()
         self.state_validator = StateValidator()
         self.progress_monitor = ProgressMonitor()
@@ -8862,24 +8872,37 @@ class MilestoneEngine:
             # personal runbooks. Without this filter search_knowledge defaults
             # to global-only, so personal (case-generated) runbooks never seed.
             #
-            # The team arm of the scope is not yet wired for the seeder
-            # pre-fetch. The QA read paths now resolve it (share table → id
-            # allowlist, ADR-013 §D4), but two pieces remain before the seeder
-            # can read team-shared runbooks: (1) this pre-fetch must resolve the
-            # case OWNER's shared-kb-id allowlist — keyed on case.user_id, NOT
-            # the session user — via resolve_shared_kb_ids and pass it as the
-            # second arg to build_kb_scope_filter (the same allowlist the QA path
-            # search_documents builds); (2) case→runbook conversion still emits
-            # only personal-scoped runbooks, so there are no team-shared runbooks
-            # to seed yet. Both land with the team-sharing buildout. Standalone
-            # stays inert: team collaboration is a Cloud feature and the owner
-            # resolves an empty shared set (build_kb_scope_filter → global ∪ own).
+            # The team arm resolves the case OWNER's shared-kb-id allowlist —
+            # keyed on case.user_id, NOT the session user, so user B's case can
+            # never surface user A's runbooks — via the same share table → id
+            # allowlist the QA path uses (resolve_shared_kb_ids, ADR-013 §D4),
+            # passed as the second arg to build_kb_scope_filter. It is inert in
+            # practice until case→runbook conversion emits team-shared runbooks
+            # (there are none to seed yet), and in standalone: team_service is
+            # None, so the owner resolves an empty shared set and the scope
+            # collapses to global ∪ owner-personal.
             from faultmaven.modules.knowledge.domain.services.knowledge_service import (
                 build_kb_scope_filter,
+                resolve_shared_kb_ids,
             )
 
             owner_id = getattr(case, "user_id", None)
-            scope_filter = build_kb_scope_filter(owner_id)
+            # team_service/share_repository are wired post-construction; use
+            # getattr so a partially-built engine (or standalone) safely skips
+            # the team arm rather than raising.
+            team_service = getattr(self, "team_service", None)
+            share_repository = getattr(self, "share_repository", None)
+            shared_kb_ids: list[str] = []
+            if owner_id and team_service and share_repository:
+                try:
+                    owner_team_ids = await team_service.list_all_user_team_ids(owner_id)
+                    shared_kb_ids = await resolve_shared_kb_ids(
+                        share_repository, owner_team_ids
+                    )
+                except Exception:  # noqa: BLE001
+                    # Graceful degradation — global ∪ owner-personal still seed.
+                    shared_kb_ids = []
+            scope_filter = build_kb_scope_filter(owner_id, shared_kb_ids)
             results = await self.knowledge_service.search_knowledge(
                 query=query, limit=3, filters=scope_filter
             )

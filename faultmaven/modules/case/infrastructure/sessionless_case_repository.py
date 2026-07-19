@@ -241,15 +241,25 @@ class SessionlessCaseRepository(CaseRepository):
         limit: int = 50,
         offset: int = 0,
         source: str | None = None,
+        shared_case_ids: list[str] | None = None,
     ) -> tuple[list[Case], int]:
         """List cases (filtered by user_id/state).
 
         organization_id is forwarded but does NOT scope reads in CE — tenant
         isolation is cloud RLS (ADR-006); see the underlying repositories.
+        ``shared_case_ids`` widens owner-only scope to ``owned ∪ shared`` (§D4).
         """
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
-            return await repo.list(user_id, organization_id, state, limit, offset)
+            return await repo.list(
+                user_id,
+                organization_id,
+                state,
+                limit,
+                offset,
+                source,
+                shared_case_ids=shared_case_ids,
+            )
 
     async def search(
         self,
@@ -257,15 +267,19 @@ class SessionlessCaseRepository(CaseRepository):
         user_id: str | None = None,
         organization_id: str | None = None,
         limit: int = 20,
+        shared_case_ids: builtins.list[str] | None = None,
     ) -> tuple[builtins.list[Case], int]:
         """Search cases by text query (scoped by user_id).
 
         organization_id is forwarded but does NOT scope reads in CE — tenant
         isolation is cloud RLS (ADR-006); see the underlying repositories.
+        ``shared_case_ids`` widens owner-only scope to ``owned ∪ shared`` (§D4).
         """
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
-            return await repo.search(query, user_id, organization_id, limit)
+            return await repo.search(
+                query, user_id, organization_id, limit, shared_case_ids=shared_case_ids
+            )
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
         """Add a message to a case."""

@@ -28,6 +28,8 @@ def create_case_service(
     settings: FaultMavenSettings,
     minimal_factory: callable,
     tenant_provider: Any | None = None,
+    team_service: Any | None = None,
+    share_repository: Any | None = None,
 ) -> Any:
     """Create case service for case persistence and management."""
     if not case_repository:
@@ -43,6 +45,8 @@ def create_case_service(
             case_vector_store=case_vector_store,
             settings=settings,
             tenant_provider=tenant_provider,  # Inject TenantProvider for deployment-agnostic org resolution
+            team_service=team_service,  # Team-membership resolution (None in standalone)
+            share_repository=share_repository,  # Case read allowlist source (ADR-013 §D4)
         )
         logger.debug(
             f"Case service initialized with milestone-based repository and TenantProvider (tenant_provider={tenant_provider})"
@@ -837,6 +841,8 @@ def register_services(container: BaseDIContainer) -> None:
         settings,
         container._create_minimal_case_service,
         tenant_provider=tenant_provider,  # Inject TenantProvider
+        team_service=team_service,  # Case read allowlist: team-membership resolution
+        share_repository=share_repository,  # Case read allowlist: share source (§D4)
     )
     container._register_service("case_service", case_service)
 
@@ -953,6 +959,11 @@ def register_services(container: BaseDIContainer) -> None:
     if knowledge_service and milestone_engine:
         milestone_engine.knowledge_service = knowledge_service
         logger.info("✅ Knowledge service wired to MilestoneEngine")
+    # KB seeder pre-fetch owner-team arm (ADR-013 §D4): resolves the case
+    # owner's team-shared runbooks. None in standalone (arm resolves empty).
+    if milestone_engine:
+        milestone_engine.team_service = team_service
+        milestone_engine.share_repository = share_repository
 
     # Report Recommendation Service (optional - may not be implemented yet)
     # TODO: Implement create_report_recommendation_service if needed
