@@ -166,7 +166,7 @@ class TestUpdateEnterprise:
         await repo.create_enterprise(ent)
 
         ent.name = "Acme International"
-        ent.plan_tier = EnterprisePlanTier.ENTERPRISE
+        ent.plan_tier = EnterprisePlanTier.BUSINESS
         ent.max_members = 5000
         ent.billing_email = "billing@acme.example"
         ent.settings = {"updated": True}
@@ -176,7 +176,7 @@ class TestUpdateEnterprise:
 
         loaded = await repo.get_enterprise(ent.enterprise_id)
         assert loaded.name == "Acme International"
-        assert loaded.plan_tier == EnterprisePlanTier.ENTERPRISE
+        assert loaded.plan_tier == EnterprisePlanTier.BUSINESS
         assert loaded.max_members == 5000
         assert loaded.billing_email == "billing@acme.example"
         assert loaded.settings == {"updated": True}

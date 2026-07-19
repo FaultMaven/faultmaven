@@ -47,20 +47,27 @@ class OrgPlanTier(str, Enum):
     This enum is retained for the Organization domain model's read-side
     fallback until callers migrate to read plan_tier off the parent
     enterprise.
+
+    Note: the top tier is ``BUSINESS`` (not "enterprise") so a billing level
+    never collides with the Enterprise tenant entity or ``RoleScope.ENTERPRISE``.
     """
 
     FREE = "free"
     PRO = "pro"
-    ENTERPRISE = "enterprise"
+    BUSINESS = "business"
 
 
 class EnterprisePlanTier(str, Enum):
-    """Enterprise subscription plan tiers (see enterprises.plan_tier)."""
+    """Enterprise subscription plan tiers (see enterprises.plan_tier).
+
+    Top tier is ``BUSINESS`` (not "enterprise"): a billing level must not
+    collide with the Enterprise tenant entity or ``RoleScope.ENTERPRISE``.
+    """
 
     FREE = "free"
     STARTER = "starter"
     PRO = "pro"
-    ENTERPRISE = "enterprise"
+    BUSINESS = "business"
 
 
 class RoleScope(str, Enum):

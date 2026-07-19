@@ -235,7 +235,7 @@ CREATE TABLE organizations (
     metadata TEXT NULL,                 -- ORM attribute is `metadata_` to avoid SQLAlchemy Base.metadata collision; physical column name is `metadata`
 
     -- Subscription
-    plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',  -- 'free', 'pro', 'enterprise'
+    plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',  -- 'free', 'pro', 'business'
     max_members INTEGER NOT NULL DEFAULT 5,
     max_cases INTEGER,
 
@@ -257,7 +257,7 @@ CREATE TABLE organizations (
     -- Tier 2 (PostgreSQL-only) — regex CHECK not in live ORM
     CONSTRAINT organizations_slug_format CHECK (slug ~* '^[a-z0-9-]+$'),
     -- Tier 2 (PostgreSQL-only) — enum CHECK not in live ORM
-    CONSTRAINT organizations_plan_tier_valid CHECK (plan_tier IN ('free', 'pro', 'enterprise'))
+    CONSTRAINT organizations_plan_tier_valid CHECK (plan_tier IN ('free', 'pro', 'business'))
 );
 
 -- Tier 2 (PostgreSQL-only) — partial indexes (WHERE deleted_at IS NULL)
