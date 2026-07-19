@@ -759,3 +759,155 @@ class TestCaseReadAllowlist:
         result = await svc.get_case(case.case_id, user_id="user_123")
         assert result is case
         team_service.list_all_user_team_ids.assert_not_awaited()
+
+
+# ============================================================
+# Case team-share write path + share-creation defaults (U10)
+# ============================================================
+
+
+class TestCaseShareCreation:
+    """The write counterpart of the read allowlist (ADR-013 §D3/§D4).
+
+    A Slack-originated case auto-shares to the owner's workspace Team at
+    creation; a Copilot case stays personal-until-shared. The mechanism is
+    Cloud-only (``team_service`` unwired in standalone) and never blocks case
+    creation.
+    """
+
+    def _share_write_service(self, mock_repo, mock_session_store, *, teams):
+        team_service = AsyncMock()
+        team_service.list_all_user_team_ids = AsyncMock(return_value=teams)
+        share_repo = AsyncMock()
+        service = CaseService(
+            case_repository=mock_repo,
+            session_store=mock_session_store,
+            max_cases_per_user=50,
+            team_service=team_service,
+            share_repository=share_repo,
+        )
+        return service, team_service, share_repo
+
+    @pytest.mark.asyncio
+    async def test_slack_case_auto_shares_to_workspace_team(
+        self, mock_repo, mock_session_store
+    ):
+        mock_repo.list.return_value = ([], 0)
+        svc, team_service, share_repo = self._share_write_service(
+            mock_repo, mock_session_store, teams=["team_ws"]
+        )
+        case = await svc.create_case(
+            title="Prod incident", owner_id="slack_svc", source="slack"
+        )
+        team_service.list_all_user_team_ids.assert_awaited_once_with("slack_svc")
+        share_repo.share.assert_awaited_once_with(
+            resource_type="case",
+            resource_id=case.case_id,
+            scope_type="team",
+            scope_id="team_ws",
+            organization_id=case.organization_id,
+            created_by="slack_svc",
+        )
+
+    @pytest.mark.asyncio
+    async def test_slack_case_shares_to_every_owner_team(
+        self, mock_repo, mock_session_store
+    ):
+        mock_repo.list.return_value = ([], 0)
+        svc, _, share_repo = self._share_write_service(
+            mock_repo, mock_session_store, teams=["team_a", "team_b"]
+        )
+        await svc.create_case(title="T", owner_id="slack_svc", source="slack")
+        shared_teams = {
+            call.kwargs["scope_id"] for call in share_repo.share.await_args_list
+        }
+        assert shared_teams == {"team_a", "team_b"}
+
+    @pytest.mark.asyncio
+    async def test_slack_case_with_no_team_stays_owner_only(
+        self, mock_repo, mock_session_store, caplog
+    ):
+        """A Slack owner resolving to zero teams stays owner-only and is logged
+        (cloud misconfiguration), never silently dropped."""
+        mock_repo.list.return_value = ([], 0)
+        svc, _, share_repo = self._share_write_service(
+            mock_repo, mock_session_store, teams=[]
+        )
+        with caplog.at_level("WARNING"):
+            await svc.create_case(title="T", owner_id="slack_svc", source="slack")
+        share_repo.share.assert_not_awaited()
+        assert "resolved no workspace Team" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_copilot_case_is_personal_until_shared(
+        self, mock_repo, mock_session_store
+    ):
+        mock_repo.list.return_value = ([], 0)
+        svc, team_service, share_repo = self._share_write_service(
+            mock_repo, mock_session_store, teams=["team_ws"]
+        )
+        await svc.create_case(title="T", owner_id="u", source="copilot")
+        share_repo.share.assert_not_awaited()
+        team_service.list_all_user_team_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_default_source_case_is_not_shared(
+        self, mock_repo, mock_session_store
+    ):
+        """The default (copilot) source takes the personal path."""
+        mock_repo.list.return_value = ([], 0)
+        svc, _, share_repo = self._share_write_service(
+            mock_repo, mock_session_store, teams=["team_ws"]
+        )
+        await svc.create_case(title="T", owner_id="u")
+        share_repo.share.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_slack_case_no_op_in_standalone(self, service, mock_repo):
+        """Standalone: no team_service wired → a Slack case is created but not
+        shared, and nothing raises."""
+        mock_repo.list.return_value = ([], 0)
+        case = await service.create_case(
+            title="T", owner_id="slack_svc", source="slack"
+        )
+        assert case.source == "slack"
+        # ``service`` fixture has no share_repository/team_service — no crash.
+
+    @pytest.mark.asyncio
+    async def test_auto_share_failure_does_not_block_creation(
+        self, mock_repo, mock_session_store
+    ):
+        mock_repo.list.return_value = ([], 0)
+        svc, team_service, share_repo = self._share_write_service(
+            mock_repo, mock_session_store, teams=["team_ws"]
+        )
+        share_repo.share = AsyncMock(side_effect=RuntimeError("db down"))
+        case = await svc.create_case(title="T", owner_id="slack_svc", source="slack")
+        # Case still created despite the share failure (fail-safe under-share).
+        assert case.source == "slack"
+
+    @pytest.mark.asyncio
+    async def test_share_case_with_team_no_op_without_repo(self, service):
+        """The write helper is inert when no share repository is wired."""
+        await service._share_case_with_team(
+            case_id="c1", team_id="t1", organization_id="org", created_by="u"
+        )  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_hard_delete_cascades_shares(self, mock_repo, mock_session_store):
+        case = _make_case(user_id="owner")
+        mock_repo.get = AsyncMock(return_value=case)
+        mock_repo.delete = AsyncMock(return_value=True)
+        svc, _, share_repo = self._share_write_service(
+            mock_repo, mock_session_store, teams=[]
+        )
+        await svc.hard_delete_case(case.case_id, user_id="owner")
+        share_repo.delete_for_resource.assert_awaited_once_with("case", case.case_id)
+
+    @pytest.mark.asyncio
+    async def test_hard_delete_without_share_repo(self, service, mock_repo):
+        """Standalone hard-delete (no share repository) must not raise."""
+        case = _make_case(user_id="owner")
+        mock_repo.get = AsyncMock(return_value=case)
+        mock_repo.delete = AsyncMock(return_value=True)
+        assert await service.hard_delete_case(case.case_id, user_id="owner") is True
