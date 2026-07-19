@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "b8c9d0e1f2a3"  # current head (026 — plan_tier business rename)
+HEAD_REVISION = "c9d0e1f2a3b4"  # current head (027 — drop organization KB scope)
 
 
 @pytest.fixture(scope="function")

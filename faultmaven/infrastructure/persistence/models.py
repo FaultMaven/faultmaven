@@ -2004,8 +2004,8 @@ class ReportModel(Base):
 
 class KnowledgeItemModel(Base):
     """Knowledge base item (RAG corpus). Scope determines visibility:
-    `personal` (one user), `team` (one team), `organization` (one tenant),
-    `global` (platform-wide built-in runbooks)."""
+    `personal` (one user), `team` (one team), `global` (platform-wide
+    built-in runbooks)."""
 
     __tablename__ = "knowledge_items"
 
@@ -2016,9 +2016,7 @@ class KnowledgeItemModel(Base):
         nullable=False,
         index=True,
     )
-    scope = Column(
-        String(20), nullable=False, server_default="organization", index=True
-    )
+    scope = Column(String(20), nullable=False, server_default="global", index=True)
     owner_id = Column(
         String(36),
         ForeignKey("users.user_id", ondelete="SET NULL"),
@@ -2084,7 +2082,7 @@ class KnowledgeItemModel(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "scope IN ('personal', 'team', 'organization', 'global')",
+            "scope IN ('personal', 'team', 'global')",
             name="knowledge_items_scope_check",
         ),
         CheckConstraint(
@@ -2276,7 +2274,7 @@ class ConversionJobModel(Base):
             name="conversion_jobs_status_check",
         ),
         CheckConstraint(
-            "scope IN ('personal', 'team', 'organization', 'global')",
+            "scope IN ('personal', 'team', 'global')",
             name="conversion_jobs_scope_check",
         ),
         CheckConstraint(
