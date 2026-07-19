@@ -1,6 +1,10 @@
 """Auth Module - Domain Models
 
-Contains all authentication, authorization, user, session, and organization models.
+Contains all authentication, authorization, user, session, and RBAC models.
+
+Tenancy models (Organization, Team, Enterprise, their members, plan-tier and
+audit enums, and the repository interfaces) are defined once in
+``faultmaven.models.interfaces_user`` — import them from there.
 """
 
 from .api_auth import (
@@ -22,7 +26,6 @@ from .auth import (
     TokenStatus,
     TokenValidationResult,
 )
-from .organization import AuditCategory, AuditEventType, OrgPlanTier
 from .rbac import Permission, Role
 from .session import Session
 from .user import User
@@ -52,8 +55,4 @@ __all__ = [
     "TokenValidationError",
     "AuthenticationRequiredError",
     "UserInfoResponse",
-    # Organization
-    "OrgPlanTier",
-    "AuditEventType",
-    "AuditCategory",
 ]

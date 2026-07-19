@@ -23,9 +23,9 @@ Cross-layer parity:
   ``LENGTH(slug) > 0`` (no TRIM, by design).
 - ``Role.scope`` is typed as :class:`RoleScope` to mirror DB roles_scope_check.
 
-Sibling file ``faultmaven.modules.auth.domain.models.organization``
-defines a parallel Pydantic family for the same DB rows (mid-migration
-state); keep validators in sync until consolidation lands.
+This is the single canonical Pydantic family for the tenancy DB rows
+(enterprises, organizations, teams, and their members). Repositories and
+tenancy providers implement/consume these interfaces and models.
 """
 
 from abc import ABC, abstractmethod
