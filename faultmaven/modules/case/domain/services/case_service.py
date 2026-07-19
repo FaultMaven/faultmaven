@@ -241,6 +241,14 @@ class CaseService(ICaseService):
             # Save the case using repository
             saved_case = await self.repository.save(case)
 
+            # Share-creation defaults (ADR-013 §D3). A Slack-originated case is
+            # auto-shared to the workspace's Team at creation, so every Team
+            # member sees it (the "visible to the whole team via Slack" promise);
+            # a Copilot case stays personal-until-shared (no share row). Inert in
+            # standalone — see ``_auto_share_slack_case``.
+            if saved_case.source == "slack":
+                await self._auto_share_slack_case(saved_case)
+
             logger.info(f"Created case {saved_case.case_id} with title '{title}'")
             return saved_case
 
@@ -728,6 +736,18 @@ class CaseService(ICaseService):
             if success:
                 logger.info(f"Hard deleted case {case_id}")
 
+                # Cascade the polymorphic team-share rows (ADR-013 §D4). The
+                # share table has no FK on its polymorphic target columns, so the
+                # cascade is app-enforced here, mirroring the KB delete path. An
+                # orphan share row is harmless to reads (the allowlist resolves
+                # ids that then match no case), but leaving them is untidy and
+                # would resurface if a case_id were ever reused.
+                if self.share_repository:
+                    try:
+                        await self.share_repository.delete_for_resource("case", case_id)
+                    except Exception as e:
+                        logger.error(f"Failed to delete shares for case {case_id}: {e}")
+
                 # Clean up Case Working Memory (delete vector store collection)
                 if self.case_vector_store:
                     try:
@@ -786,6 +806,78 @@ class CaseService(ICaseService):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to resolve shared case ids for {user_id}: {e}")
             return []
+
+    async def _share_case_with_team(
+        self,
+        *,
+        case_id: str,
+        team_id: str,
+        organization_id: str,
+        created_by: Optional[str] = None,
+    ) -> None:
+        """Record a team share for a case (idempotent) — the write counterpart of
+        the U9 read allowlist and the source of truth for team visibility
+        (ADR-013 §D4), mirroring the KB write path
+        (``KnowledgeService._create_team_share``).
+
+        No-ops when no share repository is wired. Cross-org sharing is
+        structurally impossible: the share carries the case's own
+        ``organization_id`` and the read allowlist only ever resolves teams the
+        requester belongs to (within their RLS-isolated org), so a share to a
+        foreign team is unreachable; RLS is the backstop.
+        """
+        if not self.share_repository:
+            return
+        await self.share_repository.share(
+            resource_type="case",
+            resource_id=case_id,
+            scope_type="team",
+            scope_id=team_id,
+            organization_id=organization_id,
+            created_by=created_by,
+        )
+
+    async def _auto_share_slack_case(self, case: Case) -> None:
+        """Auto-share a Slack-originated case to its workspace Team (ADR-013 §D3).
+
+        A Slack workspace maps to a Team, and the workspace's ``slack`` service
+        account (the case owner) is a nominal member of that Team; sharing the
+        case to every Team the owner belongs to makes the "visible to the whole
+        team via Slack" promise real. Copilot cases don't take this path — they
+        stay personal-until-shared.
+
+        Inert in standalone: ``team_service`` is Cloud-only (unwired in
+        single-tenant), so there is no workspace Team to resolve and the single
+        local user already sees their own cases via the owner arm. Fail-safe — an
+        auto-share error never blocks case creation, and *not* sharing is the safe
+        direction (owner-only, never over-exposed); the share can be re-created.
+        """
+        if not self.team_service or not self.share_repository:
+            return
+        try:
+            team_ids = await self.team_service.list_all_user_team_ids(case.user_id)
+            if not team_ids:
+                # Reached only in cloud (team_service is unwired in standalone),
+                # where a Slack service account is expected to be a member of its
+                # workspace Team. Zero teams means the case silently stays
+                # owner-only instead of team-visible — surface it rather than
+                # swallow, matching the account_kind path's posture.
+                logger.warning(
+                    "Slack case %s resolved no workspace Team; it stays "
+                    "owner-only (Team membership misconfigured for owner %s)",
+                    case.case_id,
+                    case.user_id,
+                )
+                return
+            for team_id in team_ids:
+                await self._share_case_with_team(
+                    case_id=case.case_id,
+                    team_id=team_id,
+                    organization_id=case.organization_id,
+                    created_by=case.user_id,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Slack case auto-share failed for {case.case_id}: {e}")
 
     async def list_user_cases(
         self, user_id: str, filters: Optional[CaseListFilter] = None
