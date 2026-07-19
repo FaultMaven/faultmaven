@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-05-11 05:35 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-07-19 10:28 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**32 tables** in the schema.
+**38 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -17,31 +17,37 @@
 | `case_entities` | 8 | `case_id, entity_type, entity_value, evidence_id` | cases, evidence, organizations |
 | `case_messages` | 9 | `message_id` | cases, organizations |
 | `case_tags` | 5 | `tag_id` | cases, organizations |
-| `cases` | 26 | `case_id` | organizations, teams, users |
+| `cases` | 26 | `case_id` | organizations, users |
+| `causal_edges` | 9 | `edge_id` | cases, causal_nodes, organizations |
+| `causal_node_evidence` | 8 | `node_id, evidence_id` | causal_nodes, evidence, organizations |
+| `causal_nodes` | 21 | `node_id` | cases, organizations |
+| `config_overrides` | 6 | `key` | users |
 | `conversion_drafts` | 22 | `id` | conversion_jobs, knowledge_items, organizations, users |
-| `conversion_jobs` | 13 | `id` | cases, organizations, teams, uploaded_files, users |
+| `conversion_jobs` | 12 | `id` | cases, organizations, uploaded_files, users |
 | `enterprises` | 11 | `enterprise_id` | — |
 | `evidence` | 23 | `evidence_id` | cases, organizations, uploaded_files |
-| `hypotheses` | 23 | `hypothesis_id` | cases, organizations, users |
+| `evidence_need_fulfillment` | 5 | `need_id, evidence_id` | evidence, evidence_needs, organizations |
+| `evidence_needs` | 14 | `need_id` | cases, organizations |
+| `hypotheses` | 25 | `hypothesis_id` | cases, causal_nodes, organizations, users |
 | `hypothesis_evidence` | 8 | `hypothesis_id, evidence_id` | evidence, hypotheses, organizations, users |
 | `investigation_sessions` | 17 | `session_id` | cases, organizations, users |
-| `knowledge_items` | 29 | `item_id` | organizations, teams, users |
+| `knowledge_items` | 28 | `item_id` | organizations, users |
 | `knowledge_suggestions` | 26 | `suggestion_id` | cases, knowledge_items, organizations, users |
-| `llm_config_overrides` | 4 | `key` | users |
 | `oauth_authorization_codes` | 7 | `code` | users |
 | `oauth_revoked_tokens` | 3 | `jti` | — |
 | `organization_members` | 9 | `user_id, organization_id` | organizations, roles, users |
 | `organizations` | 11 | `organization_id` | enterprises, users |
 | `permissions` | 4 | `permission_id` | — |
 | `reports` | 16 | `report_id` | cases, organizations, users |
+| `resource_shares` | 8 | `share_id` | organizations, users |
 | `role_permissions` | 2 | `role_id, permission_id` | permissions, roles |
 | `roles` | 7 | `role_id` | — |
-| `solutions` | 26 | `solution_id` | cases, evidence, hypotheses, organizations |
+| `solutions` | 28 | `solution_id` | cases, causal_nodes, evidence, hypotheses, organizations |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | organizations |
 | `uploaded_files` | 18 | `file_id` | cases, organizations, users |
 | `user_audit_log` | 11 | `audit_id` | organizations, users |
-| `users` | 19 | `user_id` | enterprises |
+| `users` | 21 | `user_id` | enterprises |
 
 ## ER Diagram
 
@@ -85,8 +91,8 @@ erDiagram
         INTEGER transition_id PK
         VARCHAR organization_id FK
         VARCHAR case_id FK
-        VARCHAR from_status
-        VARCHAR to_status
+        VARCHAR from_state
+        VARCHAR to_state
         TEXT reason
         VARCHAR triggered_by
         TEXT metadata
@@ -134,11 +140,11 @@ erDiagram
     cases {
         VARCHAR case_id PK
         VARCHAR organization_id FK
-        VARCHAR team_id FK
         VARCHAR user_id FK
         VARCHAR title
         TEXT description
-        VARCHAR status
+        VARCHAR state
+        VARCHAR source
         TEXT investigation_strategy
         INTEGER current_turn
         INTEGER turns_without_progress
@@ -147,16 +153,68 @@ erDiagram
         DATETIME last_activity_at
         DATETIME resolved_at
         DATETIME closed_at
+        TEXT disposition_eligibility
         TEXT inquiry
         TEXT problem_verification
         TEXT working_conclusion
         TEXT root_cause_conclusion
-        TEXT path_selection
         TEXT escalation_state
         TEXT documentation
         TEXT progress
         TEXT metadata
         DATETIME created_at
+        DATETIME updated_at
+    }
+    causal_edges {
+        VARCHAR edge_id PK
+        VARCHAR organization_id FK
+        VARCHAR case_id FK
+        VARCHAR cause_node_id FK
+        VARCHAR effect_node_id FK
+        VARCHAR and_group
+        TEXT reasoning
+        INTEGER created_at_turn
+        DATETIME created_at
+    }
+    causal_node_evidence {
+        VARCHAR node_id PK
+        VARCHAR evidence_id PK
+        VARCHAR organization_id FK
+        VARCHAR stance
+        NUMERIC stance_confidence
+        TEXT reasoning
+        INTEGER linked_at_turn
+        DATETIME created_at
+    }
+    causal_nodes {
+        VARCHAR node_id PK
+        VARCHAR organization_id FK
+        VARCHAR case_id FK
+        TEXT statement
+        VARCHAR node_type
+        VARCHAR node_state
+        VARCHAR validation_method
+        NUMERIC belief
+        BOOLEAN signature_consistent
+        BOOLEAN actionable
+        VARCHAR category
+        INTEGER state_epoch
+        INTEGER generated_at_turn
+        INTEGER last_updated_turn
+        INTEGER last_progress_at_turn
+        INTEGER iterations_without_progress
+        VARCHAR refutation_reason
+        TEXT rationale
+        TEXT metadata
+        DATETIME proposed_at
+        DATETIME updated_at
+    }
+    config_overrides {
+        VARCHAR key PK
+        TEXT value
+        VARCHAR category
+        VARCHAR source
+        VARCHAR updated_by FK
         DATETIME updated_at
     }
     conversion_drafts {
@@ -187,7 +245,6 @@ erDiagram
         VARCHAR id PK
         VARCHAR organization_id FK
         VARCHAR user_id FK
-        VARCHAR team_id FK
         VARCHAR case_id FK
         VARCHAR source_file_id FK
         VARCHAR scope
@@ -236,12 +293,37 @@ erDiagram
         DATETIME created_at
         DATETIME updated_at
     }
+    evidence_need_fulfillment {
+        VARCHAR need_id PK
+        VARCHAR evidence_id PK
+        VARCHAR organization_id FK
+        INTEGER linked_at_turn
+        DATETIME created_at
+    }
+    evidence_needs {
+        VARCHAR need_id PK
+        VARCHAR organization_id FK
+        VARCHAR case_id FK
+        VARCHAR purpose
+        VARCHAR request_text
+        VARCHAR rationale
+        VARCHAR priority
+        VARCHAR state
+        VARCHAR obtainability
+        TEXT motivating_hypothesis_ids
+        VARCHAR superseded_reason
+        INTEGER created_at_turn
+        DATETIME created_at
+        DATETIME updated_at
+    }
     hypotheses {
         VARCHAR hypothesis_id PK
         VARCHAR organization_id FK
         VARCHAR case_id FK
+        VARCHAR root_node_id FK
+        TEXT path
         TEXT statement
-        VARCHAR status
+        VARCHAR state
         NUMERIC likelihood
         NUMERIC initial_likelihood
         VARCHAR category
@@ -276,7 +358,7 @@ erDiagram
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR user_id FK
-        VARCHAR status
+        VARCHAR state
         DATETIME started_at
         DATETIME ended_at
         DATETIME last_activity_at
@@ -295,7 +377,6 @@ erDiagram
         VARCHAR organization_id FK
         VARCHAR scope
         VARCHAR owner_id FK
-        VARCHAR team_id FK
         VARCHAR source_suggestion_id
         VARCHAR title
         TEXT content
@@ -347,12 +428,6 @@ erDiagram
         TEXT rejection_reason
         TEXT metadata
         DATETIME created_at
-        DATETIME updated_at
-    }
-    llm_config_overrides {
-        VARCHAR key PK
-        TEXT value
-        VARCHAR updated_by FK
         DATETIME updated_at
     }
     oauth_authorization_codes {
@@ -417,6 +492,16 @@ erDiagram
         DATETIME generated_at
         DATETIME updated_at
     }
+    resource_shares {
+        VARCHAR share_id PK
+        VARCHAR resource_type
+        VARCHAR resource_id
+        VARCHAR scope_type
+        VARCHAR scope_id
+        VARCHAR organization_id FK
+        VARCHAR created_by FK
+        DATETIME created_at
+    }
     role_permissions {
         VARCHAR role_id PK
         VARCHAR permission_id PK
@@ -435,10 +520,12 @@ erDiagram
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR hypothesis_id FK
+        VARCHAR node_id FK
+        VARCHAR quadrant
         VARCHAR title
         TEXT description
         VARCHAR solution_type
-        VARCHAR status
+        VARCHAR state
         VARCHAR risk_level
         VARCHAR estimated_effort
         TEXT immediate_action
@@ -526,6 +613,8 @@ erDiagram
         DATETIME created_at
         DATETIME updated_at
         DATETIME deleted_at
+        TEXT dev_roles
+        VARCHAR account_kind
     }
     agent_executions ||--o{ agent_tool_calls : ""
     cases ||--o{ agent_executions : ""
@@ -534,20 +623,30 @@ erDiagram
     cases ||--o{ case_entities : ""
     cases ||--o{ case_messages : ""
     cases ||--o{ case_tags : ""
+    cases ||--o{ causal_edges : ""
+    cases ||--o{ causal_nodes : ""
     cases ||--o{ conversion_jobs : ""
     cases ||--o{ evidence : ""
+    cases ||--o{ evidence_needs : ""
     cases ||--o{ hypotheses : ""
     cases ||--o{ investigation_sessions : ""
     cases ||--o{ knowledge_suggestions : ""
     cases ||--o{ reports : ""
     cases ||--o{ solutions : ""
     cases ||--o{ uploaded_files : ""
+    causal_nodes ||--o{ causal_edges : ""
+    causal_nodes ||--o{ causal_node_evidence : ""
+    causal_nodes ||--o{ hypotheses : ""
+    causal_nodes ||--o{ solutions : ""
     conversion_jobs ||--o{ conversion_drafts : ""
     enterprises ||--o{ organizations : ""
     enterprises ||--o{ users : ""
     evidence ||--o{ case_entities : ""
+    evidence ||--o{ causal_node_evidence : ""
+    evidence ||--o{ evidence_need_fulfillment : ""
     evidence ||--o{ hypothesis_evidence : ""
     evidence ||--o{ solutions : ""
+    evidence_needs ||--o{ evidence_need_fulfillment : ""
     hypotheses ||--o{ hypothesis_evidence : ""
     hypotheses ||--o{ solutions : ""
     investigation_sessions ||--o{ agent_executions : ""
@@ -561,9 +660,14 @@ erDiagram
     organizations ||--o{ case_messages : ""
     organizations ||--o{ case_tags : ""
     organizations ||--o{ cases : ""
+    organizations ||--o{ causal_edges : ""
+    organizations ||--o{ causal_node_evidence : ""
+    organizations ||--o{ causal_nodes : ""
     organizations ||--o{ conversion_drafts : ""
     organizations ||--o{ conversion_jobs : ""
     organizations ||--o{ evidence : ""
+    organizations ||--o{ evidence_need_fulfillment : ""
+    organizations ||--o{ evidence_needs : ""
     organizations ||--o{ hypotheses : ""
     organizations ||--o{ hypothesis_evidence : ""
     organizations ||--o{ investigation_sessions : ""
@@ -571,6 +675,7 @@ erDiagram
     organizations ||--o{ knowledge_suggestions : ""
     organizations ||--o{ organization_members : ""
     organizations ||--o{ reports : ""
+    organizations ||--o{ resource_shares : ""
     organizations ||--o{ solutions : ""
     organizations ||--o{ teams : ""
     organizations ||--o{ uploaded_files : ""
@@ -578,13 +683,11 @@ erDiagram
     permissions ||--o{ role_permissions : ""
     roles ||--o{ organization_members : ""
     roles ||--o{ role_permissions : ""
-    teams ||--o{ cases : ""
-    teams ||--o{ conversion_jobs : ""
-    teams ||--o{ knowledge_items : ""
     teams ||--o{ team_members : ""
     uploaded_files ||--o{ conversion_jobs : ""
     uploaded_files ||--o{ evidence : ""
     users ||--o{ cases : ""
+    users ||--o{ config_overrides : ""
     users ||--o{ conversion_drafts : ""
     users ||--o{ conversion_jobs : ""
     users ||--o{ hypotheses : ""
@@ -592,11 +695,11 @@ erDiagram
     users ||--o{ investigation_sessions : ""
     users ||--o{ knowledge_items : ""
     users ||--o{ knowledge_suggestions : ""
-    users ||--o{ llm_config_overrides : ""
     users ||--o{ oauth_authorization_codes : ""
     users ||--o{ organization_members : ""
     users ||--o{ organizations : ""
     users ||--o{ reports : ""
+    users ||--o{ resource_shares : ""
     users ||--o{ team_members : ""
     users ||--o{ uploaded_files : ""
     users ||--o{ user_audit_log : ""

@@ -614,12 +614,6 @@ class CaseModel(Base):
         nullable=False,
         index=True,
     )
-    team_id = Column(
-        String(36),
-        ForeignKey("teams.team_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
     user_id = Column(
         String(36),
         ForeignKey("users.user_id", ondelete="SET NULL"),
@@ -2023,12 +2017,6 @@ class KnowledgeItemModel(Base):
         nullable=True,
         index=True,
     )
-    team_id = Column(
-        String(36),
-        ForeignKey("teams.team_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
     source_suggestion_id = Column(String(36), nullable=True, index=True)
 
     title = Column(String(512), nullable=False)
@@ -2229,11 +2217,6 @@ class ConversionJobModel(Base):
         nullable=True,
         index=True,
     )
-    team_id = Column(
-        String(36),
-        ForeignKey("teams.team_id", ondelete="SET NULL"),
-        nullable=True,
-    )
     case_id = Column(
         String(36),
         ForeignKey("cases.case_id", ondelete="SET NULL"),
@@ -2345,6 +2328,86 @@ class ConversionDraftModel(Base):
             name="conversion_drafts_severity_check",
         ),
         Index("ix_conversion_drafts_tags", "tags", postgresql_using="gin"),
+    )
+
+
+# ============================================================
+# Sharing Domain
+# ============================================================
+
+
+class ResourceShareModel(Base):
+    """Polymorphic share association — makes a resource visible to a scope.
+
+    ADR-013 §D4/D4a + ADR-011 D2/D3. Replaces the retired nullable ``team_id``
+    columns on ``cases`` / ``knowledge_items`` / ``conversion_jobs`` with a
+    single association table. A row means "``resource_type``:``resource_id`` is
+    shared to ``scope_type``:``scope_id``". v1 shares only to teams; the CHECK
+    sets already admit ``organization`` so org-level sharing (D4a) is a new
+    *row*, not a schema migration.
+
+    Retrieval (ADR-011 D3) resolves the visible-id allowlist in SQL from this
+    table — the share table is the single source of truth. ChromaDB metadata
+    carries only immutable facts (owner, personal/global), never share state, so
+    unshare can never orphan a vector.
+
+    Polymorphic ``resource_id``/``scope_id`` carry no DB foreign key (there is no
+    single target table). Referential integrity is application-enforced: every
+    share mutation goes through ``ShareRepository``; team-delete and
+    resource-delete cascade their share rows in the same transaction. This is
+    deliberately fail-safe — a dangling ``resource_id`` matches nothing in the
+    allowlist join (invisible, never leaked) and a dangling ``scope_id`` cannot
+    enter any allowlist because ``team_members`` rows cascade away with the team.
+    ``organization_id`` keeps a real FK: it is the RLS tenant key and the
+    cross-org-share guard's backstop.
+    """
+
+    __tablename__ = "resource_shares"
+
+    share_id = Column(String(36), primary_key=True)
+    resource_type = Column(String(20), nullable=False)
+    resource_id = Column(String(36), nullable=False)
+    scope_type = Column(String(20), nullable=False)
+    scope_id = Column(String(36), nullable=False)
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by = Column(
+        String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "resource_type IN ('case', 'knowledge_item', 'conversion_job')",
+            name="resource_shares_resource_type_check",
+        ),
+        CheckConstraint(
+            "scope_type IN ('team', 'organization')",
+            name="resource_shares_scope_type_check",
+        ),
+        # One share per (resource, scope). Also indexes the resource->scopes
+        # direction (unshare, cascade-on-resource-delete).
+        UniqueConstraint(
+            "resource_type",
+            "resource_id",
+            "scope_type",
+            "scope_id",
+            name="uq_resource_shares_target",
+        ),
+        # Allowlist direction: scope(s) -> resource_ids (covering on PG).
+        Index(
+            "ix_resource_shares_scope",
+            "scope_type",
+            "scope_id",
+            "resource_type",
+            "resource_id",
+        ),
     )
 
 

@@ -59,7 +59,9 @@ class KnowledgeScope(str, Enum):
 
     Values:
         PERSONAL: Visible only to one user (requires owner_id).
-        TEAM: Visible to one team (requires team_id).
+        TEAM: Shared to one or more teams via the share table (``resource_shares``
+            rows; the scope enum is the derived convenience — ``team`` ⟺ at least
+            one share row, maintained by the KB write path). ADR-013 §D4.
         GLOBAL: Platform-wide built-in runbooks (FaultMaven-shipped only).
     """
 
@@ -106,7 +108,6 @@ class KnowledgeItem:
     item_type: KnowledgeItemType
     scope: KnowledgeScope = KnowledgeScope.GLOBAL
     owner_id: Optional[str] = None
-    team_id: Optional[str] = None
 
     # Categorization
     category: Optional[str] = None
@@ -174,11 +175,12 @@ class KnowledgeItem:
             )
         if self.scope == KnowledgeScope.PERSONAL and not self.owner_id:
             raise ValueError("owner_id is required for personal scope")
-        if self.scope == KnowledgeScope.TEAM and not self.team_id:
-            raise ValueError("team_id is required for team scope")
+        # TEAM scope: team visibility lives in the share table (resource_shares),
+        # not on the item — the KB write path creates the share row(s) and keeps
+        # scope='team' ⟺ ≥1 share row. A team item still carries owner_id (its
+        # author), so no extra field is required here (ADR-013 §D4).
         # GLOBAL scope: organization_id is the ownership marker (already
-        # required as a base field above). No additional owner_id / team_id
-        # required.
+        # required as a base field above). No additional owner_id required.
 
         # Tags are labels and must be strings. Coerce first so values that
         # arrive non-str survive — most commonly a YAML-parsed numeric tag

@@ -487,6 +487,7 @@ async def lifespan(app: FastAPI):
                     settings=_settings,
                     db_session_factory=get_db_session,
                     knowledge_service=app.state.knowledge_service,
+                    share_repository=getattr(app.state, "share_repository", None),
                 )
                 # Give KnowledgeService a reference to ConversionService so that
                 # draft lifecycle mutations (discard on delete) are owned by a
@@ -511,6 +512,9 @@ async def lifespan(app: FastAPI):
             # KB team-scope resolver (None in standalone — team collaboration is
             # a Cloud feature; the KB inventory route reads this off app.state).
             app.state.team_service = container.get_team_service()
+            # Resource-share source of truth (ADR-013 §D4). Present in both modes;
+            # the agent retrieval path resolves the shared-id allowlist through it.
+            app.state.share_repository = getattr(container, "share_repository", None)
             app.state.report_generation_service = (
                 container.get_report_generation_service()
             )

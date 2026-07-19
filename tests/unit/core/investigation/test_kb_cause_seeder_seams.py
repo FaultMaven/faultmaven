@@ -355,32 +355,36 @@ def test_scope_filter_global_only_when_no_owner():
     assert build_kb_scope_filter("") == {"scope": "global"}
 
 
-def test_scope_filter_global_union_owner_personal():
+def test_scope_filter_global_union_owner():
+    # global ∪ owned (any scope). The owner arm is scope-agnostic — an author
+    # always sees their own items (ADR-013 §D4 / ADR-011 D3).
     assert build_kb_scope_filter("user_a") == {
         "$or": [
             {"scope": "global"},
-            {"scope": "personal", "owner_id": "user_a"},
+            {"owner_id": "user_a"},
         ]
     }
 
 
-def test_scope_filter_includes_owner_teams():
-    assert build_kb_scope_filter("user_a", ["t1", "t2"]) == {
+def test_scope_filter_includes_shared_id_allowlist():
+    # The team arm is now a pre-resolved id allowlist (from the share table),
+    # matched against the chunk's parent_document_id — never scope/team_id
+    # metadata (which would orphan a chunk on unshare).
+    assert build_kb_scope_filter("user_a", ["kb_1", "kb_2"]) == {
         "$or": [
             {"scope": "global"},
-            {"scope": "personal", "owner_id": "user_a"},
-            {"scope": "team", "team_id": "t1"},
-            {"scope": "team", "team_id": "t2"},
+            {"owner_id": "user_a"},
+            {"parent_document_id": {"$in": ["kb_1", "kb_2"]}},
         ]
     }
 
 
-def test_scope_filter_personal_condition_keyed_on_owner_only():
-    # Isolation invariant: the only personal condition is keyed on the given
+def test_scope_filter_owner_condition_keyed_on_owner_only():
+    # Isolation invariant: the only owner condition is keyed on the given
     # owner — never another user's id.
-    f = build_kb_scope_filter("user_b", ["t1"])
-    personal = [c for c in f["$or"] if c.get("scope") == "personal"]
-    assert personal == [{"scope": "personal", "owner_id": "user_b"}]
+    f = build_kb_scope_filter("user_b", ["kb_1"])
+    owner = [c for c in f["$or"] if "owner_id" in c]
+    assert owner == [{"owner_id": "user_b"}]
 
 
 # ---------------------------------------------------------------------------
@@ -411,9 +415,10 @@ def _search_hit(score=0.9, parent_id="rb1"):
     )
 
 
-async def test_prefetch_scope_is_global_union_owner_personal():
-    # The pre-fetch must search global PLUS the case owner's own personal KB —
-    # otherwise personal (case-generated) runbooks never seed.
+async def test_prefetch_scope_is_global_union_owner():
+    # The pre-fetch must search global PLUS the case owner's own KB — otherwise
+    # personal (case-generated) runbooks never seed. The team arm is not yet
+    # wired for the seeder pre-fetch (single-arg build_kb_scope_filter).
     ks = _SearchRecordingStub([_search_hit()])
     engine = _engine(ks)
     case = _case()  # user_id="u"
@@ -423,16 +428,16 @@ async def test_prefetch_scope_is_global_union_owner_personal():
         {
             "$or": [
                 {"scope": "global"},
-                {"scope": "personal", "owner_id": "u"},
+                {"owner_id": "u"},
             ]
         }
     ]
 
 
-async def test_prefetch_personal_condition_keyed_on_this_case_owner():
-    # Cross-user isolation: the personal condition is keyed on THIS case's
-    # owner. A case owned by user_b can only ever surface user_b's personal
-    # runbooks — never another user's.
+async def test_prefetch_owner_condition_keyed_on_this_case_owner():
+    # Cross-user isolation: the owner condition is keyed on THIS case's owner.
+    # A case owned by user_b can only ever surface user_b's own runbooks —
+    # never another user's.
     ks = _SearchRecordingStub([_search_hit()])
     engine = _engine(ks)
     case = _case()
@@ -440,9 +445,9 @@ async def test_prefetch_personal_condition_keyed_on_this_case_owner():
     await engine._prefetch_kb_context(case, "X fails", "symptom")
 
     scope_filter = ks.filters_seen[0]
-    personal = [c for c in scope_filter["$or"] if c.get("scope") == "personal"]
-    assert personal == [{"scope": "personal", "owner_id": "user_b"}]
-    # No other user's personal scope leaks in.
+    owner = [c for c in scope_filter["$or"] if "owner_id" in c]
+    assert owner == [{"owner_id": "user_b"}]
+    # No other user's scope leaks in.
     assert all(c.get("owner_id") in (None, "user_b") for c in scope_filter["$or"])
 
 

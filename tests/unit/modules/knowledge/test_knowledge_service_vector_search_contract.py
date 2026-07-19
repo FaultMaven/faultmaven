@@ -100,9 +100,41 @@ async def test_knowledge_service_search_uses_real_signature():
     assert call["k"] == 5
     assert isinstance(call["where"], dict)
     # Scope filter required by KnowledgeVectorStore._enforce_scope_invariant.
-    assert any(
-        k in call["where"] for k in ("scope", "owner_id", "team_id", "organization_id")
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        SCOPE_FILTER_KEYS,
+        _flatten_filter_keys,
     )
+
+    assert _flatten_filter_keys(call["where"]) & SCOPE_FILTER_KEYS
+
+
+def test_scope_filter_never_carries_team_metadata():
+    """Unshare-trap guard (ADR-013 §D4 / ADR-011 D3): team visibility is an id
+    allowlist, never scope/team_id metadata. A mutable 'team' tag in metadata
+    would orphan a chunk for everyone (incl. its owner) on unshare, and a
+    'global' tag would leak it. So the read filter must never emit either.
+    """
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        build_kb_scope_filter,
+    )
+
+    f = build_kb_scope_filter("user-1", ["kb_shared_1", "kb_shared_2"])
+    flat = repr(f)
+    assert "team_id" not in flat
+    assert "'team'" not in flat  # no scope == 'team' condition
+    # The shared arm is an id allowlist against the immutable parent id.
+    assert {"parent_document_id": {"$in": ["kb_shared_1", "kb_shared_2"]}} in f["$or"]
+
+
+def test_vector_metadata_has_no_team_field():
+    """VectorMetadata carries only the immutable floor (owner + personal/global);
+    team visibility never round-trips through ChromaDB metadata."""
+    from faultmaven.models.vector_metadata import VectorMetadata
+
+    meta = VectorMetadata(scope="personal", owner_id="user-1")
+    chroma = meta.to_chroma_metadata()
+    assert "team_id" not in chroma
+    assert "team_id" not in VectorMetadata.model_fields
 
 
 class _HitReturningStore:

@@ -1713,7 +1713,8 @@ class CaseService(ICaseService):
         Checks:
         1. User is the case owner
         2. User is a participant
-        3. User is a team member (if case has team_id)
+        3. User is a member of a team the case is shared to (via the share
+           table, ADR-013 §D4 — case sharing lands in a later unit)
         4. User has org-level access (if case has organization_id)
 
         Args:

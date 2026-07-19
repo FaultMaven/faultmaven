@@ -75,7 +75,10 @@ class ToolContext:
     case_id: str
     organization_id: str
     user_id: str
-    team_ids: List[str] = field(default_factory=list)
+    # KB item ids shared to the user's teams (ADR-013 §D4) — the shared arm of
+    # the KB read allowlist, pre-resolved by the orchestrator from the share
+    # table. Empty in standalone / for users with no team-shared items.
+    shared_kb_ids: List[str] = field(default_factory=list)
     case_repository: Optional[Any] = None
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -89,7 +92,7 @@ class ToolContext:
             case_id=self.case_id,
             organization_id=self.organization_id,
             user_id=self.user_id,
-            team_ids=self.team_ids,
+            shared_kb_ids=self.shared_kb_ids,
             case_repository=self.case_repository,
             execution_id=execution_id,
             metadata=self.metadata,

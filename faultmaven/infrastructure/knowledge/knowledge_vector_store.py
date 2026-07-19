@@ -71,8 +71,11 @@ STALENESS_HALF_LIFE_DAYS = 365
 # Collection name that requires scope filtering
 KB_COLLECTION = "faultmaven_kb"
 
-# Keys that indicate a scope filter is present in a where clause
-SCOPE_FILTER_KEYS = {"scope", "owner_id", "team_id", "organization_id"}
+# Keys that indicate a scope filter is present in a where clause. Team
+# visibility is no longer a metadata key — it is resolved to an id allowlist
+# (parent_document_id ∈ {...}) from the share table (ADR-013 §D4). The KB read
+# filter always carries `scope` (the global arm), so the guard still bites.
+SCOPE_FILTER_KEYS = {"scope", "owner_id", "organization_id", "parent_document_id"}
 
 # Common English stop words for term overlap scoring
 _STOP_WORDS = frozenset(
@@ -155,7 +158,7 @@ class KnowledgeVectorStore(BaseExternalClient):
     Scope isolation is enforced via metadata filtering at query time.
 
     **Scope safety invariant:** Queries against faultmaven_kb MUST include
-    a scope filter (scope, owner_id, or team_id) in the `where` clause.
+    a scope filter (one of ``SCOPE_FILTER_KEYS``) in the `where` clause.
     Unscoped queries raise ValueError to prevent cross-tenant data leaks.
     This converts a fail-open risk into a fail-closed guarantee.
 
@@ -218,8 +221,8 @@ class KnowledgeVectorStore(BaseExternalClient):
         if not where:
             raise ValueError(
                 f"KB queries require scope filter — refusing unscoped search "
-                f"on '{collection_name}'. Pass a where clause containing "
-                f"'scope', 'owner_id', or 'team_id'."
+                f"on '{collection_name}'. Pass a where clause containing one "
+                f"of {SCOPE_FILTER_KEYS}."
             )
 
         filter_keys = _flatten_filter_keys(where)
@@ -244,7 +247,7 @@ class KnowledgeVectorStore(BaseExternalClient):
             query: Search query text.
             k: Number of results to return.
             where: ChromaDB metadata filters. **Required** for faultmaven_kb
-                   collection (must include scope/owner_id/team_id filter).
+                   collection (must include a SCOPE_FILTER_KEYS filter).
 
         Returns:
             List of matching documents with content, metadata, and scores.

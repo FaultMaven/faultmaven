@@ -72,7 +72,7 @@ class KBToolAdapter(AgentTool):
             result = await self._wrapped._arun(
                 question=question,
                 user_id=context.user_id,
-                team_ids=context.team_ids,
+                shared_kb_ids=context.shared_kb_ids,
                 k=5,
                 context_metadata=context.kb_context_metadata or None,
             )

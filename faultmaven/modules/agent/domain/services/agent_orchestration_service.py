@@ -286,6 +286,7 @@ class AgentOrchestrationService:
         max_parallel_tools: int = 5,
         checkpoint_service: Any = None,
         team_service: Any = None,
+        share_repository: Any = None,
     ):
         """Initialize agent orchestration service.
 
@@ -329,6 +330,7 @@ class AgentOrchestrationService:
         self.max_parallel_tools = max_parallel_tools
         self.checkpoint_service = checkpoint_service
         self.team_service = team_service
+        self.share_repository = share_repository
 
     @property
     def llm_client(self) -> LLMClient:
@@ -438,7 +440,11 @@ class AgentOrchestrationService:
             total_tokens = {"input_tokens": 0, "output_tokens": 0}
             all_tool_calls: list[AgentToolCall] = []
 
-            # Resolve user's team memberships for KB scope filtering
+            # Resolve the user's team memberships, then the KB items shared to
+            # those teams — the "shared-to-my-teams" arm of the read allowlist
+            # (ADR-013 §D4 / ADR-011 D3). Both degrade to empty (global +
+            # personal still work): team_service is None in standalone, and the
+            # share repo is queried only when there are teams to resolve.
             team_ids: list[str] = []
             if self.team_service:
                 try:
@@ -448,6 +454,17 @@ class AgentOrchestrationService:
                 except Exception:
                     pass  # Graceful degradation — global + personal still work
 
+            shared_kb_ids: list[str] = []
+            if team_ids and self.share_repository:
+                try:
+                    shared_kb_ids = await self.share_repository.list_resource_ids(
+                        resource_type="knowledge_item",
+                        scope_type="team",
+                        scope_ids=team_ids,
+                    )
+                except Exception:
+                    pass  # Graceful degradation
+
             # Create tool context for tool execution
             case = await self.case_repo.get(session.case_id)
             tool_context = ToolContext(
@@ -455,7 +472,7 @@ class AgentOrchestrationService:
                 case_id=session.case_id,
                 organization_id=organization_id,
                 user_id=session.user_id,
-                team_ids=team_ids,
+                shared_kb_ids=shared_kb_ids,
                 case_repository=self.case_repo,
                 execution_id=execution_id,
                 in_memory_case=case,

@@ -3,8 +3,9 @@ Unified Knowledge Base Q&A Tool
 
 Single tool that searches all KB scopes the user has access to:
 - Global: system-wide runbooks (accessible to all)
-- Personal: user's own runbooks (filtered by owner_id)
-- Team: team runbooks (filtered by team_id)
+- Owned: user's own runbooks (filtered by owner_id)
+- Team: runbooks shared to the user's teams (resolved from the share table into
+  an id allowlist by the orchestrator; ADR-013 §D4)
 
 The agent doesn't choose a scope — the tool builds a combined filter
 from the user's identity and returns the most relevant results regardless
@@ -20,6 +21,9 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import UnifiedKBConfig
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    build_kb_scope_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +66,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
         self,
         question: str,
         user_id: str,
-        team_ids: Optional[List[str]] = None,
+        shared_kb_ids: Optional[List[str]] = None,
         k: int = 5,
         context_metadata: Optional[Dict[str, str]] = None,
     ) -> str:
@@ -71,8 +75,10 @@ global documentation, your personal runbooks, and your team's shared procedures.
 
         Args:
             question: Question about troubleshooting, procedures, or best practices
-            user_id: Current user ID (for personal scope filtering)
-            team_ids: User's team IDs (for team scope filtering)
+            user_id: Current user ID (for personal/owned scope filtering)
+            shared_kb_ids: KB item ids shared to the user's teams (ADR-013 §D4),
+                pre-resolved from the share table by the orchestrator — the team
+                arm of the read allowlist
             k: Number of chunks to retrieve (default: 5)
             context_metadata: Optional case context (e.g. affected service) for
                 metadata-aware reranking (soft boost only; see DocumentQATool)
@@ -80,7 +86,9 @@ global documentation, your personal runbooks, and your team's shared procedures.
         Returns:
             Relevant documentation with citations from all accessible scopes
         """
-        filters = self._build_scope_filter(user_id, team_ids or [])
+        # Single source of truth for the KB read allowlist (ADR-013 §D4 /
+        # ADR-011 D3): global ∪ owned ∪ items shared to the user's teams.
+        filters = build_kb_scope_filter(user_id, shared_kb_ids or [])
         return await super()._arun(
             question,
             scope_id=None,
@@ -88,18 +96,3 @@ global documentation, your personal runbooks, and your team's shared procedures.
             filters=filters,
             context_metadata=context_metadata,
         )
-
-    @staticmethod
-    def _build_scope_filter(user_id: str, team_ids: List[str]) -> dict:
-        """Build combined scope filter for all accessible KB content."""
-        conditions = [{"scope": "global"}]
-
-        if user_id:
-            conditions.append({"$and": [{"scope": "personal"}, {"owner_id": user_id}]})
-
-        if team_ids:
-            conditions.append(
-                {"$and": [{"scope": "team"}, {"team_id": {"$in": team_ids}}]}
-            )
-
-        return {"$or": conditions}

@@ -159,11 +159,14 @@ class ServiceFactory:
     def create_agent_orchestration_service(
         self,
         team_service=None,
+        share_repository=None,
     ) -> "AgentOrchestrationService":  # noqa: F821
         """Create agent orchestration service with dependencies.
 
         Args:
             team_service: Optional team service for resolving user team memberships.
+            share_repository: Optional share repository (ADR-013 §D4) for resolving
+                the shared-to-my-teams arm of the KB read allowlist.
 
         Returns:
             AgentOrchestrationService instance with injected dependencies
@@ -180,6 +183,7 @@ class ServiceFactory:
             session_service=self.create_investigation_session_service(),
             tool_registry=agent_tool_registry,
             team_service=team_service,
+            share_repository=share_repository,
             # LLM client will be created lazily by the service
         )
 
