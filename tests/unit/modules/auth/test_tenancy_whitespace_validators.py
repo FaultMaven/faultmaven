@@ -17,9 +17,9 @@ The slug fields (organizations.slug, enterprises.slug) use
 ``LENGTH(slug) > 0`` (no TRIM) on the DB side, so only ``min_length=1``
 is mirrored — whitespace-only slugs pass both layers by design.
 
-Both legacy (``faultmaven.models.interfaces_user``) and new
-(``faultmaven.modules.auth.domain.models.organization``) Pydantic
-families are covered — they shadow each other and must stay in sync.
+The tenancy Pydantic family lives once in
+``faultmaven.models.interfaces_user`` (the auth module's former parallel
+copy was consolidated into it).
 """
 
 from __future__ import annotations
@@ -32,12 +32,6 @@ from pydantic import ValidationError
 from faultmaven.models.interfaces_user import (
     Enterprise,
     EnterprisePlanTier,
-)
-from faultmaven.models.interfaces_user import Organization as LegacyOrganization
-from faultmaven.models.interfaces_user import Role as LegacyRole
-from faultmaven.models.interfaces_user import RoleScope as LegacyRoleScope
-from faultmaven.models.interfaces_user import Team as LegacyTeam
-from faultmaven.modules.auth.domain.models.organization import (
     Organization,
     Role,
     RoleScope,
@@ -49,18 +43,6 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-# Both Pydantic families must stay in sync — see module docstring.
-ORG_MODELS = pytest.mark.parametrize(
-    "Model", [Organization, LegacyOrganization], ids=["new", "legacy"]
-)
-TEAM_MODELS = pytest.mark.parametrize(
-    "Model", [Team, LegacyTeam], ids=["new", "legacy"]
-)
-ROLE_MODELS = pytest.mark.parametrize(
-    ("role_cls", "scope_enum"),
-    [(Role, RoleScope), (LegacyRole, LegacyRoleScope)],
-    ids=["new", "legacy"],
-)
 WHITESPACE_VALUES = pytest.mark.parametrize(
     "bad_value", ["", " ", "  ", "\t", "\n", "  \t\n"]
 )
@@ -83,16 +65,14 @@ def _org_kwargs(**overrides):
     return base
 
 
-@ORG_MODELS
 @WHITESPACE_VALUES
-def test_organization_name_rejects_empty_or_whitespace(Model, bad_value: str):
+def test_organization_name_rejects_empty_or_whitespace(bad_value: str):
     with pytest.raises(ValidationError):
-        Model(**_org_kwargs(name=bad_value))
+        Organization(**_org_kwargs(name=bad_value))
 
 
-@ORG_MODELS
-def test_organization_name_accepts_normal_value(Model):
-    org = Model(**_org_kwargs(name="Real Org"))
+def test_organization_name_accepts_normal_value():
+    org = Organization(**_org_kwargs(name="Real Org"))
     assert org.name == "Real Org"
 
 
@@ -101,19 +81,17 @@ def test_organization_name_accepts_normal_value(Model):
 # =============================================================================
 
 
-@ORG_MODELS
-def test_organization_slug_rejects_empty_string(Model):
+def test_organization_slug_rejects_empty_string():
     with pytest.raises(ValidationError):
-        Model(**_org_kwargs(slug=""))
+        Organization(**_org_kwargs(slug=""))
 
 
-@ORG_MODELS
-def test_organization_slug_allows_whitespace_to_match_db_check(Model):
+def test_organization_slug_allows_whitespace_to_match_db_check():
     """DB ``organizations_slug_not_empty`` is ``LENGTH(slug) > 0`` (no
     TRIM), so a whitespace-only slug passes both DB and Pydantic by
     design — pinned here so a future tightening of one side surfaces
     the other."""
-    org = Model(**_org_kwargs(slug=" "))
+    org = Organization(**_org_kwargs(slug=" "))
     assert org.slug == " "
 
 
@@ -134,25 +112,20 @@ def _team_kwargs(**overrides):
     return base
 
 
-@TEAM_MODELS
 @WHITESPACE_VALUES
-def test_team_name_rejects_empty_or_whitespace(Model, bad_value: str):
+def test_team_name_rejects_empty_or_whitespace(bad_value: str):
     with pytest.raises(ValidationError):
-        Model(**_team_kwargs(name=bad_value))
+        Team(**_team_kwargs(name=bad_value))
 
 
-@TEAM_MODELS
-def test_team_name_accepts_normal_value(Model):
-    team = Model(**_team_kwargs(name="SRE"))
+def test_team_name_accepts_normal_value():
+    team = Team(**_team_kwargs(name="SRE"))
     assert team.name == "SRE"
 
 
 # =============================================================================
-# Enterprise.name (mirror of enterprises_name_not_empty — legacy file only)
+# Enterprise.name (mirror of enterprises_name_not_empty)
 # =============================================================================
-# Enterprise is only defined as a Pydantic model in interfaces_user.py;
-# the auth module file has no Enterprise class today. If/when one is
-# added, extend this section to cover both.
 
 
 def _enterprise_kwargs(**overrides):
@@ -200,19 +173,13 @@ def _role_kwargs(scope, **overrides):
     return base
 
 
-@ROLE_MODELS
 @pytest.mark.parametrize("scope", ["system", "enterprise", "organization", "team"])
-def test_role_scope_accepts_all_check_constraint_values(
-    role_cls, scope_enum, scope: str
-):
-    role = role_cls(**_role_kwargs(scope=scope))
-    assert role.scope == scope_enum(scope)
+def test_role_scope_accepts_all_check_constraint_values(scope: str):
+    role = Role(**_role_kwargs(scope=scope))
+    assert role.scope == RoleScope(scope)
 
 
-@ROLE_MODELS
 @pytest.mark.parametrize("bad_scope", ["", " ", "global", "ORG", "user", "system "])
-def test_role_scope_rejects_values_outside_check_constraint(
-    role_cls, scope_enum, bad_scope: str
-):
+def test_role_scope_rejects_values_outside_check_constraint(bad_scope: str):
     with pytest.raises(ValidationError):
-        role_cls(**_role_kwargs(scope=bad_scope))
+        Role(**_role_kwargs(scope=bad_scope))

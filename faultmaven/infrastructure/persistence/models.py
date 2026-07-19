@@ -88,13 +88,6 @@ class SolutionState(str, enum.Enum):
     VERIFIED = "verified"
 
 
-class KnowledgeScope(str, enum.Enum):
-    PERSONAL = "personal"
-    TEAM = "team"
-    ORGANIZATION = "organization"
-    GLOBAL = "global"
-
-
 class KnowledgeItemType(str, enum.Enum):
     TROUBLESHOOTING_GUIDE = "troubleshooting_guide"
     ERROR_PATTERN = "error_pattern"
