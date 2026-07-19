@@ -261,7 +261,7 @@ class EnterpriseModel(Base):
         Index("ix_enterprises_slug", "slug", unique=True),
         CheckConstraint("LENGTH(TRIM(name)) > 0", name="enterprises_name_not_empty"),
         CheckConstraint(
-            "plan_tier IN ('free', 'starter', 'pro', 'enterprise')",
+            "plan_tier IN ('free', 'starter', 'pro', 'business')",
             name="enterprises_plan_tier_check",
         ),
     )
