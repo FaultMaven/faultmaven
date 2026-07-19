@@ -811,6 +811,13 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "tenant_provider", None)
 
+    def get_team_service(self):
+        """Get the team service for KB team-scope resolution (None in standalone)."""
+        if not self._initialized:
+            if not getattr(self, "_initializing", False):
+                pass  # Container must be initialized via await container.initialize() at startup
+        return getattr(self, "team_service", None)
+
     def get_report_generation_service(self):
         """Get the report generation service (TASK-024)"""
         if not self._initialized:

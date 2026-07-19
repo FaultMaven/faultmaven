@@ -12,7 +12,6 @@ __all__ = [
     # real Redis cloud). See case-and-session-concepts.md v2.1 +
     # deployment-schema-strategy.md §11.1.
     "OrganizationRepository",
-    "TeamRepository",
     "UserRepository",
     "InMemoryOAuthCodeRepository",
     "RedisOAuthCodeRepository",

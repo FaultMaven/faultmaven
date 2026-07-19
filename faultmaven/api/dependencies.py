@@ -219,6 +219,7 @@ async def get_file_storage_service(
 
 
 async def get_agent_orchestration_service(
+    request: Request,
     factory: ServiceFactory = Depends(get_service_factory),
 ) -> "AgentOrchestrationService":  # noqa: F821
     """Get agent orchestration service for request.
@@ -247,9 +248,12 @@ async def get_agent_orchestration_service(
             ):
                 yield event
     """
-    # The standalone deployment has no team collaboration — org/team management is
-    # a Cloud feature — so no team service is wired for KB scoping.
-    return factory.create_agent_orchestration_service(team_service=None)
+    # KB team-scope resolver. Wired only in multi-tenant (Cloud) deployments;
+    # in standalone it is None (team collaboration is a Cloud feature), so the
+    # agent resolves an empty team set and KB scope collapses to personal ∪
+    # global. Sourced from app.state (set once at startup by the container).
+    team_service = getattr(request.app.state, "team_service", None)
+    return factory.create_agent_orchestration_service(team_service=team_service)
 
 
 # Future service dependencies:

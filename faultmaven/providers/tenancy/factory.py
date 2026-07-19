@@ -21,6 +21,7 @@ from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces_user import (
     IEnterpriseRepository,
     IOrganizationRepository,
+    ITeamRepository,
 )
 from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
@@ -74,6 +75,7 @@ def requested_tenant_provider() -> str:
 def create_tenant_provider(
     organization_repository: IOrganizationRepository,
     enterprise_repository: Optional[IEnterpriseRepository] = None,
+    team_repository: Optional[ITeamRepository] = None,
 ) -> TenantProvider:
     """Build the configured tenant provider (``single`` or ``multi``).
 
@@ -82,6 +84,8 @@ def create_tenant_provider(
         enterprise_repository: Enterprise repository, used by the single-tenant
             default for its default-enterprise bootstrap. The multi-tenant
             provider does not use it.
+        team_repository: Team repository, used by the single-tenant default to
+            seed the default team row. The multi-tenant provider does not use it.
 
     Returns:
         The built ``TenantProvider``.
@@ -97,6 +101,7 @@ def create_tenant_provider(
         return SingleTenantProvider(
             organization_repository=organization_repository,
             enterprise_repository=enterprise_repository,
+            team_repository=team_repository,
         )
 
     if requested == BUILTIN_MULTI:

@@ -8862,13 +8862,19 @@ class MilestoneEngine:
             # personal runbooks. Without this filter search_knowledge defaults
             # to global-only, so personal (case-generated) runbooks never seed.
             #
-            # Team-scoped KB is a deliberate inert seam today: no team service
-            # is wired anywhere (org/team collaboration is a Cloud-only
-            # feature — see agent_orchestration_service, which likewise
-            # resolves an empty team set), and case→runbook conversion emits
-            # only personal-scoped runbooks. When team collaboration lands, pass
-            # the owner's team_ids to build_kb_scope_filter — the same isolation
-            # filter the QA retrieval path (search_documents) uses.
+            # The team arm of the scope is not yet wired for the seeder
+            # pre-fetch. A membership resolver (TeamService) now exists and is
+            # wired for the QA read paths in multi-tenant (Cloud) deployments,
+            # but two pieces remain before the seeder can read team-scoped
+            # runbooks: (1) this pre-fetch must resolve the case OWNER's
+            # team_ids — keyed on case.user_id, NOT the session user — and pass
+            # them to build_kb_scope_filter (the same isolation filter the QA
+            # path search_documents uses); (2) case→runbook conversion still
+            # emits only personal-scoped runbooks, so there are no team-scoped
+            # runbooks to seed yet. Both land with the team-sharing buildout
+            # (ADR-013 Enterprise/Organization/Team). Standalone stays inert:
+            # team collaboration is a Cloud feature and the owner resolves an
+            # empty team set.
             from faultmaven.modules.knowledge.domain.services.knowledge_service import (
                 build_kb_scope_filter,
             )

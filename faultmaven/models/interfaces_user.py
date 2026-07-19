@@ -571,6 +571,32 @@ class ITeamRepository(ABC):
         """
         pass
 
+    @abstractmethod
+    async def list_all_user_team_ids(self, user_id: str) -> List[str]:
+        """List every team id a user belongs to (KB scope resolution).
+
+        Lightweight id-only projection used to build the team arm of a
+        principal's KB read scope (``build_kb_scope_filter``). Returns ids
+        only — no full ``Team`` objects — because the sole consumer needs a
+        membership set, not team metadata.
+
+        Isolation posture: implementations MUST resolve membership by joining
+        ``team_members`` through the ``teams`` table (which carries
+        ``organization_id`` and is RLS-tenanted), so that under the limited
+        ``faultmaven_app`` role a cross-organization membership row fails
+        closed. ``team_members`` itself is intentionally not RLS-tenanted (it
+        has no ``organization_id`` column); the join through ``teams`` is the
+        isolation boundary. See ADR-013 (Enterprise/Organization/Team).
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            List of team_id strings (empty when the user has no memberships —
+            the standalone/self-hosted case, where team collaboration is inert).
+        """
+        pass
+
 
 class IAuditRepository(ABC):
     """Interface for audit log persistence operations."""
