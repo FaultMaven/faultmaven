@@ -807,9 +807,9 @@ async def get_available_scopes(
 
     A standalone (self-hosted) deployment is single-tenant — one implicit
     operator, no teams, no multi-member orgs — so only ``personal`` and
-    ``global`` are publishable here. The ``team`` / ``organization`` scopes
-    are a Cloud collaboration feature, gated by the org/team management
-    surface that ships only in Cloud.
+    ``global`` are publishable here. The ``team`` scope is a Cloud
+    collaboration feature, gated by the org/team management surface that
+    ships only in Cloud.
     """
     return AvailableScopesResponse(scopes=["personal", "global"])
 

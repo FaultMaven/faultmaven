@@ -144,13 +144,6 @@ class TestListForInventoryRBAC:
         assert [i.item_id for i in anon] == [BUILTIN_ID]
         assert [i.item_id for i in someone] == [BUILTIN_ID]
 
-    async def test_organization_scope_visible_to_everyone(self):
-        repo = await self._repo_with(
-            [_mk_item("org-item", scope=KnowledgeScope.ORGANIZATION)]
-        )
-        got = await repo.list_for_inventory("org-1", user_id="anyone")
-        assert [i.item_id for i in got] == ["org-item"]
-
     async def test_personal_visible_to_owner_only(self):
         repo = await self._repo_with(
             [_mk_item("p1", scope=KnowledgeScope.PERSONAL, owner_id="user-1")]

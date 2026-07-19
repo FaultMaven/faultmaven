@@ -159,7 +159,7 @@ class KnowledgeItemRepository(ABC):
         """List published items visible to a requester, RBAC enforced in-query.
 
         Powers the dashboard "Runbooks" inventory. Visibility:
-          - global / organization scope → visible to everyone in the org
+          - global scope → visible to everyone in the org
           - personal scope → only when ``owner_id == user_id``
           - team scope → only when ``team_id in team_ids``
 
@@ -513,12 +513,12 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     ):
         """RBAC scope-visibility predicate for the inventory surface.
 
-        global/organization → everyone in the org; personal → owner only;
-        team → members only. Branches for personal/team are added only when
-        the requester actually has a user_id / team memberships, so an
-        anonymous caller sees global/organization content only.
+        global → everyone in the org; personal → owner only; team → members
+        only. Branches for personal/team are added only when the requester
+        actually has a user_id / team memberships, so an anonymous caller
+        sees global content only.
         """
-        visibility = [KnowledgeItemModel.scope.in_(["global", "organization"])]
+        visibility = [KnowledgeItemModel.scope == "global"]
         if user_id:
             visibility.append(
                 and_(
@@ -951,7 +951,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     @staticmethod
     def _inventory_visible(item, user_id, team_set) -> bool:
         scope = item.scope.value if hasattr(item.scope, "value") else str(item.scope)
-        if scope in ("global", "organization"):
+        if scope == "global":
             return True
         if scope == "personal":
             return bool(user_id) and item.owner_id == user_id

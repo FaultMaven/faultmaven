@@ -60,14 +60,11 @@ class KnowledgeScope(str, Enum):
     Values:
         PERSONAL: Visible only to one user (requires owner_id).
         TEAM: Visible to one team (requires team_id).
-        ORGANIZATION: Visible across one organization (organization_id is
-            the only ownership marker; owner_id and team_id are optional).
         GLOBAL: Platform-wide built-in runbooks (FaultMaven-shipped only).
     """
 
     PERSONAL = "personal"
     TEAM = "team"
-    ORGANIZATION = "organization"
     GLOBAL = "global"
 
 
@@ -179,9 +176,9 @@ class KnowledgeItem:
             raise ValueError("owner_id is required for personal scope")
         if self.scope == KnowledgeScope.TEAM and not self.team_id:
             raise ValueError("team_id is required for team scope")
-        # ORGANIZATION and GLOBAL scope: organization_id is the ownership
-        # marker (already required as a base field above). No additional
-        # owner_id / team_id required.
+        # GLOBAL scope: organization_id is the ownership marker (already
+        # required as a base field above). No additional owner_id / team_id
+        # required.
 
         # Tags are labels and must be strings. Coerce first so values that
         # arrive non-str survive — most commonly a YAML-parsed numeric tag
