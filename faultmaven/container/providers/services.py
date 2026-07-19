@@ -315,6 +315,63 @@ def create_enterprise_repository() -> Any | None:
         return None
 
 
+def create_team_repository() -> Any | None:
+    """Create the sessionless team repository.
+
+    Mirrors create_organization_repository (repository only). The core ships the
+    team repository *substrate* — used by the single-tenant default-team
+    bootstrap and by KB team-scope resolution (TeamService). Team *management*
+    (create/invite from a UI) is a Cloud collaboration feature and drives the
+    same repository from faultmaven-cloud (ADR-006 / ADR-013).
+    """
+    try:
+        from faultmaven.infrastructure.persistence.sessionless_team_repository import (
+            SessionlessTeamRepository,
+        )
+
+        repository = SessionlessTeamRepository()
+        logger.debug("TeamRepository initialized (sessionless)")
+        return repository
+    except Exception as e:
+        logger.warning(f"TeamRepository initialization failed: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return None
+
+
+def create_team_service(
+    tenant_provider: Any | None,
+    team_repository: Any | None,
+) -> Any | None:
+    """Create the team service (KB team-scope resolution), or None.
+
+    Gated on multi-tenant mode (ADR-013): team collaboration is a Cloud feature,
+    so the resolver is wired only when the tenant provider is multi-tenant.
+    Standalone (single-tenant) leaves ``team_service`` unwired — the two
+    consumers (agent retrieval + KB inventory route) then skip team resolution
+    and KB scope collapses to ``personal ∪ global``.
+
+    Because multi-tenant is held behind ``MULTI_TENANT_READY`` (factory.py) until
+    the RLS + request→org wiring ships (ADR-010 P2), this returns None at runtime
+    today; it lights up automatically when multi-tenant activates. The resolver
+    itself is exercised directly by unit tests.
+    """
+    if team_repository is None or tenant_provider is None:
+        return None
+
+    from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+
+    if isinstance(tenant_provider, SingleTenantProvider):
+        logger.debug("TeamService skipped (single-tenant; team collaboration inert)")
+        return None
+
+    from faultmaven.modules.auth.domain.services.team_service import TeamService
+
+    logger.debug("TeamService initialized (multi-tenant)")
+    return TeamService(team_repository)
+
+
 def create_auth_service(
     redis_client: Any | None,
     settings: FaultMavenSettings,
@@ -420,6 +477,7 @@ def create_tenant_provider(
     organization_repository: Any | None,
     settings: FaultMavenSettings,
     enterprise_repository: Any | None = None,
+    team_repository: Any | None = None,
 ) -> Any | None:
     """Create tenant provider for deployment neutrality.
 
@@ -427,6 +485,10 @@ def create_tenant_provider(
     SingleTenantProvider uses it for default-enterprise bootstrap. Absence is
     safe — migration 006 also seeds the default enterprise idempotently, so
     bootstrap simply skips the runtime check.
+
+    team_repository is optional; when present (single-tenant mode), the
+    SingleTenantProvider uses it to seed the default team row. Absence is safe —
+    bootstrap simply skips team seeding.
     """
     if not organization_repository:
         logger.debug("TenantProvider skipped (no organization repository)")
@@ -441,6 +503,7 @@ def create_tenant_provider(
         provider = factory(
             organization_repository=organization_repository,
             enterprise_repository=enterprise_repository,
+            team_repository=team_repository,
         )
         logger.debug(
             f"TenantProvider initialized (tenant_provider: {settings.providers.tenant_provider}, "
@@ -704,16 +767,31 @@ def register_services(container: BaseDIContainer) -> None:
     if enterprise_repository:
         container._register_service("enterprise_repository", enterprise_repository)
 
-    # Tenant Provider (create after the Organization + Enterprise repositories,
-    # before CaseService)
+    # Team Repository (create before TenantProvider; SingleTenantProvider uses
+    # it to seed the default team row. Also the substrate for TeamService.)
+    team_repository = create_team_repository()
+    container.team_repository = team_repository
+    if team_repository:
+        container._register_service("team_repository", team_repository)
+
+    # Tenant Provider (create after the Organization + Enterprise + Team
+    # repositories, before CaseService)
     tenant_provider = create_tenant_provider(
         organization_repository,
         settings,
         enterprise_repository=enterprise_repository,
+        team_repository=team_repository,
     )
     container.tenant_provider = tenant_provider
     if tenant_provider:
         container._register_service("tenant_provider", tenant_provider)
+
+    # Team Service (KB team-scope resolution). Gated on multi-tenant mode —
+    # None in standalone (team collaboration is a Cloud feature).
+    team_service = create_team_service(tenant_provider, team_repository)
+    container.team_service = team_service
+    if team_service:
+        container._register_service("team_service", team_service)
 
     # Case Service (with TenantProvider injection for deployment-agnostic org resolution)
     case_service = create_case_service(

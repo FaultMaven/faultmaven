@@ -26,3 +26,11 @@ STANDALONE_ORG_NAME = "Default Organization"
 STANDALONE_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 STANDALONE_ENTERPRISE_SLUG = "default"
 STANDALONE_ENTERPRISE_NAME = "Default Enterprise"
+
+# Implicit single-tenant team (the default sharing unit inside the org). In
+# standalone the Enterprise = Organization = Team collapse rule (ADR-013 D1)
+# makes this a 1:1:1 chain; the row exists for schema/relationship completeness.
+# Team-scoped sharing itself stays inert in standalone (no membership-population
+# path — that is the Cloud management module).
+STANDALONE_TEAM_ID = "00000000-0000-0000-0000-000000000003"
+STANDALONE_TEAM_NAME = "Default Team"

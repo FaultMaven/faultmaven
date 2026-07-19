@@ -10,7 +10,7 @@ from uuid import UUID
 import pytest
 
 from faultmaven.exceptions import NotFoundError
-from faultmaven.models.interfaces_user import Organization, OrgPlanTier
+from faultmaven.models.interfaces_user import Organization, OrgPlanTier, Team
 from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
@@ -367,3 +367,62 @@ async def test_multiple_users_get_same_default_organization(
 
     assert org1.organization_id == org2.organization_id
     assert org1.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
+
+
+# ============================================================================
+# ensure_default_team_exists() — #734 default-team seeding
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_ensure_default_team_creates_when_absent(mock_organization_repository):
+    """Seeds the default team under the default org when it doesn't exist."""
+    team_repo = AsyncMock()
+    team_repo.get_team.return_value = None
+    team_repo.create_team.side_effect = lambda team: team
+    provider = SingleTenantProvider(
+        organization_repository=mock_organization_repository,
+        team_repository=team_repo,
+    )
+
+    team = await provider.ensure_default_team_exists()
+
+    assert team is not None
+    assert team.team_id == SingleTenantProvider.DEFAULT_TEAM_ID
+    assert team.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
+    team_repo.create_team.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_default_team_idempotent_when_exists(mock_organization_repository):
+    """Existing default team is returned; no second create."""
+    existing = Team(
+        team_id=SingleTenantProvider.DEFAULT_TEAM_ID,
+        organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
+        name=SingleTenantProvider.DEFAULT_TEAM_NAME,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    team_repo = AsyncMock()
+    team_repo.get_team.return_value = existing
+    provider = SingleTenantProvider(
+        organization_repository=mock_organization_repository,
+        team_repository=team_repo,
+    )
+
+    team = await provider.ensure_default_team_exists()
+
+    assert team is existing
+    team_repo.create_team.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_default_team_noop_without_repository(
+    mock_organization_repository,
+):
+    """No team_repository wired → no-op (returns None), never raises."""
+    provider = SingleTenantProvider(
+        organization_repository=mock_organization_repository,
+    )
+
+    assert await provider.ensure_default_team_exists() is None

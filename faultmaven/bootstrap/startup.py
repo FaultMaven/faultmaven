@@ -93,6 +93,20 @@ async def bootstrap_application(container: Any) -> None:
             except Exception as e:
                 logger.error(f"Failed to create default organization: {e}")
                 raise
+
+            # Order: organization -> team. The team FK organization_id is NOT
+            # NULL, so the default org must exist first.
+            logger.info("Single-tenant mode: Ensuring default team exists")
+            try:
+                default_team = await tenant_provider.ensure_default_team_exists()
+                if default_team is not None:
+                    logger.info(
+                        f"Default team ready: {default_team.name} "
+                        f"(ID: {default_team.team_id})"
+                    )
+            except Exception as e:
+                logger.error(f"Failed to create default team: {e}")
+                raise
         else:
             logger.info("Multi-tenant mode: No default tenant created")
 

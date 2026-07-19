@@ -15,6 +15,8 @@ from faultmaven.config.constants import (
     STANDALONE_ORG_ID,
     STANDALONE_ORG_NAME,
     STANDALONE_ORG_SLUG,
+    STANDALONE_TEAM_ID,
+    STANDALONE_TEAM_NAME,
 )
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.interfaces_user import (
@@ -22,8 +24,10 @@ from faultmaven.models.interfaces_user import (
     EnterprisePlanTier,
     IEnterpriseRepository,
     IOrganizationRepository,
+    ITeamRepository,
     Organization,
     OrgPlanTier,
+    Team,
 )
 from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.base import TenantProvider
@@ -58,10 +62,14 @@ class SingleTenantProvider(TenantProvider):
     DEFAULT_ENTERPRISE_SLUG = STANDALONE_ENTERPRISE_SLUG
     DEFAULT_ENTERPRISE_NAME = STANDALONE_ENTERPRISE_NAME
 
+    DEFAULT_TEAM_ID = STANDALONE_TEAM_ID
+    DEFAULT_TEAM_NAME = STANDALONE_TEAM_NAME
+
     def __init__(
         self,
         organization_repository: IOrganizationRepository,
         enterprise_repository: Optional[IEnterpriseRepository] = None,
+        team_repository: Optional[ITeamRepository] = None,
     ):
         """Initialize single-tenant provider.
 
@@ -71,11 +79,17 @@ class SingleTenantProvider(TenantProvider):
                 Optional during the rollout window — when absent,
                 ensure_default_enterprise_exists() is a no-op (the
                 migration's own backfill is the source of truth).
+            team_repository: Repository for team persistence. Optional — when
+                absent, ensure_default_team_exists() is a no-op. Used only to
+                seed the default team row (schema/relationship completeness);
+                team collaboration stays inert in standalone.
         """
         self.organization_repository = organization_repository
         self.enterprise_repository = enterprise_repository
+        self.team_repository = team_repository
         self._default_enterprise: Optional[Enterprise] = None
         self._default_org: Optional[Organization] = None
+        self._default_team: Optional[Team] = None
 
     async def get_current_organization(
         self, current_user: User, organization_id: Optional[str] = None
@@ -215,3 +229,45 @@ class SingleTenantProvider(TenantProvider):
         self._default_org = created_org
 
         return created_org
+
+    async def ensure_default_team_exists(self) -> Optional[Team]:
+        """Create the default team if it doesn't exist.
+
+        Called by the startup bootstrapper after the default organization
+        (the team's FK organization_id → organizations is NOT NULL). Seeds a
+        single default team so the Enterprise = Organization = Team collapse
+        chain (ADR-013 D1) is materialized for the standalone tenant.
+
+        This seeds the team ROW only — no memberships. In standalone there is
+        no membership-population path (team management is the Cloud module), so
+        team-scoped sharing stays inert regardless. Membership resolution
+        (build_kb_scope_filter's team arm) therefore returns an empty set.
+
+        Returns:
+            Team: the default team, or None if no team_repository is wired
+            (rollout fallback — the row is not required for standalone to run).
+
+        Design Notes:
+            - Uses a fixed UUID for predictability and testing.
+            - Idempotent: safe to call multiple times.
+        """
+        if self.team_repository is None:
+            return None
+
+        existing = await self.team_repository.get_team(self.DEFAULT_TEAM_ID)
+        if existing:
+            self._default_team = existing
+            return existing
+
+        now = datetime.now(timezone.utc)
+        default_team = Team(
+            team_id=self.DEFAULT_TEAM_ID,
+            organization_id=self.DEFAULT_ORG_ID,
+            name=self.DEFAULT_TEAM_NAME,
+            description="Default team for standalone deployment",
+            created_at=now,
+            updated_at=now,
+        )
+        created_team = await self.team_repository.create_team(default_team)
+        self._default_team = created_team
+        return created_team

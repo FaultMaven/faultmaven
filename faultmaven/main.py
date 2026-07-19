@@ -508,6 +508,9 @@ async def lifespan(app: FastAPI):
             app.state.orchestration_service = container.get_orchestration_service()
             app.state.data_service = container.get_data_service()
             app.state.tenant_provider = container.get_tenant_provider()
+            # KB team-scope resolver (None in standalone — team collaboration is
+            # a Cloud feature; the KB inventory route reads this off app.state).
+            app.state.team_service = container.get_team_service()
             app.state.report_generation_service = (
                 container.get_report_generation_service()
             )
