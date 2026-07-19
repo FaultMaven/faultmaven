@@ -19,6 +19,7 @@ DB) so the tests stay fast and deterministic.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -417,8 +418,9 @@ def _search_hit(score=0.9, parent_id="rb1"):
 
 async def test_prefetch_scope_is_global_union_owner():
     # The pre-fetch must search global PLUS the case owner's own KB — otherwise
-    # personal (case-generated) runbooks never seed. The team arm is not yet
-    # wired for the seeder pre-fetch (single-arg build_kb_scope_filter).
+    # personal (case-generated) runbooks never seed. The team arm is wired but
+    # resolves empty when no team_service/share_repository is attached (standalone,
+    # or a bare __new__ engine), so the scope collapses to global ∪ owner.
     ks = _SearchRecordingStub([_search_hit()])
     engine = _engine(ks)
     case = _case()  # user_id="u"
@@ -432,6 +434,33 @@ async def test_prefetch_scope_is_global_union_owner():
             ]
         }
     ]
+
+
+async def test_prefetch_team_arm_uses_owner_shared_runbooks():
+    # When team_service + share_repository are attached (Cloud), the seeder
+    # widens the OWNER's scope with the runbooks shared to the OWNER's teams —
+    # keyed on case.user_id, NOT the session user. Inert until conversion emits
+    # team-shared runbooks, but the plumbing must resolve through the share table.
+    ks = _SearchRecordingStub([_search_hit()])
+    engine = _engine(ks)
+    engine.team_service = SimpleNamespace(
+        list_all_user_team_ids=AsyncMock(return_value=["team_1"])
+    )
+    engine.share_repository = SimpleNamespace(
+        list_resource_ids=AsyncMock(return_value=["rb_team_a"])
+    )
+    case = _case()
+    case.user_id = "owner_b"
+    await engine._prefetch_kb_context(case, "X fails", "symptom")
+
+    scope_filter = ks.filters_seen[0]
+    assert {"parent_document_id": {"$in": ["rb_team_a"]}} in scope_filter["$or"]
+    assert {"owner_id": "owner_b"} in scope_filter["$or"]
+    # Teams resolved for the CASE OWNER, not any session user.
+    engine.team_service.list_all_user_team_ids.assert_awaited_once_with("owner_b")
+    engine.share_repository.list_resource_ids.assert_awaited_once_with(
+        resource_type="knowledge_item", scope_type="team", scope_ids=["team_1"]
+    )
 
 
 async def test_prefetch_owner_condition_keyed_on_this_case_owner():

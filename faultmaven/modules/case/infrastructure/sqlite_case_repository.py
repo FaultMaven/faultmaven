@@ -81,6 +81,7 @@ from faultmaven.modules.case.infrastructure import (
     _agent_execution_mappers as agent_mappers,
 )
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
 from faultmaven.utils.serialization import to_json_compatible
 
 if TYPE_CHECKING:
@@ -1187,6 +1188,7 @@ class SQLiteCaseRepository(CaseRepository):
         limit: int = 50,
         offset: int = 0,
         source: str | None = None,
+        shared_case_ids: list[str] | None = None,
     ) -> tuple[list[Case], int]:
         """List cases with optional filters and pagination.
 
@@ -1200,9 +1202,11 @@ class SQLiteCaseRepository(CaseRepository):
             where_clauses = []
             params: dict[str, Any] = {"limit": limit, "offset": offset}
 
-            if user_id:
-                where_clauses.append("user_id = :user_id")
-                params["user_id"] = user_id
+            # owned ∪ shared-to-my-teams (ADR-013 §D4). None when user_id is
+            # falsy (cross-tenant admin path); owner-only when no shares.
+            scope_clause = case_scope_where(params, user_id, shared_case_ids)
+            if scope_clause:
+                where_clauses.append(scope_clause)
 
             # No per-query org filter: standalone is single-tenant (one implicit
             # org), and cloud tenant isolation is enforced by PostgreSQL RLS in
@@ -1622,6 +1626,7 @@ class SQLiteCaseRepository(CaseRepository):
         user_id: str | None = None,
         organization_id: str | None = None,
         limit: int = 20,
+        shared_case_ids: builtins.list[str] | None = None,
     ) -> tuple[builtins.list[Case], int]:
         """Search cases using SQLite LIKE pattern matching (no full-text search)."""
         try:
@@ -1634,9 +1639,10 @@ class SQLiteCaseRepository(CaseRepository):
                 "limit": limit,
             }
 
-            if user_id:
-                where_clauses.append("user_id = :user_id")
-                params["user_id"] = user_id
+            # owned ∪ shared-to-my-teams (ADR-013 §D4); owner-only when no shares.
+            scope_clause = case_scope_where(params, user_id, shared_case_ids)
+            if scope_clause:
+                where_clauses.append(scope_clause)
 
             # No per-query org filter: standalone is single-tenant (one implicit
             # org), and cloud tenant isolation is enforced by PostgreSQL RLS in

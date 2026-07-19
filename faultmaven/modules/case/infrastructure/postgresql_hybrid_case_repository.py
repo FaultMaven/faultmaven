@@ -76,6 +76,7 @@ from faultmaven.modules.case.infrastructure import (
     _agent_execution_mappers as agent_mappers,
 )
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
 from faultmaven.utils.datetime import parse_utc_timestamp
 
 # TYPE_CHECKING imports not needed - models imported directly above
@@ -956,6 +957,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         limit: int = 50,
         offset: int = 0,
         source: Optional[str] = None,
+        shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters and pagination.
@@ -969,6 +971,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
+            shared_case_ids: Case ids readable via a team share (ADR-013 §D4);
+                widens owner-only scope to ``owned ∪ shared-to-my-teams``.
 
         Returns:
             Tuple of (cases, total_count)
@@ -978,9 +982,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             where_clauses = []
             params = {"limit": limit, "offset": offset}
 
-            if user_id:
-                where_clauses.append("user_id = :user_id")
-                params["user_id"] = user_id
+            # owned ∪ shared-to-my-teams (ADR-013 §D4). None when user_id is
+            # falsy (cross-tenant admin path); owner-only when no shares.
+            scope_clause = case_scope_where(params, user_id, shared_case_ids)
+            if scope_clause:
+                where_clauses.append(scope_clause)
 
             # No per-query org filter: tenant isolation is enforced by PostgreSQL
             # RLS in faultmaven-cloud (ADR-006), not by CE repositories;
@@ -1463,6 +1469,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
         limit: int = 20,
+        shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """
         Search cases using PostgreSQL full-text search.
@@ -1479,6 +1486,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             organization_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
             limit: Maximum results
+            shared_case_ids: Case ids readable via a team share (ADR-013 §D4);
+                widens owner-only scope to ``owned ∪ shared-to-my-teams``.
 
         Returns:
             Tuple of (cases, total_count)
@@ -1492,9 +1501,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             ]
             params = {"query": query, "case_id_pattern": f"%{query}%", "limit": limit}
 
-            if user_id:
-                where_clauses.append("c.user_id = :user_id")
-                params["user_id"] = user_id
+            # owned ∪ shared-to-my-teams (ADR-013 §D4); owner-only when no shares.
+            # The full-text query aliases ``cases`` as ``c``, so scope on ``c.``.
+            scope_clause = case_scope_where(
+                params, user_id, shared_case_ids, col_prefix="c."
+            )
+            if scope_clause:
+                where_clauses.append(scope_clause)
 
             # No per-query org filter: tenant isolation is RLS in
             # faultmaven-cloud (ADR-006); standalone is single-tenant.
