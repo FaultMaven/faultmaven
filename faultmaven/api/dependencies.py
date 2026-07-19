@@ -253,7 +253,12 @@ async def get_agent_orchestration_service(
     # agent resolves an empty team set and KB scope collapses to personal ∪
     # global. Sourced from app.state (set once at startup by the container).
     team_service = getattr(request.app.state, "team_service", None)
-    return factory.create_agent_orchestration_service(team_service=team_service)
+    # Share source of truth (ADR-013 §D4): resolves the shared-to-my-teams arm of
+    # the KB read allowlist. Present in both deployment modes.
+    share_repository = getattr(request.app.state, "share_repository", None)
+    return factory.create_agent_orchestration_service(
+        team_service=team_service, share_repository=share_repository
+    )
 
 
 # Future service dependencies:

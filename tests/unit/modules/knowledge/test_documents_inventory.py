@@ -45,7 +45,6 @@ def _mk_item(
     *,
     scope=KnowledgeScope.GLOBAL,
     owner_id=None,
-    team_id=None,
     org="org-1",
     title="Runbook",
     is_published=True,
@@ -60,7 +59,6 @@ def _mk_item(
         item_type=item_type,
         scope=scope,
         owner_id=owner_id,
-        team_id=team_id,
         is_published=is_published,
         metadata=metadata,
     )
@@ -155,18 +153,22 @@ class TestListForInventoryRBAC:
         assert other == []
         assert anon == []
 
-    async def test_team_visible_to_members_only(self):
+    async def test_team_item_visible_to_its_owner(self):
+        # Team visibility now lives in the share table (ADR-013 §D4), which the
+        # InMemory fallback does not model — so it surfaces a team-scoped item
+        # only to its author (owner arm), not to other team members. The
+        # share-resolved member visibility is covered by the DB test below.
         repo = await self._repo_with(
-            [_mk_item("t1", scope=KnowledgeScope.TEAM, team_id="team-A")]
+            [_mk_item("t1", scope=KnowledgeScope.TEAM, owner_id="user-1")]
         )
-        member = await repo.list_for_inventory(
-            "org-1", user_id="u", team_ids=["team-A", "team-B"]
+        owner = await repo.list_for_inventory(
+            "org-1", user_id="user-1", team_ids=["team-A"]
         )
-        nonmember = await repo.list_for_inventory(
-            "org-1", user_id="u", team_ids=["team-B"]
+        other = await repo.list_for_inventory(
+            "org-1", user_id="user-2", team_ids=["team-A"]
         )
-        assert [i.item_id for i in member] == ["t1"]
-        assert nonmember == []
+        assert [i.item_id for i in owner] == ["t1"]
+        assert other == []
 
     async def test_unpublished_excluded(self):
         repo = await self._repo_with(
@@ -263,6 +265,7 @@ async def inventory_service():
     svc._vector_store = MagicMock()
     svc._vector_store.delete_documents_by_parent_id = AsyncMock(return_value=2)
     svc._tracer = MagicMock()
+    svc._share_repo = None  # no team publishing in this fixture
 
     async def _seed(item):
         async with factory() as session:
@@ -319,6 +322,40 @@ class TestInventoryServiceDB:
         assert {d["document_id"] for d in owner["documents"]} == {BUILTIN_ID, "p-1"}
         # user-2 must not see user-1's personal runbook
         assert {d["document_id"] for d in other["documents"]} == {BUILTIN_ID}
+
+    async def test_team_shared_visible_via_share_table(self, inventory_service):
+        # A team-scoped runbook authored by user-1, shared to team-A through the
+        # resource_shares table (ADR-013 §D4). A member of team-A sees it via the
+        # SQL allowlist subquery; a non-member does not. The share table — not a
+        # column on the item — is the source of truth.
+        from faultmaven.infrastructure.persistence.share_repository import (
+            PostgreSQLShareRepository,
+        )
+
+        svc, factory = inventory_service
+        await svc._seed_item(
+            _mk_item("t-1", scope=KnowledgeScope.TEAM, owner_id="user-1")
+        )
+        async with factory() as session:
+            await PostgreSQLShareRepository(session).share(
+                resource_type="knowledge_item",
+                resource_id="t-1",
+                scope_type="team",
+                scope_id="team-A",
+                organization_id="org-1",
+                created_by="user-1",
+            )
+
+        member = await svc.list_documents(
+            user=SimpleNamespace(user_id="user-2", organization_id="org-1"),
+            team_ids=["team-A"],
+        )
+        nonmember = await svc.list_documents(
+            user=SimpleNamespace(user_id="user-2", organization_id="org-1"),
+            team_ids=["team-B"],
+        )
+        assert "t-1" in {d["document_id"] for d in member["documents"]}
+        assert "t-1" not in {d["document_id"] for d in nonmember["documents"]}
 
     async def test_get_document_reads_row_content(self, inventory_service):
         svc, _ = inventory_service

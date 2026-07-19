@@ -653,13 +653,15 @@ alembic downgrade -1
 
 **Tenancy:** `enterprises` (top-tier container), with `users.enterprise_id` and `organizations.enterprise_id` NOT NULL FKs.
 
+**Sharing:** `resource_shares` — polymorphic `(resource_type, resource_id, scope_type, scope_id)` association (ADR-013 §D4). Single source of truth for team visibility of runbooks/cases/drafts; replaced the nullable `team_id` columns on `cases`/`knowledge_items`/`conversion_jobs`. v1 `scope_type=team`; `organization` reserved (D4a). Retrieval resolves it to a visible-id allowlist in SQL; ChromaDB metadata never carries team state.
+
 **Config domain:** `llm_config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; local mode uses .env as sole source of truth)
 
 All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. ER diagram: `docs/architecture/data-and-storage/er-diagram.md` (regenerate with `python scripts/generate_er_diagram.py --update`).
 
 ### Migration
 
-Baseline `001_clean_baseline` (revision `c4689af8aa3f`) creates 32 tables + RBAC seed data. Subsequent migrations 002–010 cover the post-baseline cleanups: evidence `summary`/`extract` two-field shape (002), enterprise-tier transitional nullability (003), uploaded_files cleanup (004), description CHECK relaxation (005), enterprise-tier NOT NULL tightening (006), drop `users_password_or_sso` CHECK to permit dev-login (007), `case_actions.triggered_by` audit column + read-path wiring (008), Evidence/Solution audit fields (009), and the strict evidence-model redesign (010 — preprocessing artifacts move to `uploaded_files`; `evidence.form` dropped; `evidence_source_invariant` CHECK added so every Evidence row has a known source). Migrations continue through 011–024 (evidence-needs, `status`→`state`, RLS tenant isolation, causal-graph chain model, PostgreSQL type-divergence fixes, causal-table RLS, provenance-column drop). Current head: `e6f7a8b9c0d1`. See `docs/architecture/data-and-storage/schemas/case-schema.md` for the full migration table.
+Baseline `001_clean_baseline` (revision `c4689af8aa3f`) creates 32 tables + RBAC seed data. Subsequent migrations 002–010 cover the post-baseline cleanups: evidence `summary`/`extract` two-field shape (002), enterprise-tier transitional nullability (003), uploaded_files cleanup (004), description CHECK relaxation (005), enterprise-tier NOT NULL tightening (006), drop `users_password_or_sso` CHECK to permit dev-login (007), `case_actions.triggered_by` audit column + read-path wiring (008), Evidence/Solution audit fields (009), and the strict evidence-model redesign (010 — preprocessing artifacts move to `uploaded_files`; `evidence.form` dropped; `evidence_source_invariant` CHECK added so every Evidence row has a known source). Migrations continue through 011–028 (evidence-needs, `status`→`state`, RLS tenant isolation, causal-graph chain model, PostgreSQL type-divergence fixes, causal-table RLS, provenance-column drop, `account_kind`+source, plan-tier rename, drop orphaned `organization` KB scope, and the polymorphic `resource_shares` table replacing the nullable `team_id` columns — 028). Current head: `d0e1f2a3b4c5`. See `docs/architecture/data-and-storage/schemas/case-schema.md` for the full migration table.
 
 ## Key Patterns
 

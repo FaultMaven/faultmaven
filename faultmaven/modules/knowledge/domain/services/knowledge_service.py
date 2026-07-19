@@ -75,25 +75,54 @@ def _strip_chunk_suffix(chunk_id: Optional[str]) -> Optional[str]:
 
 
 def build_kb_scope_filter(
-    owner_id: Optional[str], team_ids: Optional[List[str]] = None
+    owner_id: Optional[str], shared_ids: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Build a vector-store ``where`` filter for the KB scopes a principal may read.
+    """Build a vector-store ``where`` filter for the KB items a principal may read.
 
-    Returns ``global`` ∪ the owner's own ``personal`` ∪ each of the owner's
-    ``team`` scopes, as a ChromaDB ``$or`` (or the bare single condition when
-    only global applies). The personal/team conditions are keyed on the owner's
-    ids, so a filter built for user A can never surface user B's personal (or a
-    non-shared team's) content — this is the single source of truth for KB read
-    isolation, shared by the QA retrieval path (``search_documents``) and the KB
-    cause-seeder pre-fetch (``MilestoneEngine._prefetch_kb_context``).
+    The visible-id allowlist (ADR-011 D3): ``global`` ∪ items the principal
+    ``owns`` ∪ items ``shared to any of the principal's teams``, as a ChromaDB
+    ``$or`` (or the bare single condition when only global applies):
+
+    - ``{"scope": "global"}`` — platform corpus, readable by all.
+    - ``{"owner_id": owner_id}`` — the principal's own items, any scope (an
+      author always sees their own). Vector metadata tags only the immutable
+      floor (personal/global) + owner, never team, so this arm is unshare-proof.
+    - ``{"parent_document_id": {"$in": shared_ids}}`` — items shared to one of
+      the principal's teams. ``shared_ids`` (``knowledge_items.item_id`` values)
+      is resolved in SQL from the ``resource_shares`` table by the caller, which
+      is the single source of truth for team visibility. Omitted when empty
+      (ChromaDB rejects an empty ``$in``).
+
+    Keyed entirely on the caller's own ids/allowlist, so a filter built for user
+    A can never surface user B's non-shared content. Shared by the QA retrieval
+    path (``search_documents``) and the KB cause-seeder pre-fetch
+    (``MilestoneEngine._prefetch_kb_context``).
     """
     scope_conditions: List[Dict[str, Any]] = [{"scope": "global"}]
     if owner_id:
-        scope_conditions.append({"scope": "personal", "owner_id": owner_id})
-    for tid in team_ids or ():
-        scope_conditions.append({"scope": "team", "team_id": tid})
+        scope_conditions.append({"owner_id": owner_id})
+    if shared_ids:
+        scope_conditions.append({"parent_document_id": {"$in": list(shared_ids)}})
     return (
         {"$or": scope_conditions} if len(scope_conditions) > 1 else scope_conditions[0]
+    )
+
+
+async def resolve_shared_kb_ids(
+    share_repository: Optional[Any], team_ids: Optional[List[str]]
+) -> List[str]:
+    """Resolve the ``knowledge_item`` ids shared to any of ``team_ids``.
+
+    The team arm of the visible-id allowlist (ADR-011 D3). Returns ``[]`` when
+    there is no share repository (e.g. an in-memory fallback) or the principal
+    belongs to no teams — retrieval then collapses to ``personal ∪ global``.
+    """
+    if not share_repository or not team_ids:
+        return []
+    return await share_repository.list_resource_ids(
+        resource_type="knowledge_item",
+        scope_type="team",
+        scope_ids=list(team_ids),
     )
 
 
@@ -112,6 +141,7 @@ class KnowledgeService:
             ILLMProvider
         ] = None,  # Enhanced: LLM for intelligent processing
         db_session_factory: Optional[Any] = None,
+        share_repository: Optional[Any] = None,
     ):
         """
         Initialize with interface dependencies for better testability
@@ -133,6 +163,10 @@ class KnowledgeService:
         self._redis = redis_client
         self._settings = settings
         self._db_session_factory = db_session_factory
+        # Source of truth for team visibility (ADR-013 §D4). Used to create share
+        # rows on team publish and to resolve the shared-id read allowlist. May be
+        # None (e.g. minimal/test wiring) — team sharing then no-ops.
+        self._share_repo = share_repository
         # Set by main.py after ConversionService is created (avoids circular DI).
         # When present, all ConversionDraftModel mutations are delegated to it.
         self._conversion_service: Optional[Any] = None
@@ -463,6 +497,15 @@ class KnowledgeService:
                         await repo.delete(document_id)
                         action = "deleted"
 
+                # Cascade the item's team share rows on hard delete (source of
+                # truth, ADR-013 §D4). Orphan shares are already fail-safe (they
+                # match nothing in the allowlist), but clean them to keep the
+                # table tidy. Unpublish keeps the row, so keeps its shares.
+                if action == "deleted" and self._share_repo:
+                    await self._share_repo.delete_for_resource(
+                        "knowledge_item", document_id
+                    )
+
                 # Remove ChromaDB vectors in BOTH paths (best-effort, after DB
                 # commit). Critical for unpublish: retrieval ignores
                 # is_published, so deleting the vectors is what actually
@@ -652,6 +695,13 @@ class KnowledgeService:
             # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)
 
+            # Metadata scope carries only the immutable floor: 'global' vs
+            # 'personal'. Team visibility lives in the share table and is
+            # resolved to an id allowlist at query time — never written here
+            # (a 'team'/'global' tag would orphan-on-unshare or leak). ADR-013 §D4.
+            _raw_scope = getattr(document, "scope", "global") or "global"
+            _meta_scope = "global" if _raw_scope == "global" else "personal"
+
             # Build per-chunk document dicts
             doc_dicts = []
             for i, chunk in enumerate(chunks):
@@ -660,9 +710,8 @@ class KnowledgeService:
                     document_type=document.document_type,
                     tags=document.tags or [],
                     source_url=document.source_url,
-                    scope=getattr(document, "scope", "global"),
+                    scope=_meta_scope,
                     owner_id=getattr(document, "owner_id", None),
-                    team_id=getattr(document, "team_id", None),
                     created_at=document.created_at,
                     updated_at=document.updated_at,
                     domain=fm_meta.get("domain"),
@@ -713,6 +762,41 @@ class KnowledgeService:
             logger.info(f"Removed {count} chunks for document {document_id}")
         except Exception as e:
             logger.error(f"Failed to remove document from vector store: {e}")
+
+    async def _create_team_share(
+        self,
+        *,
+        resource_type: str,
+        resource_id: str,
+        team_id: str,
+        organization_id: str,
+        created_by: Optional[str] = None,
+    ) -> None:
+        """Record a team share for a resource (idempotent), the source of truth
+        for team visibility (ADR-013 §D4).
+
+        No-ops when no share repository is wired (e.g. minimal/test wiring) —
+        team publishing is then inert. Cross-org sharing is structurally
+        impossible: the share carries the resource's own ``organization_id`` and
+        the read allowlist only ever resolves teams the requester belongs to
+        (within their RLS-isolated org), so a share to a foreign team is
+        unreachable. RLS is the backstop.
+        """
+        if not self._share_repo:
+            logger.debug(
+                "Team share skipped for %s %s (no share repository wired)",
+                resource_type,
+                resource_id,
+            )
+            return
+        await self._share_repo.share(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            scope_type="team",
+            scope_id=team_id,
+            organization_id=organization_id,
+            created_by=created_by,
+        )
 
     async def ingest_runbook(
         self,
@@ -805,7 +889,6 @@ class KnowledgeService:
             item_type=KnowledgeItemType.RUNBOOK,
             scope=KnowledgeScope(scope),
             owner_id=owner_id,
-            team_id=team_id,
             tags=list(tags) if tags else [],
             source_url=source_url,
             # Explicit verification_level wins; otherwise derive from
@@ -842,6 +925,19 @@ class KnowledgeService:
             repo = DatabaseKnowledgeItemRepository(session)
             await repo.create(item)
 
+        # Team publish: record visibility in the share table (source of truth,
+        # ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row. Cross-org
+        # shares are impossible by construction — the share carries the item's
+        # own organization_id (a team belongs to exactly one org).
+        if scope == KnowledgeScope.TEAM.value and team_id:
+            await self._create_team_share(
+                resource_type="knowledge_item",
+                resource_id=document_id,
+                team_id=team_id,
+                organization_id=organization_id,
+                created_by=owner_id or verified_by,
+            )
+
         # 2) ChromaDB second — chunks + embeddings. On failure (raises OR
         # returns 0 chunks), delete the SQL row before raising. The prior
         # "leave SQL for recovery" policy produced half-state rows that
@@ -855,7 +951,6 @@ class KnowledgeService:
             source_url=source_url,
             scope=scope,
             owner_id=owner_id,
-            team_id=team_id,
             created_at=to_json_compatible(now),
             updated_at=to_json_compatible(now),
         )
@@ -992,7 +1087,6 @@ class KnowledgeService:
                         user_id=owner_id,  # NULL if anonymous; FK SET NULL
                         organization_id=org_id,
                         scope=scope,
-                        team_id=team_id,
                         status="completed",
                         source_file_id=source_file_id,
                         source_type="upload",
@@ -1164,7 +1258,6 @@ class KnowledgeService:
                         "tags": tag_list,
                         "scope": item.scope.value,
                         "owner_id": item.owner_id,
-                        "team_id": item.team_id,
                         "source_url": item.source_url,
                         "created_at": (
                             item.created_at.isoformat() if item.created_at else ""
@@ -1258,7 +1351,6 @@ class KnowledgeService:
                 "tags": list(item.tags) if item.tags else [],
                 "scope": item.scope.value,
                 "owner_id": item.owner_id,
-                "team_id": item.team_id,
                 "source_url": item.source_url,
                 "created_at": item.created_at.isoformat() if item.created_at else "",
                 "updated_at": item.updated_at.isoformat() if item.updated_at else "",
@@ -1478,10 +1570,11 @@ class KnowledgeService:
         try:
             user_id = getattr(user, "user_id", None) if user else None
 
-            # Build a ChromaDB $or scope filter covering all accessible tiers.
-            scope_filter: Dict[str, Any] = build_kb_scope_filter(
-                user_id, list(team_ids or [])
-            )
+            # Resolve the "shared-to-my-teams" arm from the share table (source
+            # of truth), then build the visible-id allowlist filter
+            # (global ∪ owned ∪ shared). ADR-013 §D4 / ADR-011 D3.
+            shared_ids = await resolve_shared_kb_ids(self._share_repo, team_ids)
+            scope_filter: Dict[str, Any] = build_kb_scope_filter(user_id, shared_ids)
 
             if document_type:
                 scope_filter = {
@@ -1697,7 +1790,6 @@ class KnowledgeService:
                     source_url=item.source_url,
                     scope=item.scope.value,
                     owner_id=item.owner_id,
-                    team_id=item.team_id,
                     created_at=item.created_at.isoformat() if item.created_at else "",
                     updated_at=item.updated_at.isoformat() if item.updated_at else "",
                 )

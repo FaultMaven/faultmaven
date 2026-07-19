@@ -244,7 +244,6 @@ class KnowledgeIngester:
         document_id: Optional[str] = None,
         scope: str = "global",
         owner_id: Optional[str] = None,
-        team_id: Optional[str] = None,
     ) -> str:
         """
         Ingest a document into the knowledge base (background task)
@@ -256,9 +255,10 @@ class KnowledgeIngester:
             tags: Optional tags for categorization
             source_url: Optional source URL
             document_id: Optional document ID to use (generates new if not provided)
-            scope: Visibility scope (global, personal, team)
+            scope: Visibility scope (global, personal, team). Team visibility is
+                carried by the share table (resource_shares), not here — this
+                path only tags the immutable metadata floor (owner/global).
             owner_id: Owner user ID (required for personal scope)
-            team_id: Team ID (required for team scope)
 
         Returns:
             Document ID of the ingested document
@@ -288,7 +288,6 @@ class KnowledgeIngester:
                 source_url=source_url,
                 scope=scope,
                 owner_id=owner_id,
-                team_id=team_id,
                 created_at=now,
                 updated_at=now,
             )
@@ -427,15 +426,23 @@ class KnowledgeIngester:
 
         for i, chunk in enumerate(chunks):
             chunk_id = f"{document.document_id}_chunk_{i}"
+            # Metadata scope carries only the immutable floor: 'global' (platform)
+            # vs 'personal' (owner-only). A team item is tagged 'personal' here —
+            # its team visibility lives in the share table and is resolved into an
+            # id allowlist at query time. Writing 'team'/team_id here would orphan
+            # the chunk on unshare, and writing 'global' would leak it to everyone
+            # (ADR-013 §D4 / ADR-011 D3).
+            _raw_scope = getattr(document, "scope", None) or "global"
+            _meta_scope = "global" if _raw_scope == "global" else "personal"
             metadata = {
                 "document_id": document.document_id,
+                "parent_document_id": document.document_id,
                 "title": document.title,
                 "document_type": document.document_type,
                 "tags": ",".join(document.tags) if document.tags else "",
                 "source_url": document.source_url or "",
-                "scope": getattr(document, "scope", None) or "global",
+                "scope": _meta_scope,
                 "owner_id": getattr(document, "owner_id", None) or "",
-                "team_id": getattr(document, "team_id", None) or "",
                 "chunk_index": i,
                 "total_chunks": len(chunks),
                 "created_at": document.created_at,

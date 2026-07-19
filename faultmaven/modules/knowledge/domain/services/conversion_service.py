@@ -277,11 +277,17 @@ class ConversionService:
         settings,
         db_session_factory=None,
         knowledge_service=None,
+        share_repository=None,
     ):
         self._llm_router = llm_router
         self._settings = settings
         self._db_session_factory = db_session_factory
         self._knowledge_service = knowledge_service
+        # Source of truth for team visibility (ADR-013 §D4). A team publish
+        # target is recorded as a share row on the conversion_job and, on
+        # verify, transferred to the promoted knowledge_item. None → team
+        # publishing is inert (standalone).
+        self._share_repo = share_repository
         self._preprocessor = DocumentPreprocessor(llm_router, settings)
         self._validator = RunbookValidator()
         self._scorer = QualityScorer()
@@ -957,7 +963,6 @@ class ConversionService:
                 user_id=user_id,
                 organization_id=org_id,
                 scope=scope,
-                team_id=team_id,
                 status=status.value,
                 source_file_id=source_file_id,
                 source_type=source_type,
@@ -989,6 +994,37 @@ class ConversionService:
                 session.add(draft_model)
 
             await session.commit()
+
+        # Team publish target: record it as a share row on the conversion_job
+        # (source of truth, ADR-013 §D4). On verify, it is transferred to the
+        # promoted knowledge_item. Outside the session block — the share repo is
+        # sessionless. Inert (no-op) when no share repo is wired.
+        if scope == "team" and team_id and self._share_repo:
+            await self._share_repo.share(
+                resource_type="conversion_job",
+                resource_id=conversion_id,
+                scope_type="team",
+                scope_id=team_id,
+                organization_id=org_id,
+                created_by=user_id,
+            )
+
+    async def _resolve_job_team_id(self, conversion_id: str) -> Optional[str]:
+        """Return the team a conversion job is shared to, or None.
+
+        Reads the job's share rows (ADR-013 §D4) — replaces the retired
+        ``conversion_jobs.team_id`` column. A job is shared to at most one team
+        in v1; the first team share wins.
+        """
+        if not self._share_repo:
+            return None
+        shares = await self._share_repo.list_scopes_for_resource(
+            "conversion_job", conversion_id
+        )
+        for s in shares:
+            if s.scope_type == "team":
+                return s.scope_id
+        return None
 
     # =========================================================================
     # Draft Management (Phase 2)
@@ -1576,6 +1612,11 @@ class ConversionService:
             # anonymous/experimental ``upload_document`` path also calls
             # ``ingest_runbook`` and must never become a seeder feeder.
             causes = extract_causes(content)
+            # Transfer the job's team publish target (a share row on the
+            # conversion_job) to the promoted knowledge_item — ingest_runbook
+            # creates the item's own share row. Replaces the retired
+            # conversion_jobs.team_id column (ADR-013 §D4).
+            team_id = await self._resolve_job_team_id(conversion_id)
             try:
                 chunks_created = await self._knowledge_service.ingest_runbook(
                     document_id=knowledge_item_id,
@@ -1586,7 +1627,7 @@ class ConversionService:
                     source_url=f"conversion:{conversion_id}",
                     scope=job.scope,
                     owner_id=user_id,
-                    team_id=job.team_id,
+                    team_id=team_id,
                     verified_by=user_id,
                     causes=causes or None,
                 )

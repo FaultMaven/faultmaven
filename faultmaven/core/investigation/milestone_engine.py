@@ -8863,18 +8863,17 @@ class MilestoneEngine:
             # to global-only, so personal (case-generated) runbooks never seed.
             #
             # The team arm of the scope is not yet wired for the seeder
-            # pre-fetch. A membership resolver (TeamService) now exists and is
-            # wired for the QA read paths in multi-tenant (Cloud) deployments,
-            # but two pieces remain before the seeder can read team-scoped
-            # runbooks: (1) this pre-fetch must resolve the case OWNER's
-            # team_ids — keyed on case.user_id, NOT the session user — and pass
-            # them to build_kb_scope_filter (the same isolation filter the QA
-            # path search_documents uses); (2) case→runbook conversion still
-            # emits only personal-scoped runbooks, so there are no team-scoped
-            # runbooks to seed yet. Both land with the team-sharing buildout
-            # (ADR-013 Enterprise/Organization/Team). Standalone stays inert:
-            # team collaboration is a Cloud feature and the owner resolves an
-            # empty team set.
+            # pre-fetch. The QA read paths now resolve it (share table → id
+            # allowlist, ADR-013 §D4), but two pieces remain before the seeder
+            # can read team-shared runbooks: (1) this pre-fetch must resolve the
+            # case OWNER's shared-kb-id allowlist — keyed on case.user_id, NOT
+            # the session user — via resolve_shared_kb_ids and pass it as the
+            # second arg to build_kb_scope_filter (the same allowlist the QA path
+            # search_documents builds); (2) case→runbook conversion still emits
+            # only personal-scoped runbooks, so there are no team-shared runbooks
+            # to seed yet. Both land with the team-sharing buildout. Standalone
+            # stays inert: team collaboration is a Cloud feature and the owner
+            # resolves an empty shared set (build_kb_scope_filter → global ∪ own).
             from faultmaven.modules.knowledge.domain.services.knowledge_service import (
                 build_kb_scope_filter,
             )

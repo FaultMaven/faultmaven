@@ -40,7 +40,10 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+from faultmaven.infrastructure.persistence.models import (
+    KnowledgeItemModel,
+    ResourceShareModel,
+)
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
@@ -158,10 +161,13 @@ class KnowledgeItemRepository(ABC):
     ) -> List[KnowledgeItem]:
         """List published items visible to a requester, RBAC enforced in-query.
 
-        Powers the dashboard "Runbooks" inventory. Visibility:
-          - global scope → visible to everyone in the org
-          - personal scope → only when ``owner_id == user_id``
-          - team scope → only when ``team_id in team_ids``
+        Powers the dashboard "Runbooks" inventory. Visibility (mirrors
+        ``build_kb_scope_filter``):
+          - global → visible to everyone in the org
+          - owned → any item whose ``owner_id == user_id`` (an author always
+            sees their own, regardless of scope)
+          - team-shared → items shared to any of ``team_ids`` via the
+            ``resource_shares`` table (ADR-013 §D4 / ADR-011 D3)
 
         Returns the full RBAC-visible set (ordered created_at DESC); the
         service applies tag/scope filtering and pagination over this already
@@ -296,7 +302,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 organization_id=item.organization_id,
                 scope=item.scope.value,
                 owner_id=item.owner_id,
-                team_id=item.team_id,
                 title=item.title,
                 content=item.content,
                 item_type=item.item_type.value,
@@ -385,7 +390,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 .values(
                     scope=item.scope.value,
                     owner_id=item.owner_id,
-                    team_id=item.team_id,
                     title=item.title,
                     content=item.content,
                     item_type=item.item_type.value,
@@ -513,26 +517,24 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     ):
         """RBAC scope-visibility predicate for the inventory surface.
 
-        global → everyone in the org; personal → owner only; team → members
-        only. Branches for personal/team are added only when the requester
-        actually has a user_id / team memberships, so an anonymous caller
-        sees global content only.
+        Mirrors the vector-retrieval allowlist (``build_kb_scope_filter``):
+        ``global`` (everyone in the org) ∪ items the requester ``owns`` (any
+        scope — an author always sees their own) ∪ items ``shared to any of the
+        requester's teams`` via ``resource_shares``. The owner/team branches are
+        added only when the requester has a user_id / team memberships, so an
+        anonymous caller sees global content only. The share table is the single
+        source of truth for team visibility (ADR-013 §D4 / ADR-011 D3).
         """
         visibility = [KnowledgeItemModel.scope == "global"]
         if user_id:
-            visibility.append(
-                and_(
-                    KnowledgeItemModel.scope == "personal",
-                    KnowledgeItemModel.owner_id == user_id,
-                )
-            )
+            visibility.append(KnowledgeItemModel.owner_id == user_id)
         if team_ids:
-            visibility.append(
-                and_(
-                    KnowledgeItemModel.scope == "team",
-                    KnowledgeItemModel.team_id.in_(list(team_ids)),
-                )
+            shared_ids = select(ResourceShareModel.resource_id).where(
+                ResourceShareModel.resource_type == "knowledge_item",
+                ResourceShareModel.scope_type == "team",
+                ResourceShareModel.scope_id.in_(list(team_ids)),
             )
+            visibility.append(KnowledgeItemModel.item_id.in_(shared_ids))
         return or_(*visibility)
 
     async def list_for_inventory(
@@ -798,7 +800,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             # raise from __post_init__.
             scope=KnowledgeScope(model.scope),
             owner_id=model.owner_id,
-            team_id=model.team_id,
             title=model.title,
             content=model.content,
             item_type=KnowledgeItemType(model.item_type),
@@ -949,15 +950,14 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         return [deepcopy(i) for i in paginated]
 
     @staticmethod
-    def _inventory_visible(item, user_id, team_set) -> bool:
+    def _inventory_visible(item, user_id) -> bool:
         scope = item.scope.value if hasattr(item.scope, "value") else str(item.scope)
         if scope == "global":
             return True
-        if scope == "personal":
-            return bool(user_id) and item.owner_id == user_id
-        if scope == "team":
-            return item.team_id in team_set
-        return False
+        # Owner sees their own items (any scope). Team visibility lives in the
+        # share table (resource_shares), which this in-memory fallback does not
+        # model — team-shared items authored by others are not surfaced here.
+        return bool(user_id) and item.owner_id == user_id
 
     async def list_for_inventory(
         self,
@@ -966,15 +966,19 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         team_ids: Optional[List[str]] = None,
         item_type: Optional[KnowledgeItemType] = None,
     ) -> List[KnowledgeItem]:
-        """List published items visible to a requester, RBAC enforced."""
-        team_set = set(team_ids or [])
+        """List published items visible to a requester, RBAC enforced.
+
+        ``team_ids`` is accepted for interface parity with the DB repository but
+        unused: the in-memory fallback does not model the share table, so it
+        surfaces only global + owner-authored items.
+        """
         items = [
             i
             for i in self._items.values()
             if i.organization_id == organization_id
             and i.is_published
             and (item_type is None or i.item_type == item_type)
-            and self._inventory_visible(i, user_id, team_set)
+            and self._inventory_visible(i, user_id)
         ]
         items.sort(key=lambda x: x.created_at, reverse=True)
         return [deepcopy(i) for i in items]

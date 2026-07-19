@@ -36,7 +36,7 @@ For the full policy, see [deployment-schema-strategy.md](https://github.com/Faul
 
 **Storage**: Single ChromaDB collection with metadata-based scope filtering
 **Collection**: `faultmaven_kb`
-**Scope Fields**: `scope` (`global` | `personal` | `team`), `owner_id`, `team_id` — stored at ingestion, filtered at query time
+**Scope Fields**: `scope` (`global` | `personal`), `owner_id` — the **immutable floor** stored in chunk metadata at ingestion. Team visibility is **not** a metadata field: it lives in the relational `resource_shares` table (ADR-013 §D4) and is resolved to an id allowlist (`parent_document_id ∈ {…}`) at query time. A team-shared item is tagged `scope=personal` in metadata (never `team`, which would orphan the chunk on unshare, nor `global`, which would leak it).
 **Implementation**: `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` (`KnowledgeVectorStore`)
 **Search Tool**: `faultmaven/modules/agent/tools/kb_qa.py` — the unified `answer_from_kb` tool serves all scopes
 
@@ -67,10 +67,11 @@ KnowledgeDocument:
     content: str
     document_type: str   # troubleshooting | configuration | runbook
 
-    # Scope metadata (required — enforced at ingest)
-    scope: str           # "global" | "personal" | "team"
-    owner_id: str | None # user_id when scope == "personal"
-    team_id: str | None  # team_id when scope == "team"
+    # Scope metadata (required — enforced at ingest). The chunk metadata carries
+    # only the immutable floor; team visibility lives in the resource_shares
+    # table (ADR-013 §D4), resolved to an id allowlist at query time.
+    scope: str           # "global" | "personal" (a team item is tagged "personal")
+    owner_id: str | None # user_id (author) — an author always sees their own
 
     # Frontmatter-derived metadata
     metadata:
@@ -100,11 +101,13 @@ await knowledge_vector_store.add_documents(
 results = await knowledge_vector_store.search(
     query="DB timeouts",
     k=5,
+    # visible-id allowlist (ADR-011 D3): global ∪ owned ∪ shared-to-my-teams.
+    # shared_ids is resolved in SQL from resource_shares by the caller.
     scope_filter={
         "$or": [
             {"scope": "global"},
-            {"$and": [{"scope": "personal"}, {"owner_id": user_id}]},
-            {"$and": [{"scope": "team"}, {"team_id": {"$in": user_teams}}]},
+            {"owner_id": user_id},
+            {"parent_document_id": {"$in": shared_ids}},
         ]
     },
 )

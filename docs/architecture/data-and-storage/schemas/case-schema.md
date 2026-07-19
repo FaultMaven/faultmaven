@@ -46,7 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration Chain** (linear; current head is `e6f7a8b9c0d1`):
+**Migration Chain** (linear; current head is `d0e1f2a3b4c5`):
 
 | # | Revision | Description |
 | --- | --- | --- |
@@ -67,6 +67,10 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | 022 | `d3e4f5a6b7c8` | PostgreSQL type-divergence fixes (forward ALTERs; PG-only, no-op on SQLite): `uploaded_files.coverage_start_ts`/`coverage_end_ts` → `TIMESTAMPTZ` (were naive `TIMESTAMP` from 010; the model is `DateTime(timezone=True)` and the app binds tz-aware datetimes, which asyncpg's naive codec rejected); `evidence.advances_milestones` → `VARCHAR(50)[]` (was `TEXT` from 009; the model's `TagsArray` binds a Python list on PG). Both were invisible on SQLite (loosely typed) and 500'd only on real PostgreSQL. |
 | 023 | `f5a6b7c8d9e0` | Enrol the causal-graph tables (`causal_nodes`, `causal_edges`, `causal_node_evidence`) in RLS tenant isolation — they carry `organization_id` but were added after migration 018 and never enrolled. Applies the identical `<table>_tenant_isolation` policy. PostgreSQL-only. |
 | 024 | `e6f7a8b9c0d1` | Drop `causal_node_evidence.provenance` and its value CHECK (`causal_node_evidence_provenance_check`, from migration 020). The column served the retired runbook-cause-matcher grounding arm (#658); node grounding now reads the backing datum's `CAUSAL_EVIDENCE` category only. |
+| 025 | `a7b8c9d0e1f2` | `users.account_kind` + derived `cases.source` (ADR-012 two-account model). |
+| 026 | `b8c9d0e1f2a3` | Rename the `enterprise` plan-tier collision to `business` (Wave 2/U5). |
+| 027 | `c9d0e1f2a3b4` | Drop the orphaned `organization` KB visibility scope from `knowledge_items`/`conversion_jobs` scope CHECKs (canonical 3-tier `personal`/`team`/`global`, ADR-013). |
+| 028 | `d0e1f2a3b4c5` | **Polymorphic `resource_shares` table** (`resource_type, resource_id, scope_type, scope_id`; `organization_id` denormalized + RLS `resource_shares_tenant_isolation` policy, PG-only) replacing the nullable `team_id` columns on `cases`/`knowledge_items`/`conversion_jobs` (dropped). Team visibility is now a share row + SQL-resolved visible-id allowlist (ADR-013 §D4 / ADR-011 D3). No backfill — the columns never had a live writer. v1 `scope_type=team`; `organization` reserved (D4a). |
 
 **Active Implementations**:
 
@@ -1752,7 +1756,7 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply migrations via alembic (chain head: e6f7a8b9c0d1)
+# Apply migrations via alembic (chain head: d0e1f2a3b4c5)
 alembic upgrade head
 
 # Verify all tables created

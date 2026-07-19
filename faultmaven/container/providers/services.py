@@ -248,6 +248,7 @@ def create_knowledge_service(
     redis_client: Any | None,
     settings: FaultMavenSettings,
     db_session_factory: Any | None = None,
+    share_repository: Any | None = None,
 ) -> Any:
     """Create knowledge service for knowledge base operations."""
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -263,6 +264,7 @@ def create_knowledge_service(
         settings=settings,
         llm_provider=llm_provider,
         db_session_factory=db_session_factory,
+        share_repository=share_repository,
     )
 
 
@@ -370,6 +372,32 @@ def create_team_service(
 
     logger.debug("TeamService initialized (multi-tenant)")
     return TeamService(team_repository)
+
+
+def create_share_repository() -> Any | None:
+    """Create the sessionless resource-share repository.
+
+    The share table (ADR-013 §D4) is the single source of truth for team
+    visibility of runbooks/cases/drafts. Unlike ``team_service``, the repository
+    is created in BOTH deployment modes: the read path resolves the
+    "shared-to-my-teams" allowlist arm through it (empty in standalone, where a
+    user resolves to no teams) and the write path creates share rows when a
+    resource is published to a team.
+    """
+    try:
+        from faultmaven.infrastructure.persistence.sessionless_share_repository import (
+            SessionlessShareRepository,
+        )
+
+        repository = SessionlessShareRepository()
+        logger.debug("ShareRepository initialized (sessionless)")
+        return repository
+    except Exception as e:
+        logger.warning(f"ShareRepository initialization failed: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return None
 
 
 def create_auth_service(
@@ -793,6 +821,14 @@ def register_services(container: BaseDIContainer) -> None:
     if team_service:
         container._register_service("team_service", team_service)
 
+    # Share Repository (resource→scope visibility source of truth, ADR-013 §D4).
+    # Created in both modes: the read allowlist resolves through it (empty in
+    # standalone) and the KB write path creates share rows on team publish.
+    share_repository = create_share_repository()
+    container.share_repository = share_repository
+    if share_repository:
+        container._register_service("share_repository", share_repository)
+
     # Case Service (with TenantProvider injection for deployment-agnostic org resolution)
     case_service = create_case_service(
         case_repository,
@@ -892,6 +928,7 @@ def register_services(container: BaseDIContainer) -> None:
         container.get_service("llm_provider", required=False),
         redis_client,
         settings,
+        share_repository=share_repository,
     )
     container._register_service("knowledge_service", knowledge_service)
 

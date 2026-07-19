@@ -249,6 +249,8 @@ async def test_rls_enabled_and_policy_present(superuser_engine):
             "causal_nodes",
             "causal_edges",
             "causal_node_evidence",
+            # polymorphic share table enrolled by migration 028 (ADR-013 §D4)
+            "resource_shares",
         ):
             enabled = (
                 await session.execute(

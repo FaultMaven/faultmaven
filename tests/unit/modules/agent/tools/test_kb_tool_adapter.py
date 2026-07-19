@@ -19,7 +19,7 @@ def context():
         case_id="case_123",
         organization_id="org_1",
         user_id="user_42",
-        team_ids=["team_sre", "team_platform"],
+        shared_kb_ids=["kb_shared_1", "kb_shared_2"],
     )
 
 
@@ -57,7 +57,7 @@ class TestKBToolAdapter:
         mock_kb_tool._arun.assert_called_once_with(
             question="How to diagnose memory leaks?",
             user_id="user_42",
-            team_ids=["team_sre", "team_platform"],
+            shared_kb_ids=["kb_shared_1", "kb_shared_2"],
             k=5,
             context_metadata=None,
         )
@@ -102,13 +102,13 @@ class TestKBToolAdapter:
         assert call_kwargs["user_id"] == "user_42"
 
     @pytest.mark.asyncio
-    async def test_passes_team_ids_from_context(self, mock_kb_tool, context):
+    async def test_passes_shared_kb_ids_from_context(self, mock_kb_tool, context):
         adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
 
         await adapter.execute_with_context({"question": "test"}, context)
 
         call_kwargs = mock_kb_tool._arun.call_args.kwargs
-        assert call_kwargs["team_ids"] == ["team_sre", "team_platform"]
+        assert call_kwargs["shared_kb_ids"] == ["kb_shared_1", "kb_shared_2"]
 
     @pytest.mark.asyncio
     async def test_empty_question_returns_error(self, mock_kb_tool, context):

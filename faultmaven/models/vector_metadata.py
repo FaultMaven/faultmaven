@@ -19,9 +19,13 @@ class VectorMetadata(BaseModel):
     document_type: Optional[str] = None
     tags: List[str] = []
     source_url: Optional[str] = None
+    # scope carries only the immutable visibility floor: 'personal' (owner-only)
+    # or 'global' (platform). Team visibility is NEVER written here — it lives in
+    # the share table and is resolved into an id allowlist at query time. Writing
+    # a mutable 'team'/team_id into vector metadata would orphan a chunk on
+    # unshare (it would match no filter branch). ADR-013 §D4 / ADR-011 D3.
     scope: Optional[str] = None
     owner_id: Optional[str] = None
-    team_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # RAG-enrichment fields: extracted from runbook frontmatter at ingestion
@@ -53,7 +57,6 @@ class VectorMetadata(BaseModel):
         "source_url",
         "scope",
         "owner_id",
-        "team_id",
         "domain",
         "service",
         "last_updated",
@@ -83,8 +86,6 @@ class VectorMetadata(BaseModel):
             data["scope"] = self.scope
         if self.owner_id:
             data["owner_id"] = self.owner_id
-        if self.team_id:
-            data["team_id"] = self.team_id
         if self.created_at:
             data["created_at"] = to_json_compatible(self.created_at)
         if self.updated_at:

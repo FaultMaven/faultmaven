@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "c9d0e1f2a3b4"  # current head (027 — drop organization KB scope)
+HEAD_REVISION = "d0e1f2a3b4c5"  # current head (028 — polymorphic resource_shares)
 
 
 @pytest.fixture(scope="function")
@@ -128,6 +128,7 @@ EXPECTED_TABLES = [
     "organizations",
     "permissions",
     "reports",
+    "resource_shares",
     "role_permissions",
     "roles",
     "solutions",
