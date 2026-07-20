@@ -1631,7 +1631,10 @@ async def get_capabilities():
         "features": {
             "extensionKB": False,  # Always false - extension KB removed
             "adminKB": deployment_mode == "cloud",
-            "teamWorkspaces": deployment_mode == "cloud",
+            # Team-based KB/case sharing (ADR-013: Team = the sharing unit).
+            # Renamed from the "teamWorkspaces" misnomer (a Slack workspace maps
+            # to a Team; the capability is team *sharing*, not a workspace).
+            "teamSharing": deployment_mode == "cloud",
             "caseHistory": deployment_mode == "cloud",
             "sso": deployment_mode == "cloud",
         },

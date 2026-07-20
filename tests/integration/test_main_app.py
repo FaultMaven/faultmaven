@@ -123,6 +123,31 @@ def test_health_check():
         ), f"Migration field '{field}' should not be present in health check after Phase 3"
 
 
+def test_capabilities_endpoint_feature_flags():
+    """The extension capabilities endpoint reports the canonical feature flags.
+
+    Guards the wire contract consumed by the Copilot extension
+    (``/v1/meta/capabilities`` → ``BackendCapabilities``). In particular the
+    team-sharing capability is named ``teamSharing`` (ADR-013: Team = the
+    sharing unit), NOT the retired ``teamWorkspaces`` misnomer.
+    """
+    with TestClient(app) as client:
+        response = client.get("/v1/meta/capabilities")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    features = data["features"]
+    # Canonical flag present and boolean.
+    assert "teamSharing" in features
+    assert isinstance(features["teamSharing"], bool)
+    # Retired misnomer must be gone (no dual key on the wire).
+    assert "teamWorkspaces" not in features
+    # Sibling capability flags remain intact.
+    for flag in ("extensionKB", "adminKB", "caseHistory", "sso"):
+        assert flag in features and isinstance(features[flag], bool)
+
+
 def test_root_endpoint():
     """
     Tests the root (/) endpoint to ensure it returns the correct API
