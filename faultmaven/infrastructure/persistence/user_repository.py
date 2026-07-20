@@ -31,6 +31,14 @@ class User(BaseModel):
         ..., min_length=1, max_length=100, description="Unique username"
     )
     email: EmailStr = Field(..., description="User email address")
+    enterprise_id: Optional[str] = Field(
+        None,
+        description=(
+            "Enterprise (top-tier tenant) this user belongs to. Required to scope "
+            "cross-tenant lookups — e.g. resolving an existing user by email within "
+            "the caller's enterprise when adding them to an organization."
+        ),
+    )
 
     # ============================================================
     # Authentication
@@ -309,6 +317,7 @@ class PostgreSQLUserRepository(UserRepository):
             user_id=model.user_id,
             username=model.username,
             email=model.email,
+            enterprise_id=getattr(model, "enterprise_id", None),
             display_name=model.display_name,
             avatar_url=model.avatar_url,
             timezone=model.timezone,
@@ -331,16 +340,14 @@ class PostgreSQLUserRepository(UserRepository):
     def _domain_to_dict(self, user: User) -> dict:
         """Convert User domain object to dict for ORM model assignment.
 
-        enterprise_id is sourced from the user object when present; in
-        single-tenant mode (where the User domain model doesn't yet
-        carry the field), it defaults to DEFAULT_ENTERPRISE_ID. Once
-        the cloud rollout wires multi-tenant flows, the User domain
-        model gains an enterprise_id field and this fallback can be
-        dropped.
+        enterprise_id is taken from the user object; it falls back to
+        DEFAULT_ENTERPRISE_ID when unset (standalone / single-tenant, where
+        every user belongs to the one default enterprise) since the column is
+        NOT NULL.
         """
         from faultmaven.providers.tenancy.single_tenant import DEFAULT_ENTERPRISE_ID
 
-        enterprise_id = getattr(user, "enterprise_id", None) or DEFAULT_ENTERPRISE_ID
+        enterprise_id = user.enterprise_id or DEFAULT_ENTERPRISE_ID
         return {
             "user_id": user.user_id,
             "enterprise_id": enterprise_id,
@@ -362,8 +369,10 @@ class PostgreSQLUserRepository(UserRepository):
             "last_password_change_at": user.last_password_change_at,
             "deleted_at": user.deleted_at,
             "account_kind": getattr(user, "account_kind", "individual"),
-            # dev_roles: JSON-serialised role list for local/dev mode. Cloud
-            # mode derives roles from RBAC tables; this column is ignored there.
+            # dev_roles: JSON-serialised role list. This is the canonical role
+            # source in BOTH auth modes today — no login/token path derives the
+            # role claim from the RBAC tables yet (#706). Deriving cloud roles
+            # from organization_members → roles is designed but not yet wired.
             "dev_roles": __import__("json").dumps(user.roles) if user.roles else None,
         }
 
