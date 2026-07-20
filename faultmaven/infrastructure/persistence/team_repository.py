@@ -126,14 +126,19 @@ class PostgreSQLTeamRepository(ITeamRepository):
         models = result.scalars().all()
         return [_model_to_domain(m) for m in models]
 
-    async def list_user_teams(self, user_id: str, organization_id: str) -> List[Team]:
-        """List all teams a user belongs to in an organization."""
+    async def list_user_teams(self, user_id: str) -> List[Team]:
+        """List the teams a user belongs to (full objects).
+
+        Object-returning sibling of ``list_all_user_team_ids``: same JOIN of
+        ``team_members`` through the RLS-tenanted ``teams`` table (excluding
+        soft-deleted teams), so cross-organization membership fails closed under
+        the ``faultmaven_app`` role — no explicit org filter is needed.
+        """
         stmt = (
             select(TeamModel)
             .join(TeamMemberModel, TeamModel.team_id == TeamMemberModel.team_id)
             .where(
                 TeamMemberModel.user_id == user_id,
-                TeamModel.organization_id == organization_id,
                 TeamModel.deleted_at.is_(None),
             )
             .order_by(TeamMemberModel.joined_at.desc())

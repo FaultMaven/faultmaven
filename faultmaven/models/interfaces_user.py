@@ -505,15 +505,20 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_user_teams(self, user_id: str, organization_id: str) -> List[Team]:
-        """List all teams a user belongs to in an organization.
+    async def list_user_teams(self, user_id: str) -> List[Team]:
+        """List the teams a user belongs to (full ``Team`` objects, with names).
+
+        The object-returning sibling of ``list_all_user_team_ids`` — same
+        membership resolution (JOIN ``team_members`` through the RLS-tenanted
+        ``teams`` table, excluding soft-deleted teams), so under the caller's org
+        RLS context it returns only teams in that org. Used by the ``GET /teams``
+        read path (team picker + id→name resolution).
 
         Args:
             user_id: User identifier
-            organization_id: Organization identifier
 
         Returns:
-            List of teams
+            List of teams (empty when the user belongs to none)
         """
         pass
 

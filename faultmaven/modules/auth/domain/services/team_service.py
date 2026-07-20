@@ -17,7 +17,7 @@ scope collapses to ``personal ∪ global``.
 
 from typing import List
 
-from faultmaven.models.interfaces_user import ITeamRepository
+from faultmaven.models.interfaces_user import ITeamRepository, Team
 
 
 class TeamService:
@@ -34,3 +34,13 @@ class TeamService:
         membership fails closed under the ``faultmaven_app`` role.
         """
         return await self._team_repository.list_all_user_team_ids(user_id)
+
+    async def list_user_teams(self, user_id: str) -> List[Team]:
+        """Return the full ``Team`` objects ``user_id`` belongs to (empty when none).
+
+        The object-returning form of ``list_all_user_team_ids`` (same RLS-scoped
+        membership resolution). Backs the ``GET /teams`` read path: the frontend
+        needs team names to render share badges and to populate the
+        share-to-team picker, which the id-only method cannot supply.
+        """
+        return await self._team_repository.list_user_teams(user_id)

@@ -233,8 +233,7 @@ modules/auth/
 │   ├── auth.py                     # Login, register, token refresh
 │   ├── oauth.py                    # OAuth 2.0 flow with PKCE
 │   ├── session.py                  # Session management
-│   ├── organizations.py            # Organization management
-│   ├── teams.py                    # Team management
+│   ├── teams.py                    # GET /teams — list the caller's teams (read-only)
 │   └── rate_limiting.py            # Auth-specific rate limiting
 ├── domain/
 │   ├── models/                     # User, Session, RBAC, Organization models
@@ -730,8 +729,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | OAuth | `POST /auth/oauth/token` | OAuth token exchange |
 | Evidence | `POST /evidence/upload` | File upload |
 | Reports | `GET/POST /reports` | Terminal summaries (auto-generated) |
-| Organizations | `GET/POST /organizations` | Organization management |
-| Teams | `GET/POST /teams` | Team management |
+| Teams | `GET /teams` | List the caller's teams (read-only; names for share badges + share-to-team picker). Team *management* is the Cloud-composed admin module. |
 | Sessions | `GET /sessions` | Session management |
 | Admin | `GET /admin/users` | List users (admin only) |
 | Admin | `GET /admin/users/{id}` | User details (admin only) |

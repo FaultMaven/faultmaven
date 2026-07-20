@@ -465,6 +465,26 @@ class TestListCases:
         )
         assert filters.state == CaseState.INQUIRY
 
+    async def test_list_cases_with_team_filter(
+        self, client, mock_case_service, mock_case_summary, headers
+    ):
+        """The ?team_id= query param reaches CaseListFilter.team_id (ADR-013 §D4)."""
+        mock_case_service.list_user_cases.return_value = [mock_case_summary]
+
+        response = await client.get(
+            "/api/v1/cases?team_id=team_a",
+            headers=headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        call_args = mock_case_service.list_user_cases.call_args
+        filters = (
+            call_args[0][1]
+            if len(call_args[0]) > 1
+            else call_args.kwargs.get("filters")
+        )
+        assert filters.team_id == "team_a"
+
     async def test_list_cases_with_severity_filter(
         self, client, mock_case_service, mock_case_summary, headers
     ):
@@ -816,3 +836,71 @@ class TestCaseHealth:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["status"] == "healthy"
+
+
+# ============================================================
+# Case Team-Sharing Endpoints (ADR-013 §D4)
+# ============================================================
+
+
+class TestCaseTeamShareEndpoints:
+    """POST/DELETE /api/v1/cases/{case_id}/team-shares.
+
+    Regression coverage for the auth wiring: require_authentication yields a
+    user object (not a tuple), so the handler must read current_user.user_id.
+    These drive the actual routes end-to-end (the service layer is mocked).
+    """
+
+    async def test_share_with_team_success(self, client, mock_case_service, headers):
+        mock_case_service.share_case_with_team = AsyncMock(return_value=None)
+
+        response = await client.post(
+            "/api/v1/cases/case_123abc/team-shares",
+            json={"team_id": "team_a"},
+            headers=headers,
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        assert data["case_id"] == "case_123abc"
+        assert data["team_id"] == "team_a"
+        # The authenticated user's id (from current_user.user_id) is forwarded.
+        mock_case_service.share_case_with_team.assert_awaited_once_with(
+            "case_123abc", "team_a", "user_789"
+        )
+
+    async def test_share_with_team_forbidden(self, client, mock_case_service, headers):
+        from faultmaven.exceptions import ValidationException
+
+        mock_case_service.share_case_with_team = AsyncMock(
+            side_effect=ValidationException("Only the case owner can share it")
+        )
+
+        response = await client.post(
+            "/api/v1/cases/case_123abc/team-shares",
+            json={"team_id": "team_a"},
+            headers=headers,
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    async def test_unshare_from_team_success(self, client, mock_case_service, headers):
+        mock_case_service.unshare_case_from_team = AsyncMock(return_value=True)
+
+        response = await client.delete(
+            "/api/v1/cases/case_123abc/team-shares/team_a", headers=headers
+        )
+
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        mock_case_service.unshare_case_from_team.assert_awaited_once_with(
+            "case_123abc", "team_a", "user_789"
+        )
+
+    async def test_unshare_from_team_not_shared_returns_404(
+        self, client, mock_case_service, headers
+    ):
+        mock_case_service.unshare_case_from_team = AsyncMock(return_value=False)
+
+        response = await client.delete(
+            "/api/v1/cases/case_123abc/team-shares/team_a", headers=headers
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND

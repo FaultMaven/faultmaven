@@ -214,6 +214,7 @@ from .modules.agent.api.routes import router as agent_router
 from .modules.auth.api.auth import router as auth_router
 from .modules.auth.api.oauth import router as oauth_router
 from .modules.auth.api.session import router as session_router
+from .modules.auth.api.teams import router as teams_router
 from .modules.case.api.routes import router as case_router
 from .modules.knowledge.api.conversion_routes import router as conversion_router
 from .modules.knowledge.api.routes import router as knowledge_router
@@ -1212,6 +1213,9 @@ logger.info("✅ Agent endpoints added")
 
 app.include_router(auth_router, prefix="/api/v1")
 logger.info("✅ Auth endpoints added")
+
+app.include_router(teams_router, prefix="/api/v1")
+logger.info("✅ Team endpoints added")
 
 app.include_router(case_router, prefix="/api/v1")
 logger.info("✅ Case endpoints added")

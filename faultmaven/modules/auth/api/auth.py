@@ -801,17 +801,27 @@ class AvailableScopesResponse(BaseModel):
 @router.get("/me/available-scopes", response_model=AvailableScopesResponse)
 @trace("auth_available_scopes")
 async def get_available_scopes(
+    request: Request,
     current_user: DevUser = Depends(require_authentication),
 ) -> AvailableScopesResponse:
-    """Return KB scopes the calling user can target when publishing.
+    """Return the scopes the calling user can target for team collaboration.
 
-    A standalone (self-hosted) deployment is single-tenant — one implicit
-    operator, no teams, no multi-member orgs — so only ``personal`` and
-    ``global`` are publishable here. The ``team`` scope is a Cloud
-    collaboration feature, gated by the org/team management surface that
-    ships only in Cloud.
+    ``personal`` (author-only) and ``global`` (platform-wide) are always
+    available. ``team`` is reported only when the deployment is team-enabled
+    (``team_service`` is wired — a Cloud collaboration feature, unwired in
+    standalone) AND the caller actually belongs to at least one Team, since a
+    user with no Team has nothing to target. Frontends gate their team UI (KB
+    team-publish, case share-to-team) on this signal, so it must reflect the
+    caller's real capability rather than a hardcoded assumption. Scopes are
+    returned narrowest-to-widest: ``personal | team | global``.
     """
-    return AvailableScopesResponse(scopes=["personal", "global"])
+    scopes = ["personal", "global"]
+    team_service = getattr(request.app.state, "team_service", None)
+    if team_service:
+        team_ids = await team_service.list_all_user_team_ids(current_user.user_id)
+        if team_ids:
+            scopes.insert(1, "team")
+    return AvailableScopesResponse(scopes=scopes)
 
 
 @router.get("/health")

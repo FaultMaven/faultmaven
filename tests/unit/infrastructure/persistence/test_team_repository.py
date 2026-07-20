@@ -132,6 +132,49 @@ async def test_list_all_user_team_ids_isolated_per_user(repo):
 
 
 # =============================================================================
+# list_user_teams — object-returning sibling (GET /teams: names for the picker)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_list_user_teams_returns_full_objects_with_names(repo):
+    """Returns the same membership set as the id resolver, but full Team objects."""
+    await repo.create_team(make_team("t1", name="Alpha"))
+    await repo.create_team(make_team("t2", name="Beta"))
+    await repo.add_member("t1", "user-1")
+    await repo.add_member("t2", "user-1")
+
+    teams = await repo.list_user_teams("user-1")
+
+    assert {t.team_id for t in teams} == {"t1", "t2"}
+    assert {t.name for t in teams} == {"Alpha", "Beta"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_list_user_teams_excludes_non_member_and_soft_deleted(repo):
+    """Non-member teams are excluded; soft-deleted teams drop out of the join."""
+    await repo.create_team(make_team("t1"))
+    await repo.create_team(make_team("t2"))  # user is not a member
+    await repo.add_member("t1", "user-1")
+
+    assert [t.team_id for t in await repo.list_user_teams("user-1")] == ["t1"]
+
+    await repo.delete_team("t1")
+
+    assert await repo.list_user_teams("user-1") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_list_user_teams_empty_when_no_memberships(repo):
+    await repo.create_team(make_team("t1"))  # exists but nobody joined
+
+    assert await repo.list_user_teams("user-1") == []
+
+
+# =============================================================================
 # Team + membership CRUD substrate
 # =============================================================================
 
