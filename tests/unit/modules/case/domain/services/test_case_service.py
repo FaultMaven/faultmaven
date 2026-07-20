@@ -1049,12 +1049,15 @@ class TestCaseTeamShareReads:
         svc, _, share_repo = _team_share_service(
             mock_repo, mock_session_store, teams=[]
         )
-        share_repo.list_scopes_for_resource = AsyncMock(
-            return_value=[
-                MagicMock(scope_type="team", scope_id="team_a"),
-                MagicMock(scope_type="organization", scope_id="org_1"),
-                MagicMock(scope_type="team", scope_id="team_b"),
-            ]
+        # Delegates to the batched resolver (single-id map).
+        share_repo.list_scopes_for_resources = AsyncMock(
+            return_value={
+                "c1": [
+                    MagicMock(scope_type="team", scope_id="team_a"),
+                    MagicMock(scope_type="organization", scope_id="org_1"),
+                    MagicMock(scope_type="team", scope_id="team_b"),
+                ]
+            }
         )
         assert await svc.get_case_team_ids("c1") == ["team_a", "team_b"]
 
