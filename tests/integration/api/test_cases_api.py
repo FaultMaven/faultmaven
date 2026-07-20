@@ -465,6 +465,26 @@ class TestListCases:
         )
         assert filters.state == CaseState.INQUIRY
 
+    async def test_list_cases_with_team_filter(
+        self, client, mock_case_service, mock_case_summary, headers
+    ):
+        """The ?team_id= query param reaches CaseListFilter.team_id (ADR-013 §D4)."""
+        mock_case_service.list_user_cases.return_value = [mock_case_summary]
+
+        response = await client.get(
+            "/api/v1/cases?team_id=team_a",
+            headers=headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        call_args = mock_case_service.list_user_cases.call_args
+        filters = (
+            call_args[0][1]
+            if len(call_args[0]) > 1
+            else call_args.kwargs.get("filters")
+        )
+        assert filters.team_id == "team_a"
+
     async def test_list_cases_with_severity_filter(
         self, client, mock_case_service, mock_case_summary, headers
     ):

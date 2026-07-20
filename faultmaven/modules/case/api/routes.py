@@ -758,6 +758,13 @@ async def list_cases(
     source: Optional[Literal["copilot", "slack", "api"]] = Query(
         None, description="Filter by case source"
     ),
+    team_id: Optional[str] = Query(
+        None,
+        description=(
+            "Filter to cases shared with this Team (ADR-013 §D4). Only Teams the "
+            "caller belongs to yield results; ignored in standalone (no teams)."
+        ),
+    ),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     # Changed default to True - new cases should be visible immediately
@@ -795,6 +802,7 @@ async def list_cases(
             user_id=current_user.user_id,
             state=state,
             source=source,
+            team_id=team_id,
             limit=limit,
             offset=offset,
             include_empty=include_empty,
