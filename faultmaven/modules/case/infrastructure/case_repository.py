@@ -99,6 +99,7 @@ class CaseRepository(ABC):
         offset: int = 0,
         source: Optional[str] = None,
         shared_case_ids: Optional[List[str]] = None,
+        restrict_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters.
@@ -113,6 +114,9 @@ class CaseRepository(ABC):
             shared_case_ids: Case ids the requester can read via a team share
                 (ADR-013 §D4). Widens the owner-only scope to
                 ``owned ∪ shared-to-my-teams``; empty leaves owner-only.
+            restrict_case_ids: Filter-by-team facet — narrows the result to one
+                team's shared case ids (the caller resolves/authorizes the team).
+                ``None`` = no facet; a non-``None`` empty list matches nothing.
 
         Returns:
             Tuple of (cases, total_count)
@@ -816,6 +820,7 @@ class InMemoryCaseRepository(CaseRepository):
         offset: int = 0,
         source: Optional[str] = None,
         shared_case_ids: Optional[List[str]] = None,
+        restrict_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """List cases with filters."""
         # Filter cases
@@ -828,6 +833,12 @@ class InMemoryCaseRepository(CaseRepository):
             filtered = [
                 c for c in filtered if c.user_id == user_id or c.case_id in shared
             ]
+
+        # Filter-by-team facet: narrow to an explicit case-id allowlist (one
+        # team's shares). None = no facet; empty = match nothing (mirrors SQL).
+        if restrict_case_ids is not None:
+            restrict = set(restrict_case_ids)
+            filtered = [c for c in filtered if c.case_id in restrict]
 
         # No org filter: standalone is single-tenant; cloud isolation is RLS
         # (ADR-006). organization_id param retained for interface symmetry.
@@ -1008,10 +1019,12 @@ class InMemoryCaseRepository(CaseRepository):
         organization_id: Optional[str] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
+        restrict_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """Search cases by text query (simple substring match)."""
         query_lower = query.lower()
         shared = set(shared_case_ids or ())
+        restrict = None if restrict_case_ids is None else set(restrict_case_ids)
 
         # Filter cases
         filtered = []
@@ -1026,6 +1039,10 @@ class InMemoryCaseRepository(CaseRepository):
                 # Apply user filter: owned ∪ shared-to-my-teams (ADR-013 §D4).
                 # Empty shared set leaves owner-only (behavior-neutral until U10).
                 if user_id and case.user_id != user_id and case.case_id not in shared:
+                    continue
+
+                # Filter-by-team facet: narrow to one team's shares.
+                if restrict is not None and case.case_id not in restrict:
                     continue
 
                 # No org filter: single-tenant standalone; cloud isolation is

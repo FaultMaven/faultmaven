@@ -1005,7 +1005,6 @@ def mock_case_service():
     service.create_case = AsyncMock()
     service.get_case = AsyncMock(return_value=None)
     service.update_case = AsyncMock(return_value=False)
-    service.share_case = AsyncMock(return_value=False)
     service.add_message_to_case = AsyncMock(return_value=False)
     service.get_or_create_case_for_session = AsyncMock(return_value="test-case-123")
     service.link_session_to_case = AsyncMock(return_value=False)

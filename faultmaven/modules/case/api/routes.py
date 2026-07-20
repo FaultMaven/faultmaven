@@ -955,7 +955,10 @@ async def get_case(
             )
 
         # Convert to CaseDetail (v2.0 API model with milestones)
-        return CaseDetail.from_case(case)
+        detail = CaseDetail.from_case(case)
+        # Enrich with team shares (ADR-013 §D4); empty in standalone.
+        detail.shared_team_ids = await case_service.get_case_team_ids(case_id)
+        return detail
 
     except HTTPException:
         raise
@@ -3618,62 +3621,41 @@ async def get_evidence_details(
 
 
 # ============================================================================
-# Case Sharing Endpoints
+# Case Team-Sharing Endpoints (ADR-013 §D4)
 # ============================================================================
+#
+# A case is shared to a Team via the polymorphic ``resource_shares`` table; every
+# member of that Team can then read the case (visibility is resolved in the read
+# path, not stored on the case). These replace the retired pre-ADR-013 per-user
+# participant endpoints (``/share``, ``/participants``, ``/access-check``), which
+# had no client and referenced a ``case_participants`` table that never existed in
+# the clean baseline. Cloud-only: standalone has no teams, so the service returns
+# a clear "not available".
 
 
 @router.post(
-    "/{case_id}/share",
+    "/{case_id}/team-shares",
     status_code=status.HTTP_201_CREATED,
-    summary="Share Case",
-    description="Share a case with another user. Requires owner or collaborator permission.",
+    summary="Share Case With Team",
+    description="Share a case with a Team (ADR-013 §D4). Owner-only; the Team must "
+    "be one the caller belongs to. Idempotent.",
 )
-async def share_case(
+async def share_case_with_team(
     case_id: str = Path(..., description="Case ID"),
-    target_user_id: str = Body(..., embed=True, description="User ID to share with"),
-    role: str = Body(
-        "viewer",
-        embed=True,
-        description="Participant role: owner, collaborator, viewer",
-    ),
+    team_id: str = Body(..., embed=True, description="Team ID to share the case with"),
     case_service: ICaseService = Depends(get_case_service),
     auth: tuple = Depends(require_authentication),
 ):
-    """Share a case with another user."""
+    """Share a case with a Team."""
     session_id, user_id = auth
 
     try:
-        # Validate role
-        valid_roles = ["owner", "collaborator", "viewer"]
-        if role not in valid_roles:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}",
-            )
-
-        # Share the case
-        success = await case_service.share_case(
-            case_id=case_id,
-            target_user_id=target_user_id,
-            role=role,
-            sharer_user_id=user_id,
-        )
-
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to share case",
-            )
-
-        logger.info(
-            f"Case {case_id} shared with user {target_user_id} as {role} by {user_id}"
-        )
-
+        await case_service.share_case_with_team(case_id, team_id, user_id)
+        logger.info(f"Case {case_id} shared with team {team_id} by {user_id}")
         return {
-            "message": "Case shared successfully",
+            "message": "Case shared with team",
             "case_id": case_id,
-            "shared_with": target_user_id,
-            "role": role,
+            "team_id": team_id,
         }
 
     except ValidationException as e:
@@ -3681,109 +3663,44 @@ async def share_case(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error sharing case {case_id}: {e}")
+        logger.error(f"Error sharing case {case_id} with team: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
 
 
 @router.delete(
-    "/{case_id}/share/{target_user_id}",
+    "/{case_id}/team-shares/{team_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Unshare Case",
-    description="Unshare a case from a user. Requires owner permission.",
+    summary="Unshare Case From Team",
+    description="Remove a case's share to a Team (ADR-013 §D4). Owner-only.",
 )
-async def unshare_case(
+async def unshare_case_from_team(
     case_id: str = Path(..., description="Case ID"),
-    target_user_id: str = Path(..., description="User ID to unshare from"),
+    team_id: str = Path(..., description="Team ID to unshare from"),
     case_service: ICaseService = Depends(get_case_service),
     auth: tuple = Depends(require_authentication),
 ):
-    """Unshare a case from a user."""
+    """Unshare a case from a Team."""
     session_id, user_id = auth
 
     try:
-        success = await case_service.unshare_case(
-            case_id=case_id, target_user_id=target_user_id, unsharer_user_id=user_id
-        )
+        removed = await case_service.unshare_case_from_team(case_id, team_id, user_id)
 
-        if not success:
+        if not removed:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User {target_user_id} not found in case {case_id} participants",
+                detail=f"Case {case_id} is not shared with team {team_id}",
             )
 
-        logger.info(f"Case {case_id} unshared from user {target_user_id} by {user_id}")
+        logger.info(f"Case {case_id} unshared from team {team_id} by {user_id}")
 
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error unsharing case {case_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
-        )
-
-
-@router.get(
-    "/{case_id}/participants",
-    response_model=List[Dict[str, Any]],
-    summary="Get Case Participants",
-    description="Get all participants who have access to this case.",
-)
-async def get_case_participants(
-    case_id: str = Path(..., description="Case ID"),
-    case_service: ICaseService = Depends(get_case_service),
-    auth: tuple = Depends(require_authentication),
-) -> List[Dict[str, Any]]:
-    """Get all participants for a case."""
-    session_id, user_id = auth
-
-    try:
-        # Verify user has access to the case
-        case = await case_service.get_case(case_id)
-        if not case:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Case {case_id} not found",
-            )
-
-        # Get participants
-        participants = await case_service.get_case_participants(case_id)
-
-        return participants
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting participants for case {case_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
-        )
-
-
-@router.get(
-    "/{case_id}/access-check",
-    response_model=Dict[str, bool],
-    summary="Check Case Access",
-    description="Check if current user has access to this case.",
-)
-async def check_case_access(
-    case_id: str = Path(..., description="Case ID"),
-    case_service: ICaseService = Depends(get_case_service),
-    auth: tuple = Depends(require_authentication),
-) -> Dict[str, bool]:
-    """Check if user has access to case."""
-    session_id, user_id = auth
-
-    try:
-        has_access = await case_service.user_can_access_case(user_id, case_id)
-
-        return {"has_access": has_access, "user_id": user_id, "case_id": case_id}
-
-    except Exception as e:
-        logger.error(f"Error checking access for case {case_id}: {e}")
+        logger.error(f"Error unsharing case {case_id} from team: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )

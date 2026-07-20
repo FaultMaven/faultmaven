@@ -14,7 +14,7 @@ reaches into persistence infrastructure directly (import-linter).
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -75,6 +75,18 @@ class IShareRepository(ABC):
         self, resource_type: str, resource_id: str
     ) -> List[ResourceShare]:
         """All scopes a single resource is shared to."""
+
+    @abstractmethod
+    async def list_scopes_for_resources(
+        self, resource_type: str, resource_ids: List[str]
+    ) -> Dict[str, List[ResourceShare]]:
+        """Scopes for MANY resources in one query (batch DTO enrichment).
+
+        The batch form of ``list_scopes_for_resource``, used to attach a page of
+        cases' team shares without an N+1 fan-out. Returns a mapping keyed by
+        ``resource_id``; ids with no shares are absent from the map. Empty
+        ``resource_ids`` returns ``{}`` without a query.
+        """
 
     @abstractmethod
     async def list_resource_ids(

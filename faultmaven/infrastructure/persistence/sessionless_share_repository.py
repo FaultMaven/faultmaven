@@ -6,7 +6,7 @@ via ``get_db_session()``, following the same pattern as
 DI container.
 """
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.share_repository import (
@@ -62,6 +62,13 @@ class SessionlessShareRepository(IShareRepository):
         async with get_db_session() as session:
             repo = PostgreSQLShareRepository(session)
             return await repo.list_scopes_for_resource(resource_type, resource_id)
+
+    async def list_scopes_for_resources(
+        self, resource_type: str, resource_ids: List[str]
+    ) -> Dict[str, List[ResourceShare]]:
+        async with get_db_session() as session:
+            repo = PostgreSQLShareRepository(session)
+            return await repo.list_scopes_for_resources(resource_type, resource_ids)
 
     async def list_resource_ids(
         self,

@@ -112,6 +112,9 @@ def mock_case_summary():
 def mock_case_service():
     """Create a mock case service."""
     service = AsyncMock()
+    # Team-share enrichment on the case-detail read path (ADR-013 §D4): default to
+    # no shares so CaseDetail.shared_team_ids serializes as [] not a raw AsyncMock.
+    service.get_case_team_ids = AsyncMock(return_value=[])
     return service
 
 

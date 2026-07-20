@@ -780,24 +780,47 @@ class CaseService(ICaseService):
             # The case might not exist or might already be deleted
             return True
 
+    async def _resolve_user_team_ids(self, user_id: Optional[str]) -> List[str]:
+        """The team ids a principal belongs to; ``[]`` when unwired or on error.
+
+        Sole gateway to ``team_service.list_all_user_team_ids`` so a request that
+        needs both the read allowlist and the team facet resolves membership once.
+        The resolver JOINs ``team_members`` through the RLS-tenanted ``teams``
+        table (see ``PostgreSQLTeamRepository``), so under the caller's org RLS
+        context it returns only teams in that org — the case/team org boundary is
+        enforced here, not left to a distant policy. Fail-safe: an error yields
+        ``[]`` (owner-only reads / no facet) rather than leaking or crashing.
+        """
+        if not user_id or not self.team_service:
+            return []
+        try:
+            return await self.team_service.list_all_user_team_ids(user_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Failed to resolve team ids for {user_id}: {e}")
+            return []
+
     @trace("case_service_list_user_cases")
-    async def _resolve_shared_case_ids(self, user_id: Optional[str]) -> List[str]:
+    async def _resolve_shared_case_ids(
+        self, user_id: Optional[str], team_ids: Optional[List[str]] = None
+    ) -> List[str]:
         """Resolve the case ids shared to any of ``user_id``'s teams.
 
         The "shared-to-my-teams" arm of the case read allowlist (ADR-013 §D4 /
         ADR-011 D3), the case analogue of ``resolve_shared_kb_ids``. Returns
-        ``[]`` — collapsing the allowlist to owner-only — when there is no
-        principal, no team_service (standalone), no share repository, or the
-        principal belongs to no teams. Degrades gracefully on any resolution
-        error: the owner arm still works, so a share-lookup failure narrows
-        visibility (fail-closed) rather than leaking.
+        ``[]`` — collapsing the allowlist to owner-only — when there is no share
+        repository or the principal belongs to no teams. ``team_ids`` may be
+        passed pre-resolved by a caller that already fetched membership (the
+        team-filter path) to avoid a second lookup. Degrades gracefully on any
+        resolution error: the owner arm still works, so a share-lookup failure
+        narrows visibility (fail-closed) rather than leaking.
         """
-        if not user_id or not self.team_service or not self.share_repository:
+        if not self.share_repository:
+            return []
+        if team_ids is None:
+            team_ids = await self._resolve_user_team_ids(user_id)
+        if not team_ids:
             return []
         try:
-            team_ids = await self.team_service.list_all_user_team_ids(user_id)
-            if not team_ids:
-                return []
             return await self.share_repository.list_resource_ids(
                 resource_type="case",
                 scope_type="team",
@@ -899,15 +922,31 @@ class CaseService(ICaseService):
             # Get cases from repository
             status_filter = filters.state if filters else None
             source_filter = filters.source if filters else None
+            team_filter = filters.team_id if filters else None
+            # Resolve team membership once for both the facet and the allowlist.
+            team_ids = await self._resolve_user_team_ids(user_id)
+            # Filter-by-team facet (ADR-013 §D4): narrow to one Team's shares.
+            # Resolving to an empty set (not a member / standalone) means "no
+            # matches" — short-circuit rather than issue a query that can't match.
+            restrict_case_ids: Optional[List[str]] = None
+            if team_filter:
+                restrict_case_ids = await self._resolve_team_filter_case_ids(
+                    user_id, team_filter, team_ids=team_ids
+                )
+                if not restrict_case_ids:
+                    return []
             # owned ∪ shared-to-my-teams (ADR-013 §D4). Resolved in SQL, not
             # post-filter: paginating the owner-only set and then adding shares
             # in Python would break the page/total contract.
-            shared_case_ids = await self._resolve_shared_case_ids(user_id)
+            shared_case_ids = await self._resolve_shared_case_ids(
+                user_id, team_ids=team_ids
+            )
             cases_list, total = await self.repository.list(
                 user_id=user_id,
                 state=status_filter,
                 source=source_filter,
                 shared_case_ids=shared_case_ids,
+                restrict_case_ids=restrict_case_ids,
             )
 
             # Apply additional filters in service layer (restored from old implementation)
@@ -935,6 +974,10 @@ class CaseService(ICaseService):
                         f"Failed to convert case {case.case_id} to summary: {e}"
                     )
                     # Continue best effort? Or fail? Best effort for list
+
+            # Enrich with team shares (ADR-013 §D4) in one batched query — empty
+            # in standalone (team sharing unwired).
+            await self._enrich_summaries_with_team_shares(summaries)
 
             if summaries:
                 logger.debug(
@@ -1010,24 +1053,41 @@ class CaseService(ICaseService):
             List of matching cases
         """
         try:
+            # Resolve team membership once for both the facet and the allowlist.
+            team_ids = await self._resolve_user_team_ids(user_id)
+            # Filter-by-team facet (ADR-013 §D4): narrow to one Team's shares.
+            # Empty resolution (not a member / standalone) → no matches.
+            restrict_case_ids: Optional[List[str]] = None
+            if search_request.team_id:
+                restrict_case_ids = await self._resolve_team_filter_case_ids(
+                    user_id, search_request.team_id, team_ids=team_ids
+                )
+                if not restrict_case_ids:
+                    return []
             # Scope in the SQL query, not in Python: filtering after the
             # repository already applied its LIMIT would (a) drop the caller's
             # own matches when other users' cases fill the page, and (b) leak
             # every user's cases if user_id were ever falsy. Passing user_id
             # down adds `AND c.user_id = :user_id` to the WHERE clause; the
             # shared-case allowlist widens it to owned ∪ shared-to-my-teams.
-            shared_case_ids = await self._resolve_shared_case_ids(user_id)
+            shared_case_ids = await self._resolve_shared_case_ids(
+                user_id, team_ids=team_ids
+            )
             cases_list, total = await self.repository.search(
                 query=search_request.query,
                 user_id=user_id,
                 limit=search_request.limit,
                 shared_case_ids=shared_case_ids,
+                restrict_case_ids=restrict_case_ids,
             )
 
             # Convert to CaseSummary
             from faultmaven.models.api_models import CaseSummary
 
             summaries = [CaseSummary.from_case(case) for case in cases_list]
+
+            # Enrich with team shares (ADR-013 §D4); empty in standalone.
+            await self._enrich_summaries_with_team_shares(summaries)
 
             return summaries
 
@@ -1731,156 +1791,173 @@ class CaseService(ICaseService):
             )
 
     # ============================================================
-    # Case Sharing Operations
+    # Case Team-Sharing Operations (ADR-013 §D4)
     # ============================================================
+    #
+    # Team sharing is the canonical case-visibility model: a case is visible to
+    # its owner and to members of any Team it is shared to via ``resource_shares``
+    # (the read counterpart is ``_resolve_shared_case_ids`` /
+    # ``case_scope_where``). It replaced the pre-ADR-013 per-user participant
+    # model (``share_case``/``unshare_case``/``get_case_participants``), which was
+    # unreachable (no client), non-functional (its ``case_participants`` table +
+    # ``upsert_case_participant`` SQL function never existed in the clean
+    # baseline), and contradicted this model — retired here.
+    #
+    # All operations are Cloud-only: ``team_service`` is unwired in standalone
+    # (single implicit team), so they raise a clear "not available" rather than
+    # silently no-op.
 
-    @trace("case_service_share_case")
-    async def share_case(
+    @trace("case_service_get_case_team_ids")
+    async def get_case_team_ids(self, case_id: str) -> List[str]:
+        """Team ids a single case is shared to (``[]`` when sharing is unwired).
+
+        Used by the case-detail read path to populate ``CaseDetail.shared_team_ids``;
+        delegates to the batched resolver (single-id map) so the team-scope
+        projection lives in exactly one place.
+        """
+        team_map = await self._resolve_case_team_ids_map([case_id])
+        return team_map.get(case_id, [])
+
+    async def _resolve_case_team_ids_map(
+        self, case_ids: List[str]
+    ) -> Dict[str, List[str]]:
+        """Batch ``case_id -> team ids`` for a page of cases (one query, no N+1).
+
+        Gated on ``team_service`` — team visibility is a Cloud feature, so this
+        skips the query entirely in standalone and every case gets ``[]``.
+        """
+        if not self.team_service or not self.share_repository or not case_ids:
+            return {}
+        shares_map = await self.share_repository.list_scopes_for_resources(
+            "case", case_ids
+        )
+        return {
+            cid: [s.scope_id for s in shares if s.scope_type == "team"]
+            for cid, shares in shares_map.items()
+        }
+
+    async def _enrich_summaries_with_team_shares(
+        self, summaries: List["CaseSummary"]
+    ) -> None:
+        """Populate ``shared_team_ids`` on a page of summaries in place.
+
+        One batched share lookup for the whole page (no N+1); a no-op in
+        standalone (``_resolve_case_team_ids_map`` returns ``{}``). Best-effort:
+        an enrichment failure leaves ``shared_team_ids`` empty rather than
+        failing the list.
+        """
+        if not summaries:
+            return
+        try:
+            team_map = await self._resolve_case_team_ids_map(
+                [s.case_id for s in summaries]
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Failed to enrich cases with team shares: {e}")
+            return
+        for summary in summaries:
+            summary.shared_team_ids = team_map.get(summary.case_id, [])
+
+    async def _resolve_team_filter_case_ids(
         self,
-        case_id: str,
-        target_user_id: str,
-        role: str,  # 'owner', 'collaborator', 'viewer'
-        sharer_user_id: str,
-    ) -> bool:
+        user_id: Optional[str],
+        team_id: str,
+        team_ids: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Case ids shared to ``team_id`` for the filter-by-team facet.
+
+        Returns ``[]`` (→ empty result) unless the caller is a member of
+        ``team_id``: you can only filter by a Team you belong to, so probing an
+        arbitrary team id surfaces nothing. Empty in standalone (no team_service).
+        ``team_ids`` may be passed pre-resolved to avoid re-fetching membership.
         """
-        Share a case with another user.
+        if not user_id or not self.share_repository:
+            return []
+        if team_ids is None:
+            team_ids = await self._resolve_user_team_ids(user_id)
+        if team_id not in team_ids:
+            return []
+        return await self.share_repository.list_resource_ids(
+            resource_type="case",
+            scope_type="team",
+            scope_ids=[team_id],
+        )
 
-        Args:
-            case_id: Case identifier
-            target_user_id: User to share with
-            role: Role to assign (owner, collaborator, viewer)
-            sharer_user_id: User performing the share action
+    @trace("case_service_share_case_with_team")
+    async def share_case_with_team(
+        self, case_id: str, team_id: str, actor_user_id: str
+    ) -> None:
+        """Share a case with a Team (ADR-013 §D4), user-initiated.
 
-        Returns:
-            True if case was shared successfully
+        Only the case owner may share, and only with a Team they belong to. The
+        membership check is what keeps the share within the case's org: it
+        resolves through the RLS-tenanted ``teams`` table
+        (``_resolve_user_team_ids``), so under the owner's org RLS context
+        ``team_ids`` contains only teams in that org — a foreign-org team is
+        never a member and is rejected here, not merely masked at read time. The
+        share row then carries the case's own ``organization_id``. Idempotent
+        (re-sharing is a no-op).
 
         Raises:
-            ValidationException: If user lacks permission to share
+            ValidationException: sharing unavailable (standalone), case missing,
+                caller is not the owner, or caller is not a member of ``team_id``.
         """
-        # Verify case exists
+        if not self.team_service or not self.share_repository:
+            raise ValidationException(
+                "Team sharing is not available in this deployment"
+            )
         case = await self.repository.get(case_id)
         if not case:
             raise ValidationException(f"Case {case_id} not found")
-
-        # Verify sharer has permission (must be owner or existing collaborator)
-        if case.user_id != sharer_user_id:
-            # Check if sharer is a participant with appropriate permissions
-            participants = await self.repository.get_case_participants(case_id)
-            sharer_participant = next(
-                (p for p in participants if p["user_id"] == sharer_user_id), None
+        if case.user_id != actor_user_id:
+            raise ValidationException("Only the case owner can share it with a team")
+        team_ids = await self._resolve_user_team_ids(actor_user_id)
+        if team_id not in team_ids:
+            raise ValidationException(
+                "You can only share a case with a team you belong to"
             )
-            if not sharer_participant or sharer_participant["role"] == "viewer":
-                raise ValidationException("User lacks permission to share this case")
-
-        # Share the case
-        success = await self.repository.share_case(
-            case_id, target_user_id, role, sharer_user_id
+        await self._share_case_with_team(
+            case_id=case_id,
+            team_id=team_id,
+            organization_id=case.organization_id,
+            created_by=actor_user_id,
+        )
+        logger.info(
+            "Case %s shared with team %s by %s", case_id, team_id, actor_user_id
         )
 
-        if success:
-            logger.info(
-                f"Case {case_id} shared with user {target_user_id} as {role} "
-                f"by {sharer_user_id}"
-            )
-
-        return success
-
-    @trace("case_service_unshare_case")
-    async def unshare_case(
-        self, case_id: str, target_user_id: str, unsharer_user_id: str
+    @trace("case_service_unshare_case_from_team")
+    async def unshare_case_from_team(
+        self, case_id: str, team_id: str, actor_user_id: str
     ) -> bool:
-        """
-        Unshare a case from a user.
+        """Remove a case's share to a Team (ADR-013 §D4). Owner-only.
 
-        Args:
-            case_id: Case identifier
-            target_user_id: User to unshare from
-            unsharer_user_id: User performing the unshare action
-
-        Returns:
-            True if case was unshared successfully
+        Returns True if a share row was removed (False if it wasn't shared).
 
         Raises:
-            ValidationException: If user lacks permission or trying to unshare owner
+            ValidationException: sharing unavailable, case missing, or caller is
+                not the owner.
         """
-        # Verify case exists
+        if not self.team_service or not self.share_repository:
+            raise ValidationException(
+                "Team sharing is not available in this deployment"
+            )
         case = await self.repository.get(case_id)
         if not case:
             raise ValidationException(f"Case {case_id} not found")
-
-        # Prevent unsharing the case owner
-        if case.user_id == target_user_id:
-            raise ValidationException("Cannot unshare the case owner")
-
-        # Verify unsharer has permission
-        if case.user_id != unsharer_user_id:
-            participants = await self.repository.get_case_participants(case_id)
-            unsharer_participant = next(
-                (p for p in participants if p["user_id"] == unsharer_user_id), None
-            )
-            if not unsharer_participant or unsharer_participant["role"] != "owner":
-                raise ValidationException("User lacks permission to unshare this case")
-
-        # Unshare the case
-        success = await self.repository.unshare_case(
-            case_id, target_user_id, unsharer_user_id
+        if case.user_id != actor_user_id:
+            raise ValidationException("Only the case owner can unshare it from a team")
+        removed = await self.share_repository.unshare(
+            resource_type="case",
+            resource_id=case_id,
+            scope_type="team",
+            scope_id=team_id,
         )
-
-        if success:
+        if removed:
             logger.info(
-                f"Case {case_id} unshared from user {target_user_id} "
-                f"by {unsharer_user_id}"
+                "Case %s unshared from team %s by %s",
+                case_id,
+                team_id,
+                actor_user_id,
             )
-
-        return success
-
-    @trace("case_service_get_case_participants")
-    async def get_case_participants(self, case_id: str) -> List[Dict[str, Any]]:
-        """
-        Get all participants for a case.
-
-        Args:
-            case_id: Case identifier
-
-        Returns:
-            List of participants with their roles and metadata
-        """
-        return await self.repository.get_case_participants(case_id)
-
-    @trace("case_service_user_can_access_case")
-    async def user_can_access_case(self, case_id: str, user_id: str) -> bool:
-        """
-        Check if a user can access a case.
-
-        Checks:
-        1. User is the case owner
-        2. User is a participant
-        3. User is a member of a team the case is shared to (via the share
-           table, ADR-013 §D4 — case sharing lands in a later unit)
-        4. User has org-level access (if case has organization_id)
-
-        Args:
-            case_id: Case identifier
-            user_id: User identifier
-
-        Returns:
-            True if user can access the case
-        """
-        # Get case
-        case = await self.repository.get(case_id)
-        if not case:
-            return False
-
-        # Check if user is owner
-        if case.user_id == user_id:
-            return True
-
-        # Check if user is participant
-        participants = await self.repository.get_case_participants(case_id)
-        if any(p["user_id"] == user_id for p in participants):
-            return True
-
-        # TODO: Check team/org membership when those services are integrated
-        # For now, return False if not owner or explicit participant
-
-        return False
+        return removed

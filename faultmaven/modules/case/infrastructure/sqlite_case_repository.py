@@ -1189,6 +1189,7 @@ class SQLiteCaseRepository(CaseRepository):
         offset: int = 0,
         source: str | None = None,
         shared_case_ids: list[str] | None = None,
+        restrict_case_ids: list[str] | None = None,
     ) -> tuple[list[Case], int]:
         """List cases with optional filters and pagination.
 
@@ -1204,7 +1205,13 @@ class SQLiteCaseRepository(CaseRepository):
 
             # owned ∪ shared-to-my-teams (ADR-013 §D4). None when user_id is
             # falsy (cross-tenant admin path); owner-only when no shares.
-            scope_clause = case_scope_where(params, user_id, shared_case_ids)
+            # restrict_case_ids narrows to one team's shares (filter-by-team).
+            scope_clause = case_scope_where(
+                params,
+                user_id,
+                shared_case_ids,
+                restrict_case_ids=restrict_case_ids,
+            )
             if scope_clause:
                 where_clauses.append(scope_clause)
 
@@ -1627,6 +1634,7 @@ class SQLiteCaseRepository(CaseRepository):
         organization_id: str | None = None,
         limit: int = 20,
         shared_case_ids: builtins.list[str] | None = None,
+        restrict_case_ids: builtins.list[str] | None = None,
     ) -> tuple[builtins.list[Case], int]:
         """Search cases using SQLite LIKE pattern matching (no full-text search)."""
         try:
@@ -1640,7 +1648,13 @@ class SQLiteCaseRepository(CaseRepository):
             }
 
             # owned ∪ shared-to-my-teams (ADR-013 §D4); owner-only when no shares.
-            scope_clause = case_scope_where(params, user_id, shared_case_ids)
+            # restrict_case_ids narrows to one team's shares (filter-by-team).
+            scope_clause = case_scope_where(
+                params,
+                user_id,
+                shared_case_ids,
+                restrict_case_ids=restrict_case_ids,
+            )
             if scope_clause:
                 where_clauses.append(scope_clause)
 
@@ -3703,34 +3717,6 @@ class SQLiteCaseRepository(CaseRepository):
             updated_at=updated_at,
             metadata=metadata,
         )
-
-    # ============================================================
-    # Stub Methods (Not implemented - same as PostgreSQL version)
-    # ============================================================
-
-    async def share_case(
-        self,
-        case_id: str,
-        target_user_id: str,
-        role: str,
-        sharer_user_id: str | None = None,
-    ) -> bool:
-        """Share a case with another user (stub - not implemented for SQLite)."""
-        raise NotImplementedError(
-            "share_case not implemented for SQLite (requires stored procedures)"
-        )
-
-    async def unshare_case(
-        self, case_id: str, user_id: str, unsharer_user_id: str | None = None
-    ) -> bool:
-        """Unshare a case (stub - not implemented for SQLite)."""
-        raise NotImplementedError("unshare_case not implemented for SQLite")
-
-    async def get_case_participants(
-        self, case_id: str
-    ) -> builtins.list[dict[str, Any]]:
-        """Get case participants (stub)."""
-        raise NotImplementedError("get_case_participants not implemented for SQLite")
 
     # ============================================================
     # Agent Execution & Tool Call Persistence (SQLite)
