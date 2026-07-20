@@ -14,16 +14,20 @@ Usage:
 import os
 import sqlite3
 import subprocess
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
+
+from faultmaven.models.rbac import ROLE_PERMISSIONS, Permission, Role
+from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 
 # Test database path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "d0e1f2a3b4c5"  # current head (028 — polymorphic resource_shares)
+HEAD_REVISION = "e1f2a3b4c5d6"  # current head (029 — seed RBAC roles/permissions)
 
 
 @pytest.fixture(scope="function")
@@ -77,6 +81,17 @@ def get_tables(db_path: str) -> list[str]:
     tables = [row[0] for row in cursor.fetchall()]
     conn.close()
     return tables
+
+
+def query_rows(db_path: str, sql: str) -> list[tuple]:
+    """Run a read query against the SQLite database and return all rows."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        return cursor.fetchall()
+    finally:
+        conn.close()
 
 
 def get_current_revision(database_url: str) -> str:
@@ -253,6 +268,81 @@ class TestAlembicMigrationInfrastructure:
         assert (
             "clean_baseline" in output.lower()
         ), f"Clean baseline migration should be in history. Output: {output}"
+
+
+class TestRbacSeed:
+    """Migration 029 seeds the system RBAC roles/permissions/grants.
+
+    These assertions tie the frozen seed snapshot in the migration to the live
+    authority model (``faultmaven/models/rbac.py``) and the runtime role-id
+    constant (``rbac_seed.SYSTEM_ROLE_IDS``) — so the migration can never
+    silently drift from either.
+    """
+
+    def test_system_roles_seeded_with_stable_ids(self, clean_database, database_url):
+        """The three system roles exist with the IDs SYSTEM_ROLE_IDS promises."""
+        run_alembic("upgrade head", database_url)
+
+        rows = query_rows(
+            TEST_DB, "SELECT role_id, name, scope, is_system_role FROM roles"
+        )
+        by_name = {
+            name: (role_id, scope, is_sys) for role_id, name, scope, is_sys in rows
+        }
+
+        assert set(by_name) == {role.value for role in Role}
+        for role in Role:
+            role_id, scope, is_sys = by_name[role.value]
+            assert role_id == SYSTEM_ROLE_IDS[role], f"stale id for {role.value}"
+            assert scope == "organization"
+            assert is_sys in (1, True)
+
+    def test_permissions_seeded_match_enum(self, clean_database, database_url):
+        """Every Permission in the model is seeded as a (resource, action) row."""
+        run_alembic("upgrade head", database_url)
+
+        rows = query_rows(TEST_DB, "SELECT resource, action FROM permissions")
+        seeded = {f"{resource}:{action}" for resource, action in rows}
+
+        assert seeded == {perm.value for perm in Permission}
+
+    def test_role_permission_grants_match_model(self, clean_database, database_url):
+        """role_permissions reproduces ROLE_PERMISSIONS exactly."""
+        run_alembic("upgrade head", database_url)
+
+        rows = query_rows(
+            TEST_DB,
+            "SELECT r.name, p.resource || ':' || p.action "
+            "FROM role_permissions rp "
+            "JOIN roles r ON r.role_id = rp.role_id "
+            "JOIN permissions p ON p.permission_id = rp.permission_id",
+        )
+        actual = defaultdict(set)
+        for role_name, perm_value in rows:
+            actual[role_name].add(perm_value)
+
+        expected = {
+            role.value: {perm.value for perm in perms}
+            for role, perms in ROLE_PERMISSIONS.items()
+        }
+        assert dict(actual) == expected
+
+    def test_seed_is_reversible_and_idempotent(self, clean_database, database_url):
+        """Downgrade removes exactly the seed; re-upgrade restores it without dupes."""
+        run_alembic("upgrade head", database_url)
+        assert len(query_rows(TEST_DB, "SELECT role_id FROM roles")) == 3
+
+        # Step back over 029 only (tables remain; seed rows are deleted).
+        result = run_alembic("downgrade -1", database_url)
+        assert result.returncode == 0, f"downgrade failed: {result.stderr}"
+        assert query_rows(TEST_DB, "SELECT role_id FROM roles") == []
+        assert query_rows(TEST_DB, "SELECT permission_id FROM permissions") == []
+        assert query_rows(TEST_DB, "SELECT role_id FROM role_permissions") == []
+
+        # Re-apply — counts return to exactly the seed, no duplication.
+        run_alembic("upgrade head", database_url)
+        assert len(query_rows(TEST_DB, "SELECT role_id FROM roles")) == 3
+        assert len(query_rows(TEST_DB, "SELECT permission_id FROM permissions")) == 14
 
 
 class TestHelperScript:
