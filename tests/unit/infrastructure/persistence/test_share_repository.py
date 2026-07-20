@@ -140,6 +140,27 @@ class TestShareRepository:
         assert {s.scope_id for s in scopes} == {"team-A", "team-B"}
         assert all(s.scope_type == "team" for s in scopes)
 
+    async def test_list_scopes_for_resources_batch(self, share_factory):
+        # Batch DTO enrichment: many resources, one query; keyed by resource_id,
+        # and ids with no shares are absent from the map.
+        await _share(share_factory, resource_id="kb-1", scope_id="team-A", **_KB)
+        await _share(share_factory, resource_id="kb-1", scope_id="team-B", **_KB)
+        await _share(share_factory, resource_id="kb-2", scope_id="team-A", **_KB)
+        async with share_factory() as session:
+            result = await PostgreSQLShareRepository(session).list_scopes_for_resources(
+                "knowledge_item", ["kb-1", "kb-2", "kb-none"]
+            )
+        assert {s.scope_id for s in result["kb-1"]} == {"team-A", "team-B"}
+        assert {s.scope_id for s in result["kb-2"]} == {"team-A"}
+        assert "kb-none" not in result
+
+    async def test_list_scopes_for_resources_empty_ids(self, share_factory):
+        async with share_factory() as session:
+            result = await PostgreSQLShareRepository(session).list_scopes_for_resources(
+                "knowledge_item", []
+            )
+        assert result == {}
+
     async def test_delete_for_resource_cascade(self, share_factory):
         # Resource-delete cascade (no DB FK on the polymorphic resource_id).
         await _share(share_factory, resource_id="kb-1", scope_id="team-A", **_KB)

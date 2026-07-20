@@ -911,3 +911,253 @@ class TestCaseShareCreation:
         mock_repo.get = AsyncMock(return_value=case)
         mock_repo.delete = AsyncMock(return_value=True)
         assert await service.hard_delete_case(case.case_id, user_id="owner") is True
+
+
+def _team_share_service(mock_repo, mock_session_store, *, teams):
+    """CaseService wired for Cloud team sharing (team_service + share_repository)."""
+    team_service = AsyncMock()
+    team_service.list_all_user_team_ids = AsyncMock(return_value=teams)
+    share_repo = AsyncMock()
+    service = CaseService(
+        case_repository=mock_repo,
+        session_store=mock_session_store,
+        max_cases_per_user=50,
+        team_service=team_service,
+        share_repository=share_repo,
+    )
+    return service, team_service, share_repo
+
+
+class TestCaseTeamShareEndpoints:
+    """User-initiated case→Team share/unshare (ADR-013 §D4, U12 backend).
+
+    Owner-only, membership-checked, Cloud-only. Replaces the retired per-user
+    participant share.
+    """
+
+    @pytest.mark.asyncio
+    async def test_share_success_writes_share_row(self, mock_repo, mock_session_store):
+        case = _make_case(user_id="owner", organization_id="org_1")
+        mock_repo.get = AsyncMock(return_value=case)
+        svc, team_service, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        await svc.share_case_with_team(case.case_id, "team_a", "owner")
+        share_repo.share.assert_awaited_once_with(
+            resource_type="case",
+            resource_id=case.case_id,
+            scope_type="team",
+            scope_id="team_a",
+            organization_id="org_1",
+            created_by="owner",
+        )
+
+    @pytest.mark.asyncio
+    async def test_share_rejected_for_non_owner(self, mock_repo, mock_session_store):
+        case = _make_case(user_id="owner")
+        mock_repo.get = AsyncMock(return_value=case)
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        with pytest.raises(ValidationException, match="owner"):
+            await svc.share_case_with_team(case.case_id, "team_a", "intruder")
+        share_repo.share.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_share_rejected_for_non_member_team(
+        self, mock_repo, mock_session_store
+    ):
+        case = _make_case(user_id="owner")
+        mock_repo.get = AsyncMock(return_value=case)
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        with pytest.raises(ValidationException, match="team you belong to"):
+            await svc.share_case_with_team(case.case_id, "team_other", "owner")
+        share_repo.share.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_share_missing_case_raises(self, mock_repo, mock_session_store):
+        mock_repo.get = AsyncMock(return_value=None)
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        with pytest.raises(ValidationException, match="not found"):
+            await svc.share_case_with_team("missing", "team_a", "owner")
+        share_repo.share.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_share_not_available_in_standalone(self, service, mock_repo):
+        """No team_service (standalone) → clear 'not available', never a no-op."""
+        with pytest.raises(ValidationException, match="not available"):
+            await service.share_case_with_team("c1", "team_a", "owner")
+
+    @pytest.mark.asyncio
+    async def test_unshare_success_returns_true(self, mock_repo, mock_session_store):
+        case = _make_case(user_id="owner")
+        mock_repo.get = AsyncMock(return_value=case)
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        share_repo.unshare = AsyncMock(return_value=True)
+        assert await svc.unshare_case_from_team(case.case_id, "team_a", "owner") is True
+        share_repo.unshare.assert_awaited_once_with(
+            resource_type="case",
+            resource_id=case.case_id,
+            scope_type="team",
+            scope_id="team_a",
+        )
+
+    @pytest.mark.asyncio
+    async def test_unshare_returns_false_when_not_shared(
+        self, mock_repo, mock_session_store
+    ):
+        case = _make_case(user_id="owner")
+        mock_repo.get = AsyncMock(return_value=case)
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        share_repo.unshare = AsyncMock(return_value=False)
+        assert (
+            await svc.unshare_case_from_team(case.case_id, "team_a", "owner") is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_unshare_rejected_for_non_owner(self, mock_repo, mock_session_store):
+        case = _make_case(user_id="owner")
+        mock_repo.get = AsyncMock(return_value=case)
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        with pytest.raises(ValidationException, match="owner"):
+            await svc.unshare_case_from_team(case.case_id, "team_a", "intruder")
+        share_repo.unshare.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unshare_not_available_in_standalone(self, service):
+        with pytest.raises(ValidationException, match="not available"):
+            await service.unshare_case_from_team("c1", "team_a", "owner")
+
+
+class TestCaseTeamShareReads:
+    """Read-side enrichment: a case's shared team ids on the DTOs."""
+
+    @pytest.mark.asyncio
+    async def test_get_case_team_ids_filters_to_team_scope(
+        self, mock_repo, mock_session_store
+    ):
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=[]
+        )
+        share_repo.list_scopes_for_resource = AsyncMock(
+            return_value=[
+                MagicMock(scope_type="team", scope_id="team_a"),
+                MagicMock(scope_type="organization", scope_id="org_1"),
+                MagicMock(scope_type="team", scope_id="team_b"),
+            ]
+        )
+        assert await svc.get_case_team_ids("c1") == ["team_a", "team_b"]
+
+    @pytest.mark.asyncio
+    async def test_get_case_team_ids_empty_in_standalone(self, service):
+        assert await service.get_case_team_ids("c1") == []
+
+    @pytest.mark.asyncio
+    async def test_enrich_summaries_sets_shared_team_ids(
+        self, mock_repo, mock_session_store
+    ):
+        from faultmaven.models.api_models import CaseSummary
+
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=[]
+        )
+        share_repo.list_scopes_for_resources = AsyncMock(
+            return_value={
+                "c1": [MagicMock(scope_type="team", scope_id="team_a")],
+            }
+        )
+        s1 = CaseSummary.from_case(_make_case(title="A"))
+        object.__setattr__(s1, "case_id", "c1")
+        s2 = CaseSummary.from_case(_make_case(title="B"))
+        object.__setattr__(s2, "case_id", "c2")
+        await svc._enrich_summaries_with_team_shares([s1, s2])
+        assert s1.shared_team_ids == ["team_a"]
+        assert s2.shared_team_ids == []  # no shares → empty
+
+    @pytest.mark.asyncio
+    async def test_enrich_summaries_best_effort_on_error(
+        self, mock_repo, mock_session_store
+    ):
+        from faultmaven.models.api_models import CaseSummary
+
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=[]
+        )
+        share_repo.list_scopes_for_resources = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
+        s1 = CaseSummary.from_case(_make_case(title="A"))
+        await svc._enrich_summaries_with_team_shares([s1])  # must not raise
+        assert s1.shared_team_ids == []
+
+
+class TestCaseTeamFilter:
+    """Filter-by-team facet on list/search (a narrowing, not the visibility arm)."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_team_filter_requires_membership(
+        self, mock_repo, mock_session_store
+    ):
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        share_repo.list_resource_ids = AsyncMock(return_value=["c1", "c2"])
+        # Member of team_a → resolves shared ids.
+        assert await svc._resolve_team_filter_case_ids("u", "team_a") == ["c1", "c2"]
+        # Not a member of team_x → empty (can't filter by a foreign team).
+        assert await svc._resolve_team_filter_case_ids("u", "team_x") == []
+
+    @pytest.mark.asyncio
+    async def test_resolve_team_filter_empty_in_standalone(self, service):
+        assert await service._resolve_team_filter_case_ids("u", "team_a") == []
+
+    @pytest.mark.asyncio
+    async def test_list_with_team_filter_passes_restrict_ids(
+        self, mock_repo, mock_session_store
+    ):
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        share_repo.list_resource_ids = AsyncMock(return_value=["c1"])
+        share_repo.list_scopes_for_resources = AsyncMock(return_value={})
+        mock_repo.list = AsyncMock(return_value=([], 0))
+        await svc.list_user_cases("u", CaseListFilter(team_id="team_a"))
+        assert mock_repo.list.await_args.kwargs["restrict_case_ids"] == ["c1"]
+
+    @pytest.mark.asyncio
+    async def test_list_with_empty_team_filter_short_circuits(
+        self, mock_repo, mock_session_store
+    ):
+        """Filtering by a team with no shares (or as a non-member) returns [] and
+        never queries the repository."""
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        share_repo.list_resource_ids = AsyncMock(return_value=[])
+        mock_repo.list = AsyncMock(return_value=([], 0))
+        assert await svc.list_user_cases("u", CaseListFilter(team_id="team_a")) == []
+        mock_repo.list.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_search_with_team_filter_passes_restrict_ids(
+        self, mock_repo, mock_session_store
+    ):
+        svc, _, share_repo = _team_share_service(
+            mock_repo, mock_session_store, teams=["team_a"]
+        )
+        share_repo.list_resource_ids = AsyncMock(return_value=["c1"])
+        mock_repo.search = AsyncMock(return_value=([], 0))
+        await svc.search_cases(
+            CaseSearchRequest(query="db", team_id="team_a"), user_id="u"
+        )
+        assert mock_repo.search.await_args.kwargs["restrict_case_ids"] == ["c1"]

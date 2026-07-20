@@ -958,6 +958,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         offset: int = 0,
         source: Optional[str] = None,
         shared_case_ids: Optional[List[str]] = None,
+        restrict_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters and pagination.
@@ -973,6 +974,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             offset: Pagination offset
             shared_case_ids: Case ids readable via a team share (ADR-013 §D4);
                 widens owner-only scope to ``owned ∪ shared-to-my-teams``.
+            restrict_case_ids: Filter-by-team facet — narrows the result to one
+                team's shared case ids (the caller resolves/authorizes the team).
 
         Returns:
             Tuple of (cases, total_count)
@@ -984,7 +987,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             # owned ∪ shared-to-my-teams (ADR-013 §D4). None when user_id is
             # falsy (cross-tenant admin path); owner-only when no shares.
-            scope_clause = case_scope_where(params, user_id, shared_case_ids)
+            # restrict_case_ids narrows to one team's shares (filter-by-team).
+            scope_clause = case_scope_where(
+                params,
+                user_id,
+                shared_case_ids,
+                restrict_case_ids=restrict_case_ids,
+            )
             if scope_clause:
                 where_clauses.append(scope_clause)
 
@@ -1333,136 +1342,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 f"Failed to list top entities for case {case_id}: {e}"
             ) from e
 
-    async def share_case(
-        self,
-        case_id: str,
-        target_user_id: str,
-        role: str,  # ParticipantRole: owner, collaborator, viewer
-        sharer_user_id: Optional[str] = None,
-    ) -> bool:
-        """
-        Share a case with another user.
-
-        Uses the SQL function created in migration 002.
-
-        Args:
-            case_id: Case identifier
-            target_user_id: User to share with
-            role: Role to assign (owner, collaborator, viewer)
-            sharer_user_id: User performing the share action
-
-        Returns:
-            True if case was shared successfully
-        """
-        try:
-            # Use the upsert_case_participant function from migration 002
-            query = text(f"""
-                SELECT upsert_case_participant(
-                    :case_id,
-                    :user_id,
-                    {self._cast('role', 'participant_role')},
-                    :added_by
-                )
-            """)
-
-            await self.db.execute(
-                query,
-                {
-                    "case_id": case_id,
-                    "user_id": target_user_id,
-                    "role": role,
-                    "added_by": sharer_user_id or target_user_id,
-                },
-            )
-            await self.db.commit()
-
-            self.logger.info(
-                f"Shared case {case_id} with user {target_user_id} as {role}"
-            )
-            return True
-
-        except Exception as e:
-            await self.db.rollback()
-            raise RepositoryException(f"Failed to share case {case_id}: {e}") from e
-
-    async def unshare_case(
-        self, case_id: str, user_id: str, unsharer_user_id: Optional[str] = None
-    ) -> bool:
-        """
-        Unshare a case from a user.
-
-        Args:
-            case_id: Case identifier
-            user_id: User to unshare from
-            unsharer_user_id: User performing the unshare action
-
-        Returns:
-            True if case was unshared successfully
-        """
-        try:
-            # Use the remove_case_participant function from migration 002
-            query = text("""
-                SELECT remove_case_participant(
-                    :case_id,
-                    :user_id,
-                    :removed_by
-                )
-            """)
-
-            await self.db.execute(
-                query,
-                {
-                    "case_id": case_id,
-                    "user_id": user_id,
-                    "removed_by": unsharer_user_id or user_id,
-                },
-            )
-            await self.db.commit()
-
-            self.logger.info(f"Unshared case {case_id} from user {user_id}")
-            return True
-
-        except Exception as e:
-            await self.db.rollback()
-            raise RepositoryException(f"Failed to unshare case {case_id}: {e}") from e
-
-    async def get_case_participants(self, case_id: str) -> List[Dict[str, Any]]:
-        """
-        Get all participants for a case.
-
-        Args:
-            case_id: Case identifier
-
-        Returns:
-            List of participants with their roles
-        """
-        try:
-            query = text("""
-                SELECT user_id, role, added_at, added_by, last_accessed_at
-                FROM case_participants
-                WHERE case_id = :case_id
-                ORDER BY added_at DESC
-            """)
-
-            result = await self.db.execute(query, {"case_id": case_id})
-            rows = result.fetchall()
-
-            return [
-                {
-                    "user_id": row.user_id,
-                    "role": row.role,
-                    "added_at": row.added_at,
-                    "added_by": row.added_by,
-                    "last_accessed_at": row.last_accessed_at,
-                }
-                for row in rows
-            ]
-
-        except Exception as e:
-            raise RepositoryException(
-                f"Failed to get participants for case {case_id}: {e}"
-            ) from e
-
     async def search(
         self,
         query: str,
@@ -1470,6 +1349,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         organization_id: Optional[str] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
+        restrict_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
         """
         Search cases using PostgreSQL full-text search.
@@ -1488,6 +1368,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             limit: Maximum results
             shared_case_ids: Case ids readable via a team share (ADR-013 §D4);
                 widens owner-only scope to ``owned ∪ shared-to-my-teams``.
+            restrict_case_ids: Filter-by-team facet — narrows the result to one
+                team's shared case ids (the caller resolves/authorizes the team).
 
         Returns:
             Tuple of (cases, total_count)
@@ -1502,9 +1384,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             params = {"query": query, "case_id_pattern": f"%{query}%", "limit": limit}
 
             # owned ∪ shared-to-my-teams (ADR-013 §D4); owner-only when no shares.
+            # restrict_case_ids narrows to one team's shares (filter-by-team).
             # The full-text query aliases ``cases`` as ``c``, so scope on ``c.``.
             scope_clause = case_scope_where(
-                params, user_id, shared_case_ids, col_prefix="c."
+                params,
+                user_id,
+                shared_case_ids,
+                col_prefix="c.",
+                restrict_case_ids=restrict_case_ids,
             )
             if scope_clause:
                 where_clauses.append(scope_clause)

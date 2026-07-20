@@ -62,6 +62,33 @@ class TestCaseScopeWhere:
         clause = case_scope_where(params, "user_a", ["case_1"], col_prefix="c.")
         assert clause == "(c.user_id = :user_id OR c.case_id IN (:shared_case_0))"
 
+    def test_restrict_case_ids_ands_the_team_facet(self):
+        """Filter-by-team narrows the visibility arm with an explicit id set."""
+        params: dict = {}
+        clause = case_scope_where(
+            params, "user_a", restrict_case_ids=["case_1", "case_2"]
+        )
+        assert clause == (
+            "(user_id = :user_id) AND (case_id IN (:restrict_case_0, :restrict_case_1))"
+        )
+        assert params == {
+            "user_id": "user_a",
+            "restrict_case_0": "case_1",
+            "restrict_case_1": "case_2",
+        }
+
+    def test_restrict_empty_matches_nothing(self):
+        """A non-None empty facet must not emit ``IN ()`` — it matches nothing."""
+        params: dict = {}
+        clause = case_scope_where(params, "user_a", restrict_case_ids=[])
+        assert clause == "(user_id = :user_id) AND (1 = 0)"
+
+    def test_restrict_admin_path_no_visibility_arm(self):
+        """Cross-tenant admin (no user_id) + team facet → facet alone."""
+        params: dict = {}
+        clause = case_scope_where(params, None, restrict_case_ids=["case_1"])
+        assert clause == "case_id IN (:restrict_case_0)"
+
 
 # ============================================================
 # SQLite repository — list / search honor the allowlist
@@ -143,6 +170,22 @@ class TestSqliteListAllowlist:
         """user_id=None (platform admin) is unscoped."""
         cases, total = await repository.list(user_id=None)
         assert total == 3
+
+    async def test_restrict_narrows_to_team_facet(self, repository, seeded):
+        """Filter-by-team: only the restricted id surfaces, even for the owner."""
+        cases, total = await repository.list(
+            user_id="user_a",
+            shared_case_ids=[seeded["theirs_shared"]],
+            restrict_case_ids=[seeded["theirs_shared"]],
+        )
+        assert {c.case_id for c in cases} == {seeded["theirs_shared"]}
+        assert seeded["mine"] not in {c.case_id for c in cases}
+        assert total == 1
+
+    async def test_restrict_empty_matches_nothing(self, repository, seeded):
+        cases, total = await repository.list(user_id="user_a", restrict_case_ids=[])
+        assert cases == []
+        assert total == 0
 
 
 class TestSqliteSearchAllowlist:

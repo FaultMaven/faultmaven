@@ -14,7 +14,7 @@ to a soft-deleted team are already unreachable (``list_all_user_team_ids`` filte
 
 import logging
 import uuid
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -126,6 +126,22 @@ class PostgreSQLShareRepository(IShareRepository):
         )
         rows = (await self.db.execute(stmt)).scalars().all()
         return [_model_to_domain(r) for r in rows]
+
+    async def list_scopes_for_resources(
+        self, resource_type: str, resource_ids: List[str]
+    ) -> Dict[str, List[ResourceShare]]:
+        """Scopes for MANY resources in one query (batch DTO enrichment)."""
+        if not resource_ids:
+            return {}
+        stmt = select(ResourceShareModel).where(
+            ResourceShareModel.resource_type == resource_type,
+            ResourceShareModel.resource_id.in_(resource_ids),
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        result: Dict[str, List[ResourceShare]] = {}
+        for r in rows:
+            result.setdefault(r.resource_id, []).append(_model_to_domain(r))
+        return result
 
     async def list_resource_ids(
         self,

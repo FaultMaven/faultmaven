@@ -1317,30 +1317,6 @@ class TestCheckpoints:
 
 
 # ============================================================
-# Stubbed operations (case sharing — out of scope for SQLite)
-# ============================================================
-
-
-class TestStubbedOperations:
-    """share_case et al remain NotImplementedError in SQLite."""
-
-    @pytest.mark.asyncio
-    async def test_share_case_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.share_case("c", "u", "viewer")
-
-    @pytest.mark.asyncio
-    async def test_unshare_case_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.unshare_case("c", "u")
-
-    @pytest.mark.asyncio
-    async def test_get_case_participants_stub(self, repository):
-        with pytest.raises(NotImplementedError):
-            await repository.get_case_participants("c")
-
-
-# ============================================================
 # Agent execution & tool call persistence
 # ============================================================
 

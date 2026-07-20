@@ -104,6 +104,7 @@ class ICaseRepository(Protocol):
         offset: int = 0,
         source: Optional[str] = None,
         shared_case_ids: Optional[List[str]] = None,
+        restrict_case_ids: Optional[List[str]] = None,
     ) -> tuple[List["Case"], int]:
         """List cases with optional filters.
 
@@ -111,6 +112,11 @@ class ICaseRepository(Protocol):
         ``owned ∪ shared-to-my-teams`` (ADR-013 §D4): case ids the requester can
         read via a team share, resolved from ``resource_shares`` by the caller.
         Empty/omitted leaves the pre-existing owner-only filter.
+
+        ``restrict_case_ids`` is the filter-by-team facet: an explicit case-id
+        allowlist ANDed onto the visibility scope to narrow results to one team's
+        shares (the caller resolves and authorizes the team). ``None`` = no facet;
+        a non-``None`` empty list matches nothing.
         """
         ...
 
@@ -125,11 +131,13 @@ class ICaseRepository(Protocol):
         organization_id: Optional[str] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
+        restrict_case_ids: Optional[List[str]] = None,
     ) -> tuple[List["Case"], int]:
         """Search cases by text query.
 
         ``shared_case_ids`` widens the owner-only scope to
-        ``owned ∪ shared-to-my-teams`` (ADR-013 §D4). See ``list``.
+        ``owned ∪ shared-to-my-teams`` (ADR-013 §D4); ``restrict_case_ids`` is the
+        filter-by-team facet that narrows to one team's shares. See ``list``.
         """
         ...
 

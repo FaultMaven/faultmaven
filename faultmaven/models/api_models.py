@@ -106,6 +106,11 @@ class CaseSummary(BaseModel):
     # Computed fields
     is_terminal: bool
 
+    # Team sharing (ADR-013 §D4). Ids of the Teams this case is shared to via
+    # ``resource_shares``. Enriched by the service read path (empty in standalone,
+    # where team sharing is unwired); ``from_case`` alone leaves it empty.
+    shared_team_ids: List[str] = Field(default_factory=list)
+
     # Status transitions
     valid_next_states: List[str] = Field(
         default_factory=list,
@@ -176,6 +181,11 @@ class CaseDetail(BaseModel):
     is_terminal: bool
     escalated: bool
 
+    # Team sharing (ADR-013 §D4). Ids of the Teams this case is shared to via
+    # ``resource_shares``. Enriched by the service read path (empty in standalone,
+    # where team sharing is unwired); ``from_case`` alone leaves it empty.
+    shared_team_ids: List[str] = Field(default_factory=list)
+
     # Status transitions
     valid_next_states: List[str] = Field(
         default_factory=list,
@@ -238,6 +248,14 @@ class CaseListFilter(BaseModel):
         default=None, description="Filter by case source (copilot | slack | api)"
     )
 
+    team_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter to cases shared with this Team (ADR-013 §D4). Only Teams the "
+            "caller belongs to yield results; ignored in standalone (no teams)."
+        ),
+    )
+
     created_after: Optional[datetime] = Field(
         default=None, description="Cases created after this date"
     )
@@ -298,6 +316,14 @@ class CaseSearchRequest(BaseModel):
     )
 
     state: Optional[CaseState] = Field(default=None, description="Filter by state")
+
+    team_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter to cases shared with this Team (ADR-013 §D4). Only Teams the "
+            "caller belongs to yield results; ignored in standalone (no teams)."
+        ),
+    )
 
     limit: int = Field(default=20, ge=1, le=100, description="Maximum results")
 
