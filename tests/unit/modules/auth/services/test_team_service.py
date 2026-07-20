@@ -38,6 +38,21 @@ async def test_team_service_returns_empty_for_no_memberships():
     assert await service.list_all_user_team_ids("user-1") == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_team_service_list_user_teams_delegates_to_repository():
+    """list_user_teams passes through to the repository (GET /teams read path)."""
+    repo = AsyncMock()
+    teams = [Mock(team_id="t1"), Mock(team_id="t2")]
+    repo.list_user_teams.return_value = teams
+    service = TeamService(repo)
+
+    result = await service.list_user_teams("user-1")
+
+    assert result == teams
+    repo.list_user_teams.assert_awaited_once_with("user-1")
+
+
 @pytest.mark.unit
 def test_create_team_service_none_in_single_tenant():
     """Standalone (SingleTenantProvider) leaves team_service unwired."""

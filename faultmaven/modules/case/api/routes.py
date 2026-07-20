@@ -3643,11 +3643,12 @@ async def get_evidence_details(
 async def share_case_with_team(
     case_id: str = Path(..., description="Case ID"),
     team_id: str = Body(..., embed=True, description="Team ID to share the case with"),
-    case_service: ICaseService = Depends(get_case_service),
-    auth: tuple = Depends(require_authentication),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    current_user: UserDTO = Depends(require_authentication),
 ):
     """Share a case with a Team."""
-    session_id, user_id = auth
+    case_service = check_case_service_available(case_service)
+    user_id = current_user.user_id
 
     try:
         await case_service.share_case_with_team(case_id, team_id, user_id)
@@ -3678,11 +3679,12 @@ async def share_case_with_team(
 async def unshare_case_from_team(
     case_id: str = Path(..., description="Case ID"),
     team_id: str = Path(..., description="Team ID to unshare from"),
-    case_service: ICaseService = Depends(get_case_service),
-    auth: tuple = Depends(require_authentication),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    current_user: UserDTO = Depends(require_authentication),
 ):
     """Unshare a case from a Team."""
-    session_id, user_id = auth
+    case_service = check_case_service_available(case_service)
+    user_id = current_user.user_id
 
     try:
         removed = await case_service.unshare_case_from_team(case_id, team_id, user_id)
