@@ -563,20 +563,6 @@ class UserAuditLogModel(Base):
     )
 
 
-class OAuthRevokedTokenModel(Base):
-    """Revoked JWT tokens for invalidation tracking."""
-
-    __tablename__ = "oauth_revoked_tokens"
-
-    jti = Column(String(64), primary_key=True)
-    revoked_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-
-    __table_args__ = (Index("idx_revoked_tokens_expires_at", "expires_at"),)
-
-
 class OAuthAuthorizationCodeModel(Base):
     """OAuth 2.0 PKCE authorization codes."""
 

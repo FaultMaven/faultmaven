@@ -306,13 +306,13 @@ For complete recommendations, examples, and edge case handling, see [Module Orga
 
 ### Table Naming Convention
 
-Tables are named after the business entity they store. Module-name prefixes are **not** required — the live schema uses unprefixed names for the primary entity of a module (`users`, `cases`, `evidence`, `reports`, `knowledge_items`) and semantic prefixes only to disambiguate sub-entities or related collections (`case_messages`, `case_actions`, `case_checkpoints`, `knowledge_suggestions`, `oauth_revoked_tokens`).
+Tables are named after the business entity they store. Module-name prefixes are **not** required — the live schema uses unprefixed names for the primary entity of a module (`users`, `cases`, `evidence`, `reports`, `knowledge_items`) and semantic prefixes only to disambiguate sub-entities or related collections (`case_messages`, `case_actions`, `case_checkpoints`, `knowledge_suggestions`, `oauth_authorization_codes`).
 
 ```sql
 -- Auth module (user domain)
 users, organizations, organization_members, roles, permissions,
 role_permissions, teams, team_members, user_audit_log,
-oauth_revoked_tokens, oauth_authorization_codes
+oauth_authorization_codes
 -- Note: auth sessions live in Redis (FakeRedis local, real Redis cloud)
 -- via RedisSessionStore — there is no SQL `sessions` table.
 

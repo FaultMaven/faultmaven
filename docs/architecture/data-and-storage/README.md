@@ -31,7 +31,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 
 - **[schemas/user-schema.md](./schemas/user-schema.md)** - User accounts, roles, and SSO integration
   - Enterprise SaaS schema (organizations, teams, RBAC)
-  - 11 user-domain tables with Row-Level Security (`users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`)
+  - 10 user-domain tables with Row-Level Security (`users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`)
 
 - **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** - Knowledge base storage
   - Unified KB collection (faultmaven_kb) with metadata-based scope filtering

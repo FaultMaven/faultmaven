@@ -32,7 +32,7 @@ A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE**
 | Module | Schema Verification | Classification |
 |--------|-------------------|----------------|
 | **Case** | Owns the case-domain tables (cases, evidence, hypotheses, solutions, case_messages, case_actions, uploaded_files, reports, and related high-cardinality tables) | ✅ **VERTICAL** |
-| **Auth** | Owns the 11 user-domain tables (`users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`) | ✅ **VERTICAL** |
+| **Auth** | Owns the 10 user-domain tables (`users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`) | ✅ **VERTICAL** |
 | **Knowledge** | Owns `knowledge_items` + `knowledge_suggestions` PostgreSQL tables + the unified `faultmaven_kb` ChromaDB collection | ✅ **VERTICAL** |
 | **Evidence** | Evidence table has FK to `cases` → part of Case module's schema | ❌ **DOMAIN SERVICE** |
 | **Agent** | No agent_* tables; `agent_tool_calls` is case audit data | ❌ **DOMAIN SERVICE** |
@@ -51,7 +51,7 @@ A module is **vertical** (business domain) if and only if it meets **ALL THREE**
 
 #### Criterion 1: Domain Data Ownership ✅
 - **Requirement**: Module owns database tables/entities that represent **business entities** (not just technical state)
-- **Test**: Does the module own one or more SQL tables for its core business entities (e.g., `cases`, `users`, `knowledge_items`)? Module-name prefixes are not required — semantic prefixes (`case_messages`, `oauth_revoked_tokens`) are used only to disambiguate sub-entities.
+- **Test**: Does the module own one or more SQL tables for its core business entities (e.g., `cases`, `users`, `knowledge_items`)? Module-name prefixes are not required — semantic prefixes (`case_messages`, `oauth_authorization_codes`) are used only to disambiguate sub-entities.
 - **Exclusion**: Technical state (sessions, caches, locks) does NOT count as domain data
 - **Stable**: Once a module owns domain data, this criterion remains true even if the schema evolves
 
@@ -98,7 +98,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 ### Example 1: `modules/auth/` - ✅ VERTICAL
 
 **Criterion 1: Domain Data Ownership** ✅
-- Owns tables: `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes` (session storage is in Redis/FakeRedis, not in a SQL table)
+- Owns tables: `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes` (session storage is in Redis/FakeRedis, not in a SQL table)
 - These represent business entities (users, organizations, RBAC), not technical state
 - **Result**: PASS
 

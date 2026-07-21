@@ -400,17 +400,18 @@ def create_share_repository() -> Any | None:
 
 
 def create_auth_service(
-    redis_client: Any | None,
+    revocation_store: Any | None,
     settings: FaultMavenSettings,
 ) -> Any:
     """Create authentication service for JWT token operations.
 
     Args:
-        redis_client: Redis client for token revocation tracking
+        revocation_store: The deployment-wide token revocation store (#767 —
+            the same instance every revoke path writes to)
         settings: Application settings
 
     Returns:
-        AuthService instance (with or without Redis depending on availability)
+        AuthService instance
     """
     try:
         from faultmaven.modules.auth.domain.services.auth_service import AuthService
@@ -424,22 +425,22 @@ def create_auth_service(
             public_key = settings.security.jwt_public_key
 
         service = AuthService(
-            redis_client=redis_client,
+            revocation_store=revocation_store,
             private_key=private_key,
             public_key=public_key,
         )
-        if redis_client:
+        if revocation_store:
             logger.info(
-                "✅ AuthService initialized with Redis (token revocation enabled)"
+                "✅ AuthService initialized with revocation store (token revocation enabled)"
             )
         else:
             logger.info(
-                "✅ AuthService initialized without Redis (token revocation disabled)"
+                "✅ AuthService initialized without revocation store (token revocation disabled)"
             )
         return service
     except Exception as e:
         logger.warning(f"AuthService initialization failed: {e}")
-        # Return a minimal AuthService without Redis
+        # Return a minimal AuthService without a revocation store
         from faultmaven.modules.auth.domain.services.auth_service import AuthService
 
         return AuthService()
@@ -625,9 +626,11 @@ def create_token_revocation_store(
     settings: FaultMavenSettings,
     cache_client: Any = None,
 ) -> Any:
-    """Create token revocation store backed by Redis (real or FakeRedis).
+    """Create the deployment-wide token revocation store (real or FakeRedis).
 
-    Revoked tokens are tracked with TTL (matching token expiration).
+    Revoked tokens are tracked with TTL (matching token expiration). This is
+    the SINGLE revocation store (#767): every revoke path writes to it and the
+    request-path check reads from it, all under one key prefix.
 
     Args:
         settings: FaultMavenSettings instance
@@ -640,7 +643,10 @@ def create_token_revocation_store(
         RedisTokenRevocationStore,
     )
 
-    return RedisTokenRevocationStore(cache_client)
+    return RedisTokenRevocationStore(
+        cache_client,
+        key_prefix=settings.security.token_revocation_prefix,
+    )
 
 
 def create_jwt_token_generator(
@@ -816,8 +822,18 @@ def register_services(container: BaseDIContainer) -> None:
     knowledge_ingester = getattr(container, "knowledge_ingester", None)
     redis_client = getattr(container, "redis_client", None)
 
-    # Auth Service (JWT token operations with optional Redis for revocation)
-    auth_service = create_auth_service(redis_client, settings)
+    # Token revocation store — created unconditionally (#767): both auth modes
+    # revoke tokens (OAuth /revoke, refresh rotation, logout), and the
+    # request-path check in AuthService must read the same store instance.
+    token_revocation_store = create_token_revocation_store(
+        settings,
+        cache_client=redis_client,
+    )
+    container.token_revocation_store = token_revocation_store
+    container._register_service("token_revocation_store", token_revocation_store)
+
+    # Auth Service (JWT token operations; revocation via the shared store)
+    auth_service = create_auth_service(token_revocation_store, settings)
     container.auth_service = auth_service
     container._register_service("auth_service", auth_service)
 
@@ -839,15 +855,8 @@ def register_services(container: BaseDIContainer) -> None:
         container.oauth_code_repository = oauth_code_repository
         container._register_service("oauth_code_repository", oauth_code_repository)
 
-        # Create token revocation store (cache layer only)
-        token_revocation_store = create_token_revocation_store(
-            settings,
-            cache_client=redis_client,
-        )
-        container.token_revocation_store = token_revocation_store
-        container._register_service("token_revocation_store", token_revocation_store)
-
-        # Create JWT token generator
+        # Create JWT token generator (shares the deployment-wide revocation
+        # store, so tokens revoked here are seen by the request-path check)
         jwt_token_generator = create_jwt_token_generator(
             settings,
             revocation_store=token_revocation_store,

@@ -561,5 +561,12 @@ async def revoke(
 
     except Exception as e:
         logger.error(f"Token revocation error: {e}")
-        # Per RFC 7009, don't leak information about token validity
-        return {}
+        # Invalid/unknown tokens are already treated as success inside the
+        # generator (RFC 7009), so an exception here means the revocation was
+        # NOT recorded (e.g. store outage). Surface it (RFC 7009 §2.2.1
+        # permits 503) so the client retries instead of believing the token
+        # is dead.
+        raise HTTPException(
+            status_code=503,
+            detail="Token revocation temporarily unavailable. Please retry.",
+        )

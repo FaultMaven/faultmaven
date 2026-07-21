@@ -25,7 +25,7 @@ Wherever a DDL element in this document is Tier 2, it is marked inline with **"T
 
 **Tenancy context in Local Deployment**: In Local Deployment, `organizations` has exactly one row (`local-user-org`, created by the startup bootstrapper) and `organization_members` has exactly one entry (the default admin user). `teams` and `team_members` tables exist in both schemas (per the no-divergence rule) but remain empty in Local Deployment — team-management workflows are Cloud-only behavior. See the per-table applicability matrix in [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
 
-**OAuth tables** (`oauth_revoked_tokens`, `oauth_authorization_codes`): These tables exist in both schemas but are only populated when `AUTH_MODE=oauth` (Cloud Deployment). Local Deployment uses `AUTH_MODE=local` (HS256 JWT) and never writes to these tables. They are marked Cloud-only behavior in the per-table matrix.
+**OAuth tables** (`oauth_authorization_codes`): Exists in both schemas but is only populated when `AUTH_MODE=oauth` (Cloud Deployment). Local Deployment uses `AUTH_MODE=local` (HS256 JWT) and never writes to it. Marked Cloud-only behavior in the per-table matrix. Token *revocation* has no SQL table: revoked JTIs live in the deployment-wide Redis revocation store (migration 031 dropped the never-written `oauth_revoked_tokens` table — #767).
 
 **Session storage (v2.1)**: The SQL `sessions` table is **DELETED**. Auth sessions are Redis-only — see §5.3 below. There is no SQL session table in either deployment.
 
@@ -47,7 +47,7 @@ All user-domain tables, repositories, services, and API endpoints are implemente
 | ✅ Services | Live | `faultmaven/modules/auth/domain/services/` |
 | ✅ API endpoints | Live | `faultmaven/modules/auth/api/` (auth, oauth, organizations, teams, session) |
 
-**Tables delivered by the user domain** (11 total): `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`. Row-Level Security policies, seed roles/permissions, and the `user_has_org_permission()` helper are all installed by the baseline migration.
+**Tables delivered by the user domain** (10 total): `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`. Row-Level Security policies, seed roles/permissions, and the `user_has_org_permission()` helper are all installed by the baseline migration.
 
 ---
 
@@ -105,7 +105,6 @@ In development, the same SQLite-backed user store is used as in local deployment
 - `permissions` - Permission definitions
 - `role_permissions` - Role-permission mapping
 - `user_audit_log` - Security audit trail
-- `oauth_revoked_tokens` - Revoked OAuth tokens
 - `oauth_authorization_codes` - OAuth PKCE authorization codes
 
 ---
@@ -793,7 +792,7 @@ HAVING COUNT(*) > 5;
 - ✅ Multi-tenancy via `organizations` + `organization_members` + `teams`
 - ✅ Full RBAC via `roles`, `permissions`, `role_permissions`
 - ✅ Audit trail via `user_audit_log`
-- ✅ SSO via `sso_provider` / `sso_provider_id` columns; OAuth code flow via `oauth_authorization_codes` and `oauth_revoked_tokens`
+- ✅ SSO via `sso_provider` / `sso_provider_id` columns; OAuth code flow via `oauth_authorization_codes` (token revocation is Redis-only — #767)
 
 ---
 

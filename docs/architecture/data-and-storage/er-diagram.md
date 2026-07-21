@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-07-19 10:28 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-07-21 19:01 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**38 tables** in the schema.
+**37 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -34,7 +34,6 @@
 | `knowledge_items` | 28 | `item_id` | organizations, users |
 | `knowledge_suggestions` | 26 | `suggestion_id` | cases, knowledge_items, organizations, users |
 | `oauth_authorization_codes` | 7 | `code` | users |
-| `oauth_revoked_tokens` | 3 | `jti` | — |
 | `organization_members` | 9 | `user_id, organization_id` | organizations, roles, users |
 | `organizations` | 11 | `organization_id` | enterprises, users |
 | `permissions` | 4 | `permission_id` | — |
@@ -438,11 +437,6 @@ erDiagram
         DATETIME expires_at
         BOOLEAN used
         DATETIME created_at
-    }
-    oauth_revoked_tokens {
-        VARCHAR jti PK
-        DATETIME revoked_at
-        DATETIME expires_at
     }
     organization_members {
         VARCHAR user_id PK
