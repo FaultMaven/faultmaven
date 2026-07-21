@@ -409,15 +409,22 @@ class ICaseService(ABC):
     @abstractmethod
     async def list_user_cases(
         self, user_id: str, filters: Optional[CaseListFilter] = None
-    ) -> List[CaseSummary]:
-        """List cases for a user.
+    ) -> Tuple[List[CaseSummary], int]:
+        """List cases for a user (paginated).
+
+        Pagination (``limit``/``offset``) and ``include_empty`` from
+        ``filters`` are applied in the repository query, so the returned page
+        and the total count stay consistent.
 
         Args:
             user_id: User identifier
-            filters: Optional filter criteria
+            filters: Optional filter criteria (state, source, limit, offset,
+                include_empty, team_id)
 
         Returns:
-            List of user's cases
+            Tuple of (case summaries for the requested page, total match count).
+            The total is the full number of matches, NOT the page length — the
+            API layer uses it to compute ``has_more``.
         """
         pass
 

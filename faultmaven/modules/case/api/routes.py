@@ -801,8 +801,10 @@ async def list_cases(
             include_archived=include_archived,
         )
 
-        # Get case summaries (already converted by service)
-        case_summaries = await case_service.list_user_cases(
+        # Get case summaries (already converted by service). The service returns
+        # the page plus the repository's true total match count so pagination
+        # (total_count / has_more) is sound rather than derived from page length.
+        case_summaries, total_count = await case_service.list_user_cases(
             current_user.user_id, filters
         )
 
@@ -823,14 +825,16 @@ async def list_cases(
 
         case_summaries = validated_summaries
 
-        # Build response
-        total_count = len(case_summaries)  # TODO: Get actual total from repository
+        # Build response. total_count is the repository's true match count (all
+        # filters applied, before pagination); has_more is derived from the
+        # offset + this page's length against that total.
+        has_more = offset + len(case_summaries) < total_count
         list_response = CaseListResponse(
             cases=case_summaries,
             total_count=total_count,
             limit=limit,
             offset=offset,
-            has_more=len(case_summaries) == limit,
+            has_more=has_more,
         )
 
         # Set pagination headers

@@ -105,8 +105,14 @@ class ICaseRepository(Protocol):
         source: Optional[str] = None,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
+        include_empty: bool = True,
     ) -> tuple[List["Case"], int]:
         """List cases with optional filters.
+
+        ``include_empty`` gates empty cases (``current_turn == 0``): when
+        ``False`` the ``current_turn > 0`` predicate is applied in SQL so it
+        constrains BOTH the returned page and the total count (keeping the
+        page/total pagination contract sound).
 
         ``shared_case_ids`` widens the owner-only scope to
         ``owned ∪ shared-to-my-teams`` (ADR-013 §D4): case ids the requester can

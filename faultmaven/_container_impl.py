@@ -1346,10 +1346,13 @@ class DIContainer(BaseDIContainer):
                 if filters and hasattr(filters, "offset"):
                     offset = filters.offset
 
-                # Pagination
+                # Total match count is computed BEFORE pagination so it agrees
+                # with the returned page (mirrors CaseService.list_user_cases,
+                # which returns (page, total)).
+                total = len(user_cases)
                 paginated_cases = user_cases[offset : offset + limit]
 
-                return paginated_cases
+                return paginated_cases, total
 
             async def list_all_cases(self, filters=None):
                 """List all in-memory cases as summaries (admin cross-tenant read; degraded double).

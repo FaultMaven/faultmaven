@@ -1012,7 +1012,7 @@ def mock_case_service():
     service.get_case_messages = AsyncMock(return_value=[])
     service.resume_case_in_session = AsyncMock(return_value=False)
     service.archive_case = AsyncMock(return_value=False)
-    service.list_user_cases = AsyncMock(return_value=[])
+    service.list_user_cases = AsyncMock(return_value=([], 0))
     service.search_cases = AsyncMock(return_value=[])
     service.get_case_analytics = AsyncMock(return_value={})
     service.cleanup_expired_cases = AsyncMock(return_value=0)

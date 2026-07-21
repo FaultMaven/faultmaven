@@ -959,6 +959,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         source: Optional[str] = None,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
+        include_empty: bool = True,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters and pagination.
@@ -1009,6 +1010,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if source:
                 where_clauses.append("source = :source")
                 params["source"] = source
+
+            # Exclude empty cases (no conversation yet) when requested. Applied
+            # in SQL — not as a Python post-filter — so the same predicate
+            # constrains both the COUNT and the paginated SELECT, keeping the
+            # page/total contract sound (parity with the SQLite repository).
+            if not include_empty:
+                where_clauses.append("current_turn > 0")
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
