@@ -7,7 +7,10 @@ Verifies:
 4. App boot passes without scheduler threads (RUN_SCHEDULER=false)
 """
 
+import contextlib
 import os
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -197,6 +200,13 @@ class TestJobsRunner:
                 "faultmaven.config.settings.get_settings", return_value=mock_settings
             ),
             patch("faultmaven.container.container", mock_container),
+            patch(
+                "faultmaven.config.deployment_coherence.validate_deployment_coherence"
+            ),
+            patch(
+                "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+                return_value="single",
+            ),
         ):
             result = await run_job("case_cleanup", verbose=False)
 
@@ -275,3 +285,336 @@ class TestJobsWorkWithoutServer:
         # Just importing should not cause errors
         assert hasattr(faultmaven.jobs.case_cleanup, "run")
         assert hasattr(faultmaven.jobs.run, "main")
+
+
+# =============================================================================
+# Tenant-scope gates on the jobs path (ADR-010 P3, issue #629)
+# =============================================================================
+
+FAKE_JOB_MODULE = "tests_fake_job_module_p3"
+
+
+@contextlib.contextmanager
+def _fake_job(tenant_scope, mock_container, mock_settings, provider="multi"):
+    """Register a fake job module and patch the runner's boot gates.
+
+    Yields (job_run_mock, rls_guard_mock, set_org_mock).
+    """
+    module = types.ModuleType(FAKE_JOB_MODULE)
+    module.run = AsyncMock(return_value={"status": "completed"})
+    if tenant_scope is not None:
+        module.JOB_TENANT_SCOPE = tenant_scope
+    sys.modules[FAKE_JOB_MODULE] = module
+
+    rls_guard = AsyncMock()
+    set_org = MagicMock()
+    try:
+        with (
+            patch(
+                "faultmaven.config.settings.get_settings", return_value=mock_settings
+            ),
+            patch("faultmaven.container.container", mock_container),
+            patch(
+                "faultmaven.config.deployment_coherence.validate_deployment_coherence"
+            ),
+            patch(
+                "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+                return_value=provider,
+            ),
+            patch(
+                "faultmaven.infrastructure.persistence.rls_role_guard"
+                ".assert_app_db_role_enforces_rls",
+                rls_guard,
+            ),
+            patch("faultmaven.config.tenant_context.set_current_org_id", set_org),
+            patch.dict(
+                "faultmaven.jobs.run.AVAILABLE_JOBS",
+                {"fake_job": FAKE_JOB_MODULE},
+            ),
+        ):
+            yield module.run, rls_guard, set_org
+    finally:
+        sys.modules.pop(FAKE_JOB_MODULE, None)
+
+
+class TestJobTenantScopeGates:
+    """The runner enforces each job's declared tenant scope (ADR-010 P3)."""
+
+    @pytest.mark.asyncio
+    async def test_cross_tenant_job_refused_under_multi(
+        self, mock_container, mock_settings
+    ):
+        """A cross_tenant job must fail closed under multi: the RLS-scoped role
+        sees a partial case-id view, which would delete other tenants' data."""
+        from faultmaven.jobs.run import JobTenantScopeError, run_job
+
+        with _fake_job("cross_tenant", mock_container, mock_settings) as (
+            job_run,
+            _,
+            _set_org,
+        ):
+            with pytest.raises(JobTenantScopeError):
+                await run_job("fake_job")
+
+        job_run.assert_not_called()
+        # Refusal happens before any heavy initialization.
+        mock_container.initialize.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_org_job_requires_explicit_org_under_multi(
+        self, mock_container, mock_settings
+    ):
+        """An org-scoped job without --organization-id fails closed under multi
+        (the contextvar default is the never-seeded Standalone org)."""
+        from faultmaven.jobs.run import JobTenantScopeError, run_job
+
+        with _fake_job("org", mock_container, mock_settings) as (job_run, _, _set_org):
+            with pytest.raises(JobTenantScopeError):
+                await run_job("fake_job")
+
+        job_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_org_job_binds_tenant_context_under_multi(
+        self, mock_container, mock_settings
+    ):
+        """An org-scoped job with an explicit org binds the tenant contextvar
+        before running, so every DB transaction is RLS-scoped to that org."""
+        from faultmaven.jobs.run import run_job
+
+        with _fake_job("org", mock_container, mock_settings) as (
+            job_run,
+            rls_guard,
+            set_org,
+        ):
+            # The binding must happen BEFORE the job executes — a run with the
+            # contextvar still at its default is exactly the P3 hole.
+            def _assert_bound_then_complete(**kwargs):
+                assert (
+                    set_org.called
+                ), "tenant context must be bound before the job runs"
+                return {"status": "completed"}
+
+            job_run.side_effect = _assert_bound_then_complete
+
+            result = await run_job("fake_job", organization_id="org_alpha")
+
+        assert result["status"] == "completed"
+        set_org.assert_called_once_with("org_alpha")
+        rls_guard.assert_awaited_once_with(is_multi_tenant=True)
+        job_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_tenant_neutral_job_runs_under_multi_without_org(
+        self, mock_container, mock_settings
+    ):
+        """A tenant-neutral job (no tenanted DB access) runs under multi with
+        no org binding."""
+        from faultmaven.jobs.run import run_job
+
+        with _fake_job("tenant_neutral", mock_container, mock_settings) as (
+            job_run,
+            _,
+            set_org,
+        ):
+            result = await run_job("fake_job")
+
+        assert result["status"] == "completed"
+        set_org.assert_not_called()
+        job_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_undeclared_scope_fails_closed_under_multi(
+        self, mock_container, mock_settings
+    ):
+        """A job with no JOB_TENANT_SCOPE declaration cannot run under multi."""
+        from faultmaven.jobs.run import JobTenantScopeError, run_job
+
+        with _fake_job(None, mock_container, mock_settings) as (job_run, _, _set_org):
+            with pytest.raises(JobTenantScopeError):
+                await run_job("fake_job")
+
+        job_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_undeclared_scope_still_runs_single_tenant(
+        self, mock_container, mock_settings
+    ):
+        """Single-tenant behavior is unchanged: the Standalone contextvar
+        default scopes correctly, no declaration required."""
+        from faultmaven.jobs.run import run_job
+
+        with _fake_job(None, mock_container, mock_settings, provider="single") as (
+            job_run,
+            _,
+            set_org,
+        ):
+            result = await run_job("fake_job")
+
+        assert result["status"] == "completed"
+        set_org.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalid_scope_declaration_rejected_in_any_mode(
+        self, mock_container, mock_settings
+    ):
+        """A typo'd JOB_TENANT_SCOPE fails loudly even in single-tenant, so a
+        bad declaration is caught long before a multi deployment runs it."""
+        from faultmaven.jobs.run import JobTenantScopeError, run_job
+
+        with _fake_job("per-org", mock_container, mock_settings, provider="single") as (
+            job_run,
+            _,
+            _set_org,
+        ):
+            with pytest.raises(JobTenantScopeError):
+                await run_job("fake_job")
+
+        job_run.assert_not_called()
+
+    def test_real_job_modules_declare_valid_scopes(self):
+        """Every registered job declares a scope the runner recognizes."""
+        import importlib
+
+        from faultmaven.jobs.run import _VALID_TENANT_SCOPES, AVAILABLE_JOBS
+
+        for job_name, module_path in AVAILABLE_JOBS.items():
+            module = importlib.import_module(module_path)
+            scope = getattr(module, "JOB_TENANT_SCOPE", None)
+            assert scope in _VALID_TENANT_SCOPES, (
+                f"Job '{job_name}' ({module_path}) must declare a valid "
+                f"JOB_TENANT_SCOPE, got {scope!r}"
+            )
+
+    def test_case_cleanup_is_cross_tenant(self):
+        """case_cleanup diffs the DB case-id set against non-partitioned
+        ChromaDB collections — it must stay cross_tenant scoped."""
+        from faultmaven.jobs import case_cleanup
+
+        assert case_cleanup.JOB_TENANT_SCOPE == "cross_tenant"
+
+    def test_storage_cleanup_is_tenant_neutral(self):
+        """storage_cleanup is a sidecar-driven filesystem sweep with no
+        tenanted DB reads."""
+        from faultmaven.modules.agent.jobs import storage_cleanup
+
+        assert storage_cleanup.JOB_TENANT_SCOPE == "tenant_neutral"
+
+
+class TestJobsPathBootGates:
+    """The jobs path runs the same boot gates as the web lifespan."""
+
+    @pytest.mark.asyncio
+    async def test_coherence_gate_failure_is_terminal(
+        self, mock_container, mock_settings
+    ):
+        """An incoherent deployment config refuses the job (not a warning)."""
+        from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+        from faultmaven.jobs.run import run_job
+
+        with (
+            patch(
+                "faultmaven.config.settings.get_settings", return_value=mock_settings
+            ),
+            patch("faultmaven.container.container", mock_container),
+            patch(
+                "faultmaven.config.deployment_coherence.validate_deployment_coherence",
+                side_effect=DeploymentCoherenceError("incoherent"),
+            ),
+        ):
+            with pytest.raises(DeploymentCoherenceError):
+                await run_job("case_cleanup")
+
+        mock_container.initialize.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rls_role_guard_failure_is_terminal(
+        self, mock_container, mock_settings
+    ):
+        """A multi-tenant job with an RLS-exempt DB role refuses to run."""
+        from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+        from faultmaven.jobs.run import run_job
+
+        with _fake_job("tenant_neutral", mock_container, mock_settings) as (
+            job_run,
+            rls_guard,
+            _set_org,
+        ):
+            rls_guard.side_effect = DeploymentCoherenceError("role is RLS-exempt")
+            with pytest.raises(DeploymentCoherenceError):
+                await run_job("fake_job")
+
+        job_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_container_init_runtime_error_is_terminal(
+        self, mock_container, mock_settings
+    ):
+        """The container's production fail-fast (RuntimeError) refuses the job
+        instead of degrading to a half-initialized 'skipped' run (exit 0)."""
+        from faultmaven.jobs.run import run_job
+
+        mock_container.initialize.side_effect = RuntimeError(
+            "Container initialization failed in production"
+        )
+        with _fake_job(
+            "tenant_neutral", mock_container, mock_settings, provider="single"
+        ) as (job_run, _, _set_org):
+            with pytest.raises(RuntimeError):
+                await run_job("fake_job")
+
+        job_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rls_guard_noop_single_tenant(self, mock_container, mock_settings):
+        """Single-tenant jobs pass the guard without touching the DB (the
+        guard short-circuits on is_multi_tenant=False)."""
+        from faultmaven.jobs.run import run_job
+
+        with _fake_job("cross_tenant", mock_container, mock_settings, "single") as (
+            job_run,
+            rls_guard,
+            _set_org,
+        ):
+            result = await run_job("fake_job")
+
+        assert result["status"] == "completed"
+        rls_guard.assert_awaited_once_with(is_multi_tenant=False)
+
+
+class TestSchedulerMultiTenantGate:
+    """The in-process cleanup scheduler is refused under multi (same hazard)."""
+
+    def test_scheduler_refused_under_multi(self):
+        from faultmaven.infrastructure.tasks.case_cleanup import (
+            start_case_cleanup_scheduler,
+        )
+
+        with patch(
+            "faultmaven.infrastructure.tasks.case_cleanup.BackgroundScheduler"
+        ) as scheduler_cls:
+            result = start_case_cleanup_scheduler(
+                case_vector_store=MagicMock(),
+                case_store=MagicMock(),
+                is_multi_tenant=True,
+            )
+
+        assert result is None
+        scheduler_cls.assert_not_called()
+
+    def test_scheduler_starts_single_tenant(self):
+        from faultmaven.infrastructure.tasks.case_cleanup import (
+            start_case_cleanup_scheduler,
+        )
+
+        with patch(
+            "faultmaven.infrastructure.tasks.case_cleanup.BackgroundScheduler"
+        ) as scheduler_cls:
+            result = start_case_cleanup_scheduler(
+                case_vector_store=MagicMock(),
+                case_store=MagicMock(),
+                is_multi_tenant=False,
+            )
+
+        assert result is scheduler_cls.return_value
+        scheduler_cls.return_value.start.assert_called_once()

@@ -8,6 +8,12 @@ Usage:
 
 An "orphaned" collection is one that doesn't have a corresponding active case.
 This is a safety net for collections that weren't properly deleted when cases closed.
+
+Tenant scope: **cross_tenant**. ChromaDB collections are not org-partitioned, so
+"orphaned" is only decidable against the case-id set of ALL organizations; a
+partial (single-org) view would classify every other tenant's collections as
+orphaned and delete them. Under the multi-tenant provider the runner therefore
+refuses to run this job (see faultmaven.jobs.run, ADR-010 P3 / issue #629).
 """
 
 import logging
@@ -103,3 +109,6 @@ async def run(
 # Job metadata for CLI discovery
 JOB_NAME = "case_cleanup"
 JOB_DESCRIPTION = "Clean up orphaned case collections from vector store"
+# Needs the case-id set of ALL orgs (collections are not org-partitioned);
+# the runner refuses to run this under the multi-tenant provider.
+JOB_TENANT_SCOPE = "cross_tenant"

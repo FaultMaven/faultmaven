@@ -739,15 +739,27 @@ async def lifespan(app: FastAPI):
             case_vector_store = getattr(container, "case_vector_store", None)
             case_store = getattr(container, "case_store", None)
             if case_vector_store and case_store:
+                # The cleanup task is cross-tenant scoped; the scheduler refuses
+                # to start under the multi-tenant provider (ADR-010 P3, #629).
+                # Self-contained import: the earlier factory import sits inside
+                # the bootstrap try-block, which a degraded (non-production)
+                # startup can skip past.
+                from .providers.tenancy.factory import (
+                    BUILTIN_MULTI,
+                    requested_tenant_provider,
+                )
+
                 case_cleanup_scheduler = start_case_cleanup_scheduler(
                     case_vector_store=case_vector_store,
                     case_store=case_store,
                     interval_hours=6,  # Run cleanup every 6 hours
+                    is_multi_tenant=(requested_tenant_provider() == BUILTIN_MULTI),
                 )
-                logger.info(
-                    "✅ Case cleanup scheduler started (RUN_SCHEDULER=true, single-process mode)"
-                )
-                app.extra["case_cleanup_scheduler"] = case_cleanup_scheduler
+                if case_cleanup_scheduler:
+                    logger.info(
+                        "✅ Case cleanup scheduler started (RUN_SCHEDULER=true, single-process mode)"
+                    )
+                    app.extra["case_cleanup_scheduler"] = case_cleanup_scheduler
             else:
                 logger.debug(
                     "Case cleanup scheduler skipped (missing case_vector_store or case_store)"
