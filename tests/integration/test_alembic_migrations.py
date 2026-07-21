@@ -27,7 +27,11 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "e1f2a3b4c5d6"  # current head (029 — seed RBAC roles/permissions)
+HEAD_REVISION = "f2a3b4c5d6e7"  # current head (030 — team_members RLS policy)
+# Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
+# (029) regardless of no-op migrations stacked above it — more robust than a
+# relative "downgrade -1", which follows whatever the current head is.
+RBAC_SEED_PARENT_REVISION = "d0e1f2a3b4c5"  # 028 — polymorphic resource_shares
 
 
 @pytest.fixture(scope="function")
@@ -332,8 +336,10 @@ class TestRbacSeed:
         run_alembic("upgrade head", database_url)
         assert len(query_rows(TEST_DB, "SELECT role_id FROM roles")) == 3
 
-        # Step back over 029 only (tables remain; seed rows are deleted).
-        result = run_alembic("downgrade -1", database_url)
+        # Step back to before 029 (tables remain; seed rows are deleted). Target
+        # 029's parent explicitly so later no-op migrations (e.g. 030 RLS) don't
+        # shift what a relative "downgrade -1" would reverse.
+        result = run_alembic(f"downgrade {RBAC_SEED_PARENT_REVISION}", database_url)
         assert result.returncode == 0, f"downgrade failed: {result.stderr}"
         assert query_rows(TEST_DB, "SELECT role_id FROM roles") == []
         assert query_rows(TEST_DB, "SELECT permission_id FROM permissions") == []

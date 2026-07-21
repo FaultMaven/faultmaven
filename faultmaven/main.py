@@ -417,6 +417,24 @@ async def lifespan(app: FastAPI):
             # A broken bootstrap means DB or critical directories are missing.
             raise RuntimeError(f"Critical bootstrap failure: {e}") from e
 
+        # Multi-tenant hard gate: refuse to serve if the app's PostgreSQL role is
+        # exempt from RLS. Superusers and table owners bypass row-level security,
+        # so a misprovisioned role would silently defeat tenant isolation (the
+        # policies from migrations 018/023/030 become no-ops). Runs after
+        # bootstrap so the DB + RLS policies are guaranteed present; no-op in
+        # single-tenant mode and on SQLite.
+        from .infrastructure.persistence.rls_role_guard import (
+            assert_app_db_role_enforces_rls,
+        )
+        from .providers.tenancy.factory import (
+            BUILTIN_MULTI,
+            requested_tenant_provider,
+        )
+
+        await assert_app_db_role_enforces_rls(
+            is_multi_tenant=(requested_tenant_provider() == BUILTIN_MULTI)
+        )
+
         # ============================================================
         # Composition Root: Attach all services to app.state
         # ============================================================
