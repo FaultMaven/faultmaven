@@ -628,6 +628,10 @@ async def refresh_tokens(
         await jwt_generator.revoke_refresh_token(request_body.refresh_token)
 
         response.headers["X-Correlation-Id"] = correlation_id
+        # Token response: no-store per RFC 6749 §5.1 (same convention as the
+        # SSO exchange endpoint — the body carries fresh credentials).
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
         logger.info(
             f"Token refreshed for user {user.user_id} (correlation: {correlation_id})"
         )

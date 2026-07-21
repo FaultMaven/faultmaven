@@ -151,6 +151,9 @@ async def test_oauth_refresh_returns_new_pair_and_rotates():
     assert result.token_type == "bearer"
     assert result.expires_in == 60 * 60
 
+    # Token response must not be cached (RFC 6749 §5.1).
+    assert response.headers["Cache-Control"] == "no-store"
+
     # New pair validates under the RS256 generator that issued it.
     assert await generator.validate_access_token(result.access_token) is not None
     assert await generator.validate_refresh_token(result.refresh_token) is not None
