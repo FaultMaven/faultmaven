@@ -405,23 +405,23 @@ class TestAuthorizationEnforcement:
 
 
 # ============================================================
-# Organization Scoping (single-tenant CE — reads are NOT org-isolated)
+# Organization Scoping (single-tenant standalone — reads are NOT org-isolated)
 # ============================================================
 
 
-class TestOrganizationScopingCE:
-    """CE is single-tenant: list/statistics do NOT isolate by organization.
+class TestOrganizationScopingStandalone:
+    """Standalone is single-tenant: list/statistics do NOT isolate by org.
 
-    Per ADR-006 the ``organization_id`` argument is retained but does not
-    scope reads in the Community Edition — multi-tenant isolation is enforced
-    by PostgreSQL RLS in faultmaven-cloud, not by CE per-query filters. These
-    tests pin that CE behavior so the org-filter removal cannot silently
+    Per ADR-010 the ``organization_id`` argument is retained but does not
+    scope reads at the repository layer — multi-tenant isolation is enforced
+    by in-core PostgreSQL RLS (migration 018), not by per-query filters.
+    These tests pin that behavior so the org-filter removal cannot silently
     regress back to per-org scoping.
     """
 
     @pytest.mark.asyncio
-    async def test_list_cases_not_isolated_by_org_in_ce(self, case_service):
-        """list_cases returns all cases regardless of the org passed (single-tenant CE)."""
+    async def test_list_cases_not_isolated_by_org_per_query(self, case_service):
+        """list_cases returns all cases regardless of the org passed (single-tenant)."""
         org_a = create_test_org_id()
         org_b = create_test_org_id()
         user_id = create_test_user_id()
@@ -446,15 +446,16 @@ class TestOrganizationScopingCE:
                 severity=CaseSeverity.LOW,
             )
 
-        # CE does not scope by org: all 5 cases are returned regardless of the
-        # org argument (ADR-006 — isolation is cloud RLS, not CE filters).
+        # The repository does not scope by org: all 5 cases are returned
+        # regardless of the org argument (ADR-010 — isolation is RLS, not
+        # per-query filters).
         all_cases = await case_service.list_cases(org_a)
         assert len(all_cases) == 5
         assert {case.organization_id for case in all_cases} == {org_a, org_b}
 
     @pytest.mark.asyncio
     async def test_statistics_not_isolated_by_org_in_ce(self, case_service):
-        """get_case_statistics aggregates all cases regardless of org (single-tenant CE)."""
+        """get_case_statistics aggregates all cases regardless of org (single-tenant)."""
         org_a = create_test_org_id()
         org_b = create_test_org_id()
         user_id = create_test_user_id()
@@ -479,8 +480,8 @@ class TestOrganizationScopingCE:
                 severity=CaseSeverity.LOW,
             )
 
-        # CE statistics are not org-scoped: both calls count all 8 cases
-        # (ADR-006 — isolation is cloud RLS, not CE filters).
+        # Statistics are not org-scoped per-query: both calls count all 8
+        # cases (ADR-010 — isolation is RLS, not per-query filters).
         stats_a = await case_service.get_case_statistics(org_a)
         stats_b = await case_service.get_case_statistics(org_b)
 

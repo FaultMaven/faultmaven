@@ -41,10 +41,9 @@ def create_tracer(settings: FaultMavenSettings) -> Any:
 def create_llm_provider(settings: FaultMavenSettings | None = None) -> Any:
     """Create LLM provider/router.
 
-    Defaults to the OSS LLMRouter. Override via LLM_ROUTER_CLASS env var
-    pointing to a dotted path (e.g.
-    ``faultmaven_cloud.providers.tenant_llm_router.MultiTenantLLMRouter``)
-    for cloud deployments that need tenant-aware routing.
+    Defaults to the core LLMRouter. Override via LLM_ROUTER_CLASS env var
+    pointing to a dotted path for deployments that need a custom router
+    (e.g. tenant-aware routing — a core concern when built, ADR-010 D4).
 
     The replacement class must satisfy ``ILLMProvider`` and accept zero
     constructor arguments (or have all-optional kwargs).

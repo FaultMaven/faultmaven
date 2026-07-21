@@ -271,11 +271,11 @@ def create_knowledge_service(
 def create_organization_repository() -> Any | None:
     """Create the sessionless organization repository.
 
-    CE keeps only the organization *repository* (the substrate the tenant
-    factory + SingleTenantProvider need to resolve/stamp the implicit default
-    org). Organization *management* (OrganizationService + routes) is a cloud
-    collaboration feature and lives in faultmaven-cloud (ADR-006), so CE no
-    longer constructs a service here.
+    The core keeps only the organization *repository* (the substrate the
+    tenant factory + SingleTenantProvider need to resolve/stamp the implicit
+    default org). Organization *management* (OrganizationService + routes) is
+    the hosted admin composed module (ADR-010 D4), so the core does not
+    construct a service here.
     """
     try:
         from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
@@ -297,9 +297,9 @@ def create_enterprise_repository() -> Any | None:
     """Create the sessionless enterprise repository.
 
     Mirrors create_organization_repository (repository only). There is no
-    EnterpriseService — enterprise CRUD is bootstrap-only in CE
-    (single-tenant default-enterprise seeding); multi-tenant enterprise
-    management is a faultmaven-cloud concern (ADR-006).
+    EnterpriseService — enterprise CRUD in the core is bootstrap-only
+    (single-tenant default-enterprise seeding); enterprise management is the
+    hosted admin composed module (ADR-010 D4).
     """
     try:
         from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
@@ -323,8 +323,8 @@ def create_team_repository() -> Any | None:
     Mirrors create_organization_repository (repository only). The core ships the
     team repository *substrate* — used by the single-tenant default-team
     bootstrap and by KB team-scope resolution (TeamService). Team *management*
-    (create/invite from a UI) is a Cloud collaboration feature and drives the
-    same repository from faultmaven-cloud (ADR-006 / ADR-013).
+    (create/invite from a UI) is the hosted admin composed module, which drives
+    the same repository (ADR-010 D4 / ADR-013).
     """
     try:
         from faultmaven.infrastructure.persistence.sessionless_team_repository import (
@@ -889,8 +889,8 @@ def register_services(container: BaseDIContainer) -> None:
 
     # Organization Repository (create before TenantProvider, which resolves the
     # implicit org through it via constructor injection below). Org/team
-    # *management* lives in faultmaven-cloud (ADR-006); CE keeps only the
-    # repository substrate.
+    # *management* is the hosted admin composed module (ADR-010 D4); the core
+    # keeps only the repository substrate.
     organization_repository = create_organization_repository()
 
     # Enterprise Repository (create before TenantProvider; SingleTenantProvider

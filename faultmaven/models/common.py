@@ -56,7 +56,7 @@ class SessionContext(BaseModel):
     )
     organization_id: str = Field(
         default=STANDALONE_ORG_ID,
-        description="Implicit single-tenant org; multi-tenant isolation is RLS in cloud (ADR-006)",
+        description="Implicit single-tenant org; multi-tenant isolation is in-core PostgreSQL RLS (ADR-010)",
     )
 
     # Multi-device support fields (spec lines 263-269)

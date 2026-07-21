@@ -100,7 +100,7 @@ def test_docker_compose_services():
         except:
             services_status["redis"] = False
     else:
-        services_status["redis"] = False  # Redis not available in community edition
+        services_status["redis"] = False  # Redis runs in-process in standalone
 
     # Test PostgreSQL
     try:

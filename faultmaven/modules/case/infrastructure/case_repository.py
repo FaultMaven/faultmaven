@@ -108,7 +108,8 @@ class CaseRepository(ABC):
         Args:
             user_id: Filter by user
             organization_id: Retained for interface symmetry; does NOT scope
-                reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
+                reads (single-tenant standalone; multi-tenant isolation is
+                PostgreSQL RLS, ADR-010)
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
@@ -340,7 +341,8 @@ class CaseRepository(ABC):
             query: Search query
             user_id: Filter by user
             organization_id: Retained for interface symmetry; does NOT scope
-                reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
+                reads (single-tenant standalone; multi-tenant isolation is
+                PostgreSQL RLS, ADR-010)
             limit: Maximum results
             shared_case_ids: Case ids the requester can read via a team share
                 (ADR-013 §D4). Widens the owner-only scope to
@@ -845,8 +847,9 @@ class InMemoryCaseRepository(CaseRepository):
             restrict = set(restrict_case_ids)
             filtered = [c for c in filtered if c.case_id in restrict]
 
-        # No org filter: standalone is single-tenant; cloud isolation is RLS
-        # (ADR-006). organization_id param retained for interface symmetry.
+        # No org filter: standalone is single-tenant; multi-tenant isolation
+        # is PostgreSQL RLS (ADR-010). organization_id param retained for
+        # interface symmetry.
 
         if state:
             filtered = [c for c in filtered if c.state == state]
@@ -1056,8 +1059,9 @@ class InMemoryCaseRepository(CaseRepository):
                 if restrict is not None and case.case_id not in restrict:
                     continue
 
-                # No org filter: single-tenant standalone; cloud isolation is
-                # RLS (ADR-006). organization_id param retained for symmetry.
+                # No org filter: single-tenant standalone; multi-tenant
+                # isolation is PostgreSQL RLS (ADR-010). organization_id param
+                # retained for symmetry.
 
                 filtered.append(case)
 

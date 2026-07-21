@@ -12,6 +12,22 @@ Features:
 - Pagination support
 - Support for both in-memory and database backends
 
+Tenancy posture: unlike the case repositories (whose reads ignore the org
+param and rely on PostgreSQL RLS alone, ADR-010), knowledge queries
+deliberately keep their per-query ``organization_id`` predicates alongside
+the scope-visibility clauses — defense-in-depth on top of RLS for the
+org-owned tiers (personal | team, ADR-011/ADR-013). Do NOT remove them by
+analogy with the case module. Global-tier rows are the platform corpus
+(seeded into the single-tenant default org), so under ``TENANT_PROVIDER=multi``
+they are invisible to these SQL read paths (inventory / list / fulltext)
+and to the RLS policy — cross-tenant global visibility is the platform-tier
+read exemption tracked in issue #770. The vector QA path is different: it is
+org-free by design (``build_kb_scope_filter`` = ``global ∪ owner ∪ team-share
+allowlist``, owner ids globally unique, share ids resolved from RLS-scoped
+SQL) and serves chunk content straight from ChromaDB, so any global chunks
+that exist ARE retrievable by every tenant — which is why #770 also gates
+global authoring/seeding on the platform operator.
+
 Usage:
     from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
         DatabaseKnowledgeItemRepository,

@@ -247,8 +247,8 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> tuple[list[Case], int]:
         """List cases (filtered by user_id/state).
 
-        organization_id is forwarded but does NOT scope reads in CE — tenant
-        isolation is cloud RLS (ADR-006); see the underlying repositories.
+        organization_id is forwarded but does NOT scope reads — multi-tenant
+        isolation is PostgreSQL RLS (ADR-010); see the underlying repositories.
         ``shared_case_ids`` widens owner-only scope to ``owned ∪ shared`` (§D4);
         ``restrict_case_ids`` narrows to one team's shares (filter-by-team).
         """
@@ -277,8 +277,8 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> tuple[builtins.list[Case], int]:
         """Search cases by text query (scoped by user_id).
 
-        organization_id is forwarded but does NOT scope reads in CE — tenant
-        isolation is cloud RLS (ADR-006); see the underlying repositories.
+        organization_id is forwarded but does NOT scope reads — multi-tenant
+        isolation is PostgreSQL RLS (ADR-010); see the underlying repositories.
         ``shared_case_ids`` widens owner-only scope to ``owned ∪ shared`` (§D4);
         ``restrict_case_ids`` narrows to one team's shares (filter-by-team).
         """
