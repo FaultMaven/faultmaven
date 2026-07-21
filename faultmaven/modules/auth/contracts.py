@@ -146,6 +146,16 @@ class IUserRepository(Protocol):
         """Retrieve user by email."""
         ...
 
+    async def get_by_sso(self, provider: str, provider_id: str) -> Optional["User"]:
+        """Retrieve user by external SSO subject (provider + provider_id).
+
+        Returns the user linked to this IdP subject, or None if no user is
+        linked. The (provider, provider_id) pair is unique (users_sso_unique).
+        Returns None if either argument is empty — a password user has NULL sso
+        fields and must never resolve from an empty subject.
+        """
+        ...
+
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List["User"], int]:
         """List users with pagination."""
         ...
