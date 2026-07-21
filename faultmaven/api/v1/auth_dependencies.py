@@ -32,6 +32,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer
 
 from faultmaven.config.settings import get_settings
+from faultmaven.config.tenant_context import get_current_org_id
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
 # Initialize logger and security scheme
@@ -249,6 +250,25 @@ async def get_current_user_optional(
         )
 
         # Extract user information from JWT claims
+        #
+        # organization_id is sourced from the request-scoped tenant contextvar, NOT
+        # the raw ``organization_id`` JWT claim. This keeps ``DevUser.organization_id``
+        # definitionally equal to the org PostgreSQL RLS is enforcing for this request
+        # (both read ``config.tenant_context``), so this object can never be a source
+        # of tenant mis-scoping. The global ``bind_request_org_context`` dependency
+        # (ADR-010 P2b) runs before this path dependency and has already resolved the
+        # contextvar: forced to the Standalone org under single-tenant (ignoring any
+        # injected claim — the re-leak guard), or the verified claim under multi-tenant
+        # (having failed the request closed if that claim was missing).
+        #
+        # Sourcing the raw claim here instead would silently mask a missing claim to
+        # the Standalone org (via ``DevUser.__post_init__``), and let a forged org
+        # diverge from the RLS-scoped org. Live readers of this field (the knowledge
+        # suggestions listing and conversion-job org-stamping, which take the
+        # ``DevUser`` from this dependency) were therefore mis-scoping to Standalone
+        # under multi-tenant; this corrects them. The agent/sessions/admin scoping
+        # paths are unaffected — they read ``AuthenticatedUser`` (api/middleware/auth)
+        # and the report path reads the contextvar directly (P2c).
         user = DevUser(
             user_id=claims["sub"],
             username=claims.get("username", ""),
@@ -258,6 +278,7 @@ async def get_current_user_optional(
             is_dev_user=claims.get("auth_mode") == "local",  # Local mode = dev user
             is_active=True,
             roles=claims.get("roles", ["user"]),
+            organization_id=get_current_org_id(),
         )
 
         logger.debug(
