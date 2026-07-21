@@ -456,6 +456,10 @@ async def lifespan(app: FastAPI):
         # SSO hosted-login orchestration (ADR-015). None unless WorkOS is fully
         # configured in oauth mode; the SSO router only mounts in that case.
         app.state.sso_login_service = container.get_service("sso_login_service")
+        # RS256 token generator for oauth-mode /auth/refresh (ADR-015 D6).
+        # None in local mode, where refresh builds its HS256 generator per
+        # request instead.
+        app.state.jwt_token_generator = container.get_service("jwt_token_generator")
 
         # Shared Redis client (real Redis in cloud, FakeRedis in standalone).
         # Single source of truth for Redis-dependent middleware (deduplication,

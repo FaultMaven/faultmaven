@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
+from faultmaven.config.settings import AuthMode
 from faultmaven.modules.auth.api import auth as auth_routes
 from faultmaven.modules.auth.domain.models.api_auth import TokenRefreshRequest
 from faultmaven.modules.auth.domain.models.auth import DevUser
@@ -89,7 +90,10 @@ def _fake_request(user_store, token_manager):
 def _patches(generator):
     """Patch the route's generator factory + settings to use the test generator."""
     settings_stub = SimpleNamespace(
-        auth=SimpleNamespace(jwt_access_token_expire_minutes=60)
+        auth=SimpleNamespace(
+            auth_mode=AuthMode.LOCAL,
+            jwt_access_token_expire_minutes=60,
+        )
     )
     return (
         patch.object(auth_routes, "_build_local_jwt_generator", return_value=generator),

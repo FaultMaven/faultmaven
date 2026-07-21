@@ -135,6 +135,12 @@ class OAuthConfigResponse(BaseModel):
     token_url: str
     client_id: str
     scopes: List[str]
+    # Hosted SSO login entry point for HUMAN sign-in (ADR-015 D3). Distinct from
+    # authorize_url, which is the copilot OAuth-PKCE machine flow and needs
+    # client_id/redirect_uri/PKCE params. None until WorkOS is configured, so
+    # the dashboard shows an honest "not configured" state instead of a broken
+    # redirect.
+    hosted_login_url: Optional[str] = None
 
 
 class AuthConfigResponse(BaseModel):
@@ -181,10 +187,15 @@ async def get_auth_config() -> AuthConfigResponse:
         "authorize_url": "/auth/oauth/authorize",
         "token_url": "/auth/oauth/token",
         "client_id": "faultmaven-copilot",
-        "scopes": ["openid", "profile", "email", "cases:read", "cases:write"]
+        "scopes": ["openid", "profile", "email", "cases:read", "cases:write"],
+        "hosted_login_url": "/api/v1/auth/sso/login"
       }
     }
     ```
+
+    `hosted_login_url` is the human sign-in entry point (hosted SSO login,
+    ADR-015). It is null unless SSO is configured; `authorize_url` remains the
+    copilot OAuth-PKCE machine flow.
     """
     settings = get_settings()
     auth_settings = settings.auth
@@ -209,6 +220,13 @@ async def get_auth_config() -> AuthConfigResponse:
                 token_url="/auth/oauth/token",
                 client_id="faultmaven-copilot",
                 scopes=["openid", "profile", "email", "cases:read", "cases:write"],
+                # Advertised only when the SSO router is actually mounted
+                # (same sso_configured gate as main.py), and as a relative
+                # path — the dashboard resolves it against its configured API
+                # origin.
+                hosted_login_url=(
+                    "/api/v1/auth/sso/login" if auth_settings.sso_configured else None
+                ),
             ),
         )
 
@@ -529,7 +547,6 @@ async def local_register(
     "/refresh",
     response_model=TokenRefreshResponse,
     status_code=200,
-    dependencies=[Depends(require_local_mode)],
 )
 @trace("auth_refresh")
 async def refresh_tokens(
@@ -537,12 +554,17 @@ async def refresh_tokens(
     request: Request,
     response: Response,
 ) -> TokenRefreshResponse:
-    """Exchange a refresh token for a new access token (local mode).
+    """Exchange a refresh token for a new access token (both auth modes).
 
     The short-lived access token cannot be extended (it is a stateless JWT),
     so an active client must mint a new one before expiry rather than being
     forced to re-login. Refresh tokens rotate: the presented token is revoked
     and a fresh one is returned alongside the new access token.
+
+    Mode-aware (ADR-015 D6): local mode validates and mints with the HS256
+    generator; oauth/cloud mode uses the RS256 generator that issued the
+    tokens (dev-login-, OAuth-, and SSO-minted refresh tokens alike), with
+    identical rotation and revocation semantics.
 
     **Flow:**
     1. Validate the refresh token (signature, expiry, type, revocation)
@@ -554,9 +576,23 @@ async def refresh_tokens(
 
     try:
         user_store = await get_user_store(request)
-        token_manager = await get_token_manager(request)
         settings = get_settings()
-        jwt_generator = _build_local_jwt_generator(token_manager)
+        if settings.auth.auth_mode == AuthMode.LOCAL:
+            token_manager = await get_token_manager(request)
+            jwt_generator = _build_local_jwt_generator(token_manager)
+        else:
+            # Composition root attaches the RS256 generator (with its Redis
+            # revocation store) under oauth mode; a refresh token must verify
+            # under exactly the configuration that issued it.
+            jwt_generator = getattr(request.app.state, "jwt_token_generator", None)
+            if jwt_generator is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error": "service_unavailable",
+                        "message": "Token service unavailable. Please check server startup logs.",
+                    },
+                )
 
         # 1. Validate the presented refresh token (None => invalid/expired/revoked)
         claims = await jwt_generator.validate_refresh_token(request_body.refresh_token)
