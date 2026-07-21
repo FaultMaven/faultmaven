@@ -14,11 +14,10 @@ closed on a missing org). These tests pin that this dependency reflects the
 resolved contextvar rather than re-deriving org from the token.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.api.v1 import auth_dependencies
 from faultmaven.api.v1.auth_dependencies import get_current_user_optional
 from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.config.tenant_context import set_current_org_id
@@ -35,25 +34,18 @@ def _reset_org_context():
     set_current_org_id(STANDALONE_ORG_ID)
 
 
-def _mock_settings():
-    """Minimal settings for the local-mode decode path."""
-    settings = MagicMock()
-    settings.auth.auth_mode = "local"
-    settings.security.jwt_audience = "faultmaven-api"
-    settings.security.jwt_issuer = "faultmaven"
-    return settings
-
-
 async def _resolve_user(claims: dict):
-    """Invoke get_current_user_optional with a decoded-claims stub."""
-    with (
-        patch.object(auth_dependencies, "get_settings", _mock_settings),
-        patch.object(auth_dependencies, "get_verification_key", return_value="secret"),
-        patch.object(auth_dependencies.jwt, "decode", return_value=claims),
-    ):
-        return await get_current_user_optional(
-            request=MagicMock(), token="a.valid.token"
-        )
+    """Invoke get_current_user_optional with a verified-claims stub.
+
+    Verification + revocation are AuthService's job (pinned by
+    test_auth_dependencies_revocation.py); these tests stub the verified
+    claims to isolate the org-sourcing behavior.
+    """
+    auth_service = MagicMock()
+    auth_service.verify_token_with_revocation_check = AsyncMock(return_value=claims)
+    return await get_current_user_optional(
+        request=MagicMock(), token="a.valid.token", auth_service=auth_service
+    )
 
 
 @pytest.mark.unit

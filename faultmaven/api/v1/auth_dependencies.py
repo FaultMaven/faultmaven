@@ -27,76 +27,21 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-import jwt
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer
 
-from faultmaven.config.settings import get_settings
+from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.config.tenant_context import get_current_org_id
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.domain.services.auth_service import (
+    AuthenticationError,
+    AuthService,
+    TokenRevocationError,
+)
 
 # Initialize logger and security scheme
 logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
-
-
-# JWT Helper Functions
-def get_verification_key() -> str:
-    """Get JWT verification key based on auth mode.
-
-    Returns the appropriate key for JWT validation:
-    - Local mode (AUTH_MODE=local): Returns JWT_SECRET_KEY for HS256 validation
-    - OAuth mode (AUTH_MODE=oauth): Returns public key for RS256 validation
-
-    Returns:
-        Verification key string
-
-    Raises:
-        RuntimeError: If required key is not configured
-
-    Notes:
-        - Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes
-          use JWT tokens with identical structure"
-        - Algorithm is implicitly determined by AUTH_MODE:
-          * local → HS256 (symmetric)
-          * oauth → RS256 (asymmetric)
-    """
-    settings = get_settings()
-
-    # Determine algorithm from auth mode per iam-design.md
-    # local → HS256, oauth → RS256
-    if settings.auth.auth_mode == "local":
-        # Local mode: HS256 symmetric key
-        if not settings.security.jwt_secret_key:
-            raise RuntimeError(
-                "JWT_SECRET_KEY not configured for local mode authentication. "
-                "Set JWT_SECRET_KEY environment variable."
-            )
-        return settings.security.jwt_secret_key.get_secret_value()
-
-    elif settings.auth.auth_mode == "oauth":
-        # OAuth mode: RS256 public key for verification
-        if settings.security.jwt_public_key:
-            return settings.security.jwt_public_key
-        elif settings.security.jwt_public_key_path:
-            try:
-                with open(settings.security.jwt_public_key_path, "r") as f:
-                    return f.read()
-            except FileNotFoundError:
-                raise RuntimeError(
-                    f"JWT public key file not found: {settings.security.jwt_public_key_path}"
-                )
-        else:
-            raise RuntimeError(
-                "JWT_PUBLIC_KEY or JWT_PUBLIC_KEY_PATH not configured for OAuth mode. "
-                "Set JWT_PUBLIC_KEY or JWT_PUBLIC_KEY_PATH environment variable."
-            )
-
-    else:
-        raise RuntimeError(
-            f"Unsupported auth mode: {settings.auth.auth_mode}. "
-            "Only 'local' and 'oauth' are supported."
-        )
 
 
 # Service Dependencies (Composition Root pattern - access via app.state)
@@ -210,43 +155,40 @@ async def extract_bearer_token(
 
 # User Authentication Dependencies
 async def get_current_user_optional(
-    request: Request, token: Optional[str] = Depends(extract_bearer_token)
+    request: Request,
+    token: Optional[str] = Depends(extract_bearer_token),
+    auth_service: AuthService = Depends(get_auth_service),
 ) -> Optional[DevUser]:
     """Get current user from JWT token (optional - no error if missing/invalid)
 
-    Implements unified JWT validation per iam-design.md:
-    - HS256 for local mode (symmetric key validation)
-    - RS256 for OAuth mode (public key validation)
+    Verification and revocation are delegated to the same
+    ``AuthService.verify_token_with_revocation_check`` the mandatory-auth
+    middleware (``api/middleware/auth.get_current_user``) and the tenant binder
+    (``api/middleware/tenant_scope``) use: signature (HS256 local / RS256
+    OAuth), expiration, issuer, audience, required claims (incl. ``jti``),
+    ``type == "access"``, and the Redis revocation list. A revoked-but-unexpired
+    token is unauthenticated here — it must not retain the identity it would be
+    denied on every mandatory-auth endpoint (issue #761).
 
     Args:
         request: FastAPI request object
         token: Bearer token from header (JWT format)
+        auth_service: AuthService from app.state (Composition Root)
 
     Returns:
         DevUser if valid JWT provided, None otherwise
 
     Notes:
-        - Does not raise exceptions for missing/invalid tokens
+        - Does not raise exceptions for missing/invalid/revoked tokens
         - Logs validation failures at debug level
         - Used for endpoints that work both authenticated and unauthenticated
-        - Validates JWT structure, signature, expiration, issuer, and audience
     """
     if not token:
         return None
 
     try:
-        settings = get_settings()
-
-        # Determine algorithm from auth mode (per iam-design.md)
-        algorithm = "HS256" if settings.auth.auth_mode == "local" else "RS256"
-
-        # Validate JWT token using unified verification key
-        claims = jwt.decode(
-            token,
-            key=get_verification_key(),
-            algorithms=[algorithm],
-            audience=settings.security.jwt_audience,
-            issuer=settings.security.jwt_issuer,
+        claims = await auth_service.verify_token_with_revocation_check(
+            token, token_type="access"
         )
 
         # Extract user information from JWT claims
@@ -287,14 +229,14 @@ async def get_current_user_optional(
         )
         return user
 
-    except jwt.ExpiredSignatureError:
-        logger.debug("JWT token expired")
+    except TokenRevocationError:
+        logger.debug("JWT rejected: token has been revoked")
         return None
-    except jwt.InvalidTokenError as e:
-        logger.debug(f"JWT validation failed: {e}")
+    except AuthenticationError as e:
+        logger.debug(f"JWT validation failed: {e.message} ({e.error_code})")
         return None
     except HTTPException:
-        # Re-raise service availability errors (from get_verification_key)
+        # Re-raise service availability errors (from get_auth_service)
         raise
     except Exception as e:
         # Log unexpected errors but don't fail the request for optional auth
