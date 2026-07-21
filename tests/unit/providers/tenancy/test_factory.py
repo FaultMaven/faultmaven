@@ -18,7 +18,6 @@ from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 _SETTINGS = "faultmaven.providers.tenancy.factory.get_settings"
-_READY = "faultmaven.providers.tenancy.factory.MULTI_TENANT_READY"
 
 
 @pytest.fixture
@@ -26,10 +25,11 @@ def org_repo():
     return AsyncMock()
 
 
-def _settings(tenant_provider: str) -> MagicMock:
+def _settings(tenant_provider: str, is_cloud: bool = False) -> MagicMock:
     s = MagicMock()
     s.providers = MagicMock()
     s.providers.tenant_provider = tenant_provider
+    s.is_cloud = is_cloud
     return s
 
 
@@ -46,29 +46,29 @@ def test_single_is_builtin_and_gets_repositories(org_repo):
     assert provider.organization_repository is org_repo
 
 
-# --- multi (built-in, in-core — held closed until P2) -----------------------
+# --- multi (built-in, in-core — requires cloud) -----------------------------
 
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_multi_fails_closed_until_ready(org_repo):
-    """``multi`` is held closed (MULTI_TENANT_READY=False) until P2 ships its
-    isolation — it must NOT boot with no tenant isolation."""
-    with patch(_SETTINGS, return_value=_settings("multi")):
+def test_multi_outside_cloud_fails_closed(org_repo):
+    """``multi`` requires DEPLOYMENT_MODE=cloud — outside it, the cloud stack
+    its RLS isolation relies on isn't guaranteed, so the factory must refuse
+    (covering the gate-less jobs/CLI path, not only the startup gate)."""
+    with patch(_SETTINGS, return_value=_settings("multi", is_cloud=False)):
         with pytest.raises(TenancyConfigurationError) as exc:
             create_tenant_provider(organization_repository=org_repo)
-    assert "not yet available" in str(exc.value)
+    assert "requires DEPLOYMENT_MODE=cloud" in str(exc.value)
 
 
 @pytest.mark.unit
-def test_multi_resolves_in_core_when_ready(org_repo):
-    """When MULTI_TENANT_READY is flipped (P2), ``multi`` builds the in-core
+def test_multi_resolves_in_core_under_cloud(org_repo):
+    """Under DEPLOYMENT_MODE=cloud, ``multi`` builds the in-core
     MultiTenantProvider (no plugin)."""
-    with patch(_SETTINGS, return_value=_settings("multi")):
-        with patch(_READY, True):
-            provider = create_tenant_provider(
-                organization_repository=org_repo, enterprise_repository="ent"
-            )
+    with patch(_SETTINGS, return_value=_settings("multi", is_cloud=True)):
+        provider = create_tenant_provider(
+            organization_repository=org_repo, enterprise_repository="ent"
+        )
     assert isinstance(provider, MultiTenantProvider)
     assert provider.organization_repository is org_repo
 

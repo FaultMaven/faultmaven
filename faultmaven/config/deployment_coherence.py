@@ -6,9 +6,8 @@ Asserts that the running configuration is coherent with the canonical
 boot rather than silently running as ``standalone`` on cloud infrastructure.
 
 Tenancy (``TENANT_PROVIDER`` single/multi) is config-selected in the core
-(ADR-010) — both providers are in-core. ``multi`` is not yet bootable (the
-row-level isolation it requires has not shipped — ADR-010 P2); until then it
-fails closed here, regardless of ``DEPLOYMENT_MODE``
+(ADR-010) — both providers are in-core. ``multi`` requires
+``DEPLOYMENT_MODE=cloud`` and fails closed outside it
 (see ``_check_tenant_provider_coherent``).
 
 This closes the failure mode where a cloud k8s deployment whose Secret carried
@@ -105,23 +104,20 @@ def _check_tenant_provider_coherent(settings: Any) -> None:
     """Fail closed unless a supported tenant provider is configured.
 
     Tenancy is config-selected in the core (ADR-010): ``single`` (the Standalone
-    default) and ``multi`` are both in-core. ``multi`` is config-selectable and
-    the provider exists, but is **not yet bootable** — the row-level isolation it
-    requires (PostgreSQL RLS) and the request->organization wiring have not
-    shipped (ADR-010 P2), so it is held behind ``MULTI_TENANT_READY`` and fails
-    closed here rather than running with no tenant isolation. ``single`` is always
-    valid; an unrecognized provider name is fatal. (When ``multi`` becomes ready,
-    P2 enforces its cloud preconditions — PostgreSQL+RLS, OAuth/RS256, Redis —
-    here, since multi-tenant requires cloud.)
+    default) and ``multi`` are both in-core. ``multi`` requires
+    ``DEPLOYMENT_MODE=cloud``: its isolation is PostgreSQL row-level security
+    scoped by the per-request organization binding, and the cloud coherence
+    checks (PostgreSQL, OAuth/RS256, Redis) are what guarantee that stack —
+    ``multi`` outside cloud would run without those guarantees, so it is fatal.
+    ``single`` is always valid; an unrecognized provider name is fatal.
     """
     # Lazy import: keep this module importable as early as possible at startup,
     # and reuse the factory's name coercion + constants so the gate and the
-    # factory cannot diverge on the provider names or the readiness flag.
+    # factory cannot diverge on the provider names or the cloud precondition.
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         BUILTIN_SINGLE,
-        MULTI_NOT_READY_MSG,
-        MULTI_TENANT_READY,
+        MULTI_REQUIRES_CLOUD_MSG,
         coerce_provider_name,
     )
 
@@ -136,8 +132,8 @@ def _check_tenant_provider_coherent(settings: Any) -> None:
             f"(expected '{BUILTIN_SINGLE}' or '{BUILTIN_MULTI}')."
         )
 
-    if not MULTI_TENANT_READY:
-        raise DeploymentCoherenceError(MULTI_NOT_READY_MSG)
+    if not settings.is_cloud:
+        raise DeploymentCoherenceError(MULTI_REQUIRES_CLOUD_MSG)
 
 
 def validate_deployment_coherence(settings: Any) -> None:

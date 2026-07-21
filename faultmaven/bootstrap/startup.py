@@ -60,13 +60,12 @@ async def bootstrap_application(container: Any) -> None:
     # ============================================================
     # Order: enterprise -> organization. Organization FK enterprise_id
     # is NOT NULL, so the enterprise row must exist first.
-    if not hasattr(container, "tenant_provider") or container.tenant_provider is None:
+    tenant_provider = getattr(container, "tenant_provider", None)
+    if tenant_provider is None:
         logger.warning(
             "TenantProvider not available in container - skipping tenant bootstrap"
         )
     else:
-        tenant_provider = container.tenant_provider
-
         if isinstance(tenant_provider, SingleTenantProvider):
             logger.info("Single-tenant mode: Ensuring default enterprise exists")
             try:
@@ -111,16 +110,26 @@ async def bootstrap_application(container: Any) -> None:
             logger.info("Multi-tenant mode: No default tenant created")
 
     # ============================================================
-    # Step 3: Ensure Default Admin User
+    # Step 3: Ensure Default Admin User (Single-Tenant Mode)
     # ============================================================
-    # Must run after tenant bootstrap so the enterprise_id FK is valid
-    from faultmaven.bootstrap.data_init import ensure_default_admin_exists
-
-    logger.info("Ensuring default admin user exists")
-    admin_user = await ensure_default_admin_exists(container)
-    if admin_user:
-        logger.info(f"Default admin user ready: {admin_user.username}")
+    # Must run after tenant bootstrap so the enterprise_id FK is valid. The
+    # default admin is the Standalone passwordless account scoped to the
+    # default organization — under multi-tenant there is no default org and
+    # identities come from the IdP, so creating it must not even be attempted
+    # (it would plant a passwordless admin in any Standalone org row that
+    # exists in the database, e.g. after a data migration).
+    if tenant_provider is not None and not isinstance(
+        tenant_provider, SingleTenantProvider
+    ):
+        logger.info("Multi-tenant mode: skipping default admin bootstrap")
     else:
-        logger.info("Default admin user check complete (already exists or skipped)")
+        from faultmaven.bootstrap.data_init import ensure_default_admin_exists
+
+        logger.info("Ensuring default admin user exists")
+        admin_user = await ensure_default_admin_exists(container)
+        if admin_user:
+            logger.info(f"Default admin user ready: {admin_user.username}")
+        else:
+            logger.info("Default admin user check complete (already exists or skipped)")
 
     logger.info("Application bootstrap complete")

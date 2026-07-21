@@ -247,9 +247,9 @@ class TestTenantProviderFactory:
 
         assert isinstance(provider, SingleTenantProvider)
 
-    def test_factory_multi_fails_closed_until_ready(self):
-        """``multi`` is held closed until P2 ships its isolation (ADR-010) —
-        fail-closed on every container path, incl. the gate-less jobs/CLI path."""
+    def test_factory_multi_outside_cloud_fails_closed(self):
+        """``multi`` requires DEPLOYMENT_MODE=cloud (ADR-010 P2e) — fail-closed
+        on every container path, incl. the gate-less jobs/CLI path."""
         from unittest.mock import MagicMock, patch
 
         import pytest
@@ -263,14 +263,16 @@ class TestTenantProviderFactory:
         mock_settings = MagicMock()
         mock_settings.providers = MagicMock()
         mock_settings.providers.tenant_provider = TenantProviderEnum.MULTI
+        mock_settings.is_cloud = False
         mock_repo = MagicMock()
 
         with patch(
             "faultmaven.providers.tenancy.factory.get_settings",
             return_value=mock_settings,
         ):
-            with pytest.raises(TenancyConfigurationError):
+            with pytest.raises(TenancyConfigurationError) as exc:
                 create_tenant_provider(mock_repo)
+        assert "requires DEPLOYMENT_MODE=cloud" in str(exc.value)
 
     def test_di_wrapper_reraises_fatal_tenancy_error(self):
         """The container DI wrapper must NOT swallow a fatal tenancy misconfig —

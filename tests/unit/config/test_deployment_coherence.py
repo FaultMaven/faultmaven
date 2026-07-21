@@ -5,7 +5,6 @@ cloud incoherence is fatal, standalone incoherence only warns.
 """
 
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -149,24 +148,23 @@ def test_settings_is_cloud_property_reads_deployment_mode(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_multi_tenant_not_yet_available_fails_closed():
-    """TENANT_PROVIDER=multi is held closed until its isolation ships (P2),
-    regardless of DEPLOYMENT_MODE — it must not boot with no tenant isolation."""
-    for base in (_standalone_ok, _cloud_ok):
-        s = base()
-        s.providers = SimpleNamespace(tenant_provider="multi")
-        with pytest.raises(DeploymentCoherenceError) as exc:
-            validate_deployment_coherence(s)
-        assert "not yet available" in str(exc.value)
+def test_multi_tenant_outside_cloud_fails_closed():
+    """TENANT_PROVIDER=multi requires DEPLOYMENT_MODE=cloud — the cloud checks
+    (PostgreSQL, OAuth/RS256, Redis) guarantee the stack its RLS isolation
+    relies on, so multi outside cloud must refuse to boot."""
+    s = _standalone_ok()
+    s.providers = SimpleNamespace(tenant_provider="multi")
+    with pytest.raises(DeploymentCoherenceError) as exc:
+        validate_deployment_coherence(s)
+    assert "requires DEPLOYMENT_MODE=cloud" in str(exc.value)
 
 
 @pytest.mark.unit
-def test_multi_tenant_passes_gate_when_ready():
-    """When MULTI_TENANT_READY is flipped (P2), the gate stops blocking multi."""
+def test_multi_tenant_passes_gate_under_cloud():
+    """Under a fully-coherent cloud configuration, multi passes the gate."""
     s = _cloud_ok()
     s.providers = SimpleNamespace(tenant_provider="multi")
-    with patch("faultmaven.providers.tenancy.factory.MULTI_TENANT_READY", True):
-        validate_deployment_coherence(s)  # must not raise
+    validate_deployment_coherence(s)  # must not raise
 
 
 @pytest.mark.unit

@@ -354,10 +354,9 @@ def create_team_service(
     consumers (agent retrieval + KB inventory route) then skip team resolution
     and KB scope collapses to ``personal ∪ global``.
 
-    Because multi-tenant is held behind ``MULTI_TENANT_READY`` (factory.py) until
-    the RLS + request→org wiring ships (ADR-010 P2), this returns None at runtime
-    today; it lights up automatically when multi-tenant activates. The resolver
-    itself is exercised directly by unit tests.
+    In Standalone (single-tenant) deployments this returns None; the resolver is
+    live only under the multi-tenant provider (Cloud). The resolver itself is
+    exercised directly by unit tests.
     """
     if team_repository is None or tenant_provider is None:
         return None
@@ -518,14 +517,23 @@ def create_tenant_provider(
     SingleTenantProvider uses it to seed the default team row. Absence is safe —
     bootstrap simply skips team seeding.
     """
-    if not organization_repository:
-        logger.debug("TenantProvider skipped (no organization repository)")
-        return None
-
     from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
         TenancyConfigurationError,
+        requested_tenant_provider,
     )
     from faultmaven.providers.tenancy.factory import create_tenant_provider as factory
+
+    if not organization_repository:
+        if requested_tenant_provider() == BUILTIN_MULTI:
+            # Skipping here would bypass the factory's fail-closed checks and
+            # leave a multi-tenant deployment without its tenant provider.
+            raise TenancyConfigurationError(
+                "TENANT_PROVIDER='multi' requires an organization repository; "
+                "refusing to continue without one."
+            )
+        logger.debug("TenantProvider skipped (no organization repository)")
+        return None
 
     try:
         provider = factory(
