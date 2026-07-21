@@ -181,27 +181,22 @@ Both `HS256JWTTokenGenerator` (local mode) and `RS256JWTTokenGenerator` (cloud/O
 
 ### Token Validation Middleware
 
-Because tokens are uniformly JWT, validation middleware is identical for both modes:
+Because tokens are uniformly JWT, validation is identical for both modes. Every
+request path — the mandatory-auth middleware (`api/middleware/auth.py`), the
+tenant binder (`api/middleware/tenant_scope.py`), and the optional-auth
+dependency (`api/v1/auth_dependencies.py`) — converges on one implementation:
 
 ```python
-# faultmaven/api/middleware/auth.py
-async def validate_token(token: str) -> TokenClaims:
-    """Validate JWT token - works for both Local and Cloud modes."""
-    try:
-        # Decode and validate JWT
-        claims = jwt.decode(
-            token,
-            key=get_verification_key(),  # Returns symmetric or public key based on config
-            algorithms=[settings.auth.jwt_algorithm],
-            audience="faultmaven-api",
-            issuer="faultmaven"
-        )
-        return TokenClaims(**claims)
-    except jwt.ExpiredSignatureError:
-        raise AuthenticationError("Token expired")
-    except jwt.InvalidTokenError:
-        raise AuthenticationError("Invalid token")
+# faultmaven/modules/auth/domain/services/auth_service.py
+claims = await auth_service.verify_token_with_revocation_check(token, token_type="access")
 ```
+
+This performs the full validation set: signature (HS256 with `JWT_SECRET_KEY`
+in local mode, RS256 with the public key in cloud mode), expiration, issuer,
+audience, required claims (including `jti`), `type == "access"`, and the Redis
+revocation-list check. A revoked-but-unexpired token is rejected on every
+path; the optional-auth dependency treats it as unauthenticated rather than
+erroring.
 
 ## Local Mode Authentication
 
