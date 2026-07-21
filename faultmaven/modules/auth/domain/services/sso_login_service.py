@@ -54,6 +54,26 @@ ERROR_FAILED = "sso_failed"
 
 _MAX_RETURN_TO_LENGTH = 512
 
+# Our state/completion tokens are 43-char token_urlsafe values; anything far
+# beyond that (or an oversized IdP code) is garbage — bound it before it
+# reaches Redis or the IdP exchange.
+_MAX_STATE_LENGTH = 256
+_MAX_CODE_LENGTH = 512
+
+
+@dataclass(frozen=True)
+class SSOLoginStart:
+    """A begun login: where to send the browser, and the state that binds it.
+
+    ``state`` is returned so the transport layer can ALSO bind it to the
+    initiating browser (an HttpOnly cookie) — the server-side single-use store
+    alone does not prove the callback arrived from the browser that started
+    the flow (login-CSRF/session-fixation defense).
+    """
+
+    authorization_url: str
+    state: str
+
 
 @dataclass(frozen=True)
 class SSOExchangeResult:
@@ -117,15 +137,18 @@ class SSOLoginService:
 
     # -- leg 1: browser -> IdP ---------------------------------------------- #
 
-    async def begin_login(self, return_to: str | None = None) -> str:
-        """Mint a single-use state and return the IdP hosted-login URL."""
+    async def begin_login(self, return_to: str | None = None) -> SSOLoginStart:
+        """Mint a single-use state and return the IdP URL + state to bind."""
         state = secrets.token_urlsafe(32)
         payload = {}
         safe_return_to = sanitize_return_to(return_to)
         if safe_return_to:
             payload["return_to"] = safe_return_to
         await self._store.put_state(state, payload, STATE_TTL_SECONDS)
-        return self._provider.build_authorization_url(state=state)
+        return SSOLoginStart(
+            authorization_url=self._provider.build_authorization_url(state=state),
+            state=state,
+        )
 
     # -- leg 2: IdP -> callback -> dashboard -------------------------------- #
 
@@ -135,19 +158,55 @@ class SSOLoginService:
         code: str | None,
         state: str | None,
         error: str | None,
+        browser_state: str | None,
     ) -> str:
         """Handle the IdP redirect; always return a dashboard redirect URL.
 
-        This method never raises for flow failures — the browser is mid-redirect
-        and must land somewhere. Every failure path resolves to the dashboard
-        login callback with a sanitized ``error`` slug.
+        ``browser_state`` is the state echoed by the initiating browser (the
+        cookie set alongside ``begin_login``); it must match the ``state`` query
+        param, or the callback did not come from the browser that started the
+        flow (login-CSRF/session-fixation attempt).
+
+        This method never raises — the browser is mid-redirect and must land
+        somewhere. Every failure, including unexpected infrastructure errors,
+        resolves to the dashboard login callback with a sanitized ``error`` slug.
         """
+        try:
+            return await self._complete_callback(
+                code=code, state=state, error=error, browser_state=browser_state
+            )
+        except Exception:
+            # Redis/DB/provider infrastructure failure mid-redirect: never leak
+            # a raw 500 page at the API origin — land on the dashboard.
+            logger.exception("sso_callback_failed")
+            return self._dashboard_redirect(error=ERROR_FAILED)
+
+    async def _complete_callback(
+        self,
+        *,
+        code: str | None,
+        state: str | None,
+        error: str | None,
+        browser_state: str | None,
+    ) -> str:
+        if not state or len(state) > _MAX_STATE_LENGTH:
+            logger.warning("sso_callback_rejected", reason="state_invalid")
+            return self._dashboard_redirect(error=ERROR_STATE_INVALID)
+
         # Verify-and-consume the state FIRST, even on IdP-reported errors: the
         # stored payload must not survive for a second attempt, and an unsolicited
         # callback (no valid state) must not be able to probe anything.
-        state_payload = await self._store.consume_state(state) if state else None
+        state_payload = await self._store.consume_state(state)
         if state_payload is None:
             logger.warning("sso_callback_rejected", reason="state_invalid")
+            return self._dashboard_redirect(error=ERROR_STATE_INVALID)
+
+        # Browser binding: the server-side store proves the state is one WE
+        # minted, but only the cookie proves THIS browser started the flow. An
+        # attacker replaying their own unconsumed callback URL in a victim's
+        # browser fails here (state already burned above, so no retry either).
+        if not browser_state or not secrets.compare_digest(state, browser_state):
+            logger.warning("sso_callback_rejected", reason="browser_binding_missing")
             return self._dashboard_redirect(error=ERROR_STATE_INVALID)
 
         return_to = state_payload.get("return_to")
@@ -159,8 +218,8 @@ class SSOLoginService:
             logger.warning("sso_callback_rejected", reason="idp_error")
             return self._dashboard_redirect(error=slug, return_to=return_to)
 
-        if not code:
-            logger.warning("sso_callback_rejected", reason="missing_code")
+        if not code or len(code) > _MAX_CODE_LENGTH:
+            logger.warning("sso_callback_rejected", reason="missing_or_oversized_code")
             return self._dashboard_redirect(error=ERROR_FAILED, return_to=return_to)
 
         try:

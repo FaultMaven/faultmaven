@@ -2,16 +2,20 @@
 
 Runs the real router + real ``SSOLoginService`` (fake collaborators) on a
 minimal FastAPI app, exercising the browser-visible contract: 302 redirects
-with ``Cache-Control: no-store``, uniform 401 on any bad exchange, 503 when the
-composition root didn't provide the service, and per-IP rate limits on all
-three endpoints. The ephemeral store here is a dict-backed single-use fake —
-TestClient runs each request on its own event loop, which FakeRedis can't span;
-real-store (GETDEL/TTL) semantics are covered by the service-level tests.
+with ``Cache-Control: no-store``, the browser-binding state cookie
+(set at /login, required + cleared at /callback), uniform 401 on any bad
+exchange, 503 when the composition root didn't provide the service, and per-IP
+rate limits on all three endpoints. The ephemeral store here is a dict-backed
+single-use fake — TestClient runs each request on its own event loop, which
+FakeRedis can't span; real-store (GETDEL/TTL) semantics are covered by the
+service-level tests. The client uses an https base URL so the Secure state
+cookie round-trips in the cookie jar like it does in the real (cloud, https)
+deployment.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -127,12 +131,21 @@ def client(store):
     app = FastAPI()
     app.include_router(sso_router, prefix="/api/v1")
     app.state.sso_login_service = service
-    return TestClient(app)
+    # https base URL: the Secure state cookie must round-trip in the jar.
+    return TestClient(app, base_url="https://testserver")
+
+
+def start_login(client, **params):
+    response = client.get(
+        "/api/v1/auth/sso/login", params=params, follow_redirects=False
+    )
+    assert response.status_code == 302
+    state = parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
+    return response, state
 
 
 def login_and_get_completion_code(client) -> str:
-    login = client.get("/api/v1/auth/sso/login", follow_redirects=False)
-    state = parse_qs(urlsplit(login.headers["location"]).query)["state"][0]
+    _, state = start_login(client)
     callback = client.get(
         "/api/v1/auth/sso/callback",
         params={"code": "authkit-code", "state": state},
@@ -155,18 +168,23 @@ def test_login_redirects_to_idp_with_no_store(client):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_login_sets_browser_binding_state_cookie(client):
+    response, state = start_login(client)
+    cookie = response.headers["set-cookie"]
+    assert cookie.startswith(f"fm_sso_state={state};")
+    assert "HttpOnly" in cookie
+    assert "Secure" in cookie
+    assert "SameSite=lax" in cookie
+    assert "Path=/api/v1/auth/sso" in cookie
+
+
 # =============================================================================
 # /callback
 # =============================================================================
 
 
 def test_callback_redirects_to_dashboard_with_completion_code(client):
-    login = client.get(
-        "/api/v1/auth/sso/login",
-        params={"return_to": "/cases"},
-        follow_redirects=False,
-    )
-    state = parse_qs(urlsplit(login.headers["location"]).query)["state"][0]
+    _, state = start_login(client, return_to="/cases")
 
     response = client.get(
         "/api/v1/auth/sso/callback",
@@ -181,6 +199,23 @@ def test_callback_redirects_to_dashboard_with_completion_code(client):
     params = {k: v[0] for k, v in parse_qs(urlsplit(location).query).items()}
     assert params["return_to"] == "/cases"
     assert "code" in params
+    # The single-use state cookie is cleared once the flow completes.
+    assert 'fm_sso_state=""' in response.headers["set-cookie"]
+
+
+def test_callback_without_state_cookie_is_rejected(client):
+    # Login-CSRF: replaying a valid callback URL in a browser that did not
+    # start the flow (no cookie jar entry) must fail, not mint a login.
+    _, state = start_login(client)
+    bare_client = TestClient(client.app, base_url="https://testserver")
+
+    response = bare_client.get(
+        "/api/v1/auth/sso/callback",
+        params={"code": "authkit-code", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert "error=sso_state_invalid" in response.headers["location"]
 
 
 def test_callback_with_bad_state_redirects_with_error(client):
@@ -202,6 +237,7 @@ def test_exchange_returns_auth_token_response(client):
     code = login_and_get_completion_code(client)
     response = client.post("/api/v1/auth/sso/exchange", json={"code": code})
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
     body = response.json()
     assert body["access_token"] == "access-token"
     assert body["refresh_token"] == "refresh-token"
@@ -271,3 +307,17 @@ def test_login_rate_limited_per_ip(client):
     assert (
         client.get("/api/v1/auth/sso/login", follow_redirects=False).status_code == 429
     )
+
+
+def test_callback_rate_limited_per_ip(client):
+    for _ in range(10):
+        response = client.get(
+            "/api/v1/auth/sso/callback",
+            params={"state": "bogus"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+    limited = client.get(
+        "/api/v1/auth/sso/callback", params={"state": "bogus"}, follow_redirects=False
+    )
+    assert limited.status_code == 429

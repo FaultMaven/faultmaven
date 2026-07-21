@@ -1,16 +1,17 @@
 """Unit tests for the SSO hosted-login orchestration service (ADR-015, PR 2b).
 
 The service is the security surface of the cloud login flow, so these tests
-pin its guarantees: state is single-use CSRF, ``return_to`` is same-origin
-path-only, every callback failure maps to a sanitized error slug (never IdP
-text), the completion code is single-use, and exchange failures are uniform
-(None) regardless of cause. The ephemeral store is real (FakeRedis-backed) so
-single-use semantics are exercised end to end.
+pin its guarantees: state is single-use AND browser-bound (login-CSRF defense),
+``return_to`` is same-origin path-only, every callback failure — including
+infrastructure exceptions — maps to a sanitized error slug (never IdP text,
+never a raised error), the completion code is single-use, and exchange
+failures are uniform (None) regardless of cause. The ephemeral store is real
+(FakeRedis-backed) so single-use semantics are exercised end to end.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -140,8 +141,12 @@ def redirect_params(url: str) -> dict:
     return {k: v[0] for k, v in parse_qs(parts.query).items()}
 
 
-def state_from(url: str) -> str:
-    return parse_qs(urlsplit(url).query)["state"][0]
+async def callback(service, *, code="authkit-code", state, error=None, browser=...):
+    """Invoke complete_callback; browser cookie defaults to matching the state."""
+    browser_state = state if browser is ... else browser
+    return await service.complete_callback(
+        code=code, state=state, error=error, browser_state=browser_state
+    )
 
 
 # =============================================================================
@@ -187,38 +192,37 @@ def test_sanitize_return_to_rejects_unsafe_values(value):
 
 async def test_begin_login_returns_idp_url_with_stored_state(store):
     service = build_service(store)
-    url = await service.begin_login("/cases")
-    assert url.startswith("https://authkit.test/authorize?state=")
-    payload = await store.consume_state(state_from(url))
-    assert payload == {"return_to": "/cases"}
+    start = await service.begin_login("/cases")
+    assert start.authorization_url == (
+        f"https://authkit.test/authorize?state={start.state}"
+    )
+    assert await store.consume_state(start.state) == {"return_to": "/cases"}
 
 
 async def test_begin_login_drops_unsafe_return_to(store):
     service = build_service(store)
-    url = await service.begin_login("https://evil.test/phish")
-    assert await store.consume_state(state_from(url)) == {}
+    start = await service.begin_login("https://evil.test/phish")
+    assert await store.consume_state(start.state) == {}
 
 
 async def test_begin_login_states_are_unique(store):
     service = build_service(store)
     first = await service.begin_login(None)
     second = await service.begin_login(None)
-    assert state_from(first) != state_from(second)
+    assert first.state != second.state
 
 
 # =============================================================================
-# complete_callback
+# complete_callback — state + browser binding
 # =============================================================================
 
 
 async def test_callback_happy_path_issues_completion_code(store):
     user = make_user()
     service = build_service(store, users_by_subject={("workos", "user_wos_123"): user})
-    login_url = await service.begin_login("/cases")
+    start = await service.begin_login("/cases")
 
-    redirect = await service.complete_callback(
-        code="authkit-code", state=state_from(login_url), error=None
-    )
+    redirect = await callback(service, state=start.state)
 
     params = redirect_params(redirect)
     assert params["return_to"] == "/cases"
@@ -230,34 +234,65 @@ async def test_callback_happy_path_issues_completion_code(store):
 
 async def test_callback_without_state_is_rejected(store):
     service = build_service(store)
-    redirect = await service.complete_callback(code="c", state=None, error=None)
+    redirect = await callback(service, state=None, browser=None)
     assert redirect_params(redirect) == {"error": ERROR_STATE_INVALID}
 
 
 async def test_callback_with_unknown_state_is_rejected(store):
     service = build_service(store)
-    redirect = await service.complete_callback(
-        code="c", state="never-issued", error=None
-    )
+    redirect = await callback(service, state="never-issued")
+    assert redirect_params(redirect) == {"error": ERROR_STATE_INVALID}
+
+
+async def test_callback_with_oversized_state_is_rejected(store):
+    service = build_service(store)
+    redirect = await callback(service, state="s" * 4096)
     assert redirect_params(redirect) == {"error": ERROR_STATE_INVALID}
 
 
 async def test_callback_state_is_single_use(store):
     user = make_user()
     service = build_service(store, users_by_subject={("workos", "user_wos_123"): user})
-    state = state_from(await service.begin_login(None))
-    first = await service.complete_callback(code="c", state=state, error=None)
+    start = await service.begin_login(None)
+    first = await callback(service, state=start.state)
     assert "code" in redirect_params(first)
 
-    replay = await service.complete_callback(code="c", state=state, error=None)
+    replay = await callback(service, state=start.state)
     assert redirect_params(replay) == {"error": ERROR_STATE_INVALID}
+
+
+async def test_callback_without_browser_cookie_is_rejected(store):
+    # Login-CSRF: a callback URL replayed in a browser that did not start the
+    # flow carries no state cookie — reject, and burn the state.
+    user = make_user()
+    service = build_service(store, users_by_subject={("workos", "user_wos_123"): user})
+    start = await service.begin_login(None)
+
+    redirect = await callback(service, state=start.state, browser=None)
+    assert redirect_params(redirect) == {"error": ERROR_STATE_INVALID}
+    # The state was consumed by the rejected attempt — the URL is dead now.
+    replay = await callback(service, state=start.state)
+    assert redirect_params(replay) == {"error": ERROR_STATE_INVALID}
+
+
+async def test_callback_with_mismatched_browser_cookie_is_rejected(store):
+    user = make_user()
+    service = build_service(store, users_by_subject={("workos", "user_wos_123"): user})
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state, browser="other-state")
+    assert redirect_params(redirect) == {"error": ERROR_STATE_INVALID}
+
+
+# =============================================================================
+# complete_callback — IdP errors, exchange, user resolution
+# =============================================================================
 
 
 async def test_callback_maps_idp_access_denied(store):
     service = build_service(store)
-    state = state_from(await service.begin_login("/cases"))
-    redirect = await service.complete_callback(
-        code=None, state=state, error="access_denied"
+    start = await service.begin_login("/cases")
+    redirect = await callback(
+        service, code=None, state=start.state, error="access_denied"
     )
     params = redirect_params(redirect)
     assert params["error"] == ERROR_ACCESS_DENIED
@@ -266,9 +301,12 @@ async def test_callback_maps_idp_access_denied(store):
 
 async def test_callback_maps_other_idp_errors_to_generic_slug(store):
     service = build_service(store)
-    state = state_from(await service.begin_login(None))
-    redirect = await service.complete_callback(
-        code=None, state=state, error="server_error: upstream SAML assertion invalid"
+    start = await service.begin_login(None)
+    redirect = await callback(
+        service,
+        code=None,
+        state=start.state,
+        error="server_error: upstream SAML assertion invalid",
     )
     params = redirect_params(redirect)
     assert params["error"] == ERROR_FAILED
@@ -278,23 +316,33 @@ async def test_callback_maps_other_idp_errors_to_generic_slug(store):
 
 async def test_callback_idp_error_still_consumes_state(store):
     service = build_service(store)
-    state = state_from(await service.begin_login(None))
-    await service.complete_callback(code=None, state=state, error="access_denied")
-    replay = await service.complete_callback(code="c", state=state, error=None)
+    start = await service.begin_login(None)
+    await callback(service, code=None, state=start.state, error="access_denied")
+    replay = await callback(service, state=start.state)
     assert redirect_params(replay) == {"error": ERROR_STATE_INVALID}
 
 
 async def test_callback_missing_code_is_generic_failure(store):
     service = build_service(store)
-    state = state_from(await service.begin_login(None))
-    redirect = await service.complete_callback(code=None, state=state, error=None)
+    start = await service.begin_login(None)
+    redirect = await callback(service, code=None, state=start.state)
     assert redirect_params(redirect)["error"] == ERROR_FAILED
+
+
+async def test_callback_oversized_code_is_generic_failure(store):
+    provider = FakeProvider()
+    service = build_service(store, provider=provider)
+    start = await service.begin_login(None)
+    redirect = await callback(service, code="c" * 4096, state=start.state)
+    assert redirect_params(redirect)["error"] == ERROR_FAILED
+    # The garbage code was never shipped to the IdP.
+    assert provider.exchanged_codes == []
 
 
 async def test_callback_exchange_failure_maps_to_slug(store):
     service = build_service(store, provider=FakeProvider(fail=True))
-    state = state_from(await service.begin_login(None))
-    redirect = await service.complete_callback(code="bad", state=state, error=None)
+    start = await service.begin_login(None)
+    redirect = await callback(service, code="bad", state=start.state)
     assert redirect_params(redirect)["error"] == ERROR_EXCHANGE_FAILED
 
 
@@ -302,23 +350,69 @@ async def test_callback_unknown_subject_maps_to_slug(store):
     # No users registered: strict match-by-subject finds nothing (JIT is a
     # later phase).
     service = build_service(store)
-    state = state_from(await service.begin_login(None))
-    redirect = await service.complete_callback(code="c", state=state, error=None)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
     assert redirect_params(redirect)["error"] == ERROR_USER_UNKNOWN
 
 
 async def test_callback_inactive_user_maps_to_slug(store):
     user = make_user(is_active=False)
     service = build_service(store, users_by_subject={("workos", "user_wos_123"): user})
-    state = state_from(await service.begin_login(None))
-    redirect = await service.complete_callback(code="c", state=state, error=None)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
     assert redirect_params(redirect)["error"] == ERROR_USER_INACTIVE
 
 
 async def test_callback_handles_dashboard_url_trailing_slash(store):
     service = build_service(store, dashboard_url=DASHBOARD_URL + "/")
-    redirect = await service.complete_callback(code=None, state=None, error=None)
+    redirect = await callback(service, state=None, browser=None)
     assert redirect.startswith(f"{DASHBOARD_URL}/auth/sso/callback?")
+
+
+# =============================================================================
+# complete_callback — infrastructure failures still redirect
+# =============================================================================
+
+
+class ExplodingRepository(FakeUserRepository):
+    async def get_by_sso(self, provider, provider_id):
+        raise RuntimeError("database connection lost")
+
+
+async def test_callback_survives_repository_failure(store):
+    service = SSOLoginService(
+        identity_provider=FakeProvider(),
+        ephemeral_store=store,
+        user_repository=ExplodingRepository(),
+        token_generator=FakeTokenGenerator(),
+        session_service=FakeSessionService(),
+        dashboard_url=DASHBOARD_URL,
+        access_token_expires_in=3600,
+    )
+    start = await service.begin_login(None)
+    # Browser is mid-redirect: infra failure must land on the dashboard, not
+    # raise into a 500 page — and must not leak the failure detail.
+    redirect = await callback(service, state=start.state)
+    assert redirect_params(redirect)["error"] == ERROR_FAILED
+    assert "database" not in redirect
+
+
+async def test_callback_survives_store_failure():
+    class ExplodingStore:
+        async def consume_state(self, state):
+            raise ConnectionError("redis down")
+
+    service = SSOLoginService(
+        identity_provider=FakeProvider(),
+        ephemeral_store=ExplodingStore(),
+        user_repository=FakeUserRepository(),
+        token_generator=FakeTokenGenerator(),
+        session_service=FakeSessionService(),
+        dashboard_url=DASHBOARD_URL,
+        access_token_expires_in=3600,
+    )
+    redirect = await callback(service, state="some-state")
+    assert redirect_params(redirect)["error"] == ERROR_FAILED
 
 
 # =============================================================================
@@ -327,8 +421,8 @@ async def test_callback_handles_dashboard_url_trailing_slash(store):
 
 
 async def _login_and_get_code(service, store):
-    state = state_from(await service.begin_login(None))
-    redirect = await service.complete_callback(code="c", state=state, error=None)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
     return redirect_params(redirect)["code"]
 
 
