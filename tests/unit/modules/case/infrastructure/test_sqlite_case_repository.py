@@ -610,8 +610,8 @@ class TestListAndSearch:
 
     @pytest.mark.asyncio
     async def test_list_ignores_organization_filter(self, repository):
-        # ADR-006: CE is single-tenant; the organization_id param does NOT scope
-        # reads (cloud tenant isolation is enforced by RLS, not CE repositories).
+        # ADR-010: standalone is single-tenant; the organization_id param does
+        # NOT scope reads (multi-tenant isolation is RLS, not per-query filters).
         # All cases are returned regardless of the org passed.
         await repository.save(_make_case(organization_id="org_left"))
         await repository.save(_make_case(organization_id="org_left"))
@@ -726,8 +726,8 @@ class TestListAndSearch:
 
     @pytest.mark.asyncio
     async def test_search_ignores_organization_filter(self, repository):
-        # ADR-006: org param does NOT scope reads in CE (single-tenant); both
-        # orgs' matching cases are returned.
+        # ADR-010: org param does NOT scope reads per-query (single-tenant);
+        # both orgs' matching cases are returned.
         await repository.save(_make_case(organization_id="org_1", title="Net issue"))
         await repository.save(_make_case(organization_id="org_2", title="Net issue"))
 

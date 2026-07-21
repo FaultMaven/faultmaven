@@ -969,7 +969,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Args:
             user_id: Filter by user
             organization_id: Retained for interface symmetry; does NOT scope
-                reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
+                reads (single-tenant standalone; multi-tenant isolation is
+                PostgreSQL RLS, ADR-010)
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
@@ -998,10 +999,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if scope_clause:
                 where_clauses.append(scope_clause)
 
-            # No per-query org filter: tenant isolation is enforced by PostgreSQL
-            # RLS in faultmaven-cloud (ADR-006), not by CE repositories;
-            # standalone-on-postgres is single-tenant. The organization_id param
-            # is retained for interface symmetry but does not scope reads.
+            # No per-query org filter: multi-tenant isolation is enforced by
+            # in-core PostgreSQL RLS (ADR-010, migration 018), not by per-query
+            # repository filters; standalone-on-postgres is single-tenant. The
+            # organization_id param is retained for interface symmetry but does
+            # not scope reads.
 
             if state:
                 where_clauses.append("state = :state")
@@ -1372,7 +1374,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query: Search query
             user_id: Filter by user
             organization_id: Retained for interface symmetry; does NOT scope
-                reads (single-tenant standalone; cloud isolation is RLS, ADR-006)
+                reads (single-tenant standalone; multi-tenant isolation is
+                PostgreSQL RLS, ADR-010)
             limit: Maximum results
             shared_case_ids: Case ids readable via a team share (ADR-013 §D4);
                 widens owner-only scope to ``owned ∪ shared-to-my-teams``.
@@ -1404,8 +1407,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if scope_clause:
                 where_clauses.append(scope_clause)
 
-            # No per-query org filter: tenant isolation is RLS in
-            # faultmaven-cloud (ADR-006); standalone is single-tenant.
+            # No per-query org filter: multi-tenant isolation is in-core
+            # PostgreSQL RLS (ADR-010); standalone is single-tenant.
 
             where_sql = "WHERE " + " AND ".join(where_clauses)
 

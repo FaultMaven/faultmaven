@@ -7,8 +7,8 @@ both call ``list_all_user_team_ids`` on the wired ``team_service``.
 
 Scope (ADR-010 / ADR-013): membership *resolution* lives in the core (this
 service + ``ITeamRepository``), config-selected like the tenant provider. Team
-*management* (create team, invite/assign members) is the composed Cloud admin
-module — it drives the same repository from faultmaven-cloud. The service is
+*management* (create team, invite/assign members) is the hosted admin
+composed module (ADR-010 D4), which drives the same repository. The service is
 therefore wired only in multi-tenant (Cloud) deployments; standalone leaves it
 unwired (``team_service=None``) so team collaboration stays inert. Even when
 wired, it degrades safely: a user with no memberships resolves to ``[]`` and KB

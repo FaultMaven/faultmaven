@@ -34,8 +34,8 @@ def case_scope_where(
     Mutates ``params`` in place with the bound values it references.
 
     - ``user_id`` falsy → the visibility arm is dropped: the cross-tenant
-      platform-admin path (``list_all_cases`` passes ``user_id=None``); cloud
-      tenant isolation still applies via RLS (ADR-006).
+      platform-admin path (``list_all_cases`` passes ``user_id=None``);
+      multi-tenant isolation still applies via PostgreSQL RLS (ADR-010).
     - ``user_id`` set, no ``shared_case_ids`` → ``"user_id = :user_id"`` (the
       unchanged owner-only filter).
     - ``user_id`` set, with ``shared_case_ids`` →

@@ -1,20 +1,20 @@
 """Team Repository - SQLAlchemy ORM Implementation.
 
 Implements ITeamRepository for team and team-membership persistence. Mirrors
-PostgreSQLOrganizationRepository: the standalone/self-hosted core ships the
-repository *substrate* (used by the single-tenant default-team bootstrap and by
-KB scope resolution); team *management* (create/invite from a UI) is a Cloud
-collaboration feature and drives these same methods from faultmaven-cloud
-(ADR-006 / ADR-013).
+PostgreSQLOrganizationRepository: the core ships the repository *substrate*
+(used by the single-tenant default-team bootstrap and by KB scope resolution);
+team *management* (create/invite from a UI) is the hosted admin composed
+module, which drives these same methods (ADR-010 D4 / ADR-013).
 
-Isolation posture (team_members RLS): ``team_members`` has no ``organization_id``
-column and is deliberately NOT in the RLS ``_TENANTED_TABLES`` set (migration
-018). Cross-organization isolation for membership is enforced by JOINing through
-the ``teams`` table, which IS RLS-tenanted — under the limited ``faultmaven_app``
-role a membership row whose team belongs to another org is filtered out by the
-teams-policy, so it fails closed. (Rejected alternative: add ``organization_id``
-to ``team_members`` + its own policy — duplicates the org already reachable via
-``teams.organization_id`` and invites drift.) See ADR-013.
+Isolation posture (team_members RLS): ``team_members`` has no
+``organization_id`` column, so it is not in migration 018's
+``_TENANTED_TABLES``; migration 030 gives it its own subquery policy —
+``USING (team_id IN (SELECT team_id FROM teams WHERE organization_id =
+current_setting('app.current_org_id', true)))`` — so membership rows are
+org-scoped through their team and fail closed under the limited
+``faultmaven_app`` role. (Rejected alternative: add ``organization_id`` to
+``team_members`` + a direct policy — duplicates the org already reachable via
+``teams.organization_id`` and invites drift.) See ADR-013 + migration 030.
 """
 
 import logging

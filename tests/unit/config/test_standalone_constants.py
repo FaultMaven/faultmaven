@@ -1,10 +1,10 @@
 """Standalone single-tenant identity constants + org-isolation-removal guards.
 
-ADR-006: the Community Edition is single-tenant. The implicit org/enterprise
-identity lives in one place (``faultmaven.config.constants``), and CE
-repositories do NOT enforce tenant isolation with per-query
-``WHERE organization_id`` filters — cloud isolation is PostgreSQL RLS in
-faultmaven-cloud. These tests pin both facts so neither silently regresses.
+ADR-010: standalone is single-tenant. The implicit org/enterprise identity
+lives in one place (``faultmaven.config.constants``), and case repositories do
+NOT enforce tenant isolation with per-query ``WHERE organization_id`` filters —
+multi-tenant isolation is in-core PostgreSQL RLS (migration 018). These tests
+pin both facts so neither silently regresses.
 """
 
 import inspect
@@ -56,8 +56,8 @@ class TestStandaloneConstants:
 
 
 @pytest.mark.unit
-class TestOrgIsolationNotEnforcedInCE:
-    """CE reads must not be scoped by a per-query org filter (ADR-006)."""
+class TestOrgIsolationNotEnforcedPerQuery:
+    """Case reads must not be scoped by a per-query org filter (ADR-010)."""
 
     def test_repositories_have_no_org_read_filter(self):
         from faultmaven.modules.case.infrastructure import (
@@ -78,7 +78,7 @@ class TestOrgIsolationNotEnforcedInCE:
                 'where_clauses.append("organization_id = :organization_id")' not in src
             ), (
                 f"{module.__name__} reintroduced a per-query org read filter; "
-                "tenant isolation belongs in cloud RLS, not CE (ADR-006)"
+                "tenant isolation belongs in PostgreSQL RLS, not per-query filters (ADR-010)"
             )
             assert (
                 'where_clauses.append("c.organization_id = :organization_id")'

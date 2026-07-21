@@ -1,8 +1,9 @@
 """Auth Module - Vertical Slice
 
 Contains authentication, authorization, user management, and session
-management. (Team/organization management is a cloud collaboration feature —
-see faultmaven-cloud, ADR-006.)
+management. (Team/organization *management* UIs are the hosted admin
+composed module, ADR-010 D4; the core ships membership resolution and the
+repository substrate.)
 
 Public API:
     From domain.models:

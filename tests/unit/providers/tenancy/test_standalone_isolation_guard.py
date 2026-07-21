@@ -1,4 +1,4 @@
-"""Standalone tenant-isolation guard (ADR-006, refinement #5).
+"""Standalone tenant-isolation guard (ADR-010 standalone posture).
 
 PERMANENT SECURITY GUARD — do not weaken. FaultMaven Standalone is
 strictly single-user / single-tenant: the local operator is the sole owner of
@@ -9,7 +9,8 @@ claim) — every request is forced to the one standalone organization.
 These tests pin that property at the org-resolution **seam**
 (``SingleTenantProvider`` — the single place Standalone resolves the current org) and
 structurally forbid re-introducing request-header tenant extraction in the core.
-Multi-tenancy is a cloud-only capability (ADR-006); if you are tempted to make
+Multi-tenancy is cloud-only (``TENANT_PROVIDER=multi`` requires
+``DEPLOYMENT_MODE=cloud``, ADR-010); if you are tempted to make
 any of these pass by honoring an external org, you are re-opening the boundary
 leak this guard exists to prevent — stop.
 """
@@ -106,7 +107,7 @@ async def test_single_tenant_mode_is_not_multi_tenant(provider):
 @pytest.mark.unit
 @pytest.mark.security
 def test_standalone_seed_ids_are_pinned():
-    """The seeded UUIDs are load-bearing substrate (ADR-006 implicit seed) —
+    """The seeded UUIDs are load-bearing substrate (the implicit single-tenant seed) —
     changing them orphans existing standalone data, so they are pinned here."""
     assert SingleTenantProvider.DEFAULT_ORG_ID == "00000000-0000-0000-0000-000000000001"
     assert (
@@ -120,7 +121,7 @@ def test_standalone_seed_ids_are_pinned():
 def test_core_has_no_request_header_tenant_extraction():
     """Structural guard: the OSS core must not read an org/tenant from a request
     header. Re-adding ``X-Organization-ID`` (or similar) header extraction would
-    let single-tenant CE honor an external tenant context — the leak this
+    let single-tenant standalone honor an external tenant context — the leak this
     boundary prevents. Docstring/prose mentions are fine; active reads are not.
     """
     core = Path(faultmaven.__file__).resolve().parent
@@ -135,7 +136,7 @@ def test_core_has_no_request_header_tenant_extraction():
             line = text.count("\n", 0, m.start()) + 1
             offenders.append(f"{py.relative_to(core.parent)}:{line}")
     assert not offenders, (
-        "Core reads a tenant id from a request header — single-tenant CE must not "
-        "honor client-supplied tenant context (ADR-006). Offenders:\n  "
+        "Core reads a tenant id from a request header — single-tenant standalone "
+        "must not honor client-supplied tenant context (ADR-010). Offenders:\n  "
         + "\n  ".join(offenders)
     )

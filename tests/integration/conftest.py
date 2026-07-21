@@ -831,7 +831,7 @@ async def wait_for_services():
     if REDIS_AVAILABLE and not await wait_for_redis(REDIS_URL):
         pytest.skip(f"Redis not ready at {REDIS_URL}")
     elif not REDIS_AVAILABLE:
-        # Skip Redis-dependent setup in community edition
+        # Skip Redis-dependent setup in standalone (in-process FakeRedis)
         pass
 
     print("All services are ready")
