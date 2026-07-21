@@ -5,8 +5,10 @@ pin its guarantees: state is single-use AND browser-bound (login-CSRF defense),
 ``return_to`` is same-origin path-only, every callback failure — including
 infrastructure exceptions — maps to a sanitized error slug (never IdP text,
 never a raised error), the completion code is single-use, and exchange
-failures are uniform (None) regardless of cause. The ephemeral store is real
-(FakeRedis-backed) so single-use semantics are exercised end to end.
+failures are uniform (None) regardless of cause. JIT provisioning (ADR-015
+D4/D5) is strict subject-match-or-create: no email linking, no admin grant.
+The ephemeral store is real (FakeRedis-backed) so single-use semantics are
+exercised end to end.
 """
 
 from __future__ import annotations
@@ -25,8 +27,8 @@ from faultmaven.modules.auth.domain.services.sso_login_service import (
     ERROR_FAILED,
     ERROR_STATE_INVALID,
     ERROR_USER_INACTIVE,
-    ERROR_USER_UNKNOWN,
     SSOLoginService,
+    derive_username,
     sanitize_return_to,
 )
 from faultmaven.modules.auth.exceptions import SSOAuthenticationError
@@ -45,16 +47,23 @@ IDENTITY = SSOIdentity(
 )
 
 
-def make_user(user_id="u-1", is_active=True):
-    return SimpleNamespace(
+def make_user(user_id="u-1", is_active=True, deleted_at=None, **overrides):
+    user = SimpleNamespace(
         user_id=user_id,
         username="alex",
         email="alex@example.com",
         display_name="Alex Example",
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         is_active=is_active,
+        is_email_verified=True,
+        email_verified_at=datetime(2026, 1, 1, tzinfo=UTC),
+        last_login_at=None,
+        deleted_at=deleted_at,
         roles=["user"],
     )
+    for key, value in overrides.items():
+        setattr(user, key, value)
+    return user
 
 
 class FakeProvider(ISSOIdentityProvider):
@@ -81,15 +90,65 @@ class FakeProvider(ISSOIdentityProvider):
 
 
 class FakeUserRepository:
-    def __init__(self, users_by_subject=None, users_by_id=None):
+    """Duck-typed user repository with JIT-provisioning support.
+
+    ``users_by_subject``/``users_by_id`` mirror the lookup indexes the service
+    uses; ``existing`` holds pre-existing unlinked accounts that only the
+    email/username uniqueness scans should see. ``created``/``updated`` record
+    the writes for assertions.
+    """
+
+    def __init__(self, users_by_subject=None, users_by_id=None, existing=None):
         self.users_by_subject = users_by_subject or {}
         self.users_by_id = users_by_id or {}
+        self.existing = list(existing or [])
+        self.created = []
+        self.updated = []
+
+    def _all_users(self):
+        seen = {}
+        for user in (
+            list(self.users_by_subject.values())
+            + list(self.users_by_id.values())
+            + self.existing
+            + self.created
+        ):
+            seen[id(user)] = user
+        return list(seen.values())
 
     async def get_by_sso(self, provider, provider_id):
         return self.users_by_subject.get((provider, provider_id))
 
     async def get(self, user_id):
         return self.users_by_id.get(user_id)
+
+    async def get_by_username(self, username):
+        for user in self._all_users():
+            if user.username.lower() == username.lower():
+                return user
+        return None
+
+    async def get_by_email(self, email):
+        for user in self._all_users():
+            if user.email.lower() == email.lower():
+                return user
+        return None
+
+    async def create(self, user):
+        from faultmaven.exceptions import ConflictError
+
+        if await self.get_by_email(user.email):
+            raise ConflictError("Email already registered")
+        if await self.get_by_username(user.username):
+            raise ConflictError("Username already taken")
+        self.created.append(user)
+        self.users_by_subject[(user.sso_provider, user.sso_provider_id)] = user
+        self.users_by_id[user.user_id] = user
+        return user
+
+    async def update(self, user):
+        self.updated.append(user)
+        return user
 
 
 class FakeTokenGenerator:
@@ -120,13 +179,18 @@ def build_service(
     provider=None,
     users_by_subject=None,
     users_by_id=None,
+    repo=None,
     session_service=None,
     dashboard_url=DASHBOARD_URL,
 ):
     return SSOLoginService(
         identity_provider=provider or FakeProvider(),
         ephemeral_store=store,
-        user_repository=FakeUserRepository(users_by_subject, users_by_id),
+        user_repository=(
+            repo
+            if repo is not None
+            else FakeUserRepository(users_by_subject, users_by_id)
+        ),
         token_generator=FakeTokenGenerator(),
         session_service=session_service or FakeSessionService(),
         dashboard_url=dashboard_url,
@@ -346,21 +410,214 @@ async def test_callback_exchange_failure_maps_to_slug(store):
     assert redirect_params(redirect)["error"] == ERROR_EXCHANGE_FAILED
 
 
-async def test_callback_unknown_subject_maps_to_slug(store):
-    # No users registered: strict match-by-subject finds nothing (JIT is a
-    # later phase).
-    service = build_service(store)
-    start = await service.begin_login(None)
-    redirect = await callback(service, state=start.state)
-    assert redirect_params(redirect)["error"] == ERROR_USER_UNKNOWN
-
-
 async def test_callback_inactive_user_maps_to_slug(store):
     user = make_user(is_active=False)
     service = build_service(store, users_by_subject={("workos", "user_wos_123"): user})
     start = await service.begin_login(None)
     redirect = await callback(service, state=start.state)
     assert redirect_params(redirect)["error"] == ERROR_USER_INACTIVE
+
+
+async def test_callback_soft_deleted_user_maps_to_slug(store):
+    user = make_user(deleted_at=datetime(2026, 6, 1, tzinfo=UTC))
+    service = build_service(store, users_by_subject={("workos", "user_wos_123"): user})
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+    assert redirect_params(redirect)["error"] == ERROR_USER_INACTIVE
+
+
+# =============================================================================
+# complete_callback — JIT provisioning (ADR-015 D4/D5)
+# =============================================================================
+
+
+def test_derive_username_sanitizes_local_part():
+    assert derive_username("Alex@example.com") == "alex"
+    assert derive_username("a.b-c_d@example.com") == "a.b-c_d"
+    assert derive_username("Alex.O'Neil+dev@Example.com") == "alex.oneildev"
+    assert derive_username("..alex..@example.com") == "alex"
+    assert derive_username("++++@example.com") == "user"
+    assert derive_username("a" * 200 + "@example.com") == "a" * 64
+
+
+async def test_callback_unknown_subject_provisions_user(store):
+    repo = FakeUserRepository()
+    service = build_service(store, repo=repo)
+    start = await service.begin_login(None)
+
+    redirect = await callback(service, state=start.state)
+
+    params = redirect_params(redirect)
+    assert "error" not in params
+    assert len(repo.created) == 1
+    user = repo.created[0]
+    assert user.username == "alex"
+    assert user.email == "alex@example.com"
+    assert user.display_name == "Alex Example"
+    assert user.hashed_password is None
+    assert user.sso_provider == "workos"
+    assert user.sso_provider_id == "user_wos_123"
+    assert user.is_active is True
+    assert user.is_email_verified is True
+    assert user.email_verified_at is not None
+    assert user.last_login_at is not None
+    # Never admin (D5): every JIT user gets exactly the base role.
+    assert user.roles == ["user"]
+    # The completion code points at the new user; no redundant profile sync.
+    assert await store.consume_login(params["code"]) == {"user_id": user.user_id}
+    assert repo.updated == []
+
+
+async def test_jit_user_reflects_unverified_email(store):
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_999",
+        email="sam@example.com",
+        email_verified=False,
+    )
+    repo = FakeUserRepository()
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    user = repo.created[0]
+    assert user.is_email_verified is False
+    assert user.email_verified_at is None
+    # Display name falls back to the derived username when the IdP has none.
+    assert user.display_name == "sam"
+
+
+async def test_jit_username_collision_gets_numeric_suffix(store):
+    taken = make_user(user_id="u-old", email="other@example.com")  # username "alex"
+    repo = FakeUserRepository(existing=[taken])
+    service = build_service(store, repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert repo.created[0].username == "alex-2"
+
+
+async def test_jit_refuses_email_owned_by_unlinked_account(store):
+    # ADR-015 D4: never link by email — an existing unlinked account owning
+    # the identity's email fails the login and provisions nothing.
+    unlinked = make_user(user_id="u-old", username="someone-else")
+    repo = FakeUserRepository(existing=[unlinked])
+    service = build_service(store, repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert redirect_params(redirect)["error"] == ERROR_FAILED
+    assert repo.created == []
+
+
+@pytest.mark.parametrize("email", ["", "not-an-email", "a" * 300 + "@example.com"])
+async def test_jit_refuses_unusable_email(store, email):
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_999",
+        email=email,
+        email_verified=True,
+    )
+    repo = FakeUserRepository()
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert redirect_params(redirect)["error"] == ERROR_FAILED
+    assert repo.created == []
+
+
+async def test_jit_create_race_falls_back_to_concurrent_row(store):
+    # Two concurrent first logins for the same subject: the loser's create
+    # conflicts, but the subject now resolves — log in with that row.
+    winner = make_user(user_id="u-won")
+
+    class RacingRepository(FakeUserRepository):
+        def __init__(self):
+            super().__init__()
+            self.sso_calls = 0
+
+        async def get_by_sso(self, provider, provider_id):
+            self.sso_calls += 1
+            return None if self.sso_calls == 1 else winner
+
+        async def create(self, user):
+            from faultmaven.exceptions import ConflictError
+
+            raise ConflictError("Email already registered")
+
+    service = build_service(store, repo=RacingRepository())
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    params = redirect_params(redirect)
+    assert await store.consume_login(params["code"]) == {"user_id": "u-won"}
+
+
+# =============================================================================
+# complete_callback — returning-subject profile sync (ADR-015 D4)
+# =============================================================================
+
+
+async def test_callback_syncs_profile_on_returning_subject(store):
+    user = make_user(
+        email="old@example.com",
+        display_name="Old Name",
+        is_email_verified=False,
+        email_verified_at=None,
+    )
+    repo = FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert repo.updated == [user]
+    assert user.email == "alex@example.com"
+    assert user.display_name == "Alex Example"
+    assert user.is_email_verified is True
+    assert user.email_verified_at is not None
+    assert user.last_login_at is not None
+    assert repo.created == []
+
+
+async def test_profile_sync_ignores_malformed_idp_email(store):
+    # The sync path assigns onto an existing model (no validate_assignment),
+    # so it must run the same email validation the create path gets from
+    # model construction — a malformed IdP email is never persisted.
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_123",
+        email="not-an-email",
+        email_verified=True,
+    )
+    user = make_user()
+    repo = FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert user.email == "alex@example.com"
+
+
+async def test_callback_profile_sync_conflict_does_not_fail_login(store):
+    user = make_user(email="old@example.com")
+
+    class ConflictingRepository(FakeUserRepository):
+        async def update(self, user):
+            from faultmaven.exceptions import ConflictError
+
+            raise ConflictError("Email already in use")
+
+    repo = ConflictingRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
 
 
 async def test_callback_handles_dashboard_url_trailing_slash(store):
@@ -483,6 +740,18 @@ async def test_exchange_fails_when_user_deactivated_after_callback(store):
         store,
         users_by_subject={("workos", "user_wos_123"): active},
         users_by_id={"u-1": deactivated},
+    )
+    code = await _login_and_get_code(service, store)
+    assert await service.exchange(code) is None
+
+
+async def test_exchange_fails_when_user_soft_deleted_after_callback(store):
+    active = make_user()
+    deleted = make_user(deleted_at=datetime(2026, 6, 1, tzinfo=UTC))
+    service = build_service(
+        store,
+        users_by_subject={("workos", "user_wos_123"): active},
+        users_by_id={"u-1": deleted},
     )
     code = await _login_and_get_code(service, store)
     assert await service.exchange(code) is None

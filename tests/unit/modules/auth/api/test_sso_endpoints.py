@@ -91,6 +91,10 @@ class FakeUserRepository:
     async def get(self, user_id):
         return self.user if self.user and self.user.user_id == user_id else None
 
+    async def update(self, user):
+        # Returning-subject profile sync (ADR-015 D4) — a no-op here.
+        return user
+
 
 class FakeTokenGenerator:
     async def generate_access_token(self, user):
