@@ -153,7 +153,7 @@ def _raise_unless_maintenance_posture(
         )
 
 
-async def assert_maintenance_db_role_posture(*, engine=None) -> None:
+async def assert_maintenance_db_role_posture(*, engine=None) -> str:
     """Refuse to run a cross-tenant maintenance job on the wrong DB role.
 
     Counterpart of :func:`assert_app_db_role_enforces_rls` for the audited
@@ -166,6 +166,10 @@ async def assert_maintenance_db_role_posture(*, engine=None) -> None:
     Args:
         engine: Async engine to probe; defaults to the shared engine. Injected
             in tests.
+
+    Returns:
+        The verified DB role name — the caller interpolates it into the
+        audit log line so every maintenance run records WHO ran it.
 
     Raises:
         DeploymentCoherenceError: If the connected role lacks BYPASSRLS, is a
@@ -200,3 +204,4 @@ async def assert_maintenance_db_role_posture(*, engine=None) -> None:
         "neither superuser nor owner; cross-tenant maintenance may proceed.",
         row.role_name,
     )
+    return row.role_name

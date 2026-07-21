@@ -669,10 +669,13 @@ class TestCrossTenantMaintenancePath:
             set_org,
             maintenance_guard,
         ):
+            maintenance_guard.return_value = "faultmaven_maintenance"
             result = await run_job("fake_job", cross_tenant_maintenance=True)
 
         assert result["status"] == "completed"
         job_run.assert_awaited_once()
+        # The acknowledgment flag is runner input, never job input.
+        assert "cross_tenant_maintenance" not in job_run.await_args.kwargs
         maintenance_guard.assert_awaited_once()
         rls_guard.assert_not_called()
         set_org.assert_not_called()
@@ -680,6 +683,53 @@ class TestCrossTenantMaintenancePath:
         assert audit_lines, "cross-tenant maintenance run must be audit-logged"
         assert audit_lines[0].levelname == "WARNING"
         assert "fake_job" in audit_lines[0].getMessage()
+        # WHO ran it: the probe-verified DB role is part of the audit record.
+        assert "faultmaven_maintenance" in audit_lines[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_audit_line_survives_crashing_job(
+        self, mock_container, mock_settings, caplog
+    ):
+        """The audit record is emitted BEFORE the job runs, so a crashed
+        sweep still leaves the trail."""
+        from faultmaven.jobs.run import run_job
+
+        with _fake_job("cross_tenant", mock_container, mock_settings) as (
+            job_run,
+            _rls_guard,
+            _set_org,
+            maintenance_guard,
+        ):
+            maintenance_guard.return_value = "faultmaven_maintenance"
+            job_run.side_effect = RuntimeError("sweep exploded")
+            result = await run_job("fake_job", cross_tenant_maintenance=True)
+
+        assert result["status"] == "failed"
+        audit_lines = [r for r in caplog.records if "AUDIT" in r.getMessage()]
+        assert audit_lines, "audit record must precede the job invocation"
+
+    @pytest.mark.asyncio
+    async def test_flag_with_organization_id_refused(
+        self, mock_container, mock_settings
+    ):
+        """The maintenance path bypasses RLS entirely — an org id could not
+        scope anything, so passing both is contradictory manifest input."""
+        from faultmaven.jobs.run import JobTenantScopeError, run_job
+
+        with _fake_job("cross_tenant", mock_container, mock_settings) as (
+            job_run,
+            _,
+            _set_org,
+            _maint,
+        ):
+            with pytest.raises(JobTenantScopeError, match="mutually"):
+                await run_job(
+                    "fake_job",
+                    cross_tenant_maintenance=True,
+                    organization_id="org-1",
+                )
+
+        job_run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_maintenance_path_refused_on_wrong_role(

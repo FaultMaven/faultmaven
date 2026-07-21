@@ -152,6 +152,14 @@ def _enforce_tenant_scope(
         # session correctly; --organization-id is not a scoping instruction here.
         return None
 
+    if cross_tenant_maintenance and organization_id:
+        raise JobTenantScopeError(
+            "--cross-tenant-maintenance and --organization-id are mutually "
+            "exclusive: the maintenance path bypasses RLS entirely, so an org "
+            "id could not scope anything and passing one indicates a confused "
+            "manifest. Drop one of the two."
+        )
+
     if cross_tenant_maintenance and scope != TENANT_SCOPE_CROSS_TENANT:
         raise JobTenantScopeError(
             f"--cross-tenant-maintenance was passed but job '{module_path}' "
@@ -329,7 +337,7 @@ async def run_job(
 
     if is_multi_tenant and cross_tenant_maintenance:
         try:
-            await assert_maintenance_db_role_posture()
+            maintenance_role = await assert_maintenance_db_role_posture()
         except DeploymentCoherenceError:
             logger.critical(
                 "Refusing to run job: DB role does not fit the maintenance "
@@ -338,12 +346,14 @@ async def run_job(
             raise
         # The audit record for the run: who (DB role), what (job + args), and
         # under which posture. Emitted at WARNING so it survives quiet logging
-        # configs — a cross-tenant sweep should never be invisible.
+        # configs — a cross-tenant sweep should never be invisible. Logged
+        # BEFORE the job runs so a crashing job still leaves the trail.
         logger.warning(
-            "AUDIT cross-tenant maintenance run: job=%s args=%s "
+            "AUDIT cross-tenant maintenance run: job=%s db_role=%s args=%s "
             "(RLS bypassed by dedicated maintenance role; "
             "--cross-tenant-maintenance acknowledged)",
             job_name,
+            maintenance_role,
             {k: v for k, v in kwargs.items()},
         )
     else:

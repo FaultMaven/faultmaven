@@ -84,9 +84,14 @@ async def run(
         result["active_cases"] = len(active_case_ids)
         logger.debug(f"Found {len(active_case_ids)} case rows in the database")
 
-        # Clean up orphaned collections
+        # Clean up orphaned collections. The per-candidate re-check closes the
+        # snapshot race (a case created after list_all_case_ids() must not
+        # lose its collection).
+        async def _case_exists(case_id: str) -> bool:
+            return await case_repository.get(case_id) is not None
+
         deleted_count = await case_vector_store.cleanup_orphaned_collections(
-            active_case_ids
+            active_case_ids, case_exists=_case_exists
         )
         result["deleted_count"] = deleted_count
 
