@@ -453,6 +453,9 @@ async def lifespan(app: FastAPI):
         app.state.oauth_service = (
             container.get_oauth_service()
         )  # OAuth service (optional)
+        # SSO hosted-login orchestration (ADR-015). None unless WorkOS is fully
+        # configured in oauth mode; the SSO router only mounts in that case.
+        app.state.sso_login_service = container.get_service("sso_login_service")
 
         # Shared Redis client (real Redis in cloud, FakeRedis in standalone).
         # Single source of truth for Redis-dependent middleware (deduplication,
@@ -1296,6 +1299,22 @@ try:
         logger.info("ℹ️ OAuth endpoints disabled (using dev-login mode)")
 except Exception as e:
     logger.warning(f"OAuth router initialization failed (non-critical): {e}")
+
+# SSO hosted-login router (ADR-015) — only when WorkOS is fully configured in
+# oauth mode. Mirrors the OAuth router gate above; standalone never mounts it.
+try:
+    from .config.settings import get_settings
+
+    _sso_settings = get_settings()
+    if _sso_settings.auth.sso_configured:
+        from .modules.auth.api.sso import router as sso_router
+
+        app.include_router(sso_router, prefix="/api/v1")
+        logger.info("✅ SSO endpoints added")
+    else:
+        logger.info("ℹ️ SSO endpoints disabled (WorkOS not configured)")
+except Exception as e:
+    logger.warning(f"SSO router initialization failed (non-critical): {e}")
 
 # Prometheus metrics endpoint (PR #5 - observability neutrality)
 # Only mounted when METRICS_EXPORTER=prometheus_http
