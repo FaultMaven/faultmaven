@@ -42,13 +42,14 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from starlette.formparsers import MultiPartParser
 
+from faultmaven.api.middleware.tenant_scope import bind_request_org_context
 from faultmaven.utils.serialization import to_json_compatible
 
 # Configure enhanced logging system first
@@ -874,6 +875,12 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
     redirect_slashes=False,  # Disable automatic trailing slash redirects
+    # Bind the request's organization to the RLS contextvar before any endpoint
+    # opens a database transaction (ADR-010 P2b). Single-tenant forces the
+    # Standalone org; multi-tenant sources it from the verified auth claim and
+    # fails closed on a missing org. A global dependency (not BaseHTTPMiddleware)
+    # so the contextvar reaches the endpoint's task.
+    dependencies=[Depends(bind_request_org_context)],
 )
 
 # Override Starlette's default multipart form parser size limits.
