@@ -583,6 +583,26 @@ async def test_callback_syncs_profile_on_returning_subject(store):
     assert repo.created == []
 
 
+async def test_profile_sync_ignores_malformed_idp_email(store):
+    # The sync path assigns onto an existing model (no validate_assignment),
+    # so it must run the same email validation the create path gets from
+    # model construction — a malformed IdP email is never persisted.
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id="user_wos_123",
+        email="not-an-email",
+        email_verified=True,
+    )
+    user = make_user()
+    repo = FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, provider=FakeProvider(identity=identity), repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert user.email == "alex@example.com"
+
+
 async def test_callback_profile_sync_conflict_does_not_fail_login(store):
     user = make_user(email="old@example.com")
 

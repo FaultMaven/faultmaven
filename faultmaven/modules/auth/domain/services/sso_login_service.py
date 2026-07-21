@@ -35,7 +35,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import structlog
-from pydantic import ValidationError
+from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.user_repository import (
@@ -77,6 +77,22 @@ _USERNAME_BASE_MAX = 64
 _USERNAME_SUFFIX_ATTEMPTS = 30
 _MAX_EMAIL_LENGTH = 255
 _MAX_DISPLAY_NAME_LENGTH = 200
+
+# The JIT path validates emails via User model construction; the profile-sync
+# path assigns onto an existing model (no validate_assignment), so it runs the
+# same EmailStr validation explicitly before applying an IdP email change.
+_EMAIL_VALIDATOR: TypeAdapter[str] = TypeAdapter(EmailStr)
+
+
+def _is_usable_email(email: str) -> bool:
+    """True when the IdP-supplied email is present, bounded, and well-formed."""
+    if not email or len(email) > _MAX_EMAIL_LENGTH:
+        return False
+    try:
+        _EMAIL_VALIDATOR.validate_python(email)
+    except ValidationError:
+        return False
+    return True
 
 
 def derive_username(email: str) -> str:
@@ -344,9 +360,9 @@ class SSOLoginService:
         email — linking is deliberately out of scope). Failures are logged
         with the provider only, never the subject or email.
         """
-        if not identity.email or len(identity.email) > _MAX_EMAIL_LENGTH:
+        if not _is_usable_email(identity.email):
             logger.warning(
-                "sso_jit_rejected", reason="missing_email", provider=identity.provider
+                "sso_jit_rejected", reason="unusable_email", provider=identity.provider
             )
             return None
         if await self._users.get_by_email(identity.email) is not None:
@@ -432,8 +448,7 @@ class SSOLoginService:
         """
         now = datetime.now(UTC)
         if (
-            identity.email
-            and len(identity.email) <= _MAX_EMAIL_LENGTH
+            _is_usable_email(identity.email)
             and identity.email.lower() != (user.email or "").lower()
         ):
             user.email = identity.email
