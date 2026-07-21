@@ -776,7 +776,12 @@ async def logout(
     correlation_id = str(uuid.uuid4())
 
     try:
-        revocation_store = await get_token_revocation_store(request)
+        auth_service = getattr(request.app.state, "auth_service", None)
+        if auth_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service unavailable. Please check server startup logs.",
+            )
 
         # The bearer token was already verified by require_authentication;
         # decode without re-verifying just to read jti + exp for revocation.
@@ -797,12 +802,10 @@ async def logout(
                 revoked_tokens=0,
             )
 
-        now = int(datetime.now(timezone.utc).timestamp())
-        ttl = max(int(exp) - now, 0) if exp else 0
-        if ttl > 0:
-            # Raises on store failure — logout must not claim success while
-            # the token remains usable.
-            await revocation_store.add_revoked_token(jti, ttl)
+        # Raises ServiceError on store failure — logout must not claim
+        # success while the token remains usable. AuthService writes the
+        # same deployment-wide store the request-path check reads (#767).
+        await auth_service.revoke_token(jti, int(exp) if exp else 0)
 
         logger.info(
             f"User logout: {current_user.user_id} (correlation: {correlation_id})"

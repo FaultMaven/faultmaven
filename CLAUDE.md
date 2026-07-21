@@ -782,7 +782,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `faultmaven/modules/knowledge/api/conversion_routes.py` | Conversion API endpoints (feature-flagged) |
 | `.env.example` | Configuration template |
 | `pyproject.toml` | Dependencies and tool config |
-| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 32 tables) |
+| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 31 tables) |
 | `faultmaven/config/llm_config_overrides.py` | Config override application + hot-reload (cloud mode only) |
 | `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, features, connection test |
 | `.importlinter` | Architecture contracts (13 rules) |

@@ -198,7 +198,7 @@ revocation-list check. A revoked-but-unexpired token is rejected on every
 path; the optional-auth dependency treats it as unauthenticated rather than
 erroring.
 
-**Single revocation store (#767).** Every revocation writer — OAuth
+**Single revocation store (#767).** Every per-token revocation writer — OAuth
 `POST /auth/oauth/revoke`, refresh-token rotation in both modes, and logout —
 writes to the same deployment-wide store the check above reads:
 `RedisTokenRevocationStore`, keyed `{token_revocation_prefix}{jti}`
@@ -210,6 +210,13 @@ validation in the generators fails **closed** (a store outage cannot mint new
 credentials from a revoked token), and revocation *writes* propagate store
 errors so revoke endpoints never report success while the token remains
 usable.
+
+Known limitation: bulk **per-user** revocation (admin
+`POST /auth/users/{id}/revoke-tokens`, user deactivate/delete flows) is
+effectively a no-op — the store is keyed by jti and there is no per-user
+index of issued JTIs, so outstanding tokens cannot be enumerated. Exposure is
+bounded by access-token expiry (<30 min) and the user-liveness check on
+refresh. Implementing it requires per-user JTI tracking (follow-up to #767).
 
 ## Local Mode Authentication
 

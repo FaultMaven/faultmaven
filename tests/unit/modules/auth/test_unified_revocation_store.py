@@ -203,6 +203,41 @@ class TestFailurePosture:
         # RFC 7009: revoking an invalid token is success, not an error
         await generator.revoke_access_token("not-a-jwt")
 
+    async def test_revoke_tolerates_malformed_exp_claims(self):
+        """Crafted or ms-precision exp is an invalid-token case, not a 5xx.
+
+        A junk exp must not escape as an exception (pre-review-fix it
+        propagated to /auth/oauth/revoke's catch-all and produced a 503 for
+        an unauthenticated caller, violating RFC 7009's 200-for-invalid).
+        """
+        import jwt as pyjwt
+
+        store = _store(_fake_redis())
+        redis = store.redis
+        generator = _generator(store)
+
+        for bad_exp in ["abc", 1e100, 9999999999999]:  # str, overflow, ms
+            token = pyjwt.encode(
+                {"jti": "jti-bad-exp", "exp": bad_exp}, SECRET, algorithm="HS256"
+            )
+            await generator.revoke_access_token(token)
+
+        keys = [k async for k in redis.scan_iter("*")]
+        assert keys == []  # nothing revoked, nothing raised
+
+
+def _logout_request(store):
+    """Fake request wired the way production wires logout: AuthService on
+    app.state, sharing the revocation store instance."""
+    with patch(
+        "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+        return_value=_auth_service_settings(),
+    ):
+        auth_service = AuthService(revocation_store=store)
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(auth_service=auth_service))
+    )
+
 
 class TestLogoutRevokesViaSharedStore:
     """Logout writes the access token's jti into the shared store."""
@@ -215,11 +250,9 @@ class TestLogoutRevokesViaSharedStore:
         user = _user()
         access = await generator.generate_access_token(user)
 
-        request = SimpleNamespace(
-            app=SimpleNamespace(state=SimpleNamespace(token_revocation_store=store))
+        result = await auth_routes.logout(
+            _logout_request(store), current_user=user, token=access
         )
-
-        result = await auth_routes.logout(request, current_user=user, token=access)
 
         assert result.revoked_tokens == 1
         # The generator (same store) now refuses the token
@@ -239,13 +272,44 @@ class TestLogoutRevokesViaSharedStore:
             raise ConnectionError("store down")
 
         store.add_revoked_token = boom
-        request = SimpleNamespace(
-            app=SimpleNamespace(state=SimpleNamespace(token_revocation_store=store))
-        )
 
         with pytest.raises(HTTPException) as exc_info:
-            await auth_routes.logout(request, current_user=user, token=access)
+            await auth_routes.logout(
+                _logout_request(store), current_user=user, token=access
+            )
         assert exc_info.value.status_code == 500
+
+
+class TestLocalRouteGeneratorFactory:
+    """Execute _build_local_jwt_generator itself — the exact wiring point
+    where the pre-#767 bug lived (token_manager passed as revocation store).
+    """
+
+    async def test_factory_built_generator_roundtrips_with_production_store(self):
+        from faultmaven.modules.auth.api import auth as auth_routes
+
+        store = _store(_fake_redis())
+        settings_stub = SimpleNamespace(
+            auth=SimpleNamespace(
+                jwt_access_token_expire_minutes=60,
+                jwt_refresh_token_expire_days=7,
+            ),
+            security=SimpleNamespace(
+                jwt_secret_key=SimpleNamespace(get_secret_value=lambda: SECRET),
+                jwt_issuer="faultmaven",
+                jwt_audience="faultmaven-api",
+            ),
+        )
+
+        with patch.object(auth_routes, "get_settings", return_value=settings_stub):
+            generator = auth_routes._build_local_jwt_generator(store)
+
+        assert generator.revocation_store is store
+
+        refresh = await generator.generate_refresh_token(_user())
+        assert await generator.validate_refresh_token(refresh) is not None
+        await generator.revoke_refresh_token(refresh)
+        assert await generator.validate_refresh_token(refresh) is None
 
 
 class TestDIFactoryUsesConfiguredPrefix:

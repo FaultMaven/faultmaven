@@ -451,41 +451,45 @@ async def _revoke_token_by_jti(
 ) -> None:
     """Record a token's jti in the revocation store (shared by both generators).
 
-    Undecodable input and jti-less tokens are tolerated (logged, no-op):
-    RFC 7009 treats revocation of an invalid token as success. Store write
-    failures PROPAGATE so revoke endpoints cannot report success while the
-    token remains usable (#767).
+    Invalid input — undecodable tokens, missing jti, malformed/overflowing
+    exp claims — is tolerated (logged, no-op): RFC 7009 treats revocation of
+    an invalid token as success, and a junk token has nothing to revoke. Only
+    STORE WRITE failures propagate, so revoke endpoints cannot report success
+    while a real token remains usable (#767).
     """
     try:
         # Decode without verification just to read jti/exp; the caller is
-        # responsible for any authenticity requirements.
+        # responsible for any authenticity requirements. The exp/TTL math is
+        # inside this block too: a crafted or ms-precision exp (e.g.
+        # 9999999999999) overflows fromtimestamp and is an invalid-token
+        # case, not a store failure.
         payload = jwt.decode(
             token, options={"verify_signature": False, "verify_exp": False}
         )
+
+        jti = payload.get("jti")
+        if not jti:
+            logger.warning(
+                "JWT revocation skipped: token missing jti",
+                extra={"token_kind": token_kind, "user_id": payload.get("sub")},
+            )
+            return
+
+        # Revocation entry lives exactly as long as the token could be used
+        exp = payload.get("exp")
+        if exp:
+            expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+            ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+            if ttl <= 0:
+                return  # Already expired; nothing left to revoke
+        else:
+            ttl = default_ttl
     except Exception as e:
         logger.warning(
             "JWT revocation skipped: token could not be decoded",
             extra={"token_kind": token_kind, "error": str(e)},
         )
         return
-
-    jti = payload.get("jti")
-    if not jti:
-        logger.warning(
-            "JWT revocation skipped: token missing jti",
-            extra={"token_kind": token_kind, "user_id": payload.get("sub")},
-        )
-        return
-
-    # Revocation entry lives exactly as long as the token could still be used
-    exp = payload.get("exp")
-    if exp:
-        expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-        ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
-        if ttl <= 0:
-            return  # Already expired; nothing left to revoke
-    else:
-        ttl = default_ttl
 
     await revocation_store.add_revoked_token(jti, ttl)
     logger.info(
