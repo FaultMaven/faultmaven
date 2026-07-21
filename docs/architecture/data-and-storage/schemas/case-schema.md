@@ -1732,15 +1732,7 @@ CREATE POLICY cases_tenant_isolation ON cases
 -- Repeat for each tenanted table above.
 ```
 
-**Request middleware**: Every authenticated request sets the per-connection tenant context before any tenanted query. Planned in `faultmaven/api/middleware/tenant_isolation.py`:
-
-```python
-async def set_tenant_context(session: AsyncSession, organization_id: str):
-    await session.execute(
-        text("SET LOCAL app.current_org_id = :org_id"),
-        {"org_id": organization_id},
-    )
-```
+**Request wiring**: A global FastAPI dependency (`faultmaven/api/middleware/tenant_scope.py::bind_request_org_context`) binds the request's organization to a contextvar (`faultmaven/config/tenant_context.py`), and an engine `begin` listener (`faultmaven/infrastructure/persistence/database.py`) applies it to **every transaction** via `SELECT set_config('app.current_org_id', :org_id, true)` (`SET LOCAL` cannot take a bound parameter). No per-endpoint code is involved.
 
 **Test requirement**: A test must demonstrate that an `AsyncSession` with `app.current_org_id` unset returns zero rows from any tenanted table. This proves RLS is enforced, not just advisory.
 
