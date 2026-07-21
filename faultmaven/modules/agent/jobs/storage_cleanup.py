@@ -53,6 +53,9 @@ JOB_DESCRIPTION = (
     "Delete stored files whose sidecar metadata shows linked=False and "
     "uploaded_at older than the TTL (PLAN-evidence-failure-modes M1)."
 )
+# Filesystem-only sweep driven by sidecar metadata written at upload time —
+# no tenanted DB reads, so it runs identically in both tenancy modes.
+JOB_TENANT_SCOPE = "tenant_neutral"
 
 SIDECAR_SUFFIX = ".meta.json"
 
