@@ -24,7 +24,6 @@ from .auth import (
 from .deduplication import DeduplicationMiddleware
 from .logging import LoggingMiddleware
 from .rate_limiting import RateLimitMiddleware
-from .tenant_isolation import set_tenant_context
 
 __all__ = [
     "LoggingMiddleware",
@@ -41,6 +40,4 @@ __all__ = [
     "require_admin",
     "get_auth_service",
     "set_auth_service",
-    # PostgreSQL RLS (Phase 8 storage redesign)
-    "set_tenant_context",
 ]

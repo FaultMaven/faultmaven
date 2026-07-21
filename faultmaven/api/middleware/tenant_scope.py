@@ -13,10 +13,10 @@ any database transaction. A ``BaseHTTPMiddleware`` cannot be used here: Starlett
 runs its downstream app in a separate task, so a contextvar it sets would not
 reach the endpoint.
 
-Single-tenant (Standalone) is the default and the only bootable mode today
-(``MULTI_TENANT_READY`` gates ``multi`` — see ``providers/tenancy/factory.py``). In
-single-tenant mode this **forces** the Standalone org, ignoring any org an attacker
-might inject via a forged claim — the permanent re-leak guard ADR-010 requires.
+Single-tenant (Standalone) is the default; ``multi`` requires
+``DEPLOYMENT_MODE=cloud`` (see ``providers/tenancy/factory.py``). In single-tenant
+mode this **forces** the Standalone org, ignoring any org an attacker might
+inject via a forged claim — the permanent re-leak guard ADR-010 requires.
 
 Multi-tenant mode sources the org from the authenticated user's verified
 ``organization_id`` claim and **fails closed** when it is missing: a verified

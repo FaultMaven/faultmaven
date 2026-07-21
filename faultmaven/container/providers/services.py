@@ -354,10 +354,9 @@ def create_team_service(
     consumers (agent retrieval + KB inventory route) then skip team resolution
     and KB scope collapses to ``personal ∪ global``.
 
-    Because multi-tenant is held behind ``MULTI_TENANT_READY`` (factory.py) until
-    the RLS + request→org wiring ships (ADR-010 P2), this returns None at runtime
-    today; it lights up automatically when multi-tenant activates. The resolver
-    itself is exercised directly by unit tests.
+    In Standalone (single-tenant) deployments this returns None; the resolver is
+    live only under the multi-tenant provider (Cloud). The resolver itself is
+    exercised directly by unit tests.
     """
     if team_repository is None or tenant_provider is None:
         return None
