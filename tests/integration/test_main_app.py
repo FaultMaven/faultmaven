@@ -126,10 +126,11 @@ def test_health_check():
 def test_capabilities_endpoint_feature_flags():
     """The extension capabilities endpoint reports the canonical feature flags.
 
-    Guards the wire contract consumed by the Copilot extension
-    (``/v1/meta/capabilities`` → ``BackendCapabilities``). In particular the
-    team-sharing capability is named ``teamSharing`` (ADR-013: Team = the
-    sharing unit), NOT the retired ``teamWorkspaces`` misnomer.
+    Guards the wire contract consumed by the Copilot extension and the
+    Dashboard (``/v1/meta/capabilities`` → ``BackendCapabilities``). In
+    particular the team-sharing capability is named ``teamSharing`` (ADR-013:
+    Team = the sharing unit), NOT the retired ``teamWorkspaces`` misnomer, and
+    the org/team console gate is advertised as ``managementConsole``.
     """
     with TestClient(app) as client:
         response = client.get("/v1/meta/capabilities")
@@ -138,14 +139,40 @@ def test_capabilities_endpoint_feature_flags():
     data = response.json()
 
     features = data["features"]
-    # Canonical flag present and boolean.
-    assert "teamSharing" in features
-    assert isinstance(features["teamSharing"], bool)
+    # Canonical flags present and boolean.
+    for flag in ("teamSharing", "managementConsole"):
+        assert flag in features and isinstance(features[flag], bool)
     # Retired misnomer must be gone (no dual key on the wire).
     assert "teamWorkspaces" not in features
     # Sibling capability flags remain intact.
     for flag in ("extensionKB", "adminKB", "caseHistory", "sso"):
         assert flag in features and isinstance(features[flag], bool)
+
+
+def test_capabilities_team_flags_gate_on_team_service():
+    """``teamSharing``/``managementConsole`` follow the live TeamService signal.
+
+    They must NOT key on ``deployment_mode == "cloud"`` (which would light them
+    up in Cloud before multi-tenancy is ready, ADR-010 P2). The predicate is
+    ``app.state.team_service is not None`` — None in standalone, set only when a
+    multi-tenant TeamService is wired.
+    """
+    with TestClient(app) as client:
+        # Standalone bootstrap wires no TeamService → team capabilities OFF.
+        app.state.team_service = None
+        off = client.get("/v1/meta/capabilities").json()["features"]
+        assert off["teamSharing"] is False
+        assert off["managementConsole"] is False
+
+        # A wired TeamService (multi-tenant/Cloud-ready) → team capabilities ON.
+        app.state.team_service = Mock()
+        try:
+            on = client.get("/v1/meta/capabilities").json()["features"]
+            assert on["teamSharing"] is True
+            assert on["managementConsole"] is True
+        finally:
+            # Restore the standalone default so later tests see a clean state.
+            app.state.team_service = None
 
 
 def test_root_endpoint():
