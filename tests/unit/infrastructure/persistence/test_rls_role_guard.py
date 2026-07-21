@@ -20,15 +20,28 @@ from faultmaven.infrastructure.persistence.rls_role_guard import (
 class TestRaiseIfRlsExempt:
     def test_superuser_is_rejected(self):
         with pytest.raises(DeploymentCoherenceError, match="superuser=True"):
-            _raise_if_rls_exempt("app", is_superuser=True, owns_rls_table=False)
+            _raise_if_rls_exempt(
+                "app", is_superuser=True, has_bypassrls=False, owns_rls_table=False
+            )
+
+    def test_bypassrls_is_rejected(self):
+        # A non-superuser, non-owner role with BYPASSRLS still bypasses RLS.
+        with pytest.raises(DeploymentCoherenceError, match="bypassrls=True"):
+            _raise_if_rls_exempt(
+                "app", is_superuser=False, has_bypassrls=True, owns_rls_table=False
+            )
 
     def test_table_owner_is_rejected(self):
         with pytest.raises(DeploymentCoherenceError, match="owns_rls_table=True"):
-            _raise_if_rls_exempt("app", is_superuser=False, owns_rls_table=True)
+            _raise_if_rls_exempt(
+                "app", is_superuser=False, has_bypassrls=False, owns_rls_table=True
+            )
 
     def test_limited_role_passes(self):
-        # Non-superuser, non-owner -> no exception.
-        _raise_if_rls_exempt("app", is_superuser=False, owns_rls_table=False)
+        # Non-superuser, non-BYPASSRLS, non-owner -> no exception.
+        _raise_if_rls_exempt(
+            "app", is_superuser=False, has_bypassrls=False, owns_rls_table=False
+        )
 
 
 class _FakeResult:
@@ -64,10 +77,16 @@ class _FakeEngine:
         return _FakeConn(self._row)
 
 
-def _row(is_superuser=False, owns_rls_table=False, role_name="faultmaven_app"):
+def _row(
+    is_superuser=False,
+    has_bypassrls=False,
+    owns_rls_table=False,
+    role_name="faultmaven_app",
+):
     return SimpleNamespace(
         role_name=role_name,
         is_superuser=is_superuser,
+        has_bypassrls=has_bypassrls,
         owns_rls_table=owns_rls_table,
     )
 
@@ -88,6 +107,14 @@ async def test_sqlite_engine_is_noop():
 @pytest.mark.asyncio
 async def test_postgres_superuser_role_raises():
     engine = _FakeEngine(row=_row(is_superuser=True))
+    with pytest.raises(DeploymentCoherenceError):
+        await assert_app_db_role_enforces_rls(is_multi_tenant=True, engine=engine)
+
+
+@pytest.mark.asyncio
+async def test_postgres_bypassrls_role_raises():
+    # Non-superuser, non-owner, but BYPASSRLS -> still exempt -> must fail closed.
+    engine = _FakeEngine(row=_row(is_superuser=False, has_bypassrls=True))
     with pytest.raises(DeploymentCoherenceError):
         await assert_app_db_role_enforces_rls(is_multi_tenant=True, engine=engine)
 

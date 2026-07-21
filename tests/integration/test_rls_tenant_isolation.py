@@ -337,6 +337,46 @@ async def test_rls_role_guard_rejects_superuser_and_passes_limited(
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
+async def test_rls_role_guard_rejects_bypassrls_role(superuser_engine):
+    """A non-superuser, non-owner role with BYPASSRLS is still RLS-exempt.
+
+    BYPASSRLS is PostgreSQL's third RLS-exemption mechanism (besides SUPERUSER
+    and table ownership); the guard must reject it too or it gives false
+    assurance while cross-tenant reads leak.
+    """
+    from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+    from faultmaven.infrastructure.persistence.rls_role_guard import (
+        assert_app_db_role_enforces_rls,
+    )
+
+    role = f"fm_rls_bypass_{uuid4().hex[:8]}"
+    drop_sql = (
+        f"DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') "
+        f"THEN DROP OWNED BY {role}; DROP ROLE {role}; END IF; END $$;"
+    )
+    async with superuser_engine.begin() as conn:
+        dbname = (await conn.exec_driver_sql("SELECT current_database()")).scalar()
+        await conn.exec_driver_sql(drop_sql)
+        await conn.exec_driver_sql(
+            f"CREATE ROLE {role} LOGIN PASSWORD '{_LIMITED_PW}' "
+            "NOSUPERUSER BYPASSRLS"
+        )
+        await conn.exec_driver_sql(f'GRANT CONNECT ON DATABASE "{dbname}" TO {role}')
+        await conn.exec_driver_sql(f"GRANT USAGE ON SCHEMA public TO {role}")
+
+    url = make_url(os.environ["DATABASE_URL"]).set(username=role, password=_LIMITED_PW)
+    engine = create_async_engine(url, future=True)
+    try:
+        with pytest.raises(DeploymentCoherenceError, match="bypassrls=True"):
+            await assert_app_db_role_enforces_rls(is_multi_tenant=True, engine=engine)
+    finally:
+        await engine.dispose()
+        async with superuser_engine.begin() as conn:
+            await conn.exec_driver_sql(drop_sql)
+
+
+@pytest.mark.asyncio
 async def test_rls_enabled_and_policy_present(superuser_engine):
     """Structural: RLS is enabled and the tenant-isolation policy exists on a
     representative sample of tenanted tables."""

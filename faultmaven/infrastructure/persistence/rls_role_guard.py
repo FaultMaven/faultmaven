@@ -1,11 +1,11 @@
 """Startup guard: the application's DB role must not be exempt from RLS.
 
-ADR-010 forward-consolidation P2d. PostgreSQL exempts **superusers** and a
-table's **owner** from row-level security. So if the application connects as
-either, the tenant-isolation policies (migrations 018/023/030) are silently
-bypassed and cross-tenant reads leak — the most dangerous possible failure for a
-multi-tenant deployment, and one that no test on a superuser CI role would ever
-surface.
+ADR-010 forward-consolidation P2d. PostgreSQL exempts three kinds of role from
+row-level security: **superusers**, roles with the **BYPASSRLS** attribute, and a
+table's **owner**. So if the application connects as any of them, the
+tenant-isolation policies (migrations 018/023/030) are silently bypassed and
+cross-tenant reads leak — the most dangerous possible failure for a multi-tenant
+deployment, and one that no test on a superuser CI role would ever surface.
 
 This guard runs once at startup and **fails closed** (raising
 :class:`DeploymentCoherenceError`, the same boot-refusal signal the deployment
@@ -26,13 +26,16 @@ from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 
 logger = logging.getLogger(__name__)
 
-# One round-trip: is the current role a superuser, and does it own any
-# RLS-enabled table in a user schema? Either makes it exempt from RLS.
+# One round-trip: is the current role a superuser, does it hold the BYPASSRLS
+# attribute, and does it own any RLS-enabled table in a user schema? Any of the
+# three makes it exempt from RLS.
 _ROLE_PRIVILEGE_QUERY = text("""
     SELECT
         current_user AS role_name,
         (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
             AS is_superuser,
+        (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user)
+            AS has_bypassrls,
         EXISTS (
             SELECT 1
             FROM pg_class c
@@ -46,20 +49,24 @@ _ROLE_PRIVILEGE_QUERY = text("""
 
 
 def _raise_if_rls_exempt(
-    role_name: str, is_superuser: bool, owns_rls_table: bool
+    role_name: str,
+    is_superuser: bool,
+    has_bypassrls: bool,
+    owns_rls_table: bool,
 ) -> None:
     """Fail closed if the role bypasses RLS. Pure decision logic (no I/O)."""
-    if is_superuser or owns_rls_table:
+    if is_superuser or has_bypassrls or owns_rls_table:
         raise DeploymentCoherenceError(
             "Multi-tenant isolation requires the application to connect with a "
-            "non-superuser, non-owner PostgreSQL role, but it is connected as "
-            f"'{role_name}' (superuser={is_superuser}, "
-            f"owns_rls_table={owns_rls_table}). PostgreSQL exempts superusers and "
-            "table owners from row-level security, so the tenant-isolation "
+            "non-superuser, non-BYPASSRLS, non-owner PostgreSQL role, but it is "
+            f"connected as '{role_name}' (superuser={is_superuser}, "
+            f"bypassrls={has_bypassrls}, owns_rls_table={owns_rls_table}). "
+            "PostgreSQL exempts superusers, roles with the BYPASSRLS attribute, "
+            "and table owners from row-level security, so the tenant-isolation "
             "policies (migrations 018/023/030) would be silently bypassed and "
-            "cross-tenant reads would leak. Provision a dedicated non-owner, "
-            "non-superuser role for the application; the schema must be owned and "
-            "migrated by a separate role."
+            "cross-tenant reads would leak. Provision a dedicated non-owner "
+            "role without SUPERUSER or BYPASSRLS for the application; the schema "
+            "must be owned and migrated by a separate role."
         )
 
 
@@ -76,8 +83,9 @@ async def assert_app_db_role_enforces_rls(
             tests.
 
     Raises:
-        DeploymentCoherenceError: If the app's role is a superuser or owns an
-            RLS-enabled table (RLS would be bypassed).
+        DeploymentCoherenceError: If the app's role is a superuser, holds the
+            BYPASSRLS attribute, or owns an RLS-enabled table (RLS would be
+            bypassed).
     """
     if not is_multi_tenant:
         return  # single-tenant: no RLS to bypass
@@ -94,10 +102,13 @@ async def assert_app_db_role_enforces_rls(
         row = (await conn.execute(_ROLE_PRIVILEGE_QUERY)).first()
 
     _raise_if_rls_exempt(
-        row.role_name, bool(row.is_superuser), bool(row.owns_rls_table)
+        row.role_name,
+        bool(row.is_superuser),
+        bool(row.has_bypassrls),
+        bool(row.owns_rls_table),
     )
     logger.info(
-        "RLS role guard passed: app DB role '%s' is non-superuser and owns no "
-        "RLS-enabled table; tenant isolation is enforced.",
+        "RLS role guard passed: app DB role '%s' is non-superuser, non-BYPASSRLS "
+        "and owns no RLS-enabled table; tenant isolation is enforced.",
         row.role_name,
     )
