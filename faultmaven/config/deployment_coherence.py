@@ -2,8 +2,9 @@
 
 Asserts that the running configuration is coherent with the canonical
 ``DEPLOYMENT_MODE``. A ``cloud`` deployment MUST present cloud-native identity
-(OAuth auth + RS256 keys, PostgreSQL, real Redis); otherwise the app refuses to
-boot rather than silently running as ``standalone`` on cloud infrastructure.
+(OAuth auth + RS256 keys, WorkOS AuthKit SSO, PostgreSQL, real Redis); otherwise
+the app refuses to boot rather than silently running as ``standalone`` on cloud
+infrastructure.
 
 Tenancy (``TENANT_PROVIDER`` single/multi) is config-selected in the core
 (ADR-010) — both providers are in-core. ``multi`` requires
@@ -81,6 +82,27 @@ def _check_cloud(settings: Any) -> List[str]:
         problems.append(
             "Cloud requires real Redis sessions: set SESSION_STORAGE_TYPE=redis with "
             "REDIS_URL or REDIS_HOST. FakeRedis is ephemeral and standalone-only."
+        )
+
+    # 4. The hosted identity provider must be configured (ADR-015 D7). Cloud
+    # sign-in is WorkOS AuthKit only — without it no user can log in, and the
+    # deployment would sit dark while looking healthy. Hard requirement since
+    # the WorkOS cutover (it shipped as a warning during rollout).
+    missing = [
+        env_name
+        for env_name, field in (
+            ("WORKOS_API_KEY", "workos_api_key"),
+            ("WORKOS_CLIENT_ID", "workos_client_id"),
+            ("WORKOS_REDIRECT_URI", "workos_redirect_uri"),
+        )
+        if not _plain(auth, field)
+    ]
+    if missing:
+        problems.append(
+            "Cloud requires the WorkOS AuthKit identity provider (ADR-015): set "
+            f"{', '.join(missing)}. Without a hosted IdP no user can sign in to "
+            "a cloud deployment (see faultmaven-enterprise-infra "
+            "docs/operations/workos-sso-setup.md)."
         )
 
     # Tenancy (TENANT_PROVIDER single/multi) is an INDEPENDENT axis — a cloud

@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-07-21 19:01 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-07-21 23:23 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -45,7 +45,7 @@
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | organizations |
 | `uploaded_files` | 18 | `file_id` | cases, organizations, users |
-| `user_audit_log` | 11 | `audit_id` | organizations, users |
+| `user_audit_log` | 13 | `audit_id` | organizations, users |
 | `users` | 21 | `user_id` | enterprises |
 
 ## ER Diagram
@@ -585,6 +585,8 @@ erDiagram
         TEXT details
         VARCHAR ip_address
         TEXT user_agent
+        VARCHAR session_id
+        BOOLEAN success
         DATETIME created_at
     }
     users {

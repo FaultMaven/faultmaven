@@ -749,6 +749,9 @@ def create_sso_login_service(
         )
         return None
 
+    from faultmaven.infrastructure.persistence.sessionless_audit_repository import (
+        SessionlessAuditRepository,
+    )
     from faultmaven.infrastructure.persistence.user_repository import (
         SessionlessUserRepository,
     )
@@ -767,6 +770,7 @@ def create_sso_login_service(
         session_service=session_service,
         dashboard_url=settings.auth.dashboard_url,
         access_token_expires_in=settings.auth.jwt_access_token_expire_minutes * 60,
+        audit_log=SessionlessAuditRepository(),
     )
     logger.info("✅ SSO login service initialized")
     return service
