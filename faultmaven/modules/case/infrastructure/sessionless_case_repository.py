@@ -243,6 +243,7 @@ class SessionlessCaseRepository(CaseRepository):
         source: str | None = None,
         shared_case_ids: list[str] | None = None,
         restrict_case_ids: list[str] | None = None,
+        include_empty: bool = True,
     ) -> tuple[list[Case], int]:
         """List cases (filtered by user_id/state).
 
@@ -262,6 +263,7 @@ class SessionlessCaseRepository(CaseRepository):
                 source,
                 shared_case_ids=shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
+                include_empty=include_empty,
             )
 
     async def search(

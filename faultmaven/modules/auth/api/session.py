@@ -649,18 +649,19 @@ async def list_session_cases(
                     offset=offset,
                 )
 
-                # Get user's cases (session provides authentication context)
+                # Get user's cases (session provides authentication context).
+                # The service applies limit/offset in the repository query and
+                # returns (page, true total), so we must NOT re-slice here — the
+                # page is already paginated and total_count is the full match
+                # count used for the X-Total-Count header.
                 # Architecture: Session → User → User's Cases (indirect relationship)
-                user_cases = await case_service.list_user_cases(
+                paginated_cases, total_count = await case_service.list_user_cases(
                     current_user.user_id, filters
                 )
                 logger.debug(
-                    f"Session {session_id} accessing {len(user_cases)} cases for user {current_user.user_id}"
+                    f"Session {session_id} accessing {len(paginated_cases)} cases "
+                    f"(of {total_count}) for user {current_user.user_id}"
                 )
-
-                # No additional filtering needed - session authenticates access to all user's cases
-                total_count = len(user_cases)
-                paginated_cases = user_cases[offset : offset + limit]
 
                 # Convert Case entities to API objects (consistent with /api/v1/cases)
                 cases = CaseConverter.entities_to_api_list(paginated_cases)

@@ -100,6 +100,7 @@ class CaseRepository(ABC):
         source: Optional[str] = None,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
+        include_empty: bool = True,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters.
@@ -111,6 +112,9 @@ class CaseRepository(ABC):
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
+            include_empty: When False, exclude empty cases (current_turn == 0)
+                via the query WHERE clause so the predicate constrains both the
+                returned page and the total count.
             shared_case_ids: Case ids the requester can read via a team share
                 (ADR-013 §D4). Widens the owner-only scope to
                 ``owned ∪ shared-to-my-teams``; empty leaves owner-only.
@@ -821,6 +825,7 @@ class InMemoryCaseRepository(CaseRepository):
         source: Optional[str] = None,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
+        include_empty: bool = True,
     ) -> tuple[List[Case], int]:
         """List cases with filters."""
         # Filter cases
@@ -845,6 +850,12 @@ class InMemoryCaseRepository(CaseRepository):
 
         if state:
             filtered = [c for c in filtered if c.state == state]
+
+        # Exclude empty cases (current_turn == 0) when requested, BEFORE the
+        # total count is computed so the count and the returned page agree
+        # (mirrors the SQL WHERE-clause predicate in the DB repositories).
+        if not include_empty:
+            filtered = [c for c in filtered if c.current_turn > 0]
 
         # Sort by last_activity_at descending
         filtered.sort(key=lambda c: c.last_activity_at, reverse=True)

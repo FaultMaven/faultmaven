@@ -508,21 +508,52 @@ class TestListUserCases:
     """Test case listing with filters: empty cases, archived, status."""
 
     @pytest.mark.asyncio
-    async def test_returns_case_summaries(self, service, mock_repo):
+    async def test_returns_case_summaries_and_total(self, service, mock_repo):
         cases = [_make_case(current_turn=1)]
         mock_repo.list.return_value = (cases, 1)
-        result = await service.list_user_cases("user_123")
-        assert len(result) == 1
+        summaries, total = await service.list_user_cases("user_123")
+        assert len(summaries) == 1
+        # total is the repository's true match count, not the page length.
+        assert total == 1
 
     @pytest.mark.asyncio
-    async def test_excludes_empty_cases_by_default(self, service, mock_repo):
-        empty_case = _make_case(current_turn=0)
-        active_case = _make_case(current_turn=3)
-        mock_repo.list.return_value = ([empty_case, active_case], 2)
+    async def test_total_is_repo_total_not_page_length(self, service, mock_repo):
+        # Repository returns a single page (2 rows) but reports a larger total.
+        page = [_make_case(current_turn=1), _make_case(current_turn=1)]
+        mock_repo.list.return_value = (page, 17)
+        summaries, total = await service.list_user_cases(
+            "user_123", CaseListFilter(limit=2, offset=0)
+        )
+        assert len(summaries) == 2
+        assert total == 17
 
-        filters = CaseListFilter(include_empty=False)
-        result = await service.list_user_cases("user_123", filters=filters)
-        assert len(result) == 1
+    @pytest.mark.asyncio
+    async def test_forwards_pagination_and_include_empty_to_repo(
+        self, service, mock_repo
+    ):
+        # include_empty filtering is pushed into the repository query (SQL),
+        # NOT applied as a Python post-filter — so the service must forward
+        # limit/offset/include_empty and trust the repo's page + total.
+        mock_repo.list.return_value = ([], 0)
+        filters = CaseListFilter(include_empty=False, limit=25, offset=50)
+        await service.list_user_cases("user_123", filters=filters)
+        kwargs = mock_repo.list.await_args.kwargs
+        assert kwargs["include_empty"] is False
+        assert kwargs["limit"] == 25
+        assert kwargs["offset"] == 50
+
+    @pytest.mark.asyncio
+    async def test_no_python_post_filter_of_empty_cases(self, service, mock_repo):
+        # The repo (with include_empty pushed down) returns exactly the rows the
+        # service should surface. The service must NOT re-filter empties itself
+        # (a post-slice filter would disagree with the repo's total).
+        active = [_make_case(current_turn=3)]
+        mock_repo.list.return_value = (active, 1)
+        summaries, total = await service.list_user_cases(
+            "user_123", CaseListFilter(include_empty=False)
+        )
+        assert len(summaries) == 1
+        assert total == 1
 
     # test_excludes_archived_cases_by_default removed: archive feature dropped
     # in the schema redesign (commit 7b5a1b93). Will be reintroduced as a
@@ -1148,7 +1179,10 @@ class TestCaseTeamFilter:
         )
         share_repo.list_resource_ids = AsyncMock(return_value=[])
         mock_repo.list = AsyncMock(return_value=([], 0))
-        assert await svc.list_user_cases("u", CaseListFilter(team_id="team_a")) == []
+        assert await svc.list_user_cases("u", CaseListFilter(team_id="team_a")) == (
+            [],
+            0,
+        )
         mock_repo.list.assert_not_awaited()
 
     @pytest.mark.asyncio

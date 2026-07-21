@@ -904,16 +904,19 @@ class CaseService(ICaseService):
 
     async def list_user_cases(
         self, user_id: str, filters: Optional[CaseListFilter] = None
-    ) -> List[CaseSummary]:
+    ) -> Tuple[List[CaseSummary], int]:
         """
         List cases for a user
 
         Args:
             user_id: User identifier
-            filters: Optional filter criteria (include_empty, include_archived, status, etc.)
+            filters: Optional filter criteria (include_empty, status, limit, offset, etc.)
 
         Returns:
-            List of user's cases (as CaseSummary objects)
+            Tuple of (case summaries for the requested page, total match count).
+            The total reflects every filter the repository applies (state,
+            source, ``include_empty``, team scope) so the API can compute
+            ``has_more`` soundly — it is NOT the length of the returned page.
         """
         if not user_id:
             raise ValidationException("User ID cannot be empty")
@@ -923,6 +926,12 @@ class CaseService(ICaseService):
             status_filter = filters.state if filters else None
             source_filter = filters.source if filters else None
             team_filter = filters.team_id if filters else None
+            # Pagination + include_empty are pushed into the repository query so
+            # the returned page and the total count stay consistent (sound
+            # pagination). Defaults mirror CaseListFilter when no filters given.
+            limit = filters.limit if filters else 50
+            offset = filters.offset if filters else 0
+            include_empty = filters.include_empty if filters else True
             # Resolve team membership once for both the facet and the allowlist.
             team_ids = await self._resolve_user_team_ids(user_id)
             # Filter-by-team facet (ADR-013 §D4): narrow to one Team's shares.
@@ -934,7 +943,7 @@ class CaseService(ICaseService):
                     user_id, team_filter, team_ids=team_ids
                 )
                 if not restrict_case_ids:
-                    return []
+                    return [], 0
             # owned ∪ shared-to-my-teams (ADR-013 §D4). Resolved in SQL, not
             # post-filter: paginating the owner-only set and then adding shares
             # in Python would break the page/total contract.
@@ -945,16 +954,16 @@ class CaseService(ICaseService):
                 user_id=user_id,
                 state=status_filter,
                 source=source_filter,
+                limit=limit,
+                offset=offset,
                 shared_case_ids=shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
+                include_empty=include_empty,
             )
 
-            # Apply additional filters in service layer (restored from old implementation)
-            if filters:
-                # Filter empty cases (current_turn == 0) unless include_empty=True
-                # Note: New model uses current_turn instead of message_count
-                if not filters.include_empty:
-                    cases_list = [c for c in cases_list if c.current_turn > 0]
+            # NOTE: include_empty is applied in the repository query (above), not
+            # as a Python post-filter — a post-slice filter would drop rows from
+            # an already-paginated page and disagree with ``total``.
 
             # Convert to CaseSummary
             from faultmaven.models.api_models import CaseSummary
@@ -984,11 +993,11 @@ class CaseService(ICaseService):
                     f"DEBUG_CASE_SUMMARIES: Returning {len(summaries)} summaries. First type: {type(summaries[0])}"
                 )
 
-            return summaries
+            return summaries, total
 
         except Exception as e:
             logger.error(f"Failed to list cases for user {user_id}: {e}")
-            return []
+            return [], 0
 
     async def list_all_cases(
         self, filters: Optional[CaseListFilter] = None
@@ -1462,10 +1471,10 @@ class CaseService(ICaseService):
             raise ValidationException("User ID is required")
 
         try:
-            # Get all user cases and count them
-            # Note: This could be optimized with store-level counting
-            cases = await self.list_user_cases(user_id, filters)
-            count = len(cases) if cases else 0
+            # list_user_cases returns the repository's true total match count
+            # (all filters applied, before pagination) — use it directly rather
+            # than counting a single page's rows.
+            _, count = await self.list_user_cases(user_id, filters)
 
             logger.debug(f"Counted {count} cases for user {user_id}")
             return count

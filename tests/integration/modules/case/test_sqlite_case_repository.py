@@ -258,6 +258,78 @@ class TestSQLiteCaseRepository:
         assert len(cases) == 3
         assert total == 3
 
+    async def test_list_pagination_and_include_empty_soundness(self, sqlite_session):
+        """Real SQLite: limit/offset paginate and include_empty is pushed into
+        the WHERE clause so the COUNT and the SELECT stay consistent.
+
+        This is the pagination-soundness contract for the case-list endpoint:
+        the total reflects the same filters as the page, and empty cases
+        (current_turn == 0) are excluded from BOTH the count and every page
+        when include_empty=False.
+        """
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseState,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        user_id = f"user_{uuid4().hex[:8]}"
+        organization_id = f"org_{uuid4().hex[:8]}"
+
+        # 4 active (current_turn > 0) + 2 empty (current_turn == 0) = 6 rows.
+        for i in range(6):
+            case = Case(
+                case_id=f"case_{uuid4().hex[:12]}",
+                user_id=user_id,
+                organization_id=organization_id,
+                title=f"Paginate Case {i}",
+                state=CaseState.INQUIRY,
+                inquiry=InquiryData(),
+                documentation=DocumentationData(),
+                progress=InvestigationProgress(),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            object.__setattr__(case, "current_turn", 0 if i >= 4 else i + 1)
+            await repo.save(case)
+
+        # Pagination: distinct, non-overlapping pages; total is the true count.
+        page1, total1 = await repo.list(user_id=user_id, limit=2, offset=0)
+        page2, total2 = await repo.list(user_id=user_id, limit=2, offset=2)
+        assert total1 == 6 and total2 == 6
+        assert len(page1) == 2 and len(page2) == 2
+        assert {c.case_id for c in page1}.isdisjoint({c.case_id for c in page2})
+
+        # has_more boundary: last page reports the remainder, no overrun.
+        last_page, total_last = await repo.list(user_id=user_id, limit=2, offset=4)
+        assert total_last == 6
+        assert len(last_page) == 2
+        # offset past the end returns an empty page but the true total.
+        beyond, total_beyond = await repo.list(user_id=user_id, limit=2, offset=6)
+        assert beyond == []
+        assert total_beyond == 6
+
+        # include_empty pushed into SQL: total drops to 4 and every returned row
+        # is non-empty. Walk all pages and confirm page/total agree.
+        _, total_active = await repo.list(user_id=user_id, include_empty=False)
+        assert total_active == 4
+        seen, offset = [], 0
+        while offset < total_active:
+            page, total = await repo.list(
+                user_id=user_id, include_empty=False, limit=3, offset=offset
+            )
+            assert total == 4  # count matches the filtered SELECT, every page
+            seen.extend(page)
+            offset += 3
+        assert len(seen) == 4
+        assert all(c.current_turn > 0 for c in seen)
+
     async def test_message_operations_sqlite_compatible(self, sqlite_session):
         """Test that message operations work with SQLite (no ::jsonb)."""
         from faultmaven.modules.case.domain.models import (

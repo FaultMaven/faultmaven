@@ -416,7 +416,7 @@ class TestListCases:
         self, client, mock_case_service, mock_case_summary, headers
     ):
         """Test successful case list."""
-        mock_case_service.list_user_cases.return_value = [mock_case_summary]
+        mock_case_service.list_user_cases.return_value = ([mock_case_summary], 1)
 
         response = await client.get(
             "/api/v1/cases",
@@ -431,7 +431,7 @@ class TestListCases:
 
     async def test_list_cases_empty(self, client, mock_case_service, headers):
         """Test empty case list."""
-        mock_case_service.list_user_cases.return_value = []
+        mock_case_service.list_user_cases.return_value = ([], 0)
 
         response = await client.get(
             "/api/v1/cases",
@@ -447,7 +447,7 @@ class TestListCases:
         self, client, mock_case_service, mock_case_summary, headers
     ):
         """Test case list with state filter."""
-        mock_case_service.list_user_cases.return_value = [mock_case_summary]
+        mock_case_service.list_user_cases.return_value = ([mock_case_summary], 1)
 
         response = await client.get(
             "/api/v1/cases?state=inquiry",
@@ -469,7 +469,7 @@ class TestListCases:
         self, client, mock_case_service, mock_case_summary, headers
     ):
         """The ?team_id= query param reaches CaseListFilter.team_id (ADR-013 §D4)."""
-        mock_case_service.list_user_cases.return_value = [mock_case_summary]
+        mock_case_service.list_user_cases.return_value = ([mock_case_summary], 1)
 
         response = await client.get(
             "/api/v1/cases?team_id=team_a",
@@ -489,7 +489,7 @@ class TestListCases:
         self, client, mock_case_service, mock_case_summary, headers
     ):
         """Test case list with severity filter."""
-        mock_case_service.list_user_cases.return_value = [mock_case_summary]
+        mock_case_service.list_user_cases.return_value = ([mock_case_summary], 1)
 
         response = await client.get(
             "/api/v1/cases?severity=high",
@@ -503,7 +503,7 @@ class TestListCases:
 
     async def test_list_cases_pagination(self, client, mock_case_service, headers):
         """Test case list pagination."""
-        mock_case_service.list_user_cases.return_value = []
+        mock_case_service.list_user_cases.return_value = ([], 0)
 
         response = await client.get(
             "/api/v1/cases?limit=10&offset=20",
@@ -514,6 +514,42 @@ class TestListCases:
         data = response.json()
         assert data["limit"] == 10
         assert data["offset"] == 20
+
+    async def test_list_cases_total_count_is_repo_total_not_page_length(
+        self, client, mock_case_service, mock_case_summary, headers
+    ):
+        """total_count reflects the service's true total (not the page length),
+        and has_more is True when the page does not reach the total."""
+        # One row on the page, but 5 total matches.
+        mock_case_service.list_user_cases.return_value = ([mock_case_summary], 5)
+
+        response = await client.get(
+            "/api/v1/cases?limit=2&offset=0",
+            headers=headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total_count"] == 5  # true total, not len(cases)==1
+        assert data["has_more"] is True  # offset(0) + len(1) < 5
+        assert response.headers["X-Total-Count"] == "5"
+
+    async def test_list_cases_has_more_false_at_last_page(
+        self, client, mock_case_service, mock_case_summary, headers
+    ):
+        """has_more is False once offset + page length reaches the total."""
+        # Final page: offset 4, one row, total 5 → 4 + 1 == 5, no more.
+        mock_case_service.list_user_cases.return_value = ([mock_case_summary], 5)
+
+        response = await client.get(
+            "/api/v1/cases?limit=2&offset=4",
+            headers=headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total_count"] == 5
+        assert data["has_more"] is False  # 4 + 1 == 5
 
     async def test_list_cases_limit_validation(self, client, headers):
         """Test case list limit validation."""

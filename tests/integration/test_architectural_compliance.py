@@ -241,8 +241,8 @@ class TestArchitecturalCompliance:
         )
 
         # Retrieve cases via both sessions - use list_user_cases method
-        cases_via_session1 = await case_service.list_user_cases(user_id)
-        cases_via_session2 = await case_service.list_user_cases(user_id)
+        cases_via_session1, _ = await case_service.list_user_cases(user_id)
+        cases_via_session2, _ = await case_service.list_user_cases(user_id)
 
         # ✅ SPEC COMPLIANCE: Identical results from both sessions
         case_ids_session1 = {c.case_id for c in cases_via_session1}
@@ -284,7 +284,7 @@ class TestArchitecturalCompliance:
         session2, _ = await session_service.create_session(user_id, client_id)
 
         # Case should still be accessible - use list_user_cases
-        cases = await case_service.list_user_cases(user_id)
+        cases, _ = await case_service.list_user_cases(user_id)
         case_ids = {c.case_id for c in cases}
 
         # ✅ SPEC COMPLIANCE: Case persists beyond session
@@ -316,8 +316,8 @@ class TestArchitecturalCompliance:
             created_cases.append(case)
 
         # Get cases via list_user_cases method (accessed twice to verify consistency)
-        first_access = await case_service.list_user_cases(user_id)
-        second_access = await case_service.list_user_cases(user_id)
+        first_access, _ = await case_service.list_user_cases(user_id)
+        second_access, _ = await case_service.list_user_cases(user_id)
 
         # ✅ SPEC COMPLIANCE: Identical results from multiple accesses
         first_case_ids = sorted([c.case_id for c in first_access])
@@ -524,7 +524,7 @@ class TestArchitecturalCompliance:
         )
 
         # User 1 should only see their case
-        user1_cases = await case_service.list_user_cases(user1_id)
+        user1_cases, _ = await case_service.list_user_cases(user1_id)
         user1_case_ids = {c.case_id for c in user1_cases}
 
         assert case1.case_id in user1_case_ids, "User should see their own cases"
@@ -533,7 +533,7 @@ class TestArchitecturalCompliance:
         ), "User should not see other users' cases"
 
         # User 2 should only see their case
-        user2_cases = await case_service.list_user_cases(user2_id)
+        user2_cases, _ = await case_service.list_user_cases(user2_id)
         user2_case_ids = {c.case_id for c in user2_cases}
 
         assert case2.case_id in user2_case_ids, "User should see their own cases"

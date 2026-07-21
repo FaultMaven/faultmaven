@@ -63,6 +63,88 @@ def test_list_filter_param_is_state_not_status(provider):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("provider", _LIST_PROVIDERS, ids=lambda c: c.__name__)
+def test_list_declares_include_empty_param(provider):
+    """Case ``list()`` must accept ``include_empty`` across contract + all impls.
+
+    ``include_empty`` is pushed into the repository query so the empty-case
+    predicate constrains BOTH the returned page and the total count. The
+    service calls ``repo.list(include_empty=...)`` by keyword, so any impl
+    missing the param would raise ``unexpected keyword argument`` at runtime.
+    """
+    params = inspect.signature(provider.list).parameters
+    assert "include_empty" in params, (
+        f"{provider.__name__}.list() missing 'include_empty' param — the "
+        f"service calls list(include_empty=...) by keyword"
+    )
+    # Default must preserve the "show everything" behavior.
+    assert params["include_empty"].default is True
+
+
+def _make_case(title, user_id="u1", current_turn=1):
+    case = Case(title=title, user_id=user_id, organization_id="org1", description="")
+    # Bypass Pydantic cross-field validators to set current_turn directly.
+    object.__setattr__(case, "current_turn", current_turn)
+    return case
+
+
+@pytest.mark.unit
+async def test_inmemory_pagination_returns_distinct_pages_and_true_total():
+    """limit/offset yield distinct, non-overlapping pages; total is the true
+    match count, not the page length."""
+    repo = InMemoryCaseRepository()
+    for i in range(6):
+        await repo.save(_make_case(title=f"Case {i}"))
+
+    page1, total1 = await repo.list(user_id="u1", limit=2, offset=0)
+    page2, total2 = await repo.list(user_id="u1", limit=2, offset=2)
+
+    # Total is the full count (6), independent of the page size (2).
+    assert total1 == 6
+    assert total2 == 6
+    assert len(page1) == 2
+    assert len(page2) == 2
+    # Pages do not overlap.
+    ids1 = {c.case_id for c in page1}
+    ids2 = {c.case_id for c in page2}
+    assert ids1.isdisjoint(ids2)
+
+
+@pytest.mark.unit
+async def test_inmemory_include_empty_false_is_sound_across_pages():
+    """include_empty=False constrains both the page and the total: empties are
+    excluded from the count AND never appear on any page (page/total agree)."""
+    repo = InMemoryCaseRepository()
+    # 3 active (current_turn>0) + 2 empty (current_turn==0) = 5 rows total.
+    for i in range(3):
+        await repo.save(_make_case(title=f"Active {i}", current_turn=i + 1))
+    for i in range(2):
+        await repo.save(_make_case(title=f"Empty {i}", current_turn=0))
+
+    # With empties included, total is 5.
+    _, total_all = await repo.list(user_id="u1", include_empty=True)
+    assert total_all == 5
+
+    # With empties excluded, total drops to 3 and NO empty row surfaces on any
+    # page — walk the whole result set page by page and assert consistency.
+    _, total_active = await repo.list(user_id="u1", include_empty=False)
+    assert total_active == 3
+
+    seen = []
+    offset = 0
+    while offset < total_active:
+        page, total = await repo.list(
+            user_id="u1", include_empty=False, limit=2, offset=offset
+        )
+        assert total == total_active  # total is stable across pages
+        seen.extend(page)
+        offset += 2
+    # Every surfaced case is non-empty, and the pages summed to exactly total.
+    assert len(seen) == total_active
+    assert all(c.current_turn > 0 for c in seen)
+
+
+@pytest.mark.unit
 async def test_inmemory_list_filters_by_state_keyword():
     """Functional: list(state=...) reads the renamed field, matching and excluding.
 
