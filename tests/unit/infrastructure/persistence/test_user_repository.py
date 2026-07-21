@@ -18,6 +18,7 @@ import pytest
 from faultmaven.exceptions import ConflictError, NotFoundError
 from faultmaven.infrastructure.persistence.user_repository import (
     InMemoryUserRepository,
+    PostgreSQLUserRepository,
     User,
     UserRepository,
 )
@@ -691,3 +692,65 @@ class TestEmailUniquenessEnforcement:
 
         found_by_username = await user_repo.get_by_username("newalice")
         assert found_by_username.user_id == user.user_id
+
+
+class TestInMemoryUserRepositoryGetBySSO:
+    """Tests for InMemoryUserRepository.get_by_sso() (ADR-015)."""
+
+    def _sso_user(self, user_id, provider, provider_id):
+        now = datetime.now(timezone.utc)
+        return User(
+            user_id=user_id,
+            username=user_id,
+            email=f"{user_id}@example.com",
+            display_name=user_id,
+            hashed_password=None,
+            sso_provider=provider,
+            sso_provider_id=provider_id,
+            is_active=True,
+            is_email_verified=True,
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def test_get_by_sso_returns_linked_user(self, user_repo):
+        user = self._sso_user("u-sso", "workos", "user_01ABC")
+        await user_repo.save(user)
+
+        found = await user_repo.get_by_sso("workos", "user_01ABC")
+        assert found is not None
+        assert found.user_id == "u-sso"
+
+    async def test_get_by_sso_returns_none_when_no_link(self, user_repo):
+        assert await user_repo.get_by_sso("workos", "user_missing") is None
+
+    async def test_get_by_sso_does_not_match_non_sso_users(
+        self, user_repo, sample_user
+    ):
+        # A password user has sso_provider/sso_provider_id = None and must never
+        # match an SSO lookup (guards against None==None false positives).
+        await user_repo.save(sample_user)
+        assert await user_repo.get_by_sso("workos", "user_01ABC") is None
+        assert await user_repo.get_by_sso(None, None) is None
+
+    async def test_get_by_sso_is_provider_scoped(self, user_repo):
+        # Same subject id under a different provider must not match.
+        await user_repo.save(self._sso_user("u1", "workos", "shared-id"))
+        assert await user_repo.get_by_sso("okta", "shared-id") is None
+        assert (await user_repo.get_by_sso("workos", "shared-id")).user_id == "u1"
+
+
+class TestPostgreSQLUserRepositoryGetBySSO:
+    """PostgreSQL get_by_sso empty-subject guard (ADR-015).
+
+    The dangerous path: `sso_provider == None` renders as `IS NULL`, which would
+    match every password (non-SSO) user. The guard must short-circuit BEFORE the
+    query — proven here with db_session=None, where reaching `self.db.execute`
+    would raise AttributeError.
+    """
+
+    async def test_empty_subject_returns_none_without_querying(self):
+        repo = PostgreSQLUserRepository(db_session=None)
+        assert await repo.get_by_sso(None, None) is None
+        assert await repo.get_by_sso("workos", None) is None
+        assert await repo.get_by_sso("", "user_01ABC") is None
