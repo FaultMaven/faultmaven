@@ -91,7 +91,10 @@ def _sync_cleanup_wrapper(case_vector_store: CaseVectorStore, case_store: ICaseS
 
 
 def start_case_cleanup_scheduler(
-    case_vector_store: CaseVectorStore, case_store: ICaseStore, interval_hours: int = 6
+    case_vector_store: CaseVectorStore,
+    case_store: ICaseStore,
+    interval_hours: int = 6,
+    is_multi_tenant: bool = False,
 ) -> Optional[BackgroundScheduler]:
     """
     Start background scheduler for case collection cleanup.
@@ -100,10 +103,26 @@ def start_case_cleanup_scheduler(
         case_vector_store: CaseVectorStore instance
         case_store: CaseStore instance for getting active case IDs
         interval_hours: Cleanup interval in hours (default: 6)
+        is_multi_tenant: Whether the deployment runs the multi-tenant provider.
+            The cleanup task is cross-tenant scoped (it diffs the DB case-id
+            set against ChromaDB collections, which are not org-partitioned),
+            but a background task's DB reads are RLS-scoped to the contextvar
+            default — a partial view that would classify other tenants'
+            collections as orphaned and delete them. Refused under multi
+            (ADR-010 P3 / issue #629).
 
     Returns:
-        BackgroundScheduler instance (or None if initialization fails)
+        BackgroundScheduler instance (or None if refused or initialization fails)
     """
+    if is_multi_tenant:
+        logger.warning(
+            "In-process case-cleanup scheduler refused under the multi-tenant "
+            "provider: the cleanup task needs a cross-tenant case-id view, but "
+            "background DB reads are RLS-scoped to a single organization — a "
+            "partial view would delete other tenants' collections (issue #629)."
+        )
+        return None
+
     try:
         scheduler = BackgroundScheduler()
 
