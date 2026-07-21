@@ -235,6 +235,108 @@ async def test_login_by_username_resolves_under_limited_role_without_org_context
 
 
 @pytest.mark.asyncio
+@pytest.mark.security
+async def test_rls_scopes_team_members_to_current_org(
+    limited_engine, superuser_engine, two_orgs
+):
+    """team_members has no organization_id; its policy scopes via teams (030).
+
+    A membership row is visible only when its team belongs to the connection's
+    current organization; cross-org membership rows are invisible, and with no
+    context set the table is fail-closed.
+    """
+    from tests.utils import seed_users
+
+    org_a, org_b = two_orgs
+    team_a, team_b = f"team_a_{uuid4().hex[:8]}", f"team_b_{uuid4().hex[:8]}"
+    user_a, user_b = f"tm_user_a_{uuid4().hex[:8]}", f"tm_user_b_{uuid4().hex[:8]}"
+
+    su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
+    async with su_maker() as session:
+        await seed_users(session, [user_a, user_b])
+        for tid, oid in ((team_a, org_a), (team_b, org_b)):
+            await session.execute(
+                text(
+                    "INSERT INTO teams (team_id, organization_id, name) "
+                    "VALUES (:t, :o, :n)"
+                ),
+                {"t": tid, "o": oid, "n": tid},
+            )
+        for uid, tid in ((user_a, team_a), (user_b, team_b)):
+            await session.execute(
+                text("INSERT INTO team_members (user_id, team_id) VALUES (:u, :t)"),
+                {"u": uid, "t": tid},
+            )
+        await session.commit()
+
+    tm_query = "SELECT team_id FROM team_members WHERE team_id IN (:a, :b)"
+    try:
+        maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+        # Scoped to org_a -> only org_a's team's membership row is visible.
+        async with maker() as session:
+            await session.execute(
+                text("SELECT set_config('app.current_org_id', :o, true)"), {"o": org_a}
+            )
+            rows = (
+                (await session.execute(text(tm_query), {"a": team_a, "b": team_b}))
+                .scalars()
+                .all()
+            )
+            assert set(rows) == {team_a}, "RLS leaked a cross-org membership row"
+
+        # Fail-closed: no org context -> no membership rows.
+        async with maker() as session:
+            count = (
+                await session.execute(
+                    text("SELECT count(*) FROM team_members WHERE team_id IN (:a, :b)"),
+                    {"a": team_a, "b": team_b},
+                )
+            ).scalar()
+            assert count == 0, "RLS leak: team_members visible with no tenant context"
+    finally:
+        async with su_maker() as session:
+            await session.execute(
+                text("DELETE FROM team_members WHERE team_id IN (:a, :b)"),
+                {"a": team_a, "b": team_b},
+            )
+            await session.execute(
+                text("DELETE FROM teams WHERE team_id IN (:a, :b)"),
+                {"a": team_a, "b": team_b},
+            )
+            await session.execute(
+                text("DELETE FROM users WHERE user_id IN (:a, :b)"),
+                {"a": user_a, "b": user_b},
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_rls_role_guard_rejects_superuser_and_passes_limited(
+    limited_engine, superuser_engine
+):
+    """The startup guard fails closed for an RLS-exempt role, passes a limited one."""
+    from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+    from faultmaven.infrastructure.persistence.rls_role_guard import (
+        assert_app_db_role_enforces_rls,
+    )
+
+    # Superuser / table-owner role bypasses RLS -> refuse to boot.
+    with pytest.raises(DeploymentCoherenceError):
+        await assert_app_db_role_enforces_rls(
+            is_multi_tenant=True, engine=superuser_engine
+        )
+
+    # Non-superuser, non-owner role enforces RLS -> passes.
+    await assert_app_db_role_enforces_rls(is_multi_tenant=True, engine=limited_engine)
+
+    # Single-tenant is a no-op even on the RLS-exempt engine.
+    await assert_app_db_role_enforces_rls(
+        is_multi_tenant=False, engine=superuser_engine
+    )
+
+
+@pytest.mark.asyncio
 async def test_rls_enabled_and_policy_present(superuser_engine):
     """Structural: RLS is enabled and the tenant-isolation policy exists on a
     representative sample of tenanted tables."""
@@ -251,6 +353,8 @@ async def test_rls_enabled_and_policy_present(superuser_engine):
             "causal_node_evidence",
             # polymorphic share table enrolled by migration 028 (ADR-013 §D4)
             "resource_shares",
+            # team_members enrolled by migration 030 (subquery policy via teams)
+            "team_members",
         ):
             enabled = (
                 await session.execute(
