@@ -1,14 +1,14 @@
-"""Token Revocation Store Implementations.
+"""Token Revocation Store Implementation.
 
-Storage implementations for JWT token revocation tracking.
-Revoked tokens are stored by their JTI (JWT ID) with TTL matching token expiration.
+The single revocation store for the whole deployment (issue #767): every
+revoke path (OAuth /revoke, refresh rotation in both auth modes, logout)
+writes here, and the request-path check (``AuthService._is_token_revoked``)
+reads here. Revoked tokens are stored by their JTI (JWT ID) with TTL matching
+token expiration; Redis expiry handles cleanup.
 
-Two implementations:
-1. RedisTokenRevocationStore - For all deployments (real Redis or FakeRedis)
-2. PostgresTokenRevocationStore - For enterprise deployment (persistent audit trail, ORM)
+The key prefix comes from ``settings.security.token_revocation_prefix`` so
+writers and the reader can never disagree on the namespace.
 """
-
-from datetime import datetime, timedelta, timezone
 
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
@@ -18,19 +18,20 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
 class RedisTokenRevocationStore(ITokenRevocationStore):
     """Redis implementation of token revocation store.
 
+    Works against real Redis (cloud) or FakeRedis (standalone).
     Uses Redis TTL for automatic expiration.
     """
 
-    def __init__(self, redis_client):
+    def __init__(self, redis_client, key_prefix: str = "revoked:token:"):
         self.redis = redis_client
-        self._key_prefix = "oauth:revoked:"
+        self._key_prefix = key_prefix
 
     def _make_key(self, jti: str) -> str:
         return f"{self._key_prefix}{jti}"
 
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
         key = self._make_key(jti)
-        await self.redis.setex(key, ttl, "1")
+        await self.redis.setex(key, ttl, "revoked")
 
     async def is_revoked(self, jti: str) -> bool:
         key = self._make_key(jti)
@@ -38,53 +39,3 @@ class RedisTokenRevocationStore(ITokenRevocationStore):
 
     async def cleanup_expired(self) -> int:
         return 0  # Redis handles expiration automatically
-
-
-class PostgresTokenRevocationStore(ITokenRevocationStore):
-    """SQLAlchemy ORM implementation of token revocation store."""
-
-    def __init__(self, db_session_factory):
-        self.session_factory = db_session_factory
-
-    async def add_revoked_token(self, jti: str, ttl: int) -> None:
-        from faultmaven.infrastructure.persistence.db_compat import dialect_insert
-        from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
-
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
-
-        async with self.session_factory() as session:
-            stmt = dialect_insert(session, OAuthRevokedTokenModel).values(
-                jti=jti,
-                expires_at=expires_at,
-            )
-            stmt = stmt.on_conflict_do_nothing(index_elements=["jti"])
-            await session.execute(stmt)
-            await session.commit()
-
-    async def is_revoked(self, jti: str) -> bool:
-        from sqlalchemy import select
-
-        from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
-
-        async with self.session_factory() as session:
-            now = datetime.now(timezone.utc)
-            stmt = select(OAuthRevokedTokenModel.jti).where(
-                OAuthRevokedTokenModel.jti == jti,
-                OAuthRevokedTokenModel.expires_at > now,
-            )
-            result = await session.execute(stmt)
-            return result.scalar_one_or_none() is not None
-
-    async def cleanup_expired(self) -> int:
-        from sqlalchemy import delete
-
-        from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
-
-        async with self.session_factory() as session:
-            now = datetime.now(timezone.utc)
-            stmt = delete(OAuthRevokedTokenModel).where(
-                OAuthRevokedTokenModel.expires_at <= now
-            )
-            result = await session.execute(stmt)
-            await session.commit()
-            return result.rowcount

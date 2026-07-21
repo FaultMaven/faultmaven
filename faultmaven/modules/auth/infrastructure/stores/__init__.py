@@ -11,5 +11,4 @@ __all__ = [
     "RedisSessionStore",
     "UserStore",
     "RedisTokenRevocationStore",
-    "PostgresTokenRevocationStore",
 ]

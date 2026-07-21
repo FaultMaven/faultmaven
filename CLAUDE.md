@@ -642,9 +642,9 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-### Key Tables (32 total, 4 domains)
+### Key Tables (31 total, 4 domains)
 
-**User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`
+**User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`
 
 **Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `reports`, `conversion_jobs`, `conversion_drafts`
 
@@ -660,7 +660,7 @@ All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/
 
 ### Migration
 
-Baseline `001_clean_baseline` (revision `c4689af8aa3f`) creates 32 tables + RBAC seed data. Subsequent migrations 002–010 cover the post-baseline cleanups: evidence `summary`/`extract` two-field shape (002), enterprise-tier transitional nullability (003), uploaded_files cleanup (004), description CHECK relaxation (005), enterprise-tier NOT NULL tightening (006), drop `users_password_or_sso` CHECK to permit dev-login (007), `case_actions.triggered_by` audit column + read-path wiring (008), Evidence/Solution audit fields (009), and the strict evidence-model redesign (010 — preprocessing artifacts move to `uploaded_files`; `evidence.form` dropped; `evidence_source_invariant` CHECK added so every Evidence row has a known source). Migrations continue through 011–028 (evidence-needs, `status`→`state`, RLS tenant isolation, causal-graph chain model, PostgreSQL type-divergence fixes, causal-table RLS, provenance-column drop, `account_kind`+source, plan-tier rename, drop orphaned `organization` KB scope, and the polymorphic `resource_shares` table replacing the nullable `team_id` columns — 028). Current head: `d0e1f2a3b4c5`. See `docs/architecture/data-and-storage/schemas/case-schema.md` for the full migration table.
+Baseline `001_clean_baseline` (revision `c4689af8aa3f`) creates 32 tables + RBAC seed data. Subsequent migrations 002–010 cover the post-baseline cleanups: evidence `summary`/`extract` two-field shape (002), enterprise-tier transitional nullability (003), uploaded_files cleanup (004), description CHECK relaxation (005), enterprise-tier NOT NULL tightening (006), drop `users_password_or_sso` CHECK to permit dev-login (007), `case_actions.triggered_by` audit column + read-path wiring (008), Evidence/Solution audit fields (009), and the strict evidence-model redesign (010 — preprocessing artifacts move to `uploaded_files`; `evidence.form` dropped; `evidence_source_invariant` CHECK added so every Evidence row has a known source). Migrations continue through 011–031 (evidence-needs, `status`→`state`, RLS tenant isolation, causal-graph chain model, PostgreSQL type-divergence fixes, causal-table RLS, provenance-column drop, `account_kind`+source, plan-tier rename, drop orphaned `organization` KB scope, the polymorphic `resource_shares` table replacing the nullable `team_id` columns (028), RBAC role/permission seed (029), `team_members` RLS (030), and dropping the never-written `oauth_revoked_tokens` table — token revocation is Redis-only via the single deployment-wide store (031, #767)). Current head: `a3b4c5d6e7f8`. See `docs/architecture/data-and-storage/schemas/case-schema.md` for the full migration table.
 
 ## Key Patterns
 
@@ -782,7 +782,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `faultmaven/modules/knowledge/api/conversion_routes.py` | Conversion API endpoints (feature-flagged) |
 | `.env.example` | Configuration template |
 | `pyproject.toml` | Dependencies and tool config |
-| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 32 tables) |
+| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 31 tables) |
 | `faultmaven/config/llm_config_overrides.py` | Config override application + hot-reload (cloud mode only) |
 | `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, features, connection test |
 | `.importlinter` | Architecture contracts (13 rules) |

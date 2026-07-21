@@ -27,6 +27,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import jwt as jwt_lib
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel, ValidationError
@@ -35,6 +36,7 @@ from faultmaven.api.v1.auth_dependencies import (
     check_auth_services_health,
     extract_bearer_token,
     get_token_manager,
+    get_token_revocation_store,
     get_user_store,
     require_admin,
     require_authentication,
@@ -96,12 +98,18 @@ async def require_local_mode() -> None:
         )
 
 
-def _build_local_jwt_generator(token_manager):
+def _build_local_jwt_generator(revocation_store):
     """Construct the HS256 JWT generator used for local-mode tokens.
 
     Shared by /login and /refresh so both mint and validate tokens with the
     same secret, issuer, audience, and revocation store — a refresh token must
     verify under exactly the configuration that issued it.
+
+    Args:
+        revocation_store: The deployment-wide revocation store from
+            ``get_token_revocation_store`` (#767). The request-path check in
+            AuthService reads the same instance, so tokens revoked through
+            this generator are rejected on every API endpoint.
     """
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
         HS256JWTTokenGenerator,
@@ -116,7 +124,7 @@ def _build_local_jwt_generator(token_manager):
 
     return HS256JWTTokenGenerator(
         secret_key=settings.security.jwt_secret_key.get_secret_value(),
-        revocation_store=token_manager,
+        revocation_store=revocation_store,
         settings=settings.auth,
         issuer=settings.security.jwt_issuer,
         audience=settings.security.jwt_audience,
@@ -282,7 +290,7 @@ async def local_login(
     try:
         # Get required services
         user_store = await get_user_store(request)
-        token_manager = await get_token_manager(request)
+        revocation_store = await get_token_revocation_store(request)
 
         # Try to find existing user
         user = await user_store.get_user_by_username(request_body.username)
@@ -322,7 +330,7 @@ async def local_login(
         # Generate JWT tokens (HS256 for local mode)
         # Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes use JWT tokens"
         settings = get_settings()
-        jwt_generator = _build_local_jwt_generator(token_manager)
+        jwt_generator = _build_local_jwt_generator(revocation_store)
 
         access_token = await jwt_generator.generate_access_token(user)
         # Refresh token lets the client mint a new access token via
@@ -444,7 +452,7 @@ async def local_register(
     try:
         # Get required services
         user_store = await get_user_store(request)
-        token_manager = await get_token_manager(request)
+        revocation_store = await get_token_revocation_store(request)
 
         # Check if user already exists
         existing_user = await user_store.get_user_by_username(request_body.username)
@@ -470,7 +478,7 @@ async def local_register(
         # Generate JWT tokens (HS256 for local mode)
         # Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes use JWT tokens"
         settings = get_settings()
-        jwt_generator = _build_local_jwt_generator(token_manager)
+        jwt_generator = _build_local_jwt_generator(revocation_store)
 
         access_token = await jwt_generator.generate_access_token(user)
         refresh_token = await jwt_generator.generate_refresh_token(user)
@@ -578,8 +586,8 @@ async def refresh_tokens(
         user_store = await get_user_store(request)
         settings = get_settings()
         if settings.auth.auth_mode == AuthMode.LOCAL:
-            token_manager = await get_token_manager(request)
-            jwt_generator = _build_local_jwt_generator(token_manager)
+            revocation_store = await get_token_revocation_store(request)
+            jwt_generator = _build_local_jwt_generator(revocation_store)
         else:
             # Composition root attaches the RS256 generator (with its Redis
             # revocation store) under oauth mode; a refresh token must verify
@@ -755,8 +763,10 @@ async def logout(
 ) -> LogoutResponse:
     """Logout current user
 
-    Revokes the current authentication token. The user will need to login
-    again to access protected resources.
+    Revokes the current access token in the deployment-wide revocation store
+    (#767), so the request-path revocation check rejects it on every endpoint
+    for the remainder of its lifetime. Works in both auth modes — the store
+    is keyed by jti, independent of the signing algorithm.
 
     **Flow:**
     1. Validate current authentication
@@ -766,10 +776,36 @@ async def logout(
     correlation_id = str(uuid.uuid4())
 
     try:
-        token_manager = await get_token_manager(request)
+        auth_service = getattr(request.app.state, "auth_service", None)
+        if auth_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service unavailable. Please check server startup logs.",
+            )
 
-        # Revoke the current token (raises exception on failure)
-        await token_manager.revoke_token(token)
+        # The bearer token was already verified by require_authentication;
+        # decode without re-verifying just to read jti + exp for revocation.
+        claims = jwt_lib.decode(
+            token, options={"verify_signature": False, "verify_exp": False}
+        )
+        jti = claims.get("jti")
+        exp = claims.get("exp")
+        if not jti:
+            # Cannot revoke a token that carries no revocation handle. Our
+            # generators always mint a jti, so this indicates a foreign token.
+            logger.warning(
+                f"Logout without jti claim: {current_user.user_id} "
+                f"(correlation: {correlation_id})"
+            )
+            return LogoutResponse(
+                message="Logged out (token carries no jti; nothing to revoke)",
+                revoked_tokens=0,
+            )
+
+        # Raises ServiceError on store failure — logout must not claim
+        # success while the token remains usable. AuthService writes the
+        # same deployment-wide store the request-path check reads (#767).
+        await auth_service.revoke_token(jti, int(exp) if exp else 0)
 
         logger.info(
             f"User logout: {current_user.user_id} (correlation: {correlation_id})"

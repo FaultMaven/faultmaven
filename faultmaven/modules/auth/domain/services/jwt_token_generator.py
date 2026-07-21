@@ -408,112 +408,98 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
 
     async def revoke_access_token(self, token: str) -> None:
-        """Revoke access token by adding jti to revocation list.
+        """Revoke access token by adding jti to the revocation store.
 
         Args:
             token: JWT access token to revoke
+
+        Raises:
+            Exception: Store write failures propagate — a caller must not
+                report revocation success when the token remains usable.
         """
-        try:
-            # Decode without verification to get jti
-            payload = jwt.decode(
-                token, options={"verify_signature": False, "verify_exp": False}
-            )
-
-            jti = payload.get("jti")
-            if not jti:
-                logger.warning(
-                    "JWT revocation skipped: token missing jti",
-                    extra={"user_id": payload.get("sub")},
-                )
-                return
-
-            # Calculate remaining TTL for revocation entry
-            exp = payload.get("exp")
-            user_id = payload.get("sub")
-            if exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
-                if ttl > 0:
-                    await self.revocation_store.add_revoked_token(jti, ttl)
-                    logger.info(
-                        "JWT access token revoked",
-                        extra={
-                            "jti": jti,
-                            "user_id": user_id,
-                            "ttl_seconds": ttl,
-                        },
-                    )
-            else:
-                # No expiration, revoke with default TTL
-                default_ttl = self.settings.jwt_access_token_expire_minutes * 60
-                await self.revocation_store.add_revoked_token(jti, default_ttl)
-                logger.info(
-                    "JWT access token revoked",
-                    extra={
-                        "jti": jti,
-                        "user_id": user_id,
-                        "ttl_seconds": default_ttl,
-                    },
-                )
-
-        except Exception as e:
-            logger.error(
-                "JWT revocation failed", extra={"error": str(e)}, exc_info=True
-            )
+        await _revoke_token_by_jti(
+            self.revocation_store,
+            token,
+            token_kind="access",
+            default_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+        )
 
     async def revoke_refresh_token(self, token: str) -> None:
-        """Revoke refresh token by adding jti to revocation list.
+        """Revoke refresh token by adding jti to the revocation store.
 
         Args:
             token: JWT refresh token to revoke
+
+        Raises:
+            Exception: Store write failures propagate — a caller must not
+                report revocation success when the token remains usable.
         """
-        try:
-            # Decode without verification to get jti
-            payload = jwt.decode(
-                token, options={"verify_signature": False, "verify_exp": False}
+        await _revoke_token_by_jti(
+            self.revocation_store,
+            token,
+            token_kind="refresh",
+            default_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
+        )
+
+
+async def _revoke_token_by_jti(
+    revocation_store,
+    token: str,
+    *,
+    token_kind: str,
+    default_ttl: int,
+) -> None:
+    """Record a token's jti in the revocation store (shared by both generators).
+
+    Invalid input — undecodable tokens, missing jti, malformed/overflowing
+    exp claims — is tolerated (logged, no-op): RFC 7009 treats revocation of
+    an invalid token as success, and a junk token has nothing to revoke. Only
+    STORE WRITE failures propagate, so revoke endpoints cannot report success
+    while a real token remains usable (#767).
+    """
+    try:
+        # Decode without verification just to read jti/exp; the caller is
+        # responsible for any authenticity requirements. The exp/TTL math is
+        # inside this block too: a crafted or ms-precision exp (e.g.
+        # 9999999999999) overflows fromtimestamp and is an invalid-token
+        # case, not a store failure.
+        payload = jwt.decode(
+            token, options={"verify_signature": False, "verify_exp": False}
+        )
+
+        jti = payload.get("jti")
+        if not jti:
+            logger.warning(
+                "JWT revocation skipped: token missing jti",
+                extra={"token_kind": token_kind, "user_id": payload.get("sub")},
             )
+            return
 
-            jti = payload.get("jti")
-            if not jti:
-                logger.warning(
-                    "JWT revocation skipped: refresh token missing jti",
-                    extra={"user_id": payload.get("sub")},
-                )
-                return
+        # Revocation entry lives exactly as long as the token could be used
+        exp = payload.get("exp")
+        if exp:
+            expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+            ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+            if ttl <= 0:
+                return  # Already expired; nothing left to revoke
+        else:
+            ttl = default_ttl
+    except Exception as e:
+        logger.warning(
+            "JWT revocation skipped: token could not be decoded",
+            extra={"token_kind": token_kind, "error": str(e)},
+        )
+        return
 
-            # Calculate remaining TTL for revocation entry
-            exp = payload.get("exp")
-            user_id = payload.get("sub")
-            if exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
-                if ttl > 0:
-                    await self.revocation_store.add_revoked_token(jti, ttl)
-                    logger.info(
-                        "JWT refresh token revoked",
-                        extra={
-                            "jti": jti,
-                            "user_id": user_id,
-                            "ttl_seconds": ttl,
-                        },
-                    )
-            else:
-                # No expiration, revoke with default TTL
-                default_ttl = self.settings.jwt_refresh_token_expire_days * 86400
-                await self.revocation_store.add_revoked_token(jti, default_ttl)
-                logger.info(
-                    "JWT refresh token revoked",
-                    extra={
-                        "jti": jti,
-                        "user_id": user_id,
-                        "ttl_seconds": default_ttl,
-                    },
-                )
-
-        except Exception as e:
-            logger.error(
-                "JWT revocation failed", extra={"error": str(e)}, exc_info=True
-            )
+    await revocation_store.add_revoked_token(jti, ttl)
+    logger.info(
+        f"JWT {token_kind} token revoked",
+        extra={
+            "jti": jti,
+            "user_id": payload.get("sub"),
+            "ttl_seconds": ttl,
+        },
+    )
 
 
 class HS256JWTTokenGenerator(IJWTTokenGenerator):
@@ -830,112 +816,38 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
 
     async def revoke_access_token(self, token: str) -> None:
-        """Revoke access token by adding jti to revocation list.
+        """Revoke access token by adding jti to the revocation store.
 
         Args:
             token: JWT access token to revoke
+
+        Raises:
+            Exception: Store write failures propagate — a caller must not
+                report revocation success when the token remains usable.
         """
-        try:
-            # Decode without verification to get jti
-            payload = jwt.decode(
-                token, options={"verify_signature": False, "verify_exp": False}
-            )
-
-            jti = payload.get("jti")
-            if not jti:
-                logger.warning(
-                    "JWT revocation skipped: token missing jti",
-                    extra={"user_id": payload.get("sub")},
-                )
-                return
-
-            # Calculate remaining TTL for revocation entry
-            exp = payload.get("exp")
-            user_id = payload.get("sub")
-            if exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
-                if ttl > 0:
-                    await self.revocation_store.add_revoked_token(jti, ttl)
-                    logger.info(
-                        "JWT access token revoked (HS256)",
-                        extra={
-                            "jti": jti,
-                            "user_id": user_id,
-                            "ttl_seconds": ttl,
-                        },
-                    )
-            else:
-                # No expiration, revoke with default TTL
-                default_ttl = self.settings.jwt_access_token_expire_minutes * 60
-                await self.revocation_store.add_revoked_token(jti, default_ttl)
-                logger.info(
-                    "JWT access token revoked (HS256)",
-                    extra={
-                        "jti": jti,
-                        "user_id": user_id,
-                        "ttl_seconds": default_ttl,
-                    },
-                )
-
-        except Exception as e:
-            logger.error(
-                "JWT revocation failed", extra={"error": str(e)}, exc_info=True
-            )
+        await _revoke_token_by_jti(
+            self.revocation_store,
+            token,
+            token_kind="access",
+            default_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+        )
 
     async def revoke_refresh_token(self, token: str) -> None:
-        """Revoke refresh token by adding jti to revocation list.
+        """Revoke refresh token by adding jti to the revocation store.
 
         Args:
             token: JWT refresh token to revoke
+
+        Raises:
+            Exception: Store write failures propagate — a caller must not
+                report revocation success when the token remains usable.
         """
-        try:
-            # Decode without verification to get jti
-            payload = jwt.decode(
-                token, options={"verify_signature": False, "verify_exp": False}
-            )
-
-            jti = payload.get("jti")
-            if not jti:
-                logger.warning(
-                    "JWT revocation skipped: token missing jti",
-                    extra={"user_id": payload.get("sub")},
-                )
-                return
-
-            # Calculate remaining TTL for revocation entry
-            exp = payload.get("exp")
-            user_id = payload.get("sub")
-            if exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
-                if ttl > 0:
-                    await self.revocation_store.add_revoked_token(jti, ttl)
-                    logger.info(
-                        "JWT refresh token revoked (HS256)",
-                        extra={
-                            "jti": jti,
-                            "user_id": user_id,
-                            "ttl_seconds": ttl,
-                        },
-                    )
-            else:
-                # No expiration, revoke with default TTL
-                default_ttl = self.settings.jwt_refresh_token_expire_days * 86400
-                await self.revocation_store.add_revoked_token(jti, default_ttl)
-                logger.info(
-                    "JWT refresh token revoked (HS256)",
-                    extra={
-                        "jti": jti,
-                        "user_id": user_id,
-                        "ttl_seconds": default_ttl,
-                    },
-                )
-
-        except Exception as e:
-            logger.error(
-                "JWT revocation failed", extra={"error": str(e)}, exc_info=True
-            )
+        await _revoke_token_by_jti(
+            self.revocation_store,
+            token,
+            token_kind="refresh",
+            default_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
+        )
 
 
 class ITokenRevocationStore(ABC):

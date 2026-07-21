@@ -7,7 +7,7 @@ expiry. These tests pin that behaviour and the refresh-token rotation that
 makes a replayed token unusable after a successful refresh.
 
 The route is exercised by calling the handler directly with a minimal fake
-request (the ``get_user_store`` / ``get_token_manager`` dependencies read from
+request (the ``get_user_store`` / ``get_token_revocation_store`` dependencies read from
 ``request.app.state``), a real ``HS256JWTTokenGenerator``, and an in-memory
 revocation store — no full-app boot required.
 """
@@ -79,10 +79,12 @@ def _make_generator(revocation_store) -> HS256JWTTokenGenerator:
     )
 
 
-def _fake_request(user_store, token_manager):
+def _fake_request(user_store, revocation_store):
     return SimpleNamespace(
         app=SimpleNamespace(
-            state=SimpleNamespace(user_store=user_store, token_manager=token_manager)
+            state=SimpleNamespace(
+                user_store=user_store, token_revocation_store=revocation_store
+            )
         )
     )
 
@@ -107,7 +109,7 @@ async def test_refresh_returns_new_token_pair_and_rotates():
     generator = _make_generator(store)
     old_refresh = await generator.generate_refresh_token(user)
 
-    request = _fake_request(_FakeUserStore(user), token_manager=store)
+    request = _fake_request(_FakeUserStore(user), revocation_store=store)
     response = SimpleNamespace(headers={})
 
     gen_patch, settings_patch = _patches(generator)
@@ -140,7 +142,7 @@ async def test_refresh_rejects_reused_old_token_after_rotation():
     generator = _make_generator(store)
     old_refresh = await generator.generate_refresh_token(user)
 
-    request = _fake_request(_FakeUserStore(user), token_manager=store)
+    request = _fake_request(_FakeUserStore(user), revocation_store=store)
     response = SimpleNamespace(headers={})
 
     gen_patch, settings_patch = _patches(generator)
@@ -163,7 +165,7 @@ async def test_refresh_rejects_an_access_token_in_place_of_refresh():
     generator = _make_generator(store)
     access_token = await generator.generate_access_token(user)
 
-    request = _fake_request(_FakeUserStore(user), token_manager=store)
+    request = _fake_request(_FakeUserStore(user), revocation_store=store)
     response = SimpleNamespace(headers={})
 
     gen_patch, settings_patch = _patches(generator)
@@ -182,7 +184,7 @@ async def test_refresh_rejects_when_user_no_longer_exists():
     refresh = await generator.generate_refresh_token(user)
 
     # User store no longer has the account.
-    request = _fake_request(_FakeUserStore(None), token_manager=store)
+    request = _fake_request(_FakeUserStore(None), revocation_store=store)
     response = SimpleNamespace(headers={})
 
     gen_patch, settings_patch = _patches(generator)

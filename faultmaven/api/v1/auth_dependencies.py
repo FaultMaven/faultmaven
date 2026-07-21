@@ -76,6 +76,30 @@ async def get_token_manager(request: Request):
         raise HTTPException(status_code=503, detail="Authentication service error")
 
 
+async def get_token_revocation_store(request: Request):
+    """Get the deployment-wide token revocation store from app.state.
+
+    This is the single revocation store (#767): every revoke path writes to
+    it and the request-path revocation check reads from it. Handlers must use
+    this shared instance — building a separate store would silently fork the
+    revocation namespace again.
+
+    Returns:
+        RedisTokenRevocationStore instance
+
+    Raises:
+        HTTPException: 503 if service unavailable
+    """
+    store = getattr(request.app.state, "token_revocation_store", None)
+    if store is None:
+        logger.error("Token revocation store not available from app.state")
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service unavailable. Please check server startup logs.",
+        )
+    return store
+
+
 async def get_user_store(request: Request):
     """Get user store from app.state (Composition Root)
 

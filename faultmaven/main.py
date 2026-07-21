@@ -447,6 +447,11 @@ async def lifespan(app: FastAPI):
         # CRITICAL: Set authentication services FIRST - they're required for the API to work
         # These were already verified above, so they must be available
         app.state.token_manager = token_manager
+        # Deployment-wide token revocation store (#767): the single store all
+        # revoke paths write to and the request-path check reads from.
+        app.state.token_revocation_store = container.get_service(
+            "token_revocation_store"
+        )
         app.state.user_store = user_store
         app.state.user_service = container.get_user_service()
         app.state.auth_service = container.get_auth_service()

@@ -1,12 +1,11 @@
 """Unit tests for AuthService (TASK-017)
 
-Tests JWT token generation, verification, refresh, and revocation.
+Tests JWT token generation, verification, and revocation.
 
 Test Categories:
 1. Token Generation Tests - Access and refresh token creation
 2. Token Verification Tests - Signature, expiration, claims validation
-3. Token Refresh Tests - Token exchange and rotation
-4. Token Revocation Tests - Redis-based revocation
+3. Token Revocation Tests - revocation via the deployment-wide store (#767)
 
 Coverage Target: 90%+
 """
@@ -57,13 +56,26 @@ def mock_settings():
     return settings
 
 
+class FakeRevocationStore:
+    """In-memory ITokenRevocationStore: records jti -> ttl."""
+
+    def __init__(self):
+        self.revoked: dict = {}
+
+    async def add_revoked_token(self, jti: str, ttl: int) -> None:
+        self.revoked[jti] = ttl
+
+    async def is_revoked(self, jti: str) -> bool:
+        return jti in self.revoked
+
+    async def cleanup_expired(self) -> int:
+        return 0
+
+
 @pytest.fixture
-def mock_redis():
-    """Mock Redis client for revocation testing."""
-    redis = AsyncMock()
-    redis.get = AsyncMock(return_value=None)
-    redis.setex = AsyncMock()
-    return redis
+def revocation_store():
+    """In-memory revocation store for revocation testing."""
+    return FakeRevocationStore()
 
 
 @pytest.fixture
@@ -78,13 +90,13 @@ def auth_service(mock_settings):
 
 
 @pytest.fixture
-def auth_service_with_redis(mock_settings, mock_redis):
-    """Create AuthService with mocked settings and Redis."""
+def auth_service_with_store(mock_settings, revocation_store):
+    """Create AuthService with mocked settings and a revocation store."""
     with patch(
         "faultmaven.modules.auth.domain.services.auth_service.get_settings",
         return_value=mock_settings,
     ):
-        service = AuthService(redis_client=mock_redis)
+        service = AuthService(revocation_store=revocation_store)
         return service
 
 
@@ -470,19 +482,17 @@ class TestTokenVerificationWithRevocation:
 
     @pytest.mark.asyncio
     async def test_verify_with_revocation_allows_valid_token(
-        self, auth_service_with_redis, sample_user_data, mock_redis
+        self, auth_service_with_store, sample_user_data
     ):
         """Valid non-revoked token passes verification."""
-        token = auth_service_with_redis.generate_access_token(
+        token = auth_service_with_store.generate_access_token(
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
 
-        mock_redis.get.return_value = None  # Not revoked
-
-        claims = await auth_service_with_redis.verify_token_with_revocation_check(
+        claims = await auth_service_with_store.verify_token_with_revocation_check(
             token, token_type="access"
         )
 
@@ -491,184 +501,48 @@ class TestTokenVerificationWithRevocation:
 
     @pytest.mark.asyncio
     async def test_verify_with_revocation_raises_on_revoked_token(
-        self, auth_service_with_redis, sample_user_data, mock_redis
+        self, auth_service_with_store, sample_user_data, revocation_store
     ):
         """Revoked token raises TokenRevocationError."""
-        token = auth_service_with_redis.generate_access_token(
+        token = auth_service_with_store.generate_access_token(
+            user_id=sample_user_data["user_id"],
+            organization_id=sample_user_data["organization_id"],
+            email=sample_user_data["email"],
+            roles=sample_user_data["roles"],
+        )
+        jti = auth_service_with_store.verify_token(token, token_type="access")["jti"]
+        await revocation_store.add_revoked_token(jti, 600)
+
+        with pytest.raises(TokenRevocationError):
+            await auth_service_with_store.verify_token_with_revocation_check(
+                token, token_type="access"
+            )
+
+    @pytest.mark.asyncio
+    async def test_revocation_check_fails_open_on_store_error(
+        self, auth_service_with_store, sample_user_data, revocation_store
+    ):
+        """Store outage on the request path fails OPEN (documented posture).
+
+        Access tokens are short-lived; availability wins on the per-request
+        check. Refresh validation in the generators fails closed instead.
+        """
+        token = auth_service_with_store.generate_access_token(
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
 
-        mock_redis.get.return_value = b"revoked"  # Token is revoked
+        async def boom(jti):
+            raise ConnectionError("store down")
 
-        with pytest.raises(TokenRevocationError):
-            await auth_service_with_redis.verify_token_with_revocation_check(
-                token, token_type="access"
-            )
+        revocation_store.is_revoked = boom
 
-
-# ============================================================
-# Token Refresh Tests
-# ============================================================
-
-
-class TestTokenRefresh:
-    """Tests for token refresh functionality."""
-
-    @pytest.mark.asyncio
-    async def test_refresh_exchanges_for_new_tokens(
-        self, auth_service_with_redis, sample_user_data, mock_redis
-    ):
-        """refresh_access_token exchanges refresh token for new tokens."""
-        refresh_token = auth_service_with_redis.generate_refresh_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+        claims = await auth_service_with_store.verify_token_with_revocation_check(
+            token, token_type="access"
         )
-
-        mock_redis.get.return_value = None  # Not revoked
-
-        async def mock_user_loader(user_id):
-            return ("test@example.com", ["admin"], None)
-
-        new_access, new_refresh = await auth_service_with_redis.refresh_access_token(
-            refresh_token=refresh_token,
-            user_loader=mock_user_loader,
-        )
-
-        assert new_access is not None
-        assert new_refresh is not None
-        assert new_access != refresh_token
-        assert new_refresh != refresh_token
-
-    @pytest.mark.asyncio
-    async def test_refresh_new_token_has_updated_permissions(
-        self, auth_service_with_redis, sample_user_data, mock_redis
-    ):
-        """New access token from refresh has current permissions."""
-        refresh_token = auth_service_with_redis.generate_refresh_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-        )
-
-        mock_redis.get.return_value = None
-
-        # User loader returns updated roles
-        async def mock_user_loader(user_id):
-            return (
-                "test@example.com",
-                ["member"],
-                None,
-            )  # Changed from admin to member
-
-        new_access, _ = await auth_service_with_redis.refresh_access_token(
-            refresh_token=refresh_token,
-            user_loader=mock_user_loader,
-        )
-
-        claims = auth_service_with_redis.verify_token(new_access, token_type="access")
-        assert "member" in claims["roles"]
-
-    @pytest.mark.asyncio
-    async def test_refresh_revokes_old_refresh_token(
-        self, auth_service_with_redis, sample_user_data, mock_redis
-    ):
-        """Old refresh token is revoked after refresh."""
-        refresh_token = auth_service_with_redis.generate_refresh_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-        )
-
-        # Get the jti of old token
-        old_claims = auth_service_with_redis.verify_token(
-            refresh_token, token_type="refresh"
-        )
-        old_jti = old_claims["jti"]
-
-        mock_redis.get.return_value = None
-
-        async def mock_user_loader(user_id):
-            return ("test@example.com", ["admin"], None)
-
-        await auth_service_with_redis.refresh_access_token(
-            refresh_token=refresh_token,
-            user_loader=mock_user_loader,
-        )
-
-        # Verify revoke was called with old jti
-        mock_redis.setex.assert_called()
-        call_args = mock_redis.setex.call_args
-        assert f"revoked:token:{old_jti}" in call_args[0][0]
-
-    @pytest.mark.asyncio
-    async def test_refresh_raises_on_expired_refresh_token(
-        self, auth_service_with_redis, sample_user_data
-    ):
-        """Expired refresh token raises AuthenticationError."""
-        # Create expired refresh token
-        now = datetime.now(timezone.utc)
-        expired_claims = {
-            "sub": sample_user_data["user_id"],
-            "organization_id": sample_user_data["organization_id"],
-            "iss": "faultmaven-api",
-            "aud": "faultmaven-app",
-            "iat": int((now - timedelta(days=10)).timestamp()),
-            "exp": int((now - timedelta(days=1)).timestamp()),
-            "jti": str(uuid.uuid4()),
-            "token_type": "refresh",
-        }
-
-        expired_token = auth_service_with_redis._encode_token(expired_claims)
-
-        with pytest.raises(AuthenticationError) as exc_info:
-            await auth_service_with_redis.refresh_access_token(
-                refresh_token=expired_token,
-                user_loader=lambda x: ("test@example.com", ["admin"], None),
-            )
-
-        assert exc_info.value.error_code == "TOKEN_EXPIRED"
-
-    @pytest.mark.asyncio
-    async def test_refresh_raises_on_revoked_refresh_token(
-        self, auth_service_with_redis, sample_user_data, mock_redis
-    ):
-        """Revoked refresh token raises TokenRevocationError."""
-        refresh_token = auth_service_with_redis.generate_refresh_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-        )
-
-        mock_redis.get.return_value = b"revoked"
-
-        with pytest.raises(TokenRevocationError):
-            await auth_service_with_redis.refresh_access_token(
-                refresh_token=refresh_token,
-                user_loader=lambda x: ("test@example.com", ["admin"], None),
-            )
-
-    @pytest.mark.asyncio
-    async def test_refresh_raises_when_user_not_found(
-        self, auth_service_with_redis, sample_user_data, mock_redis
-    ):
-        """refresh_access_token raises when user no longer exists."""
-        refresh_token = auth_service_with_redis.generate_refresh_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-        )
-
-        mock_redis.get.return_value = None
-
-        async def mock_user_loader(user_id):
-            return None  # User not found
-
-        with pytest.raises(AuthenticationError) as exc_info:
-            await auth_service_with_redis.refresh_access_token(
-                refresh_token=refresh_token,
-                user_loader=mock_user_loader,
-            )
-
-        assert exc_info.value.error_code == "USER_NOT_FOUND"
+        assert claims["sub"] == sample_user_data["user_id"]
 
 
 # ============================================================
@@ -680,88 +554,103 @@ class TestTokenRevocation:
     """Tests for token revocation functionality."""
 
     @pytest.mark.asyncio
-    async def test_revoke_token_adds_jti_to_revocation_list(
-        self, auth_service_with_redis, mock_redis
+    async def test_revoke_token_adds_jti_to_revocation_store(
+        self, auth_service_with_store, revocation_store
     ):
-        """revoke_token adds jti to Redis revocation list."""
+        """revoke_token records the jti in the revocation store."""
         jti = str(uuid.uuid4())
         exp = int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp())
 
-        await auth_service_with_redis.revoke_token(jti, exp)
+        await auth_service_with_store.revoke_token(jti, exp)
 
-        mock_redis.setex.assert_called_once()
-        call_args = mock_redis.setex.call_args[0]
-        assert f"revoked:token:{jti}" in call_args[0]
-        assert call_args[2] == "revoked"
+        assert jti in revocation_store.revoked
 
     @pytest.mark.asyncio
     async def test_revoke_token_sets_correct_ttl(
-        self, auth_service_with_redis, mock_redis
+        self, auth_service_with_store, revocation_store
     ):
         """revoke_token sets TTL matching token expiration."""
         jti = str(uuid.uuid4())
         now = int(datetime.now(timezone.utc).timestamp())
         exp = now + 600  # 10 minutes from now
 
-        await auth_service_with_redis.revoke_token(jti, exp)
+        await auth_service_with_store.revoke_token(jti, exp)
 
-        call_args = mock_redis.setex.call_args[0]
-        ttl = call_args[1]
-        assert 595 <= ttl <= 605  # ~600 seconds with tolerance
+        assert 595 <= revocation_store.revoked[jti] <= 605
 
     @pytest.mark.asyncio
     async def test_revoked_tokens_fail_verification(
-        self, auth_service_with_redis, sample_user_data, mock_redis
+        self, auth_service_with_store, sample_user_data
     ):
-        """Revoked tokens fail verification check."""
-        token = auth_service_with_redis.generate_access_token(
+        """A token revoked via revoke_token fails the request-path check."""
+        token = auth_service_with_store.generate_access_token(
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
 
-        claims = auth_service_with_redis.verify_token(token, token_type="access")
-        jti = claims["jti"]
-        exp = claims["exp"]
+        claims = auth_service_with_store.verify_token(token, token_type="access")
 
-        # Revoke the token
-        await auth_service_with_redis.revoke_token(jti, exp)
-
-        # Now set redis to return revoked
-        mock_redis.get.return_value = b"revoked"
+        # Revoke the token; the same store instance backs the check
+        await auth_service_with_store.revoke_token(claims["jti"], claims["exp"])
 
         with pytest.raises(TokenRevocationError):
-            await auth_service_with_redis.verify_token_with_revocation_check(
+            await auth_service_with_store.verify_token_with_revocation_check(
                 token, token_type="access"
             )
 
     @pytest.mark.asyncio
     async def test_multiple_tokens_can_be_revoked(
-        self, auth_service_with_redis, sample_user_data, mock_redis
+        self, auth_service_with_store, sample_user_data, revocation_store
     ):
         """Multiple tokens can be revoked independently."""
-        token1 = auth_service_with_redis.generate_access_token(
+        token1 = auth_service_with_store.generate_access_token(
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
 
-        token2 = auth_service_with_redis.generate_access_token(
+        token2 = auth_service_with_store.generate_access_token(
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
 
-        claims1 = auth_service_with_redis.verify_token(token1, token_type="access")
-        claims2 = auth_service_with_redis.verify_token(token2, token_type="access")
+        claims1 = auth_service_with_store.verify_token(token1, token_type="access")
+        claims2 = auth_service_with_store.verify_token(token2, token_type="access")
 
-        await auth_service_with_redis.revoke_token(claims1["jti"], claims1["exp"])
-        await auth_service_with_redis.revoke_token(claims2["jti"], claims2["exp"])
+        await auth_service_with_store.revoke_token(claims1["jti"], claims1["exp"])
+        await auth_service_with_store.revoke_token(claims2["jti"], claims2["exp"])
 
-        assert mock_redis.setex.call_count == 2
+        assert len(revocation_store.revoked) == 2
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_raises_on_store_failure(
+        self, auth_service_with_store, revocation_store
+    ):
+        """Revocation writes fail CLOSED: a store error surfaces as ServiceError."""
+        from faultmaven.exceptions import ServiceError
+
+        async def boom(jti, ttl):
+            raise ConnectionError("store down")
+
+        revocation_store.add_revoked_token = boom
+
+        with pytest.raises(ServiceError):
+            exp = int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp())
+            await auth_service_with_store.revoke_token(str(uuid.uuid4()), exp)
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_raises_without_store(self, auth_service):
+        """revoke_token must not silently succeed with no store configured."""
+        from faultmaven.exceptions import ServiceError
+
+        exp = int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp())
+        with pytest.raises(ServiceError):
+            await auth_service.revoke_token(str(uuid.uuid4()), exp)
 
 
 # ============================================================
@@ -805,20 +694,18 @@ class TestExtractUser:
 
     @pytest.mark.asyncio
     async def test_extract_user_with_revocation_check(
-        self, auth_service_with_redis, sample_user_data, mock_redis
+        self, auth_service_with_store, sample_user_data
     ):
         """extract_user_from_token_with_revocation_check works correctly."""
-        token = auth_service_with_redis.generate_access_token(
+        token = auth_service_with_store.generate_access_token(
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
 
-        mock_redis.get.return_value = None
-
         user = (
-            await auth_service_with_redis.extract_user_from_token_with_revocation_check(
+            await auth_service_with_store.extract_user_from_token_with_revocation_check(
                 token
             )
         )

@@ -6,8 +6,7 @@ This module provides production-ready JWT authentication using RS256 algorithm:
 - Access token generation (15 minutes expiry)
 - Refresh token generation (7 days expiry)
 - Token verification with signature, expiration, issuer, audience validation
-- Token refresh with rotation
-- Token revocation via Redis revocation list
+- Token revocation via the deployment-wide revocation store (#767)
 
 Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 """
@@ -18,14 +17,16 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import jwt
 
 from faultmaven.config.settings import get_settings
 
 if TYPE_CHECKING:
-    from redis.asyncio import Redis
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        ITokenRevocationStore,
+    )
 from faultmaven.exceptions import AuthorizationError, ServiceError, ValidationException
 from faultmaven.modules.auth.domain.models.auth import (
     AuthenticatedUser,
@@ -60,31 +61,34 @@ class AuthService:
     Handles all JWT token operations including:
     - Token generation (access and refresh)
     - Token verification
-    - Token refresh
     - Token revocation
 
     Uses RS256 (RSA with SHA-256) for asymmetric signing:
     - Private key: Used for token generation
     - Public key: Used for token verification
 
-    Token revocation is tracked via Redis with TTL matching token expiry.
+    Token revocation is tracked via the deployment-wide revocation store
+    (one key prefix, shared by every revoke path — #767) with TTL matching
+    token expiry.
     """
 
     def __init__(
         self,
-        redis_client: Optional[Redis] = None,
+        revocation_store: Optional["ITokenRevocationStore"] = None,
         private_key: Optional[str] = None,
         public_key: Optional[str] = None,
     ):
         """Initialize AuthService.
 
         Args:
-            redis_client: Redis client for token revocation tracking
+            revocation_store: Deployment-wide token revocation store. Must be
+                the same instance the token generators write to, or revoked
+                tokens keep working on the request path.
             private_key: RSA private key for signing (optional, loaded from config)
             public_key: RSA public key for verification (optional, loaded from config)
         """
         self._settings = get_settings()
-        self._redis = redis_client
+        self._revocation_store = revocation_store
         self._private_key = private_key
         self._public_key = public_key
 
@@ -216,11 +220,6 @@ class AuthService:
     def _refresh_token_expire_days(self) -> int:
         """Get refresh token expiration in days."""
         return self._settings.security.jwt_refresh_token_expire_days
-
-    @property
-    def _revocation_prefix(self) -> str:
-        """Get Redis key prefix for revoked tokens."""
-        return self._settings.security.token_revocation_prefix
 
     def generate_access_token(
         self,
@@ -458,93 +457,33 @@ class AuthService:
 
         return claims
 
-    async def refresh_access_token(
-        self,
-        refresh_token: str,
-        user_loader: Optional[callable] = None,
-    ) -> Tuple[str, str]:
-        """Exchange refresh token for new access + refresh tokens.
-
-        Token rotation: old refresh token is revoked after successful refresh.
-
-        Args:
-            refresh_token: Valid refresh token
-            user_loader: Async callable to load user data by user_id
-                         Returns (email, roles, permissions) or None
-
-        Returns:
-            Tuple of (new_access_token, new_refresh_token)
-
-        Raises:
-            AuthenticationError: Invalid or expired refresh token
-            TokenRevocationError: Refresh token has been revoked
-        """
-        # Verify the refresh token
-        claims = await self.verify_token_with_revocation_check(
-            refresh_token,
-            token_type="refresh",
-        )
-
-        user_id = claims["sub"]
-        organization_id = claims["organization_id"]
-        old_jti = claims["jti"]
-        exp = claims["exp"]
-
-        # Load current user data if loader provided
-        email = ""
-        roles = ["member"]  # Default role
-        permissions = None
-
-        if user_loader:
-            user_data = await user_loader(user_id)
-            if user_data is None:
-                raise AuthenticationError(
-                    "User not found or inactive",
-                    error_code="USER_NOT_FOUND",
-                )
-            email, roles, permissions = user_data
-
-        # Generate new tokens
-        new_access_token = self.generate_access_token(
-            user_id=user_id,
-            organization_id=organization_id,
-            email=email,
-            roles=roles,
-            permissions=permissions,
-        )
-
-        new_refresh_token = self.generate_refresh_token(
-            user_id=user_id,
-            organization_id=organization_id,
-        )
-
-        # Revoke old refresh token
-        await self.revoke_token(old_jti, exp)
-
-        return new_access_token, new_refresh_token
-
     async def revoke_token(
         self,
         token_jti: str,
         expiration: int,
     ) -> None:
-        """Revoke a token by adding jti to revocation list.
+        """Revoke a token by adding jti to the revocation store.
 
-        Uses Redis with TTL matching token expiration so revoked tokens
+        The store applies a TTL matching token expiration so revoked tokens
         are automatically cleaned up.
 
         Args:
             token_jti: JWT ID (jti claim)
             expiration: Token expiration timestamp (Unix) for TTL calculation
+
+        Raises:
+            ServiceError: The revocation could not be recorded. Callers must
+                not report a revocation as successful when this raises.
         """
+        if self._revocation_store is None:
+            raise ServiceError("Token revocation failed: no revocation store")
         try:
             # Calculate TTL from expiration
             now = int(datetime.now(timezone.utc).timestamp())
             ttl = max(expiration - now, 0)
 
             if ttl > 0:
-                key = f"{self._revocation_prefix}{token_jti}"
-                await self._redis.setex(key, ttl, "revoked")
+                await self._revocation_store.add_revoked_token(token_jti, ttl)
                 logger.debug(f"Token revoked: {token_jti} (TTL: {ttl}s)")
         except Exception as e:
             logger.error(f"Failed to revoke token: {e}")
@@ -556,17 +495,17 @@ class AuthService:
     ) -> int:
         """Revoke all tokens for a user.
 
-        Note: This requires tracking all user tokens, which is beyond
-        simple JWT. In practice, you would track issued JTIs in a database.
-
-        For now, this is a placeholder that should be extended when
-        user token tracking is implemented.
+        Not implemented: the revocation store is keyed by jti and there is no
+        per-user index of issued JTIs, so outstanding tokens cannot be
+        enumerated. Callers (user deactivate/delete in UserService) rely on
+        token expiry (<30 min access tokens) plus the user-liveness check on
+        refresh. Implementing this requires tracking issued JTIs per user.
 
         Args:
             user_id: User ID to revoke tokens for
 
         Returns:
-            Number of tokens revoked (0 without token tracking)
+            Number of tokens revoked (always 0 without per-user tracking)
         """
         logger.warning(
             f"revoke_user_tokens called for {user_id}, "
@@ -577,16 +516,23 @@ class AuthService:
     async def _is_token_revoked(self, jti: str) -> bool:
         """Check if a token is revoked.
 
+        Fail-open by design: if the store is unavailable, the request-path
+        check treats the token as not revoked rather than rejecting all
+        traffic. Access tokens are short-lived (<30 min), which bounds the
+        exposure; the error is logged for monitoring. Refresh-token
+        validation in the generators fails CLOSED (store error => invalid),
+        so a store outage cannot mint new credentials from a revoked token.
+
         Args:
             jti: JWT ID to check
 
         Returns:
             True if token is revoked
         """
+        if self._revocation_store is None:
+            return False
         try:
-            key = f"{self._revocation_prefix}{jti}"
-            result = await self._redis.get(key)
-            return result is not None
+            return await self._revocation_store.is_revoked(jti)
         except Exception as e:
             logger.error(f"Failed to check token revocation: {e}")
             # Fail open for availability, but log for monitoring

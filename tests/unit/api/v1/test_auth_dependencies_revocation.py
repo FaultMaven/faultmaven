@@ -25,6 +25,9 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.modules.auth.domain.services.auth_service import AuthService
+from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+    RedisTokenRevocationStore,
+)
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
 ORG_ID = "22222222-2222-2222-2222-222222222222"
@@ -51,12 +54,15 @@ def _mock_settings():
 
 @pytest.fixture
 def auth_service():
-    """Real AuthService: HS256 local mode, FakeRedis revocation store."""
+    """Real AuthService: HS256 local mode, production store over FakeRedis."""
+    store = RedisTokenRevocationStore(
+        fakeredis.FakeRedis(decode_responses=True), key_prefix="revoked:token:"
+    )
     with patch(
         "faultmaven.modules.auth.domain.services.auth_service.get_settings",
         return_value=_mock_settings(),
     ):
-        yield AuthService(redis_client=fakeredis.FakeRedis(decode_responses=True))
+        yield AuthService(revocation_store=store)
 
 
 def _mint_access_token(auth_service: AuthService) -> str:

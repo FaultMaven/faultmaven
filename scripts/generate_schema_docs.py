@@ -42,7 +42,6 @@ TABLE_DOMAIN = {
     "permissions": "user",
     "role_permissions": "user",
     "user_audit_log": "user",
-    "oauth_revoked_tokens": "user",
     "oauth_authorization_codes": "user",
     # Case domain
     "cases": "case",
