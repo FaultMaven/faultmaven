@@ -726,3 +726,62 @@ async def test_pruned_causal_graph_does_not_resurrect(pg_repo):
     assert len(reloaded.causal_edges) == 2
     assert all(e.cause_node_id != stub.node_id for e in reloaded.causal_edges)
     assert all(e.edge_id != shortcut.edge_id for e in reloaded.causal_edges)
+
+
+@pytest.mark.asyncio
+async def test_list_pagination_and_include_empty_soundness_pg(pg_repo):
+    """PG parity for the case-list pagination contract (cloud path).
+
+    Mirrors the SQLite behavioral test: on a REAL PostgreSQL, limit/offset
+    paginate and ``include_empty`` is pushed into the WHERE clause so the
+    COUNT and the paginated SELECT stay consistent. The signature-parity unit
+    test proves every impl DECLARES include_empty; this proves PG actually
+    EXCLUDES empties from both the count and every page (the "SQLite/PG
+    parity" claim, verified against the backend cloud runs on).
+    """
+    session = pg_repo.db
+    org_id = f"org_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_organizations(session, [org_id])
+    await seed_users(session, [user_id])
+
+    # 4 active (current_turn > 0) + 2 empty (current_turn == 0) = 6 rows.
+    for i in range(6):
+        case = Case(
+            case_id=f"case_{uuid4().hex[:12]}",
+            user_id=user_id,
+            organization_id=org_id,
+            title=f"PG paginate {i}",
+            state=CaseState.INQUIRY,
+            inquiry=InquiryData(),
+        )
+        object.__setattr__(case, "current_turn", 0 if i >= 4 else i + 1)
+        await pg_repo.save(case)
+
+    # Pagination: distinct, non-overlapping pages; total is the true count,
+    # independent of the page size.
+    page1, total1 = await pg_repo.list(user_id=user_id, limit=2, offset=0)
+    page2, total2 = await pg_repo.list(user_id=user_id, limit=2, offset=2)
+    assert total1 == 6 and total2 == 6
+    assert len(page1) == 2 and len(page2) == 2
+    assert {c.case_id for c in page1}.isdisjoint({c.case_id for c in page2})
+
+    # offset past the end: empty page, but the true total is still reported.
+    beyond, total_beyond = await pg_repo.list(user_id=user_id, limit=2, offset=6)
+    assert beyond == []
+    assert total_beyond == 6
+
+    # include_empty pushed into SQL: total drops to 4 (COUNT excludes empties)
+    # and every returned row is non-empty. Walk all pages; total stays constant.
+    _, total_active = await pg_repo.list(user_id=user_id, include_empty=False)
+    assert total_active == 4
+    seen, offset = [], 0
+    while offset < total_active:
+        page, total = await pg_repo.list(
+            user_id=user_id, include_empty=False, limit=3, offset=offset
+        )
+        assert total == 4  # COUNT matches the filtered SELECT on every page
+        seen.extend(page)
+        offset += 3
+    assert len(seen) == 4
+    assert all(c.current_turn > 0 for c in seen)

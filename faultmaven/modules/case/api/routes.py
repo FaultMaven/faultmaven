@@ -828,6 +828,14 @@ async def list_cases(
         # Build response. total_count is the repository's true match count (all
         # filters applied, before pagination); has_more is derived from the
         # offset + this page's length against that total.
+        #
+        # Known safe-direction divergence: total_count is a raw COUNT(*), while
+        # the page can contain fewer rows than the LIMIT if a row fails to
+        # hydrate (skipped in _row_to_case / from_case). total_count can then
+        # slightly over-report, keeping has_more True at the true end — the
+        # caller fetches one extra page that comes back empty. It never hides a
+        # real page, so we accept the over-report rather than reconcile COUNT
+        # against hydration on every list call.
         has_more = offset + len(case_summaries) < total_count
         list_response = CaseListResponse(
             cases=case_summaries,
