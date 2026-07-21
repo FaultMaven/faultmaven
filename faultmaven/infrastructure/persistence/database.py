@@ -186,7 +186,7 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         # — this branch is PG.
         @event.listens_for(_engine.sync_engine, "begin")
         def _scope_tenant_per_transaction(conn):
-            from faultmaven.infrastructure.persistence.tenant_context import (
+            from faultmaven.config.tenant_context import (
                 get_current_org_id,
             )
 
