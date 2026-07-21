@@ -36,6 +36,7 @@ from faultmaven.api.v1.dependencies import (
     get_report_recommendation_service,
     get_tenant_provider,
 )
+from faultmaven.config.tenant_context import get_current_org_id
 from faultmaven.exceptions import (
     NotFoundError,
     ServiceException,
@@ -217,8 +218,15 @@ async def validate_organization_access(
         HTTPException: 403 if user lacks organization access
     """
     try:
-        # Get current organization context
-        organization = await tenant_provider.get_current_organization(current_user)
+        # Resolve the current organization from the request-bound tenant context
+        # (tenant_scope middleware -> config.tenant_context). In single-tenant mode
+        # the provider ignores the id and returns the default org; in multi-tenant
+        # mode it validates the caller's membership in that org. Passing it is what
+        # keeps this check working under multi — the provider otherwise raises
+        # "organization_id required" and every report call fails closed with 403.
+        organization = await tenant_provider.get_current_organization(
+            current_user, organization_id=get_current_org_id()
+        )
 
         # If case has organization_id, verify it matches
         if (

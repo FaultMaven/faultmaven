@@ -27,7 +27,6 @@ def create_case_service(
     case_vector_store: Any | None,
     settings: FaultMavenSettings,
     minimal_factory: callable,
-    tenant_provider: Any | None = None,
     team_service: Any | None = None,
     share_repository: Any | None = None,
 ) -> Any:
@@ -44,13 +43,10 @@ def create_case_service(
             session_store=session_store,
             case_vector_store=case_vector_store,
             settings=settings,
-            tenant_provider=tenant_provider,  # Inject TenantProvider for deployment-agnostic org resolution
             team_service=team_service,  # Team-membership resolution (None in standalone)
             share_repository=share_repository,  # Case read allowlist source (ADR-013 §D4)
         )
-        logger.debug(
-            f"Case service initialized with milestone-based repository and TenantProvider (tenant_provider={tenant_provider})"
-        )
+        logger.debug("Case service initialized with milestone-based repository")
         return service
     except Exception as e:
         logger.warning(f"Case service initialization failed: {e}")
@@ -833,14 +829,15 @@ def register_services(container: BaseDIContainer) -> None:
     if share_repository:
         container._register_service("share_repository", share_repository)
 
-    # Case Service (with TenantProvider injection for deployment-agnostic org resolution)
+    # Case Service. Org resolution is request-scoped (tenant_scope middleware ->
+    # config.tenant_context contextvar), so no TenantProvider injection is needed
+    # here; the service reads the bound org at write time.
     case_service = create_case_service(
         case_repository,
         session_store,
         case_vector_store,
         settings,
         container._create_minimal_case_service,
-        tenant_provider=tenant_provider,  # Inject TenantProvider
         team_service=team_service,  # Case read allowlist: team-membership resolution
         share_repository=share_repository,  # Case read allowlist: share source (§D4)
     )

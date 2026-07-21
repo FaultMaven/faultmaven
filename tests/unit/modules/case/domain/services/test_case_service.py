@@ -6,10 +6,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.api_models import CaseListFilter, CaseMessage, CaseSearchRequest
 from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
 from faultmaven.modules.case.domain.services.case_service import CaseService
+
+
+@pytest.fixture(autouse=True)
+def _reset_tenant_context():
+    """Reset the request-bound org contextvar after each test.
+
+    ``create_case`` now stamps the case with ``get_current_org_id()`` (P2c), so
+    a test that sets a tenant org must not leak it into the next test.
+    """
+    yield
+    set_current_org_id(STANDALONE_ORG_ID)
 
 
 def _make_case(
@@ -140,6 +153,27 @@ class TestCreateCase:
         assert slack.source == "slack"
         default = await service.create_case(title="T2", owner_id="u")
         assert default.source == "copilot"
+
+    @pytest.mark.asyncio
+    async def test_stamps_org_from_request_context(self, service, mock_repo):
+        # P2c: the case is stamped with the request-bound org (tenant_scope
+        # middleware -> config.tenant_context). In multi-tenant mode this is the
+        # caller's verified JWT org; the write stamp must match it, not fall back
+        # to the Standalone/default org.
+        mock_repo.list.return_value = ([], 0)
+        tenant_org = "11111111-1111-1111-1111-111111111111"
+        set_current_org_id(tenant_org)
+        case = await service.create_case(title="Scoped", owner_id="user_123")
+        assert case.organization_id == tenant_org
+
+    @pytest.mark.asyncio
+    async def test_defaults_org_to_standalone(self, service, mock_repo):
+        # Single-tenant / unset context -> the Standalone org (contextvar default),
+        # so standalone deployments stay scoped without any per-request wiring.
+        mock_repo.list.return_value = ([], 0)
+        assert get_current_org_id() == STANDALONE_ORG_ID  # sanity: default binding
+        case = await service.create_case(title="Default", owner_id="user_123")
+        assert case.organization_id == STANDALONE_ORG_ID
 
     @pytest.mark.asyncio
     async def test_adds_initial_message(self, service, mock_repo):

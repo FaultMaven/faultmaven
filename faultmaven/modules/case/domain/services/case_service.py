@@ -21,6 +21,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from faultmaven.config.tenant_context import get_current_org_id
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api_models import (
@@ -36,7 +37,6 @@ from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -53,7 +53,6 @@ class CaseService(ICaseService):
         case_vector_store: Optional[Any] = None,
         settings: Optional[Any] = None,
         max_cases_per_user: int = 100,
-        tenant_provider: Optional[TenantProvider] = None,
         team_service: Optional[Any] = None,
         share_repository: Optional[Any] = None,
     ):
@@ -66,7 +65,6 @@ class CaseService(ICaseService):
             case_vector_store: Optional case vector store for Working Memory cleanup
             settings: Configuration settings for the service
             max_cases_per_user: Maximum cases per user
-            tenant_provider: Optional tenant provider for deployment-neutral organization context
             team_service: Optional team-membership resolver (``list_all_user_team_ids``).
                 Unwired in standalone — the shared-case arm then resolves empty.
             share_repository: Optional ``IShareRepository`` for the case read
@@ -77,7 +75,6 @@ class CaseService(ICaseService):
         self.session_store = session_store
         self.case_vector_store = case_vector_store
         self._settings = settings
-        self.tenant_provider = tenant_provider
         self.team_service = team_service
         self.share_repository = share_repository
 
@@ -184,24 +181,13 @@ class CaseService(ICaseService):
                 if len(title) > 200:
                     raise ValidationException("Case title cannot exceed 200 characters")
 
-            # Resolve organization context using TenantProvider (deployment-neutral)
-            # In single-tenant mode: uses default organization
-            # In multi-tenant mode: uses user's organization
-            from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
-
-            resolved_org_id = SingleTenantProvider.DEFAULT_ORG_ID  # Default fallback
-            if self.tenant_provider:
-                try:
-                    # For single-tenant: get_default_organization() is simpler
-                    # For multi-tenant: would need User object, but single-tenant is primary use case
-                    organization = await self.tenant_provider.get_default_organization()
-                    resolved_org_id = organization.organization_id
-                except Exception as e:
-                    # If get_default_organization fails, use default organization_id
-                    logger.debug(
-                        f"TenantProvider.get_default_organization() failed: {e}. "
-                        f"Using default organization_id: {resolved_org_id}"
-                    )
+            # Stamp the case with the request's resolved organization. The
+            # request->org middleware (api/middleware/tenant_scope.py) binds this
+            # once per request: the Standalone org in single-tenant mode, or the
+            # caller's verified JWT org in multi-tenant mode. It is the same value
+            # RLS scopes every query to, so the write stamp and the read-isolation
+            # boundary can never diverge.
+            resolved_org_id = get_current_org_id()
 
             # Create new case using milestone-based model
             case = Case(
