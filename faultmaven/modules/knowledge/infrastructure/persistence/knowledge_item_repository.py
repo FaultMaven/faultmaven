@@ -19,12 +19,14 @@ the scope-visibility clauses — defense-in-depth on top of RLS for the
 org-owned tiers (personal | team, ADR-011/ADR-013). Do NOT remove them by
 analogy with the case module. Global-tier rows are the platform corpus
 (seeded into the single-tenant default org), so under ``TENANT_PROVIDER=multi``
-they are visible through neither these org-filtered queries nor the RLS
-policy — cross-tenant global visibility is the platform-tier read exemption
-tracked in issue #770 (until then multi-tenant deployments simply have no
-global KB tier; it fails closed). The vector path (``build_kb_scope_filter``)
-is org-free by design: ``global ∪ owner ∪ team-share allowlist``, with owner
-ids globally unique and share ids resolved from RLS-scoped SQL.
+they are invisible to these SQL read paths (inventory / list / fulltext)
+and to the RLS policy — cross-tenant global visibility is the platform-tier
+read exemption tracked in issue #770. The vector QA path is different: it is
+org-free by design (``build_kb_scope_filter`` = ``global ∪ owner ∪ team-share
+allowlist``, owner ids globally unique, share ids resolved from RLS-scoped
+SQL) and serves chunk content straight from ChromaDB, so any global chunks
+that exist ARE retrievable by every tenant — which is why #770 also gates
+global authoring/seeding on the platform operator.
 
 Usage:
     from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (

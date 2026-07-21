@@ -364,7 +364,7 @@ class TestInstallationSimulation:
 
     def test_base_installation_package_list(self, base_dependencies: List[str]):
         """Verify base installation has reasonable package count."""
-        # Community edition should be lightweight but functional
+        # Standalone should be lightweight but functional
         assert len(base_dependencies) > 10, "Too few base dependencies"
         assert len(base_dependencies) < 100, "Too many base dependencies"
 
