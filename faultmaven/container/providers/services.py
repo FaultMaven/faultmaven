@@ -517,14 +517,23 @@ def create_tenant_provider(
     SingleTenantProvider uses it to seed the default team row. Absence is safe —
     bootstrap simply skips team seeding.
     """
-    if not organization_repository:
-        logger.debug("TenantProvider skipped (no organization repository)")
-        return None
-
     from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
         TenancyConfigurationError,
+        requested_tenant_provider,
     )
     from faultmaven.providers.tenancy.factory import create_tenant_provider as factory
+
+    if not organization_repository:
+        if requested_tenant_provider() == BUILTIN_MULTI:
+            # Skipping here would bypass the factory's fail-closed checks and
+            # leave a multi-tenant deployment without its tenant provider.
+            raise TenancyConfigurationError(
+                "TENANT_PROVIDER='multi' requires an organization repository; "
+                "refusing to continue without one."
+            )
+        logger.debug("TenantProvider skipped (no organization repository)")
+        return None
 
     try:
         provider = factory(

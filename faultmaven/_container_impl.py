@@ -145,6 +145,18 @@ class DIContainer(BaseDIContainer):
             logger.error(f"❌ DI Container initialization failed: {e}")
             self._initializing = False
 
+            # A tenancy configuration refusal (e.g. TENANT_PROVIDER=multi
+            # outside DEPLOYMENT_MODE=cloud) is a deliberate fail-closed
+            # decision, not an infrastructure hiccup: it must terminate every
+            # path — jobs/CLI included — never degrade to a half-initialized
+            # container that would run against tenanted data unchecked.
+            from faultmaven.providers.tenancy.factory import (
+                TenancyConfigurationError,
+            )
+
+            if isinstance(e, TenancyConfigurationError):
+                raise
+
             # Check if interfaces are available - if not, use minimal container
             if not INTERFACES_AVAILABLE:
                 logger.warning(

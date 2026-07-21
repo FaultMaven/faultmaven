@@ -21,6 +21,8 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional
 
+from faultmaven.providers.tenancy.factory import TenancyConfigurationError
+
 # Available jobs registry
 AVAILABLE_JOBS: Dict[str, str] = {
     "case_cleanup": "faultmaven.jobs.case_cleanup",
@@ -105,6 +107,12 @@ async def run_job(
     try:
         await container.initialize()
         logger.info("DI container initialized")
+    except TenancyConfigurationError:
+        # Deliberate fail-closed refusal (e.g. TENANT_PROVIDER=multi outside
+        # cloud) — never run a job against tenanted data with an invalid
+        # tenancy configuration.
+        logger.critical("Refusing to run job: tenancy configuration is invalid")
+        raise
     except Exception as e:
         logger.warning(f"Container initialization warning: {e}")
 

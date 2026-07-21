@@ -6,9 +6,8 @@ Asserts that the running configuration is coherent with the canonical
 boot rather than silently running as ``standalone`` on cloud infrastructure.
 
 Tenancy (``TENANT_PROVIDER`` single/multi) is config-selected in the core
-(ADR-010) — both providers are in-core. ``multi`` is not yet bootable (the
-row-level isolation it requires has not shipped — ADR-010 P2); until then it
-fails closed here, regardless of ``DEPLOYMENT_MODE``
+(ADR-010) — both providers are in-core. ``multi`` requires
+``DEPLOYMENT_MODE=cloud`` and fails closed outside it
 (see ``_check_tenant_provider_coherent``).
 
 This closes the failure mode where a cloud k8s deployment whose Secret carried
