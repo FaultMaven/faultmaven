@@ -1,11 +1,17 @@
 """Tenant context for PostgreSQL Row-Level Security (ADR-010).
 
 Carries the current organization id in a contextvar. The engine ``begin``
-listener (``database.py``) reads it and applies it to **every transaction** as
-``app.current_org_id``, so the RLS policies (migration 018) scope reads to that
-organization. The contextvar **defaults to the Standalone org**, so single-tenant
-deployments are always scoped correctly without any per-request wiring;
-multi-tenant request handling sets it per request (a later phase).
+listener (``infrastructure/persistence/database.py``) reads it and applies it to
+**every transaction** as ``app.current_org_id``, so the RLS policies
+(migration 018) scope reads to that organization. The contextvar **defaults to
+the Standalone org**, so single-tenant deployments are always scoped correctly
+without any per-request wiring; multi-tenant request handling sets it per request
+(ADR-010 P2).
+
+This lives in ``config`` — a neutral leaf importable from every layer — rather
+than under ``infrastructure``, so the api-layer request middleware that sets it
+per request can import it without violating the api→infrastructure boundary
+(``tests/.../test_architecture_boundaries.py::test_api_layer_boundaries``).
 """
 
 from contextvars import ContextVar
