@@ -32,6 +32,15 @@ class AuthenticationError(AuthException):
         super().__init__(message, details={**(details or {}), "error_code": error_code})
 
 
+class SSOAuthenticationError(AuthException):
+    """Raised when an external IdP (e.g. WorkOS AuthKit) rejects or fails a code
+    exchange.
+
+    Carries no provider-specific detail by design: callers surface a uniform
+    failure so the SSO callback cannot become an error oracle. See ADR-015.
+    """
+
+
 class TokenError(AuthException):
     """Raised when token operations fail.
 
