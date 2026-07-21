@@ -120,6 +120,9 @@ cloud = [
     "asyncpg>=0.29.0",            # Async PostgreSQL driver
     "boto3>=1.34.0",              # AWS S3 storage
     "azure-storage-blob>=12.0.0", # Azure Blob storage
+
+    # Identity (WorkOS AuthKit cloud SSO — ADR-015; imported only in oauth mode)
+    "workos>=9,<10",
 ]
 
 # ============================================================================
