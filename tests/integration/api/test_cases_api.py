@@ -469,7 +469,7 @@ class TestListCases:
         self, client, mock_case_service, mock_case_summary, headers
     ):
         """The ?team_id= query param reaches CaseListFilter.team_id (ADR-013 §D4)."""
-        mock_case_service.list_user_cases.return_value = [mock_case_summary]
+        mock_case_service.list_user_cases.return_value = ([mock_case_summary], 1)
 
         response = await client.get(
             "/api/v1/cases?team_id=team_a",
