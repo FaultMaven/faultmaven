@@ -8,7 +8,7 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional, Protocol, runtime_checkable
@@ -144,6 +144,16 @@ class IUserRepository(Protocol):
 
     async def get_by_email(self, email: str) -> Optional["User"]:
         """Retrieve user by email."""
+        ...
+
+    async def get_by_sso(self, provider: str, provider_id: str) -> Optional["User"]:
+        """Retrieve user by external SSO subject (provider + provider_id).
+
+        Returns the user linked to this IdP subject, or None if no user is
+        linked. The (provider, provider_id) pair is unique (users_sso_unique).
+        Returns None if either argument is empty — a password user has NULL sso
+        fields and must never resolve from an empty subject.
+        """
         ...
 
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List["User"], int]:
@@ -438,6 +448,61 @@ class ISessionService(Protocol):
 
 
 # ============================================================
+# SSO (external IdP) identity port — ADR-015
+# ============================================================
+
+
+@dataclass(frozen=True)
+class SSOIdentity:
+    """A normalized identity returned by an external IdP after authentication.
+
+    ``provider`` + ``provider_user_id`` is the stable subject FaultMaven uses to
+    look up or provision a user (never the email — emails change). ``email`` and
+    ``email_verified`` come straight from the IdP. ``organization_id`` is carried
+    for a future org-mapping phase (ADR-010 P2) and is ignored today.
+    """
+
+    provider: str
+    provider_user_id: str
+    email: str
+    email_verified: bool
+    display_name: str | None = None
+    organization_id: str | None = None
+
+
+class ISSOIdentityProvider(ABC):
+    """Hosted-login SSO provider port: build an authorization URL, exchange a code.
+
+    Implemented by an infrastructure adapter (e.g. WorkOS AuthKit). Concrete
+    adapters are the only code that imports a vendor SDK; this port stays
+    vendor-free so it is import-safe in every deployment.
+    """
+
+    @property
+    @abstractmethod
+    def provider_name(self) -> str:
+        """Stable provider key persisted on the user (e.g. ``"workos"``)."""
+
+    @abstractmethod
+    def build_authorization_url(self, *, state: str) -> str:
+        """Return the IdP hosted-login URL to redirect the browser to.
+
+        Args:
+            state: an opaque CSRF token the caller mints and later verifies when
+                the IdP redirects back to the callback.
+        """
+
+    @abstractmethod
+    def exchange_code(self, code: str) -> SSOIdentity:
+        """Exchange an authorization code for a normalized identity.
+
+        Raises:
+            SSOAuthenticationError: if the IdP rejects the code, or the exchange
+                fails for any reason.
+        """
+
+
+# ============================================================
 # Module Exports
 # ============================================================
 
@@ -449,6 +514,7 @@ __all__ = [
     "OAuthTokenDTO",
     "OAuthCodeDTO",
     "AuthTokenDTO",
+    "SSOIdentity",
     # Repository Protocols
     "IUserRepository",
     "IUserQuery",
@@ -459,4 +525,5 @@ __all__ = [
     "ILocalAuthService",
     "IPermissionChecker",
     "ISessionService",
+    "ISSOIdentityProvider",
 ]

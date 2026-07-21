@@ -137,6 +137,11 @@ class UserRepository(ABC):
         pass
 
     @abstractmethod
+    async def get_by_sso(self, provider: str, provider_id: str) -> Optional[User]:
+        """Retrieve user by external SSO subject (provider + provider_id)."""
+        pass
+
+    @abstractmethod
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
         pass
@@ -205,6 +210,17 @@ class InMemoryUserRepository(UserRepository):
         user_id = self._email_index.get(email.lower())
         if user_id:
             return self._users.get(user_id)
+        return None
+
+    async def get_by_sso(self, provider: str, provider_id: str) -> Optional[User]:
+        """Get user by external SSO subject."""
+        # Never match on empty subject: a password user has NULL sso fields, and
+        # (None, None) must not resolve to it.
+        if not provider or not provider_id:
+            return None
+        for user in self._users.values():
+            if user.sso_provider == provider and user.sso_provider_id == provider_id:
+                return user
         return None
 
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
@@ -431,6 +447,25 @@ class PostgreSQLUserRepository(UserRepository):
         model = result.scalar_one_or_none()
         return self._model_to_domain(model) if model else None
 
+    async def get_by_sso(self, provider: str, provider_id: str) -> Optional[User]:
+        """Retrieve user by external SSO subject (provider + provider_id)."""
+        # Never match on empty subject: `sso_provider == None` renders as
+        # `IS NULL` and would match every password (non-SSO) user.
+        if not provider or not provider_id:
+            return None
+
+        from sqlalchemy import select
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        stmt = select(UserModel).where(
+            UserModel.sso_provider == provider,
+            UserModel.sso_provider_id == provider_id,
+        )
+        result = await self.db.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._model_to_domain(model) if model else None
+
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
         from sqlalchemy import func, select
@@ -582,6 +617,14 @@ class SessionlessUserRepository(UserRepository):
 
         async with get_db_session() as session:
             return await PostgreSQLUserRepository(session).get_by_email(email)
+
+    async def get_by_sso(self, provider: str, provider_id: str) -> Optional[User]:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).get_by_sso(
+                provider, provider_id
+            )
 
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         from faultmaven.infrastructure.persistence.database import get_db_session

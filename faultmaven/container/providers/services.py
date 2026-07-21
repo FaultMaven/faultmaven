@@ -678,6 +678,39 @@ def create_jwt_token_generator(
     )
 
 
+def create_sso_identity_provider(
+    settings: FaultMavenSettings,
+) -> Any | None:
+    """Create the cloud SSO identity provider, or None when SSO is unconfigured.
+
+    Returns None unless ``auth_mode=oauth`` and WorkOS is fully configured, so
+    standalone/local deployments never import the vendor SDK (the adapter is
+    imported lazily only on the configured path). See ADR-015.
+
+    Args:
+        settings: FaultMavenSettings instance
+
+    Returns:
+        An ISSOIdentityProvider (WorkOS AuthKit), or None when SSO is off.
+    """
+    auth = settings.auth
+    if not auth.sso_configured:
+        return None
+
+    from faultmaven.modules.auth.infrastructure.sso.workos_provider import (
+        WorkOSIdentityProvider,
+    )
+
+    # sso_configured guarantees these are present and non-empty.
+    provider = WorkOSIdentityProvider.from_config(
+        api_key=auth.workos_api_key.get_secret_value(),
+        client_id=auth.workos_client_id,
+        redirect_uri=auth.workos_redirect_uri,
+    )
+    logger.info("✅ SSO identity provider initialized (WorkOS AuthKit)")
+    return provider
+
+
 def create_oauth_service(
     settings: FaultMavenSettings,
     user_repository: Any,

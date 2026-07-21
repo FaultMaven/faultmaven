@@ -1051,6 +1051,28 @@ class AuthSettings(BaseSettings):
         description="Require HTTPS for redirect URIs (production security). Set false for local dev",
     )
 
+    # WorkOS AuthKit SSO (cloud/oauth only; absent in standalone). Selects and
+    # configures the hosted IdP for the cloud sign-in flow (ADR-015). FaultMaven
+    # mints its own session — these are consumed only to authenticate the user.
+    workos_api_key: Optional[SecretStr] = Field(
+        default=None,
+        validation_alias="WORKOS_API_KEY",
+        description="WorkOS API key (secret). Cloud/oauth mode only.",
+    )
+    workos_client_id: Optional[str] = Field(
+        default=None,
+        validation_alias="WORKOS_CLIENT_ID",
+        description="WorkOS client ID (public). Cloud/oauth mode only.",
+    )
+    workos_redirect_uri: Optional[str] = Field(
+        default=None,
+        validation_alias="WORKOS_REDIRECT_URI",
+        description=(
+            "Registered WorkOS redirect URI (the SSO callback). Must match the "
+            "WorkOS dashboard entry exactly. Cloud/oauth mode only."
+        ),
+    )
+
     # Local mode settings (only used when auth_mode=local)
     local_token_expiry_hours: int = Field(
         default=24,
@@ -1095,6 +1117,22 @@ class AuthSettings(BaseSettings):
             )
 
         return v
+
+    @property
+    def sso_configured(self) -> bool:
+        """True when WorkOS AuthKit SSO is fully configured for cloud/oauth mode.
+
+        Gates whether the SSO provider is built and (later) whether the SSO
+        router mounts and ``/auth/config`` advertises a hosted login URL. Standalone
+        (``auth_mode=local``) is always False regardless of any WORKOS_* values.
+        """
+        return (
+            self.auth_mode == AuthMode.OAUTH
+            and self.workos_api_key is not None
+            and bool(self.workos_api_key.get_secret_value())
+            and bool(self.workos_client_id)
+            and bool(self.workos_redirect_uri)
+        )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 

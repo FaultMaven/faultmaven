@@ -134,6 +134,9 @@ ignore_imports =
     faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository -> faultmaven.modules.auth.contracts
     # ITokenRevocationStore interface defined in jwt_token_generator (should be in contracts)
     faultmaven.modules.auth.infrastructure.stores.token_revocation_store -> faultmaven.modules.auth.domain.services.jwt_token_generator
+    # SSO adapter implements the ISSOIdentityProvider port defined in contracts
+    # (same DIP pattern as oauth_code_repository above). ADR-015.
+    faultmaven.modules.auth.infrastructure.sso.workos_provider -> faultmaven.modules.auth.contracts
 
 # ============================================================================
 # CONTRACT 7: Agent Module Layer Boundaries
