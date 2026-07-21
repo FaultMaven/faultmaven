@@ -1322,6 +1322,14 @@ class SQLiteCaseRepository(CaseRepository):
         except Exception as e:
             raise RepositoryException(f"Failed to count user cases: {e}") from e
 
+    async def list_all_case_ids(self) -> List[str]:
+        """Every case row's id, regardless of state (see CaseRepository)."""
+        try:
+            result = await self.db.execute(text("SELECT case_id FROM cases"))
+            return [row[0] for row in result.fetchall()]
+        except Exception as e:
+            raise RepositoryException(f"Failed to list case ids: {e}") from e
+
     async def delete(self, case_id: str) -> bool:
         """Delete case by ID."""
         try:

@@ -609,6 +609,20 @@ class TestListAndSearch:
         assert all(c.user_id == "user_a" for c in cases)
 
     @pytest.mark.asyncio
+    async def test_list_all_case_ids_returns_every_row_any_state(self, repository):
+        # The orphaned-collection sweep's reference set: EVERY case row's id,
+        # regardless of state or owner — a collection is orphaned only when no
+        # case row exists at all, so closed cases keep their vector data.
+        c1 = _make_case(user_id="user_a")
+        c2 = _make_case(user_id="user_b")
+        await repository.save(c1)
+        await repository.save(c2)
+
+        ids = await repository.list_all_case_ids()
+
+        assert sorted(ids) == sorted([c1.case_id, c2.case_id])
+
+    @pytest.mark.asyncio
     async def test_list_ignores_organization_filter(self, repository):
         # ADR-010: standalone is single-tenant; the organization_id param does
         # NOT scope reads (multi-tenant isolation is RLS, not per-query filters).

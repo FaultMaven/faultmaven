@@ -27,11 +27,15 @@ job module declares ``JOB_TENANT_SCOPE``:
   Under single-tenant the Standalone default already scopes correctly.
 - ``cross_tenant`` — needs a view across ALL organizations (e.g. case_cleanup
   diffs the DB case-id set against ChromaDB collections, which are not
-  org-partitioned). Under multi this **fails closed**: RLS scopes every DB
-  transaction to the single org bound in the tenant context, so any run would
-  see a partial id set and delete other tenants' data. Cross-tenant jobs
-  cannot be scheduled in cloud until an audited maintenance path exists
-  (tracked in #629).
+  org-partitioned). Under multi this **fails closed by default**: RLS scopes
+  every DB transaction to the single org bound in the tenant context, so a
+  run under the regular app role would see a partial id set and delete other
+  tenants' data. The audited maintenance path (ADR-010 / #629) is the ONLY
+  way to run one in cloud: invoke with ``--cross-tenant-maintenance`` and
+  connect as the dedicated maintenance role (``faultmaven_maintenance`` —
+  BYPASSRLS, non-superuser, non-owner; the runner probe-verifies this and
+  refuses anything else). Each run emits an audit log line with the job, DB
+  role, and arguments. See docs/operations/evidence-job-scheduling.md.
 
 ``--organization-id`` is operator input: the runner binds whatever org id the
 caller passes (and logs it). The scope model is a mis-scoping guard for
@@ -105,17 +109,27 @@ def _enforce_tenant_scope(
     module_path: str,
     is_multi_tenant: bool,
     organization_id: Optional[str],
+    cross_tenant_maintenance: bool = False,
 ) -> Optional[str]:
     """Enforce the job's declared tenant scope; return the org id to bind.
 
     Returns the organization id to set on the tenant contextvar before the job
     runs, or ``None`` when the ambient default is already correct (single-tenant,
-    or a tenant-neutral job).
+    or a tenant-neutral job) or when the maintenance path bypasses RLS entirely.
+
+    ``cross_tenant_maintenance`` is the operator's explicit acknowledgment
+    (``--cross-tenant-maintenance``) that this run uses the audited maintenance
+    path. It is only meaningful for ``cross_tenant`` jobs under the multi-tenant
+    provider; anywhere else it is a configuration error and fails closed (a
+    manifest carrying the flag against the wrong job or the wrong deployment
+    mode is drift worth catching, not ignoring).
 
     Raises:
         JobTenantScopeError: If the scope declaration is missing/invalid, if an
             ``org``-scoped job runs under multi without ``--organization-id``,
-            or if a ``cross_tenant`` job runs under multi at all.
+            if a ``cross_tenant`` job runs under multi without the maintenance
+            acknowledgment, or if the acknowledgment is passed where it does
+            not apply.
     """
     scope = getattr(module, "JOB_TENANT_SCOPE", None)
 
@@ -126,9 +140,26 @@ def _enforce_tenant_scope(
         )
 
     if not is_multi_tenant:
+        if cross_tenant_maintenance:
+            raise JobTenantScopeError(
+                "--cross-tenant-maintenance only applies to cross-tenant jobs "
+                "under the multi-tenant provider; this deployment is "
+                "single-tenant, where every job already sees the one implicit "
+                "org. Remove the flag (it usually indicates a manifest copied "
+                "from a cloud deployment)."
+            )
         # Single-tenant: the contextvar default (Standalone org) scopes every
         # session correctly; --organization-id is not a scoping instruction here.
         return None
+
+    if cross_tenant_maintenance and scope != TENANT_SCOPE_CROSS_TENANT:
+        raise JobTenantScopeError(
+            f"--cross-tenant-maintenance was passed but job '{module_path}' "
+            f"declares JOB_TENANT_SCOPE={scope!r}. The maintenance role "
+            "bypasses RLS, so running a tenant-scoped or undeclared job under "
+            "it would expose every tenant's rows to a job that expects a "
+            "scoped view. Run this job with the regular app role instead."
+        )
 
     if scope is None:
         raise JobTenantScopeError(
@@ -140,15 +171,25 @@ def _enforce_tenant_scope(
         )
 
     if scope == TENANT_SCOPE_CROSS_TENANT:
-        raise JobTenantScopeError(
-            f"Job '{module_path}' requires a cross-tenant view, which the "
-            "multi-tenant deployment cannot provide: row-level security "
-            "scopes every DB transaction to the single organization bound in "
-            "the tenant context, so the job would operate on a partial view "
-            "of tenanted data (for cleanup jobs, that means deleting other "
-            "tenants' resources). Do not schedule this job in cloud; an "
-            "audited maintenance path is tracked in issue #629."
-        )
+        if not cross_tenant_maintenance:
+            raise JobTenantScopeError(
+                f"Job '{module_path}' requires a cross-tenant view, which the "
+                "multi-tenant deployment refuses by default: row-level "
+                "security scopes every DB transaction to the single "
+                "organization bound in the tenant context, so the job would "
+                "operate on a partial view of tenanted data (for cleanup "
+                "jobs, that means deleting other tenants' resources). To run "
+                "it, use the audited maintenance path: pass "
+                "--cross-tenant-maintenance and connect as the dedicated "
+                "maintenance DB role (BYPASSRLS, non-superuser, non-owner) — "
+                "see docs/operations/evidence-job-scheduling.md and issue "
+                "#629."
+            )
+        # Maintenance path: RLS is bypassed by role, so there is no org to
+        # bind — the contextvar stays at its default and is irrelevant. The
+        # role posture is verified by assert_maintenance_db_role_posture
+        # after the container (and its engine) is up.
+        return None
 
     if scope == TENANT_SCOPE_ORG:
         if not organization_id:
@@ -234,6 +275,7 @@ async def run_job(
         raise
 
     is_multi_tenant = requested_tenant_provider() == BUILTIN_MULTI
+    cross_tenant_maintenance = bool(kwargs.pop("cross_tenant_maintenance", False))
 
     # Enforce the job's declared tenant scope before any heavy initialization.
     try:
@@ -242,6 +284,7 @@ async def run_job(
             module_path,
             is_multi_tenant=is_multi_tenant,
             organization_id=kwargs.get("organization_id"),
+            cross_tenant_maintenance=cross_tenant_maintenance,
         )
     except JobTenantScopeError:
         logger.critical("Refusing to run job: tenant-scope requirements not satisfied")
@@ -268,19 +311,47 @@ async def run_job(
     except Exception as e:
         logger.warning(f"Container initialization warning: {e}")
 
-    # Same multi-tenant hard gate as the web lifespan: refuse to run if the
-    # app's PostgreSQL role is exempt from RLS (superuser / BYPASSRLS / table
-    # owner) — a misprovisioned CronJob would otherwise see every tenant's
-    # rows unguarded. No-op in single-tenant mode and on SQLite.
+    # DB-role gate. Two mutually exclusive postures under multi:
+    # - Regular jobs (org / tenant_neutral): same hard gate as the web
+    #   lifespan — refuse if the app's PostgreSQL role is exempt from RLS
+    #   (superuser / BYPASSRLS / table owner); a misprovisioned CronJob would
+    #   otherwise see every tenant's rows unguarded.
+    # - The audited maintenance path (cross_tenant + --cross-tenant-maintenance,
+    #   already validated by _enforce_tenant_scope): the INVERSE — the role
+    #   must hold BYPASSRLS (an RLS-scoped partial view is the delete-other-
+    #   tenants hazard) while still being non-superuser and non-owner.
+    # Both are no-ops in single-tenant mode; the app gate is also a no-op on
+    # SQLite, while the maintenance gate fails closed off PostgreSQL.
     from faultmaven.infrastructure.persistence.rls_role_guard import (
         assert_app_db_role_enforces_rls,
+        assert_maintenance_db_role_posture,
     )
 
-    try:
-        await assert_app_db_role_enforces_rls(is_multi_tenant=is_multi_tenant)
-    except DeploymentCoherenceError:
-        logger.critical("Refusing to run job: app DB role is exempt from RLS")
-        raise
+    if is_multi_tenant and cross_tenant_maintenance:
+        try:
+            await assert_maintenance_db_role_posture()
+        except DeploymentCoherenceError:
+            logger.critical(
+                "Refusing to run job: DB role does not fit the maintenance "
+                "posture (BYPASSRLS + non-superuser + non-owner)"
+            )
+            raise
+        # The audit record for the run: who (DB role), what (job + args), and
+        # under which posture. Emitted at WARNING so it survives quiet logging
+        # configs — a cross-tenant sweep should never be invisible.
+        logger.warning(
+            "AUDIT cross-tenant maintenance run: job=%s args=%s "
+            "(RLS bypassed by dedicated maintenance role; "
+            "--cross-tenant-maintenance acknowledged)",
+            job_name,
+            {k: v for k, v in kwargs.items()},
+        )
+    else:
+        try:
+            await assert_app_db_role_enforces_rls(is_multi_tenant=is_multi_tenant)
+        except DeploymentCoherenceError:
+            logger.critical("Refusing to run job: app DB role is exempt from RLS")
+            raise
 
     # Bind the job's tenant scope (multi + org-scoped jobs only). The engine's
     # per-transaction listener reads this contextvar, so every DB transaction
@@ -357,6 +428,18 @@ Examples:
             "RLS-scoped to that organization."
         ),
     )
+    parser.add_argument(
+        "--cross-tenant-maintenance",
+        action="store_true",
+        help=(
+            "Run a JOB_TENANT_SCOPE='cross_tenant' job on the audited "
+            "maintenance path (multi-tenant deployments only). Requires the "
+            "process to connect as the dedicated maintenance DB role "
+            "(BYPASSRLS, non-superuser, non-owner) — the runner verifies the "
+            "role and refuses anything else, and every run is audit-logged. "
+            "See docs/operations/evidence-job-scheduling.md."
+        ),
+    )
 
     parsed_args = parser.parse_args(args)
 
@@ -376,6 +459,8 @@ Examples:
     kwargs: Dict[str, Any] = {}
     if parsed_args.organization_id:
         kwargs["organization_id"] = parsed_args.organization_id
+    if parsed_args.cross_tenant_maintenance:
+        kwargs["cross_tenant_maintenance"] = True
 
     # Run the job
     try:

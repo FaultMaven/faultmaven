@@ -90,6 +90,27 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def list_all_case_ids(self) -> List[str]:
+        """
+        Return the id of every case row, regardless of state or owner.
+
+        The reference set for the orphaned-collection sweep (case_cleanup):
+        a ChromaDB case collection is orphaned only when NO case row exists
+        for it at all — terminal/archived cases still count, so the sweep
+        never deletes vector data for a case that merely closed. Deliberately
+        unfiltered; under the multi-tenant provider a complete (cross-tenant)
+        result requires the maintenance DB role, which the jobs runner
+        enforces (an RLS-scoped role returns a partial set).
+
+        Returns:
+            List of case ids (unordered).
+
+        Raises:
+            RepositoryException: If the query fails
+        """
+        pass
+
+    @abstractmethod
     async def list(
         self,
         user_id: Optional[str] = None,
@@ -816,6 +837,10 @@ class InMemoryCaseRepository(CaseRepository):
         stored object is always consecutive.
         """
         return self._cases.get(case_id)
+
+    async def list_all_case_ids(self) -> List[str]:
+        """Every stored case id, regardless of state (see CaseRepository)."""
+        return list(self._cases.keys())
 
     async def list(
         self,

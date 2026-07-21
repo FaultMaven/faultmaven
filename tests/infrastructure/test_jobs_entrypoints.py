@@ -46,12 +46,12 @@ def mock_container():
     mock_vector_store.cleanup_orphaned_collections = AsyncMock(return_value=5)
     container.case_vector_store = mock_vector_store
 
-    # Mock case_store
-    mock_case_store = AsyncMock()
-    mock_case_store.get_all_case_ids = AsyncMock(
+    # Mock case_repository (the reference case-id set for the sweep)
+    mock_case_repository = AsyncMock()
+    mock_case_repository.list_all_case_ids = AsyncMock(
         return_value=["case_1", "case_2", "case_3"]
     )
-    container.case_store = mock_case_store
+    container.case_repository = mock_case_repository
 
     # Mock initialize
     container.initialize = AsyncMock()
@@ -95,7 +95,7 @@ class TestCaseCleanupJob:
 
         container = MagicMock()
         container.case_vector_store = None
-        container.case_store = MagicMock()
+        container.case_repository = MagicMock()
 
         result = await run(settings=mock_settings, container=container)
 
@@ -103,18 +103,20 @@ class TestCaseCleanupJob:
         assert result["reason"] == "case_vector_store_unavailable"
 
     @pytest.mark.asyncio
-    async def test_case_cleanup_skips_when_case_store_unavailable(self, mock_settings):
-        """Test job skips gracefully when case_store is not available."""
+    async def test_case_cleanup_skips_when_case_repository_unavailable(
+        self, mock_settings
+    ):
+        """Test job skips gracefully when case_repository is not available."""
         from faultmaven.jobs.case_cleanup import run
 
         container = MagicMock()
         container.case_vector_store = MagicMock()
-        container.case_store = None
+        container.case_repository = None
 
         result = await run(settings=mock_settings, container=container)
 
         assert result["status"] == "skipped"
-        assert result["reason"] == "case_store_unavailable"
+        assert result["reason"] == "case_repository_unavailable"
 
     @pytest.mark.asyncio
     async def test_case_cleanup_handles_errors(self, mock_settings):
@@ -128,9 +130,9 @@ class TestCaseCleanupJob:
         )
         container.case_vector_store = mock_vector_store
 
-        mock_case_store = AsyncMock()
-        mock_case_store.get_all_case_ids = AsyncMock(return_value=["case_1"])
-        container.case_store = mock_case_store
+        mock_case_repository = AsyncMock()
+        mock_case_repository.list_all_case_ids = AsyncMock(return_value=["case_1"])
+        container.case_repository = mock_case_repository
 
         result = await run(settings=mock_settings, container=container)
 
@@ -298,7 +300,7 @@ FAKE_JOB_MODULE = "tests_fake_job_module_p3"
 def _fake_job(tenant_scope, mock_container, mock_settings, provider="multi"):
     """Register a fake job module and patch the runner's boot gates.
 
-    Yields (job_run_mock, rls_guard_mock, set_org_mock).
+    Yields (job_run_mock, rls_guard_mock, set_org_mock, maintenance_guard_mock).
     """
     module = types.ModuleType(FAKE_JOB_MODULE)
     module.run = AsyncMock(return_value={"status": "completed"})
@@ -307,6 +309,7 @@ def _fake_job(tenant_scope, mock_container, mock_settings, provider="multi"):
     sys.modules[FAKE_JOB_MODULE] = module
 
     rls_guard = AsyncMock()
+    maintenance_guard = AsyncMock()
     set_org = MagicMock()
     try:
         with (
@@ -326,13 +329,18 @@ def _fake_job(tenant_scope, mock_container, mock_settings, provider="multi"):
                 ".assert_app_db_role_enforces_rls",
                 rls_guard,
             ),
+            patch(
+                "faultmaven.infrastructure.persistence.rls_role_guard"
+                ".assert_maintenance_db_role_posture",
+                maintenance_guard,
+            ),
             patch("faultmaven.config.tenant_context.set_current_org_id", set_org),
             patch.dict(
                 "faultmaven.jobs.run.AVAILABLE_JOBS",
                 {"fake_job": FAKE_JOB_MODULE},
             ),
         ):
-            yield module.run, rls_guard, set_org
+            yield module.run, rls_guard, set_org, maintenance_guard
     finally:
         sys.modules.pop(FAKE_JOB_MODULE, None)
 
@@ -352,6 +360,7 @@ class TestJobTenantScopeGates:
             job_run,
             _,
             _set_org,
+            _maint,
         ):
             with pytest.raises(JobTenantScopeError):
                 await run_job("fake_job")
@@ -368,7 +377,12 @@ class TestJobTenantScopeGates:
         (the contextvar default is the never-seeded Standalone org)."""
         from faultmaven.jobs.run import JobTenantScopeError, run_job
 
-        with _fake_job("org", mock_container, mock_settings) as (job_run, _, _set_org):
+        with _fake_job("org", mock_container, mock_settings) as (
+            job_run,
+            _,
+            _set_org,
+            _maint,
+        ):
             with pytest.raises(JobTenantScopeError):
                 await run_job("fake_job")
 
@@ -386,6 +400,7 @@ class TestJobTenantScopeGates:
             job_run,
             rls_guard,
             set_org,
+            _maint,
         ):
             # The binding must happen BEFORE the job executes — a run with the
             # contextvar still at its default is exactly the P3 hole.
@@ -416,6 +431,7 @@ class TestJobTenantScopeGates:
             job_run,
             _,
             set_org,
+            _maint,
         ):
             result = await run_job("fake_job")
 
@@ -430,7 +446,12 @@ class TestJobTenantScopeGates:
         """A job with no JOB_TENANT_SCOPE declaration cannot run under multi."""
         from faultmaven.jobs.run import JobTenantScopeError, run_job
 
-        with _fake_job(None, mock_container, mock_settings) as (job_run, _, _set_org):
+        with _fake_job(None, mock_container, mock_settings) as (
+            job_run,
+            _,
+            _set_org,
+            _maint,
+        ):
             with pytest.raises(JobTenantScopeError):
                 await run_job("fake_job")
 
@@ -448,6 +469,7 @@ class TestJobTenantScopeGates:
             job_run,
             _,
             set_org,
+            _maint,
         ):
             result = await run_job("fake_job")
 
@@ -466,6 +488,7 @@ class TestJobTenantScopeGates:
             job_run,
             _,
             _set_org,
+            _maint,
         ):
             with pytest.raises(JobTenantScopeError):
                 await run_job("fake_job")
@@ -539,6 +562,7 @@ class TestJobsPathBootGates:
             job_run,
             rls_guard,
             _set_org,
+            _maint,
         ):
             rls_guard.side_effect = DeploymentCoherenceError("role is RLS-exempt")
             with pytest.raises(DeploymentCoherenceError):
@@ -559,7 +583,7 @@ class TestJobsPathBootGates:
         )
         with _fake_job(
             "tenant_neutral", mock_container, mock_settings, provider="single"
-        ) as (job_run, _, _set_org):
+        ) as (job_run, _, _set_org, _maint):
             with pytest.raises(RuntimeError):
                 await run_job("fake_job")
 
@@ -575,6 +599,7 @@ class TestJobsPathBootGates:
             job_run,
             rls_guard,
             _set_org,
+            _maint,
         ):
             result = await run_job("fake_job")
 
@@ -595,7 +620,7 @@ class TestSchedulerMultiTenantGate:
         ) as scheduler_cls:
             result = start_case_cleanup_scheduler(
                 case_vector_store=MagicMock(),
-                case_store=MagicMock(),
+                case_repository=MagicMock(),
                 is_multi_tenant=True,
             )
 
@@ -612,9 +637,160 @@ class TestSchedulerMultiTenantGate:
         ) as scheduler_cls:
             result = start_case_cleanup_scheduler(
                 case_vector_store=MagicMock(),
-                case_store=MagicMock(),
+                case_repository=MagicMock(),
                 is_multi_tenant=False,
             )
 
         assert result is scheduler_cls.return_value
         scheduler_cls.return_value.start.assert_called_once()
+
+
+# =============================================================================
+# Audited cross-tenant maintenance path (ADR-010 / issue #629)
+# =============================================================================
+
+
+class TestCrossTenantMaintenancePath:
+    """--cross-tenant-maintenance is the ONLY way to run a cross_tenant job
+    under multi, and it swaps the app-role guard for the maintenance guard."""
+
+    @pytest.mark.asyncio
+    async def test_maintenance_path_runs_cross_tenant_job(
+        self, mock_container, mock_settings, caplog
+    ):
+        """Flag + maintenance role → the job runs; the maintenance guard (not
+        the app guard) is enforced; the run is audit-logged; no org is bound
+        (BYPASSRLS makes the contextvar irrelevant)."""
+        from faultmaven.jobs.run import run_job
+
+        with _fake_job("cross_tenant", mock_container, mock_settings) as (
+            job_run,
+            rls_guard,
+            set_org,
+            maintenance_guard,
+        ):
+            result = await run_job("fake_job", cross_tenant_maintenance=True)
+
+        assert result["status"] == "completed"
+        job_run.assert_awaited_once()
+        maintenance_guard.assert_awaited_once()
+        rls_guard.assert_not_called()
+        set_org.assert_not_called()
+        audit_lines = [r for r in caplog.records if "AUDIT" in r.getMessage()]
+        assert audit_lines, "cross-tenant maintenance run must be audit-logged"
+        assert audit_lines[0].levelname == "WARNING"
+        assert "fake_job" in audit_lines[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_maintenance_path_refused_on_wrong_role(
+        self, mock_container, mock_settings
+    ):
+        """Flag + a role that fails the maintenance posture probe → refused
+        before the job runs."""
+        from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+        from faultmaven.jobs.run import run_job
+
+        with _fake_job("cross_tenant", mock_container, mock_settings) as (
+            job_run,
+            _rls_guard,
+            _set_org,
+            maintenance_guard,
+        ):
+            maintenance_guard.side_effect = DeploymentCoherenceError(
+                "role lacks BYPASSRLS"
+            )
+            with pytest.raises(DeploymentCoherenceError):
+                await run_job("fake_job", cross_tenant_maintenance=True)
+
+        job_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_flag_refused_for_org_scoped_job(self, mock_container, mock_settings):
+        """The maintenance role must never run tenant-scoped work: an org job
+        with the flag fails closed (it would see every tenant's rows)."""
+        from faultmaven.jobs.run import JobTenantScopeError, run_job
+
+        with _fake_job("org", mock_container, mock_settings) as (
+            job_run,
+            _,
+            _set_org,
+            _maint,
+        ):
+            with pytest.raises(JobTenantScopeError):
+                await run_job(
+                    "fake_job",
+                    cross_tenant_maintenance=True,
+                    organization_id="org-1",
+                )
+
+        job_run.assert_not_called()
+        mock_container.initialize.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_flag_refused_for_tenant_neutral_job(
+        self, mock_container, mock_settings
+    ):
+        from faultmaven.jobs.run import JobTenantScopeError, run_job
+
+        with _fake_job("tenant_neutral", mock_container, mock_settings) as (
+            job_run,
+            _,
+            _set_org,
+            _maint,
+        ):
+            with pytest.raises(JobTenantScopeError):
+                await run_job("fake_job", cross_tenant_maintenance=True)
+
+        job_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_flag_refused_under_single_tenant(
+        self, mock_container, mock_settings
+    ):
+        """Single-tenant has no maintenance role; the flag is config drift
+        (e.g. a manifest copied from cloud) and fails closed."""
+        from faultmaven.jobs.run import JobTenantScopeError, run_job
+
+        with _fake_job(
+            "cross_tenant", mock_container, mock_settings, provider="single"
+        ) as (job_run, _, _set_org, _maint):
+            with pytest.raises(JobTenantScopeError):
+                await run_job("fake_job", cross_tenant_maintenance=True)
+
+        job_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cross_tenant_without_flag_still_refused(
+        self, mock_container, mock_settings
+    ):
+        """The pre-existing fail-closed default survives: no flag → refusal,
+        and the message points at the maintenance path."""
+        from faultmaven.jobs.run import JobTenantScopeError, run_job
+
+        with _fake_job("cross_tenant", mock_container, mock_settings) as (
+            job_run,
+            _,
+            _set_org,
+            _maint,
+        ):
+            with pytest.raises(JobTenantScopeError, match="cross-tenant-maintenance"):
+                await run_job("fake_job")
+
+        job_run.assert_not_called()
+
+    def test_cli_flag_reaches_run_job(self):
+        """--cross-tenant-maintenance parses and lands in run_job kwargs."""
+        from faultmaven.jobs import run as run_module
+
+        captured = {}
+
+        async def fake_run_job(job_name, verbose=False, **kwargs):
+            captured.update(kwargs, job_name=job_name)
+            return {"status": "completed"}
+
+        with patch.object(run_module, "run_job", side_effect=fake_run_job):
+            exit_code = run_module.main(["case_cleanup", "--cross-tenant-maintenance"])
+
+        assert exit_code == 0
+        assert captured["cross_tenant_maintenance"] is True
+        assert captured["job_name"] == "case_cleanup"

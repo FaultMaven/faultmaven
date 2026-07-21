@@ -112,3 +112,91 @@ async def assert_app_db_role_enforces_rls(
         "and owns no RLS-enabled table; tenant isolation is enforced.",
         row.role_name,
     )
+
+
+def _raise_unless_maintenance_posture(
+    role_name: str,
+    is_superuser: bool,
+    has_bypassrls: bool,
+    owns_rls_table: bool,
+) -> None:
+    """Fail closed unless the role fits the maintenance posture (no I/O).
+
+    The maintenance posture is the deliberate INVERSE of the app posture on
+    exactly one axis: the role MUST hold BYPASSRLS (a cross-tenant job run
+    with an RLS-scoped role sees a partial, single-org view of tenanted data —
+    for cleanup jobs that means classifying other tenants' resources as
+    orphaned and deleting them). Superuser and table ownership stay forbidden:
+    they grant DDL/catalog power far beyond what a maintenance job needs, and
+    ownership would let a compromised job rewrite the schema it sweeps.
+    """
+    problems = []
+    if not has_bypassrls:
+        problems.append(
+            "it lacks the BYPASSRLS attribute (RLS would scope the job to a "
+            "single org — a partial view that turns cross-tenant cleanup into "
+            "deleting other tenants' resources)"
+        )
+    if is_superuser:
+        problems.append("it is a superuser (far more privilege than a sweep needs)")
+    if owns_rls_table:
+        problems.append(
+            "it owns RLS-enabled tables (the maintenance role must not be able "
+            "to alter the schema it sweeps)"
+        )
+    if problems:
+        raise DeploymentCoherenceError(
+            "Cross-tenant maintenance requires a dedicated PostgreSQL role with "
+            "BYPASSRLS but neither SUPERUSER nor table ownership "
+            "(faultmaven_maintenance, provisioned by faultmaven-enterprise-infra), "
+            f"but the job is connected as '{role_name}': " + "; ".join(problems) + "."
+        )
+
+
+async def assert_maintenance_db_role_posture(*, engine=None) -> None:
+    """Refuse to run a cross-tenant maintenance job on the wrong DB role.
+
+    Counterpart of :func:`assert_app_db_role_enforces_rls` for the audited
+    maintenance path (ADR-010 / issue #629): a job whose tenant scope is
+    ``cross_tenant`` may only run under the multi-tenant provider when the
+    connected role deliberately bypasses RLS (BYPASSRLS, non-superuser,
+    non-owner). Callers gate on the multi-tenant predicate before calling —
+    single-tenant deployments have no RLS and no maintenance role.
+
+    Args:
+        engine: Async engine to probe; defaults to the shared engine. Injected
+            in tests.
+
+    Raises:
+        DeploymentCoherenceError: If the connected role lacks BYPASSRLS, is a
+            superuser, or owns an RLS-enabled table — or if the deployment is
+            not on PostgreSQL at all (a multi-tenant deployment on SQLite is
+            already refused by the coherence gate; failing closed here keeps
+            this guard self-contained).
+    """
+    if engine is None:
+        from faultmaven.infrastructure.persistence.database import get_engine
+
+        engine = get_engine()
+
+    if engine.dialect.name != "postgresql":
+        raise DeploymentCoherenceError(
+            "Cross-tenant maintenance is only defined for multi-tenant "
+            "PostgreSQL deployments (RLS + a dedicated BYPASSRLS role); the "
+            f"connected database dialect is '{engine.dialect.name}'."
+        )
+
+    async with engine.connect() as conn:
+        row = (await conn.execute(_ROLE_PRIVILEGE_QUERY)).first()
+
+    _raise_unless_maintenance_posture(
+        row.role_name,
+        bool(row.is_superuser),
+        bool(row.has_bypassrls),
+        bool(row.owns_rls_table),
+    )
+    logger.info(
+        "Maintenance role guard passed: DB role '%s' holds BYPASSRLS and is "
+        "neither superuser nor owner; cross-tenant maintenance may proceed.",
+        row.role_name,
+    )
