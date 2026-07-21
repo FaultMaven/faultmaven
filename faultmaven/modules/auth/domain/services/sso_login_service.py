@@ -6,31 +6,42 @@ Drives the three-legged cloud sign-in flow:
    ``return_to`` path, and build the IdP hosted-login URL to redirect to.
 2. ``complete_callback`` — the IdP redirected back: verify + consume the
    ``state``, exchange the authorization code for a normalized identity, resolve
-   the FaultMaven user by stable SSO subject, and hand the dashboard a 60-second
-   single-use completion code. Every failure maps to a sanitized error slug in
-   the dashboard redirect — IdP detail is never echoed (no error oracle).
+   the FaultMaven user by stable SSO subject (provisioning one just-in-time on
+   first login), and hand the dashboard a 60-second single-use completion
+   code. Every failure maps to a sanitized error slug in the dashboard
+   redirect — IdP detail is never echoed (no error oracle).
 3. ``exchange`` — the dashboard posts the completion code back and receives a
    freshly minted FaultMaven session (RS256 access + refresh tokens). Tokens are
    minted here, at exchange time, so they never rest in Redis and never appear
    in a URL.
 
 FaultMaven mints its own session; the IdP is an authentication front-end only.
-User resolution is strict match-by-subject (``get_by_sso``) — no email linking.
-An unknown subject is an error in this phase (JIT provisioning arrives in the
-next phase and flips that branch to a create).
+User resolution is strict match-by-subject (``get_by_sso``); an unknown subject
+is provisioned just-in-time (ADR-015 D4): username derived from the email
+local-part, NULL password, never admin. There is deliberately NO email-based
+linking of an SSO login to a pre-existing unlinked account — an account that
+already owns the identity's email is a hard conflict, not a link target.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
 
 import structlog
+from pydantic import EmailStr, TypeAdapter, ValidationError
 
-from faultmaven.modules.auth.contracts import ISSOIdentityProvider
+from faultmaven.exceptions import ConflictError
+from faultmaven.infrastructure.persistence.user_repository import (
+    User as RepositoryUser,
+)
+from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
 from faultmaven.modules.auth.exceptions import SSOAuthenticationError
 
 logger = structlog.get_logger(__name__)
@@ -47,7 +58,6 @@ LOGIN_CODE_TTL_SECONDS = 60
 # error values the callback may emit — never raw IdP error text.
 ERROR_STATE_INVALID = "sso_state_invalid"
 ERROR_EXCHANGE_FAILED = "sso_exchange_failed"
-ERROR_USER_UNKNOWN = "sso_user_unknown"
 ERROR_USER_INACTIVE = "sso_user_inactive"
 ERROR_ACCESS_DENIED = "sso_access_denied"
 ERROR_FAILED = "sso_failed"
@@ -59,6 +69,41 @@ _MAX_RETURN_TO_LENGTH = 512
 # reaches Redis or the IdP exchange.
 _MAX_STATE_LENGTH = 256
 _MAX_CODE_LENGTH = 512
+
+# JIT provisioning bounds. The username base is capped well under the column
+# limit (100) so collision suffixes always fit; suffix probing is bounded and
+# falls back to a random tail so provisioning always terminates.
+_USERNAME_BASE_MAX = 64
+_USERNAME_SUFFIX_ATTEMPTS = 30
+_MAX_EMAIL_LENGTH = 255
+_MAX_DISPLAY_NAME_LENGTH = 200
+
+# The JIT path validates emails via User model construction; the profile-sync
+# path assigns onto an existing model (no validate_assignment), so it runs the
+# same EmailStr validation explicitly before applying an IdP email change.
+_EMAIL_VALIDATOR: TypeAdapter[str] = TypeAdapter(EmailStr)
+
+
+def _is_usable_email(email: str) -> bool:
+    """True when the IdP-supplied email is present, bounded, and well-formed."""
+    if not email or len(email) > _MAX_EMAIL_LENGTH:
+        return False
+    try:
+        _EMAIL_VALIDATOR.validate_python(email)
+    except ValidationError:
+        return False
+    return True
+
+
+def derive_username(email: str) -> str:
+    """Derive a username candidate from an email local-part (ADR-015 D4).
+
+    Lowercased, restricted to ``[a-z0-9._-]``, trimmed of edge punctuation,
+    length-capped; falls back to ``"user"`` when nothing survives.
+    """
+    local_part = email.split("@", 1)[0].lower()
+    base = re.sub(r"[^a-z0-9._-]", "", local_part).strip("._-")
+    return (base or "user")[:_USERNAME_BASE_MAX]
 
 
 @dataclass(frozen=True)
@@ -235,19 +280,25 @@ class SSOLoginService:
         user = await self._users.get_by_sso(
             identity.provider, identity.provider_user_id
         )
+        provisioned = user is None
         if user is None:
-            # Strict match-by-subject: unknown subject is a dead end in this
-            # phase. The JIT-provisioning phase replaces this branch with a
-            # create. Log the provider only — never the subject or email.
-            logger.info("sso_login_unknown_subject", provider=identity.provider)
-            return self._dashboard_redirect(
-                error=ERROR_USER_UNKNOWN, return_to=return_to
-            )
-        if not getattr(user, "is_active", True):
+            # Strict match-by-subject found nothing: provision just-in-time.
+            # Never link by email — a conflicting unlinked account fails the
+            # login instead (ADR-015 D4).
+            user = await self._jit_provision(identity)
+            if user is None:
+                return self._dashboard_redirect(error=ERROR_FAILED, return_to=return_to)
+        if getattr(user, "deleted_at", None) is not None or not getattr(
+            user, "is_active", True
+        ):
             logger.info("sso_login_inactive_user", user_id=user.user_id)
             return self._dashboard_redirect(
                 error=ERROR_USER_INACTIVE, return_to=return_to
             )
+        if not provisioned:
+            # Returning subject: mirror the IdP's mutable profile and stamp
+            # the login (ADR-015 D4). A just-created user is already current.
+            await self._sync_profile(user, identity)
 
         completion_code = secrets.token_urlsafe(32)
         await self._store.put_login(
@@ -270,7 +321,11 @@ class SSOLoginService:
             return None
 
         user = await self._users.get(payload["user_id"])
-        if user is None or not getattr(user, "is_active", True):
+        if (
+            user is None
+            or getattr(user, "deleted_at", None) is not None
+            or not getattr(user, "is_active", True)
+        ):
             logger.warning("sso_exchange_user_unavailable", user_id=payload["user_id"])
             return None
 
@@ -294,6 +349,123 @@ class SSOLoginService:
             expires_in=self._access_token_expires_in,
             session_id=session_id,
         )
+
+    # -- provisioning (ADR-015 D4/D5) ----------------------------------------- #
+
+    async def _jit_provision(self, identity: SSOIdentity) -> Any | None:
+        """Create a FaultMaven user for a first-time SSO subject, or None.
+
+        Returns None on any non-provisionable identity (missing/oversized/
+        invalid email, or an existing unlinked account already owning the
+        email — linking is deliberately out of scope). Failures are logged
+        with the provider only, never the subject or email.
+        """
+        if not _is_usable_email(identity.email):
+            logger.warning(
+                "sso_jit_rejected", reason="unusable_email", provider=identity.provider
+            )
+            return None
+        if await self._users.get_by_email(identity.email) is not None:
+            # A pre-existing, unlinked account owns this email. ADR-015 D4:
+            # subject-match-or-create, never email-link — fail the login.
+            logger.warning(
+                "sso_jit_rejected", reason="email_conflict", provider=identity.provider
+            )
+            return None
+
+        now = datetime.now(UTC)
+        username = await self._free_username(derive_username(identity.email))
+        display_name = (identity.display_name or username)[:_MAX_DISPLAY_NAME_LENGTH]
+        try:
+            user = RepositoryUser(
+                user_id=str(uuid.uuid4()),
+                username=username,
+                email=identity.email,
+                display_name=display_name,
+                hashed_password=None,  # SSO-only account, no password ever
+                is_active=True,
+                is_email_verified=identity.email_verified,
+                email_verified_at=now if identity.email_verified else None,
+                sso_provider=identity.provider,
+                sso_provider_id=identity.provider_user_id,
+                created_at=now,
+                updated_at=now,
+                last_login_at=now,
+                # Never admin (ADR-015 D5): the first cloud admin is promoted
+                # out-of-band, no login path grants elevated roles.
+                roles=["user"],
+            )
+        except ValidationError:
+            # Keep pydantic's message (which echoes the input email) out of
+            # the logs — reject with a reason slug only.
+            logger.warning(
+                "sso_jit_rejected",
+                reason="invalid_identity",
+                provider=identity.provider,
+            )
+            return None
+
+        try:
+            created = await self._users.create(user)
+        except ConflictError:
+            # Lost a create race. If the same subject was provisioned by a
+            # concurrent callback, that row is ours to log in with.
+            existing = await self._users.get_by_sso(
+                identity.provider, identity.provider_user_id
+            )
+            if existing is not None:
+                return existing
+            logger.warning(
+                "sso_jit_rejected",
+                reason="create_conflict",
+                provider=identity.provider,
+            )
+            return None
+        logger.info(
+            "sso_user_provisioned",
+            user_id=created.user_id,
+            provider=identity.provider,
+        )
+        return created
+
+    async def _free_username(self, base: str) -> str:
+        """Pick an unused username: base, then numeric suffixes, then random."""
+        candidate = base
+        for suffix in range(2, 2 + _USERNAME_SUFFIX_ATTEMPTS):
+            if await self._users.get_by_username(candidate) is None:
+                return candidate
+            candidate = f"{base}-{suffix}"
+        # Pathological collision run: a random tail terminates the search; the
+        # create's own uniqueness check still backstops a race.
+        return f"{base}-{secrets.token_hex(4)}"
+
+    async def _sync_profile(self, user: Any, identity: SSOIdentity) -> None:
+        """Mirror the IdP's mutable profile onto a returning user + stamp login.
+
+        A profile-sync conflict (the IdP-reported email now belongs to another
+        account) must not fail the login — the stored profile simply stays as
+        it was.
+        """
+        now = datetime.now(UTC)
+        if (
+            _is_usable_email(identity.email)
+            and identity.email.lower() != (user.email or "").lower()
+        ):
+            user.email = identity.email
+            user.is_email_verified = identity.email_verified
+            user.email_verified_at = now if identity.email_verified else None
+        elif identity.email_verified and not getattr(user, "is_email_verified", False):
+            user.is_email_verified = True
+            user.email_verified_at = now
+        if identity.display_name and identity.display_name != getattr(
+            user, "display_name", None
+        ):
+            user.display_name = identity.display_name[:_MAX_DISPLAY_NAME_LENGTH]
+        user.last_login_at = now
+        try:
+            await self._users.update(user)
+        except ConflictError:
+            logger.warning("sso_profile_sync_conflict", user_id=user.user_id)
 
     # -- internals ----------------------------------------------------------- #
 
