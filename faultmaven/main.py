@@ -214,6 +214,7 @@ from .modules.agent.api.routes import router as agent_router
 from .modules.auth.api.auth import router as auth_router
 from .modules.auth.api.oauth import router as oauth_router
 from .modules.auth.api.session import router as session_router
+from .modules.auth.api.teams import router as teams_router
 from .modules.case.api.routes import router as case_router
 from .modules.knowledge.api.conversion_routes import router as conversion_router
 from .modules.knowledge.api.routes import router as knowledge_router
@@ -1213,6 +1214,9 @@ logger.info("✅ Agent endpoints added")
 app.include_router(auth_router, prefix="/api/v1")
 logger.info("✅ Auth endpoints added")
 
+app.include_router(teams_router, prefix="/api/v1")
+logger.info("✅ Team endpoints added")
+
 app.include_router(case_router, prefix="/api/v1")
 logger.info("✅ Case endpoints added")
 
@@ -1600,12 +1604,13 @@ async def root():
 
 
 @app.get("/v1/meta/capabilities")
-async def get_capabilities():
+async def get_capabilities(request: Request):
     """
     Return backend capabilities for browser extension configuration.
 
     This endpoint is called by the FaultMaven Copilot browser extension
-    to detect the deployment mode and configure itself accordingly.
+    and the Dashboard to detect the deployment mode and gate features
+    (e.g. team sharing, the org/team management console) accordingly.
 
     Returns:
         Backend capabilities including deployment mode, dashboard URL, and feature flags
@@ -1620,6 +1625,15 @@ async def get_capabilities():
     is_cloud = settings.is_cloud
     deployment_mode = "cloud" if is_cloud else "self-hosted"
 
+    # Team collaboration is active only when a TeamService is wired
+    # (multi-tenant provider, ADR-010 P2). This is the correct signal for
+    # team-gated capabilities: keying on ``deployment_mode == "cloud"`` would
+    # light them up in Cloud *before* multi-tenancy is ready (team_service is
+    # None until then), which the dashboard/copilot would then act on. The
+    # inventory/team routes read the same ``app.state.team_service`` signal.
+    team_service = getattr(request.app.state, "team_service", None)
+    team_management_active = team_service is not None
+
     return {
         "deploymentMode": deployment_mode,
         "kbManagement": "dashboard",
@@ -1627,7 +1641,14 @@ async def get_capabilities():
         "features": {
             "extensionKB": False,  # Always false - extension KB removed
             "adminKB": deployment_mode == "cloud",
-            "teamWorkspaces": deployment_mode == "cloud",
+            # Team-based KB/case sharing (ADR-013: Team = the sharing unit).
+            # Gated on the live TeamService, not deployment mode, so it stays
+            # off in Cloud until multi-tenancy is ready (ADR-010 P2).
+            "teamSharing": team_management_active,
+            # Org/Team management console (the composed Cloud admin module,
+            # ADR-010 D7). Advertised from the same TeamService signal so the
+            # dashboard hides the console until team management is live.
+            "managementConsole": team_management_active,
             "caseHistory": deployment_mode == "cloud",
             "sso": deployment_mode == "cloud",
         },

@@ -758,6 +758,13 @@ async def list_cases(
     source: Optional[Literal["copilot", "slack", "api"]] = Query(
         None, description="Filter by case source"
     ),
+    team_id: Optional[str] = Query(
+        None,
+        description=(
+            "Filter to cases shared with this Team (ADR-013 §D4). Only Teams the "
+            "caller belongs to yield results; ignored in standalone (no teams)."
+        ),
+    ),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     # Changed default to True - new cases should be visible immediately
@@ -795,6 +802,7 @@ async def list_cases(
             user_id=current_user.user_id,
             state=state,
             source=source,
+            team_id=team_id,
             limit=limit,
             offset=offset,
             include_empty=include_empty,
@@ -3655,11 +3663,12 @@ async def get_evidence_details(
 async def share_case_with_team(
     case_id: str = Path(..., description="Case ID"),
     team_id: str = Body(..., embed=True, description="Team ID to share the case with"),
-    case_service: ICaseService = Depends(get_case_service),
-    auth: tuple = Depends(require_authentication),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    current_user: UserDTO = Depends(require_authentication),
 ):
     """Share a case with a Team."""
-    session_id, user_id = auth
+    case_service = check_case_service_available(case_service)
+    user_id = current_user.user_id
 
     try:
         await case_service.share_case_with_team(case_id, team_id, user_id)
@@ -3690,11 +3699,12 @@ async def share_case_with_team(
 async def unshare_case_from_team(
     case_id: str = Path(..., description="Case ID"),
     team_id: str = Path(..., description="Team ID to unshare from"),
-    case_service: ICaseService = Depends(get_case_service),
-    auth: tuple = Depends(require_authentication),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    current_user: UserDTO = Depends(require_authentication),
 ):
     """Unshare a case from a Team."""
-    session_id, user_id = auth
+    case_service = check_case_service_available(case_service)
+    user_id = current_user.user_id
 
     try:
         removed = await case_service.unshare_case_from_team(case_id, team_id, user_id)
