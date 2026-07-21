@@ -711,6 +711,61 @@ def create_sso_identity_provider(
     return provider
 
 
+def create_sso_login_service(
+    settings: FaultMavenSettings,
+    identity_provider: Any,
+    redis_client: Any,
+    token_generator: Any,
+    session_service: Any,
+) -> Any | None:
+    """Create the SSO login orchestration service, or None when SSO is off.
+
+    Only constructed when the identity provider exists (i.e. ``sso_configured``),
+    which also guarantees oauth mode — so the RS256 token generator is present.
+    User lookup uses a sessionless repository (per-operation sessions), the same
+    pattern the user store uses.
+
+    Args:
+        settings: FaultMavenSettings instance
+        identity_provider: ISSOIdentityProvider from create_sso_identity_provider
+        redis_client: Async Redis-compatible client (real Redis in cloud)
+        token_generator: RS256 JWT token generator
+        session_service: AuthSessionService for session creation at exchange
+
+    Returns:
+        An SSOLoginService, or None when SSO is not configured.
+    """
+    if identity_provider is None:
+        return None
+    if token_generator is None or session_service is None:
+        logger.warning(
+            "SSO login service skipped (missing token generator or session service)"
+        )
+        return None
+
+    from faultmaven.infrastructure.persistence.user_repository import (
+        SessionlessUserRepository,
+    )
+    from faultmaven.modules.auth.domain.services.sso_login_service import (
+        SSOLoginService,
+    )
+    from faultmaven.modules.auth.infrastructure.stores.sso_ephemeral_store import (
+        SSOEphemeralStore,
+    )
+
+    service = SSOLoginService(
+        identity_provider=identity_provider,
+        ephemeral_store=SSOEphemeralStore(redis_client),
+        user_repository=SessionlessUserRepository(),
+        token_generator=token_generator,
+        session_service=session_service,
+        dashboard_url=settings.auth.dashboard_url,
+        access_token_expires_in=settings.auth.jwt_access_token_expire_minutes * 60,
+    )
+    logger.info("✅ SSO login service initialized")
+    return service
+
+
 def create_oauth_service(
     settings: FaultMavenSettings,
     user_repository: Any,
@@ -939,6 +994,22 @@ def register_services(container: BaseDIContainer) -> None:
         container._create_minimal_session_service,
     )
     container._register_service("session_service", session_service)
+
+    # SSO login orchestration (cloud WorkOS AuthKit; ADR-015). Registered after
+    # the session service because exchange mints a session; the JWT generator
+    # was registered in the oauth block above (sso_configured implies oauth).
+    sso_identity_provider = create_sso_identity_provider(settings)
+    if sso_identity_provider:
+        container._register_service("sso_identity_provider", sso_identity_provider)
+        sso_login_service = create_sso_login_service(
+            settings,
+            identity_provider=sso_identity_provider,
+            redis_client=redis_client,
+            token_generator=container.get_service("jwt_token_generator"),
+            session_service=session_service,
+        )
+        if sso_login_service:
+            container._register_service("sso_login_service", sso_login_service)
 
     # Agent Service
     # Backward-compatible alias: expose InvestigationService as agent_service.

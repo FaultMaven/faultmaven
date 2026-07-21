@@ -38,6 +38,9 @@ class OAuthRateLimiter:
             "/authorize": 10,  # Prevent authorization flooding
             "/token": 5,  # Prevent token brute force
             "/revoke": 20,  # Allow normal logout patterns
+            "/sso/login": 10,  # Prevent state-store flooding
+            "/sso/callback": 10,  # Prevent state/code guessing via the IdP leg
+            "/sso/exchange": 5,  # Prevent completion-code brute force
         }
 
         # Window size in seconds
@@ -162,3 +165,18 @@ async def require_oauth_rate_limit_revoke(request: Request) -> None:
             ...
     """
     await _oauth_rate_limiter.check_rate_limit(request, "/revoke")
+
+
+async def require_sso_rate_limit_login(request: Request) -> None:
+    """Rate limiting dependency for GET /auth/sso/login (ADR-015)."""
+    await _oauth_rate_limiter.check_rate_limit(request, "/sso/login")
+
+
+async def require_sso_rate_limit_callback(request: Request) -> None:
+    """Rate limiting dependency for GET /auth/sso/callback (ADR-015)."""
+    await _oauth_rate_limiter.check_rate_limit(request, "/sso/callback")
+
+
+async def require_sso_rate_limit_exchange(request: Request) -> None:
+    """Rate limiting dependency for POST /auth/sso/exchange (ADR-015)."""
+    await _oauth_rate_limiter.check_rate_limit(request, "/sso/exchange")
