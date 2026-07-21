@@ -27,10 +27,15 @@ job module declares ``JOB_TENANT_SCOPE``:
   Under single-tenant the Standalone default already scopes correctly.
 - ``cross_tenant`` — needs a view across ALL organizations (e.g. case_cleanup
   diffs the DB case-id set against ChromaDB collections, which are not
-  org-partitioned). Under multi this **fails closed**: the app's DB role is
-  RLS-scoped to one org, so any run would see a partial id set and delete
-  other tenants' data. Cross-tenant jobs cannot be scheduled in cloud until an
-  audited maintenance path exists (tracked in #629).
+  org-partitioned). Under multi this **fails closed**: RLS scopes every DB
+  transaction to the single org bound in the tenant context, so any run would
+  see a partial id set and delete other tenants' data. Cross-tenant jobs
+  cannot be scheduled in cloud until an audited maintenance path exists
+  (tracked in #629).
+
+``--organization-id`` is operator input: the runner binds whatever org id the
+caller passes (and logs it). The scope model is a mis-scoping guard for
+in-cluster maintenance, not an authorization boundary.
 
 A job that declares no scope fails closed under multi — an undeclared job may
 read tenanted tables, and the mis-scoped default (the never-seeded Standalone
@@ -137,12 +142,12 @@ def _enforce_tenant_scope(
     if scope == TENANT_SCOPE_CROSS_TENANT:
         raise JobTenantScopeError(
             f"Job '{module_path}' requires a cross-tenant view, which the "
-            "multi-tenant deployment cannot provide: the application's DB role "
-            "is scoped to one organization by row-level security, so the job "
-            "would operate on a partial view of tenanted data (for cleanup "
-            "jobs, that means deleting other tenants' resources). Do not "
-            "schedule this job in cloud; an audited maintenance path is "
-            "tracked in issue #629."
+            "multi-tenant deployment cannot provide: row-level security "
+            "scopes every DB transaction to the single organization bound in "
+            "the tenant context, so the job would operate on a partial view "
+            "of tenanted data (for cleanup jobs, that means deleting other "
+            "tenants' resources). Do not schedule this job in cloud; an "
+            "audited maintenance path is tracked in issue #629."
         )
 
     if scope == TENANT_SCOPE_ORG:
@@ -251,6 +256,14 @@ async def run_job(
         # cloud) — never run a job against tenanted data with an invalid
         # tenancy configuration.
         logger.critical("Refusing to run job: tenancy configuration is invalid")
+        raise
+    except RuntimeError:
+        # The container's production fail-fast (ENVIRONMENT=production raises
+        # instead of degrading to a half-initialized container). The web
+        # lifespan treats this as terminal; so does the jobs path — otherwise
+        # a CronJob with broken infrastructure would report "skipped" (exit 0)
+        # forever instead of failing loudly.
+        logger.critical("Refusing to run job: container initialization failed")
         raise
     except Exception as e:
         logger.warning(f"Container initialization warning: {e}")

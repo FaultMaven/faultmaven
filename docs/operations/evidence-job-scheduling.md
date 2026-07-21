@@ -127,7 +127,7 @@ The CLI runner (`faultmaven.jobs.run`) enforces a declared tenant scope per job
 |-------|---------|-------------------------------|
 | `tenant_neutral` | No tenanted DB access (e.g. `storage_cleanup`, a sidecar-driven filesystem sweep) | Runs as-is |
 | `org` | Operates on one organization's rows | Requires explicit `--organization-id`; the runner binds it to the tenant context so all DB access is RLS-scoped to that org |
-| `cross_tenant` | Needs all organizations' rows (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections) | **Refused** — the app DB role is RLS-scoped to one org; a partial view would delete other tenants' data. Do not schedule in cloud (see faultmaven#629) |
+| `cross_tenant` | Needs all organizations' rows (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections) | **Refused** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Do not schedule in cloud (see faultmaven#629) |
 
 The runner also runs the same boot gates as the API lifespan: the deployment
 coherence gate, and (under multi) the RLS role guard — a CronJob with a

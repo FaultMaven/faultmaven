@@ -387,6 +387,16 @@ class TestJobTenantScopeGates:
             rls_guard,
             set_org,
         ):
+            # The binding must happen BEFORE the job executes — a run with the
+            # contextvar still at its default is exactly the P3 hole.
+            def _assert_bound_then_complete(**kwargs):
+                assert (
+                    set_org.called
+                ), "tenant context must be bound before the job runs"
+                return {"status": "completed"}
+
+            job_run.side_effect = _assert_bound_then_complete
+
             result = await run_job("fake_job", organization_id="org_alpha")
 
         assert result["status"] == "completed"
@@ -532,6 +542,25 @@ class TestJobsPathBootGates:
         ):
             rls_guard.side_effect = DeploymentCoherenceError("role is RLS-exempt")
             with pytest.raises(DeploymentCoherenceError):
+                await run_job("fake_job")
+
+        job_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_container_init_runtime_error_is_terminal(
+        self, mock_container, mock_settings
+    ):
+        """The container's production fail-fast (RuntimeError) refuses the job
+        instead of degrading to a half-initialized 'skipped' run (exit 0)."""
+        from faultmaven.jobs.run import run_job
+
+        mock_container.initialize.side_effect = RuntimeError(
+            "Container initialization failed in production"
+        )
+        with _fake_job(
+            "tenant_neutral", mock_container, mock_settings, provider="single"
+        ) as (job_run, _, _set_org):
+            with pytest.raises(RuntimeError):
                 await run_job("fake_job")
 
         job_run.assert_not_called()

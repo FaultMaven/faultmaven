@@ -106,10 +106,11 @@ def start_case_cleanup_scheduler(
         is_multi_tenant: Whether the deployment runs the multi-tenant provider.
             The cleanup task is cross-tenant scoped (it diffs the DB case-id
             set against ChromaDB collections, which are not org-partitioned),
-            but a background task's DB reads are RLS-scoped to the contextvar
-            default — a partial view that would classify other tenants'
-            collections as orphaned and delete them. Refused under multi
-            (ADR-010 P3 / issue #629).
+            but RLS scopes a background task's DB reads to whatever org the
+            tenant contextvar holds — under multi, its default (the never-
+            seeded Standalone org) — a partial view that would classify other
+            tenants' collections as orphaned and delete them. Refused under
+            multi (ADR-010 P3 / issue #629).
 
     Returns:
         BackgroundScheduler instance (or None if refused or initialization fails)
@@ -118,8 +119,9 @@ def start_case_cleanup_scheduler(
         logger.warning(
             "In-process case-cleanup scheduler refused under the multi-tenant "
             "provider: the cleanup task needs a cross-tenant case-id view, but "
-            "background DB reads are RLS-scoped to a single organization — a "
-            "partial view would delete other tenants' collections (issue #629)."
+            "RLS scopes background DB reads to the single org bound in the "
+            "tenant context — a partial view would delete other tenants' "
+            "collections (issue #629)."
         )
         return None
 
