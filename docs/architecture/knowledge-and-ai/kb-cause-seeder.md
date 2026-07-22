@@ -264,17 +264,37 @@ drift, not a current defect.
 ### What the seeder consumes (and what it doesn't)
 
 The seeder reads a cause's `chain_nodes` / `chain_edges` / `cause_statement` /
-`cause_letter` / `cause_name`. It does **not** structurally consume
-`rung_indicators` or `interventions` — those reach the engine only as *prose* for
-the LLM (the AUTHORITY block's per-rung indicator matching, and treatment-stage
-`SolutionToAdd`). So a seeded chain is *topology with the per-rung validation
-signal detached*: the engine leans on the LLM to map evidence to the right rung.
-This is the deepest remaining slice of the write-only-`causes` residue. Making it
-load-bearing — seeding `rung_indicators` as evidence-needs / expected
-`causal_evidence` per rung — is a **recommended, separately-sized follow-on**, its
-go/no-go informed by whether seeded rungs validate well in the eval. (Wiring the
-deterministic `<!-- match -->` predicates is blocked upstream: the pack ships zero
-`predicate`/`exit_code` keys — they are dropped at pack-build.)
+`cause_letter` / `cause_name` for the chain topology, **and** its
+`rung_indicators` to seed per-rung evidence-needs (see *Rung indicators →
+evidence-needs* below). It does **not** yet structurally consume `interventions`
+— those still reach the engine only as *prose* for the LLM (treatment-stage
+`SolutionToAdd`); wiring them to a structured candidate `Solution` at the M5 gate
+is the remaining produce-symmetric follow-on. (The deterministic `<!-- match -->`
+predicates stay blocked upstream: the pack ships zero `predicate`/`exit_code`
+keys — dropped at pack-build.)
+
+#### Rung indicators → evidence-needs
+
+`rung_indicators` (`dict[rung_ref → list[observable]]`) are a cause's per-rung
+checkable signals — the richest slice of the `metadata["causes"]` record and,
+before this, structurally write-only (consumed only as prose by the LLM). At seed
+time, `_emit_rung_needs` turns each indicator into one **PENDING
+`CAUSAL_VERIFICATION`** `EvidenceNeed` in `case.evidence_needs`, motivated by the
+seeded hypothesis, so a seeded chain arrives carrying its own discriminators
+rather than leaning entirely on the LLM to invent them. The runbook's `[Step N]`
+reference prefix is stripped for the user-facing `request_text`; indicators empty
+after stripping, and duplicates within a cause, are dropped.
+
+Every property keeps a seeded need a **prior, not a gate** — mechanically
+identical to an LLM-emitted need:
+
+| Property | Effect |
+|---|---|
+| `state = PENDING`, no `fulfilling_evidence_ids` | Never auto-fulfilled — grounds only when a real datum arrives, like any need. |
+| `priority = LOW` | Sinks a seeded ask in the rendered `<evidence_needs>` ordering. Not a suppression guarantee — surfacing *selection* is deliberately priority- and origin-blind (ranks by `request_text` rarity + rotation), so a discriminating seeded rung surfaces like any other need. |
+| `obtainability = UNKNOWN` (fail-safe) | Never contributes to the declared-data-wall on its own (`verification_status._candidate_unresolvable` walls a candidate only when *all* its discriminators are `UNOBTAINABLE`). It makes the wall *honestly computable* for a seeded candidate — a latent gap before R8, when a seeded hypothesis had zero discriminators — without ever moving a case toward INSUFFICIENT_EVIDENCE. |
+| Motivated solely by the seeded hypothesis | Cleared for free by the engine's motivator-based auto-supersession when that hypothesis is retired (evidence-needs-design §7.4) — no bespoke cleanup. |
+| Origin only in `rationale` (`SEEDED_RATIONALE_PREFIX`) | Provenance-blind to safety (see below) — nothing branches on it. |
 
 ## Guarantee: no evidentiary privilege, no anchoring
 
@@ -309,15 +329,20 @@ rests on *nothing branching on origin*. The seeder records origin in two read
 surfaces — `node.metadata["seeded_from_runbook"]` and the hypothesis `rationale`
 (prefix `"Seeded from runbook …"`) — read only by observability and tests. This
 is enforced by a standing invariant test that greps the safety modules for
-**both** markers (the metadata key *and* the rationale-prefix literal), so a
-mechanism cannot sniff origin out of the rationale string either. The checked
-module set spans consume-side safety (decay / anchoring / failed-fix demotion /
-node+hypothesis state derivation in `causal_graph` + `hypothesis_manager`;
-`cause_state` derivation + the per-turn housekeeping loop in `milestone_engine`)
-**and** the conclusion/terminal gates a seeded prior must never shortcut
-(`cause_assurance`, `terminal_transitions`, `progress_monitor`, `state_validator`,
-`working_conclusion_generator`) — a whole-file grep is deliberately coarse so the
-guard can never be silently narrowed below where the safety logic actually lives.
+**both** markers (the metadata key *and* the rationale-prefix literal — the latter
+now also carried by each seeded rung-need's `rationale`), so a mechanism cannot
+sniff origin out of the rationale string either. The checked module set spans
+consume-side safety (decay / anchoring / failed-fix demotion / node+hypothesis
+state derivation in `causal_graph` + `hypothesis_manager`; `cause_state`
+derivation + the per-turn housekeeping loop in `milestone_engine`), the
+conclusion/terminal gates a seeded prior must never shortcut (`cause_assurance`,
+`terminal_transitions`, `progress_monitor`, `state_validator`,
+`working_conclusion_generator`), **and** — since R8 makes a seeded cause emit
+evidence-needs — the need-consuming safety paths (`verification_status`, the
+declared-data-wall arm; `evidence_need_surfacing`, the render-time view), proving
+neither reaches through a need's motivating hypothesis to sniff origin. A
+whole-file grep is deliberately coarse so the guard can never be silently narrowed
+below where the safety logic actually lives.
 The grep also bans the origin **symbol names** themselves (a module could import
 the metadata-key constant and branch on it with no literal value in its source),
 so the literal-value grep alone is a tripwire, not a proof. A future edit cannot

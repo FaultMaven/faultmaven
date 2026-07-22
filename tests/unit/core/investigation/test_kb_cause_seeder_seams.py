@@ -35,6 +35,9 @@ from faultmaven.modules.case.contracts import (
     CaseSeverity,
     CaseState,
     InquiryData,
+    NeedPriority,
+    NeedPurpose,
+    NeedState,
     ProblemVerification,
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
@@ -95,6 +98,7 @@ def _good_cause(letter="A", root_stmt="root A: the underlying fault") -> dict:
             {"cause_ref": "root", "effect_ref": "s1"},
             {"cause_ref": "s1", "effect_ref": "D"},
         ],
+        "rung_indicators": {"root": [f"[Step 1] observable for {letter}"]},
         "is_fallback_cause": False,
     }
 
@@ -344,6 +348,27 @@ async def test_wrapper_happy_path_seeds_through_real_seeder(enable_seeder):
         if (n.metadata or {}).get(SEEDED_FROM_RUNBOOK_KEY) == "rb1"
     ]
     assert seeded_nodes  # provenance stamped on the newly-minted nodes
+
+
+@pytest.mark.asyncio
+async def test_wrapper_seeds_rung_evidence_needs(enable_seeder):
+    # End-to-end through the flag-ON engine wrapper: a seeded cause's rung
+    # indicators land as PENDING causal evidence-needs on the case (R8). The
+    # flag-OFF counterpart is test_wrapper_flag_off_is_a_noop — no seeding, so no
+    # needs.
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    case = _case()
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(case, [_hit("rb1", 0.9)])
+
+    hyp_id = next(iter(case.hypotheses))
+    needs = [n for n in case.evidence_needs if hyp_id in n.motivating_hypothesis_ids]
+    assert needs  # the seeded hypothesis arrived carrying its discriminators
+    for n in needs:
+        assert n.purpose == NeedPurpose.CAUSAL_VERIFICATION
+        assert n.state == NeedState.PENDING
+        assert n.priority == NeedPriority.LOW
+        assert n.request_text == "observable for A"  # [Step N] prefix stripped
 
 
 # ---------------------------------------------------------------------------
