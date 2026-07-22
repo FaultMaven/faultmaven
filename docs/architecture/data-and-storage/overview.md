@@ -242,7 +242,7 @@ For auth/session TTL detail (JWT lifetimes, session record TTL, inactivity timeo
 
 **Immutable Logs**:
 
-- `case_actions`: All case-level actions and status changes (the Python `CaseStatusTransitionModel` alias points here for back-compat)
+- `case_actions`: All case-level actions and status changes (ORM model `CaseActionModel`)
 - `agent_tool_calls` / `agent_tool_calls_v2`: All agent actions
 - `user_audit_log`: User authentication and administrative events
 

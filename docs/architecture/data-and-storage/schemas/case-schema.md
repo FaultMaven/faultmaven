@@ -4,7 +4,7 @@
 **Status**: Authoritative Standard
 **Last Updated**: 2026-05-10
 
-> **Scope**: This document reflects the live schema as of migration `0a1b2c3d4e5f` (016). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
+> **Scope**: This document reflects the live schema as of migration `c5d6e7f8a9b0` (033, current head). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
 
 > **NOTE on `organization_id` placement**: All tenanted case-domain tables carry `organization_id NOT NULL FK` for RLS policy enforcement in PostgreSQL and direct repository-layer filtering in both dialects. The per-table DDL below reflects this placement on every tenanted table.
 
@@ -38,7 +38,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | --- | --- | --- |
 | ✅ Design | Approved | This document |
 | ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` (32 tables) |
-| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `0a1b2c3d4e5f` (016) |
+| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `c5d6e7f8a9b0` (033) |
 | ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
 | ✅ SQLite Repository | Complete | `sqlite_case_repository.py` |
 | ✅ SQLite Integration Tests | Complete | Tests passing with real SQLite database |
@@ -46,7 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration Chain** (linear; current head is `d0e1f2a3b4c5`):
+**Migration Chain** (linear; current head is `c5d6e7f8a9b0`):
 
 | # | Revision | Description |
 | --- | --- | --- |
@@ -176,7 +176,7 @@ class CaseRepository(ABC):
 
 ### 2.2 InMemory Implementation (Development/Testing)
 
-**File**: `faultmaven/infrastructure/persistence/case_repository.py`
+**File**: `faultmaven/modules/case/infrastructure/case_repository.py`
 
 ```python
 class InMemoryCaseRepository(CaseRepository):
@@ -378,7 +378,7 @@ Agent Execution Cascade (3):
 └── agent_tool_calls        -- Tool-call log
 ```
 
-The full live table count across user + case + knowledge + config domains is **32** — see `er-diagram.md` for the authoritative enumeration.
+The full live table count across user + case + knowledge + config domains is **37** — see `er-diagram.md` for the authoritative enumeration.
 
 Tables historically present and removed by the redesign (`evidence_artifacts`, `standalone_evidence`, `agent_tool_calls` v1, `sessions`) are documented in the appendix at the end of this file.
 
@@ -401,7 +401,8 @@ CREATE TABLE cases (
     -- ============================================================
     case_id VARCHAR(36) PRIMARY KEY,
     organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
-    team_id VARCHAR(36) REFERENCES teams(team_id) ON DELETE SET NULL,
+    -- team_id column DROPPED in migration 028 (d0e1f2a3b4c5). Team visibility is
+    -- now carried by the polymorphic `resource_shares` table, not a column here.
     user_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
     title VARCHAR(200) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
@@ -410,7 +411,12 @@ CREATE TABLE cases (
     -- Status & Lifecycle
     -- ============================================================
     state VARCHAR(50) NOT NULL DEFAULT 'inquiry',
+    -- Case origin (ADR-012 two-account model, migration 025). Python attr: source.
+    source VARCHAR(20) NOT NULL DEFAULT 'copilot',
     closure_reason VARCHAR(100),
+    -- Per-disposition eligibility view, maintained at the repository save chokepoint
+    -- (migration 013). Nullable JSON-in-TEXT.
+    disposition_eligibility TEXT,
 
     -- ============================================================
     -- Investigation State (first-class — drive milestone engine logic)
@@ -546,7 +552,7 @@ CREATE TABLE evidence (
     category            VARCHAR(50) NOT NULL,
     -- domain EvidenceSourceType enum: logs | metrics | configuration
     --                                | code | text | image | user_description
-    source_type         VARCHAR(50) NOT NULL,
+    source_type         VARCHAR(50),   -- nullable in live ORM (models.py: nullable=True)
 
     -- Two-field content shape (see "Role of summary vs extract" above):
     summary             VARCHAR(500) NOT NULL,
@@ -693,6 +699,11 @@ CREATE TABLE hypotheses (
     organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
+    -- Causal-graph chain model (migration 019). A hypothesis is a causal CHAIN:
+    -- root_node_id anchors it to the graph; path is the ordered node-id chain.
+    root_node_id VARCHAR(36) REFERENCES causal_nodes(node_id) ON DELETE SET NULL,
+    path JSONB NOT NULL DEFAULT '[]',               -- ordered causal_nodes.node_id chain
+
     statement TEXT NOT NULL,
     -- HypothesisState enum: captured | active | validated | refuted | inconclusive | retired
     state VARCHAR(20) NOT NULL DEFAULT 'captured',
@@ -779,6 +790,11 @@ CREATE TABLE solutions (
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     hypothesis_id VARCHAR(36) REFERENCES hypotheses(hypothesis_id) ON DELETE SET NULL,
 
+    -- Causal-graph linkage (migration 019). node_id anchors the solution to a
+    -- causal_nodes row; quadrant classifies the fix type.
+    node_id VARCHAR(36) REFERENCES causal_nodes(node_id) ON DELETE SET NULL,
+    quadrant VARCHAR(20),                            -- remediation | defensive_fix | mitigation | loop_break
+
     title VARCHAR(500) NOT NULL,
     description TEXT NOT NULL,
     solution_type VARCHAR(30) NOT NULL DEFAULT 'other',
@@ -823,7 +839,9 @@ CREATE TABLE solutions (
     CONSTRAINT solutions_risk_level_check
         CHECK (risk_level IS NULL OR risk_level IN ('low', 'medium', 'high', 'critical')),
     CONSTRAINT solutions_effectiveness_range
-        CHECK (effectiveness IS NULL OR (effectiveness >= 0 AND effectiveness <= 1))
+        CHECK (effectiveness IS NULL OR (effectiveness >= 0 AND effectiveness <= 1)),
+    CONSTRAINT solutions_quadrant_check
+        CHECK (quadrant IS NULL OR quadrant IN ('remediation', 'defensive_fix', 'mitigation', 'loop_break'))
 );
 
 CREATE INDEX ix_solutions_case_id ON solutions(case_id);
@@ -902,7 +920,7 @@ COMMENT ON COLUMN uploaded_files.structural_index IS 'Preprocessing-pipeline JSO
 > **Column discrepancies vs. live ORM**:
 >
 > - `message_id UUID PRIMARY KEY DEFAULT gen_random_uuid()` — live ORM uses `String(36)` as the primary key with no auto-generation (post-Phase 4 width normalization). UUID PK with `gen_random_uuid()` is **Tier 2 (PostgreSQL-only)** (SQLite cannot express this natively). The Tier 1 reality is a VARCHAR(36) application-generated ID.
-> - `CONSTRAINT case_messages_role_check` — not present in live ORM; marking Tier 2 (PostgreSQL-only).
+> - `CONSTRAINT case_messages_role_check` — present in the live ORM as a **Tier 1** `CheckConstraint` (both dialects), `role IN ('user', 'assistant', 'system')`.
 
 ```sql
 CREATE TABLE case_messages (
@@ -930,7 +948,7 @@ CREATE TABLE case_messages (
     -- ============================================================
     metadata JSONB DEFAULT '{}'::jsonb,         -- Sources, tools used, etc.
 
-    -- Tier 2 (PostgreSQL-only)
+    -- Tier 1 (live ORM; both dialects)
     CONSTRAINT case_messages_role_check
         CHECK (role IN ('user', 'assistant', 'system'))
 );
@@ -1128,7 +1146,7 @@ Top of the cascade. One session groups all agent executions that occur within a 
 
 **When written**: Created when the user submits a turn and the milestone engine starts processing. A session spans multiple agent executions (one per LLM call iteration).
 
-**Key columns** (see `models.py:1475`):
+**Key columns** (see `InvestigationSessionModel` in `models.py`):
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -1136,7 +1154,7 @@ Top of the cascade. One session groups all agent executions that occur within a 
 | `case_id` | VARCHAR(36) FK → cases CASCADE | |
 | `user_id` | VARCHAR(36) | |
 | `organization_id` | VARCHAR(36) | |
-| `status` | VARCHAR(32) | `active\|paused\|completed\|abandoned` |
+| `state` | VARCHAR(32) | `active\|paused\|completed\|abandoned` — renamed from `status` in migration 015 (`investigation_sessions_state_check`) |
 | `started_at` | TIMESTAMPTZ | |
 | `ended_at` | TIMESTAMPTZ nullable | |
 | `last_activity_at` | TIMESTAMPTZ | |
@@ -1339,23 +1357,17 @@ SELECT * FROM cases WHERE case_id = 'case_123';
 
 ### 5.4 Multi-Tenancy: organization_id Normalization
 
-**Decision**: `organization_id` is stored **ONLY on the `cases` table**, not on child tables.
+**Decision**: `organization_id` is **denormalized onto every tenanted table** (`NOT NULL`), not stored only on `cases`. This is what the live ORM and migration 018 (RLS tenant isolation) implement — see the Implementation Pattern below.
+
+> **Superseded**: An earlier revision of this section proposed storing `organization_id` only on `cases` and resolving org filtering via JOIN. That was rejected in favor of the denormalized layout because PostgreSQL Row-Level Security policies filter each table by its own `organization_id` column — RLS cannot reach through a JOIN to `cases`.
 
 **Rationale**:
 
-1. **Query Pattern Analysis**: 0% of child table queries filter by `organization_id` without `case_id`
-   - All child queries have `case_id` in WHERE clause (100% of 369 queries analyzed)
-   - Organization filtering is achieved via JOIN to `cases` table
+1. **RLS requires the column per table**: each tenanted table's `<table>_tenant_isolation` policy filters on that table's own `organization_id`; a JOIN-only design cannot back RLS.
 
-2. **Data Integrity**: Single source of truth prevents inconsistencies
-   - No risk of child `organization_id` diverging from parent
-   - No complex CHECK constraints needed
-   - Organization transfers = single UPDATE to `cases` table
+2. **Direct repository-layer filtering**: the repository filters by `organization_id` on every query without a mandatory JOIN to `cases`.
 
-3. **Performance**: JOIN overhead is negligible
-   - Normalized: ~2.5ms per query (with JOIN)
-   - Denormalized: ~1.1ms per query (direct filter)
-   - **Difference**: 1.4ms (< 3% of total 50-100ms query time)
+3. **Defense in depth**: the column + RLS provide a second enforcement layer independent of application-level `case_id` scoping.
 
 **Implementation Pattern**:
 
@@ -1750,7 +1762,7 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply migrations via alembic (chain head: d0e1f2a3b4c5)
+# Apply migrations via alembic (chain head: c5d6e7f8a9b0)
 alembic upgrade head
 
 # Verify all tables created
@@ -1916,7 +1928,7 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 
 - [x] Design approved (this document)
 - [x] ORM models (`faultmaven/infrastructure/persistence/models.py`)
-- [x] Migration chain through head `4b7e2f9d3a18` (009)
+- [x] Migration chain through head `c5d6e7f8a9b0` (033)
 - [x] Repository implementation (`postgresql_hybrid_case_repository.py`, `sqlite_case_repository.py`)
 - [x] Container.py wiring (`CASE_STORAGE_TYPE=database`)
 - [x] Enterprise tier bootstrap (default enterprise seed; NOT NULL `enterprise_id` on users/orgs)
@@ -1990,7 +2002,7 @@ The following tables and columns existed in earlier iterations of this design bu
 - **Created**: 2025-11-09
 - **Last Updated**: 2026-05-10
 - **Version**: 4.2 (Authoritative)
-- **Status**: ✅ Implemented — live schema (migration chain head `4b7e2f9d3a18`)
+- **Status**: ✅ Implemented — live schema (migration chain head `c5d6e7f8a9b0`, 033)
 
 **Changelog**:
 
