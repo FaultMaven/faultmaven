@@ -110,7 +110,21 @@ regardless of the seeder flag.
 ### 1a. Retrieval scope and trust boundary
 
 The seeder can only seed from runbooks the prefetch surfaces, so two constraints
-live at the retrieval seam:
+live at the retrieval seam.
+
+**Ranking is plain retrieval score.** The prefetch runs
+`KnowledgeService.search_knowledge` → `KnowledgeVectorStore.search`, a single-pass
+pure-vector search (cosine similarity, `score = 1.0 − distance`) — **no reranker
+and no service-metadata boost**. The case-derived service signal
+(`context_metadata` → `hybrid_search(filter_mode="soft")` → the reranker's
+`_compute_metadata_score`) is wired only through the agent QA tools path
+(`KBToolAdapter` → `DocumentQATool` → `hybrid_search`), which the seeder does not
+use. So the runbooks the seeder ranks and picks are ordered by plain retrieval
+score, with the affected service exerting no boost. Threading the metadata signal
+onto the prefetch/seeder path is a possible future refinement, tracked in
+tech-debt issue #710 (reranker service-signal refinements); it is not wired today.
+
+The two scope/trust constraints:
 
 - **Owner-aware scope.** `_prefetch_kb_context` searches **`global` ∪ the case
   owner's own `personal` KB** (keyed on `case.user_id`), not global-only. This
@@ -137,8 +151,16 @@ Left unbounded, seeding would flood the graph and trip anchoring detection (≥4
 active hypotheses in one category reads as fixation). The bounds:
 
 - **Cap runbooks:** dedup hits by `parent_document_id`, take the top-N distinct
-  runbooks by rerank score (`MAX_SEEDED_RUNBOOKS`, default 2). Retrieval has
-  already done the semantic alignment at runbook granularity.
+  runbooks by retrieval score (`MAX_SEEDED_RUNBOOKS`, default 2). Retrieval has
+  already done the semantic alignment at runbook granularity. Retrieval results are
+  **chunk-level**, so a single long runbook can occupy several of the top-ranked
+  slots and starve the parent-runbook dedup of a second distinct runbook. The
+  prefetch therefore fetches deeper than the prompt surface —
+  `KB_PREFETCH_FETCH_LIMIT` (10) chunks feed the seeder's parent-dedup, while only
+  the top `KB_CONTEXT_MAX_ENTRIES` (3) are rendered into `case.kb_context`
+  (`milestone_engine._prefetch_kb_context`). Because results are score-ranked, the
+  rendered top-3 slice is byte-identical to the prior limit-3 fetch, so the LLM's
+  prompt surface is unchanged; only the seeder sees the deeper list.
 - **Skip fallback causes:** a `is_fallback_cause: true` Cause (`### Cause Z:
   Unidentified`) has an empty chain — nothing to instantiate.
 - **Order causes by the ranking that already exists — no bespoke scorer.** Each
@@ -163,8 +185,30 @@ active hypotheses in one category reads as fixation). The bounds:
   its chain. This matters when a second runbook shares a root but diverges
   mid-chain — deciding the dedup after ingest would leave the divergent
   intermediate rungs as orphan nodes/edges (on no hypothesis path, invisible to
-  the skip taxonomy). Near-duplicate roots are reconciled by the existing MECE
-  arbitration (`distinct_cause_clusters`, Jaccard 0.6).
+  the skip taxonomy). A **second, paraphrase** dedup runs in the same pre-ingest
+  block: the hypothesis statement the seed would create is passed to the INV-36
+  predicate `find_duplicate_hypothesis` (`causal_graph.py`) — the *same*
+  mutual-Jaccard + polarity-guard + numeric-discriminator-guard predicate already
+  applied to the LLM's `hypotheses_to_add` — and a hit against a **chain-heading**
+  standing hypothesis is skipped `benign_dedup` ("duplicates standing hypothesis …
+  (paraphrase)"). This stops two runbooks that describe one cause in different
+  words from co-seeding two paraphrase OR-siblings, which would inflate the
+  differential and spuriously raise the `validate_by_exclusion` bar (exclusion
+  needs ≥2 siblings counterfactually refuted). It is sound because it applies the
+  same predicate and reaches the same dedup *decision* as the INV-36 path that
+  would have deduped the statement had the LLM emitted it — the difference is the
+  reconciliation: INV-36 surfaces the matched id so the LLM *updates* the standing
+  hypothesis, whereas the seeder path is a silent skip (there is no emission to
+  merge). The fail-open guards keep genuinely distinct siblings (a negated
+  restatement, or one differing only by a number) separate — no bespoke scorer is
+  introduced. The check is **scoped to chain-heading hypotheses** (`root_node_id`
+  set), the same scope as the exact-root check: a chain-less standing hypothesis
+  must never paraphrase-suppress a structurally-rich runbook cause (that would
+  silently discard its chain, rung-indicator evidence-needs, and interventions),
+  so if both a chain-less match and a chain-heading paraphrase exist the
+  duplicate-sibling cost is preferred over the silent structural loss, left for the
+  LLM to reconcile. Near-duplicate roots below the paraphrase bar are reconciled by
+  the existing MECE arbitration (`distinct_cause_clusters`, Jaccard 0.6).
 - **Distinct roots compete as OR-alternatives:** pack `chain_edges` carry no
   `and_group`, so seeded predecessors enter as independent OR-alternative sibling
   causes — never silently merged into one Cause. Evidence separates them. A cause
@@ -172,6 +216,10 @@ active hypotheses in one category reads as fixation). The bounds:
   or a non-linear chain (a second root, a branching fork, a convergence/join, a
   dangling edge ref, or a cycle/fragment/non-`D`-terminating chain) — is
   **rejected**, not flattened/mis-seeded — see the `unsupported_shape` skip below.
+  A cause carrying the grammar's cross-chain `converges: <Cause>.<ref>` directive
+  is likewise rejected, but under its own `converges_unmodeled` class — the
+  convergence is legal, well-authored grammar, so it must not trip the quality
+  alarm (see below).
 
 ### 4–5. Instantiation
 
@@ -215,11 +263,29 @@ A matched runbook that seeds nothing must never be *invisible*. Every non-seed i
 recorded as a class-tagged `SkippedCause` on the `SeedReport` (keyed by
 `(item_id, cause_letter)`):
 
+The classes split into two families — **expected non-seeding** (`intentional`,
+`benign_dedup`, `converges_unmodeled`), which are normal outcomes on a
+well-authored runbook and are never alarmed, and **actionable** (`quality_drop`,
+`unsupported_shape`), a real cause that should have seeded but did not:
+
 - **`intentional`** — the fallback (`Z`/`[Default]`) cause; never a candidate root
   by design.
-- **`benign_dedup`** — a root already seeded by an earlier retrieved runbook
-  (overlap); normal and correct. Decided **before** ingest (see *Dedup across
-  runbooks* above), so it never mints orphan nodes.
+- **`benign_dedup`** — a cause already represented: either a root already seeded by
+  an earlier retrieved runbook (exact-normalized overlap), or a *paraphrase* of a
+  standing hypothesis caught by the INV-36 `find_duplicate_hypothesis` predicate.
+  Normal and correct. Both are decided **before** ingest (see *Dedup across
+  runbooks* above), so neither mints orphan nodes.
+- **`converges_unmodeled`** — a cause carrying the v4 grammar's cross-chain
+  `converges: <Cause>.<ref>` directive. Both producers emit it as a chain edge with
+  a truthy `converges` key whose `effect_ref` points into *another* Cause's chain,
+  so the cause cannot form a self-contained `root → D` path. It is detected
+  **before** `_reject_nonlinear_shape` (otherwise the convergence edge would be
+  misdiagnosed as a dangling ref and mis-classed `unsupported_shape`) and the whole
+  cause is **rejected** — never partially seeded or flattened. Because a
+  `converges:` directive is legal, well-authored grammar (the sole cross-chain
+  construct), this is *expected* non-seeding, **not** a quality drop, so it does not
+  trip the "contributed nothing" alarm. Modeling it is future work. **0/640** in
+  the shipped pack; produce-path / future-authoring protection.
 - **`quality_drop`** — a *real* cause the seeder could not instantiate (no chain,
   non-root head, bad `node_type`, empty statement, ingest produced nothing).
 - **`unsupported_shape`** — a well-formed cause using a structure the seeder does
@@ -254,8 +320,10 @@ recorded as a class-tagged `SkippedCause` on the `SeedReport` (keyed by
 The **"matched runbook contributed nothing"** warning fires when a zero-seed
 runbook has ≥1 *actionable* skip — `quality_drop` **or** `unsupported_shape`
 (`runbooks_contributing_nothing()`) — a runbook
-whose only skips are dedup/fallback is *not* alarmed, so two runbooks sharing a
-cause never false-alarm. (A runbook never entered because the `MAX_SEEDED_CAUSES`
+whose only skips are the expected non-seeding classes (`benign_dedup`,
+`intentional`, or `converges_unmodeled`) is *not* alarmed, so two runbooks sharing
+a cause — and a grammar-legal cross-chain convergence — never false-alarm. (A
+runbook never entered because the `MAX_SEEDED_CAUSES`
 budget was already spent leaves no skip record; that zero is benign — budget, not
 quality.) The shipped corpus has **zero** `quality_drop` shapes (all 549
 non-fallback causes are multi-rung), so this is observability for future/authoring
