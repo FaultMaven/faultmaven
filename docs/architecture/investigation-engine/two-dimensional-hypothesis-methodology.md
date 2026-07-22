@@ -1047,7 +1047,7 @@ user reads.
 
 This generalizes INV-26(b) — "the visible transcript may not contradict the
 applied `state_updates`" — from gate-override turns to disposition claims on
-*any* turn. It reuses the existing narrow `_completion_phrases` scan
+*any* turn. It reuses the existing narrow `_COMPLETION_PHRASES` scan
 (§1.3.1 / INV-15) unchanged: the same detector, a new consumer
 (state-reconciled, not log-only), so the PR #299 decision to keep that scan
 narrow is untouched. It is a soundness guard in the engine derive/veto lane —
