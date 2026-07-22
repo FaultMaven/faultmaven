@@ -131,7 +131,7 @@ These were the limitations that motivated consolidating the handling into a sing
 
 ## 5. Direction
 
-The consolidation target is to make insufficient-evidence handling a single, engine-owned, evaluable path rather than two layers plus a prompt. Not yet implemented; recorded here to guide the work. The whole design turns on *correctly identifying which fact the case is in and disposing each* — so the refinements below all guard against mis-identifying the confusable situations, which is where the failures actually live.
+The consolidation target is to make insufficient-evidence handling a single, engine-owned, evaluable path rather than two layers plus a prompt. Built and live — §3.5 documents the as-built shape; this section records the design and its identification refinements. The whole design turns on *correctly identifying which fact the case is in and disposing each* — so the refinements below all guard against mis-identifying the confusable situations, which is where the failures actually live.
 
 ### 5.1 Verification status is a join of two axes, not a merged scalar
 

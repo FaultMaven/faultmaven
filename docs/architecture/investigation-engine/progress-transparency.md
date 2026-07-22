@@ -90,7 +90,7 @@ Each milestone has known evidence dependencies. This map is static — it define
 | Pending Milestone | Stage | What Would Advance It |
 |---|---|---|
 | symptom_verified | DIAGNOSIS | Evidence showing error patterns, symptoms, or anomalies (logs, error reports, metrics) |
-| root_cause_identified | DIAGNOSIS | Validated hypothesis with supporting causal evidence |
+| cause_state → IDENTIFIED (engine-derived, INV-35) | DIAGNOSIS | Validated hypothesis with supporting causal evidence |
 | solution_proposed | DIAGNOSIS | Sufficient confidence in root cause to propose a concrete fix |
 | mitigation_verified | MITIGATION | User confirmation that temporary fix stabilized the situation |
 | solution_verified | TREATMENT | User confirmation that permanent fix resolved the issue |
@@ -182,8 +182,8 @@ Transparent Mode (progress stalled)
 ```text
 PROGRESS TRANSPARENCY: The investigation has been in DIAGNOSIS for 5 
 investigative turns without reaching the next milestone.
-Pending milestone: root_cause_identified — Validated hypothesis with 
-supporting causal evidence.
+Pending milestone: cause identification (cause_state → IDENTIFIED) — 
+Validated hypothesis with supporting causal evidence.
 In your response, provide case-specific guidance on what evidence would 
 advance this milestone. Be concrete: name specific files, services, time 
 ranges, or commands based on what you know about this case.
@@ -191,7 +191,7 @@ ranges, or commands based on what you know about this case.
 
 Agent response includes: "We've narrowed the issue to either a connection pool exhaustion or a DNS resolution timeout, but the current evidence doesn't distinguish between them. A packet capture from the application server during the next error window (likely between 14:00-16:00 UTC based on the pattern) would tell us which one it is. Alternatively, the connection pool metrics from the monitoring dashboard would show whether connections are being exhausted."
 
-**Turn 11:** User provides packet capture. Agent analyzes it, validates hypothesis, `root_cause_identified` milestone completes. Transparent mode → Silent mode. Counter resets.
+**Turn 11:** User provides packet capture. Agent analyzes it, validates hypothesis, and the engine derives `cause_state=IDENTIFIED`. Transparent mode → Silent mode. Counter resets.
 
 ---
 

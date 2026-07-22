@@ -62,7 +62,8 @@ tiny tool-call (~180 output tokens) — carries a ~22K prompt.
    tool-loop base cached / not-re-sent across **all** providers (§4.3).
 
 **Non-goal / guardrail:** none of these may cause a wrong or collapsed
-investigation. Per [soundness guarantees](../../../SOUNDNESS_ANALYSIS.md), goal 2
+investigation. Per the soundness guarantees (NO INCORRECT CONCLUSION, NO
+COLLAPSE UNDER PRESSURE), goal 2
 was validated by a sim/playbook eval (no conclusion regression) and is safe by
 construction via its tool-availability gate (§4.2) before becoming the standing
 behavior.

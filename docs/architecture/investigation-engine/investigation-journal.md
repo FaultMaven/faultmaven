@@ -294,10 +294,12 @@ Implemented with a **pair-integrity invariant**: `status=REFUTED` and
 `refutation_reason` travel together — a Hypothesis with one but not the
 other cannot exist. Domain-level Pydantic validator enforces the pair at
 construction; the LLM schema permits each field optional so structured-
-output parsing is resilient, and the orchestration layer would reject
-inconsistent updates (there is currently no LLM-driven `HypothesisUpdate`
-consumer — the schema is future-ready; internal refutation paths in
-`hypothesis_manager` set both fields atomically).
+output parsing is resilient. The LLM-driven `HypothesisUpdate` consumer
+(`milestone_engine._apply_hypothesis_updates`) applies the REFUTED +
+`refutation_reason` pair together (plus likelihood tracking); other state
+transitions (VALIDATED / RETIRED / ACTIVE / INCONCLUSIVE) are deliberately
+not applied in that slice. Internal refutation paths in
+`hypothesis_manager` set both fields atomically.
 
 RETIRED is the explicit fallback when the agent wants to abandon a
 hypothesis without disproof — the prompt guides the agent toward RETIRED

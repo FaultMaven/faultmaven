@@ -324,8 +324,8 @@ User requests "Resolved"
        ├── READY → propose transition, show confirmation
        ├── NEEDS_INFO → set pending_transition.needs_info=True,
        |                 tell user what's missing
-       └── SUGGEST_CLOSE → set pending_transition.needs_info=True,
-                           suggest Close instead
+       └── SUGGEST_CLOSE → pivot the pending proposal to CLOSED,
+                           emit the close confirmation pair
        
   ... next turn arrives ...
        |

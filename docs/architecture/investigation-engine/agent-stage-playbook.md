@@ -345,9 +345,9 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 1. State the root cause in one sentence before proposing a fix.
 2. Propose a direct, executable action — instruction form, not a question ("Run: [command]", not "Would you like to try X?").
 3. State impact: reversible or not, blast radius (single pod, cluster, database, shared service).
-4. Do not request further evidence after `cause_state = IDENTIFIED`. Hold until the user executes or raises an objection.
+4. After proposing, hold for the fix's result — a non-suppressive hold, not a freeze (INV-33): if the user reports executing the fix, advance; if the reply instead brings new evidence, disputes the fix, or points at a competing cause, resume root-cause analysis on that signal.
 5. `solution_proposed` does not require a new `evidence_to_add` record — it is set when the proposal is issued, derived from causal evidence already linked to the hypothesis.
-6. While awaiting compliance (`solution_proposed=True`), offer exactly two suggestions — and no others (in particular, no new diagnostic asks): (1) EVIDENCE "Share the result of the fix" (the outcome data must come from the user's environment), (2) FREE_SPEECH "Ask about the proposed fix" (the user's question is their own to write). Neither is clickable: the content of both moves must come from the user — a pre-composed "I ran it — here's the result" payload submits an empty claim.
+6. While awaiting compliance (`solution_proposed=True`), the default suggestion pair is: (1) EVIDENCE "Share the result of the fix" (the outcome data must come from the user's environment), (2) FREE_SPEECH "Ask about the proposed fix" (the user's question is their own to write). Neither is clickable: the content of both moves must come from the user — a pre-composed "I ran it — here's the result" payload submits an empty claim. This is a default, not a gag (INV-33): a reply carrying new evidence, a dispute, or a competing cause reopens diagnostic asks.
 
 **Trigger variables in Zone 3:**
 
@@ -514,7 +514,7 @@ One primary ask per turn. Stack only when items are genuinely parallel (e.g., tw
 | DIAGNOSIS Zone 1 | 1–2 EVIDENCE + 1 FREE_SPEECH |
 | DIAGNOSIS Zone 2 | 1 EVIDENCE (targeted to hypothesis) + optionally 1 RUN (command) |
 | DIAGNOSIS Zone 3 (proposing fix) | 1 RUN (the fix) |
-| DIAGNOSIS Zone 3 (pending — fix already proposed) | 1 EVIDENCE (share fix outcome) + 1 FREE_SPEECH (ask about the fix); no new diagnostic asks |
+| DIAGNOSIS Zone 3 (pending — fix already proposed) | 1 EVIDENCE (share fix outcome) + 1 FREE_SPEECH (ask about the fix) by default; a reopening signal — new evidence, a dispute, a competing cause — restores diagnostic asks (INV-33) |
 | MITIGATION (guiding) | 1 RUN + 1 EVIDENCE (post-fix verification) |
 | MITIGATION (stalled) | 2 DECIDE (accept partial state / escalate) |
 | TREATMENT (verifying) | 1 EVIDENCE (post-fix) or 0 if user already confirmed |
@@ -579,13 +579,10 @@ keeps its pre-redesign name `_select_diagnosis_block`; it is now a thin wrapper,
 a path selector.
 
 `_get_diagnosis_focus_emphasis()` maps the DIAGNOSIS zones plus the pending state to
-a contextual status signal prepended to the block:
-
-| Zone | Condition | Emphasis |
-| ---- | --------- | -------- |
-| Zone 1 | `symptom_verified = False` | "Symptom verification pending — search for evidence the problem exists" |
-| Zone 2 | `symptom_verified = True`, `cause_state ∈ {UNKNOWN, CANDIDATES}` | "Root cause analysis — form hypotheses, search for causal evidence" |
-| Zone 3 | `cause_state = IDENTIFIED`, `solution_proposed = False` | "Solution needed — propose a concrete, executable fix" |
-| Pending | `solution_proposed = True` | "Solution proposal issued — awaiting execution. Do not request further evidence or introduce alternative proposals." |
+a contextual status signal prepended to the block. The per-zone conditions and
+emphasis strings are documented once, in
+[Prompt Assembly Architecture §3.2](./prompt-assembly-architecture.md#32-adaptive-instructions)
+(the canonical rendition). The Zone-3-pending emphasis is a non-suppressive hold
+(INV-33) — it names the exit rather than forbidding further evidence.
 
 **`knowledge_query` mode bypass:** When `processing_mode == "knowledge_query"`, stage dispatch is skipped entirely. `KNOWLEDGE_QUERY_INSTRUCTIONS` replaces `adaptive_instructions`, and both `_EVIDENCE_GROUNDING_BLOCK` and `_DIAGNOSTIC_REASONING_BLOCK` are passed as `""`. The two waived rule blocks are absent from the rendered prompt entirely (rather than sandwiching an exemption clause between active rules). This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver: "The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply."
