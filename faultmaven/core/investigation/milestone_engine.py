@@ -2925,6 +2925,9 @@ class MilestoneEngine:
         3. If eligible: call ConversionService.convert_from_case() in background
         4. Return immediately with a message directing user to Dashboard Drafts
         """
+        from faultmaven.core.investigation.kb_cause_seeder import (
+            confirmed_root_seed_origin,
+        )
         from faultmaven.core.investigation.terminal_transitions import (
             RunbookSuggestion,
             evaluate_runbook_suggestion,
@@ -2940,10 +2943,6 @@ class MilestoneEngine:
         # covers the residual typed-exact-payload path and names the runbook.)
         # A knowledge-lifecycle decision, not a safety gate — the manual
         # POST /knowledge/runbooks/create path stays open.
-        from faultmaven.core.investigation.kb_cause_seeder import (
-            confirmed_root_seed_origin,
-        )
-
         seed_origin = confirmed_root_seed_origin(case)
         if seed_origin:
             title = None

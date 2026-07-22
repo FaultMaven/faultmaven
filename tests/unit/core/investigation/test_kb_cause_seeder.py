@@ -30,9 +30,9 @@ from faultmaven.core.investigation.kb_cause_seeder import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CausalNode,
     CaseSeverity,
     CaseState,
+    CausalNode,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
