@@ -554,6 +554,17 @@ async def _repair_orphaned_rows(
         )
         return [], orphaned_rows
 
+    # Surface the EFFECTIVE bounds in the log whenever repair actually acts, so an
+    # operator can confirm what a KB_REPAIR_MAX_* override resolved to (the values
+    # are otherwise only visible in settings, not at runtime).
+    logger.info(
+        "KB repair: %d orphaned row(s) within bounds (max_rows=%d, max_chunks=%d) "
+        "— re-embedding with BGE-M3.",
+        len(orphaned_rows),
+        max_rows,
+        max_chunks,
+    )
+
     repaired: list[str] = []
     still_orphaned: list[str] = []
     chunks_embedded = 0

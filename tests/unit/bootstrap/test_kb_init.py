@@ -1033,6 +1033,26 @@ class TestRepairOrphanedRows:
                 kb_init.KB_REPAIR_MAX_CHUNKS,
             )
 
+    @pytest.mark.parametrize(
+        "env, value",
+        [
+            ("KB_REPAIR_MAX_ROWS", "0"),
+            ("KB_REPAIR_MAX_ROWS", "-1"),
+            ("KB_REPAIR_MAX_CHUNKS", "0"),
+            ("KB_REPAIR_MAX_CHUNKS", "-5"),
+        ],
+    )
+    def test_bounds_reject_nonpositive_at_load(self, monkeypatch, env, value):
+        """A 0/negative bound silently disables repair — so it is rejected loudly
+        at settings load (ge=1) rather than accepted and quietly no-op'd."""
+        from pydantic import ValidationError
+
+        from faultmaven.config.settings import DatabaseSettings
+
+        monkeypatch.setenv(env, value)
+        with pytest.raises(ValidationError):
+            DatabaseSettings()
+
 
 class TestCrossStoreRepairSeam:
     """DoD: a simulated mid-ingest failure (SQL row present, vectors missing)

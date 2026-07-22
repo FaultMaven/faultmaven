@@ -692,15 +692,18 @@ class DatabaseSettings(BaseSettings):
     # faultmaven/bootstrap/kb_init.py (KB_REPAIR_MAX_ROWS / KB_REPAIR_MAX_CHUNKS).
     kb_repair_max_rows: int = Field(
         default=25,
+        ge=1,
         validation_alias="KB_REPAIR_MAX_ROWS",
         description=(
             "Max orphaned KB rows to repair per boot before treating the set as a "
             "bulk-loss anomaly (repair nothing + warn; recover via a full pack "
-            "re-ingest)."
+            "re-ingest). Must be >= 1 — 0/negative would silently disable repair, "
+            "so it is rejected at startup."
         ),
     )
     kb_repair_max_chunks: int = Field(
         default=60,
+        ge=1,
         validation_alias="KB_REPAIR_MAX_CHUNKS",
         description=(
             "Per-boot embedding-work budget (chunks) for KB orphan repair. When the "
@@ -708,7 +711,8 @@ class DatabaseSettings(BaseSettings):
             "TENANT_PROVIDER=multi it runs off the readiness path in the kb_seed "
             "job), it embeds on the startup path before readiness — rows past this "
             "budget defer to the next boot. Lower it if a tight k8s startupProbe "
-            "leaves too little time for the model load + re-embed."
+            "leaves too little time for the model load + re-embed. Must be >= 1 — "
+            "0/negative would silently disable repair, so it is rejected at startup."
         ),
     )
 
