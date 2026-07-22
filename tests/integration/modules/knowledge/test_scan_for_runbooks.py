@@ -197,7 +197,7 @@ class TestScanForRunbooks:
         organization_id populated on all three (the post-redesign NOT NULL
         invariant)."""
         result = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None
+            user_id=None, organization_id=None, is_admin=True
         )
 
         assert result["discovered"] == 2
@@ -237,7 +237,9 @@ class TestScanForRunbooks:
         """Tags from frontmatter must be persisted as list[str] — passing
         a comma-joined string raises TypeError because TagsArray validates
         the bind shape. This test catches the third leak from the cleanup."""
-        await conversion_service.scan_for_runbooks(user_id=None, organization_id=None)
+        await conversion_service.scan_for_runbooks(
+            user_id=None, organization_id=None, is_admin=True
+        )
 
         async with seeded_session_factory() as session:
             from sqlalchemy import select
@@ -269,10 +271,10 @@ class TestScanForRunbooks:
         """Re-running scan over the same directory should skip already-tracked
         runbooks (drafts deduplicated by file_path) and not error."""
         first = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None
+            user_id=None, organization_id=None, is_admin=True
         )
         second = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None
+            user_id=None, organization_id=None, is_admin=True
         )
 
         assert first["discovered"] == 2
@@ -295,7 +297,7 @@ class TestScanForRunbooks:
         explicit_org = "00000000-0000-0000-0000-000000000001"
 
         await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=explicit_org
+            user_id=None, organization_id=explicit_org, is_admin=True
         )
 
         async with seeded_session_factory() as session:
@@ -349,7 +351,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
         await self._publish_kb_item(seeded_session_factory, "redis-oom")
 
         result = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None
+            user_id=None, organization_id=None, is_admin=True
         )
 
         # Only the un-published runbook becomes a draft.
@@ -370,7 +372,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
     ):
         # First scan (nothing published yet) creates both drafts.
         first = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None
+            user_id=None, organization_id=None, is_admin=True
         )
         assert first["discovered"] == 2
 
@@ -380,7 +382,9 @@ class TestScanSkipsBootstrapIngestedRunbooks:
 
         # Second scan must DISCARD the now-redundant redis-oom draft and
         # leave the genuinely-pending pg-slow-queries draft alone.
-        await conversion_service.scan_for_runbooks(user_id=None, organization_id=None)
+        await conversion_service.scan_for_runbooks(
+            user_id=None, organization_id=None, is_admin=True
+        )
 
         async with seeded_session_factory() as session:
             from sqlalchemy import select
@@ -391,3 +395,64 @@ class TestScanSkipsBootstrapIngestedRunbooks:
         by_runbook = {d.runbook_id: d.status for d in drafts}
         assert by_runbook["redis-oom"] == "discarded"
         assert by_runbook["pg-slow-queries"] == "draft"
+
+
+class TestScanGlobalAuthoringGate:
+    """R4 (#770): scan mints global-scope drafts only for a platform operator.
+
+    The fixture files live under ``global/database/`` → inferred scope
+    ``global`` (the org-free platform corpus). Minting them into drafts is
+    platform-tier authoring, so a caller who may not author global scope skips
+    them; the same call by an admin single-tenant discovers them (covered by
+    the ``is_admin=True`` calls in the classes above).
+    """
+
+    @pytest.mark.asyncio
+    async def test_non_admin_skips_global_files_single_tenant(
+        self, conversion_service, seeded_session_factory
+    ):
+        from faultmaven.modules.knowledge.domain import global_authoring
+        from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
+
+        with patch.object(
+            global_authoring, "requested_tenant_provider", lambda: BUILTIN_SINGLE
+        ):
+            result = await conversion_service.scan_for_runbooks(
+                user_id="member", organization_id=None, is_admin=False
+            )
+
+        # Both fixture runbooks are global-inferred → skipped, no drafts minted.
+        assert result["discovered"] == 0
+        assert result["skipped"] == 2
+        async with seeded_session_factory() as session:
+            from sqlalchemy import select
+
+            drafts = (
+                (await session.execute(select(ConversionDraftModel))).scalars().all()
+            )
+        assert drafts == []
+
+    @pytest.mark.asyncio
+    async def test_multi_tenant_skips_global_even_for_admin(
+        self, conversion_service, seeded_session_factory
+    ):
+        from faultmaven.modules.knowledge.domain import global_authoring
+        from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
+
+        with patch.object(
+            global_authoring, "requested_tenant_provider", lambda: BUILTIN_MULTI
+        ):
+            result = await conversion_service.scan_for_runbooks(
+                user_id="org-admin", organization_id=None, is_admin=True
+            )
+
+        # Under multi no tenant session authors global — org admins included.
+        assert result["discovered"] == 0
+        assert result["skipped"] == 2
+        async with seeded_session_factory() as session:
+            from sqlalchemy import select
+
+            drafts = (
+                (await session.execute(select(ConversionDraftModel))).scalars().all()
+            )
+        assert drafts == []

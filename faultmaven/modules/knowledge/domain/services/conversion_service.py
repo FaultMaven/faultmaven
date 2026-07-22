@@ -20,12 +20,21 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ValidationException,
+)
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
     KnowledgeItemModel,
     UploadedFileModel,
+)
+from faultmaven.modules.knowledge.domain.global_authoring import (
+    ensure_global_authoring_allowed,
+    is_global_authoring_allowed,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
@@ -1392,12 +1401,20 @@ class ConversionService:
         draft_refs: list[tuple[str, str]],  # (conversion_id, draft_id)
         user_id: str,
         username: str,
+        is_admin: bool = False,
     ) -> dict:
-        """Verify multiple drafts sequentially. Returns summary with per-item status."""
+        """Verify multiple drafts sequentially. Returns summary with per-item status.
+
+        ``is_admin`` is threaded into each :meth:`verify_draft` so the global-tier
+        authoring gate applies per item: a global draft the caller may not author
+        is recorded ``forbidden`` (never published) while the rest of the batch
+        proceeds (#770, R4).
+        """
         results = []
         verified = 0
         failed = 0
         skipped = 0
+        forbidden = 0
 
         for conversion_id, draft_id in draft_refs:
             try:
@@ -1406,6 +1423,7 @@ class ConversionService:
                     draft_id=draft_id,
                     user_id=user_id,
                     username=username,
+                    is_admin=is_admin,
                 )
                 results.append(
                     {
@@ -1443,6 +1461,20 @@ class ConversionService:
                         }
                     )
                     failed += 1
+            except AuthorizationError as e:
+                # Global-tier authoring denial (multi-tenant / non-admin). Not a
+                # failure of THIS draft — a policy refusal; record it distinctly
+                # and never treat it as retryable. The draft stays unpublished.
+                results.append(
+                    {
+                        "conversion_id": conversion_id,
+                        "draft_id": draft_id,
+                        "status": "forbidden",
+                        "error": str(e),
+                        "knowledge_item_id": None,
+                    }
+                )
+                forbidden += 1
             except Exception as e:
                 logger.error(f"Batch verify failed for {draft_id}: {e}")
                 results.append(
@@ -1461,6 +1493,7 @@ class ConversionService:
             "verified": verified,
             "failed": failed,
             "skipped": skipped,
+            "forbidden": forbidden,
             "results": results,
         }
 
@@ -1470,8 +1503,18 @@ class ConversionService:
         draft_id: str,
         user_id: str,
         username: str,
+        is_admin: bool = False,
     ) -> Optional[VerifyResponse]:
-        """Promote draft to verified status, update frontmatter, trigger ingestion."""
+        """Promote draft to verified status, update frontmatter, trigger ingestion.
+
+        ``is_admin`` gates publication at ``global`` scope: verifying a draft
+        ingests it into the KB at ``job.scope``, and a global runbook is the
+        org-free platform corpus (readable by every tenant, seeder-consumed), so
+        publishing one is a platform-operator action. The draft's scope is only
+        known once the job row is loaded, so this gate lives here rather than at
+        the route. Defaults ``False`` (fail-closed) so a caller that forgets to
+        pass it can never publish global content by omission (#770, R4).
+        """
         if not self._db_session_factory:
             return None
 
@@ -1493,6 +1536,14 @@ class ConversionService:
                     resource_id=conversion_id,
                     message="Conversion job not found",
                 )
+
+            # Global-tier authoring gate: forbidden from any tenant session under
+            # multi, admin-only single-tenant. Enforced before the draft is
+            # loaded or any side effect runs (frontmatter mutation / ingestion),
+            # and regardless of job ownership — a "system"-owned global draft
+            # (e.g. from a disk scan) must not be publishable by a non-admin.
+            if job.scope == "global":
+                ensure_global_authoring_allowed(is_admin)
 
             draft_result = await session.execute(
                 select(ConversionDraftModel).where(
@@ -1822,7 +1873,10 @@ status: draft
     # =========================================================================
 
     async def scan_for_runbooks(
-        self, user_id: str, organization_id: Optional[str] = None
+        self,
+        user_id: str,
+        organization_id: Optional[str] = None,
+        is_admin: bool = False,
     ) -> dict:
         """Scan data/knowledge/ for .md files not tracked in the database.
 
@@ -1836,19 +1890,35 @@ status: draft
             user_id: User triggering the scan (recorded as conversion job owner).
             organization_id: Org for scoping the conversion job + source upload.
                 Falls back to DEFAULT_ORGANIZATION_ID when None.
+            is_admin: Whether the caller may author global-scope KB. A file whose
+                inferred scope is ``global`` (the org-free platform corpus) is
+                SKIPPED when the caller is not a platform operator (any tenant
+                session under multi, or a non-admin single-tenant) — minting a
+                global draft is platform-tier authoring (#770, R4). Personal/team
+                discovery is unaffected. Defaults ``False`` (fail-closed).
 
         Returns:
             {"discovered": N, "skipped": N, "errors": [...], "drafts": [...]}
         """
         async with self._scan_lock:
-            return await self._scan_for_runbooks_impl(user_id, organization_id)
+            return await self._scan_for_runbooks_impl(
+                user_id, organization_id, is_admin
+            )
 
     async def _scan_for_runbooks_impl(
-        self, user_id: str, organization_id: Optional[str] = None
+        self,
+        user_id: str,
+        organization_id: Optional[str] = None,
+        is_admin: bool = False,
     ) -> dict:
         import re as _re
 
         import yaml
+
+        # Whether this caller may mint global-scope drafts. Computed once (the
+        # policy is per-caller, not per-file); global-inferred files are skipped
+        # below when this is False.
+        global_authoring_allowed = is_global_authoring_allowed(is_admin)
 
         discovered = []
         skipped = 0
@@ -2043,6 +2113,21 @@ status: draft
                 scope = "personal"
             elif scope_dir_name.startswith("team_"):
                 scope = "team"
+
+            # Global-tier authoring gate: a global-inferred file mints a draft
+            # into the platform corpus (verified → readable by every tenant,
+            # seeder-consumed). A caller who may not author global scope (any
+            # tenant session under multi, or a non-admin single-tenant) skips it
+            # rather than minting an ungated global draft; personal/team files
+            # discovered in the same scan still proceed (#770, R4).
+            if scope == "global" and not global_authoring_allowed:
+                logger.info(
+                    "Scan skipped global-scope file %s: caller not permitted to "
+                    "author global (platform corpus) knowledge",
+                    md_file.name,
+                )
+                skipped += 1
+                continue
 
             # Validate
             validation = self._validator.validate_content(content)
