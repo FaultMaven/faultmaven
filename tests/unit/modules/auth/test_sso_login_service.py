@@ -151,6 +151,20 @@ class FakeUserRepository:
         return user
 
 
+class FakeAuditRepository:
+    """Records IAuditRepository.log_event calls; optionally explodes."""
+
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.entries: list[dict] = []
+
+    async def log_event(self, **kwargs):
+        if self.fail:
+            raise RuntimeError("audit store down")
+        self.entries.append(kwargs)
+        return True
+
+
 class FakeTokenGenerator:
     async def generate_access_token(self, user):
         return f"access-{user.user_id}"
@@ -182,6 +196,7 @@ def build_service(
     repo=None,
     session_service=None,
     dashboard_url=DASHBOARD_URL,
+    audit=None,
 ):
     return SSOLoginService(
         identity_provider=provider or FakeProvider(),
@@ -195,6 +210,7 @@ def build_service(
         session_service=session_service or FakeSessionService(),
         dashboard_url=dashboard_url,
         access_token_expires_in=3600,
+        audit_log=audit,
     )
 
 
@@ -205,11 +221,25 @@ def redirect_params(url: str) -> dict:
     return {k: v[0] for k, v in parse_qs(parts.query).items()}
 
 
-async def callback(service, *, code="authkit-code", state, error=None, browser=...):
+async def callback(
+    service,
+    *,
+    code="authkit-code",
+    state,
+    error=None,
+    browser=...,
+    client_ip=None,
+    user_agent=None,
+):
     """Invoke complete_callback; browser cookie defaults to matching the state."""
     browser_state = state if browser is ... else browser
     return await service.complete_callback(
-        code=code, state=state, error=error, browser_state=browser_state
+        code=code,
+        state=state,
+        error=error,
+        browser_state=browser_state,
+        client_ip=client_ip,
+        user_agent=user_agent,
     )
 
 
@@ -554,6 +584,130 @@ async def test_jit_create_race_falls_back_to_concurrent_row(store):
 
     params = redirect_params(redirect)
     assert await store.consume_login(params["code"]) == {"user_id": "u-won"}
+
+
+# =============================================================================
+# complete_callback — JIT audit trail (ADR-015 PR 7)
+# =============================================================================
+
+
+async def test_jit_creation_writes_audit_entry(store):
+    repo = FakeUserRepository()
+    audit = FakeAuditRepository()
+    service = build_service(store, repo=repo, audit=audit)
+    start = await service.begin_login(None)
+
+    redirect = await callback(
+        service,
+        state=start.state,
+        client_ip="203.0.113.7",
+        user_agent="Mozilla/5.0 (test)",
+    )
+
+    assert "code" in redirect_params(redirect)
+    assert len(audit.entries) == 1
+    entry = audit.entries[0]
+    user = repo.created[0]
+    assert entry["user_id"] == user.user_id
+    assert entry["event_type"].value == "account_created"
+    assert entry["event_category"].value == "authentication"
+    assert entry["resource_type"] == "user"
+    assert entry["resource_id"] == user.user_id
+    assert entry["details"] == {
+        "provider": "workos",
+        "method": "sso_jit",
+        "username": "alex",
+    }
+    assert entry["ip_address"] == "203.0.113.7"
+    assert entry["user_agent"] == "Mozilla/5.0 (test)"
+    assert entry["success"] is True
+
+
+async def test_jit_audit_entry_never_carries_email_or_subject(store):
+    # The audit details must not duplicate the email or IdP subject — the user
+    # row already holds the email under its own lifecycle (same posture as the
+    # log stream).
+    audit = FakeAuditRepository()
+    service = build_service(store, repo=FakeUserRepository(), audit=audit)
+    start = await service.begin_login(None)
+    await callback(service, state=start.state)
+
+    blob = str(audit.entries[0]["details"])
+    assert "alex@example.com" not in blob
+    assert "user_wos_123" not in blob
+
+
+async def test_returning_subject_writes_no_audit_entry(store):
+    # Only JIT creation is audited (ADR-015 PR 7 scope) — a routine returning
+    # login must not add an account_created row.
+    existing = make_user()
+    audit = FakeAuditRepository()
+    service = build_service(
+        store, users_by_subject={("workos", "user_wos_123"): existing}, audit=audit
+    )
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert audit.entries == []
+
+
+async def test_lost_create_race_writes_no_audit_entry(store):
+    # The concurrent winner's callback audits the creation; the loser logs in
+    # with the winner's row and must not duplicate the entry.
+    winner = make_user(user_id="u-won")
+
+    class RacingRepository(FakeUserRepository):
+        def __init__(self):
+            super().__init__()
+            self.sso_calls = 0
+
+        async def get_by_sso(self, provider, provider_id):
+            self.sso_calls += 1
+            return None if self.sso_calls == 1 else winner
+
+        async def create(self, user):
+            from faultmaven.exceptions import ConflictError
+
+            raise ConflictError("Email already registered")
+
+    audit = FakeAuditRepository()
+    service = build_service(store, repo=RacingRepository(), audit=audit)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert audit.entries == []
+
+
+async def test_audit_write_failure_does_not_fail_the_login(store):
+    # Fail-open: the account exists and the login is legitimate — an audit
+    # store outage must not turn the first sign-in into an error.
+    repo = FakeUserRepository()
+    audit = FakeAuditRepository(fail=True)
+    service = build_service(store, repo=repo, audit=audit)
+    start = await service.begin_login(None)
+
+    redirect = await callback(service, state=start.state)
+
+    params = redirect_params(redirect)
+    assert "error" not in params
+    assert len(repo.created) == 1
+    assert await store.consume_login(params["code"]) == {
+        "user_id": repo.created[0].user_id
+    }
+
+
+async def test_no_audit_repository_is_fine(store):
+    # audit_log is optional — the default wiring in existing unit setups (and
+    # any composition without a DB) must provision without it.
+    repo = FakeUserRepository()
+    service = build_service(store, repo=repo)
+    start = await service.begin_login(None)
+    redirect = await callback(service, state=start.state)
+
+    assert "code" in redirect_params(redirect)
+    assert len(repo.created) == 1
 
 
 # =============================================================================

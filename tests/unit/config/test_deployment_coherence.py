@@ -18,7 +18,12 @@ def _cloud_ok() -> SimpleNamespace:
     """A fully-coherent cloud settings stand-in."""
     return SimpleNamespace(
         is_cloud=True,
-        auth=SimpleNamespace(auth_mode="oauth"),
+        auth=SimpleNamespace(
+            auth_mode="oauth",
+            workos_api_key="sk_test_x",
+            workos_client_id="client_x",
+            workos_redirect_uri="https://api.example.com/api/v1/auth/sso/callback",
+        ),
         security=SimpleNamespace(
             jwt_private_key="-----BEGIN PRIVATE KEY-----x",
             jwt_private_key_path=None,
@@ -115,6 +120,68 @@ def test_cloud_reports_all_problems_at_once():
         validate_deployment_coherence(s)
     msg = str(exc.value)
     assert "AUTH_MODE" in msg and "DATABASE_URL" in msg and "Redis" in msg
+
+
+# --- WorkOS AuthKit requirement (ADR-015 D7: hard-fail since cutover) -------
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_cloud_without_any_workos_config_fails():
+    s = _cloud_ok()
+    s.auth.workos_api_key = None
+    s.auth.workos_client_id = None
+    s.auth.workos_redirect_uri = None
+    with pytest.raises(DeploymentCoherenceError) as exc:
+        validate_deployment_coherence(s)
+    msg = str(exc.value)
+    assert "WorkOS" in msg
+    assert (
+        "WORKOS_API_KEY" in msg
+        and "WORKOS_CLIENT_ID" in msg
+        and "WORKOS_REDIRECT_URI" in msg
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_cloud_with_empty_workos_client_id_fails():
+    # The infra ConfigMap ships WORKOS_CLIENT_ID: "" until cutover — an empty
+    # string is NOT configured and must name exactly the missing variable.
+    s = _cloud_ok()
+    s.auth.workos_client_id = ""
+    with pytest.raises(DeploymentCoherenceError) as exc:
+        validate_deployment_coherence(s)
+    msg = str(exc.value)
+    assert "WORKOS_CLIENT_ID" in msg
+    assert "WORKOS_API_KEY" not in msg and "WORKOS_REDIRECT_URI" not in msg
+
+
+@pytest.mark.unit
+def test_cloud_workos_secretstr_api_key_is_unwrapped():
+    # The real settings field is a SecretStr — the gate must read its plain
+    # value, not truthiness of the wrapper object.
+    class _Secret:
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        def get_secret_value(self) -> str:
+            return self._value
+
+    s = _cloud_ok()
+    s.auth.workos_api_key = _Secret("sk_live_x")
+    validate_deployment_coherence(s)  # must not raise
+
+    s.auth.workos_api_key = _Secret("")
+    with pytest.raises(DeploymentCoherenceError) as exc:
+        validate_deployment_coherence(s)
+    assert "WORKOS_API_KEY" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_standalone_without_workos_does_not_warn_or_raise():
+    # WorkOS is a cloud concern only — its absence must not even warn here.
+    validate_deployment_coherence(_standalone_ok())
 
 
 @pytest.mark.unit

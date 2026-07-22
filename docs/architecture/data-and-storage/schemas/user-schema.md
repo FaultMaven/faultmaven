@@ -509,6 +509,8 @@ CREATE TABLE user_audit_log (
     ip_address VARCHAR(45),               -- Tier 1 (live ORM)
     -- ip_address INET,                   -- Tier 2 (PostgreSQL-only)
     user_agent TEXT,
+    session_id VARCHAR(64),               -- Redis session id, when the event has one (migration 032)
+    success BOOLEAN NOT NULL DEFAULT TRUE,  -- failure entries must say so explicitly (migration 032)
 
     -- Timestamp
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

@@ -123,11 +123,17 @@ async def sso_callback(
     The state cookie set at /login must accompany and match the ``state`` query
     param (browser binding), and is cleared here either way.
     """
+    # Transport metadata for the JIT-provisioning audit trail. Behind the
+    # ingress, request.client is the direct peer (the proxy) — uvicorn does not
+    # trust forwarding headers here; recorded as-is until the infra-wide
+    # proxy-IP fix (shared with the OAuth rate limiter).
     redirect_url = await service.complete_callback(
         code=code,
         state=state,
         error=error,
         browser_state=request.cookies.get(_STATE_COOKIE),
+        client_ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
     )
     response = RedirectResponse(redirect_url, status_code=302, headers=_NO_STORE)
     response.delete_cookie(_STATE_COOKIE, path=_STATE_COOKIE_PATH)

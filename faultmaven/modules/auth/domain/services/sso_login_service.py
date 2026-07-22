@@ -41,6 +41,7 @@ from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.user_repository import (
     User as RepositoryUser,
 )
+from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
 from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
 from faultmaven.modules.auth.exceptions import SSOAuthenticationError
 
@@ -171,6 +172,7 @@ class SSOLoginService:
         session_service: Any,
         dashboard_url: str,
         access_token_expires_in: int,
+        audit_log: Any | None = None,
     ) -> None:
         self._provider = identity_provider
         self._store = ephemeral_store
@@ -179,6 +181,9 @@ class SSOLoginService:
         self._sessions = session_service
         self._dashboard_url = dashboard_url.rstrip("/")
         self._access_token_expires_in = access_token_expires_in
+        # IAuditRepository (or None): records the JIT account-creation trail
+        # (ADR-015 PR 7). Optional so unit setups without a DB still work.
+        self._audit = audit_log
 
     # -- leg 1: browser -> IdP ---------------------------------------------- #
 
@@ -204,6 +209,8 @@ class SSOLoginService:
         state: str | None,
         error: str | None,
         browser_state: str | None,
+        client_ip: str | None = None,
+        user_agent: str | None = None,
     ) -> str:
         """Handle the IdP redirect; always return a dashboard redirect URL.
 
@@ -212,13 +219,22 @@ class SSOLoginService:
         param, or the callback did not come from the browser that started the
         flow (login-CSRF/session-fixation attempt).
 
+        ``client_ip``/``user_agent`` are transport metadata recorded on the
+        audit trail when this callback provisions an account; they play no part
+        in any authentication decision.
+
         This method never raises — the browser is mid-redirect and must land
         somewhere. Every failure, including unexpected infrastructure errors,
         resolves to the dashboard login callback with a sanitized ``error`` slug.
         """
         try:
             return await self._complete_callback(
-                code=code, state=state, error=error, browser_state=browser_state
+                code=code,
+                state=state,
+                error=error,
+                browser_state=browser_state,
+                client_ip=client_ip,
+                user_agent=user_agent,
             )
         except Exception:
             # Redis/DB/provider infrastructure failure mid-redirect: never leak
@@ -233,6 +249,8 @@ class SSOLoginService:
         state: str | None,
         error: str | None,
         browser_state: str | None,
+        client_ip: str | None = None,
+        user_agent: str | None = None,
     ) -> str:
         if not state or len(state) > _MAX_STATE_LENGTH:
             logger.warning("sso_callback_rejected", reason="state_invalid")
@@ -285,7 +303,9 @@ class SSOLoginService:
             # Strict match-by-subject found nothing: provision just-in-time.
             # Never link by email — a conflicting unlinked account fails the
             # login instead (ADR-015 D4).
-            user = await self._jit_provision(identity)
+            user = await self._jit_provision(
+                identity, client_ip=client_ip, user_agent=user_agent
+            )
             if user is None:
                 return self._dashboard_redirect(error=ERROR_FAILED, return_to=return_to)
         if getattr(user, "deleted_at", None) is not None or not getattr(
@@ -352,7 +372,13 @@ class SSOLoginService:
 
     # -- provisioning (ADR-015 D4/D5) ----------------------------------------- #
 
-    async def _jit_provision(self, identity: SSOIdentity) -> Any | None:
+    async def _jit_provision(
+        self,
+        identity: SSOIdentity,
+        *,
+        client_ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> Any | None:
         """Create a FaultMaven user for a first-time SSO subject, or None.
 
         Returns None on any non-provisionable identity (missing/oversized/
@@ -426,7 +452,51 @@ class SSOLoginService:
             user_id=created.user_id,
             provider=identity.provider,
         )
+        await self._audit_jit_created(
+            created, identity, client_ip=client_ip, user_agent=user_agent
+        )
         return created
+
+    async def _audit_jit_created(
+        self,
+        created: Any,
+        identity: SSOIdentity,
+        *,
+        client_ip: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Record the JIT account creation on the audit trail (ADR-015 PR 7).
+
+        Fail-open by design: the account exists and the login is legitimate, so
+        an audit-store outage must not turn a successful first sign-in into an
+        error — it logs loudly instead. Details carry the provider and username
+        only; the IdP subject and email stay out of the audit row (the user row
+        already holds the email under its own lifecycle).
+        """
+        if self._audit is None:
+            return
+        try:
+            await self._audit.log_event(
+                user_id=created.user_id,
+                event_type=AuditEventType.ACCOUNT_CREATED,
+                event_category=AuditCategory.AUTHENTICATION,
+                resource_type="user",
+                resource_id=created.user_id,
+                details={
+                    "provider": identity.provider,
+                    "method": "sso_jit",
+                    "username": created.username,
+                },
+                ip_address=client_ip,
+                user_agent=user_agent,
+                success=True,
+            )
+        except Exception:
+            logger.exception(
+                "sso_jit_audit_write_failed",
+                user_id=created.user_id,
+                provider=identity.provider,
+            )
 
     async def _free_username(self, base: str) -> str:
         """Pick an unused username: base, then numeric suffixes, then random."""

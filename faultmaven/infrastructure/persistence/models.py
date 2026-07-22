@@ -553,6 +553,8 @@ class UserAuditLogModel(Base):
     details = Column(Text, nullable=True)
     ip_address = Column(String(45), nullable=True)
     user_agent = Column(Text, nullable=True)
+    session_id = Column(String(64), nullable=True)
+    success = Column(Boolean, nullable=False, server_default="1")
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
