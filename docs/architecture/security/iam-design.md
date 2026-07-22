@@ -703,10 +703,10 @@ page rather than entering credentials into FaultMaven.
 
 Hosted SSO is abstracted behind the `ISSOIdentityProvider` interface
 (`modules/auth/contracts.py`). The single implementation today is
-`WorkOSIdentityProvider` (`infrastructure/sso/workos_provider.py`), backed by
-**WorkOS AuthKit** (User Management), constructed via `from_config`. The rest of
-the auth module depends only on the interface, so a different IdP can be swapped
-in without touching the flow.
+`WorkOSIdentityProvider` (`modules/auth/infrastructure/sso/workos_provider.py`),
+backed by **WorkOS AuthKit** (User Management), constructed via `from_config`.
+The rest of the auth module depends only on the interface, so a different IdP can
+be swapped in without touching the flow.
 
 ### Flow
 
@@ -732,21 +732,34 @@ code, which the dashboard immediately exchanges from its own backend.
   `/api/v1/auth/sso`, `SameSite=Lax`, `Secure`) binds the flow to the initiating
   browser: set on `/login`, required + verified + cleared on `/callback`.
 - **Ephemeral state store.** Pending login state is held in a short-lived store
-  (`infrastructure/stores/sso_ephemeral_store.py`), not in a durable table.
+  (`modules/auth/infrastructure/stores/sso_ephemeral_store.py`), not in a durable
+  table.
 - **No caching.** Login-flow responses send `Cache-Control: no-store` /
   `Pragma: no-cache` — the callback URL carries a single-use code and the
   exchange response carries tokens.
-- **JIT provisioning + audit.** First-time SSO users are provisioned on
-  callback; the success/failure and session id of each attempt are recorded in
-  `user_audit_log` (columns added in migration 032).
+- **JIT provisioning + audit.** First-time SSO users are provisioned just-in-time
+  on callback; each successful JIT account creation writes an `account_created`
+  entry to `user_audit_log` (provider, derived username, and transport IP /
+  user-agent — never the IdP subject or email; the `success` / `session_id`
+  columns were added in migration 032, with `session_id` null because
+  provisioning precedes the session mint at `/exchange`). Failed attempts (email
+  conflict, invalid identity, lost create-race) and returning-subject logins are
+  **not** written to `user_audit_log` — only the log stream records them
+  (`sso_jit_rejected`). The audit write itself fails open.
 
 ### Discovery
 
 When SSO is configured, `GET /auth/config` advertises the entry point as
 `oauth.hosted_login_url` (relative path, resolved by the dashboard against its
-API origin); it is `null` otherwise. Enabling the flow requires the WorkOS
-credentials (`WORKOS_*`) to be set together with cloud deployment mode — the
-configuration gate hard-fails on a partial setup.
+API origin); it is `null` otherwise. `sso_configured` — which gates both the
+router mount and this advertisement — is true when `AUTH_MODE=oauth` **and** all
+three `WORKOS_*` values are set; it does not depend on `DEPLOYMENT_MODE`. The
+coherence gate is one-directional: `DEPLOYMENT_MODE=cloud` **requires** the
+`WORKOS_*` credentials and refuses to boot (naming the missing vars) without
+them, since hosted SSO is the only cloud sign-in path. The reverse is not gated —
+`AUTH_MODE=oauth` with `WORKOS_*` set mounts SSO without cloud mode, and a partial
+`WORKOS_*` config outside cloud is simply inert (the router does not mount), not
+fatal.
 
 ## Security Design
 
