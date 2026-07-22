@@ -254,11 +254,16 @@ async def scan_for_runbooks(
 
     Discovers runbooks created by the KB Toolkit or placed on disk manually.
     Creates draft records so they appear in the Drafts tab for review.
+
+    Global-scope files (the platform corpus) are minted into drafts only for a
+    platform operator — an admin in single-tenant, and never a tenant session
+    under multi (#770). Non-global (personal/team) discovery is unaffected.
     """
     try:
         return await service.scan_for_runbooks(
             user_id=current_user.user_id,
             organization_id=getattr(current_user, "organization_id", None),
+            is_admin="admin" in (current_user.roles or []),
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -335,6 +340,7 @@ async def verify_batch(
         draft_refs=[(ref.conversion_id, ref.draft_id) for ref in body.draft_ids],
         user_id=current_user.user_id,
         username=current_user.username,
+        is_admin="admin" in (current_user.roles or []),
     )
     return result
 
@@ -353,9 +359,14 @@ async def verify_draft(
 ):
     """Promote draft to verified status and trigger ingestion into ChromaDB.
 
-    Service-layer typed exceptions (NotFoundError, ConflictError,
-    ValidationException) propagate to the global handlers in
-    api/exception_handlers.py for canonical translation to 404 / 409 /
+    Verifying a draft publishes it into the KB at the job's scope; a global
+    draft is the platform corpus, so the service refuses (AuthorizationError →
+    403) unless the caller may author global scope (admin single-tenant; never
+    a tenant session under multi, #770).
+
+    Service-layer typed exceptions (AuthorizationError, NotFoundError,
+    ConflictError, ValidationException) propagate to the global handlers in
+    api/exception_handlers.py for canonical translation to 403 / 404 / 409 /
     422 respectively. The route no longer catches ValueError; see
     docs/architecture/specifications/exception-contract.md.
     """
@@ -364,6 +375,7 @@ async def verify_draft(
         draft_id=draft_id,
         user_id=current_user.user_id,
         username=current_user.username,
+        is_admin="admin" in (current_user.roles or []),
     )
     if not result:
         raise HTTPException(

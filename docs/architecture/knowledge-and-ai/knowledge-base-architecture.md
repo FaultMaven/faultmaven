@@ -341,6 +341,12 @@ Adding a new KB tier requires:
 - **Access:** Read by all users across all organizations (auto-searched by agent). Write by platform admin only.
 - **Start state:** Pre-populated in both deployments via the shipped global runbook pack.
 
+**Global-authoring enforcement (single source of truth):** every path that authors global-scope content applies one policy —
+`modules/knowledge/domain/global_authoring.py` (`ensure_global_authoring_allowed` / `is_global_authoring_allowed`), reused at the API layer by `modules/knowledge/api/platform_tier.py`. It refuses any tenant session under `TENANT_PROVIDER=multi` (org admins included — global content ships only via the audited `kb_seed` maintenance job, #770) and requires the `admin` role single-tenant. Enforcement points:
+
+- **Creation routes** (`convert`, `runbooks/create`, `documents` upload, `suggestions/{id}/approve`) — the scope is a request field, gated at the route (403).
+- **Publish / mint** (`verify_draft`, `verify-batch`, `scan`) — the scope is only known after the conversion-job row or on-disk file is inspected, so the gate lives in the service: `verify_draft` refuses to publish a `global` draft (`AuthorizationError` → 403), and `scan` skips global-inferred files a caller may not author while still discovering personal/team ones. This closes the pre-#770 hole where a non-admin could verify a system-owned global draft or mint a global draft via scan.
+
 ### Ingestion Pipeline
 
 Global-tier ingestion runs automatically at API startup via the **KB bootstrap** (`faultmaven/bootstrap/kb_init.py`). The bootstrap loads the shipped **KB pack** (`faultmaven/bootstrap/kb_pack.py`) and, for each runbook in it, writes a row to `knowledge_items` plus the pack's pre-computed chunk vectors to ChromaDB via `KnowledgeService.ingest_runbook(prechunked=...)`. Because the pack ships pre-chunked and pre-embedded, startup does **no chunking and no embedding** — it is pure SQL + vector writes and completes in seconds. Idempotent: unchanged runbooks are skipped via content-hash comparison on every restart, and runbooks no longer in the pack are pruned from both stores.
