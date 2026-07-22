@@ -1066,6 +1066,41 @@ def test_emit_rung_needs_skips_indicators_empty_after_stripping():
     assert case.evidence_needs == []
 
 
+def test_emit_rung_needs_skips_non_list_indicator_values():
+    # metadata["causes"] is read verbatim and may be malformed on the produce
+    # path. A scalar value must not raise (the "never raised" contract); a bare
+    # string must not enumerate per-character into garbage single-char needs.
+    case = _case()
+    ids = _emit_rung_needs(
+        case,
+        "rb1",
+        {"cause_letter": "A", "rung_indicators": {"root": 5, "s1": "cpu"}},
+        "hyp_x",
+        current_turn=1,
+    )
+    assert ids == []
+    assert case.evidence_needs == []
+
+
+def test_malformed_rung_value_does_not_abort_or_orphan_the_seeded_cause():
+    # A non-list rung value on an otherwise well-formed cause must leave the
+    # candidate cleanly seeded and reported — never a hidden orphan hypothesis
+    # excluded from the report (the seeder's try/except would mark it skipped).
+    cause = _cause("A")
+    cause["rung_indicators"] = {"root": ["[Step 1] good observable"], "s1": 7}
+    case = _case()
+    report = seed_candidate_causes(case, [_runbook("rb1", [cause])], current_turn=1)
+
+    assert report.seeded_anything
+    assert len(case.hypotheses) == 1  # not an orphan hidden from the report
+    assert report.runbooks_contributing_nothing() == []  # no false alarm
+    # The one well-formed rung still seeded its need; the malformed rung was
+    # skipped, and the report accounting matches the case.
+    texts = [n.request_text for n in case.evidence_needs]
+    assert texts == ["good observable"]
+    assert report.seeded_need_ids == [case.evidence_needs[0].need_id]
+
+
 # ---------------------------------------------------------------------------
 # GUARANTEE: provenance-blindness invariant
 # ---------------------------------------------------------------------------

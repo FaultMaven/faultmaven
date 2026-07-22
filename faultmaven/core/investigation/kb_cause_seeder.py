@@ -546,7 +546,15 @@ def _emit_rung_needs(
     new_need_ids: list[str] = []
     seen_text: set[str] = set()
     for ref, indicators in rung_indicators.items():
-        for indicator in indicators or []:
+        # rung_indicators is authored as dict[ref -> list[str]] by the extractor,
+        # but this reads verbatim metadata["causes"] (malformable on the produce
+        # path). A non-list value must be skipped, not iterated: a bare string
+        # would enumerate per-character (one garbage need per char), a scalar
+        # would raise TypeError and abort the cause. The seeder contract is
+        # "never raised", so skip the malformed rung and keep the candidate.
+        if not isinstance(indicators, list):
+            continue
+        for indicator in indicators:
             request_text = _STEP_REF_PREFIX_RE.sub("", str(indicator)).strip()[:500]
             if not request_text or request_text in seen_text:
                 # Empty after stripping the step ref, or a duplicate observable
