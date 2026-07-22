@@ -25,8 +25,12 @@ from faultmaven.core.investigation.kb_cause_seeder import (
     SEEDED_RATIONALE_PREFIX,
     SeededRunbook,
     SkipClass,
+    _emit_rung_needs,
     confirmed_root_seed_origin,
     seed_candidate_causes,
+)
+from faultmaven.core.investigation.milestone_engine import (
+    _supersede_needs_on_hypothesis_retirement,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -40,6 +44,10 @@ from faultmaven.modules.case.contracts import (
     EvidenceStance,
     HypothesisState,
     InquiryData,
+    NeedObtainability,
+    NeedPriority,
+    NeedPurpose,
+    NeedState,
     NodeEvidenceLink,
     NodeState,
     NodeType,
@@ -941,6 +949,124 @@ def test_offer_gate_end_to_end_offers_self_discovered_resolution():
 
 
 # ---------------------------------------------------------------------------
+# R8: rung_indicators -> seeded evidence-needs
+# ---------------------------------------------------------------------------
+
+
+def test_seeded_rung_indicator_becomes_pending_causal_need():
+    case = _case()
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [_cause("A")])], current_turn=3
+    )
+    assert report.seeded_anything
+    hyp_id = report.seeded_hypothesis_ids[0]
+
+    # The cause's one rung indicator became exactly one need.
+    assert len(case.evidence_needs) == 1
+    need = case.evidence_needs[0]
+    assert report.seeded_need_ids == [need.need_id]
+
+    # Prior-not-gate shape: PENDING, causal, LOW, fail-safe obtainability.
+    assert need.purpose == NeedPurpose.CAUSAL_VERIFICATION
+    assert need.state == NeedState.PENDING
+    assert need.priority == NeedPriority.LOW
+    assert need.obtainability == NeedObtainability.UNKNOWN
+    assert need.is_outstanding
+    # Motivated solely by the seeded hypothesis — the auto-supersession hook.
+    assert need.motivating_hypothesis_ids == [hyp_id]
+    assert need.created_at_turn == 3
+    # The runbook step-reference prefix is stripped from the user-facing ask.
+    assert need.request_text == "indicator for A"
+    assert not need.request_text.startswith("[Step")
+    # Origin lives only in the rationale (the read surface the blindness test bans
+    # from safety modules) — never in a field a mechanism inspects.
+    assert need.rationale.startswith(SEEDED_RATIONALE_PREFIX)
+    assert "rb1" in need.rationale
+
+
+def test_seeded_needs_are_never_auto_fulfilled():
+    case = _case()
+    seed_candidate_causes(case, [_runbook("rb1", [_cause("A")])], current_turn=1)
+    assert case.evidence_needs  # at least one seeded need
+    for need in case.evidence_needs:
+        # A seeded need grounds only when a real datum arrives — none is linked.
+        assert need.state == NeedState.PENDING
+        assert need.fulfilling_evidence_ids == []
+
+
+def test_seeded_needs_supersede_when_their_hypothesis_retires():
+    case = _case()
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [_cause("A")])], current_turn=1
+    )
+    hyp_id = report.seeded_hypothesis_ids[0]
+    seeded = [n for n in case.evidence_needs if hyp_id in n.motivating_hypothesis_ids]
+    assert seeded
+
+    # The inherited motivator-based supersession (evidence-needs-design §7.4).
+    flipped = _supersede_needs_on_hypothesis_retirement(case, hyp_id, current_turn=2)
+
+    assert flipped == len(seeded)
+    for need in seeded:
+        assert need.state == NeedState.SUPERSEDED
+        assert need.superseded_reason  # required for a SUPERSEDED need
+        assert not need.is_outstanding
+
+
+def test_multiple_rung_indicators_each_emit_a_distinct_need():
+    cause = _cause("A")
+    cause["rung_indicators"] = {
+        "root": ["[Step 1] root observable"],
+        "s1": ["[Step 2] effect observable"],
+    }
+    case = _case()
+    seed_candidate_causes(case, [_runbook("rb1", [cause])], current_turn=1)
+
+    texts = sorted(n.request_text for n in case.evidence_needs)
+    assert texts == ["effect observable", "root observable"]
+
+
+def test_duplicate_rung_observable_seeds_one_need():
+    cause = _cause("A")
+    # Two rungs naming the identical observable — one need, not two.
+    cause["rung_indicators"] = {
+        "root": ["[Step 1] the same observable"],
+        "s1": ["[Step 4] the same observable"],
+    }
+    case = _case()
+    seed_candidate_causes(case, [_runbook("rb1", [cause])], current_turn=1)
+
+    matching = [
+        n for n in case.evidence_needs if n.request_text == "the same observable"
+    ]
+    assert len(matching) == 1
+
+
+def test_cause_without_rung_indicators_emits_no_need():
+    cause = _cause("A")
+    cause["rung_indicators"] = {}
+    case = _case()
+    report = seed_candidate_causes(case, [_runbook("rb1", [cause])], current_turn=1)
+    assert report.seeded_anything  # the chain still seeds
+    assert case.evidence_needs == []
+    assert report.seeded_need_ids == []
+
+
+def test_emit_rung_needs_skips_indicators_empty_after_stripping():
+    # An indicator that is only a step reference carries no observable content.
+    case = _case()
+    ids = _emit_rung_needs(
+        case,
+        "rb1",
+        {"cause_letter": "A", "rung_indicators": {"root": ["[Step 1]", "  "]}},
+        "hyp_x",
+        current_turn=1,
+    )
+    assert ids == []
+    assert case.evidence_needs == []
+
+
+# ---------------------------------------------------------------------------
 # GUARANTEE: provenance-blindness invariant
 # ---------------------------------------------------------------------------
 
@@ -985,7 +1111,12 @@ def test_safety_mechanisms_are_provenance_blind():
     cause_state derivation + the per-turn housekeeping loop in milestone_engine)
     AND the conclusion/terminal gates a seeded prior must never shortcut
     (cause_assurance, terminal_transitions, progress_monitor, state_validator,
-    working_conclusion_generator).
+    working_conclusion_generator). R8 adds the need-consuming safety paths:
+    ``verification_status`` (the declared-data-wall arm that can move a case
+    toward INSUFFICIENT_EVIDENCE) and ``evidence_need_surfacing`` (the render-time
+    view) — because a seeded cause now emits evidence-needs, and those paths read
+    needs, they must be proven not to reach through a need's motivating hypothesis
+    to sniff seed origin.
 
     INVARIANT MAINTENANCE: this module set must track any move of safety logic.
     If decay/anchoring/demotion/state-derivation/gating is relocated to another
@@ -995,11 +1126,13 @@ def test_safety_mechanisms_are_provenance_blind():
     """
     import faultmaven.core.investigation.causal_graph as cg
     import faultmaven.core.investigation.cause_assurance as cause_assurance
+    import faultmaven.core.investigation.evidence_need_surfacing as need_surfacing
     import faultmaven.core.investigation.hypothesis_manager as hmmod
     import faultmaven.core.investigation.milestone_engine as engine
     import faultmaven.core.investigation.progress_monitor as progress_monitor
     import faultmaven.core.investigation.state_validator as state_validator
     import faultmaven.core.investigation.terminal_transitions as terminal_transitions
+    import faultmaven.core.investigation.verification_status as verification_status
     import faultmaven.core.investigation.working_conclusion_generator as wcg
 
     for module in (
@@ -1011,6 +1144,12 @@ def test_safety_mechanisms_are_provenance_blind():
         progress_monitor,
         state_validator,
         wcg,
+        # R8 need-consuming safety paths: a seeded cause now emits
+        # evidence-needs, so the declared-data-wall computation
+        # (verification_status) and the surfacing view (evidence_need_surfacing)
+        # must be proven blind to seed origin too.
+        verification_status,
+        need_surfacing,
     ):
         with open(module.__file__, "r", encoding="utf-8") as fh:
             source = fh.read()

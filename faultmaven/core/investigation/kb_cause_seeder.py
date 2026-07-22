@@ -32,6 +32,7 @@ See ``docs/architecture/knowledge-and-ai/kb-cause-seeder.md``.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
@@ -47,9 +48,12 @@ from faultmaven.core.investigation.hypothesis_manager import (
     create_hypothesis_manager,
 )
 from faultmaven.modules.case.contracts import (
+    EvidenceNeed,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
+    NeedPriority,
+    NeedPurpose,
     NodeType,
 )
 
@@ -88,6 +92,11 @@ SEEDED_FROM_RUNBOOK_KEY = "seeded_from_runbook"
 # provenance-blindness invariant test greps safety modules for this literal too,
 # so a mechanism can never sniff seed origin out of the rationale text either.
 SEEDED_RATIONALE_PREFIX = "Seeded from runbook"
+
+# A rung indicator is authored as "[Step N] <observable>" (the runbook's own
+# step numbering). The step reference is meaningful only inside the runbook, so
+# it is stripped when the indicator becomes a case evidence-need's request_text.
+_STEP_REF_PREFIX_RE = re.compile(r"^\s*\[Step\s+\d+\]\s*")
 
 
 @dataclass
@@ -152,6 +161,7 @@ class SeedReport:
 
     seeded_hypothesis_ids: list[str] = field(default_factory=list)
     seeded_node_ids: list[str] = field(default_factory=list)
+    seeded_need_ids: list[str] = field(default_factory=list)
     runbooks_used: list[str] = field(default_factory=list)
     skipped: list[SkippedCause] = field(default_factory=list)
 
@@ -322,6 +332,7 @@ def seed_candidate_causes(
             # discard the report: an unexpected error is recorded as a skip (so it
             # is visible + alarmed) and the loop continues. This keeps the "never
             # raised" contract true even if _seed_one_cause hits malformed data.
+            needs_before = len(case.evidence_needs)
             try:
                 hyp_id, new_node_ids, skip = _seed_one_cause(
                     case, runbook.item_id, cause, current_turn, hm, d_id
@@ -346,6 +357,11 @@ def seed_candidate_causes(
             if hyp_id is not None:
                 report.seeded_hypothesis_ids.append(hyp_id)
                 report.seeded_node_ids.extend(new_node_ids)
+                # Needs are appended in-place by _seed_one_cause on success; the
+                # tail slice is exactly those minted for this cause.
+                report.seeded_need_ids.extend(
+                    n.need_id for n in case.evidence_needs[needs_before:]
+                )
                 if runbook.item_id not in report.runbooks_used:
                     report.runbooks_used.append(runbook.item_id)
             elif skip is not None:
@@ -364,11 +380,12 @@ def seed_candidate_causes(
     if report.seeded_anything:
         logger.info(
             "KB cause seeder: seeded %d candidate cause(s) from %d runbook(s) "
-            "for case %s (%d cause(s) skipped)",
+            "for case %s (%d cause(s) skipped, %d rung evidence-need(s) emitted)",
             len(report.seeded_hypothesis_ids),
             len(report.runbooks_used),
             getattr(case, "case_id", "?"),
             len(report.skipped),
+            len(report.seeded_need_ids),
         )
     return report
 
@@ -474,6 +491,84 @@ def _reject_nonlinear_shape(
     if len(visited) != len(non_problem):
         return "disconnected rung (not every node lies on the root→D path)"
     return None
+
+
+def _emit_rung_needs(
+    case: "Case",
+    item_id: str,
+    cause: dict[str, Any],
+    hyp_id: str,
+    current_turn: int,
+) -> list[str]:
+    """Emit the seeded cause's ``rung_indicators`` as engine-minted evidence-needs.
+
+    A v4 cause's ``rung_indicators`` (``dict[rung_ref -> list[observable]]``) are
+    the per-rung checkable signals that a rung actually holds — the richest slice
+    of the ``metadata["causes"]`` record and, until now, structurally write-only
+    (consumed only as prose by the LLM). Each indicator becomes one PENDING
+    ``CAUSAL_VERIFICATION`` need in ``case.evidence_needs``, motivated by the
+    seeded hypothesis, so a seeded chain arrives carrying its *own* discriminators
+    rather than leaning entirely on the LLM to invent them.
+
+    Prior, not gate — every property keeps a seeded need mechanically identical to
+    an LLM-emitted one, granting no evidentiary weight:
+
+    - **PENDING, never auto-fulfilled.** Fulfillment requires a real evidence row
+      (``fulfilling_evidence_ids``); the seeder links none. A seeded need grounds
+      only when an actual datum arrives, exactly like any other need.
+    - **priority=LOW.** A seeded ask never out-ranks a need the LLM raised from
+      live evidence in the surfacing view.
+    - **obtainability=UNKNOWN (fail-safe).** A seeded need never contributes to the
+      declared-data-wall (``verification_status._candidate_unresolvable`` counts a
+      candidate walled only when *all* its discriminators are UNOBTAINABLE). It
+      makes the wall *honestly computable* for a seeded candidate — if the model
+      later declares a seeded rung ungettable — without ever moving a case toward
+      INSUFFICIENT_EVIDENCE on its own.
+    - **Clears when the seed dies.** The needs are motivated solely by the seeded
+      hypothesis, so the engine's motivator-based auto-supersession retires them
+      when that hypothesis is retired (evidence-needs-design §7.4) — no bespoke
+      cleanup.
+    - **Provenance-blind to safety.** Origin lives only in the ``rationale``
+      (``SEEDED_RATIONALE_PREFIX``) — a read surface the provenance-blindness
+      invariant test bans from every safety module (now including
+      ``verification_status`` and ``evidence_need_surfacing``, the need-consuming
+      paths). Nothing branches on it.
+
+    Best-effort and self-contained: appends directly to ``case.evidence_needs`` and
+    returns the new ``need_id``s (for observability + tests). Malformed indicators
+    are skipped, never raised — seeding a cause must not fail because a rung's
+    observable was empty.
+    """
+    rung_indicators = cause.get("rung_indicators") or {}
+    if not isinstance(rung_indicators, dict):
+        return []
+    letter = cause.get("cause_letter", "?")
+    new_need_ids: list[str] = []
+    seen_text: set[str] = set()
+    for ref, indicators in rung_indicators.items():
+        for indicator in indicators or []:
+            request_text = _STEP_REF_PREFIX_RE.sub("", str(indicator)).strip()[:500]
+            if not request_text or request_text in seen_text:
+                # Empty after stripping the step ref, or a duplicate observable
+                # already asked for by an earlier rung of this same cause.
+                continue
+            seen_text.add(request_text)
+            need = EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text=request_text,
+                rationale=(
+                    f"{SEEDED_RATIONALE_PREFIX} {item_id} "
+                    f"(Cause {letter} rung {ref}): expected observable if this "
+                    "candidate holds."
+                )[:500],
+                priority=NeedPriority.LOW,
+                motivating_hypothesis_ids=[hyp_id],
+                created_at_turn=current_turn,
+            )
+            case.evidence_needs.append(need)
+            new_need_ids.append(need.need_id)
+    return new_need_ids
 
 
 def _seed_one_cause(
@@ -690,5 +785,10 @@ def _seed_one_cause(
     hypothesis.root_node_id = root_id
     hypothesis.path = [*ordered, d_id]
     case.hypotheses[hypothesis.hypothesis_id] = hypothesis
+
+    # Seed the cause's per-rung indicators as evidence-needs motivated by this
+    # hypothesis — the chain arrives with its own discriminators (prior, not gate;
+    # PENDING; provenance-blind; clears when the hypothesis is retired).
+    _emit_rung_needs(case, item_id, cause, hypothesis.hypothesis_id, current_turn)
 
     return hypothesis.hypothesis_id, new_node_ids, None
