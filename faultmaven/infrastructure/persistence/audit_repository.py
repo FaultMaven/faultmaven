@@ -11,6 +11,12 @@ organization, the row is stamped with the current tenant-context org — the
 same value the engine applies to the transaction as ``app.current_org_id`` —
 so the INSERT satisfies the policy's WITH CHECK under the limited
 ``faultmaven_app`` role instead of writing a NULL that RLS rejects.
+
+⚠️ ``TENANT_PROVIDER=multi`` precondition: an unauthenticated caller (e.g. the
+SSO callback) leaves the tenant context at the standalone default, whose org
+row does not exist under multi — the FK then fails and a fail-open caller
+loses the entry. Correct org stamping on the SSO path is part of the deferred
+WorkOS-org→FM-org mapping (ADR-015 D3); resolve it before flipping multi.
 """
 
 import json
