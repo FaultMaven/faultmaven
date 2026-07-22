@@ -197,6 +197,18 @@ _ANTI_ANCHORING_COOLDOWN_TURNS = 2
 # gate answers.)
 _PENDING_GATE_SUBSTANTIVE_LEN = 40
 
+# KB pre-fetch (`_prefetch_kb_context`) fetch depth vs. prompt-surface cap.
+# Retrieval returns CHUNK-level results, so a single long runbook can occupy
+# several of the top-ranked slots. The KB cause seeder's parent-runbook dedup
+# needs diversity ACROSS chunks to see more than one distinct runbook, so the
+# fetch depth is deeper than the prompt surface: fetch KB_PREFETCH_FETCH_LIMIT
+# chunks (the seeder's parent-dedup consumes the full ranked list), but render
+# only the top KB_CONTEXT_MAX_ENTRIES into `case.kb_context`. Because results are
+# score-ranked, the rendered top slice is byte-identical to the old limit-3 fetch,
+# so the prompt the LLM sees does not change.
+KB_PREFETCH_FETCH_LIMIT = 10
+KB_CONTEXT_MAX_ENTRIES = 3
+
 
 def _matches_gate_token(msg: str, tokens: list[str]) -> bool:
     """Word-boundary prefix match for typed gate answers.
@@ -8987,11 +8999,18 @@ class MilestoneEngine:
                     # Graceful degradation — global ∪ owner-personal still seed.
                     shared_kb_ids = []
             scope_filter = build_kb_scope_filter(owner_id, shared_kb_ids)
+            # Fetch deep (KB_PREFETCH_FETCH_LIMIT) so the seeder's parent-runbook
+            # dedup sees more than one distinct runbook when a long runbook fills
+            # the top chunk slots; render only the top KB_CONTEXT_MAX_ENTRIES into
+            # the prompt. The returned `relevant` (full ranked list) is what the
+            # seeder's parent-dedup consumes.
             results = await self.knowledge_service.search_knowledge(
-                query=query, limit=3, filters=scope_filter
+                query=query, limit=KB_PREFETCH_FETCH_LIMIT, filters=scope_filter
             )
             relevant = [r for r in results or [] if r.score >= 0.3]
             if relevant:
+                # Score-ranked, so this top slice is byte-identical to the old
+                # limit-3 fetch — the rendered prompt surface is unchanged.
                 case.kb_context = [
                     {
                         "title": r.title,
@@ -9001,7 +9020,7 @@ class MilestoneEngine:
                         "parent_document_id": getattr(r, "parent_document_id", None),
                         "trigger": trigger,
                     }
-                    for r in relevant
+                    for r in relevant[:KB_CONTEXT_MAX_ENTRIES]
                 ]
                 logger.info(
                     f"KB pre-fetch ({trigger}): {len(case.kb_context)} matches "

@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from faultmaven.core.investigation.causal_graph import (
     find_canonical_node_id,
+    find_duplicate_hypothesis,
     ingest_emitted_chain,
     seed_problem_node,
 )
@@ -118,26 +119,47 @@ class SeededRunbook:
 class SkipClass(str, Enum):
     """Why a matched runbook's cause was not seeded — so a zero-seed is never
     silent, and the 'runbook contributed nothing' alarm can distinguish a real
-    quality problem from normal, expected non-seeding."""
+    quality problem from normal, expected non-seeding.
+
+    Two families. **Expected non-seeding, never alarmed** — ``INTENTIONAL``
+    (fallback cause), ``BENIGN_DEDUP`` (already-represented cause), and
+    ``CONVERGES_UNMODELED`` (a grammar-legal cross-chain convergence the seeder
+    does not model): all are normal outcomes on a well-authored runbook.
+    **Actionable** — ``QUALITY_DROP`` (a malformed cause) and ``UNSUPPORTED_SHAPE``
+    (a well-formed cause in a shape the seeder does not model): a real cause the
+    seeder should have handled did not seed, which the 'contributed nothing' alarm
+    reports."""
 
     INTENTIONAL = "intentional"
-    """Fallback (`Z`/`[Default]`) cause — never a candidate root by design."""
+    """Fallback (`Z`/`[Default]`) cause — never a candidate root by design.
+    Expected non-seeding; never alarmed."""
 
     BENIGN_DEDUP = "benign_dedup"
-    """Root already seeded — a second retrieved runbook overlapping on a cause
-    the first already seeded. Normal and correct; not an alarm."""
+    """Root already represented — a second retrieved runbook overlapping on a
+    cause already seeded (exact-normalized root match, or a paraphrase of a
+    standing hypothesis caught by the INV-36 dedup predicate). Normal and correct;
+    never alarmed."""
+
+    CONVERGES_UNMODELED = "converges_unmodeled"
+    """A grammar-legal cross-chain convergence the seeder does not yet model: the
+    v4 ``converges: <Cause>.<ref>`` directive makes this cause's chain terminate
+    inside ANOTHER Cause's chain, so it cannot form a self-contained root→D path.
+    Rejected — never partially seeded or flattened. This is a legal, well-authored
+    construct (the sole cross-chain grammar), so it is expected non-seeding and
+    never alarmed — modeling it is future work, not a quality defect."""
 
     QUALITY_DROP = "quality_drop"
     """A real cause the seeder could not instantiate (no chain, non-root head,
-    bad node_type, empty statement, ingest produced nothing). The observability
-    signal — a matched runbook silently contributing less than it should."""
+    bad node_type, empty statement, ingest produced nothing). Actionable — the
+    observability signal that a matched runbook silently contributed less than it
+    should."""
 
     UNSUPPORTED_SHAPE = "unsupported_shape"
     """A well-formed cause using a structure the seeder does not yet model: an
     ``and_group`` AND-convergence, or a non-linear chain (a second root, a
     branching fork, a dangling edge ref). Rejected (not flattened) so a
     co-necessary A∧B is never silently mis-seeded as an OR-alternative A∨B, and a
-    branch/fork is never silently linearized to one arbitrary path."""
+    branch/fork is never silently linearized to one arbitrary path. Actionable."""
 
 
 @dataclass
@@ -182,11 +204,14 @@ class SeedReport:
 
         Actionable = a real cause the seeder should have handled did not seed:
         ``quality_drop`` (malformed) or ``unsupported_shape`` (a shape not yet
-        modeled, e.g. ``and_group``). A runbook whose only skips are benign dedup
-        or the fallback cause is NOT flagged (a second runbook overlapping an
-        already-seeded cause is normal). Caveat: a runbook never entered because
-        the ``max_causes`` budget was already spent produces no skip record and is
-        not covered here — that zero-contribution is benign (budget, not quality).
+        modeled, e.g. ``and_group``). A runbook whose only skips are the expected
+        non-seeding classes — ``benign_dedup`` (overlap), ``intentional`` (the
+        fallback cause), or ``converges_unmodeled`` (a grammar-legal cross-chain
+        convergence) — is NOT flagged: those are normal outcomes on a
+        well-authored runbook, not quality drops. Caveat: a runbook never entered
+        because the ``max_causes`` budget was already spent produces no skip
+        record and is not covered here — that zero-contribution is benign
+        (budget, not quality).
         """
         seeded = set(self.runbooks_used)
         actionable = {
@@ -682,7 +707,10 @@ def _seed_one_cause(
     can't instantiate is a QUALITY_DROP; a well-formed cause using an unmodeled
     shape (``and_group`` AND-convergence, or a non-linear chain — multiple roots,
     a branching fork, a dangling edge ref) is an UNSUPPORTED_SHAPE reject (never
-    flattened / mis-seeded); an already-seeded root is a BENIGN_DEDUP.
+    flattened / mis-seeded); a grammar-legal ``converges:`` cross-chain directive
+    is a CONVERGES_UNMODELED reject (expected non-seed, not alarmed); a root
+    already represented (exact-normalized match, or an INV-36 paraphrase of a
+    standing hypothesis) is a BENIGN_DEDUP.
 
     The BENIGN_DEDUP check runs **before** ``ingest_emitted_chain`` (via the
     shared dedup key ``find_canonical_node_id``): a second runbook that shares a
@@ -741,6 +769,30 @@ def _seed_one_cause(
                 cause,
                 SkipClass.UNSUPPORTED_SHAPE,
                 "and_group AND-convergence not yet modeled",
+            ),
+        )
+
+    # Cross-chain convergence is the v4 grammar's ONE cross-chain construct: a
+    # ``converges: <Cause>.<ref>`` directive, which both producers (the fm-side
+    # runbook_cause_extractor and the kb-toolkit pack builder) emit as a chain edge
+    # carrying a truthy ``converges`` key whose ``effect_ref`` points INTO another
+    # Cause's chain (e.g. "B.s1"). That target resolves to no node in THIS cause's
+    # chain, so the cause cannot form a self-contained root→D path. Detect it HERE,
+    # before _reject_nonlinear_shape — otherwise the convergence edge is misdiagnosed
+    # as a dangling ref and mis-classed UNSUPPORTED_SHAPE, tripping the "contributed
+    # nothing" alarm on a grammar-LEGAL, well-authored runbook. Honor-or-reject: the
+    # convergence is not yet modeled, so REJECT the whole cause (never partially seed
+    # or flatten it), tagged CONVERGES_UNMODELED — an EXPECTED non-seed, not alarmed.
+    # 0/640 in the shipped pack; produce-path / future-authoring protection.
+    if any(e.get("converges") for e in chain_edges):
+        return (
+            None,
+            [],
+            _skip(
+                item_id,
+                cause,
+                SkipClass.CONVERGES_UNMODELED,
+                "cross-chain convergence (converges: directive) not yet modeled",
             ),
         )
 
@@ -822,12 +874,22 @@ def _seed_one_cause(
             _NodeSpec(statement=statement, node_type=node_type, produces=produces)
         )
 
-    # Don't double-seed — BEFORE ingest, so a dedup never mints orphan nodes. A
-    # root whose statement matches an existing node reuses it under ingest's
-    # exact-match dedup (find_canonical_node_id is that same key); if that reused
-    # root already heads a hypothesis, the cause is already represented. Skipping
-    # here (not after ingest) means a second runbook sharing this root but
-    # diverging mid-chain never mints its divergent intermediate rungs as orphans.
+    # The statement the seed's hypothesis WOULD carry — hoisted above ingest so
+    # the paraphrase dedup below can test it BEFORE any node is minted (a dedup
+    # that fires after ingest would leave orphan rungs). Reused verbatim as the
+    # hypothesis statement on the seed path.
+    hyp_statement = (cause.get("cause_statement") or specs[0].statement)[:500]
+
+    # Don't double-seed — BEFORE ingest, so a dedup never mints orphan nodes. Two
+    # pre-ingest checks, both BENIGN_DEDUP (a second runbook overlapping an
+    # already-represented cause is normal and correct, never alarmed):
+    #
+    # (1) Exact-normalized root. A root whose statement matches an existing node
+    #     reuses it under ingest's exact-match dedup (find_canonical_node_id is
+    #     that same key); if that reused root already heads a hypothesis, the cause
+    #     is already represented. Deciding here (not after ingest) means a second
+    #     runbook sharing this root but diverging mid-chain never mints its
+    #     divergent intermediate rungs as orphans.
     existing_roots = {
         h.root_node_id for h in case.hypotheses.values() if h.root_node_id
     }
@@ -837,6 +899,47 @@ def _seed_one_cause(
             None,
             [],
             _skip(item_id, cause, SkipClass.BENIGN_DEDUP, "root already seeded"),
+        )
+
+    # (2) Paraphrase of a standing CHAIN-HEADING hypothesis. Two retrieved runbooks
+    #     describing the same cause in different words would otherwise co-seed two
+    #     paraphrase OR-siblings, inflating the differential and raising
+    #     validate_by_exclusion friction (exclusion needs ≥2 siblings
+    #     counterfactually refuted, so a phantom sibling spuriously raises the bar).
+    #     Reuse the EXISTING INV-36 dedup predicate — the SAME
+    #     find_duplicate_hypothesis (mutual-Jaccard + polarity guard +
+    #     numeric-discriminator guard, deliberately fail-open) already applied to
+    #     the LLM's hypotheses_to_add — not a bespoke scorer. Same predicate and
+    #     same dedup DECISION as the INV-36 path that would have deduped this exact
+    #     statement had the LLM emitted it; the difference is the reconciliation —
+    #     INV-36 surfaces the matched id so the LLM UPDATES the standing hypothesis,
+    #     whereas here the cause is a silent skip record (there is no LLM emission
+    #     to merge). The fail-open guards (negation, numeric discriminators) keep
+    #     genuinely distinct siblings — a negated restatement, or one differing only
+    #     by a number — separate.
+    #
+    #     Scoped to CHAIN-HEADING hypotheses (root_node_id set) — the same scope as
+    #     the exact-root check above. A chain-less standing hypothesis must never
+    #     paraphrase-suppress a structurally-rich runbook cause: doing so would
+    #     silently discard the cause's chain, its rung-indicator evidence-needs, and
+    #     its interventions, classed benign and never surfaced. If both a chain-less
+    #     match and a chain-heading paraphrase exist, the duplicate-sibling cost is
+    #     preferred over the silent structural loss — the redundant sibling is the
+    #     LLM's to reconcile. (Today the sole call site is the INQUIRY→INVESTIGATING
+    #     transition, where only this-batch root-bearing seeds exist, so the scopes
+    #     coincide; the guard hardens the documented mid-INVESTIGATING re-seed
+    #     follow-on, under which a bare standing hypothesis could otherwise exist.)
+    dup_hid = find_duplicate_hypothesis(hyp_statement, case)
+    if dup_hid is not None and case.hypotheses[dup_hid].root_node_id:
+        return (
+            None,
+            [],
+            _skip(
+                item_id,
+                cause,
+                SkipClass.BENIGN_DEDUP,
+                f"duplicates standing hypothesis {dup_hid} (paraphrase)",
+            ),
         )
 
     before = set(case.causal_nodes)
@@ -878,11 +981,10 @@ def _seed_one_cause(
                 SEEDED_INTERVENTIONS_KEY: interventions,
             }
 
-    statement = (cause.get("cause_statement") or specs[0].statement)[:500]
     letter = cause.get("cause_letter", "?")
     name = cause.get("cause_name", "")
     hypothesis = hm.create_hypothesis(
-        statement=statement,
+        statement=hyp_statement,
         category=HypothesisCategory.OTHER,
         initial_likelihood=KB_SEED_PRIOR,
         current_turn=current_turn,

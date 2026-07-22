@@ -32,6 +32,8 @@ FaultMaven's browser extension provides rich implicit context that most RAG syst
 
 **Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose. Case-derived context (the affected service from the case's problem verification) is wired end-to-end today as a **soft** rerank boost: the engine derives it (`derive_kb_context_metadata()`), carries it on `ToolContext.kb_context_metadata`, and `KBToolAdapter` threads it through `AnswerFromKB` → `DocumentQATool` → `hybrid_search(context_metadata=…, filter_mode="soft")`. The remaining, higher-confidence integration is the copilot page-comprehension → API request body → `ToolContext` path that would justify the **hard** pre-filter (`filter_mode="hard"`); that cross-repo wiring is deferred.
 
+The service-metadata signal rides **only** on the agent QA tools path, which is the sole caller of `hybrid_search()`. The engine's own KB pre-fetch — `_prefetch_kb_context` (which also feeds the KB cause seeder) — takes a different route: `KnowledgeService.search_knowledge` → `KnowledgeVectorStore.search`, a single-pass pure-vector search (cosine similarity, `score = 1.0 − distance`) with **no reranker and no metadata-match boost**. So the prefetch/seeder path ranks by plain retrieval score, and the case's affected-service signal does not influence it. Wiring the signal there is possible future work (tracked as tech-debt issue #710).
+
 ```text
 ChromaDB Instance
 │
@@ -203,6 +205,8 @@ Agent calls: answer_from_kb(question)
   └── UnifiedKBConfig.format_response()
         Returns answer with source citations
 ```
+
+**Engine pre-fetch path (no rerank).** The Tool Path above is the *only* caller that reaches `hybrid_search()` and therefore the *only* path carrying the service-metadata soft boost. The engine's `_prefetch_kb_context` — the symptom-verification KB pull that also feeds the KB cause seeder — instead calls `KnowledgeService.search_knowledge` → `KnowledgeVectorStore.search`: single-pass pure-vector similarity, no keyword recall, no four-signal reranker, no `context_metadata`. Its ranking is plain retrieval score; the case's affected-service signal is not applied. Bringing the signal onto that path is a possible future refinement (tech-debt #710).
 
 **Relay vs synthesis:** Full procedure detail must reach the engine — a compressed paraphrase of a runbook loses the actionable steps. The `DocumentQATool` synthesis prompt is aligned with this relay intent: it instructs the LLM to "preserve procedural detail — include full diagnostic steps, commands, and resolution procedures rather than summarizing them" and to "compress only background context, never actionable steps." `UnifiedKBConfig.system_prompt` reinforces this ("provide step-by-step instructions when procedures are available"), and `_format_tool_result()` wraps the `kb_qa` result with "Preserve key details, diagnostic steps, and resolution procedures — do NOT collapse it into a single sentence." All three now pull in the same direction; the earlier "be concise and factual" instruction that conflicted with relay has been removed.
 

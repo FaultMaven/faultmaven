@@ -45,6 +45,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
+    HypothesisCategory,
     HypothesisState,
     InquiryData,
     NeedObtainability,
@@ -103,7 +104,7 @@ def _cause(
         return {
             "cause_letter": letter,
             "cause_name": f"Cause {letter}",
-            "cause_statement": f"cause {letter} symptom-level statement",
+            "cause_statement": f"{root_stmt} symptom-level statement",
             "chain_nodes": [],
             "chain_edges": [],
             "rung_indicators": {},
@@ -113,7 +114,7 @@ def _cause(
     return {
         "cause_letter": letter,
         "cause_name": f"Cause {letter}",
-        "cause_statement": f"cause {letter} symptom-level statement",
+        "cause_statement": f"{root_stmt} symptom-level statement",
         "chain_nodes": [
             {"ref": "root", "node_type": "root", "statement": root_stmt},
             {"ref": "s1", "node_type": "intermediate", "statement": inter_stmt},
@@ -664,6 +665,236 @@ def test_runbook_that_seeded_something_is_not_alarmed_despite_a_quality_drop():
     assert any(s.skip_class == SkipClass.QUALITY_DROP for s in report.skipped)
     # rb1 contributed a candidate, so it is not flagged as "contributed nothing".
     assert report.runbooks_contributing_nothing() == []
+
+
+# ---------------------------------------------------------------------------
+# Cross-chain convergence (grammar-legal `converges:` directive) — a NON-actionable
+# reject that must NOT trip the quality alarm
+# ---------------------------------------------------------------------------
+
+
+def _converges_cause(letter: str = "A", target: str = "B.s1") -> dict:
+    """A cause whose chain terminates in a `converges: <Cause>.<ref>` directive —
+    the shape BOTH producers emit: a chain edge carrying a truthy ``converges`` key
+    whose ``effect_ref`` points into another Cause's chain (no self-contained D)."""
+    cause = _cause(letter)
+    cause["chain_nodes"] = [
+        {"ref": "root", "node_type": "root", "statement": f"converging root {letter}"},
+        {"ref": "s1", "node_type": "intermediate", "statement": f"effect {letter}"},
+    ]
+    cause["chain_edges"] = [
+        {"cause_ref": "root", "effect_ref": "s1"},
+        {"cause_ref": "s1", "effect_ref": target, "converges": True},
+    ]
+    return cause
+
+
+def test_converges_edge_rejected_as_converges_unmodeled_no_alarm():
+    # A grammar-legal cross-chain convergence is rejected under its OWN skip class
+    # (not UNSUPPORTED_SHAPE, which would fire the quality alarm on a well-authored
+    # runbook). It seeds nothing and is NOT alarmed.
+    case = _case()
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [_converges_cause("A")])], current_turn=1
+    )
+    assert not report.seeded_anything
+    assert case.hypotheses == {}
+    assert len(report.skipped) == 1
+    assert report.skipped[0].skip_class == SkipClass.CONVERGES_UNMODELED
+    # A converges directive is legal grammar, not a quality drop → no alarm.
+    assert report.runbooks_contributing_nothing() == []
+
+
+def test_converges_cause_detected_before_dangling_ref_misdiagnosis():
+    # The convergence edge's effect_ref ("B.s1") resolves to no node in THIS chain;
+    # were it not caught first, _reject_nonlinear_shape would mis-class it as a
+    # dangling ref (UNSUPPORTED_SHAPE, alarmed). The converges class proves it is
+    # caught before that misdiagnosis.
+    case = _case()
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [_converges_cause("A", target="Q.x")])], current_turn=1
+    )
+    assert report.skipped[0].skip_class == SkipClass.CONVERGES_UNMODELED
+    assert not any(s.skip_class == SkipClass.UNSUPPORTED_SHAPE for s in report.skipped)
+
+
+def test_converges_cause_alongside_linear_cause_still_seeds_the_linear_one():
+    # A runbook with one converges cause + one ordinary linear cause seeds the
+    # linear one; the converges cause is a non-actionable skip, and the runbook —
+    # having contributed a candidate — is not alarmed.
+    case = _case()
+    linear = _cause("B", root_stmt="ordinary linear root fault")
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [_converges_cause("A"), linear])], current_turn=1
+    )
+    assert report.seeded_anything and "rb1" in report.runbooks_used
+    assert len(case.hypotheses) == 1  # only the linear cause seeded
+    classes = {s.skip_class for s in report.skipped}
+    assert SkipClass.CONVERGES_UNMODELED in classes
+    assert report.runbooks_contributing_nothing() == []
+
+
+# ---------------------------------------------------------------------------
+# Paraphrase dedup — a second runbook whose cause paraphrases an already-seeded
+# hypothesis is skipped BENIGN_DEDUP (reusing the INV-36 predicate), never minting
+# a phantom OR-sibling; fail-open guards keep genuinely distinct siblings
+# ---------------------------------------------------------------------------
+
+
+def _cause_stmt(letter: str, *, root_stmt: str, statement: str) -> dict:
+    """A cause whose ROOT statement and hypothesis-level ``cause_statement`` are set
+    independently — so a test can make two runbooks' *hypothesis* statements
+    paraphrase each other while their root statements stay distinct (isolating the
+    paraphrase-dedup path from the exact-normalized-root dedup)."""
+    cause = _cause(letter, root_stmt=root_stmt)
+    cause["cause_statement"] = statement
+    return cause
+
+
+def test_paraphrase_of_seeded_hypothesis_is_benign_dedup_no_second_hypothesis():
+    # Two runbooks describe one cause in reworded form: the hypothesis statements
+    # are mutual mirrors above the INV-36 bar, but the ROOTS differ (so the exact
+    # root dedup does NOT fire — the paraphrase check must). The second is skipped
+    # BENIGN_DEDUP, mints no second hypothesis, and — decided before ingest —
+    # leaves no orphan nodes.
+    rb1 = _runbook(
+        "rb1",
+        [
+            _cause_stmt(
+                "A",
+                root_stmt="alpha root one",
+                statement="connection pool exhausted under heavy load",
+            )
+        ],
+        score=0.9,
+    )
+    rb2 = _runbook(
+        "rb2",
+        [
+            _cause_stmt(
+                "B",
+                root_stmt="beta root two",
+                statement="under heavy load the connection pool exhausted",
+            )
+        ],
+        score=0.8,
+    )
+    case = _case()
+    report = seed_candidate_causes(case, [rb1, rb2], current_turn=1)
+
+    assert len(report.seeded_hypothesis_ids) == 1  # rb2's paraphrase did not seed
+    assert len(case.hypotheses) == 1
+    dedup = [s for s in report.skipped if s.skip_class == SkipClass.BENIGN_DEDUP]
+    assert len(dedup) == 1 and dedup[0].item_id == "rb2"
+    assert "paraphrase" in dedup[0].reason
+    # No alarm — a paraphrase overlap is expected non-seeding.
+    assert report.runbooks_contributing_nothing() == []
+    # Orphan-free: every non-problem node lies on the one hypothesis's path.
+    on_path = set()
+    for h in case.hypotheses.values():
+        on_path.update(h.path or [])
+    for n in case.causal_nodes.values():
+        if n.node_type != NodeType.PROBLEM:
+            assert n.node_id in on_path
+
+
+def test_negated_paraphrase_fails_open_and_seeds_a_distinct_sibling():
+    # The polarity guard fails open: a second cause that NEGATES the first is a
+    # dispute, not a duplicate — it must seed as a distinct OR-sibling.
+    rb1 = _runbook(
+        "rb1",
+        [
+            _cause_stmt(
+                "A",
+                root_stmt="alpha root one",
+                statement="the connection pool exhausted under heavy load",
+            )
+        ],
+        score=0.9,
+    )
+    rb2 = _runbook(
+        "rb2",
+        [
+            _cause_stmt(
+                "B",
+                root_stmt="beta root two",
+                statement="the connection pool not exhausted under heavy load",
+            )
+        ],
+        score=0.8,
+    )
+    case = _case()
+    report = seed_candidate_causes(case, [rb1, rb2], current_turn=1)
+    assert len(report.seeded_hypothesis_ids) == 2  # distinct siblings, both seeded
+    assert len(case.hypotheses) == 2
+    assert not any(s.skip_class == SkipClass.BENIGN_DEDUP for s in report.skipped)
+
+
+def test_numeric_discriminator_paraphrase_fails_open_and_seeds_distinct_sibling():
+    # The numeric-discriminator guard fails open: two causes differing only by a
+    # number the token mirror drops ("server 1" vs "server 2") stay distinct.
+    rb1 = _runbook(
+        "rb1",
+        [
+            _cause_stmt(
+                "A",
+                root_stmt="alpha root one",
+                statement="server 1 connection pool dropped",
+            )
+        ],
+        score=0.9,
+    )
+    rb2 = _runbook(
+        "rb2",
+        [
+            _cause_stmt(
+                "B",
+                root_stmt="beta root two",
+                statement="server 2 connection pool dropped",
+            )
+        ],
+        score=0.8,
+    )
+    case = _case()
+    report = seed_candidate_causes(case, [rb1, rb2], current_turn=1)
+    assert len(report.seeded_hypothesis_ids) == 2
+    assert len(case.hypotheses) == 2
+    assert not any(s.skip_class == SkipClass.BENIGN_DEDUP for s in report.skipped)
+
+
+def test_chainless_standing_hypothesis_does_not_suppress_structural_seed():
+    # The paraphrase dedup is scoped to CHAIN-HEADING hypotheses. A chain-less
+    # standing hypothesis (root_node_id unset) whose statement paraphrases the
+    # runbook cause must NOT suppress it — suppressing a structurally-rich cause
+    # would silently discard its chain, rung-indicator evidence-needs, and
+    # interventions, classed benign and never surfaced. So the cause still seeds.
+    case = _case()
+    hm = create_hypothesis_manager()
+    standing = hm.create_hypothesis(
+        statement="connection pool exhausted under heavy load",
+        category=HypothesisCategory.OTHER,
+        initial_likelihood=0.3,
+        current_turn=1,
+    )
+    assert not standing.root_node_id  # chain-less: heads no chain
+    case.hypotheses[standing.hypothesis_id] = standing
+
+    cause = _cause_stmt(
+        "A",
+        root_stmt="alpha root one",
+        statement="under heavy load the connection pool exhausted",
+    )
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [cause])], current_turn=1, hypothesis_manager=hm
+    )
+
+    # Seeded despite paraphrasing the chain-less standing hypothesis.
+    assert report.seeded_anything
+    assert not any(s.skip_class == SkipClass.BENIGN_DEDUP for s in report.skipped)
+    # A new chain-heading hypothesis (the seed) now exists alongside the standing one.
+    chain_heading = [h for h in case.hypotheses.values() if h.root_node_id]
+    assert len(chain_heading) == 1
+    assert len(case.hypotheses) == 2
 
 
 # ---------------------------------------------------------------------------
