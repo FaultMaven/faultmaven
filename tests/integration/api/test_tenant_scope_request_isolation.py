@@ -116,8 +116,9 @@ async def test_org_bound_in_one_request_does_not_leak_into_the_next(monkeypatch)
         second = await asyncio.create_task(client.get("/org"))
 
     assert first.json() == {"org": ORG_A}
-    # No token -> binder leaves the default; ORG_A must not have leaked.
-    assert second.json() == {"org": STANDALONE_ORG_ID}
+    # No token -> binder binds the empty non-org (no org-owned rows, no
+    # platform-tier write license, #770); ORG_A must not have leaked.
+    assert second.json() == {"org": ""}
     # And nothing leaked out into the test's own context either.
     assert get_current_org_id() == STANDALONE_ORG_ID
 

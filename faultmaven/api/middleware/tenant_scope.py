@@ -21,9 +21,13 @@ inject via a forged claim — the permanent re-leak guard ADR-010 requires.
 Multi-tenant mode sources the org from the authenticated user's verified
 ``organization_id`` claim and **fails closed** when it is missing: a verified
 request that reaches a tenanted endpoint without an org is rejected, never silently
-scoped to the Standalone org (which the contextvar defaults to). Unauthenticated
-requests to public endpoints carry no org and are left at the default — they never
-read tenanted data.
+scoped to the Standalone org (which the contextvar defaults to). Unauthenticated /
+invalid-token requests are bound to the empty non-org sentinel: they match no
+org-owned rows, and — unlike the contextvar's Standalone default — they can never
+satisfy the platform-tier global-WRITE arm of the knowledge_items RLS policies
+(migration 033, #770), which is keyed on the Standalone org id. Org-free
+platform-tier READS (``scope='global'``) do not depend on the bound org and keep
+working for public endpoints.
 """
 
 import logging
@@ -45,6 +49,13 @@ from faultmaven.providers.tenancy.factory import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Bound for unauthenticated / invalid-token requests under multi-tenant: matches
+# no organization's rows AND can never satisfy the RLS write policies'
+# single-tenant-sentinel arm (migration 033 keys global writes on the Standalone
+# org id). Structurally stronger than leaving the contextvar's Standalone
+# default in place.
+_UNSCOPED_ORG = ""
 
 
 async def bind_request_org_context(
@@ -72,13 +83,17 @@ async def bind_request_org_context(
     token = _extract_token(authorization, None)
     if not token:
         # Public / unauthenticated request — no org to bind. Tenanted endpoints
-        # require auth and will 401; leave the contextvar at its default.
+        # require auth and will 401; bind the non-org sentinel so the session
+        # matches no org-owned rows and holds no global-write license (#770).
+        set_current_org_id(_UNSCOPED_ORG)
         return
 
     try:
         user = await auth_service.extract_user_from_token_with_revocation_check(token)
     except (AuthenticationError, TokenRevocationError):
-        # Invalid / revoked token — let the endpoint's own auth dependency 401.
+        # Invalid / revoked token — let the endpoint's own auth dependency 401;
+        # same non-org binding as the unauthenticated case.
+        set_current_org_id(_UNSCOPED_ORG)
         return
 
     if not user.organization_id:

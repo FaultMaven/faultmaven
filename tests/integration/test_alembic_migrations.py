@@ -273,6 +273,80 @@ class TestAlembicMigrationInfrastructure:
         ), f"Clean baseline migration should be in history. Output: {output}"
 
 
+class TestGlobalKbPlatformTierMigration:
+    """Migration 033 (#770): global rows org-free, reversible WITH data.
+
+    The downgrade restamps global rows to the standalone org; regression: it
+    originally ran the restamp UPDATE against the still-present
+    ``knowledge_items_global_org_check``, which fails on any database that
+    actually contains global rows (i.e. every seeded deployment). Clean-DB
+    up/down tests cannot catch that, so this one carries data.
+    """
+
+    _STANDALONE_ORG = "00000000-0000-0000-0000-000000000001"
+
+    def _insert_rows(self):
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute(
+                "INSERT INTO knowledge_items "
+                "(item_id, organization_id, scope, title, content, item_type) "
+                "VALUES ('kb_aaaaaaaaaaaa', NULL, 'global', 'G', 'body', 'runbook')"
+            )
+            conn.execute(
+                "INSERT INTO knowledge_items "
+                "(item_id, organization_id, scope, owner_id, title, content, item_type) "
+                "VALUES ('ki_p1', 'org-1', 'personal', NULL, 'P', 'body', 'runbook')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _org_by_item(self):
+        return dict(
+            query_rows(TEST_DB, "SELECT item_id, organization_id FROM knowledge_items")
+        )
+
+    def test_downgrade_restamps_and_upgrade_renormalizes_with_data(
+        self, clean_database, database_url
+    ):
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+        self._insert_rows()
+
+        down = run_alembic("downgrade b4c5d6e7f8a9", database_url)
+        assert (
+            down.returncode == 0
+        ), f"033 downgrade must succeed with global rows present: {down.stderr}"
+        orgs = self._org_by_item()
+        assert orgs["kb_aaaaaaaaaaaa"] == self._STANDALONE_ORG
+        assert orgs["ki_p1"] == "org-1"
+
+        up = run_alembic("upgrade head", database_url)
+        assert up.returncode == 0, up.stderr
+        orgs = self._org_by_item()
+        assert orgs["kb_aaaaaaaaaaaa"] is None, "global rows renormalized org-free"
+        assert orgs["ki_p1"] == "org-1"
+
+    def test_check_constraint_enforced_after_upgrade(
+        self, clean_database, database_url
+    ):
+        """A tenant-org-stamped global row is unrepresentable post-033."""
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="global_org_check"):
+                conn.execute(
+                    "INSERT INTO knowledge_items "
+                    "(item_id, organization_id, scope, title, content, item_type) "
+                    "VALUES ('kb_bbbbbbbbbbbb', 'org-1', 'global', 'X', 'x', 'runbook')"
+                )
+        finally:
+            conn.close()
+
+
 class TestRbacSeed:
     """Migration 029 seeds the system RBAC roles/permissions/grants.
 

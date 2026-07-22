@@ -209,3 +209,25 @@ class TestUploadRouteUnderMulti:
         assert resp.status_code == 403
         assert resp.json()["detail"] == GLOBAL_AUTHORING_FORBIDDEN_MSG
         service.upload_document.assert_not_awaited()
+
+
+class TestSuggestionApprovalUnderMulti:
+    def test_approve_suggestion_refused_under_multi(self):
+        """Suggestion approval publishes via upload_document's global default —
+        it must carry the same platform-tier gate (#770 security review M2)."""
+        from faultmaven.modules.knowledge.api.routes import get_suggestion_service
+
+        app = FastAPI()
+        app.include_router(knowledge_router)
+        service = MagicMock()
+        service.approve_suggestion = AsyncMock()
+        app.dependency_overrides[get_suggestion_service] = lambda: service
+        app.dependency_overrides[require_admin] = _admin_user
+        client = TestClient(app)
+
+        with _MULTI:
+            resp = client.post("/knowledge/suggestions/s-1/approve", json={})
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == GLOBAL_AUTHORING_FORBIDDEN_MSG
+        service.approve_suggestion.assert_not_awaited()

@@ -330,7 +330,9 @@ class TestScanSkipsBootstrapIngestedRunbooks:
             session.add(
                 KnowledgeItemModel(
                     item_id=item_id_from_runbook_id(runbook_id),
-                    organization_id="00000000-0000-0000-0000-000000000001",
+                    # Global rows are the org-free platform tier (#770,
+                    # knowledge_items_global_org_check).
+                    organization_id=None,
                     scope="global",
                     title=runbook_id,
                     content="published by bootstrap",

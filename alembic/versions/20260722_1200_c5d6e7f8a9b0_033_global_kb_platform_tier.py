@@ -161,13 +161,17 @@ def downgrade() -> None:
             f"USING ({_ORG_MATCHES_SESSION})"
         )
 
+    # Drop the CHECK BEFORE restamping: the restamp writes scope='global' rows
+    # with a non-NULL org, which the still-present constraint would reject on
+    # any database that actually contains global rows (i.e. every seeded one).
+    with op.batch_alter_table("knowledge_items") as batch:
+        batch.drop_constraint("knowledge_items_global_org_check", type_="check")
     op.execute(
         "UPDATE knowledge_items "
         f"SET organization_id = '{_STANDALONE_ORG_ID}' "
         "WHERE scope = 'global'"
     )
     with op.batch_alter_table("knowledge_items") as batch:
-        batch.drop_constraint("knowledge_items_global_org_check", type_="check")
         batch.alter_column(
             "organization_id",
             existing_type=sa.String(length=36),

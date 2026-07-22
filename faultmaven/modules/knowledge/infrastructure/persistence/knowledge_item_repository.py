@@ -26,8 +26,11 @@ allowlist``, owner ids globally unique, share ids resolved from RLS-scoped
 SQL). Writes to the global tier are platform operations: RLS write policies
 confine them to single-tenant sentinel sessions or the audited BYPASSRLS
 maintenance path (``jobs/run.py kb_seed``), never tenant sessions. Methods
-below that take only an ``organization_id`` (counts / org listings) are
-org-owned-tier queries by definition and exclude the platform tier.
+below that take only an ``organization_id`` (counts / org listings /
+text+tag search) are org-scoped queries that exclude the org-free platform
+tier; note they currently have NO production callers (the service uses only
+get/create/update/delete/list_for_inventory) — wire the global arm in
+explicitly if one is ever made live, or remove them.
 
 Usage:
     from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (

@@ -411,6 +411,30 @@ class TestInventoryServiceDB:
             BUILTIN_ID
         )
 
+    async def test_delete_refused_rows_never_touch_vectors(self, inventory_service):
+        """When the SQL delete matches zero rows (RLS refusal under multi, or a
+        concurrent delete), the shared vector store must NOT be touched — an
+        unguarded vector delete would let a tenant org admin destroy platform
+        content for every tenant (#770 security review H1)."""
+        from unittest.mock import patch
+
+        svc, factory = inventory_service
+        await svc._seed_item(_mk_item(AUTHORED_ID))
+
+        with patch.object(
+            DatabaseKnowledgeItemRepository,
+            "delete",
+            AsyncMock(return_value=False),
+        ):
+            result = await svc.delete_document(AUTHORED_ID)
+
+        assert result["success"] is False
+        svc._vector_store.delete_documents_by_parent_id.assert_not_awaited()
+        # Row untouched.
+        async with factory() as session:
+            repo = DatabaseKnowledgeItemRepository(session)
+            assert await repo.get_by_id(AUTHORED_ID) is not None
+
     async def test_delete_authored_hard_deletes_and_drops_vectors(
         self, inventory_service
     ):

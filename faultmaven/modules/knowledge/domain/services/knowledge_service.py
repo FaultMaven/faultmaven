@@ -494,7 +494,20 @@ class KnowledgeService:
                         await repo.update(item)
                         action = "unpublished"
                     else:
-                        await repo.delete(document_id)
+                        deleted = await repo.delete(document_id)
+                        if not deleted:
+                            # Zero rows matched — the RLS delete policy refused
+                            # (e.g. a tenant session targeting a platform-tier
+                            # global row under multi, #770) or a concurrent
+                            # delete won. NEVER touch the shared vector store
+                            # when the SQL row was not actually removed: the
+                            # ChromaDB collection is shared across tenants, so
+                            # an unguarded vector delete here would let any
+                            # org admin destroy platform content for everyone.
+                            return {
+                                "success": False,
+                                "error": f"Document {document_id} not deleted",
+                            }
                         action = "deleted"
 
                 # Cascade the item's team share rows on hard delete (source of

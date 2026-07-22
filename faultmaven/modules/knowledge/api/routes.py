@@ -945,6 +945,11 @@ async def approve_suggestion(
     """
     logger = logging.getLogger(__name__)
 
+    # Approval publishes at global scope (KnowledgeService.upload_document
+    # default) — the platform tier, never authorable from a tenant session
+    # under multi (#770).
+    require_global_authoring_allowed()
+
     try:
         review_notes = None
         if request_body:
