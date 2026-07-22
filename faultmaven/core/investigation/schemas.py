@@ -1012,6 +1012,28 @@ class SolutionToAdd(BaseModel):
         default_factory=list,
         description="Specific commands for the user to execute",
     )
+    # Optional causal-graph linkage (§7.4). Populated when the fix targets a
+    # specific rung — e.g. a candidate intervention surfaced for a confirmed,
+    # runbook-seeded cause. Both are optional and honor-or-reject at apply (an
+    # unrecognized quadrant / unknown node_ref is dropped, never an error), so a
+    # BEST_EFFORT provider that omits them is unaffected.
+    quadrant: Optional[str] = Field(
+        default=None,
+        description=(
+            "Intervention quadrant when this fix targets a causal rung (§7.4): "
+            "'remediation' (permanent fix at the root cause) / 'defensive_fix' "
+            "(permanent fix at an intermediate) / 'mitigation' (temporary "
+            "interception) / 'loop_break'. Omit when it does not apply."
+        ),
+    )
+    node_ref: Optional[str] = Field(
+        default=None,
+        description=(
+            "The cn_... id of the causal node this fix acts on, when known (e.g. "
+            "the validated root cause shown in the causal graph). Omit if the fix "
+            "is not tied to a specific node."
+        ),
+    )
 
 
 # =============================================================================

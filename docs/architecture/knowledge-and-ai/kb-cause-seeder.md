@@ -264,12 +264,14 @@ drift, not a current defect.
 ### What the seeder consumes (and what it doesn't)
 
 The seeder reads a cause's `chain_nodes` / `chain_edges` / `cause_statement` /
-`cause_letter` / `cause_name` for the chain topology, **and** its
-`rung_indicators` to seed per-rung evidence-needs (see *Rung indicators →
-evidence-needs* below). It does **not** yet structurally consume `interventions`
-— those still reach the engine only as *prose* for the LLM (treatment-stage
-`SolutionToAdd`); wiring them to a structured candidate `Solution` at the M5 gate
-is the remaining produce-symmetric follow-on. (The deterministic `<!-- match -->`
+`cause_letter` / `cause_name` for the chain topology, its `rung_indicators` to
+seed per-rung evidence-needs (see *Rung indicators → evidence-needs* below),
+**and** its `interventions` — captured at seed time and surfaced as candidate
+`Solution` priors once the cause is confirmed (see *Interventions → candidate
+solutions* below). So the three richest slices of the `metadata["causes"]` record
+now drive the FORMULATION (chain), VALIDATION (rung indicators → evidence-needs),
+and SOLUTION (interventions → candidate solutions) stages respectively — the
+runbook is no longer consumed as pure prose. (The deterministic `<!-- match -->`
 predicates stay blocked upstream: the pack ships zero `predicate`/`exit_code`
 keys — dropped at pack-build.)
 
@@ -295,6 +297,53 @@ identical to an LLM-emitted need:
 | `obtainability = UNKNOWN` (fail-safe) | Never contributes to the declared-data-wall on its own (`verification_status._candidate_unresolvable` walls a candidate only when *all* its discriminators are `UNOBTAINABLE`). It makes the wall *honestly computable* for a seeded candidate — a latent gap before R8, when a seeded hypothesis had zero discriminators — without ever moving a case toward INSUFFICIENT_EVIDENCE. |
 | Motivated solely by the seeded hypothesis | Cleared for free by the engine's motivator-based auto-supersession when that hypothesis is retired (evidence-needs-design §7.4) — no bespoke cleanup. |
 | Origin only in `rationale` (`SEEDED_RATIONALE_PREFIX`) | Provenance-blind to safety (see below) — nothing branches on it. |
+
+#### Interventions → candidate solutions
+
+`interventions` (`list[{"quadrant","ref","text"}]`) are a cause's fixes, tagged
+by intervention quadrant (§7.4: `remediation` / `defensive_fix` / `mitigation` /
+`loop_break`). They drive the **SOLUTION** stage the way `rung_indicators` drive
+VALIDATION, and by the same **emission-mediated** discipline — the engine renders
+them as a *prior* and the LLM emits the solution, rather than the engine minting
+solutions itself (which would collide with the existing prose-authored offer path
+and strain prior-not-gate):
+
+1. **Seed-time capture.** `_seed_one_cause` stashes the cause's sanitized
+   `interventions` onto the seeded **ROOT** node's metadata
+   (`SEEDED_INTERVENTIONS_KEY`) — only on a freshly-minted root, never on a reused
+   self-generated node (same discipline as the `seeded_from_runbook` stamp). This
+   captures them once, avoiding a racy re-fetch of the runbook at SOLUTION time.
+2. **Confirmed-cause read.** `confirmed_cause_interventions(case)` returns the
+   interventions captured on a **counterfactually-confirmed** root's distinct-cause
+   cluster (the same clustering as `confirmed_root_seed_origin`, so a
+   validated-then-restated seed still resolves to its interventions), or `[]`.
+3. **Render.** `context_builder._build_candidate_solutions_block` surfaces those
+   interventions as a `<candidate_solutions>` block **only when a seeded cause is
+   confirmed** — quadrant + text, framed as candidate fixes to *propose*, not a
+   directive. Empty when the flag is off or no seeded cause is confirmed (since
+   interventions are captured only when the seeder runs) — inert like every other
+   optional prompt block.
+4. **Emission → Solution.** `SolutionToAdd` carries optional `quadrant` /
+   `node_ref`; the apply path maps them onto the persisted `Solution.quadrant` /
+   `node_id`, **honor-or-reject** (an unrecognized quadrant or a `node_ref` not on
+   the graph is dropped to `None`, never a parse crash — BEST_EFFORT-provider-safe).
+   The emission deliberately does **not** write a proposed check into
+   `Solution.verification_method`: that field means *how the fix WAS verified* (past
+   tense — read by the resolution report and the resolution-confirmation gate), so
+   populating it at proposal time would claim a verification that never happened and
+   suppress the engine's request for real verification. The runbook's verification
+   prose still reaches the LLM via RAG.
+
+**M5 unchanged.** The interventions are recorded as **data**; the M5 downgrade
+logic (a permanent-fix SOLUTION requires an established cause; mitigation exempt)
+is untouched. Per-quadrant M5 precision — the `defensive_fix` exemption the
+methodology reserves — is now *unblocked* (the emission finally carries a
+quadrant) but deliberately **not taken** here: it is a separate, soundness-sensitive
+decision. Everything stays **prior, not gate**: a candidate solution still requires
+the user to accept and verify, and a laundered failed-fix is bounded (it surfaces
+only for a cause established with *real* evidence, the user must accept, the
+runbook's own verification catches it, and M6 demotion remains) — R5's
+solution-outcome annotation is the upstream guard.
 
 ## Guarantee: no evidentiary privilege, no anchoring
 
@@ -325,13 +374,14 @@ it too decays and can trip anchoring once it has stagnated (see the decay row
 above and #713). In no case does the engine conclude on it.
 
 **Provenance-blindness invariant (load-bearing).** The whole no-privilege claim
-rests on *nothing branching on origin*. The seeder records origin in two read
-surfaces — `node.metadata["seeded_from_runbook"]` and the hypothesis `rationale`
-(prefix `"Seeded from runbook …"`) — read only by observability and tests. This
-is enforced by a standing invariant test that greps the safety modules for
-**both** markers (the metadata key *and* the rationale-prefix literal — the latter
-now also carried by each seeded rung-need's `rationale`), so a mechanism cannot
-sniff origin out of the rationale string either. The checked module set spans
+rests on *nothing branching on origin*. The seeder records origin in **three** read
+surfaces — `node.metadata["seeded_from_runbook"]`, the hypothesis `rationale`
+(prefix `"Seeded from runbook …"`), and the R9
+`node.metadata["seeded_interventions"]` key (present on a node only if it was
+seeded) — read only by observability, the prompt-render path, and tests. This is
+enforced by a standing invariant test that greps the safety modules for **all
+three** markers, so a mechanism cannot sniff origin out of the rationale string or
+the interventions surface either. The checked module set spans
 consume-side safety (decay / anchoring / failed-fix demotion / node+hypothesis
 state derivation in `causal_graph` + `hypothesis_manager`; `cause_state`
 derivation + the per-turn housekeeping loop in `milestone_engine`), the
@@ -359,6 +409,13 @@ gating path — including all the *other* provenance surfaces in `milestone_engi
 itself — stays blind. The carve-out is scoped to one symbol in one module so it
 cannot become a general escape hatch. See the "Provenance-based uniqueness"
 subsection of `document-to-runbook-conversion.md` for how the gate reads it.
+
+The R9 reader `confirmed_cause_interventions` is likewise banned from every safety
+module but needs **no** carve-out: its only reader is the prompt-render path
+(`context_builder._build_candidate_solutions_block`), which is not a safety
+mechanism (it offers a prior to the LLM, gated by M5 and the user's accept/verify)
+and is not in the checked module set — so the bare ban with no exception is exactly
+right.
 
 **Honest limit — seed↔LLM anchoring interaction.** The `MAX_SEEDED_CAUSES`
 cap stops the seeder *alone* from tripping anchoring condition 1. But seeded
