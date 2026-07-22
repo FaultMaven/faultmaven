@@ -13,6 +13,7 @@ integrity.
 """
 
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import pytest
@@ -23,6 +24,9 @@ from faultmaven.infrastructure.persistence.audit_repository import (
     PostgreSQLAuditRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base, UserAuditLogModel
+from faultmaven.infrastructure.persistence.sessionless_audit_repository import (
+    SessionlessAuditRepository,
+)
 from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
 
 
@@ -195,6 +199,47 @@ async def test_corrupt_details_blob_does_not_break_reads(repo, session):
     await session.commit()
     entry = (await repo.get_user_audit_log("u-1"))[0]
     assert entry.details == {"_unparsed": "{not json"}
+
+
+@pytest.mark.unit
+async def test_sessionless_wrapper_round_trips_through_fresh_sessions(
+    engine, monkeypatch
+):
+    """The production-wired SessionlessAuditRepository opens one session per
+    operation via get_db_session — a write in one session must be visible to a
+    read in the next (per-op commit/close, mirroring the lifecycle-hygiene
+    posture of SessionlessUserRepository)."""
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def fake_get_db_session(database_url=None):
+        async with factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    # The wrapper binds get_db_session at import time — patch its module ref.
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.sessionless_audit_repository."
+        "get_db_session",
+        fake_get_db_session,
+    )
+
+    repo = SessionlessAuditRepository()
+    assert await repo.log_event(
+        user_id="u-1",
+        event_type=AuditEventType.ACCOUNT_CREATED,
+        event_category=AuditCategory.AUTHENTICATION,
+        details={"provider": "workos"},
+        organization_id="org-a",
+    )
+    entries = await repo.get_user_audit_log("u-1")
+    assert len(entries) == 1
+    assert entries[0].details == {"provider": "workos"}
+    assert (await repo.get_organization_audit_log("org-a"))[0].user_id == "u-1"
 
 
 @pytest.mark.unit

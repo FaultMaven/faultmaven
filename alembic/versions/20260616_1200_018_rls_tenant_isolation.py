@@ -6,8 +6,13 @@ that carries ``organization_id`` (VARCHAR(36)), so a connection scoped via
 ``SET LOCAL app.current_org_id`` (the persistence-layer ``apply_tenant_context``
 chokepoint) can only read rows for its own organization.
 
-Read-isolation (USING) only — write-isolation (WITH CHECK) is deferred because it
-interacts with org-creation/admin paths (the hosted-IAM composed module).
+The policy is created with USING only and no ``FOR`` clause, which in PostgreSQL
+means ``FOR ALL`` with the USING expression ALSO applied as the WITH CHECK on
+writes — so INSERT/UPDATE of a row whose ``organization_id`` differs from the
+session's ``app.current_org_id`` is rejected, not just hidden. Writers must stamp
+rows with the current tenant-context org (see ``audit_repository.py`` for the
+canonical pattern). (An earlier version of this docstring claimed write-isolation
+was deferred — that was wrong about PostgreSQL's defaulting.)
 
 Fail-closed: with no ``app.current_org_id`` set, ``current_setting(...)`` is NULL and
 every row is filtered out, so the context MUST be set on every session (the
