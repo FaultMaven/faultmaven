@@ -232,7 +232,7 @@ But session data (cached) should use Redis technology regardless of backend.
 
 ### 3.1 Long-Term Persistent Data (Cases, Users, Evidence)
 
-> **Current implementation vs target design**: The `SessionlessCaseRepository` with runtime dialect routing described below (and in §5.2, §6.3, and Appendix A) is the **target design**. The current wiring in `container.py` and `repository_factory.py` uses `DatabaseCaseRepository` — a generic ORM-backed repository that works on both SQLite and PostgreSQL via portable SQLAlchemy queries, with no dialect-specific code paths. The `RepositoryRegistry` consolidation (which would wire `SessionlessCaseRepository` end-to-end) was deferred as scope creep in the locked storage redesign 2026-04 (per strategy doc §12 decision #14). Readers should treat the "Runtime Dialect Detection" and `SessionlessCaseRepository` passages as documentation of the target state, not the live wiring.
+> **Live wiring**: The `SessionlessCaseRepository` with runtime dialect routing described below (and in §5.2, §6.3, and Appendix A) is the **live wiring**. `container.py` and `repository_factory.py` resolve the `database` storage type to `SessionlessCaseRepository`, which detects the dialect from `DATABASE_URL` at runtime and routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository`. The generic `DatabaseCaseRepository` was removed in the v2.5 consolidation (2026-04-25) and no longer exists in the codebase — see the changelog entry above.
 
 **Requirements**:
 - Permanent storage
@@ -361,7 +361,7 @@ CHROMADB_COLLECTION=faultmaven_kb
 
 ### 4.1 Case Repository Interface (Long-Term Data)
 
-**File**: `faultmaven/infrastructure/persistence/case_repository.py`
+**File**: `faultmaven/modules/case/infrastructure/case_repository.py`
 
 **Abstract Interface**:
 ```python
@@ -820,7 +820,7 @@ VECTOR_STORAGE_TYPE=chromadb   # PersistentClient on disk
 
 ### 5.3 Microservices Backend (Kubernetes)
 
-> **Current implementation vs target design**: The `SessionlessCaseRepository` wiring shown in §6.3 is the target design. The current live container wires `DatabaseCaseRepository` directly — a generic ORM repository that handles both SQLite and PostgreSQL without dialect-specific code paths. Dialect routing via `SessionlessCaseRepository` is deferred (strategy doc §12 #14). The production PostgreSQL path works correctly in both the current and target configurations.
+> **Live wiring**: The `SessionlessCaseRepository` wiring shown in §6.3 is the live wiring. The container resolves the `database` storage type to `SessionlessCaseRepository`, which routes to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` by the `DATABASE_URL` dialect. The generic `DatabaseCaseRepository` was removed in the v2.5 consolidation (2026-04-25) and no longer exists in the codebase.
 
 **Use Case**: Production deployment, high availability
 

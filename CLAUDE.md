@@ -654,7 +654,7 @@ alembic downgrade -1
 
 **Sharing:** `resource_shares` — polymorphic `(resource_type, resource_id, scope_type, scope_id)` association (ADR-013 §D4). Single source of truth for team visibility of runbooks/cases/drafts; replaced the nullable `team_id` columns on `cases`/`knowledge_items`/`conversion_jobs`. v1 `scope_type=team`; `organization` reserved (D4a). Retrieval resolves it to a visible-id allowlist in SQL; ChromaDB metadata never carries team state.
 
-**Config domain:** `llm_config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; local mode uses .env as sole source of truth)
+**Config domain:** `config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; local mode uses .env as sole source of truth)
 
 All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. ER diagram: `docs/architecture/data-and-storage/er-diagram.md` (regenerate with `python scripts/generate_er_diagram.py --update`).
 

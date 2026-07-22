@@ -12,7 +12,7 @@ Schema is organized into four domains:
 - **Knowledge domain** — `knowledge_items` (RAG corpus), `knowledge_suggestions`
   (HITL pipeline from cases), `conversion_jobs` / `conversion_drafts`
   (document-to-runbook).
-- **Config domain** — `llm_config_overrides` (dashboard hot-reloaded settings).
+- **Config domain** — `config_overrides` (dashboard hot-reloaded settings).
 
 Conventions:
 

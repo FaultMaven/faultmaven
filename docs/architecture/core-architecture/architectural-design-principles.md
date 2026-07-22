@@ -326,7 +326,7 @@ reports, conversion_jobs, conversion_drafts
 knowledge_items, knowledge_suggestions
 
 -- Infrastructure-layer (not a domain module)
-llm_config_overrides
+config_overrides
 ```
 
 **Source of truth:** `faultmaven/infrastructure/persistence/models.py`. The ER diagram (`docs/architecture/data-and-storage/er-diagram.md`) is regenerated from these models. See [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) for the per-table applicability matrix and dialect policy.

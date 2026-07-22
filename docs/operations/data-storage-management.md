@@ -12,7 +12,7 @@ All runtime data lives under `data/` relative to the project root. This director
 
 ```
 data/
-├── faultmaven.db              # SQLite — all relational data (29 tables; see er-diagram.md)
+├── faultmaven.db              # SQLite — all relational data (37 tables; see er-diagram.md)
 │
 ├── chroma-kb/                 # ChromaDB instance — permanent KB vectors
 │   ├── chroma.sqlite3         #   Collection metadata, doc IDs, text, full-text index
@@ -300,8 +300,8 @@ SELECT name, (SELECT COUNT(*) FROM cases) FROM sqlite_master WHERE name='cases';
 ### Useful queries
 
 ```sql
--- Case count by status
-SELECT status, COUNT(*) FROM cases GROUP BY status;
+-- Case count by state
+SELECT state, COUNT(*) FROM cases GROUP BY state;
 
 -- Evidence count by case
 SELECT case_id, COUNT(*) FROM evidence GROUP BY case_id ORDER BY COUNT(*) DESC LIMIT 10;
@@ -429,7 +429,7 @@ du -sh data/faultmaven.db data/chroma-kb/ data/chroma-evidence/ data/evidence/ d
 sqlite3 data/faultmaven.db "
   SELECT 'data/evidence/' || organization_id || '/' || case_id
   FROM cases
-  WHERE status IN ('resolved', 'closed')
+  WHERE state IN ('resolved', 'closed')
   AND resolved_at < datetime('now', '-90 days');
 "
 ```

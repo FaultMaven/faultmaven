@@ -11,7 +11,7 @@ This document covers FaultMaven's two knowledge storage systems: the unified Kno
 The relational tables in this document (`knowledge_items`, `knowledge_suggestions`, `conversion_jobs`, `conversion_drafts`) are **Tier 1 (logical schema)** — both SQLite (Local Deployment) and PostgreSQL (Cloud Deployment) implement all columns listed. The following are **Tier 2 (PostgreSQL-only)** augmentations:
 
 - `CHECK` constraints on `verification_level` (0–2 range) exist in the live ORM and apply to both dialects for simple integer range checks. The `embedding_vector` column type switch from `TEXT` to `vector(1024)` (pgvector) is Tier 2 (PostgreSQL-only).
-- `llm_config_overrides` — table exists in both schemas but is only populated in Cloud Deployment (`AUTH_MODE` environment, dashboard-managed config). Local Deployment reads from `.env` exclusively. See the per-table applicability matrix in [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+- `config_overrides` — table exists in both schemas but is only populated in Cloud Deployment (`AUTH_MODE` environment, dashboard-managed config). Local Deployment reads from `.env` exclusively. See the per-table applicability matrix in [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
 
 **Scope-isolation enforcement**: §1.1 states that `KnowledgeVectorStore` rejects any query to `faultmaven_kb` that lacks a scope filter. This enforcement lives in `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` (the wrapper class), not in `faultmaven/infrastructure/persistence/chromadb_store.py`. The base `ChromaDBVectorStore` passes `filters` through verbatim without enforcing a scope filter. Cross-tenant isolation is guaranteed by `KnowledgeVectorStore`, not the base store.
 
@@ -156,7 +156,6 @@ results = await knowledge_vector_store.search(
 {
     "case_id": "case_abc123",
     "created_at": "2025-01-15T10:30:00Z",
-    "type": "case_working_memory",
 }
 ```
 
@@ -283,17 +282,18 @@ Tracks conversion requests — both document-to-runbook and case-to-runbook.
 ```sql
 CREATE TABLE conversion_jobs (
     id VARCHAR(36) PRIMARY KEY,
-    user_id VARCHAR(36) NOT NULL,
     organization_id VARCHAR(36),
-    scope VARCHAR(20) NOT NULL,              -- global, team, personal
-    team_id VARCHAR(36),
-    status VARCHAR(20) NOT NULL DEFAULT 'processing',  -- processing, completed, partial, failed
-    source_filename VARCHAR(255) NOT NULL,
-    source_content_type VARCHAR(100) NOT NULL,
-    source_size_bytes INTEGER NOT NULL,
-    source_path VARCHAR(500) NOT NULL,
-    source_type VARCHAR(20) NOT NULL DEFAULT 'document',  -- 'document' or 'case'
+    user_id VARCHAR(36) NOT NULL,
     case_id VARCHAR(36),                     -- populated when source_type = 'case'
+    -- Source upload is referenced by FK; the file's name/content-type/size/path
+    -- live on `uploaded_files`, not denormalized here (migration 010 moved
+    -- preprocessing artifacts to uploaded_files).
+    source_file_id VARCHAR(36) NOT NULL REFERENCES uploaded_files(file_id) ON DELETE RESTRICT,
+    scope VARCHAR(20) NOT NULL,              -- global, team, personal
+    -- Team visibility is carried by the polymorphic `resource_shares` table
+    -- (migration 028), not a nullable team_id column.
+    status VARCHAR(20) NOT NULL DEFAULT 'processing',  -- processing, completed, failed, cancelled
+    source_type VARCHAR(20) NOT NULL DEFAULT 'document',  -- 'document' or 'case'
     failure_modes_detected INTEGER NOT NULL DEFAULT 0,
     analysis_result JSON,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -377,7 +377,7 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 > **`verified_by` contract**: FK to `users.user_id` — a real user or `NULL`, **never a sentinel string**. Platform/built-in trust is carried by `verification_level` (COMMUNITY), not a fake verifier.
 
-**Key columns** (see `models.py:1679`, 29 columns total):
+**Key columns** (see `KnowledgeItemModel` in `models.py`, 28 columns total):
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -385,7 +385,6 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 | `organization_id` | VARCHAR(36) | No FK — items persist independently of org lifecycle. Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
 | `scope` | VARCHAR(20) | `personal\|team\|global` — enforced by CHECK (Tier 1) |
 | `owner_id` | VARCHAR(36) nullable | Set when scope = personal |
-| `team_id` | VARCHAR(36) nullable | Set when scope = team |
 | `title` | VARCHAR(512) NOT NULL | |
 | `content` | TEXT NOT NULL | Full runbook/doc text |
 | `item_type` | VARCHAR(64) | `troubleshooting_guide\|error_pattern\|solution_template\|api_documentation\|configuration_guide\|best_practice\|faq\|runbook` |
@@ -450,9 +449,9 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 **Applicability**: Both deployments (✅ Both). The conversion service runs in both Local and Cloud deployments.
 
-### 5.3 llm_config_overrides (Config Domain — Cloud-only behavior)
+### 5.3 config_overrides (Config Domain — Cloud-only behavior)
 
-`llm_config_overrides` is a Config-domain table (not Knowledge domain) included here for cross-reference completeness. It stores dashboard-applied key/value LLM configuration overrides that take precedence over environment variables.
+`config_overrides` (ORM `ConfigOverrideModel`, `__tablename__ = "config_overrides"`) is a Config-domain table (not Knowledge domain) included here for cross-reference completeness. It stores dashboard-applied key/value LLM configuration overrides that take precedence over environment variables.
 
 **Applicability**: Cloud-only behavior (🌐). The table exists in both schemas per the no-divergence rule, but Local Deployment reads from `.env` exclusively — the table is never populated in local mode. See [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) and `faultmaven/config/llm_config_overrides.py` for the hot-reload logic.
 
