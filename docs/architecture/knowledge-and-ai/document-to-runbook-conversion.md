@@ -494,7 +494,7 @@ Rules:
 
 **System message:**
 
-```
+````
 You are a technical writer converting source material into a FaultMaven
 runbook. You MUST produce output that exactly matches the template below.
 Every section is required. Do not add sections. Do not rename sections.
@@ -542,25 +542,33 @@ status: draft
 ## Causes
 
 ### Cause A: {name}
-**Statement:** {one declarative sentence — the cause, not a symptom; ≤300 chars}
-**Mechanism:** {how the cause produces the symptom; ≤800 chars}
-**Indicator:** {what in the Diagnostic Steps confirms THIS cause}
-**Mitigation:** {fast, reversible relief}
-```{language}
-{mitigation command}
-```
-**Resolution:** {the permanent fix}
-```{language}
-{resolution command}
-```
-**Verification:** {how to confirm this cause is resolved}
+**Statement:** Single declarative sentence stating the single root cause (≤300 chars).
+**Chain:**
+- root: the root cause (the chain's top node; mirrors Statement)
+- s1: intermediate state — the direct effect of the node above
+- D: the failure (points at Symptom Recognition; do not re-author it)
+**Indicators:**
+- root: [Step 1] {observable from Step 1 that confirms the root rung}
+- s1: [Step 2] {observable that confirms intermediate state s1}
+**Interventions:**
+- **remediation** (root): {the durable fix at the root}
+  ```{language}
+  {durable fix command}
+  ```
+  **Verification:** Re-run Step N; {what confirms the fix worked}.
+- **mitigation** (s1): {a temporary interception — include only if one genuinely exists}
+  ```{language}
+  {quick fix command}
+  ```
+  **Risk:** {what could go wrong}. **Duration:** {how long safe}. **Verification:** {cause-specific check}.
 
 ### Cause Z: Unidentified
-**Statement:** Root cause not determined from the indicators above.
-**Mechanism:** N/A.
-**Indicator:** None of the above indicators match.
-**Mitigation:** {safest general mitigation}
-**Verification:** N/A.
+**Statement:** None of the documented causes match the observed evidence.
+**Indicators:**
+- [Default]
+**Interventions:**
+- **mitigation** (D): Capture full diagnostic output and consult an SME.
+  **Risk:** Diagnostic only. **Duration:** Until SME review. **Verification:** N/A.
 
 ## Prevention
 - {configuration change to prevent recurrence}
@@ -572,22 +580,30 @@ status: draft
 =========
 
 RULES:
-1. Every section MUST contain content. No empty sections.
-2. ## Causes MUST contain at least one real ### Cause A AND the fallback
+1. Every section and sub-field MUST contain content. No empty fields.
+2. ## Diagnostic Steps MUST contain fenced code blocks under numbered
+   `### Step N: <title>` headers (number, colon, then a short inline title).
+3. ## Causes MUST have at least one real ### Cause A subsection AND the fallback
    ### Cause Z: Unidentified.
-3. Each ### Cause (except Z) needs all six bolded sub-fields: Statement,
-   Mechanism, Indicator, Mitigation, Resolution, Verification.
-4. Keep Statement ≤300 chars and Mechanism ≤800 chars — they are copied verbatim
-   into engine state (RootCauseConclusion). Each ## section / ### Cause should fit
-   1-2 retrieval chunks (structure-aware splitting on headers).
-5. If the source material does not provide enough information for a field,
-   write "[INSUFFICIENT SOURCE DATA -- manual completion required]" and
-   continue. Do not fabricate commands or procedures.
-6. The Sources section MUST reference the uploaded filename as the primary
-   source.
-7. Use the taxonomy values provided in the failure mode analysis. Do not
-   change domain, service, or symptom_class.
-```
+4. Each ### Cause declares exactly ONE root — never two roots, never an AND-gate.
+   Each ### Cause (except Z) needs **Statement**, **Indicators**, and
+   **Interventions**; **Chain** is optional (omit it for a simple one-step cause).
+   For two co-necessary conditions: when one enables the other, express them as
+   sequential Chain rungs; when neither causes the other, fold the second into the
+   root Statement.
+5. Statement ≤300 characters; each Chain rung ≤300 characters. Hard limits.
+6. Each Indicator entry carries a rung ref (`root`, `s1`, …, or `D`) and at least
+   one `[Step N]` (N matches an existing Diagnostic Step) or `[Symptom]`; the
+   Cause Z fallback uses `- [Default]`.
+7. Each Intervention is tagged with exactly one quadrant — `remediation` /
+   `defensive_fix` / `mitigation` / `loop_break` — names the rung it targets in
+   `(parens)`, and carries a **Verification:**; every `mitigation` also carries
+   **Risk** and **Duration**.
+8. If source material lacks enough information for a field, write
+   "[INSUFFICIENT SOURCE DATA -- manual completion required]".
+9. Use the taxonomy values provided. Do not change domain, service, or
+   symptom_class.
+````
 
 **User message:**
 
