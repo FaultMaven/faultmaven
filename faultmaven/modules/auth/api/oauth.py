@@ -20,7 +20,7 @@ OAuth Flow:
 Security:
 - PKCE (SHA256) prevents authorization code interception
 - Single-use authorization codes (10 minute expiry)
-- Short-lived access tokens (1 hour)
+- Short-lived access tokens (15 minutes)
 - Long-lived refresh tokens (7 days) with rotation
 - Constant-time comparison for PKCE verification
 """
@@ -161,10 +161,10 @@ class TokenResponse(BaseModel):
     Returned for both authorization_code and refresh_token grants.
     """
 
-    access_token: str = Field(description="JWT access token (1 hour expiry)")
+    access_token: str = Field(description="JWT access token (15 minute expiry)")
     refresh_token: str = Field(description="JWT refresh token (7 days expiry)")
     token_type: str = Field(default="Bearer", description="Token type (always Bearer)")
-    expires_in: int = Field(description="Access token expiry in seconds (3600)")
+    expires_in: int = Field(description="Access token expiry in seconds (900)")
     refresh_expires_in: int = Field(
         description="Refresh token expiry in seconds (604800)"
     )

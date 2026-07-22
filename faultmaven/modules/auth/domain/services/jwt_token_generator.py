@@ -4,7 +4,7 @@ This module provides JWT token generation and validation for OAuth 2.0 flows.
 Implements RS256 (RSA + SHA256) for asymmetric signing and stateless validation.
 
 Design:
-- Access tokens: Short-lived (1 hour), stateless JWT tokens
+- Access tokens: Short-lived (15 minutes), stateless JWT tokens
 - Refresh tokens: Long-lived (7 days), tracked for revocation
 - Token rotation: One-time use refresh tokens (security best practice)
 - Revocation tracking: Redis for cloud, in-memory for local
@@ -32,7 +32,7 @@ class IJWTTokenGenerator(ABC):
 
     @abstractmethod
     async def generate_access_token(self, user: User) -> str:
-        """Generate short-lived access token (1 hour).
+        """Generate short-lived access token (15 minutes).
 
         Args:
             user: User to generate token for
@@ -167,11 +167,28 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         jti = str(uuid.uuid4())
 
+        # Determine organization_id — the claim is guaranteed non-empty in both
+        # modes (iam-design.md), so mirror the HS256 generator and fall back to
+        # the single-tenant default rather than emitting an empty string.
+        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+
+        organization_id = (
+            getattr(user, "organization_id", None)
+            or SingleTenantProvider.DEFAULT_ORG_ID
+        )
+
+        # Log when using default organization_id (helps debugging)
+        if not getattr(user, "organization_id", None):
+            logger.debug(
+                "Using default organization_id for user without organization",
+                extra={"user_id": user.user_id, "organization_id": organization_id},
+            )
+
         payload = {
             "sub": user.user_id,
             "username": user.username,
             "email": user.email if hasattr(user, "email") else "",
-            "organization_id": getattr(user, "organization_id", ""),
+            "organization_id": organization_id,
             "roles": user.roles if hasattr(user, "roles") else ["user"],
             "scopes": [
                 "openid",
