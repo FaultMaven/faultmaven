@@ -838,7 +838,7 @@ These modules implement **business capabilities** and should have full vertical 
 #### 1. **`modules/auth/`** ✅ **VERTICAL** (Schema-Verified)
 - **Business Logic**: User authentication, authorization, RBAC, session management
 - **Owns Data**: `users` and `organizations` PostgreSQL tables (see `../data-and-storage/schemas/case-schema.md` Section 4.9)
-- **Schema Reference**: Core tables include `users`, `organizations`, `sessions`
+- **Schema Reference**: Core tables include `users`, `organizations` (auth sessions live in Redis via `RedisSessionStore`, not a SQL `sessions` table)
 - **Cross-Module Usage**: All modules depend on auth for access control
 - **Future Extraction**: Could become identity microservice
 - **Structure**:
@@ -921,7 +921,7 @@ These modules implement **business logic** but **operate on data owned by other 
 #### 3. **`modules/preprocessing/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
 - **Business Logic**: Data classification, content extraction (11 extractors), structured chunking
 - **Data Ownership**: ❌ **NO** - operates on Evidence data owned by the Case module
-- **Schema Verification**: No `preprocessing_*` tables; outputs are written back to `evidence` and `evidence_artifacts`
+- **Schema Verification**: No `preprocessing_*` tables; outputs are written back to `evidence` and `uploaded_files`
 - **Rationale**: Preprocessing transforms raw uploaded files into searchable artifacts but never owns persistent state
 - **Structure**: Domain service (logic only, persistence via Case repository)
   ```
