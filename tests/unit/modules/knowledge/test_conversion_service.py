@@ -15,27 +15,45 @@ Tests cover:
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from faultmaven.infrastructure.persistence.models import (
+    Base,
+    ConversionDraftModel,
+    ConversionJobModel,
+    EnterpriseModel,
+    OrganizationModel,
+    UploadedFileModel,
+)
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     CaseConversionRequest,
+    ConversionDraft,
     ConversionErrorCode,
     ConversionResponse,
     ConversionStatus,
     DraftStatus,
     FailureModeAnalysis,
     PreprocessingResult,
+    QualityScore,
     RedactionReport,
     SourceAssessment,
+    SourceFileInfo,
+    SourceType,
     TriageResult,
+    ValidationResult,
+    generate_draft_id,
     generate_runbook_id,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    DEFAULT_ORGANIZATION_ID,
     ConversionRejectedError,
     ConversionService,
 )
@@ -1566,3 +1584,563 @@ class TestCaseConversionGuards:
         )
         with pytest.raises(RuntimeError, match="reached generation"):
             await service._convert_from_case_impl(self._request(), user_id="u1")
+
+
+# =============================================================================
+# Live case-conversion uniqueness (multi-replica dedup)
+# =============================================================================
+
+
+def _case_analysis() -> AnalysisResult:
+    """A single-failure-mode analysis, the shape ``convert_from_case`` builds."""
+    return AnalysisResult(
+        is_actionable=True,
+        failure_modes=[
+            FailureModeAnalysis(
+                id="case-x",
+                title="API 500s",
+                domain="application",
+                service="api",
+                symptom_class=["errors"],
+                severity="medium",
+                symptoms_summary="500s",
+                resolution_summary="pool exhausted",
+            )
+        ],
+        source_assessment=SourceAssessment(
+            content_type="resolved_case",
+            actionability_rating="high",
+            missing_information=[],
+        ),
+    )
+
+
+def _make_case_draft(
+    *,
+    draft_id: str | None = None,
+    status: DraftStatus = DraftStatus.DRAFT,
+    tmp_path: Path | None = None,
+) -> ConversionDraft:
+    """A minimal case-source ``ConversionDraft`` for the persistence paths."""
+    did = draft_id or generate_draft_id()
+    file_path = str(tmp_path / f"{did}.md") if tmp_path else f"/nonexistent/{did}.md"
+    return ConversionDraft(
+        draft_id=did,
+        runbook_id=f"rb-{did}",
+        title="Case Runbook",
+        scope="personal",
+        status=status,
+        source_type=SourceType.CASE,
+        validation=ValidationResult(passed=True),
+        quality_score=QualityScore(
+            overall=80.0,
+            grade="B",
+            completeness=80.0,
+            clarity=80.0,
+            actionability=80.0,
+            comprehensiveness=80.0,
+        ),
+        file_path=file_path,
+        content_preview="preview",
+    )
+
+
+@pytest.fixture
+async def live_case_engine():
+    """Async engine over a fresh in-memory SQLite DB (real schema)."""
+    eng = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield eng
+    await eng.dispose()
+
+
+@pytest.fixture
+async def live_case_session_factory(live_case_engine):
+    """Session factory pre-seeded with the default enterprise + organization so
+    the NOT NULL org FKs on the conversion chain bind. One factory, shared by
+    every ConversionService in a test — the single database two replicas race
+    over."""
+    factory = async_sessionmaker(
+        live_case_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with factory() as session:
+        session.add(
+            EnterpriseModel(
+                enterprise_id=DEFAULT_ORGANIZATION_ID,
+                name="Default Enterprise",
+                slug="default",
+            )
+        )
+        session.add(
+            OrganizationModel(
+                organization_id=DEFAULT_ORGANIZATION_ID,
+                enterprise_id=DEFAULT_ORGANIZATION_ID,
+                name="Default Org",
+                slug="default-org",
+            )
+        )
+        await session.commit()
+    return factory
+
+
+def _make_live_case_service(session_factory) -> ConversionService:
+    """A ConversionService wired to the shared DB. Each call yields a distinct
+    instance with its own ``_inflight_runbook`` registry — the way two replicas
+    differ."""
+    settings = MagicMock()
+    settings.llm.get_knowledge_model.return_value = "test-model"
+    return ConversionService(
+        llm_router=AsyncMock(),
+        settings=settings,
+        db_session_factory=session_factory,
+    )
+
+
+async def _insert_case_job(
+    session_factory,
+    *,
+    conversion_id: str,
+    case_id: str | None,
+    source_type: str,
+    live_case_id: str | None,
+    draft_statuses: list[DraftStatus],
+    status: ConversionStatus = ConversionStatus.COMPLETED,
+    draft_files_present: list[bool] | None = None,
+    tmp_path: Path | None = None,
+) -> None:
+    """Insert a conversion job + its drafts directly, bypassing the service, so
+    tests can construct shapes the service does not produce today (e.g. a job
+    with two live drafts). ``draft_files_present[i]`` writes a real file under
+    ``tmp_path`` for draft i (the scan reconciliation keys on file existence);
+    default is a nonexistent path for every draft."""
+    async with session_factory() as session:
+        file_id = f"file_{conversion_id}"
+        session.add(
+            UploadedFileModel(
+                file_id=file_id,
+                organization_id=DEFAULT_ORGANIZATION_ID,
+                case_id=None,
+                uploaded_by="u1",
+                filename="src",
+                size_bytes=1,
+                content_type="text/plain",
+                upload_source="conversion_source",
+                uploaded_at_turn=0,
+            )
+        )
+        await session.flush()
+        session.add(
+            ConversionJobModel(
+                id=conversion_id,
+                user_id="u1",
+                organization_id=DEFAULT_ORGANIZATION_ID,
+                scope="personal",
+                status=status.value,
+                source_file_id=file_id,
+                source_type=source_type,
+                case_id=case_id,
+                live_case_id=live_case_id,
+                failure_modes_detected=1,
+                analysis_result=None,
+            )
+        )
+        for i, ds in enumerate(draft_statuses):
+            present = bool(draft_files_present and draft_files_present[i])
+            d = _make_case_draft(
+                draft_id=f"{conversion_id}-d{i}",
+                status=ds,
+                tmp_path=tmp_path if present else None,
+            )
+            if present:
+                Path(d.file_path).write_text("# runbook body", encoding="utf-8")
+            session.add(
+                ConversionDraftModel(
+                    id=d.draft_id,
+                    organization_id=DEFAULT_ORGANIZATION_ID,
+                    conversion_id=conversion_id,
+                    runbook_id=d.runbook_id,
+                    title=d.title,
+                    file_path=d.file_path,
+                    status=d.status.value,
+                    source_type=source_type,
+                    knowledge_item_id=f"kb_{d.draft_id}",
+                    validation_passed=True,
+                )
+            )
+        await session.commit()
+
+
+async def _job_row(session_factory, conversion_id: str) -> ConversionJobModel:
+    async with session_factory() as session:
+        return await session.get(ConversionJobModel, conversion_id)
+
+
+async def _count_live_case_keys(session_factory) -> int:
+    async with session_factory() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(ConversionJobModel)
+            .where(ConversionJobModel.live_case_id.isnot(None))
+        )
+        return result.scalar_one()
+
+
+async def _count_live_drafts(session_factory) -> int:
+    async with session_factory() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(ConversionDraftModel)
+            .where(ConversionDraftModel.status != DraftStatus.DISCARDED.value)
+        )
+        return result.scalar_one()
+
+
+def _case_request(case_id: str = "case-live-1") -> CaseConversionRequest:
+    return CaseConversionRequest(
+        case_id=case_id,
+        title="API returning 500s",
+        description="Users see intermittent 500s.",
+        root_cause="connection pool exhausted",
+    )
+
+
+@pytest.mark.unit
+class TestPersistJobLiveCaseKey:
+    """``_persist_job`` stamps ``live_case_id`` only for a case-source job that
+    currently holds a live draft."""
+
+    @pytest.mark.asyncio
+    async def test_case_job_with_live_draft_sets_key(self, live_case_session_factory):
+        svc = _make_live_case_service(live_case_session_factory)
+        await svc._persist_job(
+            conversion_id="conv-case-live",
+            user_id="u1",
+            organization_id=DEFAULT_ORGANIZATION_ID,
+            scope="personal",
+            team_id=None,
+            status=ConversionStatus.COMPLETED,
+            source_file=SourceFileInfo(
+                filename="Case c1", size_bytes=1, content_type="x"
+            ),
+            analysis=_case_analysis(),
+            drafts=[_make_case_draft()],
+            created_at=datetime.now(UTC),
+            source_type="case",
+            case_id="case-x",
+        )
+        job = await _job_row(live_case_session_factory, "conv-case-live")
+        assert job.live_case_id == "case-x"
+
+    @pytest.mark.asyncio
+    async def test_document_job_leaves_key_null(self, live_case_session_factory):
+        svc = _make_live_case_service(live_case_session_factory)
+        await svc._persist_job(
+            conversion_id="conv-doc",
+            user_id="u1",
+            organization_id=DEFAULT_ORGANIZATION_ID,
+            scope="personal",
+            team_id=None,
+            status=ConversionStatus.COMPLETED,
+            source_file=SourceFileInfo(filename="doc", size_bytes=1, content_type="x"),
+            analysis=_case_analysis(),
+            drafts=[_make_case_draft()],
+            created_at=datetime.now(UTC),
+            source_type="document",
+            case_id=None,
+        )
+        job = await _job_row(live_case_session_factory, "conv-doc")
+        assert job.live_case_id is None
+
+    @pytest.mark.asyncio
+    async def test_failed_case_job_with_no_drafts_leaves_key_null(
+        self, live_case_session_factory
+    ):
+        svc = _make_live_case_service(live_case_session_factory)
+        await svc._persist_job(
+            conversion_id="conv-failed",
+            user_id="u1",
+            organization_id=DEFAULT_ORGANIZATION_ID,
+            scope="personal",
+            team_id=None,
+            status=ConversionStatus.FAILED,
+            source_file=SourceFileInfo(
+                filename="Case c2", size_bytes=1, content_type="x"
+            ),
+            analysis=_case_analysis(),
+            drafts=[],
+            created_at=datetime.now(UTC),
+            source_type="case",
+            case_id="case-y",
+        )
+        job = await _job_row(live_case_session_factory, "conv-failed")
+        assert job.live_case_id is None
+
+
+@pytest.mark.unit
+class TestDiscardReleasesLiveCaseKey:
+    """Discarding the last live draft frees the case's live-conversion claim;
+    a job that still has another live draft keeps it."""
+
+    @pytest.mark.asyncio
+    async def test_delete_draft_clears_key_on_last_live_draft(
+        self, live_case_session_factory
+    ):
+        await _insert_case_job(
+            live_case_session_factory,
+            conversion_id="conv-del",
+            case_id="case-del",
+            source_type="case",
+            live_case_id="case-del",
+            draft_statuses=[DraftStatus.DRAFT],
+        )
+        svc = _make_live_case_service(live_case_session_factory)
+        ok = await svc.delete_draft("conv-del", "conv-del-d0", user_id="u1")
+        assert ok is True
+        job = await _job_row(live_case_session_factory, "conv-del")
+        assert job.live_case_id is None
+
+    @pytest.mark.asyncio
+    async def test_discard_by_knowledge_item_id_clears_key(
+        self, live_case_session_factory
+    ):
+        await _insert_case_job(
+            live_case_session_factory,
+            conversion_id="conv-disc",
+            case_id="case-disc",
+            source_type="case",
+            live_case_id="case-disc",
+            draft_statuses=[DraftStatus.DRAFT],
+        )
+        svc = _make_live_case_service(live_case_session_factory)
+        ok = await svc.discard_by_knowledge_item_id("kb_conv-disc-d0")
+        assert ok is True
+        job = await _job_row(live_case_session_factory, "conv-disc")
+        assert job.live_case_id is None
+
+    @pytest.mark.asyncio
+    async def test_discard_keeps_key_while_another_draft_is_live(
+        self, live_case_session_factory
+    ):
+        # A job the service does not build today — two live drafts — proves the
+        # clearing logic is general: the key is released only when the LAST live
+        # draft leaves.
+        await _insert_case_job(
+            live_case_session_factory,
+            conversion_id="conv-two",
+            case_id="case-two",
+            source_type="case",
+            live_case_id="case-two",
+            draft_statuses=[DraftStatus.DRAFT, DraftStatus.DRAFT],
+        )
+        svc = _make_live_case_service(live_case_session_factory)
+        await svc.delete_draft("conv-two", "conv-two-d0", user_id="u1")
+        job = await _job_row(live_case_session_factory, "conv-two")
+        assert job.live_case_id == "case-two", "second live draft must retain the key"
+
+        await svc.delete_draft("conv-two", "conv-two-d1", user_id="u1")
+        job = await _job_row(live_case_session_factory, "conv-two")
+        assert job.live_case_id is None, "last live draft leaving releases the key"
+
+
+@pytest.mark.unit
+class TestCrossReplicaLiveCaseRace:
+    """Two ConversionService instances (two replicas) over one DB cannot both
+    persist a live case-conversion for the same case."""
+
+    @pytest.mark.asyncio
+    async def test_race_persists_exactly_one_live_conversion(
+        self, live_case_session_factory
+    ):
+        # Deterministic interleave (spec's second option): both replicas pass the
+        # idempotence read against an empty inventory, then persist in sequence.
+        # The first guard read on each service is forced to None (each read the
+        # inventory before either committed); the IntegrityError handler's
+        # re-read (call #2) hits the real query so the loser resolves the
+        # winner's conversion. A single shared SQLite connection makes true
+        # concurrency nondeterministic, so we serialize the persists — the
+        # unique index is what the loser collides on either way.
+        request = _case_request()
+
+        def _stubbed_service() -> ConversionService:
+            svc = _make_live_case_service(live_case_session_factory)
+            svc._convert_single_failure_mode = AsyncMock(
+                side_effect=lambda *a, **k: _make_case_draft()
+            )
+            real_get = svc.get_conversion_by_case
+            state = {"calls": 0}
+
+            async def _guard_then_real(case_id, user_id):
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    return None
+                return await real_get(case_id, user_id)
+
+            svc.get_conversion_by_case = _guard_then_real
+            return svc
+
+        winner = _stubbed_service()
+        loser = _stubbed_service()
+
+        resp_winner = await winner.convert_from_case(request, user_id="u1")
+        resp_loser = await loser.convert_from_case(request, user_id="u1")
+
+        # The loser does NOT raise; it returns the winner's conversion.
+        assert resp_loser.conversion_id == resp_winner.conversion_id
+
+        # The DB holds exactly one job carrying the key and exactly one live
+        # draft — the loser's whole persist transaction rolled back.
+        assert await _count_live_case_keys(live_case_session_factory) == 1
+        assert await _count_live_drafts(live_case_session_factory) == 1
+        job = await _job_row(live_case_session_factory, resp_winner.conversion_id)
+        assert job.live_case_id == request.case_id
+
+
+@pytest.mark.unit
+class TestRegenerationAfterDiscard:
+    """Discarding a case's draft frees it to be converted again — the unique
+    index does not permanently lock the case."""
+
+    @pytest.mark.asyncio
+    async def test_convert_discard_convert_succeeds(self, live_case_session_factory):
+        request = _case_request("case-regen")
+
+        def _stubbed_service() -> ConversionService:
+            svc = _make_live_case_service(live_case_session_factory)
+            svc._convert_single_failure_mode = AsyncMock(
+                side_effect=lambda *a, **k: _make_case_draft()
+            )
+            return svc
+
+        svc = _stubbed_service()
+        first = await svc.convert_from_case(request, user_id="u1")
+        job = await _job_row(live_case_session_factory, first.conversion_id)
+        assert job.live_case_id == "case-regen"
+
+        # Discard the only draft — the key is released.
+        first_draft_id = first.drafts[0].draft_id
+        await svc.delete_draft(first.conversion_id, first_draft_id, user_id="u1")
+        assert await _count_live_case_keys(live_case_session_factory) == 0
+
+        # Second conversion succeeds (no unique violation) and now holds the key.
+        second = await svc.convert_from_case(request, user_id="u1")
+        assert second.conversion_id != first.conversion_id
+        assert second.status == ConversionStatus.COMPLETED
+        new_job = await _job_row(live_case_session_factory, second.conversion_id)
+        assert new_job.live_case_id == "case-regen"
+        assert await _count_live_case_keys(live_case_session_factory) == 1
+
+
+@pytest.mark.unit
+class TestScanReleasesLiveCaseKey:
+    """Scan reconciliation also discards drafts (missing file, duplicate with a
+    knowledge_item_id); when that drains a case job's live drafts it must
+    release ``live_case_id`` like the explicit discard paths, or the case is
+    locked out of regeneration forever."""
+
+    def _scan_service(self, session_factory) -> ConversionService:
+        return _make_live_case_service(session_factory)
+
+    async def _run_scan(self, svc: ConversionService, tmp_path: Path):
+        # Point the disk walk at an empty location — these tests exercise only
+        # the DB reconciliation sweep.
+        with patch.object(
+            type(svc),
+            "_data_dir",
+            new_callable=lambda: property(lambda self: tmp_path / "kb-empty"),
+        ):
+            return await svc.scan_for_runbooks(user_id="u1")
+
+    @pytest.mark.asyncio
+    async def test_scan_discard_of_last_live_draft_clears_key(
+        self, live_case_session_factory, tmp_path
+    ):
+        # Job A: case job holding the key, its only draft's file is gone.
+        await _insert_case_job(
+            live_case_session_factory,
+            conversion_id="conv-scan-a",
+            case_id="case-scan-1",
+            source_type="case",
+            live_case_id="case-scan-1",
+            draft_statuses=[DraftStatus.DRAFT],
+        )
+        # Job B: an unaffected case job (verified draft, file present) so the
+        # scan's discard-all abort guard does not trip.
+        await _insert_case_job(
+            live_case_session_factory,
+            conversion_id="conv-scan-b",
+            case_id="case-scan-2",
+            source_type="case",
+            live_case_id="case-scan-2",
+            draft_statuses=[DraftStatus.VERIFIED],
+            draft_files_present=[True],
+            tmp_path=tmp_path,
+        )
+
+        svc = self._scan_service(live_case_session_factory)
+        await self._run_scan(svc, tmp_path)
+
+        job_a = await _job_row(live_case_session_factory, "conv-scan-a")
+        assert job_a.live_case_id is None
+        job_b = await _job_row(live_case_session_factory, "conv-scan-b")
+        assert job_b.live_case_id == "case-scan-2"
+
+    @pytest.mark.asyncio
+    async def test_scan_keeps_key_while_another_draft_live(
+        self, live_case_session_factory, tmp_path
+    ):
+        # One draft's file is gone, but a verified sibling survives the scan —
+        # the job still holds a live draft, so the key stays.
+        await _insert_case_job(
+            live_case_session_factory,
+            conversion_id="conv-scan-partial",
+            case_id="case-scan-3",
+            source_type="case",
+            live_case_id="case-scan-3",
+            draft_statuses=[DraftStatus.DRAFT, DraftStatus.VERIFIED],
+            draft_files_present=[False, True],
+            tmp_path=tmp_path,
+        )
+
+        svc = self._scan_service(live_case_session_factory)
+        await self._run_scan(svc, tmp_path)
+
+        job = await _job_row(live_case_session_factory, "conv-scan-partial")
+        assert job.live_case_id == "case-scan-3"
+
+    @pytest.mark.asyncio
+    async def test_scan_draining_job_via_two_branches_clears_key(
+        self, live_case_session_factory, tmp_path
+    ):
+        # Both of the job's drafts fall in ONE sweep, via different scan
+        # branches: d0 by missing file, d1 (status=draft with a
+        # knowledge_item_id, file present) by the duplicate-cleanup branch.
+        # The release must see both in-session status flips.
+        await _insert_case_job(
+            live_case_session_factory,
+            conversion_id="conv-scan-drain",
+            case_id="case-scan-4",
+            source_type="case",
+            live_case_id="case-scan-4",
+            draft_statuses=[DraftStatus.DRAFT, DraftStatus.DRAFT],
+            draft_files_present=[False, True],
+            tmp_path=tmp_path,
+        )
+        await _insert_case_job(
+            live_case_session_factory,
+            conversion_id="conv-scan-survivor",
+            case_id="case-scan-5",
+            source_type="case",
+            live_case_id="case-scan-5",
+            draft_statuses=[DraftStatus.VERIFIED],
+            draft_files_present=[True],
+            tmp_path=tmp_path,
+        )
+
+        svc = self._scan_service(live_case_session_factory)
+        await self._run_scan(svc, tmp_path)
+
+        drained = await _job_row(live_case_session_factory, "conv-scan-drain")
+        assert drained.live_case_id is None
+        survivor = await _job_row(live_case_session_factory, "conv-scan-survivor")
+        assert survivor.live_case_id == "case-scan-5"
