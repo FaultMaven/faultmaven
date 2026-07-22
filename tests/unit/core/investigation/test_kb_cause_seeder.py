@@ -869,6 +869,21 @@ def test_origin_returned_via_cluster_when_seeded_duplicate_confirmed():
     assert confirmed_root_seed_origin(case) == "rb_dbpool"
 
 
+def test_refuted_seeded_root_does_not_claim_resolution():
+    """A seeded root REFUTED by a failed fix must never be the basis for a
+    'resolved by applying X' signal, even when it would cluster (mutual mirror)
+    with a later-confirmed root — a disproven seed did not resolve the case, and
+    a refuted start node would otherwise poison the cluster via the descendant
+    walk's VALIDATED/count-held precondition."""
+    stmt = "database connection pool exhausted under load"
+    case, seeded_root = _seed_case_with_root("rb_disproven", root_stmt=stmt)
+    case.causal_nodes[seeded_root].node_state = NodeState.REFUTED
+    # The real, self-discovered cause (a mirror statement) is what got confirmed.
+    real = _add_unmarked_root(case, stmt)
+    _confirm_root(case, real)
+    assert confirmed_root_seed_origin(case) is None
+
+
 def test_none_on_empty_graph():
     case = _case()
     assert confirmed_root_seed_origin(case) is None

@@ -246,23 +246,33 @@ def confirmed_root_seed_origin(case: "Case") -> Optional[str]:
     from faultmaven.modules.case.contracts import NodeState
 
     nodes = getattr(case, "causal_nodes", None) or {}
-    all_root_ids = {
-        nid for nid, node in nodes.items() if node.node_type == NodeType.ROOT
+    # Cluster over the LIVE roots only. A REFUTED seeded root must never be the
+    # basis for "resolved by applying runbook X" — a disproven seed was, by
+    # definition, NOT what resolved the case. Excluding them before clustering
+    # also honors ``_live_descendant_ids``'s precondition (endpoints are never
+    # REFUTED): it prunes refuted intermediates but not a refuted START node, so
+    # a refuted seeded root could otherwise cluster with a deeper confirmed root
+    # on its line and falsely claim its origin. Seeded-candidate duplicates are
+    # CANDIDATE (not REFUTED) and are still kept, so the duplicate-collapse holds.
+    live_root_ids = {
+        nid
+        for nid, node in nodes.items()
+        if node.node_type == NodeType.ROOT and node.node_state != NodeState.REFUTED
     }
-    if not all_root_ids:
+    if not live_root_ids:
         return None
 
     cat_by_id = evidence_category_map(case)
     confirmed_root_ids = {
         rid
-        for rid in all_root_ids
+        for rid in live_root_ids
         if nodes[rid].node_state == NodeState.VALIDATED
         and root_counterfactually_confirmed(nodes[rid], cat_by_id)
     }
     if not confirmed_root_ids:
         return None
 
-    for cluster in distinct_cause_clusters(case, all_root_ids):
+    for cluster in distinct_cause_clusters(case, live_root_ids):
         if not cluster & confirmed_root_ids:
             continue
         for member_id in cluster:
