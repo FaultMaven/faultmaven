@@ -39,6 +39,8 @@ def _write_pack(
     chunk_texts: tuple = ("section one", "section two"),
     dim: int = 8,
     causes: Optional[list] = None,
+    model: str = "BAAI/bge-m3",
+    chunk_indices: Optional[tuple] = None,
 ) -> Path:
     """Write a minimal but valid KB pack under ``tmp_path/pack`` and return it.
 
@@ -57,10 +59,13 @@ def _write_pack(
         pack_dir / "vectors.npz",
         vectors=np.zeros((len(chunk_texts), dim), dtype=np.float32),
     )
+    indices = (
+        chunk_indices if chunk_indices is not None else tuple(range(len(chunk_texts)))
+    )
     manifest = {
         "pack_format": 1,
         "version": "test",
-        "model": "BAAI/bge-m3",
+        "model": model,
         "dim": dim,
         "runbooks": [
             {
@@ -74,8 +79,8 @@ def _write_pack(
                 "owner_id": None,
                 "team_id": None,
                 "chunks": [
-                    {"chunk_index": i, "vector_row": i, "text": t}
-                    for i, t in enumerate(chunk_texts)
+                    {"chunk_index": ci, "vector_row": i, "text": t}
+                    for i, (ci, t) in enumerate(zip(indices, chunk_texts))
                 ],
             }
         ],
@@ -287,6 +292,144 @@ async def test_bootstrap_raises_on_zero_chunks(tmp_path: Path):
     failed_file, reason = result.failed[0]
     assert failed_file == "global/example.md"
     assert "0 chunks" in reason
+
+
+@pytest.mark.parametrize(
+    "bad_indices",
+    [
+        (0, 2, 1),  # out of order
+        (0, 1, 3),  # gap (missing 2)
+        (0, 1, 1),  # duplicate index
+        (1, 2, 3),  # does not start at 0
+    ],
+)
+@pytest.mark.asyncio
+async def test_bootstrap_fails_runbook_on_noncanonical_chunk_indices(
+    tmp_path: Path, bad_indices
+):
+    """A pack whose chunk_index list is not contiguous 0..n-1 in list order is
+    rejected loudly for that runbook (recorded as failed, not ingested) — the
+    ingest path re-derives ids by list position, so a misordered pack would
+    silently misalign chunk ids from the manifest. ingest_runbook is never
+    reached for the malformed runbook."""
+    pack_dir = _write_pack(
+        tmp_path,
+        chunk_texts=("a", "b", "c"),
+        chunk_indices=bad_indices,
+    )
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=3)
+
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=None),
+        organization_id="org-test",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+
+    assert result.ingested == []
+    assert len(result.failed) == 1
+    failed_file, reason = result.failed[0]
+    assert failed_file == "global/example.md"
+    assert "chunk ordering invalid" in reason
+    knowledge_service.ingest_runbook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_accepts_canonical_chunk_indices(tmp_path: Path):
+    """The ordering guard is transparent to a well-formed pack (0..n-1 in order)."""
+    pack_dir = _write_pack(
+        tmp_path, chunk_texts=("a", "b", "c"), chunk_indices=(0, 1, 2)
+    )
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=3)
+
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=None),
+        organization_id="org-test",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+
+    assert result.ingested == ["global/example.md"]
+    assert result.failed == []
+    knowledge_service.ingest_runbook.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_empty_chunks_update_does_not_delete_existing_row(
+    tmp_path: Path,
+):
+    """A runbook with an EMPTY chunk list can never be retrieved. It passes the
+    ordering check vacuously ([] == range(0)), so it must be rejected explicitly
+    BEFORE the re-ingest delete — otherwise a content-changed update would delete
+    the previously-good row and only then trip the downstream zero-chunks check,
+    losing the row (the 'no silently-unretrievable runbook' invariant)."""
+    pack_dir = _write_pack(
+        tmp_path,
+        content="# Updated body (content changed since last ingest)\n",
+        chunk_texts=(),  # no chunks
+    )
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=0)
+    knowledge_service._vector_store = MagicMock()
+    knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+    existing = MagicMock()
+    existing.content = "# STALE body — differs from the updated pack content\n"
+
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=existing),
+        organization_id="org-test",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+
+    assert result.ingested == []
+    assert len(result.failed) == 1
+    assert "no chunks" in result.failed[0][1]
+    # Rejected before the delete → the existing good row/vectors survive.
+    knowledge_service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
+    knowledge_service.ingest_runbook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_malformed_update_does_not_delete_existing_row(tmp_path: Path):
+    """Fail-safe placement: a malformed pack UPDATE of an existing runbook is
+    rejected BEFORE the re-ingest delete, so the previously-good row is left
+    intact rather than deleted-with-nothing-behind (the 'no silently-unretrievable
+    runbook' invariant). The guard runs first, so _delete_existing never fires."""
+    pack_dir = _write_pack(
+        tmp_path,
+        content="# Updated body (content changed since last ingest)\n",
+        chunk_texts=("a", "b", "c"),
+        chunk_indices=(0, 2, 1),  # malformed update
+    )
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=3)
+    knowledge_service._vector_store = MagicMock()
+    knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+    existing = MagicMock()
+    existing.content = "# STALE body — differs from the updated pack content\n"
+
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=existing),
+        organization_id="org-test",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+
+    assert result.ingested == []
+    assert len(result.failed) == 1
+    assert "chunk ordering invalid" in result.failed[0][1]
+    # The existing good row was NOT deleted (guard rejected before re-ingest).
+    knowledge_service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
+    knowledge_service.ingest_runbook.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -803,6 +946,74 @@ def test_shipped_pack_carries_causes_if_vendored():
     with_causes = [rb for rb in pack.runbooks if rb.causes]
     assert with_causes, "shipped pack carries no causes record"
     assert "cause_letter" in with_causes[0].causes[0]
+
+
+def test_pack_load_rejects_mismatched_embedding_model(tmp_path, caplog):
+    """A pack built with a different embedding model is refused (returns None):
+    its vectors live in another space than the runtime query embedder, so every
+    similarity would be garbage while the dimension can still match. Refusing
+    keeps the store from being filled with unqueryable vectors."""
+    import logging
+
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack_dir = _write_pack(tmp_path, model="sentence-transformers/all-MiniLM-L6-v2")
+    with caplog.at_level(logging.ERROR):
+        pack = KbPack.load(pack_dir)
+    assert pack is None
+    assert any(
+        "incompatible" in r.message and "all-MiniLM-L6-v2" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_pack_load_accepts_matching_embedding_model(tmp_path):
+    """The guard does not fire when the pack's declared model matches the runtime
+    embedder (the normal, shipped case)."""
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack = KbPack.load(_write_pack(tmp_path, model="BAAI/bge-m3"))
+    assert pack is not None
+    assert pack.model == "BAAI/bge-m3"
+
+
+def test_pack_load_accepts_case_variant_model(tmp_path):
+    """A same-model alias that only differs in case is NOT refused — HF model ids
+    resolve case-insensitively, so the vectors are compatible. Guards against a
+    false positive that would empty the whole KB over a cosmetic case difference."""
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack = KbPack.load(_write_pack(tmp_path, model="baai/BGE-M3"))
+    assert pack is not None
+
+
+def test_embedding_model_matches_runtime_embedder():
+    """Drift guard: the loader's expected pack model (kb_pack.EMBEDDING_MODEL)
+    must equal the runtime query embedder's id (model_cache.BGE_M3_MODEL_ID).
+    They are separate literals (kb_pack stays model-free and cannot import
+    model_cache), so this pins them — if the runtime embedder changes and this
+    constant does not, the identity guard would silently check against a stale id."""
+    from faultmaven.bootstrap.kb_pack import EMBEDDING_MODEL
+    from faultmaven.infrastructure.model_cache import BGE_M3_MODEL_ID
+
+    assert EMBEDDING_MODEL == BGE_M3_MODEL_ID
+
+
+def test_pack_load_model_less_pack_fails_open(tmp_path):
+    """A pack.json that declares no `model` at all cannot be checked, so the guard
+    fails OPEN (loads) rather than refusing an otherwise-valid pack."""
+    import json as _json
+
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack_dir = _write_pack(tmp_path)
+    manifest_path = pack_dir / "pack.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["model"]
+    manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
+
+    pack = KbPack.load(pack_dir)
+    assert pack is not None
 
 
 def test_parse_json_dict_handles_dict_and_str_inputs():
