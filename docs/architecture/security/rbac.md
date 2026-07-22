@@ -65,6 +65,18 @@ const isAdmin = user.roles.includes('admin');
 
 ## User Roles
 
+> **Two role vocabularies.** This document describes the **account roles**
+> (`user`, `admin`) that govern Global-KB access — the `roles` claim minted on
+> tokens, where `admin` is enforced by the `require_admin` dependency (a literal
+> `"admin"` membership check) and everyone else is baseline `user`. A separate,
+> org-scoped `Role` enum (`admin`, `member`, `viewer`) lives in
+> `modules/auth/domain/models/rbac.py` with a granular `Permission` mapping for
+> organization/team RBAC. The two overlap only on `admin`; a role string not in
+> the enum (such as the baseline `user`) maps to no granular permissions.
+> Consolidating the two vocabularies is tracked as a separate RBAC
+> reconciliation. See
+> [iam-design.md § Role Implementation](iam-design.md#role-implementation).
+
 ### 1. Regular User (`user` role)
 
 **Default role for all users**
@@ -252,9 +264,11 @@ curl -X POST http://localhost:8000/api/v1/auth/register \
 **Response:**
 ```json
 {
-  "access_token": "550e8400-e29b-41d4-a716-446655440000",
-  "token_type": "bearer",
-  "expires_in": 86400,
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 900,
+  "refresh_expires_in": 604800,
   "session_id": "session-41afd36b...",
   "user": {
     "user_id": "user-123",
@@ -262,6 +276,7 @@ curl -X POST http://localhost:8000/api/v1/auth/register \
     "email": "alice@dev.faultmaven.local",
     "display_name": "Alice",
     "roles": ["user"],
+    "auth_mode": "local",
     "created_at": "2025-10-23T12:00:00Z"
   }
 }
@@ -696,7 +711,7 @@ await authManager.refreshToken();
 
 ## Summary
 
-- **Simple Role Model**: Just `user` and `admin` roles
+- **Account Role Model**: `user` and `admin` account roles for Global-KB access (a separate org-scoped `Role` enum — `admin`/`member`/`viewer` — exists for organization/team RBAC; see the note under [User Roles](#user-roles))
 - **Server-Side Enforcement**: All security checks on backend
 - **User Management Tools**: CLI scripts for easy administration
 - **Frontend Integration**: Roles included in login response
