@@ -3542,6 +3542,103 @@ class ActionAttempt(BaseModel):
     )
 
 
+class SolutionOutcome(str, Enum):
+    """Outcome of a proposed ``Solution``, derived from the compliance chain.
+
+    The engine never stamps ``applied_at``/``verified_at``/``effectiveness`` on a
+    ``Solution`` — those per-solution fields carry no signal. The live signal is the
+    ``ProposedAction`` a solution is co-created with (same proposal, identical
+    ``description``/``commands``): its ``state`` and ``action_type`` record whether
+    the user *executed* the fix. Used at the runbook-conversion boundary so a
+    never-run or engine-refused fix's commands don't reach a runbook's remediation
+    slot.
+
+    Note the deliberate limit: ``accepted`` means the user *executed* the fix, not
+    that it *worked* (that is ``solution_verified`` / the resolution, which is
+    case-level, not per-action). The engine records no per-fix success signal, and
+    an executed fix that failed is indistinguishable from one step of a compound
+    remediation (both are ``accepted``, neither is superseded). So this enum
+    distinguishes **executed** from **never-executed/refused** — it does not, and
+    cannot, single out which executed fix was decisive.
+    """
+
+    APPLIED = "applied"
+    """The user executed this fix — an accepted actionable action
+    (SOLUTION/MITIGATION, not a downgraded DIAGNOSTIC). Surfaced as remediation
+    material; makes no claim that this specific fix alone resolved the case."""
+
+    FAILED = "failed"
+    """Never executed or refused: the action was superseded/rejected (replaced while
+    pending, never run) OR the engine downgraded it to DIAGNOSTIC (refused as a fix).
+    Its commands must not become reusable knowledge."""
+
+    PROPOSED = "proposed"
+    """No resolved matching action (still pending or uncorrelated) — surfaced, but
+    flagged as unconfirmed rather than as an executed fix."""
+
+
+def _action_type_value(action) -> Optional[str]:
+    """The action's ``InvestigationActionType`` value (``"solution"`` /
+    ``"mitigation"`` / ``"diagnostic"``), or None if absent. Enum or raw string or
+    missing all read the same, so stub actions without an ``action_type`` are
+    treated as un-typed (neither solution nor diagnostic)."""
+    at = getattr(action, "action_type", None)
+    return getattr(at, "value", at)
+
+
+def classify_solution_outcome(
+    solution: "Solution", proposed_actions: List["ProposedAction"]
+) -> SolutionOutcome:
+    """Classify a proposed ``Solution`` by the outcome of its ``ProposedAction``.
+
+    A ``Solution`` and its ``ProposedAction`` are created together from one LLM
+    proposal, so they carry the same ``description`` (``Solution.immediate_action``)
+    and ``commands``. We correlate on that content rather than on the Solution's own
+    lifecycle fields, which the engine never populates.
+
+    - ``APPLIED``  — a matching action is ``accepted`` (the user executed it) and
+      actionable (not a downgraded DIAGNOSTIC). Biases to inclusion: any accepted
+      actionable match wins even if a same-content sibling was superseded.
+    - ``FAILED``   — matching action(s) exist but none was executed as a fix: every
+      one is superseded/rejected (never run) or an engine-downgraded DIAGNOSTIC.
+    - ``PROPOSED`` — no matching resolved action (pending or uncorrelated); the
+      safe default so an un-instrumented solution is surfaced, not dropped.
+
+    We deliberately do NOT demote an earlier executed fix just because a later
+    SOLUTION exists: an accepted fix that failed is indistinguishable from one step
+    of a compound remediation, so inferring failure from ordering would wrongly drop
+    real remediation (and could block a legitimate conversion). Excluding only the
+    unambiguous never-executed/refused cases keeps the guarantee one-directional —
+    we never launder a never-run fix in, and never drop a fix the user actually ran.
+
+    Duck-typed on ``solution``/``proposed_actions`` so stub cases (no
+    ``proposed_actions``) classify everything ``PROPOSED`` — the pre-existing
+    "surface every solution" behavior.
+    """
+    desc = getattr(solution, "immediate_action", None)
+    commands = list(getattr(solution, "commands", None) or [])
+    # Nothing to correlate on — treat as an unconfirmed proposal (surfaced).
+    if not desc and not commands:
+        return SolutionOutcome.PROPOSED
+
+    saw_terminal = False
+    for action in proposed_actions or []:
+        if getattr(action, "description", None) != desc:
+            continue
+        if list(getattr(action, "commands", None) or []) != commands:
+            continue
+        state = getattr(action, "state", None)
+        if state == "accepted":
+            if _action_type_value(action) == InvestigationActionType.DIAGNOSTIC.value:
+                # Engine refused this as a fix (M5/3D downgrade) — not remediation.
+                saw_terminal = True
+                continue
+            return SolutionOutcome.APPLIED
+        if state in ("superseded", "rejected"):
+            saw_terminal = True
+    return SolutionOutcome.FAILED if saw_terminal else SolutionOutcome.PROPOSED
+
+
 # ============================================================
 # Turn Tracking Models (Section 8)
 # ============================================================

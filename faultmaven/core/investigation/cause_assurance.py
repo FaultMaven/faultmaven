@@ -40,6 +40,8 @@ from faultmaven.modules.case.contracts import (
     NodeState,
     NodeType,
     RootCauseConclusion,
+    SolutionOutcome,
+    classify_solution_outcome,
 )
 
 if TYPE_CHECKING:
@@ -1008,15 +1010,25 @@ def has_problem_definition(case: "Case") -> bool:
 
 
 def has_actionable_solution(case: "Case") -> bool:
-    """True when at least one solution carries actionable content — commands,
-    implementation steps, or a long-term fix. Without it a generated runbook has
-    no Resolution to offer and the LLM would have to invent one."""
+    """True when at least one *non-failed* solution carries actionable content —
+    commands, implementation steps, or a long-term fix. Without it a generated
+    runbook has no Resolution to offer and the LLM would have to invent one.
+
+    A solution whose matching ``ProposedAction`` was never executed —
+    superseded/rejected or engine-downgraded to DIAGNOSTIC (``SolutionOutcome.FAILED``)
+    — does not count, so a case whose only actionable fixes were never run is not
+    offered for conversion (its runbook would launder a never-run fix's commands into
+    the remediation slot). Cases with no compliance chain classify their solutions
+    ``PROPOSED`` and still count, preserving the prior behavior."""
+    proposed_actions = getattr(case, "proposed_actions", None) or []
     for sol in case.solutions or []:
         if (
             getattr(sol, "commands", None)
             or getattr(sol, "implementation_steps", None)
             or getattr(sol, "longterm_fix", None)
-        ):
+        ) and classify_solution_outcome(
+            sol, proposed_actions
+        ) != SolutionOutcome.FAILED:
             return True
     return False
 

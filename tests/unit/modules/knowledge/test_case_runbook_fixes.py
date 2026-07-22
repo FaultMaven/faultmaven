@@ -161,3 +161,136 @@ class TestCaseConversionRequestDefaults:
         case.tags = ["istio", "envoy", "destinationrule"]
         req = CaseConversionRequest.from_case(case)
         assert req.domain == "networking"
+
+
+# =============================================================================
+# Solution-outcome surfacing (R5 — solution laundering)
+# =============================================================================
+
+
+def _sol(desc, commands):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        title=None,
+        immediate_action=desc,
+        longterm_fix=None,
+        implementation_steps=None,
+        commands=commands,
+        risks=None,
+    )
+
+
+def _action(desc, commands, state, *, action_type="solution", turn=1):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        description=desc,
+        commands=commands,
+        state=state,
+        action_type=action_type,
+        proposed_in_turn=turn,
+    )
+
+
+def _case_with(solutions, proposed_actions):
+    case = _StubCase("c1", "Title")
+    case.solutions = solutions
+    case.proposed_actions = proposed_actions
+    return case
+
+
+class TestFromCaseSolutionOutcome:
+    """``from_case`` must not launder a failed fix's commands into the runbook.
+
+    A solution whose matching ProposedAction was superseded/rejected is dropped;
+    surviving solutions are outcome-tagged and ordered applied-first so the
+    conversion prompt treats confirmed fixes as the resolution and unconfirmed
+    proposals as candidates."""
+
+    def test_failed_solution_is_dropped(self):
+        failed = _sol("restart pod", ["kubectl delete pod x"])
+        req = CaseConversionRequest.from_case(
+            _case_with(
+                [failed],
+                [_action("restart pod", ["kubectl delete pod x"], "superseded")],
+            )
+        )
+        assert req.solutions == []
+
+    def test_applied_solution_is_tagged_applied(self):
+        applied = _sol("bump memory", ["kubectl set resources y"])
+        req = CaseConversionRequest.from_case(
+            _case_with(
+                [applied],
+                [_action("bump memory", ["kubectl set resources y"], "accepted")],
+            )
+        )
+        assert len(req.solutions) == 1
+        assert req.solutions[0].startswith("Outcome: applied")
+        assert "kubectl set resources y" in req.solutions[0]
+
+    def test_uncorrelated_solution_is_tagged_proposed(self):
+        # No compliance chain → surfaced but flagged unconfirmed.
+        proposed = _sol("bump memory", ["kubectl set resources y"])
+        req = CaseConversionRequest.from_case(_case_with([proposed], []))
+        assert len(req.solutions) == 1
+        assert req.solutions[0].startswith("Outcome: proposed")
+
+    def test_compound_executed_fixes_both_surfaced_never_run_dropped(self):
+        # Two fixes the user EXECUTED (both accepted) — a compound remediation, or
+        # fix A that failed then fix B. They are indistinguishable from the state
+        # chain, so BOTH are surfaced (never wrongly drop a fix the user ran). A
+        # third, never-run (superseded) offer IS dropped so its commands can't be
+        # laundered.
+        a = _sol("restart pod", ["kubectl delete pod x"])
+        b = _sol("bump memory", ["kubectl set resources y"])
+        never_run = _sol("nuke the cluster", ["kubectl delete ns prod"])
+        req = CaseConversionRequest.from_case(
+            _case_with(
+                [a, b, never_run],
+                [
+                    _action(
+                        "restart pod", ["kubectl delete pod x"], "accepted", turn=1
+                    ),
+                    _action(
+                        "bump memory", ["kubectl set resources y"], "accepted", turn=3
+                    ),
+                    _action(
+                        "nuke the cluster",
+                        ["kubectl delete ns prod"],
+                        "superseded",
+                        turn=4,
+                    ),
+                ],
+            )
+        )
+        assert len(req.solutions) == 2
+        assert all(block.startswith("Outcome: applied") for block in req.solutions)
+        joined = "\n".join(req.solutions)
+        assert "kubectl delete pod x" in joined
+        assert "kubectl set resources y" in joined
+        # The never-run offer's dangerous command must not survive.
+        assert "kubectl delete ns prod" not in joined
+
+    def test_failed_dropped_applied_kept_and_ordered_first(self):
+        failed = _sol("restart pod", ["kubectl delete pod x"])
+        applied = _sol("bump memory", ["kubectl set resources y"])
+        proposed = _sol("increase timeout", ["set timeout=30"])
+        req = CaseConversionRequest.from_case(
+            _case_with(
+                [failed, proposed, applied],
+                [
+                    _action("restart pod", ["kubectl delete pod x"], "superseded"),
+                    _action("bump memory", ["kubectl set resources y"], "accepted"),
+                ],
+            )
+        )
+        # failed dropped; applied surfaced before the still-proposed one.
+        assert len(req.solutions) == 2
+        assert req.solutions[0].startswith("Outcome: applied")
+        assert "kubectl set resources y" in req.solutions[0]
+        assert req.solutions[1].startswith("Outcome: proposed")
+        assert "set timeout=30" in req.solutions[1]
+        # No dropped failed command survives anywhere in the surfaced material.
+        assert all("kubectl delete pod x" not in block for block in req.solutions)
