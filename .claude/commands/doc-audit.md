@@ -6,11 +6,15 @@ description: Audit documentation within a domain for redundancy, contradictions,
 
 Detect documentation entropy (redundancy, contradictions, dead references, internal inconsistency) within a specific domain. **Docs-vs-docs only** — does NOT read code. Drift between docs and code is `/design-check`'s job.
 
+## Working directory
+
+All paths in this command are relative to the faultmaven repository root (the directory containing `.claude/manifest.json`). Run every command from there, and instruct the subagent to do the same.
+
 ## Argument
 
-`$ARGUMENTS` — the domain name. Valid domains: `investigation`, `knowledge`, `data-processing`, `storage`, `auth`, `case`, `core-architecture`.
+`$ARGUMENTS` — the domain name, trimmed and lowercased. The set of valid domains is the set of keys under `domains` in `.claude/manifest.json` (the single source of truth; at the time of writing: `investigation`, `knowledge`, `data-processing`, `storage`, `auth`, `case`, `core-architecture`).
 
-If missing or invalid, reject with the list of valid domains.
+If the argument is missing or is not a manifest key, stop and reply with the list of keys read from the manifest. Do not guess a close match.
 
 ## Anti-fabrication contract
 
@@ -18,7 +22,7 @@ This skill compares text across documents. Every finding is a claim that two pas
 
 1. **Every claim about a document's content** must be a *verbatim* extract with `<file>:<line>`. Paraphrase is forbidden in finding text.
 2. **Every cited quote must be re-grep-able.** If `grep -nF "<phrase>" <file>` doesn't return the cited line, the finding is invalid.
-3. **Dead-reference claims** require *two* verifications: (a) the source-side quote (the link or mention, with file:line), and (b) a documented negative search showing the target doesn't exist in scope (e.g., `find <scope> -name '<target>' | wc -l` → 0, or `grep -rnE '^#+\s*<anchor>' <scope>` → 0 hits).
+3. **Dead-reference claims** require *two* verifications: (a) the source-side quote (the link or mention, with file:line), and (b) a documented non-existence proof against the *resolved* target path — resolve the link relative to the source file's directory and test that exact path (e.g., `[ -f <resolved-path> ] && echo EXISTS || echo MISSING` → `MISSING`). Never "prove" non-existence by searching for the bare filename across the scope: a same-named file elsewhere neither makes the link live nor dead.
 4. **Redundancy and contradiction** findings require quotes from *both* docs, each with file:line. A claim that "Doc A and Doc B cover the same topic" without two quotes is fabrication.
 5. **Internal-inconsistency** findings require *two* verbatim quotes from the same doc with their respective line numbers.
 6. **If you cannot verify a finding, omit it.** Do not soften, do not caveat — omit.
@@ -53,11 +57,13 @@ Before spawning the subagent, record:
 - `git status --porcelain | wc -l` → `WORKING_TREE_DIRT` (0 = clean)
 - `date -u +%Y-%m-%dT%H:%M:%SZ` → `SCAN_TIMESTAMP`
 
-Pass all three to the subagent. The subagent will record them in the report header. If `WORKING_TREE_DIRT` > 0, warn the user — a scan against a dirty tree will produce findings whose freshness can't be reliably checked later.
+Pass all three to the subagent. The subagent will record them in the report header (`WORKING_TREE_DIRT` = 0 renders as `working tree: clean`, otherwise `working tree: dirty (<N> files)`). If `WORKING_TREE_DIRT` > 0, warn the user — a scan against a dirty tree will produce findings whose freshness can't be reliably checked later — but proceed.
 
 ### 3. Spawn the subagent
 
-Spawn a `general-purpose` subagent via the Task tool with a fully self-contained prompt that incorporates both the anti-fabrication and anti-staleness contracts. This audit is read-heavy and would pollute the main conversation context.
+Spawn a `general-purpose` subagent (via the Task tool, or whatever the subagent-spawning tool is named in this harness) with the prompt template below. This audit is read-heavy and would pollute the main conversation context.
+
+Before sending, substitute **every** `<...>` placeholder: `<sha>` / `<N>` / `<iso8601>` from Step 2, `<DOC_PATHS>` copied verbatim from the manifest entry, and `<DOMAIN>` = the validated argument. The prompt must be fully self-contained — the subagent cannot see this file or the conversation.
 
 ---
 
@@ -77,19 +83,20 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 >
 > 1. **Every claim about a document's content** must be a *verbatim* extract with `<file>:<line>`. Paraphrase is forbidden.
 > 2. **Every cited quote must be re-grep-able.** If `grep -nF "<phrase>" <file>` doesn't return the cited line, the finding is invalid.
-> 3. **Dead-reference claims** require (a) the source-side quote (with file:line) and (b) a documented negative search showing the target doesn't exist in scope.
+> 3. **Dead-reference claims** require (a) the source-side quote (with file:line) and (b) a non-existence proof against the *resolved* target path (see Step 3 for how to resolve and test it).
 > 4. **Redundancy and contradiction** findings require quotes from *both* docs (with file:line each).
 > 5. **Internal-inconsistency** findings require *two* verbatim quotes from the same doc.
 > 6. **If you cannot verify, omit.** Do not soften, do not caveat — omit.
 >
 > **Hard constraint 2 — anti-staleness.** A correct-at-scan-time finding becomes harmful the moment the docs move past it. Every finding must carry enough captured state for a future consumer to mechanically detect staleness.
 >
-> 1. **Capture verification command output.** For every `Verify with:` command in a finding, run it once and record both the command AND its exact output (truncated to the most-discriminating ~80 chars). Embed both in the finding so a future re-run can be diff'd.
-> 2. **Use stable matchers.** Prefer `grep -nF '<verbatim string>'` over line-number-only references — line numbers drift; verbatim content moves more slowly and is detectable when it changes.
+> 1. **Capture verification command output.** For every `Verify with:` command in a finding, run it once and record both the command AND its exact output. The finding's `Expected output` block shows the captured line(s) in full; the gate's `expected` argument is a *discriminating substring* of that output (single line, ≤80 chars) — the gate passes iff that substring appears in a fresh run of the command.
+> 2. **Use stable matchers.** Prefer `grep -nF '<verbatim string>'` over line-number-only references — line numbers drift; verbatim content moves more slowly and is detectable when it changes. Quoted phrases must come from a single line — `grep -F` cannot match across lines.
 > 3. **Emit a freshness gate** in the report (template below) that re-runs every captured verification command and prints `FRESH` or `STALE` per finding.
-> 4. **Distinguish positive from absence assertions.** Each gate `check()` line has a mode: `contains` (default) means "FRESH iff the pattern is in the command output"; `absent` means "FRESH iff the pattern is NOT in the command output." Dead-reference target checks (the typical shape of "this file/anchor must remain missing") MUST use `absent` mode with the target name as the pattern. Never ship a check with `expected=""` and the default `contains` — that always passes and disables staleness detection for the finding. If you find yourself writing an empty pattern, that's the signal to convert to `absent` mode with a non-empty pattern.
+> 4. **Distinguish positive from absence assertions.** Each gate `check()` line has a mode: `contains` (default) means "FRESH iff the pattern is in the command output"; `absent` means "FRESH iff the pattern is NOT in the command output." For dead-reference *file* targets, prefer a `contains` check on `[ -f <resolved-path> ] && echo EXISTS || echo MISSING` with expected `MISSING`; use `absent` mode for anchor-grep checks and any other "X is not in Y" assertion. Never ship a check with `expected=""` and the default `contains` — that always passes and disables staleness detection for the finding. If you find yourself writing an empty pattern, that's the signal to convert to `absent` mode (or the EXISTS/MISSING form) with a non-empty pattern.
+> 5. **Keep gate arguments shell-safe.** The gate `eval`s each command and substring-matches `expected`, both passed as single-quoted shell strings. Every command and expected pattern must therefore be a single line containing no single quotes, backticks, `$`, or backslashes. If the natural verbatim quote contains one of those characters, pick a different discriminating substring from the same line that doesn't — the full verbatim line still lives in the finding's `Expected output` block.
 >
-> **Scope — documents to read:** `<DOC_PATHS>` (files and all `.md` files recursively within the listed directories, plus any `README.md`).
+> **Scope — documents to read:** `<DOC_PATHS>` — the listed files, plus every `.md` file recursively within the listed directories (READMEs included).
 >
 > **Step 1 — Enumerate the document set.** List every `.md` file within scope. Print the list before reading.
 >
@@ -99,7 +106,10 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 >
 > - **Redundancy:** Multiple documents covering the same topic with overlapping content. Cite verbatim excerpts from *each* overlapping doc. Note which document should be the single source of truth (usually the one declared canonical in `docs/architecture/README.md`, or the one the domain's README points to first).
 > - **Contradictions:** Documents that state conflicting facts or conventions (e.g., two docs describing the same enum with different values, two docs describing the same flow with different steps). Cite the verbatim conflicting passages from both sides.
-> - **Dead references:** Markdown links `[text](path)`, section anchors, or document titles that no longer exist within the documentation set. For each, record the source-side quote AND verify the target's non-existence (`find <scope> -name '<filename>'`, or `grep -rn '^#+\s*<anchor>' <scope>`). Do NOT verify code file paths against the codebase — that is out of scope.
+> - **Dead references:** Markdown links `[text](path)`, section anchors, or named documents whose target no longer exists. For each, record the source-side quote AND prove the target's non-existence:
+>   - **File targets:** resolve the link relative to the *source file's directory* (a link `../foo/bar.md` inside `docs/a/b.md` resolves to `docs/foo/bar.md`; a leading `/` means repo root), then test that exact path: `[ -f <resolved-path> ] && echo EXISTS || echo MISSING` → must print `MISSING`. Never search for the bare filename across the repo — a same-named file elsewhere does not make the link live. Testing existence of a target *outside* the domain's doc scope is allowed (a cross-domain link is not dead if its file exists); what is out of scope is reading code *content*.
+>   - **Anchor targets (`file.md#anchor`):** anchors are slugified headings (lowercased, punctuation stripped, spaces → hyphens), so never grep for the anchor string itself. De-slugify to the heading's key words and grep the target file's headings case-insensitively: `grep -icE '^#+ .*<key words>' <target-file>` → `0`. If you cannot confidently map the anchor back to a heading search, drop the finding.
+>   - **External URLs** (`http…`) are out of scope — do not fetch or report them.
 > - **Internal inconsistency:** A single document whose content contradicts itself, or uses inconsistent terminology for the same concept. Cite two verbatim quotes from the same doc.
 >
 > You must NOT read code to detect staleness. Scope is strictly documentation cross-checking. If you notice a claim in a doc that "smells stale," note it only if another doc *also* in scope disagrees. Otherwise it's out of scope for this audit — use `/design-check <domain>` for doc-vs-code checks.
@@ -107,14 +117,14 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 > **Step 4 — Self-verification pass (MANDATORY).** Before writing the report, take every candidate finding from Step 3 and run a second-pass verification AND capture the output:
 >
 > - For every quoted phrase: run `grep -nF "<verbatim phrase>" <file>`, **capture the output**. If grep returns nothing or different content, **drop the finding**.
-> - For every dead-reference target: re-run the find / grep that proves non-existence and **capture the output** (should be 0). If hits are returned, the target exists — **drop the finding**.
+> - For every dead-reference target: re-run the non-existence proof (`[ -f ... ]` test or anchor grep) and **capture the output** (`MISSING` / `0`). If the target turns out to exist, **drop the finding**.
 > - For every contradiction or redundancy: verify both quotes independently and capture both outputs. If only one verifies, **drop the finding**.
 >
 > Maintain a verification log — one line per candidate finding — listing the verification commands run and their outcomes. This log goes into the report verbatim.
 >
-> **Step 5 — Write the report** to `docs/working/ANALYSIS-doc-audit-<DOMAIN>.md` with this structure:
+> **Step 5 — Write the report** to `docs/working/ANALYSIS-doc-audit-<DOMAIN>.md` (overwrite any previous report at that path) with this structure:
 >
-> ````
+> ````markdown
 > # Doc Audit: <domain>
 >
 > **Scanned at:** `<SCAN_COMMIT>` <SCAN_TIMESTAMP> (working tree: clean | dirty)
@@ -155,10 +165,12 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 > #   contains (default) — FRESH iff $expected is a substring of command output
 > #   absent             — FRESH iff $expected is NOT in command output
 > #
-> # Use `absent` for dead-reference target checks ("file/anchor must remain
-> # missing") and for any other "X is not in Y" assertion. The default
-> # `contains` mode silently passes on empty $expected — any absence
-> # assertion MUST use `absent` mode to be staleness-detecting.
+> # Dead-reference FILE targets: use a contains check on
+> #   '[ -f <resolved-path> ] && echo EXISTS || echo MISSING'  expecting 'MISSING'.
+> # Use `absent` for anchor greps and any other "X is not in Y" assertion.
+> # The default `contains` mode silently passes on empty $expected — any
+> # absence assertion MUST use `absent` mode (or the EXISTS/MISSING form)
+> # to be staleness-detecting.
 > check() {
 >   local id="$1" cmd="$2" expected="$3" mode="${4:-contains}"
 >   local actual; actual=$(eval "$cmd" 2>&1 || true)
@@ -183,8 +195,10 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 > check "R-1-b" '<command-from-R-1-source-B>' '<expected-substring-from-source-B>'
 > # Dead-reference source quote — positive (the link still exists in the source doc):
 > check "D-1-src" '<command-from-D-1-source-quote>' '<expected-substring>'
-> # Dead-reference target — negative (the target filename must remain missing):
-> check "D-1-tgt" '<find-or-grep-command-against-target>' '<target-filename-or-anchor>' absent
+> # Dead-reference file target — the resolved path must remain missing:
+> check "D-1-tgt" '[ -f <resolved-target-path> ] && echo EXISTS || echo MISSING' 'MISSING'
+> # Dead-reference anchor target — the heading must remain absent from the target file:
+> # check "D-2-tgt" '<case-insensitive-heading-grep>' '<heading key words>' absent
 > # ... one check() line per verification per finding ...
 >
 > echo
@@ -262,17 +276,18 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 > ### [D-1] <short title>
 >
 > - **Source-side reference** — `<docA>:<lineA>` "<verbatim quote including the link or mention>"
-> - **Target** — `<path or anchor>`
-> - **Non-existence proof at scan time** — `<find or grep command>` → 0 hits
+> - **Target (as written)** — `<link target or anchor>`
+> - **Resolved target path** — `<repo-root-relative resolved path>`
+> - **Non-existence proof at scan time** — `<the [ -f ... ] test or anchor grep>` → `MISSING` (or `0` for anchors)
 > - **Verify with:**
 >   ```bash
 >   grep -nF "<source quote>" <docA>
->   <find-or-grep-non-existence-command>
+>   [ -f <resolved-target-path> ] && echo EXISTS || echo MISSING
 >   ```
 >   **Expected output (captured at scan):**
 >   ```
 >   <lineA>:<content of line A>
->   0
+>   MISSING
 >   ```
 >
 > ## Internal Inconsistency
@@ -313,7 +328,7 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 >
 > Leave any section that has no findings with the text "None." beneath the section heading. (The freshness gate stays — it's a no-op when there are no findings.)
 >
-> **Step 6 — Final integrity check (MANDATORY).** Before printing the report path, pick 3 random findings from the file you just wrote and:
+> **Step 6 — Final integrity check (MANDATORY).** Before printing the report path, pick 3 findings at random from the file you just wrote (all of them if the report has 3 or fewer) and:
 >
 > 1. Re-run their `Verify with:` commands and confirm the captured "Expected output" still matches.
 > 2. Confirm the freshness gate's `check` lines for those findings reference the exact captured expected substrings (no paraphrase, no edits).
@@ -322,14 +337,19 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 
 ---
 
-### 4. Surface the report
+### 4. Verify, then surface the report
 
-After the subagent finishes, show the user:
+After the subagent finishes, verify mechanically before telling the user anything:
+
+1. Confirm the report file exists at `docs/working/ANALYSIS-doc-audit-<DOMAIN>.md` and its header records the scan commit from Step 2.
+2. Extract the freshness-gate bash block from the report and run it once from the repo root. Immediately after a scan, **every check must print FRESH** — a STALE-at-birth check means its captured expected output is wrong (a capture error or fabrication), not that the docs moved. If any check is STALE, send the subagent back to fix or drop that finding (via SendMessage/resume if available, otherwise a follow-up subagent with the report and the failing check IDs), then re-run the gate.
+
+Then show the user:
 
 1. The report path.
 2. A one-line summary (e.g., *"4 redundancies, 1 contradiction, 0 dead refs, 2 internal inconsistencies, 3 dropped — see `docs/working/ANALYSIS-doc-audit-investigation.md`"*).
-3. The scan commit SHA.
-4. **An explicit reminder to run the freshness gate before acting** — paste the gate's bash block into a shell at the repo root; STALE findings must not be acted on.
+3. The scan commit SHA, and confirmation that the gate ran clean (all FRESH) at scan time.
+4. **An explicit reminder to run the freshness gate before acting later** — paste the gate's bash block into a shell at the repo root; STALE findings must not be acted on.
 
 ## Completion criteria
 
@@ -341,10 +361,11 @@ c. The report header records `Scanned at: <commit-sha> <timestamp> (working tree
 d. The Freshness gate section at the top of the report contains one `check` line per verification (with suffixed IDs for multi-part findings like `R-1-a` / `R-1-b`), referencing the exact captured expected substring.
 e. The "Note to the agent" section instructs the consumer to run the gate before acting and to skip stale findings.
 f. The Verification Log lists outcomes for each finding plus any drops.
+g. The caller ran the freshness gate once immediately after the scan and every check printed FRESH.
 
 ## Rules
 
-- Docs-vs-docs only. Do not read code.
+- Docs-vs-docs only. Do not read code *content*. (Testing whether a link's resolved target file exists on disk is allowed — that is a filesystem check, not a code read.)
 - Do not auto-fix, auto-delete, or auto-edit any documents.
 - Use `/design-check <domain>` for docs-vs-code drift.
 - **Verifiability over coverage.** Omit anything you cannot ground in a verbatim quote and a re-runnable command.

@@ -100,10 +100,17 @@ The frontend uses a single discovery endpoint to determine which authentication 
     "authorize_url": "/auth/oauth/authorize",
     "token_url": "/auth/oauth/token",
     "client_id": "faultmaven-copilot",
-    "scopes": ["openid", "profile", "email", "cases:read", "cases:write"]
+    "scopes": ["openid", "profile", "email", "cases:read", "cases:write"],
+    // Present (relative path) only when hosted SSO is configured; null otherwise.
+    "hosted_login_url": "/api/v1/auth/sso/login"
   }
 }
 ```
+
+> When hosted SSO is configured (see [Hosted SSO](#hosted-sso-adr-015--workos)),
+> the Cloud-mode `oauth` block advertises `hosted_login_url` so the dashboard can
+> offer a "Sign in with SSO" entry point; it is `null` when SSO is not
+> configured.
 
 **Frontend Implementation Pattern:**
 
@@ -154,7 +161,7 @@ This pattern ensures:
   "scopes": ["openid", "profile", "email", "cases:read", "cases:write", "knowledge:read"],
   "organization_id": "org_default",
   "iat": 1706140800,
-  "exp": 1706144400,
+  "exp": 1706141700,
   "iss": "faultmaven",
   "aud": "faultmaven-api",
   "jti": "550e8400-e29b-41d4-a716-446655440000",
@@ -169,7 +176,7 @@ Both `HS256JWTTokenGenerator` (local mode) and `RS256JWTTokenGenerator` (cloud/O
 
 | Token | Lifetime | Purpose | Storage |
 |-------|----------|---------|---------|
-| Access Token | 1 hour | API authentication | Extension: `chrome.storage.local` |
+| Access Token | 15 minutes | API authentication | Extension: `chrome.storage.local` |
 | Refresh Token | 7 days | Obtain new access tokens | Extension: `chrome.storage.local` |
 
 **Signing Algorithms:**
@@ -215,7 +222,7 @@ Known limitation: bulk **per-user** revocation (admin
 `POST /auth/users/{id}/revoke-tokens`, user deactivate/delete flows) is
 effectively a no-op — the store is keyed by jti and there is no per-user
 index of issued JTIs, so outstanding tokens cannot be enumerated. Exposure is
-bounded by access-token expiry (<30 min) and the user-liveness check on
+bounded by the short access-token expiry (15 min) and the user-liveness check on
 refresh. Implementing it requires per-user JTI tracking (follow-up to #767).
 
 ## Local Mode Authentication
@@ -236,6 +243,11 @@ Content-Type: application/json
 }
 ```
 
+> **Deprecated alias.** `POST /api/v1/auth/dev-login` is registered as a
+> `deprecated=True` alias of `/login` (same handler, same request/response
+> shape, same `require_local_mode` gate), retained for older clients and
+> tooling. New clients should use `/login`.
+
 **Response (200 OK):**
 
 ```json
@@ -243,7 +255,7 @@ Content-Type: application/json
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "Bearer",
-  "expires_in": 3600,
+  "expires_in": 900,
   "refresh_expires_in": 604800,
   "session_id": "session-41afd36b-3f3c-46dd-8794-1565984d843d",
   "user": {
@@ -310,7 +322,7 @@ Even in Local Mode, security best practices apply:
 | Security Measure | Implementation |
 |-----------------|----------------|
 | **JWT Tokens** | HS256-signed JWTs (not UUIDs) |
-| **Token Expiry** | Access: 1 hour, Refresh: 7 days |
+| **Token Expiry** | Access: 15 minutes, Refresh: 7 days |
 | **Password Support** | Optional bcrypt-hashed password |
 | **Rate Limiting** | 10 login attempts per minute per IP |
 | **HTTPS** | Recommended even for localhost |
@@ -351,13 +363,19 @@ Certain endpoints are only available in specific environments:
 ```python
 # Endpoint visibility by auth mode
 ENDPOINT_VISIBILITY = {
-    "/api/v1/auth/login":    ["local"],           # Local mode only
-    "/api/v1/auth/register": ["local"],           # Local mode only
-    "/auth/oauth/authorize": ["oauth"],           # Cloud mode only
-    "/auth/oauth/token":     ["oauth"],           # Cloud mode only
-    "/api/v1/auth/config":   ["local", "oauth"],  # Always available
-    "/api/v1/auth/me":       ["local", "oauth"],  # Always available
-    "/api/v1/auth/logout":   ["local", "oauth"],  # Always available
+    "/api/v1/auth/login":     ["local"],           # Local mode only
+    "/api/v1/auth/dev-login": ["local"],           # Local mode only (deprecated alias of /login)
+    "/api/v1/auth/register":  ["local"],           # Local mode only
+    "/auth/oauth/authorize":  ["oauth"],           # Cloud mode only
+    "/auth/oauth/token":      ["oauth"],           # Cloud mode only
+    "/auth/sso/login":        ["oauth"],           # Cloud mode, only when SSO is configured
+    "/auth/sso/callback":     ["oauth"],           # Cloud mode, only when SSO is configured
+    "/auth/sso/exchange":     ["oauth"],           # Cloud mode, only when SSO is configured
+    "/api/v1/auth/refresh":   ["local", "oauth"],  # Both modes (mode-agnostic refresh)
+    "/api/v1/auth/config":    ["local", "oauth"],  # Always available
+    "/api/v1/auth/me":        ["local", "oauth"],  # Always available
+    "/api/v1/auth/me/available-scopes": ["local", "oauth"],  # Always available (KB-publish scopes)
+    "/api/v1/auth/logout":    ["local", "oauth"],  # Always available
 }
 
 # Debug endpoints — development only (no auth, internal topology exposed)
@@ -456,7 +474,7 @@ sequenceDiagram
     Ext->>Ext: Retrieve code_verifier from storage
     Ext->>API: POST /auth/token {<br/>code: AUTH_CODE,<br/>code_verifier: ORIGINAL_VERIFIER,<br/>client_id: copilot,<br/>redirect_uri: chrome-extension://...<br/>}
     API->>API: Validate authorization code<br/>Verify SHA256(verifier) == stored challenge<br/>Check code not expired/used<br/>Validate redirect_uri matches
-    API-->>Ext: {<br/>access_token: JWT,<br/>token_type: Bearer,<br/>expires_in: 3600,<br/>refresh_token: JWT,<br/>refresh_expires_in: 604800,<br/>session_id: SESSION_ID,<br/>user: {...}<br/>}
+    API-->>Ext: {<br/>access_token: JWT,<br/>token_type: Bearer,<br/>expires_in: 900,<br/>refresh_token: JWT,<br/>refresh_expires_in: 604800,<br/>session_id: SESSION_ID,<br/>user: {...}<br/>}
     Ext->>Ext: Store access_token & session_id
     Ext->>Ext: Clear PKCE verifier & state
     Ext->>API: API calls with dual headers<br/>Authorization: Bearer JWT<br/>X-Session-Id: SESSION_ID
@@ -530,21 +548,25 @@ export class PKCEGenerator {
 
 **Backend: Verify PKCE**
 
+Verification is a private method on `OAuthService` (there is no standalone
+`pkce.py` module); it is invoked during the authorization-code exchange:
+
 ```python
-# faultmaven/modules/auth/domain/services/pkce.py
+# faultmaven/modules/auth/domain/services/oauth_service.py
 import hashlib
 import base64
-import hmac
+import secrets
 
-def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
-    """Verify PKCE code_verifier matches code_challenge using constant-time comparison."""
-    verifier_bytes = code_verifier.encode('utf-8')
-    computed_challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier_bytes).digest()
-    ).decode('utf-8').rstrip('=')
-
-    # Constant-time comparison to prevent timing attacks
-    return hmac.compare_digest(computed_challenge, code_challenge)
+    def _verify_pkce(self, code_verifier: str, code_challenge: str) -> bool:
+        """Verify PKCE code_verifier matches code_challenge."""
+        verifier_bytes = code_verifier.encode("utf-8")
+        computed_challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(verifier_bytes).digest())
+            .decode("utf-8")
+            .rstrip("=")
+        )
+        # Constant-time comparison to prevent timing attacks
+        return secrets.compare_digest(computed_challenge, code_challenge)
 ```
 
 ### OAuth Endpoints
@@ -608,7 +630,7 @@ Content-Type: application/json
   "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "Bearer",
-  "expires_in": 3600,
+  "expires_in": 900,
   "refresh_expires_in": 604800,
   "session_id": "session-xyz",
   "user": {
@@ -644,10 +666,100 @@ Content-Type: application/json
   "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "Bearer",
-  "expires_in": 3600,
+  "expires_in": 900,
   "refresh_expires_in": 604800
 }
 ```
+
+#### Mode-Agnostic Refresh: `POST /api/v1/auth/refresh`
+
+In addition to the OAuth `grant_type=refresh_token` flow above, a mode-agnostic
+refresh endpoint is available in **both** local and cloud modes
+(`modules/auth/api/auth.py`). Local-mode clients cannot use the OAuth token
+endpoint, so this is their refresh path; cloud clients may use either.
+
+```http
+POST /api/v1/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{refresh_token}"
+}
+```
+
+The access token is a stateless JWT and cannot be extended, so an active client
+mints a new one before expiry rather than re-logging-in. **Refresh tokens
+rotate:** the presented refresh token is revoked (in the shared revocation
+store) and a fresh refresh token is returned alongside the new access token.
+The response shape matches the OAuth refresh response above.
+
+## Hosted SSO (ADR-015 / WorkOS)
+
+Cloud deployments can offer a hosted single-sign-on flow in addition to the
+OAuth PKCE flow. Users sign in on an external identity provider's hosted login
+page rather than entering credentials into FaultMaven.
+
+### Provider seam
+
+Hosted SSO is abstracted behind the `ISSOIdentityProvider` interface
+(`modules/auth/contracts.py`). The single implementation today is
+`WorkOSIdentityProvider` (`modules/auth/infrastructure/sso/workos_provider.py`),
+backed by **WorkOS AuthKit** (User Management), constructed via `from_config`.
+The rest of the auth module depends only on the interface, so a different IdP can
+be swapped in without touching the flow.
+
+### Flow
+
+The SSO router (`modules/auth/api/sso.py`, prefix `/auth/sso`) is mounted **only
+when SSO is fully configured** (`sso_configured`), mirroring the OAuth router
+gate. All three legs are unauthenticated by nature — they *are* the login — and
+rate-limited per IP (see [Rate Limiting](#5-rate-limiting)). Orchestration lives
+in `SSOLoginService`.
+
+| Leg | Endpoint | Behavior |
+|-----|----------|----------|
+| 1 | `GET /auth/sso/login` | Mint a `state` value, store it server-side, and `302` to the IdP hosted login page. |
+| 2 | `GET /auth/sso/callback` | IdP redirect target: verify `state`, exchange the IdP code, JIT-provision/resolve the user, then `302` to the dashboard with a **single-use completion code** (or a sanitized error slug). |
+| 3 | `POST /auth/sso/exchange` | Dashboard trades the completion code for a minted FaultMaven session — a standard `AuthTokenResponse` (the same JWT access/refresh pair as the other flows). |
+
+Splitting the browser redirect (leg 2) from the token mint (leg 3) keeps tokens
+out of URLs and browser history: the callback carries only an opaque single-use
+code, which the dashboard immediately exchanges from its own backend.
+
+### Security properties
+
+- **Login-CSRF binding.** A `state` cookie (`fm_sso_state`, path-scoped to
+  `/api/v1/auth/sso`, `SameSite=Lax`, `Secure`) binds the flow to the initiating
+  browser: set on `/login`, required + verified + cleared on `/callback`.
+- **Ephemeral state store.** Pending login state is held in a short-lived store
+  (`modules/auth/infrastructure/stores/sso_ephemeral_store.py`), not in a durable
+  table.
+- **No caching.** Login-flow responses send `Cache-Control: no-store` /
+  `Pragma: no-cache` — the callback URL carries a single-use code and the
+  exchange response carries tokens.
+- **JIT provisioning + audit.** First-time SSO users are provisioned just-in-time
+  on callback; each successful JIT account creation writes an `account_created`
+  entry to `user_audit_log` (provider, derived username, and transport IP /
+  user-agent — never the IdP subject or email; the `success` / `session_id`
+  columns were added in migration 032, with `session_id` null because
+  provisioning precedes the session mint at `/exchange`). Failed attempts (email
+  conflict, invalid identity, lost create-race) and returning-subject logins are
+  **not** written to `user_audit_log` — only the log stream records them
+  (`sso_jit_rejected`). The audit write itself fails open.
+
+### Discovery
+
+When SSO is configured, `GET /auth/config` advertises the entry point as
+`oauth.hosted_login_url` (relative path, resolved by the dashboard against its
+API origin); it is `null` otherwise. `sso_configured` — which gates both the
+router mount and this advertisement — is true when `AUTH_MODE=oauth` **and** all
+three `WORKOS_*` values are set; it does not depend on `DEPLOYMENT_MODE`. The
+coherence gate is one-directional: `DEPLOYMENT_MODE=cloud` **requires** the
+`WORKOS_*` credentials and refuses to boot (naming the missing vars) without
+them, since hosted SSO is the only cloud sign-in path. The reverse is not gated —
+`AUTH_MODE=oauth` with `WORKOS_*` set mounts SSO without cloud mode, and a partial
+`WORKOS_*` config outside cloud is simply inert (the router does not mount), not
+fatal.
 
 ## Security Design
 
@@ -780,7 +892,7 @@ class OAuthClientRegistry:
 
 | Token | Lifetime | Rotation | Revocation |
 |-------|----------|----------|------------|
-| Access Token | 1 hour | N/A | Immediate on logout |
+| Access Token | 15 minutes | N/A | Immediate on logout |
 | Refresh Token | 7 days | On each use | Immediate on logout |
 
 **Storage Security:**
@@ -826,6 +938,9 @@ OAuth endpoints are rate-limited to prevent abuse:
 | `/auth/oauth/authorize` | 10 requests | 1 minute | Per IP |
 | `/auth/oauth/token` | 5 requests | 1 minute | Per IP |
 | `/auth/oauth/revoke` | 20 requests | 1 minute | Per IP |
+| `/auth/sso/login` | 10 requests | 1 minute | Per IP (prevent state-store flooding) |
+| `/auth/sso/callback` | 10 requests | 1 minute | Per IP (prevent state/code guessing via the IdP leg) |
+| `/auth/sso/exchange` | 5 requests | 1 minute | Per IP (prevent completion-code brute force) |
 | `/api/v1/auth/login` | 10 requests | 1 minute | Per IP (via global rate limiter — no dedicated per-endpoint limit yet) |
 
 **Response on limit exceeded:** `429 Too Many Requests` with `Retry-After` header.
@@ -849,71 +964,41 @@ oauth:
   # Set to false for local development with http://localhost
 ```
 
-## OAuth Scopes and Permissions
+## OAuth Scopes
 
-OAuth scopes control what resources the access token can access.
+OAuth scopes are advertised on the access token to describe the resource
+access a Copilot session intends to use. They are **not** the authorization
+mechanism: server-side authorization is enforced by the RBAC layer (roles plus
+the `require_authentication` / `require_admin` dependencies — see
+[Role-Based Access Control](#role-based-access-control)). There is no
+scope-to-permission validator in the request path; a scope on the token does
+not by itself grant access.
 
-### Supported Scopes
+### Scopes Minted on Access Tokens
 
-| Scope | Permissions Granted | Description |
-|-------|---------------------|-------------|
-| `openid` | `read:user_id` | Access to user's unique identifier |
-| `profile` | `read:user_profile` | Access to username, display_name |
-| `email` | `read:user_email` | Access to user's email address |
-| `cases:read` | `read:cases`, `list:cases`, `search:cases` | Read access to cases |
-| `cases:write` | `create:cases`, `update:cases`, `delete:cases` | Write access to cases |
-| `knowledge:read` | `read:knowledge`, `search:knowledge` | Read access to knowledge base |
-| `knowledge:write` | `create:knowledge`, `update:knowledge`, `delete:knowledge` | Write access to knowledge base |
-| `evidence:read` | `read:evidence`, `list:evidence` | Read access to evidence files |
-| `evidence:write` | `upload:evidence`, `delete:evidence` | Write access to evidence files |
+Both token generators (`jwt_token_generator.py`, HS256 and RS256) mint the same
+fixed scope set on every access token:
 
-### Scope Validation
+| Scope | Description |
+|-------|-------------|
+| `openid` | User's unique identifier |
+| `profile` | Username, display_name |
+| `email` | User's email address |
+| `cases:read` | Read access to cases |
+| `cases:write` | Write access to cases |
+| `knowledge:read` | Read access to knowledge base |
 
-```python
-# faultmaven/modules/auth/domain/services/scope_validator.py
-from typing import List, Set
+Evidence is accessed as part of its parent case, so there is no separate
+`evidence:*` scope on minted tokens.
 
-class ScopeValidator:
-    """Validates OAuth scopes and checks permissions."""
+### Scopes Advertised for the Copilot Extension
 
-    SCOPE_PERMISSIONS = {
-        "openid": {"read:user_id"},
-        "profile": {"read:user_profile"},
-        "email": {"read:user_email"},
-        "cases:read": {"read:cases", "list:cases", "search:cases"},
-        "cases:write": {"create:cases", "update:cases", "delete:cases"},
-        "knowledge:read": {"read:knowledge", "search:knowledge"},
-        "knowledge:write": {"create:knowledge", "update:knowledge", "delete:knowledge"},
-        "evidence:read": {"read:evidence", "list:evidence"},
-        "evidence:write": {"upload:evidence", "delete:evidence"},
-    }
-
-    @classmethod
-    def get_permissions_for_scopes(cls, scopes: List[str]) -> Set[str]:
-        """Convert scopes to permissions."""
-        permissions = set()
-        for scope in scopes:
-            if scope in cls.SCOPE_PERMISSIONS:
-                permissions.update(cls.SCOPE_PERMISSIONS[scope])
-        return permissions
-
-    @classmethod
-    def has_permission(cls, token_scopes: List[str], required_permission: str) -> bool:
-        """Check if token has required permission."""
-        permissions = cls.get_permissions_for_scopes(token_scopes)
-        return required_permission in permissions
-```
-
-### Default Scopes for Copilot Extension
+The discovery endpoint `GET /auth/config` advertises the subset the extension
+requests during authorization:
 
 ```text
-openid profile email cases:read cases:write knowledge:read evidence:read
+openid profile email cases:read cases:write
 ```
-
-This provides:
-- User identification and profile access
-- Read/write access to cases
-- Read-only access to knowledge base and evidence
 
 ## Role-Based Access Control
 
@@ -943,19 +1028,38 @@ Enhanced permissions:
 
 ### Role Implementation
 
+Two role vocabularies coexist in the codebase:
+
+- **Account roles (`roles` claim).** The `roles` claim on the access token
+  carries account-level role strings. `admin` is the elevated role, enforced by
+  the `require_admin` dependency, which checks for literal `"admin"` membership
+  in `user.roles` (`api/v1/auth_dependencies.py`, `AuthenticatedUser.is_admin`).
+  Every other authenticated user is baseline (`user`); baseline access is gated
+  by `require_authentication`, not by a specific role string. Token generators
+  default the claim to `["user"]` when the user carries no roles.
+- **Org-scoped roles (`Role` enum).** Separately,
+  `modules/auth/domain/models/rbac.py` defines a `Role` enum — `admin`,
+  `member`, `viewer` — with a granular `Permission` mapping
+  (`get_permissions_for_roles`) for organization/team-scoped RBAC. The two
+  vocabularies overlap only on `admin`; a role string not in the enum (such as
+  the baseline `user`) maps to no granular permissions. Consolidating the
+  account and org-scoped role vocabularies is tracked as a separate RBAC
+  reconciliation.
+
 **User contract (`UserDTO`):**
 
 This is the public contract surface other modules consume. The internal domain entity (`User`, in `faultmaven/modules/auth/domain/models/user.py`) carries persistence-layer fields like `hashed_password`, `is_verified`, `updated_at`, `last_login_at`, and `metadata`; it should not be exported across module boundaries.
 
 ```python
 # faultmaven/modules/auth/contracts.py
-class UserDTO(BaseModel):
+@dataclass
+class UserDTO:
     user_id: str
+    username: str
     email: str
-    full_name: str
+    display_name: str
     is_active: bool = True
-    # Roles are not on UserDTO; they are loaded per-request from the RBAC system
-    # (role_permissions / user_roles tables) and attached to the request context.
+    roles: Optional[List[str]] = None  # account-level role strings, when attached for cross-module checks
 ```
 
 > **Auth mode** (`local` vs `oauth`) is a system-wide configuration setting (`AUTH_MODE`), not a per-user attribute — both modes operate on the same `UserDTO` shape.
@@ -1008,6 +1112,29 @@ Authorization: Bearer {access_token}
 }
 ```
 
+### Available KB-Publish Scopes
+
+```http
+GET /api/v1/auth/me/available-scopes
+Authorization: Bearer {access_token}
+```
+
+Returns the **knowledge-base publish scopes** the caller may target for
+collaboration — a distinct concept from OAuth token scopes. `personal`
+(author-only) and `global` (platform-wide) are always returned; `team` is
+included only when the deployment is team-enabled (a Cloud collaboration
+feature) **and** the caller belongs to at least one team. Frontends gate their
+team UI (KB team-publish, case share-to-team) on this signal. Scopes are
+returned narrowest-to-widest.
+
+**Response:**
+
+```json
+{
+  "scopes": ["personal", "team", "global"]
+}
+```
+
 ### Logout
 
 ```http
@@ -1026,41 +1153,43 @@ Authorization: Bearer {access_token}
 
 ### Session Invalidation on Auth Events
 
-Authentication events have implications for session state management. The following table defines the expected behavior:
+Authentication events have implications for session state management. The
+table below is the *intended* invalidation matrix; the **Implemented** column
+records current behavior, since several rows are aspirational.
 
-| Event | Session Action |
-|-------|----------------|
-| **Logout** | Delete all sessions for user and revoke all tokens |
-| **Token Revocation** | Delete session associated with revoked token |
-| **New Login (same client_id)** | Replace previous session with new one |
-| **Password Change** | Invalidate all sessions (security measure) |
-| **Account Deactivation** | Delete all sessions immediately |
+| Event | Intended Session Action | Implemented |
+|-------|-------------------------|-------------|
+| **Logout** | Revoke the presented access token; drop associated session state | Partial — the presented token is revoked by `jti`; no session/investigation-state cleanup |
+| **Token Revocation** | Delete session associated with revoked token | Token is revoked in the shared store; session cleanup not wired |
+| **New Login (same client_id)** | Replace previous session with new one | Intended |
+| **Password Change** | Invalidate all sessions | No — bulk per-user revocation is a no-op (no per-user JTI index; see #767) |
+| **Account Deactivation** | Delete all sessions immediately | No — same bulk-revocation limitation |
 
-**Implementation:**
+**Implementation (logout, actual):**
 
 ```python
-async def logout(
-    auth_service: IAuthService,
-    state_manager: StateManager,
-    session_store: ISessionStore,
-    token: str,
-    session_id: str
-) -> LogoutResponse:
-    """Logout user and cleanup session state."""
-    # 1. Revoke token
-    await auth_service.revoke_token(token)
-
-    # 2. Delete investigation state from Redis
-    await state_manager.delete_investigation_state(session_id)
-
-    # 3. Clean up client mapping
-    await session_store.cleanup_client_session_mapping(session_id)
-
+# faultmaven/modules/auth/api/auth.py — logout endpoint
+async def logout(current_user, auth_service, ...) -> LogoutResponse:
+    jti = current_user.jti
+    if not jti:
+        # Foreign token without a jti — nothing to revoke.
+        return LogoutResponse(
+            message="Logged out (token carries no jti; nothing to revoke)",
+            revoked_tokens=0,
+        )
+    # Revoke only the presented access token. Raises on store failure so logout
+    # never reports success while the token remains usable (#767).
+    await auth_service.revoke_token(jti, exp)
     return LogoutResponse(message="Logged out successfully", revoked_tokens=1)
 ```
 
-> [!IMPORTANT]
-> Session invalidation must be atomic with token revocation. If token revocation succeeds but session cleanup fails, the user may see stale session data on next login. Use a transaction or saga pattern to ensure consistency.
+> [!NOTE]
+> Logout revokes only the token presented on the request; it does **not**
+> enumerate or revoke the user's other outstanding tokens (there is no per-user
+> JTI index — the same limitation described under
+> [Token Validation Middleware](#token-validation-middleware)), and it does not
+> delete investigation/session state. Broadening logout to full session teardown
+> depends on the per-user revocation follow-up to #767.
 
 ## Frontend Implementation
 

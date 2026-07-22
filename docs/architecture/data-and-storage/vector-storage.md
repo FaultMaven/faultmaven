@@ -387,16 +387,17 @@ await case_vector_store.add_documents(case_id, documents)
    await case_vector_store.delete_case_collection(case_id)
    ```
 
-2. **Scheduled orphan sweep** — a background job runs every 6 hours, comparing live ChromaDB collections against the active-case-ID set in the database. Any `case_*` collection without a matching active case is deleted as a safety net:
+2. **Scheduled orphan sweep (opt-in)** — an *optional* in-process background job compares live ChromaDB collections against the active-case-ID set in the database and deletes any `case_*` collection without a matching active case, as a safety net. It is **disabled by default** (`server.run_scheduler=False`, "operational neutrality"); when enabled it runs every 6 hours. The main.py lifespan only starts it when `run_scheduler` is true, and it refuses to start under the multi-tenant provider (the sweep is cross-tenant, ADR-010 P3). Operators who leave it off can instead run the equivalent CLI job (`python -m faultmaven.jobs.run`) or an external scheduler:
 
    ```python
-   # faultmaven/jobs/case_cleanup.py
-   # Started in main.py lifespan with interval_hours=6
-   case_cleanup_scheduler = start_case_cleanup_scheduler(
-       case_vector_store=case_vector_store,
-       case_store=case_store,
-       interval_hours=6,
-   )
+   # faultmaven/infrastructure/tasks/case_cleanup.py
+   # Started from main.py lifespan ONLY when settings.server.run_scheduler is True.
+   if settings.server.run_scheduler:
+       case_cleanup_scheduler = start_case_cleanup_scheduler(
+           case_vector_store=case_vector_store,
+           case_store=case_store,
+           interval_hours=6,
+       )
 
    # Each sweep iteration calls:
    active_case_ids = {c.case_id for c in await case_store.list_all()}
@@ -575,7 +576,7 @@ Source files live in `data/knowledge/` (markdown) and `data/evidence/` (raw uplo
 
 **Scheduled Maintenance**:
 
-- No in-process scheduler. Operators who want periodic sweeps (for example, the orphan-collection sweep described in §5.2) should configure an external job runner (Kubernetes CronJob, systemd timer, etc.) that invokes the relevant entry point.
+- An **opt-in** in-process scheduler exists (`server.run_scheduler`, **default off**) that runs the orphan-collection sweep described in §5.2 every 6 hours when enabled. With it left off (the default), operators who want periodic sweeps should either enable it or configure an external job runner (Kubernetes CronJob, systemd timer, etc.) that invokes the CLI entry point (`python -m faultmaven.jobs.run`).
 
 ### 7.4 Disaster Recovery
 

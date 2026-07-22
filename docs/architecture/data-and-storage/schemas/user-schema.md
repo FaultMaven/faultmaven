@@ -95,7 +95,7 @@ In development, the same SQLite-backed user store is used as in local deployment
 
 **Storage**: SQLite (Local Deployment) or PostgreSQL (Cloud Deployment) via SQLAlchemy ORM
 
-**Tables**: 11 tables (user domain)
+**Tables**: 10 tables (user domain; the `enterprises` tenancy container is not yet documented in this spec — see revision history)
 - `users` - User accounts
 - `organizations` - Tenant workspaces
 - `organization_members` - User-organization mapping
@@ -151,9 +151,10 @@ CREATE TABLE users (
     -- Primary Key
     user_id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid()::text,
 
-    -- Denormalized role string (in addition to organization_members.role_id)
-    -- Used for simple local-auth deployments. Column width matches the live schema.
-    roles VARCHAR(500),
+    -- Denormalized dev-role string (in addition to organization_members.role_id)
+    -- Used for simple local-auth deployments. ORM attribute/column is `dev_roles`
+    -- (Text, nullable) — renamed from `roles` in migration 012.
+    dev_roles TEXT,
 
     -- Authentication
     email VARCHAR(255) NOT NULL UNIQUE,
@@ -233,10 +234,11 @@ CREATE TABLE organizations (
     description TEXT NULL,              -- free-form description
     metadata TEXT NULL,                 -- ORM attribute is `metadata_` to avoid SQLAlchemy Base.metadata collision; physical column name is `metadata`
 
-    -- Subscription
-    plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',  -- 'free', 'pro', 'business'
-    max_members INTEGER NOT NULL DEFAULT 5,
-    max_cases INTEGER,
+    -- Subscription / plan limits (plan_tier, max_members, max_cases) are NOT on
+    -- organizations in the live ORM — they live on the `enterprises` table
+    -- (top-tier tenancy container; enum `('free', 'starter', 'pro', 'business')`,
+    -- max_members default 5, max_cases nullable). `enterprises` is not yet
+    -- documented in this spec (separate follow-up; see revision history).
 
     -- Settings
     settings JSONB DEFAULT '{}'::jsonb,  -- Flexible org-specific settings
@@ -254,9 +256,9 @@ CREATE TABLE organizations (
     -- Tier 1 (live ORM) — note: no TRIM, by design. Mirrored on Pydantic via ``min_length=1``
     CONSTRAINT organizations_slug_not_empty CHECK (LENGTH(slug) > 0),
     -- Tier 2 (PostgreSQL-only) — regex CHECK not in live ORM
-    CONSTRAINT organizations_slug_format CHECK (slug ~* '^[a-z0-9-]+$'),
-    -- Tier 2 (PostgreSQL-only) — enum CHECK not in live ORM
-    CONSTRAINT organizations_plan_tier_valid CHECK (plan_tier IN ('free', 'pro', 'business'))
+    CONSTRAINT organizations_slug_format CHECK (slug ~* '^[a-z0-9-]+$')
+    -- (plan-tier CHECK lives on `enterprises` as `enterprises_plan_tier_check`,
+    --  not on organizations — see the Subscription note above.)
 );
 
 -- Tier 2 (PostgreSQL-only) — partial indexes (WHERE deleted_at IS NULL)

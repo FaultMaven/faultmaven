@@ -80,7 +80,7 @@ class OAuthTokenDTO:
     user_id: str
     username: str
     token_type: str = "Bearer"
-    expires_in: int = 3600  # 1 hour
+    expires_in: int = 900  # 15 minutes
     refresh_expires_in: int = 604800  # 7 days
 
 
@@ -117,7 +117,7 @@ class AuthTokenDTO:
     roles: List[str]
     session_id: Optional[str] = None
     token_type: str = "Bearer"
-    expires_in: int = 3600  # 1 hour (in seconds)
+    expires_in: int = 900  # 15 minutes (in seconds)
     refresh_expires_in: int = 604800  # 7 days (in seconds)
     auth_mode: str = "local"  # "local" or "oauth"
 

@@ -11,11 +11,15 @@ Detect drift between design documents and implementation within a specific domai
 
 Does NOT decide which side is "correct" or whether a divergence is a positive adaptation vs. a regression — a separate triage pass makes that call. This skill's job is **objective, verifiable, freshness-anchored identification of differences**. Call out unambiguous bugs, errors, or internal inconsistencies (e.g., a repository targeting a table that does not exist, two enums with the same name and different value spaces) — those are factual findings, not judgments.
 
+## Working directory
+
+All paths in this command are relative to the faultmaven repository root (the directory containing `.claude/manifest.json`). Run every command from there, and instruct the subagent to do the same.
+
 ## Argument
 
-`$ARGUMENTS` — the domain name. Valid domains: `investigation`, `knowledge`, `data-processing`, `storage`, `auth`, `case`, `core-architecture`.
+`$ARGUMENTS` — the domain name, trimmed and lowercased. The set of valid domains is the set of keys under `domains` in `.claude/manifest.json` (the single source of truth; at the time of writing: `investigation`, `knowledge`, `data-processing`, `storage`, `auth`, `case`, `core-architecture`).
 
-If missing or invalid, reject with the list of valid domains.
+If the argument is missing or is not a manifest key, stop and reply with the list of keys read from the manifest. Do not guess a close match.
 
 ## Anti-fabrication contract
 
@@ -26,7 +30,7 @@ Hard rules every finding must satisfy:
 1. **Every claimed doc quote** must be a *verbatim* extract with `<file>:<line>` and must be re-grep-able. Paraphrase is forbidden in finding text. If you cannot grep the exact phrase from the cited file, the finding is invalid.
 2. **Every claimed code behavior** must include `<file>:<line>` pointing to the exact line that demonstrates the behavior. If the cited line does not say what the finding claims, the finding is invalid.
 3. **Every "not mentioned in X" claim** requires a documented negative grep: list the search keywords used and the number of hits returned (must be 0 for the claim to stand).
-4. **Every enum-value, threshold, or count claim** must be obtained by executing code (`python3 -c "..."`) or by grep against the file containing the literal — never by paraphrase or recall.
+4. **Every enum-value, threshold, or count claim** must be obtained by grep against the file containing the literal, or by executing code (`python3 -c "..."` from the repo root) — never by paraphrase or recall. If the python import fails (missing deps/env), fall back to grep on the defining file; do not substitute a remembered value.
 5. **If you cannot verify a finding, omit it.** Do not "soften" it, do not include it with a caveat, do not include it at all.
 
 ## Anti-staleness contract
@@ -60,11 +64,13 @@ Before spawning the subagent, record:
 - `git status --porcelain | wc -l` → `WORKING_TREE_DIRT` (0 = clean)
 - `date -u +%Y-%m-%dT%H:%M:%SZ` → `SCAN_TIMESTAMP`
 
-Pass all three to the subagent. The subagent will record them in the report header. If `WORKING_TREE_DIRT` > 0, warn the user — a scan against a dirty tree will produce findings whose freshness can't be reliably checked later.
+Pass all three to the subagent. The subagent will record them in the report header (`WORKING_TREE_DIRT` = 0 renders as `working tree: clean`, otherwise `working tree: dirty (<N> files)`). If `WORKING_TREE_DIRT` > 0, warn the user — a scan against a dirty tree will produce findings whose freshness can't be reliably checked later — but proceed.
 
 ### 3. Spawn the subagent
 
-Spawn a `general-purpose` subagent via the Task tool with a fully self-contained prompt that incorporates both the anti-fabrication and anti-staleness contracts. This check reads both docs and code for the full domain and would pollute the main conversation context.
+Spawn a `general-purpose` subagent (via the Task tool, or whatever the subagent-spawning tool is named in this harness) with the prompt template below. This check reads both docs and code for the full domain and would pollute the main conversation context.
+
+Before sending, substitute **every** `<...>` placeholder: `<sha>` / `<N>` / `<iso8601>` from Step 2, `<DOC_PATHS>` / `<CODE_PATHS>` copied verbatim from the manifest entry, and `<DOMAIN>` = the validated argument. The prompt must be fully self-contained — the subagent cannot see this file or the conversation.
 
 ---
 
@@ -83,15 +89,16 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 > 1. **Every claimed doc quote** must be a *verbatim* extract with `<file>:<line>`. Paraphrase is forbidden. If you cannot grep the exact phrase, the finding is invalid.
 > 2. **Every claimed code behavior** must include `<file>:<line>` pointing to the exact line that demonstrates it. If the line doesn't say what the finding claims, the finding is invalid.
 > 3. **Every "not mentioned in X" claim** requires a documented negative grep: keywords used + 0-hit confirmation.
-> 4. **Every enum-value, threshold, or count claim** must be obtained by executing code (`python3 -c "..."`) or by grep — never by paraphrase or recall.
+> 4. **Every enum-value, threshold, or count claim** must be obtained by grep on the file containing the literal, or by executing code (`python3 -c "..."` from the repo root) — never by paraphrase or recall. If the python import fails (missing deps/env), fall back to grep on the defining file.
 > 5. **If you cannot verify a finding, omit it.** No softening, no caveats.
 >
 > **Hard constraint 2 — anti-staleness.** A correct-at-scan-time finding becomes harmful the moment the code moves past it. Every finding must carry enough captured state for a future consumer to mechanically detect staleness.
 >
-> 1. **Capture verification command output.** For every `Verify with:` command in a finding, run it once and record both the command AND its exact output (truncated to the most-discriminating ~80 chars). Embed both in the finding so a future re-run can be diff'd.
-> 2. **Use stable matchers.** Prefer `grep -nF '<verbatim string>'` over line-number-only references (`sed -n '<N>p'` is acceptable when paired with a verbatim grep on the same content — the grep is the primary check, the sed is the locator). Line numbers drift; verbatim content moves more slowly and is detectable when it changes.
+> 1. **Capture verification command output.** For every `Verify with:` command in a finding, run it once and record both the command AND its exact output. The finding's `Expected output` block shows the captured line(s) in full; the gate's `expected` argument is a *discriminating substring* of that output (single line, ≤80 chars) — the gate passes iff that substring appears in a fresh run of the command.
+> 2. **Use stable matchers.** Prefer `grep -nF '<verbatim string>'` over line-number-only references (`sed -n '<N>p'` is acceptable when paired with a verbatim grep on the same content — the grep is the primary check, the sed is the locator). Line numbers drift; verbatim content moves more slowly and is detectable when it changes. For grep patterns, quotes must come from a single line — `grep -F` cannot match across lines.
 > 3. **Emit a freshness gate** in the report (template below) that re-runs every captured verification command and prints `FRESH` or `STALE` per finding.
 > 4. **Distinguish positive from absence assertions.** Each gate `check()` line has a mode: `contains` (default) means "FRESH iff the pattern is in the command output"; `absent` means "FRESH iff the pattern is NOT in the command output." Negative-grep findings (the typical shape of design-only "code does not implement X" claims) MUST use `absent` mode with the pattern that should stay missing. Never ship a check with `expected=""` and the default `contains` — that always passes and disables staleness detection for the finding. If you find yourself writing an empty pattern, that's the signal to convert to `absent` mode with a non-empty pattern.
+> 5. **Keep gate arguments shell-safe.** The gate `eval`s each command and substring-matches `expected`, both passed as single-quoted shell strings. Every command and expected pattern must therefore be a single line containing no single quotes, backticks, `$`, or backslashes. If the natural verbatim quote contains one of those characters, pick a different discriminating substring from the same line that doesn't — the full verbatim line still lives in the finding's `Expected output` block.
 >
 > **Scope:**
 >
@@ -124,9 +131,9 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 >
 > **Step 5 — Stay objective; do not judge adaptive vs. regression.** Report divergences in both directions with evidence. A separate triage pass decides whether each item should be resolved by updating the design or by changing the code — that is not your call. However, call out unambiguous bugs, errors, or internal inconsistencies as facts when they are clear from the evidence. State them as observations, not recommendations.
 >
-> **Step 6 — Write the report** to `docs/working/ANALYSIS-design-check-<DOMAIN>.md` with this structure:
+> **Step 6 — Write the report** to `docs/working/ANALYSIS-design-check-<DOMAIN>.md` (overwrite any previous report at that path) with this structure:
 >
-> ````
+> ````markdown
 > # Design Check: <domain>
 >
 > **Scanned at:** `<SCAN_COMMIT>` <SCAN_TIMESTAMP> (working tree: clean | dirty)
@@ -293,7 +300,9 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 > <one paragraph: magnitude of *verified* drift at the scan commit and where it concentrates. Do not extrapolate from dropped findings. State explicitly that this assessment is anchored to `<SCAN_COMMIT>`.>
 > ````
 >
-> **Step 7 — Final integrity check.** Before printing the report path, pick 3 random findings from the file you just wrote and:
+> Leave any section that has no findings with the text "None." beneath the section heading. (The freshness gate stays — with zero findings it simply prints `Fresh: 0  Stale: 0`.)
+>
+> **Step 7 — Final integrity check.** Before printing the report path, pick 3 findings at random from the file you just wrote (all of them if the report has 3 or fewer) and:
 >
 > 1. Re-run their `Verify with:` commands and confirm the captured "Expected output" still matches.
 > 2. Confirm the freshness gate's `check` lines for those findings reference the exact captured expected substrings (no paraphrase, no edits).
@@ -302,14 +311,19 @@ Spawn a `general-purpose` subagent via the Task tool with a fully self-contained
 
 ---
 
-### 4. Surface the report
+### 4. Verify, then surface the report
 
-After the subagent finishes, show the user:
+After the subagent finishes, verify mechanically before telling the user anything:
+
+1. Confirm the report file exists at `docs/working/ANALYSIS-design-check-<DOMAIN>.md` and its header records the scan commit from Step 2.
+2. Extract the freshness-gate bash block from the report and run it once from the repo root. Immediately after a scan, **every check must print FRESH** — a STALE-at-birth check means its captured expected output is wrong (a capture error or fabrication), not that the code moved. If any check is STALE, send the subagent back to fix or drop that finding (via SendMessage/resume if available, otherwise a follow-up subagent with the report and the failing check IDs), then re-run the gate.
+
+Then show the user:
 
 1. The report path.
 2. A one-line summary (e.g., *"4 design-only, 2 code-only, 1 unambiguous inconsistency, 11 candidates dropped — see `docs/working/ANALYSIS-design-check-investigation.md`"*).
-3. The scan commit SHA.
-4. **An explicit reminder to run the freshness gate before acting** — paste the gate's bash block into a shell at the repo root; STALE findings must not be acted on.
+3. The scan commit SHA, and confirmation that the gate ran clean (all FRESH) at scan time.
+4. **An explicit reminder to run the freshness gate before acting later** — paste the gate's bash block into a shell at the repo root; STALE findings must not be acted on.
 
 ## Completion criteria
 
@@ -321,6 +335,7 @@ c. The report header records `Scanned at: <commit-sha> <timestamp> (working tree
 d. The Freshness gate section at the top of the report contains one `check` line per finding, referencing the exact captured expected output.
 e. The "Note to the agent" section instructs the consumer to run the gate before acting and to skip stale findings.
 f. The Verification Log lists outcomes for each finding plus any drops.
+g. The caller ran the freshness gate once immediately after the scan and every check printed FRESH.
 
 ## Rules
 

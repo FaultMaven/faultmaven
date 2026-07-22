@@ -918,7 +918,7 @@ class SecuritySettings(BaseSettings):
         validation_alias="JWT_SECRET_KEY",
         description="HS256 secret for local auth; auto-generated+persisted in local mode by get_settings() if unset (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
     )
-    jwt_access_token_expire_minutes: int = Field(default=60)
+    jwt_access_token_expire_minutes: int = Field(default=15)
     jwt_refresh_token_expire_days: int = Field(default=7)
 
     # Refresh token rotation (security best practice)
@@ -1083,9 +1083,9 @@ class AuthSettings(BaseSettings):
 
     # JWT token expiry settings (common for both modes per iam-design.md)
     jwt_access_token_expire_minutes: int = Field(
-        default=60,
+        default=15,
         validation_alias="JWT_ACCESS_TOKEN_EXPIRY",
-        description="Access token expiry (minutes)",
+        description="Access token expiry (minutes); short-lived per security posture (<30 min)",
     )
     jwt_refresh_token_expire_days: int = Field(
         default=7,
