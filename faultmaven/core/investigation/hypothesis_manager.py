@@ -77,6 +77,17 @@ if NEW_HYPOTHESIS_MAX_PRIOR >= CAUSE_IDENTIFIED_LIKELIHOOD:  # pragma: no cover
 # introduce below this threshold instead of hardcoding a copy of the number.
 ANCHORING_SAME_CATEGORY_THRESHOLD = 4
 
+# Age-based stagnation sweep: an ACTIVE hypothesis that has gone this many turns
+# since its last progress WITHOUT any turn touching it (see
+# ``advance_stagnation_if_ignored``) is treated as stagnant and its stagnation
+# counter advances. Coupled to the 3-iteration stagnation horizon the rest of the
+# lifecycle already uses (``detect_anchoring`` conditions 2/3 and the INCONCLUSIVE
+# transition both act at ``iterations_without_progress >= 3``): an IGNORED
+# hypothesis reaches the same stall state as a repeatedly-tested one instead of
+# lingering at its prior forever. Kept equal to that horizon on purpose — do not
+# diverge the two without cause.
+IGNORED_STAGNATION_TURN_THRESHOLD = 3
+
 
 class HypothesisManager:
     """Unified hypothesis lifecycle and confidence management
@@ -140,6 +151,14 @@ class HypothesisManager:
         for h in case.hypotheses.values():
             if h.state == HypothesisState.CAPTURED:
                 h.state = HypothesisState.ACTIVE
+                # Activation starts the stagnation clock: a queued theory does
+                # not bank the turns it spent CAPTURED (the age-based sweep skips
+                # non-ACTIVE hypotheses, so an un-refreshed last_progress_at_turn
+                # from its creation turn would charge those turns the instant it
+                # goes ACTIVE and pre-age a fresh candidate). Match the
+                # create_hypothesis grace — decay counts from activation.
+                h.last_progress_at_turn = case.current_turn
+                h.last_updated_turn = case.current_turn
                 promoted.append(h.hypothesis_id)
         return promoted
 
@@ -491,6 +510,57 @@ class HypothesisManager:
             logger.info(
                 f"Hypothesis {hypothesis.hypothesis_id} RETIRED (likelihood < 30%)"
             )
+
+    def advance_stagnation_if_ignored(
+        self,
+        hypothesis: Hypothesis,
+        current_turn: int,
+    ) -> Hypothesis:
+        """Age an ACTIVE hypothesis toward stagnation when no turn is touching it.
+
+        ``iterations_without_progress`` otherwise advances ONLY when a hypothesis
+        is engaged (evidence linked / a likelihood update that fails to move
+        belief >= 5%). A hypothesis that is simply IGNORED — never touched by
+        evidence — keeps ``iterations_without_progress == 0`` forever, so
+        ``apply_likelihood_decay`` no-ops and stagnation-based anchoring never
+        fires on it: it lingers at its prior as a permanent unrefuted sibling
+        (#713). This sweep closes that gap with an age signal: once a hypothesis
+        has gone ``IGNORED_STAGNATION_TURN_THRESHOLD`` turns since its last
+        progress, its stagnation counter advances by one per housekeeping turn,
+        feeding the SAME decay/anchoring machinery a repeatedly-tested hypothesis
+        already drives.
+
+        Conservative and origin-BLIND by construction: it only ADVANCES the
+        stagnation counter (which can lower belief over time or stall the theory)
+        — it never raises likelihood, validates, refutes, concludes, or reads a
+        hypothesis's provenance. A hypothesis touched THIS turn (its
+        ``last_updated_turn`` already reached ``current_turn`` via the evidence
+        path or its own creation) is skipped, so the counter is never
+        double-advanced in one turn.
+
+        Args:
+            hypothesis: hypothesis to age
+            current_turn: current conversation turn
+        """
+        if hypothesis.state != HypothesisState.ACTIVE:
+            return hypothesis
+        # Already touched/created/advanced this turn — don't double-count.
+        if hypothesis.last_updated_turn >= current_turn:
+            return hypothesis
+        turns_since_progress = current_turn - hypothesis.last_progress_at_turn
+        if turns_since_progress < IGNORED_STAGNATION_TURN_THRESHOLD:
+            return hypothesis
+
+        hypothesis.iterations_without_progress += 1
+        hypothesis.last_updated_turn = current_turn
+        logger.info(
+            "Aged ignored hypothesis %s toward stagnation: "
+            "%d turns since progress, iterations_without_progress=%d",
+            hypothesis.hypothesis_id,
+            turns_since_progress,
+            hypothesis.iterations_without_progress,
+        )
+        return hypothesis
 
     def apply_likelihood_decay(
         self,

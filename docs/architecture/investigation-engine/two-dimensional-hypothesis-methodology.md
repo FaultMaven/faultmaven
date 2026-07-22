@@ -353,6 +353,18 @@ decays on user latency alone — a three-turn network-capture detour would penal
 the very chain it is testing. The counter is per-node and resets at
 `last_progress_at_turn`.
 
+One exception, at the flat-hypothesis layer: an ACTIVE hypothesis that *no* turn
+ever touches gets no investigation-turn increment (nothing engages it), so it
+would otherwise sit at its prior forever — never decaying, never tripping
+anchoring. The housekeeping loop closes that gap with an origin-blind, age-based
+stagnation sweep (`advance_stagnation_if_ignored`): once such a hypothesis has
+gone `IGNORED_STAGNATION_TURN_THRESHOLD` turns since its last progress, its
+counter advances one per turn so decay and anchoring act on it (#713). This is
+conservative and reversible — decay only lowers belief, and the moment evidence
+touches the hypothesis its likelihood recomputes from `initial_likelihood` (the
+age-decay is erased) — so an ignored candidate stalls/soft-retires rather than
+lingering, and never reaches a conclusion on age alone.
+
 ---
 
 ## 7. Validation, Treatment, and the Intervention Quadrants
