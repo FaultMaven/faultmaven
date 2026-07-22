@@ -463,7 +463,7 @@ class KnowledgeResolution(BaseModel):
 3. **Create `Solution`** from the attributed Cause's blocks:
    - `immediate_action` ← Cause `Mitigation` (with risk + duration metadata)
    - `longterm_fix` ← Cause `Resolution`
-4. **Set gate milestones** in the standard order: `solution_proposed=True`, `solution_accepted=True`, `solution_verified=True`. Emit the grounded cause signal `root_cause_identified=True` (the engine materializes it into `cause_state=IDENTIFIED`).
+4. **Set gate milestones** in the standard order: `solution_proposed=True`, `solution_accepted=True`, `solution_verified=True`. There is no LLM-settable cause signal (INV-35): the engine derives `cause_state=IDENTIFIED` from the validated, uncontested chain root grounded by the runbook attribution.
 5. **Fire the standard handshake.** With milestone state populated, the LLM's response on this same turn emits `ProposedTransition` to RESOLVED. The user's confirmation message that triggered `knowledge_resolution` is recognized as the disposition acknowledgment — no additional confirmation turn is required.
 
 **Why the handshake collapses cleanly.** The user already confirmed the fix worked (that's what produced `knowledge_resolution`). The standard disposition invariant — explicit user confirmation — is satisfied by the same "it worked" message that serves as the `solution_verified` signal. The engine does not auto-resolve; it recognizes the user's existing confirmation as covering both signals.
@@ -576,7 +576,7 @@ There is no `INQUIRY → RESOLVED` edge. KB-driven cases route through INVESTIGA
 
 ### 1.3.1 Invariant Enforcement Matrix
 
-The full invariant registry — every load-bearing lifecycle rule (INV-01 … INV-24) with its enforcement-tier classification, pinning tests, and drift notes — lives in its own reference document: **[Investigation Invariant Enforcement Matrix](./investigation-invariants.md)**.
+The full invariant registry — every load-bearing lifecycle rule with its enforcement-tier classification, pinning tests, and drift notes — lives in its own reference document: **[Investigation Invariant Enforcement Matrix](./investigation-invariants.md)**.
 
 It was extracted from this section so the matrix can be maintained and audited independently. The invariants index the rules defined throughout §1–§4 of this document; the *Source* column there points back here by section number.
 
@@ -693,8 +693,8 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
     # (the former "mitigation_sufficient" reason was folded in). The documented
     # mitigation is preserved on the closed case.
     case.action_history.append(CaseAction(
-        from_status=CaseState.INVESTIGATING,
-        to_status=CaseState.CLOSED,
+        from_state=CaseState.INVESTIGATING,
+        to_state=CaseState.CLOSED,
         triggered_at=datetime.now(UTC),
         triggered_by=user_id,
         reason=f"User force-closed: {reason}"
@@ -720,8 +720,8 @@ def close_from_inquiry(case: Case, user_id: str):
         closure_reason="inquiry_only",
     )
     case.action_history.append(CaseAction(
-        from_status=CaseState.INQUIRY,
-        to_status=CaseState.CLOSED,
+        from_state=CaseState.INQUIRY,
+        to_state=CaseState.CLOSED,
         triggered_at=datetime.now(UTC),
         triggered_by=user_id,
         reason="User closed after inquiry only"
@@ -1077,7 +1077,7 @@ Here's what will happen when I close this case:
 
 Please select a closure reason:
 
-[Abandoned]  [Escalated]  [Mitigation Sufficient]  [Other]
+[Abandoned]  [Escalated]  [Other]
 
 Or type your reason."""
 ```
@@ -1717,12 +1717,12 @@ This is not a separate lifecycle edge — it is the standard `INQUIRY → INVEST
 2. **Problem confirmation (INQUIRY → INVESTIGATING)**: Agent presents problem statement; user confirms. Standard INQUIRY → INVESTIGATING transition fires.
 3. **Cause attribution (early INVESTIGATING)**: The agent attributes the active `### Cause <X>` from the retrieved runbook by reasoning over its content against current case state. If attribution is unambiguous, agent proposes the Cause's `Mitigation` + `Resolution` to the user.
 4. **User applies the fix and confirms** ("That fixed it" / "It worked"). LLM emits `knowledge_resolution` in `state_updates`.
-5. **Same-turn milestone collapse**: Engine populates `RootCauseConclusion` (Statement → `root_cause`, Mechanism → `mechanism`), creates `Solution` (Mitigation → `immediate_action`, Resolution → `longterm_fix`), and sets `root_cause_identified`, `solution_accepted`, `solution_verified`.
+5. **Same-turn milestone collapse**: Engine populates `RootCauseConclusion` (Statement → `root_cause`, Mechanism → `mechanism`), creates `Solution` (Mitigation → `immediate_action`, Resolution → `longterm_fix`), and sets `solution_accepted`, `solution_verified`; `cause_state=IDENTIFIED` is engine-derived from the validated chain root (INV-35), never an emitted flag.
 6. **Standard RESOLVED handshake**: LLM emits `ProposedTransition`; user's same confirmation message is recognized as the disposition acknowledgment; transition executes.
 
 #### Milestones
 
-- All standard INVESTIGATING milestones populated in the collapse turn: `symptom_verified`, the grounded cause signal `root_cause_identified` (→ `cause_state=IDENTIFIED`), `solution_proposed`, `solution_accepted`, `solution_verified`.
+- All standard INVESTIGATING milestones populated in the collapse turn: `symptom_verified`, `cause_state=IDENTIFIED` (engine-derived, INV-35), `solution_proposed`, `solution_accepted`, `solution_verified`.
 - `knowledge_resolution` signal recorded for KB-attribution metrics.
 
 ---
@@ -1820,11 +1820,15 @@ The retrospective shape is **direct** vs **mitigated**, derived from
 | **Knowledge artifact** | **Runbook** | **Closure Summary only** | **Runbook** |
 
 `closure_reason` is `None` for all RESOLVED cases — resolution itself is the
-categorization. Only CLOSED cases carry a `closure_reason` value (`inquiry_only`
-or `closed_after_investigation`). `derive_closure_reason` (in
-`terminal_transitions.py`) returns `inquiry_only` when the case never left INQUIRY,
-otherwise `closed_after_investigation` — the former `mitigation_sufficient` reason
-was folded into the latter.
+categorization. Only CLOSED cases carry a `closure_reason` value (`inquiry_only`,
+`closed_insufficient_evidence`, or `closed_after_investigation`).
+`derive_closure_reason` (in `terminal_transitions.py`) returns `inquiry_only`
+when the case never left INQUIRY, `closed_insufficient_evidence` when the case
+is closed from INVESTIGATING while in the `INSUFFICIENT_EVIDENCE`
+verification-status cell (see
+[Insufficient-Evidence Handling §3.5](./insufficient-evidence-handling.md)),
+and otherwise `closed_after_investigation` — the former `mitigation_sufficient`
+reason was folded into the latter.
 
 ---
 
