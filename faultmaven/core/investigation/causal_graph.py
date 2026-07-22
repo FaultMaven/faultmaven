@@ -1631,6 +1631,14 @@ def project_hypothesis_states_from_roots(case: Case) -> bool:
             changed = True
         elif not root_validated and hyp.state == HypothesisState.VALIDATED:
             hyp.state = HypothesisState.ACTIVE
+            # Re-entering the ACTIVE differential restarts the stagnation clock:
+            # the age-based decay sweep skips non-ACTIVE hypotheses, so a
+            # last_progress_at_turn left at the pre-validation touch would charge
+            # the reverted candidate for the turns it spent VALIDATED and could
+            # decay/retire it the instant it reverts. A just-devalidated theory
+            # gets the same fresh grace as a newly-formed candidate.
+            hyp.last_progress_at_turn = case.current_turn
+            hyp.last_updated_turn = case.current_turn
             changed = True
     return changed
 

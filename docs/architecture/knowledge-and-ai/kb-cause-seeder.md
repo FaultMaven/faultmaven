@@ -17,9 +17,10 @@ grounded conclusion. It is explicitly *not* the retired runbook-cause matcher
 (that was a deterministic grounding/validation arm, NO-GO'd in #658); the seeder
 grants **zero evidentiary privilege** — a seeded candidate is validated only by
 real case evidence, and is subject to the same confidence decay, anchoring
-detection, and failed-fix demotion as a self-generated hypothesis (an
-engaged-but-unsupported seed decays; an ignored one stays inert at its ≤0.5 prior
-— see the Guarantee section).
+detection, and failed-fix demotion as a self-generated hypothesis (both an
+engaged-but-unsupported seed and an ignored one decay across turns — an ignored
+seed via the housekeeping loop's age-based stagnation sweep, #713 — see the
+Guarantee section).
 
 On by default, behind `FAULTMAVEN_KB_CAUSE_SEEDER` (kill switch — set `false` to
 disable without a rollback). The flag turned on after the enabling eval cleared
@@ -286,7 +287,7 @@ mechanism:
 | Mechanism | How the seeded candidate is subject to it |
 |---|---|
 | Prior cap | `create_hypothesis` clamps to `≤ 0.5` — no head start. |
-| Confidence decay (`0.85^iterations`) | Same treatment as a self-generated hypothesis — no special-casing. Precisely: `iterations_without_progress` climbs only when the LLM *engages* a hypothesis (touches it via `link_evidence`/likelihood update that fails to move likelihood ≥5%), and `apply_likelihood_decay` no-ops while the counter is 0 (`hypothesis_manager.py`). So a seed the LLM **engages and fails to support** decays each turn via the housekeeping loop, exactly like any other stagnant hypothesis; a seed the LLM **never touches** keeps `iterations_without_progress=0` and stays inert at its ≤0.5 prior (it never decays, and stagnation-based anchoring never fires on it). Either way it is harmless: candidate-only, evidence-less, provenance-blind → cannot validate. (Whether an *untouched* ACTIVE hypothesis should also decay is a global engine question, not seeder-specific — filed as #713.) |
+| Confidence decay (`0.85^iterations`) | Same treatment as a self-generated hypothesis — no special-casing. Two paths advance `iterations_without_progress`, both origin-blind. **Engaged and unsupported:** the counter climbs when the LLM *touches* a hypothesis (via `link_evidence`/a likelihood update that fails to move likelihood ≥5%), so a seed the LLM engages and fails to support decays each turn via the housekeeping loop, exactly like any other stagnant hypothesis. **Ignored:** a seed the LLM *never touches* is aged by the housekeeping loop's stagnation sweep (`advance_stagnation_if_ignored`, `hypothesis_manager.py`) — once it has gone `IGNORED_STAGNATION_TURN_THRESHOLD` turns since its last progress, the counter advances by one per turn, so decay and stagnation-based anchoring act on it just as they would on a repeatedly-tested hypothesis (#713). The sweep is provenance-blind and conservative: it only lowers belief over time (stall/soft-retire) and never validates, refutes, or concludes. Either way the seed stays harmless: candidate-only, evidence-less, provenance-blind → cannot validate. |
 | Anchoring detection | Counts and can retire seeded candidates identically (`detect_anchoring` reads `category`/`iterations`/`likelihood`, not origin). |
 | Failed-fix demotion (M6) | A disproved seed flows through the same `refute_hypothesis` / counterfactual-demotion path. |
 | VALIDATED | Unreachable by the seeder — it never invokes a VALIDATED writer. Node VALIDATED is written by `derive_node_states` (empirical) **and** `validate_by_exclusion` (deductive — the #593 exclusion arm stamps `DEDUCTIVE` on a ROOT once ≥2 siblings are counterfactually refuted); hypothesis VALIDATED is projected from those node states by `project_hypothesis_states_from_roots`. A candidate-only, evidence-less seed at ≤0.5 satisfies none of their preconditions, and Pydantic validators reject a hand-set VALIDATED node lacking a method/actionable flag. |
@@ -299,8 +300,9 @@ structural, not dynamic: a misleading runbook's seeded cause is a CANDIDATE at
 anchoring do. Decay and anchoring are the *secondary* backstop and bite only when
 the LLM **engages** the seed and fails to support it (then its stagnation counter
 climbs and it decays/anchoring-flags/demotes like any other hypothesis); a seed
-the LLM simply **ignores** stays inert at ≤0.5 rather than decaying (see the decay
-row above and #713). In no case does the engine conclude on it.
+the LLM simply **ignores** is aged by the housekeeping loop's stagnation sweep so
+it too decays and can trip anchoring once it has stagnated (see the decay row
+above and #713). In no case does the engine conclude on it.
 
 **Provenance-blindness invariant (load-bearing).** The whole no-privilege claim
 rests on *nothing branching on origin*. The seeder records origin in two read
@@ -445,8 +447,8 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   conclusion on it (NO COLLAPSE, NO INCORRECT CONCLUSION) — this holds structurally
   whether or not the LLM engages the seed. When the LLM *does* engage it and fails
   to support it, it additionally decays across turns and is anchoring-flagged/
-  demoted; when the LLM ignores it, it simply sits inert at ≤0.5 (no decay — see
-  the decay row and #713). The eval also confirms the engine did **not** simply
+  demoted; when the LLM ignores it, the housekeeping loop's age-based sweep still
+  decays it toward stagnation (see the decay row and #713). The eval also confirms the engine did **not** simply
   stop exploring — the LLM continues generating its own hypotheses (guards the
   seed-crowd-out quality risk).
 - **No paraphrase-duplication (per-provider, flag-ON sim only):** after a seeded
@@ -522,8 +524,8 @@ gate items:
 1. **No collapse / no incorrect conclusion** — a wrong seed never reaches
    VALIDATED and the engine does not conclude on it (structural: candidate-only,
    evidence-less, provenance-blind). When the LLM engages the wrong seed it also
-   decays + is anchoring-flagged; an ignored seed stays inert at ≤0.5 rather than
-   decaying (see the decay row and #713) — neither path concludes.
+   decays + is anchoring-flagged; an ignored seed is decayed toward stagnation by
+   the housekeeping age-sweep (see the decay row and #713) — neither path concludes.
 2. **No crowd-out** — the LLM keeps generating its own hypotheses.
 3. **No paraphrase-duplication** — ≤ 1 ACTIVE hypothesis per seeded cause.
    This is a *quality* property and the only prompt-strength-dependent gate item,
