@@ -587,8 +587,12 @@ class ConversionService:
         if request.root_cause_mechanism:
             source_parts.append(f"CAUSAL MECHANISM: {request.root_cause_mechanism}")
         if request.solutions:
+            # Each block is outcome-tagged (applied vs proposed) by
+            # CaseConversionRequest.from_case, which also drops superseded/failed
+            # attempts. A neutral header keeps that per-block outcome authoritative
+            # instead of asserting every listed fix was applied.
             solutions_text = "\n\n".join(request.solutions)
-            source_parts.append(f"SOLUTIONS APPLIED:\n{solutions_text}")
+            source_parts.append(f"SOLUTIONS:\n{solutions_text}")
         if request.hypotheses_summary:
             source_parts.append(f"VALIDATED HYPOTHESES: {request.hypotheses_summary}")
         if request.evidence_summary:

@@ -467,6 +467,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     RootCauseConclusion,
     Solution,
     SolutionFeasible,
+    SolutionOutcome,
     SolutionState,
     SolutionType,
     TemporalState,
@@ -477,6 +478,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     ValidationMethod,
     VerificationStatus,
     WorkingConclusion,
+    classify_solution_outcome,
 )
 
 # ============================================================
@@ -563,8 +565,10 @@ __all__ = [
     "RootCauseConclusion",
     "Solution",
     "SolutionFeasible",
+    "SolutionOutcome",
     "SolutionState",
     "SolutionType",
+    "classify_solution_outcome",
     "MitigationRecord",
     "TemporalState",
     "TurnOutcome",
