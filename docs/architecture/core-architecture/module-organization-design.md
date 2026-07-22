@@ -813,7 +813,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import Inves
 | `core/investigation/` | ❌ No* | ✅ Yes | ⚠️ Shared | ⚠️ **SHARED** | Logic only, data in Case |
 
 *Data owned by `modules/case/`, not `core/`
-**Result**: Only **3 modules** are truly vertical (Auth, Case, Knowledge). Evidence, Agent, and Report are domain services.
+**Result**: Only **3 modules** are truly vertical (Auth, Case, Knowledge). Evidence, Agent, Preprocessing, and Report are domain services.
 
 ---
 
@@ -837,7 +837,7 @@ These modules implement **business capabilities** and should have full vertical 
 
 #### 1. **`modules/auth/`** ✅ **VERTICAL** (Schema-Verified)
 - **Business Logic**: User authentication, authorization, RBAC, session management
-- **Owns Data**: `users` and `organizations` PostgreSQL tables (see `../data-and-storage/schemas/case-schema.md` Section 4.9)
+- **Owns Data**: the 10 user-domain PostgreSQL tables — `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes` (see `../data-and-storage/schemas/user-schema.md`)
 - **Schema Reference**: Core tables include `users`, `organizations` (auth sessions live in Redis via `RedisSessionStore`, not a SQL `sessions` table)
 - **Cross-Module Usage**: All modules depend on auth for access control
 - **Future Extraction**: Could become identity microservice

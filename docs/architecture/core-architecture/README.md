@@ -9,7 +9,7 @@ Foundational patterns and system design for FaultMaven.
 - **[Structured Output Capability System](./structured-output-capability-system.md)** — Provider-agnostic LLM structured output design
 - **[Infrastructure Layer Guide](./infrastructure-layer-guide.md)** — Infrastructure layer conventions
 
-> The previous "Vertical vs Layer Structuring" memo has been archived (see [`docs/archive/2026/04/vertical-vs-layer-structuring-explained.md`](../../archive/2026/04/vertical-vs-layer-structuring-explained.md)). Its guidance is now consolidated into Module Organization Design.
+> The previous "Vertical vs Layer Structuring" memo has been retired; its guidance is now consolidated into [Module Organization Design](./module-organization-design.md).
 
 ## Where Did the Other Docs Go?
 
