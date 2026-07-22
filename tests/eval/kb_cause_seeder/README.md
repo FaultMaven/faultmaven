@@ -10,8 +10,19 @@ It is **not** a CI test — it needs a live server, a real provider key, and the
 flag ON. It lives here so the enabling-gate claim rests on a runnable artifact and
 committed transcripts, not a doc assertion. The unit-level, LLM-agnostic seeder
 tests (deterministic seeding, provenance-blindness, cap↔anchoring coupling,
-observable skips, `and_group` reject) run in CI at
+observable skips, `and_group` reject, **R8 rung-indicator → evidence-need
+seeding**) run in CI at
 `tests/unit/core/investigation/test_kb_cause_seeder.py`.
+
+**R8 (rung indicators → evidence-needs) is gated mechanically, not here.** A
+seeded cause now emits its `rung_indicators` as PENDING `causal_verification`
+evidence-needs (prior-not-gate: `priority=LOW`, `obtainability=UNKNOWN`, cleared by
+motivator-based supersession when the hypothesis retires, provenance-blind). Every
+one of those properties is a deterministic engine-state assertion, so R8's gate is
+the unit + seam tests, not a live rep. What the live `smoke`/`mislead` runs add is
+a *measurement* surface — whether a real model actually validates or refutes the
+now-present seeded rung-needs — informing the deferred `interventions → Solution`
+follow-on, never a new soundness gate.
 
 ## What it asserts
 

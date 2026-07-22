@@ -443,6 +443,43 @@ pasted labels, Rule 5 row). Evidence needs piggyback on that surface;
 §6.1 documents the single new section the prompt gains
 (`<evidence_needs>`), slotted into INVESTIGATION_BASE.
 
+### 5.4 Trigger 3: KB Cause Seeded → Seed Rung-Needs (engine-minted)
+
+The two triggers above are LLM-emitted. There is one narrow,
+deterministic exception: when the [KB cause seeder](../knowledge-and-ai/kb-cause-seeder.md)
+instantiates a retrieved runbook's cause chain as a CANDIDATE
+hypothesis, it also mints that cause's `rung_indicators` as needs —
+without an LLM turn.
+
+```text
+Trigger: A runbook cause is seeded (INQUIRY → INVESTIGATING transition)
+Output:  One PENDING causal_verification need per rung indicator,
+         motivating_hypothesis_ids=[seeded hypothesis], priority=LOW
+```
+
+This is a **prior, not a gate**, and every property keeps a seeded need
+mechanically identical to an LLM-emitted one (it is subject to the same
+lifecycle, surfacing, and wall rules; nothing reads its origin):
+
+- **`priority=LOW`** so it sinks in the rendered `<evidence_needs>`
+  ordering. (Surfacing *selection* itself is priority- and origin-blind —
+  it ranks by `request_text` rarity + rotation — so this is not a
+  suppression guarantee, just a rendering-order hint.)
+- **`obtainability=UNKNOWN`** (the fail-safe default), so it never
+  contributes to the §5.3 declared-data-wall on its own — but it makes
+  the wall honestly computable for the seeded candidate, which
+  previously arrived with zero discriminators.
+- **Motivated solely by the seeded hypothesis**, so §7.4
+  motivator-based supersession retires it for free when that hypothesis
+  is retired — the seeder adds no bespoke lifecycle.
+- **Never auto-fulfilled** — it grounds only when a real datum arrives.
+
+The engine is a bounded *creator* here rather than only a *lifecycle
+manager* (cf. §9.6): the content is copied verbatim from a curated
+runbook, not reasoned, so this does not reopen "LLM determines content."
+Seeding is feature-flagged (`FAULTMAVEN_KB_CAUSE_SEEDER`); with the flag
+off, no seed needs are minted.
+
 ---
 
 ## 6. Usage
@@ -995,6 +1032,14 @@ can be created (triggers), *how* they're persisted, and one
 deterministic lifecycle event (motivator-based supersession on
 hypothesis retirement). This division keeps the LLM focused on
 reasoning while the system enforces consistency.
+
+The one bounded exception is the KB cause seeder (§5.4): it mints seed
+rung-needs deterministically, without an LLM turn. This does not erode
+the principle — the content is copied verbatim from a curated runbook
+rather than reasoned, and the seeded needs obey every lifecycle,
+surfacing, and wall rule identically (they are prior-not-gate and
+provenance-blind to safety). The engine acts as a bounded *creator*
+only for content it did not author.
 
 ### 9.7 No Stored Mention-Count — Prompt-Only Decay
 
