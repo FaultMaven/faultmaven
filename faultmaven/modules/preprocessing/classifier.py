@@ -637,7 +637,7 @@ class DataClassifier:
         if trace_result is not None:
             return trace_result
 
-        # 3. COMMAND_OUTPUT — 13 Linux/Unix commands, 2+ pattern match required.
+        # 3. COMMAND_OUTPUT — 14 Linux/Unix commands, 2+ pattern match required.
         command_result = self._detect_command_output(sample, confidence_boost)
         if command_result is not None:
             return command_result
@@ -1083,9 +1083,12 @@ class DataClassifier:
 
         char_count = len(content)
         line_count = content.count("\n") + 1
+        # "Short" means inside *both* size bounds: a paste that exceeds either
+        # bound is not short (a 2000-char/10-line note, or a 500-char/100-line
+        # dump), so skip the ambiguity assessment as soon as one is exceeded.
         if (
             char_count > self._SHORT_TEXT_MAX_CHARS
-            and line_count > self._SHORT_TEXT_MAX_LINES
+            or line_count > self._SHORT_TEXT_MAX_LINES
         ):
             return None
 
