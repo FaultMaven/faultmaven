@@ -58,11 +58,13 @@ Both deployments ship with the same global runbook pack, so neither starts empty
 
 All knowledge tiers share **one ChromaDB collection** (`faultmaven_kb`). Scope isolation is enforced via metadata filtering at query time, not via separate collections.
 
-| Tier | Metadata Filter | Access Rule |
+| Tier | Read filter arm | Access Rule |
 |------|----------------|-------------|
 | Global | `{"scope": "global"}` | Read: all users. Write: platform admin only. |
-| Team | `{"scope": "team", "team_id": "<id>"}` | Read: team members. Write: team admin (or via promotion approval). |
-| Personal | `{"scope": "personal", "owner_id": "<id>"}` | Read/write: owner only. Promote to Team KB via approval. |
+| Team | `{"parent_document_id": {"$in": shared_ids}}` — ids resolved from `resource_shares` | Read: team members. Write: team admin (or via promotion approval). |
+| Personal | `{"owner_id": "<id>"}` | Read/write: owner only. Promote to Team KB via approval. |
+
+**Team visibility is not a metadata tag.** A team-shared item keeps its personal floor in ChromaDB metadata (`scope=personal`, `owner_id=<author>`) — no `team`/`team_id` is ever written. Team membership becomes visibility at query time: the `resource_shares` table (ADR-013 §D4) is the single source of truth, and its `knowledge_item` ids for the caller's teams (`resolve_shared_kb_ids`) are injected as the `parent_document_id` `$in` allowlist arm. This makes sharing unshare-proof — dropping a share row removes visibility with nothing to clean up in the vector store.
 
 **Why one collection, not separate collections per tier:**
 
@@ -75,11 +77,11 @@ All knowledge tiers share **one ChromaDB collection** (`faultmaven_kb`). Scope i
 ChromaDB Instance
 │
 ├── faultmaven_kb                    # ALL knowledge tiers (permanent)
-│   ├── scope=global                 # Pre-built troubleshooting guides
-│   ├── scope=team, team_id=sre      # SRE team shared runbooks
-│   ├── scope=team, team_id=platform # Platform team procedures
-│   ├── scope=personal, owner_id=alice  # Alice's private runbooks
+│   ├── scope=global                 # Pre-built troubleshooting guides (org-free platform tier)
+│   ├── scope=personal, owner_id=alice  # Alice's private runbooks (team shares stay on this floor)
 │   └── scope=personal, owner_id=bob    # Bob's private procedures
+│   #  No scope=team rows: team visibility is resolved at query time from the
+│   #  resource_shares id-allowlist, not stored as vector metadata.
 │
 ├── case_{case_id}                   # Per-case evidence (ephemeral)
 │   └── [uploaded logs, configs, metrics]
@@ -87,15 +89,15 @@ ChromaDB Instance
 └── ...
 ```
 
-**Scope safety invariant:** `KnowledgeVectorStore.search()` enforces that queries against `faultmaven_kb` MUST include a scope filter (`scope`, `owner_id`, or `team_id`) in the `where` clause. Unscoped queries raise `ValueError` — converting a fail-open data leak risk into a fail-closed guarantee. This is enforced in `infrastructure/knowledge/knowledge_vector_store.py`.
+**Scope safety invariant:** `KnowledgeVectorStore.search()` enforces that queries against `faultmaven_kb` MUST include a scope filter — one of the `SCOPE_FILTER_KEYS` (`scope`, `owner_id`, `organization_id`, or `parent_document_id`) — in the `where` clause. Unscoped queries raise `ValueError` — converting a fail-open data leak risk into a fail-closed guarantee. This is enforced in `infrastructure/knowledge/knowledge_vector_store.py`.
 
-**A typical scoped query** for a user who belongs to the SRE team:
+**A typical scoped query** for a user who belongs to the SRE team (built by `build_kb_scope_filter`):
 
 ```python
 where = {"$or": [
     {"scope": "global"},
     {"owner_id": user_id},
-    {"team_id": {"$in": user_team_ids}}
+    {"parent_document_id": {"$in": shared_ids}}  # ids shared to the user's teams
 ]}
 collection.query(query_texts=[question], where=where, n_results=k)
 ```
@@ -175,9 +177,9 @@ A critical temporal separation governs the architecture:
 
 ```text
 Background (before investigation):
-├── Global:   Admin runs ingestion pipeline → runbooks validated → chunks in global_kb
-├── Team:     Team member uploads shared procedure → chunks in team_{team_id}_kb
-└── Personal: User uploads personal runbook via Dashboard → chunks in user_{user_id}_kb
+├── Global:   Admin runs ingestion pipeline → runbooks validated → chunks in faultmaven_kb (scope=global)
+├── Team:     Team member uploads shared procedure → chunks in faultmaven_kb (personal floor + resource_shares row)
+└── Personal: User uploads personal runbook via Dashboard → chunks in faultmaven_kb (scope=personal)
 
 Live (during investigation):
 └── Agent calls KB tool → semantic search on appropriate collection → chunk synthesis → answer
@@ -266,11 +268,13 @@ KB-arch owns the scope-filter construction. The full tool path (adapter → filt
 
 ```text
 {"$or": [
-    {"scope": "global"},                              # all users
-    {"scope": "personal", "owner_id": user_id},      # user's own
-    {"scope": "team", "team_id": {"$in": team_ids}}  # user's teams
+    {"scope": "global"},                                 # all users
+    {"owner_id": user_id},                               # user's own
+    {"parent_document_id": {"$in": shared_ids}}          # ids shared to user's teams
 ]}
 ```
+
+The `shared_ids` arm is resolved from `resource_shares` (`resolve_shared_kb_ids`) — the personal/global arms come straight from the caller's own ids, so a filter built for one user can never surface another's non-shared content. Empty `shared_ids` collapses the filter to `personal ∪ global`.
 
 This filter is passed to the unified `faultmaven_kb` collection in the metadata-`where` argument. The scope safety invariant (`_enforce_scope_invariant()`) rejects any KB query that arrives without a scope clause — see [Storage Architecture](#single-collection-with-metadata-filtering-current).
 
@@ -282,7 +286,7 @@ The `DocumentQATool` base class is KB-neutral — it queries via an injected `KB
 
 | Config Class | File | Collection | Scope handling | Synthesis prompt |
 |--------------|------|------------|----------------|------------------|
-| `UnifiedKBConfig` | `kb_configs/unified_kb_config.py` | `faultmaven_kb` | `$or` filter over `scope=global`, `(scope=personal, owner_id=…)`, `(scope=team, team_id ∈ …)` | Staleness-aware, prefers verified content |
+| `UnifiedKBConfig` | `kb_configs/unified_kb_config.py` | `faultmaven_kb` | `$or` filter over `scope=global`, `owner_id=…`, `parent_document_id ∈ shared_ids` | Staleness-aware, prefers verified content |
 | `CaseEvidenceConfig` | `kb_configs/case_evidence_config.py` | `case_{case_id}` | Per-case isolation | Forensic — preserves chronological order, cites filename/line numbers |
 
 **KBConfig interface** (abstract base in `modules/agent/tools/kb_config.py`):
@@ -398,9 +402,9 @@ Team KB scope filtering is **implemented end-to-end**:
 - Team and organization models exist in the auth module (`modules/auth/domain/models/`)
 - `team_members` junction table supports multi-team membership per user
 - `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs
-- Team IDs are wired into `ToolContext.team_ids` during agent execution (via `AgentOrchestrationService`)
-- The unified `answer_from_kb` tool builds a combined filter: `{"$and": [{"scope": "team"}, {"team_id": {"$in": team_ids}}]}`
-- ChromaDB metadata stores `scope` + `team_id` at ingestion time
+- Team IDs are wired into `ToolContext.team_ids` during agent execution (via `AgentOrchestrationService`), then resolved to shared `knowledge_item` ids via `resolve_shared_kb_ids` against `resource_shares`
+- The unified `answer_from_kb` tool builds the combined filter via `build_kb_scope_filter`, whose team arm is `{"parent_document_id": {"$in": shared_ids}}`
+- ChromaDB metadata stores only the immutable floor (`scope` = `global`/`personal` + `owner_id`) at ingestion time — never `team_id`; team visibility lives in the `resource_shares` table (ADR-013 §D4)
 - API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check
 
 **Remaining work:**
@@ -427,7 +431,7 @@ In Standalone, the Personal and Global scopes are available (Team is Cloud-only)
 
 ### Storage Architecture
 
-**Write path**: `upload_document()` and `verify_draft()` → `ingest_runbook()`, which writes the relational `knowledge_items` row first (source-of-truth) and then the ChromaDB chunks + embeddings. Both stores receive the same `kb_<uuid>` id; ChromaDB-side failures leave the SQL row in place for a future scan-and-recover pass to re-embed (rolling back would erase the only signal that re-embedding is needed). Conversion-bookkeeping rows (`conversion_jobs`, `conversion_drafts`) are written in addition for the upload-flow audit trail.
+**Write path**: `upload_document()` and `verify_draft()` → `ingest_runbook()`, which writes the relational `knowledge_items` row first (source-of-truth) and then the ChromaDB chunks + embeddings. Both stores receive the same `kb_<uuid>` id; on a ChromaDB-side failure (raise OR 0 chunks) `ingest_runbook()` deletes the just-written SQL row before re-raising, so the two stores never diverge (the earlier "leave the SQL row for scan-and-recover" policy produced half-state rows that downstream scans mis-classified — see `kb-ingestion-architecture.md`). Conversion-bookkeeping rows (`conversion_jobs`, `conversion_drafts`) are written in addition for the upload-flow audit trail.
 
 **Read path**: `list_documents()` and `get_document()` read from **`knowledge_items`** — the source of truth for the published inventory (both bootstrap built-ins and `verify_draft` promotions land there). Content comes from the stored `knowledge_items.content` row, not disk. RBAC (org tenancy + personal-owner / team-member isolation) is enforced **in-query** by the repository (`list_for_inventory`); tag/scope filtering and pagination are applied over that already tenant-isolated set. `conversion_drafts` is **only** the review queue (the Drafts tab = `status='draft'`); it is no longer the document inventory. ChromaDB is not queried for listing or retrieval.
 
@@ -445,7 +449,7 @@ Managed through the Knowledge module (`/api/v1/knowledge/`):
 - `POST /documents` — Upload document (SQLite record + chunked vector indexing). Accepts `text/markdown` and `text/plain` only; other content types are rejected with 415.
 - `GET /documents` — List documents — reads from SQLite. **Note:** `domain=`, `service=`, and `severity=` filter query params are specified but not yet implemented; all documents in scope are returned.
 - `GET /documents/{id}` — Get specific document (SQLite + file from disk)
-- `PUT /documents/{id}` — Update document metadata in-place. **Not yet implemented.**
+- `PUT /documents/{id}` — Update document metadata in-place (`update_document_metadata`: loads the row, applies updates, persists, and re-indexes ChromaDB on content change).
 - `DELETE /documents/{id}` — Delete document and remove from ChromaDB
 - `POST /search` — Semantic search (vector embeddings + hybrid reranker) across user's authorized scopes
 - `POST /documents/search` — Full-text search on document title (substring match). Distinct from `/search` — no vector retrieval.
@@ -457,7 +461,7 @@ Personal KB shares the same unified infrastructure as Global and Team — scope 
 | Component | Location |
 |-----------|----------|
 | Vector store (all tiers) | `infrastructure/knowledge/knowledge_vector_store.py` |
-| Document inventory (SQLite) | `infrastructure/persistence/kb_document_repository.py` |
+| Document inventory (SQLite) | `modules/knowledge/infrastructure/persistence/knowledge_item_repository.py` (`DatabaseKnowledgeItemRepository`) |
 | KBConfig (all tiers) | `modules/agent/tools/kb_configs/unified_kb_config.py` |
 | Knowledge service | `modules/knowledge/domain/services/knowledge_service.py` |
 | Knowledge routes | `modules/knowledge/api/routes.py` |
@@ -549,15 +553,11 @@ A second ChromaDB collection — `faultmaven_runbooks` — exists alongside `fau
 
 This is a deliberate exception to the single-collection design: `faultmaven_runbooks` serves a different consumer (the report generator's deduplication logic), uses a different query pattern (pure vector similarity, no metadata scope filter needed), and would otherwise compete with knowledge-retrieval chunks in `faultmaven_kb`.
 
-### `KnowledgeScope.ORGANIZATION`
-
-The code defines four scope values (`PERSONAL`, `TEAM`, `ORGANIZATION`, `GLOBAL`) while this document specifies three tiers. `ORGANIZATION` is intended for enterprise multi-tenant deployments where content should be visible across all teams within an organization but not platform-wide. Its access semantics (which users can read/write, how it maps to `enterprise_id`, how it interacts with the scope safety invariant) are not yet specified. Treat it as a reserved value — do not ingest or query against `scope=organization` without a design spec.
-
 ### `VerificationLevel` (trust/authority system)
 
 `KnowledgeItem` carries a `VerificationLevel` integer enum (`EXPERIMENTAL=0`, `COMMUNITY=1`, `ADMIN_VERIFIED=2`) that tracks the authority of the knowledge's source. This is separate from the frontmatter `status` field (lifecycle: `draft` → `verified` → `stale` → `deprecated`). The two model **different axes** and are deliberately not merged:
 
-- **`status` is the ranking signal.** The four-signal reranker reads frontmatter `status` (verified +0.40 / draft −0.10 / deprecated −0.30). This is the *editorial lifecycle* of a document and is what tunes retrieval relevance.
+- **`status` is the ranking signal.** The four-signal reranker reads frontmatter `status` (verified +0.40 / in-review +0.10 / draft −0.10 / stale −0.20 / deprecated −0.30). This is the *editorial lifecycle* of a document and is what tunes retrieval relevance.
 - **`verification_level` is source provenance only.** It records *who validated* the underlying knowledge (experimental / community / admin-verified) and is surfaced as a trust label in the API/UI (`is_admin_verified`, `/knowledge` responses). It is intentionally **not** a reranker input — provenance should not, on its own, reorder retrieval; a stale admin-verified runbook must still decay by `status`.
 
 So there is one ranking authority (`status`) and one provenance record (`verification_level`); they are complementary, not competing.
@@ -575,6 +575,43 @@ so every call raised `AttributeError` and fell through to a fallback that hardco
 have been removed; live retrieval goes through `search_knowledge()` /
 `search_documents()` (scope-enforcing) and the agent's `answer_from_kb` tool
 (`hybrid_search`). See [vector-retrieval-architecture.md](./vector-retrieval-architecture.md).
+
+---
+
+## Knowledge Suggestions (Case → KB Review Workflow)
+
+Separate from the document-to-runbook *conversion* pipeline, the **suggestion**
+subsystem captures free-form knowledge extracted from a resolved case and routes
+it through human review before it becomes a `KnowledgeItem`. It is a
+human-in-the-loop (HITL) queue with a mandatory PII gate.
+
+**Model** (`modules/knowledge/domain/models/suggestion.py`, table
+`knowledge_suggestions`): a `KnowledgeSuggestion` carries the suggested
+title/content/type, extraction lineage (source case, who/when, message +
+evidence counts), review metadata, and a bidirectional `knowledge_item_id` link
+set on approval. Two enums drive it:
+
+- `SuggestionStatus`: `PENDING_REVIEW → APPROVED` (creates a `KnowledgeItem`) /
+  `REJECTED` (archived) / `DRAFT` (needs more work).
+- `PIIScanStatus`: `NOT_SCANNED → SCANNING → CLEAN | PII_DETECTED → REMEDIATED`
+  (or `SCAN_FAILED`). A suggestion `is_ready_for_review()` only when the scan is
+  `CLEAN` or `REMEDIATED`.
+
+**PII gate (HITL invariant).** `approve()` raises `ConflictError`
+(`conflict_reason="not_ready_for_review"` → HTTP 409) unless the PII scan is
+clean/remediated; `mark_pii_remediated()` raises 409
+(`conflict_reason="no_pii_detected"`) if there is nothing to remediate. Editing
+content (`update_content`) resets the scan to `NOT_SCANNED` — any edit re-arms
+the gate.
+
+**Flow & endpoints.** Extraction is initiated from the case side
+(`POST /cases/{case_id}/extract-knowledge` → `SuggestionService.extract_knowledge_from_case`),
+producing a `PENDING_REVIEW` suggestion. Review happens over the knowledge
+routes: `GET /knowledge/suggestions` (list), `GET /knowledge/suggestions/{id}`,
+`PUT /knowledge/suggestions/{id}` (edit — resets PII scan),
+`POST /knowledge/suggestions/{id}/approve` (201; creates the `KnowledgeItem` and
+links it), `POST /knowledge/suggestions/{id}/reject`, and
+`POST /knowledge/suggestions/{id}/remediate-pii`.
 
 ---
 

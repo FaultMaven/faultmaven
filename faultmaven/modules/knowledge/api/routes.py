@@ -178,8 +178,8 @@ async def upload_document(
                         "The uploaded file must be a valid runbook with YAML frontmatter "
                         "(id, title, domain, service, symptom_class, severity, scope, "
                         "version, last_updated, verified_by, status) and required sections "
-                        "(Problem Definition, Diagnostic Steps, Mitigation, Root Cause "
-                        "Resolution, Verification, Prevention, Sources). "
+                        "(Symptom Recognition, Applicability, Diagnostic Steps, Causes, "
+                        "Prevention, Sources). "
                         "Use Write Runbook to create one from the template, or "
                         "Convert to Runbook to generate from a source document."
                     ),

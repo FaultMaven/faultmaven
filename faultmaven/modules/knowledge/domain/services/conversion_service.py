@@ -1685,7 +1685,15 @@ class ConversionService:
             # knowledge_item_id=NULL) was then "repaired" by a subsequent
             # KB-page scan that downgraded the row back to draft on every
             # visit, corrupting user-verified runbooks.
-            collection = f"{job.scope}_kb"
+            # All KB writes land in the single shared collection, regardless
+            # of scope — scope is a per-row metadata field, not a collection
+            # split. Report the real collection name so the verify response
+            # matches the store the chunks actually went to.
+            from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+                KB_COLLECTION,
+            )
+
+            collection = KB_COLLECTION
 
             if not self._knowledge_service:
                 raise RuntimeError(
