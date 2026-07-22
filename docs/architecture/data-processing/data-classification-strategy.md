@@ -168,9 +168,9 @@ if agent_hint and self._validate_hint(filename, content, agent_hint):
 
 `_validate_hint()` checks:
 
-- `VISUAL_EVIDENCE` — must have image extension (`.png/.jpg/.jpeg/.gif/.webp`)
-- `STRUCTURED_CONFIG` — either config extension (`.yaml/.yml/.json/.toml/.ini/.env`) or key-value pattern in content
-- `SOURCE_CODE` — either code extension (`.py/.js/.ts/.java/.go/.rs/.cpp/.c/.rb`) or code-keyword pattern
+- `VISUAL_EVIDENCE` — must have image extension (`.png/.jpg/.jpeg/.gif/.webp/.bmp`)
+- `STRUCTURED_CONFIG` — either config extension (`.yaml/.yml/.json/.toml/.ini/.env/.config`) or key-value pattern in content
+- `SOURCE_CODE` — either code extension (`.py/.js/.ts/.jsx/.tsx/.java/.go/.rs/.cpp/.c/.h/.rb/.php/.swift/.kt/.scala/.sh/.bash`) or code-keyword pattern
 - All other types — accepted without validation (hard to heuristically validate)
 
 The validator is a safety valve: a bad agent hint (e.g., poisoned by prompt injection) could otherwise route secrets to the wrong extractor.
