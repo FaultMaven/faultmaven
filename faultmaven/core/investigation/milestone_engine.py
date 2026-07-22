@@ -9754,6 +9754,13 @@ class MilestoneEngine:
 
         # 1. Apply confidence decay to stagnant hypotheses
         for h in active_hypotheses:
+            # Age-based stagnation sweep (#713): a hypothesis no turn ever touches
+            # keeps iterations_without_progress=0, so decay/anchoring would never
+            # act on it. Advance the stagnation counter for one that has gone
+            # stagnant-by-age (origin-blind) so an IGNORED hypothesis decays and
+            # can trip anchoring the same as a repeatedly-tested one — never
+            # validating or concluding, only lowering belief over time.
+            self.hypothesis_manager.advance_stagnation_if_ignored(h, case.current_turn)
             # We decay if NO progress was made this turn for this specific hypothesis
             # (Note: link_evidence resets iterations_without_progress to 0)
             self.hypothesis_manager.apply_likelihood_decay(h, case.current_turn)
