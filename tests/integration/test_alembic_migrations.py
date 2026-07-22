@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "c5d6e7f8a9b0"  # current head (033 — global KB platform tier, #770)
+HEAD_REVISION = "d6e7f8a9b0c1"  # current head (034 — conversion live-case uniqueness)
 # Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
 # (029) regardless of no-op migrations stacked above it — more robust than a
 # relative "downgrade -1", which follows whatever the current head is.
@@ -345,6 +345,77 @@ class TestGlobalKbPlatformTierMigration:
                 )
         finally:
             conn.close()
+
+
+class TestConversionLiveCaseUniquenessMigration:
+    """Migration 034: at most one live case-conversion per case.
+
+    A nullable ``conversion_jobs.live_case_id`` with a unique index is the
+    multi-replica dedup backstop. Newest-wins initialization runs before the
+    index is built, so a pre-migration DB that already raced (two live
+    case-source jobs for one case) can still be upgraded: the newest job takes
+    the key, the older stays NULL. Clean-DB up/down cannot exercise that, so
+    this test seeds at the parent revision and upgrades across the boundary.
+    """
+
+    _PARENT = "c5d6e7f8a9b0"  # 033 — the revision before 034
+
+    def _seed_two_live_jobs_one_case(self):
+        """Two case-source jobs for the same case, each with a live draft, one
+        newer than the other — the exact pre-migration duplicate the index
+        would otherwise reject."""
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            for cid, created in (
+                ("conv_old", "2026-07-22 10:00:00"),
+                ("conv_new", "2026-07-22 12:00:00"),
+            ):
+                conn.execute(
+                    "INSERT INTO conversion_jobs "
+                    "(id, organization_id, scope, status, source_file_id, "
+                    "source_type, case_id, created_at) "
+                    "VALUES (?, 'org-1', 'personal', 'completed', ?, 'case', "
+                    "'case-race', ?)",
+                    (cid, f"file_{cid}", created),
+                )
+                conn.execute(
+                    "INSERT INTO conversion_drafts "
+                    "(id, organization_id, conversion_id, runbook_id, title, "
+                    "file_path, status, source_type) "
+                    "VALUES (?, 'org-1', ?, 'rb', 'T', '/x.md', 'draft', 'case')",
+                    (f"{cid}_d", cid),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_newest_live_case_job_takes_key_oldest_stays_null(
+        self, clean_database, database_url
+    ):
+        up = run_alembic(f"upgrade {self._PARENT}", database_url)
+        assert up.returncode == 0, up.stderr
+        self._seed_two_live_jobs_one_case()
+
+        head = run_alembic("upgrade head", database_url)
+        assert (
+            head.returncode == 0
+        ), f"034 upgrade must seed newest-wins then build the index: {head.stderr}"
+
+        rows = dict(query_rows(TEST_DB, "SELECT id, live_case_id FROM conversion_jobs"))
+        assert rows["conv_new"] == "case-race", "newest live job takes the key"
+        assert rows["conv_old"] is None, "older duplicate live job stays NULL"
+
+    def test_unique_index_exists_and_is_unique(self, clean_database, database_url):
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        idx = query_rows(
+            TEST_DB,
+            "SELECT name, \"unique\" FROM pragma_index_list('conversion_jobs') "
+            "WHERE name = 'uq_conversion_jobs_live_case_id'",
+        )
+        assert idx, "unique index uq_conversion_jobs_live_case_id must exist"
+        assert idx[0][1] == 1, "the live_case_id index must be UNIQUE"
 
 
 class TestRbacSeed:

@@ -2221,6 +2221,19 @@ class ConversionJobModel(Base):
         nullable=True,
         index=True,
     )
+    # ``live_case_id`` = ``case_id`` iff this is a case-source job currently
+    # holding >=1 non-discarded draft; NULL otherwise. The unique index
+    # ``uq_conversion_jobs_live_case_id`` below is the multi-replica dedup
+    # backstop for ``convert_from_case``: the in-process ``_inflight_runbook``
+    # registry and the read-then-check idempotence guard cannot serialize across
+    # replicas, so at most one live case-conversion per case is enforced here at
+    # the database. NULLs are distinct under a unique index on both SQLite and
+    # PostgreSQL, so document jobs, failed no-draft jobs, and fully-discarded
+    # jobs never collide. Deliberately NOT an FK: case deletion (which nulls
+    # ``case_id`` above) may leave a stale value here — inert, since case ids
+    # are never reused and a deleted case cannot be converted; it still clears
+    # on draft discard.
+    live_case_id = Column(String(36), nullable=True)
     # ON DELETE RESTRICT: the source file IS this job's provenance. You cannot
     # delete the upload while a conversion job (or any of its drafts) still
     # references it; the job records "this exact file processed at this exact
@@ -2262,6 +2275,7 @@ class ConversionJobModel(Base):
             "source_type IN ('document', 'case')",
             name="conversion_jobs_source_type_check",
         ),
+        Index("uq_conversion_jobs_live_case_id", "live_case_id", unique=True),
     )
 
 
