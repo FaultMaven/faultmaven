@@ -39,6 +39,13 @@ except ImportError:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 
+# The embedding model that embeds queries at runtime. This is the authoritative
+# identity that KB vectors must have been produced with; the KB pack loader
+# guards its declared ``model`` against it (kb_pack.EMBEDDING_MODEL, bound to this
+# by a drift-guard test — kb_pack stays model-free and cannot import this module).
+BGE_M3_MODEL_ID = "BAAI/bge-m3"
+
+
 _THREADS_CONFIGURED = False
 
 
@@ -168,7 +175,7 @@ class ModelCache:
         Returns:
             SentenceTransformer model or None if unavailable
         """
-        model_key = "BAAI/bge-m3"
+        model_key = BGE_M3_MODEL_ID
 
         # Return cached model if available
         if model_key in self._models:
@@ -268,12 +275,12 @@ class ModelCache:
 
         return await asyncio.to_thread(_run)
 
-    def is_model_loaded(self, model_key: str = "BAAI/bge-m3") -> bool:
+    def is_model_loaded(self, model_key: str = BGE_M3_MODEL_ID) -> bool:
         """Check if a model is already loaded in cache."""
         return model_key in self._models
 
     def get_model_load_info(
-        self, model_key: str = "BAAI/bge-m3"
+        self, model_key: str = BGE_M3_MODEL_ID
     ) -> Optional[ModelLoadInfo]:
         """Get load information for a specific model."""
         return self._load_info.get(model_key)

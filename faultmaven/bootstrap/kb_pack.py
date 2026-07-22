@@ -56,6 +56,10 @@ BASELINE_SUBDIR = Path("resources") / "knowledge" / "pack"
 PACK_JSON = "pack.json"
 VECTORS_NPZ = "vectors.npz"
 RUNBOOKS_SUBDIR = "runbooks"
+# The embedding model the shipped pack's vectors were produced with. Must equal
+# the runtime query embedder (``model_cache.BGE_M3_MODEL_ID``); a drift-guard test
+# pins the two. Kept as a local literal (not imported from model_cache) so this
+# loader stays model-free — importing model_cache would pull in sentence-transformers.
 EMBEDDING_MODEL = "BAAI/bge-m3"
 EMBEDDING_DIM = 1024
 
@@ -156,6 +160,38 @@ class KbPack:
             model = meta.get("model", EMBEDDING_MODEL)
             dim = int(meta.get("dim", EMBEDDING_DIM))
             version = str(meta.get("version", "unknown"))
+
+            # Embedding-model identity guard. The pack ships build-time vectors,
+            # but queries are embedded at runtime by EMBEDDING_MODEL
+            # (model_cache.BGE_M3_MODEL_ID / get_bge_m3_model). If the pack was
+            # built with a different embedder, its stored vectors and the runtime
+            # query vectors live in different spaces and every similarity is
+            # garbage — silently, because the dimension can still match. Refuse
+            # such a pack (ignore it; the KB stays empty until it is rebuilt)
+            # rather than fill the store with vectors that can never be correctly
+            # retrieved. Only fires when the pack DECLARES a model; a model-less
+            # pack (``None``) is assumed compatible — no signal to check, fail
+            # open. An empty-string ``model`` is a malformed declaration and is
+            # (loudly) refused, not treated as absent. Compared case-insensitively
+            # so a same-model alias that only differs in case (HF ids resolve
+            # case-insensitively) is not refused as if it were a different model.
+            declared_model = meta.get("model")
+            if (
+                declared_model is not None
+                and str(declared_model).strip().lower() != EMBEDDING_MODEL.lower()
+            ):
+                logger.error(
+                    "KB pack at %s was built with embedding model %r but this app "
+                    "embeds queries with %r — the vectors are incompatible (garbage "
+                    "similarity). Ignoring the pack; no runbooks are ingested from "
+                    "it (an already-populated KB keeps its last-good content). "
+                    "Rebuild the pack with %r.",
+                    pack_dir,
+                    declared_model,
+                    EMBEDDING_MODEL,
+                    EMBEDDING_MODEL,
+                )
+                return None
 
             with np.load(vectors_npz) as npz:
                 vectors = npz["vectors"]

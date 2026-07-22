@@ -92,6 +92,42 @@ from the runbook frontmatter at ingest (cheap, app-owned), keeping the pack
 contract: runbook content + chunk text + vectors + the per-Cause `causes` record
 (below).
 
+### Integrity guards (load- and ingest-time)
+
+Because the pack ships pre-computed vectors and explicit chunk indices, two
+silent-corruption failure modes are guarded rather than left to chance:
+
+- **Embedding-model identity** (`KbPack.load`). The pack ships build-time
+  vectors, but queries are embedded at runtime by the app's `BAAI/bge-m3`
+  (`model_cache.BGE_M3_MODEL_ID` / `get_bge_m3_model`). A pack built with a
+  *different* embedder has vectors in a different space, so every similarity is
+  garbage — and the `dim` check alone does not catch it (a different model can
+  share the 1024-d shape). The loader compares the pack's declared `model`
+  against `EMBEDDING_MODEL` (case-insensitively — HF ids resolve so) and, on a
+  mismatch, logs a loud `ERROR` and **refuses the pack** (returns `None`, same as
+  a `dim`/format mismatch) rather than filling the store with vectors that can
+  never be correctly retrieved. Refusal is *before* `_prune_orphan_builtins` /
+  `_reconcile_vectors`, so an **already-populated KB keeps its last-good
+  content** — only a fresh install is left empty. A `model`-less pack is assumed
+  compatible (no signal to check — fail open); an empty-string `model` is a
+  malformed declaration and is refused. `kb_pack.EMBEDDING_MODEL` keeps its own
+  copy of the id (so the loader stays model-free — importing `model_cache` would
+  drag in sentence-transformers) and is pinned to `BGE_M3_MODEL_ID` by a
+  drift-guard test.
+
+- **Chunk integrity** (`_ingest_pack_runbook`). Each chunk carries an explicit
+  `chunk_index`, but the ingest path re-derives the chunk index and chunk id by
+  list position (`enumerate`). The ingest step, *before* any lookup or re-ingest
+  delete, rejects a runbook with (a) **no chunks** (never retrievable) or (b) a
+  `chunk_index` list that is not canonical `0..n-1` in list order (out of order /
+  gaps / duplicates / non-zero start would silently misalign ids from the
+  manifest). Validating before the delete is deliberate: a malformed pack
+  *update* must not delete a previously-good row and leave nothing behind. The
+  per-runbook loop isolates the failure to that one runbook (recorded in
+  `BootstrapResult.failed`) and the rest of the pack still ingests. (Per-chunk
+  `vector_row` is honoured directly at load, so text↔vector pairing is unaffected
+  by list order — only the derived index/id is guarded here.)
+
 ### Per-Cause `causes` record (the v4 cause-shape contract)
 
 Each runbook entry also ships a **`causes`** array — one record per `### Cause`

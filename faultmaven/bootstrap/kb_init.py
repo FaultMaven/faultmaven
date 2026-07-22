@@ -196,6 +196,36 @@ async def _ingest_pack_runbook(
         VerificationLevel,
     )
 
+    # Chunk-integrity guard — validated FIRST, before any lookup/delete. Rejecting
+    # before the re-ingest ``_delete_existing`` below is deliberate: a malformed
+    # pack UPDATE must not delete a previously-good row and leave nothing behind
+    # (the "no silently-unretrievable runbook" invariant) — the prior copy stays
+    # intact, isolated to ``BootstrapResult.failed`` by the caller.
+    #
+    # (a) A runbook with no chunks can never be retrieved. It would otherwise pass
+    #     the ordering check vacuously, then ``_delete_existing`` + an empty
+    #     ``prechunked`` would trip the ``chunks_created <= 0`` check below AFTER
+    #     the delete — losing the prior row. Reject it here, before the delete.
+    if not runbook.chunks:
+        raise RuntimeError(
+            f"KB pack runbook {runbook.relpath} has no chunks — it could never be "
+            f"retrieved (the pack is malformed; rebuild required)."
+        )
+
+    # (b) Each pack chunk carries an explicit ``chunk_index``, but the ingest path
+    #     below re-derives the chunk_index and chunk id by list position
+    #     (``enumerate``). If a pack's chunk list is out of order — or has gaps or
+    #     duplicate indices — those ids would silently misalign from the manifest
+    #     the pack builder wrote. Require canonical ``0..n-1`` order so a malformed
+    #     pack fails loudly instead of misaligning ids.
+    declared_indices = [c.chunk_index for c in runbook.chunks]
+    if declared_indices != list(range(len(declared_indices))):
+        raise RuntimeError(
+            f"KB pack chunk ordering invalid for {runbook.relpath}: chunk_index "
+            f"sequence {declared_indices} is not contiguous 0..{len(declared_indices) - 1} "
+            f"in list order — the pack is malformed (rebuild required)."
+        )
+
     # Idempotency: skip if the item exists and content is unchanged.
     async with db_session_factory() as session:
         existing = await session.execute(
