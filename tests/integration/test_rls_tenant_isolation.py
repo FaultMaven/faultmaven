@@ -379,7 +379,18 @@ async def test_rls_role_guard_rejects_bypassrls_role(superuser_engine):
 @pytest.mark.asyncio
 async def test_rls_enabled_and_policy_present(superuser_engine):
     """Structural: RLS is enabled and the tenant-isolation policy exists on a
-    representative sample of tenanted tables."""
+    representative sample of tenanted tables.
+
+    ``knowledge_items`` is the exception: migration 033 (#770) replaced its
+    single FOR ALL policy with four per-command policies so the global-tier
+    read exemption cannot double as a tenant write/delete license.
+    """
+    _KNOWLEDGE_ITEMS_POLICIES = {
+        "knowledge_items_tenant_read",
+        "knowledge_items_tenant_insert",
+        "knowledge_items_tenant_update",
+        "knowledge_items_tenant_delete",
+    }
     maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
     async with maker() as session:
         for table in (
@@ -404,15 +415,201 @@ async def test_rls_enabled_and_policy_present(superuser_engine):
             ).scalar()
             assert enabled is True, f"RLS not enabled on {table}"
 
-            polname = (
-                await session.execute(
-                    text(
-                        "SELECT p.polname FROM pg_policy p "
-                        "JOIN pg_class c ON p.polrelid = c.oid WHERE c.relname = :t"
-                    ),
-                    {"t": table},
+            polnames = set(
+                (
+                    await session.execute(
+                        text(
+                            "SELECT p.polname FROM pg_policy p "
+                            "JOIN pg_class c ON p.polrelid = c.oid WHERE c.relname = :t"
+                        ),
+                        {"t": table},
+                    )
                 )
-            ).scalar()
-            assert (
-                polname == f"{table}_tenant_isolation"
-            ), f"missing tenant-isolation policy on {table}"
+                .scalars()
+                .all()
+            )
+            if table == "knowledge_items":
+                assert polnames == _KNOWLEDGE_ITEMS_POLICIES, (
+                    "knowledge_items must carry exactly the four per-command "
+                    f"platform-tier policies (migration 033), got {polnames}"
+                )
+            else:
+                assert polnames == {
+                    f"{table}_tenant_isolation"
+                }, f"missing tenant-isolation policy on {table}, got {polnames}"
+
+
+# =============================================================================
+# Global-tier KB platform corpus (#770, migration 033)
+# =============================================================================
+
+_KI_INSERT = text(
+    "INSERT INTO knowledge_items "
+    "(item_id, organization_id, scope, title, content, item_type) "
+    "VALUES (:i, :org, :s, :t, :c, 'runbook')"
+)
+_KI_DELETE = text("DELETE FROM knowledge_items WHERE item_id = :i")
+
+
+@pytest.fixture
+async def kb_rows(superuser_engine, two_orgs):
+    """One org-free global row + one org_a-owned personal row (as superuser)."""
+    org_a, org_b = two_orgs
+    global_id = f"kb_{uuid4().hex[:12]}"
+    personal_id = f"ki_{uuid4().hex[:8]}"
+    su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
+    async with su_maker() as session:
+        await session.execute(
+            _KI_INSERT,
+            {"i": global_id, "org": None, "s": "global", "t": "G", "c": "body"},
+        )
+        await session.execute(
+            _KI_INSERT,
+            {"i": personal_id, "org": org_a, "s": "personal", "t": "P", "c": "body"},
+        )
+        await session.commit()
+    yield org_a, org_b, global_id, personal_id
+    async with su_maker() as session:
+        await session.execute(_KI_DELETE, {"i": global_id})
+        await session.execute(_KI_DELETE, {"i": personal_id})
+        await session.commit()
+
+
+async def _set_org(session, org_id) -> None:
+    await session.execute(
+        text("SELECT set_config('app.current_org_id', :o, true)"), {"o": org_id}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_global_kb_readable_by_every_tenant(limited_engine, kb_rows):
+    """The platform tier (scope='global', org-free) is readable from ANY org
+    context — the #770 read exemption — while org-owned rows stay isolated."""
+    org_a, org_b, global_id, personal_id = kb_rows
+    query = text("SELECT item_id FROM knowledge_items WHERE item_id IN (:g, :p)")
+    maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+
+    async with maker() as session:
+        await _set_org(session, org_a)
+        rows = (
+            (await session.execute(query, {"g": global_id, "p": personal_id}))
+            .scalars()
+            .all()
+        )
+        assert set(rows) == {global_id, personal_id}
+
+    async with maker() as session:
+        await _set_org(session, org_b)
+        rows = (
+            (await session.execute(query, {"g": global_id, "p": personal_id}))
+            .scalars()
+            .all()
+        )
+        assert set(rows) == {
+            global_id
+        }, "org_b must see the platform tier but never org_a's personal row"
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_tenant_session_cannot_write_platform_tier(limited_engine, kb_rows):
+    """A tenant-bound session can neither INSERT, UPDATE, nor DELETE global
+    rows — the read exemption must not double as a write license (#770 I2)."""
+    from sqlalchemy.exc import DBAPIError
+
+    org_a, _org_b, global_id, _personal_id = kb_rows
+    maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+
+    # INSERT an org-free global row from a tenant context → policy violation.
+    async with maker() as session:
+        await _set_org(session, org_a)
+        with pytest.raises(DBAPIError, match="row-level security"):
+            await session.execute(
+                _KI_INSERT,
+                {
+                    "i": f"kb_{uuid4().hex[:12]}",
+                    "org": None,
+                    "s": "global",
+                    "t": "X",
+                    "c": "x",
+                },
+            )
+            await session.commit()
+
+    # UPDATE of an existing global row silently matches zero rows.
+    async with maker() as session:
+        await _set_org(session, org_a)
+        result = await session.execute(
+            text("UPDATE knowledge_items SET title = 'own3d' WHERE item_id = :i"),
+            {"i": global_id},
+        )
+        await session.commit()
+        assert result.rowcount == 0, "tenant session updated a platform-tier row"
+
+    # DELETE of an existing global row silently matches zero rows.
+    async with maker() as session:
+        await _set_org(session, org_a)
+        result = await session.execute(_KI_DELETE, {"i": global_id})
+        await session.commit()
+        assert result.rowcount == 0, "tenant session deleted a platform-tier row"
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_tenant_cannot_publish_global_stamped_with_own_org(
+    limited_engine, kb_rows
+):
+    """A tenant INSERTing scope='global' stamped with its OWN org passes the
+    policy's own-org arm but must die on knowledge_items_global_org_check —
+    the CHECK constraint is what closes that hole (global ⟺ org-free)."""
+    from sqlalchemy.exc import DBAPIError, IntegrityError
+
+    org_a, _org_b, _global_id, _personal_id = kb_rows
+    maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+    async with maker() as session:
+        await _set_org(session, org_a)
+        with pytest.raises((IntegrityError, DBAPIError), match="global_org_check"):
+            await session.execute(
+                _KI_INSERT,
+                {
+                    "i": f"kb_{uuid4().hex[:12]}",
+                    "org": org_a,
+                    "s": "global",
+                    "t": "X",
+                    "c": "x",
+                },
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_sentinel_session_can_maintain_platform_tier(limited_engine):
+    """A session bound to the single-tenant sentinel org (standalone and
+    cloud+single — today's production shape) CAN insert/update/delete global
+    rows through the limited app role: this is the KB pack bootstrap path.
+    Under multi no tenant session ever binds the sentinel (fail-closed
+    request binder), so this arm is unreachable for tenants."""
+    from faultmaven.config.constants import STANDALONE_ORG_ID
+
+    item_id = f"kb_{uuid4().hex[:12]}"
+    maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+    async with maker() as session:
+        await _set_org(session, STANDALONE_ORG_ID)
+        await session.execute(
+            _KI_INSERT,
+            {"i": item_id, "org": None, "s": "global", "t": "G", "c": "body"},
+        )
+        await session.commit()
+
+    async with maker() as session:
+        await _set_org(session, STANDALONE_ORG_ID)
+        result = await session.execute(
+            text("UPDATE knowledge_items SET title = 'G2' WHERE item_id = :i"),
+            {"i": item_id},
+        )
+        assert result.rowcount == 1
+        result = await session.execute(_KI_DELETE, {"i": item_id})
+        assert result.rowcount == 1
+        await session.commit()

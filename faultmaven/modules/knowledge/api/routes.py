@@ -51,6 +51,9 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
 from faultmaven.modules.auth.contracts import DevUser
+from faultmaven.modules.knowledge.api.platform_tier import (
+    require_global_authoring_allowed,
+)
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
@@ -106,6 +109,11 @@ async def upload_document(
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Uploading document: {file.filename}")
+
+    # This route publishes at global scope (KnowledgeService.upload_document
+    # default) — the platform tier, never authorable from a tenant session
+    # under multi (#770).
+    require_global_authoring_allowed()
 
     try:
         # Validate file type — runbook upload accepts text formats only

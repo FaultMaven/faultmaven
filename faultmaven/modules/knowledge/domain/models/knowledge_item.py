@@ -102,7 +102,7 @@ class KnowledgeItem:
     """
 
     item_id: str
-    organization_id: str
+    organization_id: Optional[str]
     title: str
     content: str
     item_type: KnowledgeItemType
@@ -155,8 +155,6 @@ class KnowledgeItem:
         """Validate knowledge item data."""
         if not self.item_id:
             raise ValueError("item_id is required")
-        if not self.organization_id:
-            raise ValueError("organization_id is required")
         if not self.title:
             raise ValueError("title is required")
         if not self.content:
@@ -175,12 +173,24 @@ class KnowledgeItem:
             )
         if self.scope == KnowledgeScope.PERSONAL and not self.owner_id:
             raise ValueError("owner_id is required for personal scope")
+        # Ownership invariant (#770, mirrors knowledge_items_global_org_check):
+        # GLOBAL rows are the org-free platform corpus (organization_id IS NULL,
+        # readable by every tenant); personal/team rows are always org-owned.
+        if self.scope == KnowledgeScope.GLOBAL:
+            if self.organization_id is not None:
+                raise ValueError(
+                    "global scope is the platform tier and must not carry an "
+                    "organization_id (got "
+                    f"{self.organization_id!r})"
+                )
+        elif not self.organization_id:
+            raise ValueError(
+                f"organization_id is required for {self.scope.value} scope"
+            )
         # TEAM scope: team visibility lives in the share table (resource_shares),
         # not on the item — the KB write path creates the share row(s) and keeps
         # scope='team' ⟺ ≥1 share row. A team item still carries owner_id (its
         # author), so no extra field is required here (ADR-013 §D4).
-        # GLOBAL scope: organization_id is the ownership marker (already
-        # required as a base field above). No additional owner_id required.
 
         # Tags are labels and must be strings. Coerce first so values that
         # arrive non-str survive — most commonly a YAML-parsed numeric tag

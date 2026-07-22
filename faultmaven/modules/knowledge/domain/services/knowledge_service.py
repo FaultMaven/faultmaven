@@ -827,7 +827,9 @@ class KnowledgeService:
         Args:
             document_id: Stable id used for both the relational row and the
                 ChromaDB document.
-            organization_id: Required for the KnowledgeItem row (NOT NULL FK).
+            organization_id: Owning org for the org-owned tiers (personal/team).
+                Ignored for global scope — global rows are the org-free
+                platform tier (#770) and are stored with organization_id NULL.
             verified_by: A REAL user_id (from verify_draft) or None. Never a
                 sentinel string — it is an FK to users.user_id. When None and
                 no explicit verification_level is given, the item is
@@ -883,7 +885,14 @@ class KnowledgeService:
             )
         item = KnowledgeItem(
             item_id=document_id,
-            organization_id=organization_id,
+            # Global scope is the org-free platform tier (#770): the row carries
+            # NO organization_id (knowledge_items_global_org_check). Org-owned
+            # tiers (personal/team) keep the caller's org.
+            organization_id=(
+                None
+                if KnowledgeScope(scope) == KnowledgeScope.GLOBAL
+                else organization_id
+            ),
             title=title,
             content=content,
             item_type=KnowledgeItemType.RUNBOOK,

@@ -127,7 +127,7 @@ The CLI runner (`faultmaven.jobs.run`) enforces a declared tenant scope per job
 |-------|---------|-------------------------------|
 | `tenant_neutral` | No tenanted DB access (e.g. `storage_cleanup`, a sidecar-driven filesystem sweep) | Runs as-is |
 | `org` | Operates on one organization's rows | Requires explicit `--organization-id`; the runner binds it to the tenant context so all DB access is RLS-scoped to that org |
-| `cross_tenant` | Needs all organizations' rows (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
+| `cross_tenant` | Touches all organizations' data (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections; `kb_seed`, which writes the org-free global KB tier served to every tenant, #770) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
 
 The runner also runs the same boot gates as the API lifespan: the deployment
 coherence gate, and (under multi) the RLS role guard — a CronJob with a
@@ -144,14 +144,20 @@ A `cross_tenant` job runs under multi only when **both** of these hold:
    CronJob manifest's) explicit acknowledgment.
 2. The process connects as the **dedicated maintenance DB role**
    (`faultmaven_maintenance`, provisioned by `faultmaven-enterprise-infra`):
-   `BYPASSRLS` + non-superuser + non-owner, SELECT-only grants. The runner
-   probe-verifies the role and refuses anything else — including the regular
-   app role, whose RLS-scoped *partial* view is exactly the
-   delete-other-tenants hazard.
+   `BYPASSRLS` + non-superuser + non-owner, SELECT-only grants plus a single
+   explicit write surface — `INSERT, DELETE ON knowledge_items` for `kb_seed`
+   (#770). The runner probe-verifies the role and refuses anything else —
+   including the regular app role, whose RLS-scoped *partial* view is exactly
+   the delete-other-tenants hazard.
 
 ```bash
 DATABASE_URL="$MAINTENANCE_DATABASE_URL" \
   python -m faultmaven.jobs.run case_cleanup --cross-tenant-maintenance
+
+# Seed / refresh the platform KB pack (the multi-tenant replacement for the
+# single-tenant web-startup KB bootstrap, which is skipped under multi):
+DATABASE_URL="$MAINTENANCE_DATABASE_URL" \
+  python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance
 ```
 
 Every maintenance run emits a WARNING-level `AUDIT` log line (job, arguments,
