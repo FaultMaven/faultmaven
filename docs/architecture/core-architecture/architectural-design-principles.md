@@ -519,11 +519,18 @@ class CaseService:
 
 ### Shared Exception Hierarchy
 
-FaultMaven uses a single shared exception hierarchy in
-[`faultmaven/exceptions.py`](../../../faultmaven/exceptions.py) rather
-than per-module parallel hierarchies. Services raise these types
-directly; modules do not define duplicate `CaseError` / `KnowledgeError`
-class trees.
+FaultMaven roots every exception in a single shared hierarchy in
+[`faultmaven/exceptions.py`](../../../faultmaven/exceptions.py) (base
+`FaultMavenException` plus the shared cross-cutting types below). Each
+module then defines its own domain exceptions that inherit from that
+shared base — e.g. `CaseException(FaultMavenException)` in
+[`modules/case/exceptions.py`](../../../faultmaven/modules/case/exceptions.py)
+and `KnowledgeException(KnowledgeBaseException)` in
+[`modules/knowledge/exceptions.py`](../../../faultmaven/modules/knowledge/exceptions.py).
+Modules do not create *parallel* hierarchies rooted at their own base
+class: every domain exception ultimately derives from
+`FaultMavenException`, so the API layer can translate them to HTTP
+responses centrally.
 
 ```python
 # faultmaven/exceptions.py (excerpt)
