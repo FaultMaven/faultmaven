@@ -10,7 +10,7 @@
 
 The **Case Evidence Store** implements Case-Specific RAG (Retrieval-Augmented Generation) for handling detailed follow-up questions about user-uploaded troubleshooting evidence (logs, configs, stack traces, etc.). It uses a dedicated QA sub-agent with a separate synthesis LLM to prevent context pollution in the main diagnostic agent.
 
-**Important**: The vector store is tied to the **case**, not the session. Documents uploaded to a case remain accessible across all sessions until the case is **deleted**. A background orphan-detection job (default 6h interval) sweeps any case collection without an active case as a safety net. Setting `is_archived=True` or transitioning to `RESOLVED`/`CLOSED` does **not** delete the collection — the case remains queryable.
+**Important**: The vector store is tied to the **case**, not the session. Documents uploaded to a case remain accessible across all sessions until the case is **deleted**. A background orphan-detection job (default 6h interval) sweeps any case collection without an active case as a safety net. Transitioning to `RESOLVED`/`CLOSED` does **not** delete the collection — the case remains queryable.
 
 ---
 

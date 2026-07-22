@@ -115,7 +115,7 @@ function getOrCreateClientId(): string {
 **Characteristics**:
 - **Identifier**: `case_id` (UUID v4)
 - **Purpose**: Long-term investigation tracking and conversation persistence
-- **Lifecycle**: Permanent (30+ days, until explicitly deleted or archived)
+- **Lifecycle**: Permanent (30+ days, until explicitly deleted)
 - **Ownership**: Directly owned by users (`case.user_id`)
 - **Scope**: Single troubleshooting investigation (independent of sessions)
 - **Persistence**: Independent database storage (not tied to session lifecycle)
@@ -280,11 +280,13 @@ class Case(BaseModel):
     case_id: str                       # Primary key - NOT nested under sessions
     title: str                         # Generated or user-provided title
     user_id: str                       # Authorization reference (NOT FK to session)
+    organization_id: str               # Tenancy owner — every case belongs to an organization
+    source: Literal["copilot", "slack", "api"]  # Case origin (ADR-012), stamped at creation
     state: CaseState                 # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
-    severity: CaseSeverity             # LOW | MEDIUM | HIGH | CRITICAL
-    is_archived: bool                  # Independent of status; data-lifecycle flag
+    closure_reason: Optional[str]      # Sub-categorizes a CLOSED disposition (e.g. inquiry_only)
     created_at: datetime               # UTC datetime
     updated_at: datetime               # UTC datetime (note: field is `updated_at`, not `last_updated`)
+    # Severity is NOT a first-class Case field — it lives as a string on ProblemVerification / in metadata
 
 class QueryRequest(BaseModel):
     """Query within a specific case context.
@@ -324,11 +326,11 @@ interface CaseAPI {
   case_id: string;
   title: string;
   state: CaseState;         // 'inquiry' | 'investigating' | 'resolved' | 'closed'
-  severity: CaseSeverity;     // 'low' | 'medium' | 'high' | 'critical'
   user_id: string;            // User who owns the case
-  is_archived: boolean;       // Independent of status; data-lifecycle flag
   created_at: string;         // ISO 8601 UTC
   updated_at: string;         // ISO 8601 UTC
+  // Mirrors the API response (CaseUIResponse) — a subset of the domain model above.
+  // organization_id / source / closure_reason are domain-model fields NOT surfaced in this response.
 }
 ```
 
@@ -349,7 +351,7 @@ POST   /api/v1/cases                       # Create new case (auth via X-Session
 GET    /api/v1/cases                       # List user's cases (auth via X-Session-ID header)
 GET    /api/v1/cases/{case_id}             # Get specific case (auth via X-Session-ID header)
 PUT    /api/v1/cases/{case_id}             # Update case metadata
-DELETE /api/v1/cases/{case_id}             # Archive/delete case
+DELETE /api/v1/cases/{case_id}             # Delete case
 
 # Query Processing (Case-Specific)
 POST   /api/v1/cases/{case_id}/query       # Process query within specific case
