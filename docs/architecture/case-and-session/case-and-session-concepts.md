@@ -757,7 +757,7 @@ Authentication Session: session_abc123 (User: john@company.com, TTL: configurabl
 │
 └── Case (Independent Resource): case_def456
     ├── Title: "Database Performance Issues"
-    ├── Status: "investigating"
+    ├── State: "investigating"
     ├── Owner: john@company.com (authorization reference)
     ├── Created: 2024-01-15T10:30:00Z
     ├── Conversation History:
@@ -788,21 +788,21 @@ Authentication Session: session_xyz789 (User: mary@company.com, TTL: configurabl
 │   ├── Owner: mary@company.com
 │   ├── Created: 2024-01-15T09:00:00Z
 │   ├── Conversation: 3 exchanges (login errors → LDAP config fix)
-│   └── Status: "resolved"
+│   └── State: "resolved"
 │
 ├── Case 2: case_jkl202 (Performance Issues) [RESOLVED]
 │   ├── Title: "Website Loading Slowly"
 │   ├── Owner: mary@company.com
 │   ├── Created: 2024-01-15T11:00:00Z
 │   ├── Conversation: 4 exchanges (response times → API bottleneck)
-│   └── Status: "resolved"
+│   └── State: "resolved"
 │
-└── Case 3: case_mno303 (Deployment Problems) [ACTIVE]
+└── Case 3: case_mno303 (Deployment Problems) [INVESTIGATING]
     ├── Title: "CI/CD Pipeline Failures"
     ├── Owner: mary@company.com
     ├── Created: 2024-01-15T14:30:00Z
     ├── Conversation: 2 exchanges (Docker build errors → ongoing)
-    └── Status: "investigating"
+    └── State: "investigating"
 
 API Flow:
 - GET /api/v1/cases (with X-Session-ID: session_xyz789) → List all user's cases

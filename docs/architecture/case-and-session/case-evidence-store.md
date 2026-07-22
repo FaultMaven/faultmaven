@@ -76,12 +76,12 @@ CHROMADB_URL=http://chromadb.faultmaven.local:30080
 
 ### Code Configuration
 
-**Case Vector Store Initialization** (wired in the DI container under [faultmaven/container/](../../faultmaven/container/)):
+**Case Vector Store Initialization** (wired in the DI container under [faultmaven/container/](../../../faultmaven/container/)):
 ```python
 self.case_vector_store = CaseVectorStore()
 ```
 
-**Cleanup Scheduler Interval** (in [main.py](../../faultmaven/main.py)):
+**Cleanup Scheduler Interval** (in [main.py](../../../faultmaven/main.py)):
 ```python
 case_cleanup_scheduler = start_case_cleanup_scheduler(
     case_vector_store=case_vector_store,
@@ -149,7 +149,7 @@ result = await answer_from_case_evidence_tool.answer_question(
 
 ### CaseVectorStore
 
-**Location**: [faultmaven/infrastructure/persistence/case_vector_store.py](../../faultmaven/infrastructure/persistence/case_vector_store.py) (canonical path; verified)
+**Location**: [faultmaven/infrastructure/persistence/case_vector_store.py](../../../faultmaven/infrastructure/persistence/case_vector_store.py) (canonical path; verified)
 
 #### Methods
 
@@ -207,7 +207,7 @@ async def get_case_document_count(case_id: str) -> int:
 
 ### AnswerFromCaseEvidence
 
-**Location**: [faultmaven/modules/agent/tools/case_evidence_qa.py](../../faultmaven/modules/agent/tools/case_evidence_qa.py)
+**Location**: [faultmaven/modules/agent/tools/case_evidence_qa.py](../../../faultmaven/modules/agent/tools/case_evidence_qa.py)
 **Registered tool name**: `answer_from_case_evidence`
 
 #### Methods
@@ -237,7 +237,7 @@ async def answer_question(
 
 ### Background Tasks
 
-**Location**: [faultmaven/jobs/case_cleanup.py](../../faultmaven/jobs/case_cleanup.py)
+**Location**: [faultmaven/jobs/case_cleanup.py](../../../faultmaven/jobs/case_cleanup.py)
 
 #### Functions
 
@@ -507,8 +507,8 @@ curl http://localhost:8090/api/v1/case/abc123/documents/count
 
 - [Knowledge Base Architecture](../knowledge-and-ai/knowledge-base-architecture.md) - 3-tier KB system overview
 - [Vector Retrieval Architecture](../knowledge-and-ai/vector-retrieval-architecture.md) - Shared embedding/retrieval pipeline (BGE-M3, 1024 dims)
-- [CaseVectorStore Implementation](../../faultmaven/infrastructure/persistence/case_vector_store.py)
-- [AnswerFromCaseEvidence Implementation](../../faultmaven/modules/agent/tools/case_evidence_qa.py)
-- [Background Cleanup Job](../../faultmaven/jobs/case_cleanup.py)
-- [Container Integration](../../faultmaven/container/)
-- [Main App Lifecycle](../../faultmaven/main.py)
+- [CaseVectorStore Implementation](../../../faultmaven/infrastructure/persistence/case_vector_store.py)
+- [AnswerFromCaseEvidence Implementation](../../../faultmaven/modules/agent/tools/case_evidence_qa.py)
+- [Background Cleanup Job](../../../faultmaven/jobs/case_cleanup.py)
+- [Container Integration](../../../faultmaven/container/)
+- [Main App Lifecycle](../../../faultmaven/main.py)
