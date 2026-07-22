@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.exceptions import (
@@ -652,21 +653,40 @@ class ConversionService:
             retained_path=None,
         )
 
-        # Persist to database with source_type and case_id
-        await self._persist_job(
-            conversion_id=conversion_id,
-            user_id=user_id,
-            organization_id=organization_id,
-            scope=request.scope,
-            team_id=team_id,
-            status=status,
-            source_file=source_file,
-            analysis=analysis,
-            drafts=drafts,
-            created_at=created_at,
-            source_type="case",
-            case_id=request.case_id,
-        )
+        # Persist to database with source_type and case_id. The unique index on
+        # ``conversion_jobs.live_case_id`` is the cross-replica dedup backstop:
+        # if another replica committed a live case-conversion for this case while
+        # this one ran the LLM, the commit raises IntegrityError. ``_persist_job``
+        # writes the upload row + job + drafts in ONE session, so that failed
+        # commit rolls the whole unit back — no orphan rows. Mirror the
+        # in-process dedup semantics (a concurrent caller awaits the winner's
+        # task and receives the winner's response) by returning the winner's
+        # conversion. The typed IntegrityError plus a confirming re-read is the
+        # discriminator — never classify by matching the exception message.
+        try:
+            await self._persist_job(
+                conversion_id=conversion_id,
+                user_id=user_id,
+                organization_id=organization_id,
+                scope=request.scope,
+                team_id=team_id,
+                status=status,
+                source_file=source_file,
+                analysis=analysis,
+                drafts=drafts,
+                created_at=created_at,
+                source_type="case",
+                case_id=request.case_id,
+            )
+        except IntegrityError:
+            logger.warning(
+                "case_conversion_cross_replica_dedup",
+                extra={"case_id": request.case_id},
+            )
+            existing = await self.get_conversion_by_case(request.case_id, user_id)
+            if existing and existing.has_live_draft():
+                return existing
+            raise
 
         logger.info(
             "case_conversion_completed",
@@ -971,6 +991,19 @@ class ConversionService:
             session.add(upload)
             await session.flush()  # ensure upload row exists before FK ref
 
+            # ``live_case_id`` holds the case only while this case-source job has
+            # a live (non-discarded) draft; it is the value the unique index
+            # dedups on. Freshly generated drafts are DRAFT (live), a failed
+            # conversion persists zero drafts (never blocks regeneration), and
+            # document jobs carry no case — all three resolve to NULL here.
+            live_case_id = (
+                case_id
+                if source_type == "case"
+                and case_id
+                and any(d.status != DraftStatus.DISCARDED for d in drafts)
+                else None
+            )
+
             job = ConversionJobModel(
                 id=conversion_id,
                 user_id=user_id,
@@ -980,6 +1013,7 @@ class ConversionService:
                 source_file_id=source_file_id,
                 source_type=source_type,
                 case_id=case_id,
+                live_case_id=live_case_id,
                 failure_modes_detected=len(analysis.failure_modes),
                 analysis_result=analysis.model_dump(),
                 created_at=created_at,
@@ -2065,6 +2099,29 @@ status: draft
                         "Restore data/knowledge/ from backup, then retry the scan."
                     )
 
+                # Release the live-conversion claim of any case job whose last
+                # live draft this sweep discarded — same transaction, same rule
+                # as the explicit discard paths: a held unique slot on
+                # conversion_jobs.live_case_id with no live draft behind it
+                # would block that case's regeneration forever. Flush first so
+                # the drained-count sees every status flipped above, even when
+                # one job lost several drafts in this sweep.
+                discarded_ids = pending_discard_ids + redundant_discard_ids
+                if discarded_ids:
+                    await session.flush()
+                    drafts_by_id = {d.id: d for d in all_draft_models}
+                    released_job_ids: set[str] = set()
+                    for draft_id in discarded_ids:
+                        job_id = drafts_by_id[draft_id].conversion_id
+                        if job_id in released_job_ids:
+                            continue
+                        released_job_ids.add(job_id)
+                        job = await session.get(ConversionJobModel, job_id)
+                        if job is not None:
+                            await self._release_live_case_key_if_drained(
+                                session, job, draft_id
+                            )
+
                 await session.commit()
 
         # Walk all scope directories
@@ -2255,6 +2312,35 @@ status: draft
             "drafts": discovered,
         }
 
+    async def _release_live_case_key_if_drained(
+        self,
+        session: AsyncSession,
+        job: "ConversionJobModel",
+        discarded_draft_id: str,
+    ) -> None:
+        """Clear ``job.live_case_id`` once the job holds no more live drafts.
+
+        The unique-index slot on ``conversion_jobs.live_case_id`` is the case's
+        one live-conversion claim; it must be released in the same transaction
+        as the last live draft leaving so a later regeneration can take it. The
+        clearing is general (count the OTHER non-discarded drafts of this job) so
+        a job carrying more than one live draft keeps the key until the last one
+        is gone. No-op for jobs that never held the key (document jobs, failed
+        no-draft jobs)."""
+        if job.live_case_id is None:
+            return
+        remaining_live = await session.execute(
+            select(func.count())
+            .select_from(ConversionDraftModel)
+            .where(
+                ConversionDraftModel.conversion_id == job.id,
+                ConversionDraftModel.id != discarded_draft_id,
+                ConversionDraftModel.status != DraftStatus.DISCARDED.value,
+            )
+        )
+        if remaining_live.scalar_one() == 0:
+            job.live_case_id = None
+
     async def discard_by_knowledge_item_id(self, knowledge_item_id: str) -> bool:
         """Discard the draft that was activated into the given knowledge item.
 
@@ -2285,6 +2371,9 @@ status: draft
 
             dm.status = DraftStatus.DISCARDED.value
             dm.knowledge_item_id = None
+            job = await session.get(ConversionJobModel, dm.conversion_id)
+            if job is not None:
+                await self._release_live_case_key_if_drained(session, job, dm.id)
             await session.commit()
             return True
 
@@ -2309,7 +2398,8 @@ status: draft
                     ),
                 )
             )
-            if not job_result.scalar_one_or_none():
+            job = job_result.scalar_one_or_none()
+            if not job:
                 return False
 
             draft_result = await session.execute(
@@ -2329,6 +2419,7 @@ status: draft
 
             # Soft delete in database
             dm.status = DraftStatus.DISCARDED.value
+            await self._release_live_case_key_if_drained(session, job, dm.id)
             await session.commit()
 
             return True
