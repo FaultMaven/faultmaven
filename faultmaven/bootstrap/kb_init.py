@@ -63,7 +63,8 @@ class BootstrapResult:
         self.pruned: list[str] = []  # orphaned built-in item_ids removed
         # Reconcile pass (SQL <-> ChromaDB consistency):
         self.orphaned_vectors_cleaned: list[str] = []  # parent_ids w/ no DB row
-        self.orphaned_rows: list[str] = []  # DB rows w/ no vectors (warn-only)
+        self.repaired_rows: list[str] = []  # DB rows re-embedded this boot
+        self.orphaned_rows: list[str] = []  # DB rows still w/o vectors after repair
 
     def __repr__(self) -> str:
         return (
@@ -72,6 +73,7 @@ class BootstrapResult:
             f"failed={len(self.failed)}, "
             f"pruned={len(self.pruned)}, "
             f"orphaned_vectors_cleaned={len(self.orphaned_vectors_cleaned)}, "
+            f"repaired_rows={len(self.repaired_rows)}, "
             f"orphaned_rows={len(self.orphaned_rows)})"
         )
 
@@ -165,8 +167,19 @@ async def bootstrap_kb(
     # keeps retrieval from landing on a ghost vector with no row behind it.
     (
         result.orphaned_vectors_cleaned,
-        result.orphaned_rows,
+        orphaned_rows,
     ) = await _reconcile_vectors(knowledge_service, db_session_factory)
+
+    # Cross-store repair: an orphaned row (SQL row with no vectors — the
+    # half-state a crash between the SQL commit and the Chroma write leaves) is
+    # silently non-retrievable. Reconcile can only warn; here we re-chunk +
+    # re-embed a BOUNDED number of them so a rare crash self-heals on the next
+    # boot. Bounded because repair loads the embedding model the pack path
+    # deliberately skips — re-embedding the whole KB reintroduces the on-pod
+    # timeout the pack exists to avoid.
+    result.repaired_rows, result.orphaned_rows = await _repair_orphaned_rows(
+        orphaned_rows, knowledge_service
+    )
 
     logger.info(
         f"KB bootstrap complete: {len(result.ingested)} ingested, "
@@ -174,6 +187,7 @@ async def bootstrap_kb(
         f"{len(result.failed)} failed, "
         f"{len(result.pruned)} pruned, "
         f"{len(result.orphaned_vectors_cleaned)} orphaned vectors cleaned, "
+        f"{len(result.repaired_rows)} rows repaired, "
         f"{len(result.orphaned_rows)} orphaned rows"
     )
     return result
@@ -450,6 +464,111 @@ async def _reconcile_vectors(
     except Exception as exc:
         logger.warning(f"Reconcile: batched orphan delete failed: {exc}")
         return [], orphaned_rows
+
+
+# Bounds on the cross-store repair. Two distinct guards:
+#
+#   KB_REPAIR_MAX_ROWS — a bulk-loss DISCRIMINATOR. A crash between the SQL
+#     commit and the Chroma write orphans a FEW rows (self-healing them is the
+#     whole point). But a mass orphan (e.g. the Chroma collection was wiped while
+#     knowledge_items stayed intact — a state the content-hash pack skip does NOT
+#     re-vector) is an operational problem, not a crash to paper over: above this
+#     many orphans we repair NOTHING and warn (recovery there is a full pack
+#     re-ingest / reset_kb, not per-row re-embedding on every boot).
+#
+#   KB_REPAIR_MAX_CHUNKS — a per-boot WORK budget. Repair is the one bootstrap
+#     step that loads BGE-M3 and embeds, and it runs on the lifespan startup path
+#     BEFORE the app serves readiness — so the risk is the on-pod CPU-embedding
+#     time (chunks x pod CPU), NOT the row count. Bounding rows alone is
+#     insufficient: even a sub-cap orphan set of small runbooks can be hundreds
+#     of chunks (minutes on a limited pod → startupProbe SIGKILL). Once this
+#     boot's chunk budget is spent, remaining rows are DEFERRED to the next boot;
+#     per-row vectors already persist, so repair is incremental + eventually
+#     consistent and startup readiness is never gated on unbounded embedding.
+KB_REPAIR_MAX_ROWS = 25
+KB_REPAIR_MAX_CHUNKS = 60
+
+
+async def _repair_orphaned_rows(
+    orphaned_rows: list[str],
+    knowledge_service: Any,
+) -> tuple[list[str], list[str]]:
+    """Re-embed orphaned knowledge_items rows (SQL row present, vectors missing).
+
+    Returns ``(repaired_ids, still_orphaned_ids)``. Each repair re-chunks +
+    re-embeds the row's persisted content with BGE-M3 and writes ONLY the vector
+    store (``KnowledgeService.reindex_missing_vectors``, which reads the row via
+    the service's own RLS-scoped session) — the SQL row, the source of truth, is
+    never touched.
+
+    Cross-tenant-safe: repair only ADDS a row's own vectors, and bootstrap runs
+    single-tenant with an RLS-scoped session, so ``orphaned_rows`` is this
+    deployment's own rows. Contrast reconcile's DELETE side, restricted to
+    built-in ids precisely because deletion CAN cross tenants; addition cannot,
+    so ALL orphaned rows are eligible — a lost authored runbook is repaired the
+    same as a shipped one.
+
+    Bounded twice (see the module constants): ``KB_REPAIR_MAX_ROWS`` skips a
+    bulk-loss anomaly entirely, and ``KB_REPAIR_MAX_CHUNKS`` caps the embedding
+    work per boot (deferring the rest to the next boot) so startup readiness is
+    never gated on an unbounded re-embed.
+    """
+    if not orphaned_rows:
+        return [], []
+
+    if len(orphaned_rows) > KB_REPAIR_MAX_ROWS:
+        logger.warning(
+            "KB repair skipped: %d orphaned rows exceed the repair cap (%d) — "
+            "treating as a bulk-loss anomaly (e.g. the vector collection was wiped), "
+            "not the crash recovery this pass handles. Re-embedding all of them on "
+            "the boot path would reintroduce the on-pod embedding timeout. Rows left "
+            "unretrievable; recover with a full pack re-ingest.",
+            len(orphaned_rows),
+            KB_REPAIR_MAX_ROWS,
+        )
+        return [], orphaned_rows
+
+    repaired: list[str] = []
+    still_orphaned: list[str] = []
+    chunks_embedded = 0
+    for i, item_id in enumerate(orphaned_rows):
+        # Work budget: stop before starting a row once this boot's chunk budget is
+        # spent. Overshoot is bounded by one runbook's chunk count (the row in
+        # flight always finishes); the deferred rows self-heal on a later boot.
+        if chunks_embedded >= KB_REPAIR_MAX_CHUNKS:
+            deferred = orphaned_rows[i:]
+            still_orphaned.extend(deferred)
+            logger.warning(
+                "KB repair: per-boot chunk budget (%d) reached after %d row(s) — "
+                "deferring %d orphaned row(s) to the next boot (repair is "
+                "incremental to keep startup readiness off the embedding path).",
+                KB_REPAIR_MAX_CHUNKS,
+                len(repaired),
+                len(deferred),
+            )
+            break
+        try:
+            chunks = await knowledge_service.reindex_missing_vectors(item_id)
+        except Exception as exc:
+            logger.warning(f"KB repair failed for {item_id}: {exc}")
+            still_orphaned.append(item_id)
+            continue
+        if chunks > 0:
+            repaired.append(item_id)
+            chunks_embedded += chunks
+            logger.info(
+                f"KB repair: re-embedded {chunks} chunk(s) for orphaned row {item_id}"
+            )
+        else:
+            # 0 chunks = embedding model unavailable / empty content. Fail-safe:
+            # leave the row for a later boot (mirrors reconcile's warn-only prior),
+            # never raise on the startup path.
+            still_orphaned.append(item_id)
+            logger.warning(
+                f"KB repair produced 0 chunks for {item_id} (embedding model "
+                "unavailable?) — row remains unretrievable, will retry next boot."
+            )
+    return repaired, still_orphaned
 
 
 def _causes_fingerprint(causes: Optional[list]) -> str:

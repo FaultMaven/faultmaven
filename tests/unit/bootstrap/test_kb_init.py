@@ -832,6 +832,205 @@ class TestReconcileVectors:
 
 
 # ---------------------------------------------------------------------------
+# Cross-store repair (6.3): re-embed orphaned rows (SQL present, vectors gone),
+# the half-state a crash between the SQL commit and the Chroma write leaves.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reindex_missing_vectors_re_embeds_from_persisted_row(
+    fk_on_ingest_service,
+):
+    """Repair re-derives an existing row's vectors via the NON-prechunked index
+    path (chunk + BGE-M3) and never touches the SQL row."""
+    from sqlalchemy import text
+
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+
+    svc, factory = fk_on_ingest_service
+    # Seed a real SQL row (the vector write is stubbed by the fixture).
+    await svc.ingest_runbook(
+        document_id="kb_repairme",
+        title="Repair Me",
+        content="# Body\n\nSome content to chunk.",
+        organization_id="org-1",
+        scope="global",
+        tags=["postgres"],
+        verified_by=None,
+        verification_level=VerificationLevel.COMMUNITY,
+    )
+    svc._index_document_in_vector_store.reset_mock()
+    svc._index_document_in_vector_store.return_value = 4
+
+    chunks = await svc.reindex_missing_vectors("kb_repairme")
+
+    assert chunks == 4
+    svc._index_document_in_vector_store.assert_awaited_once()
+    (doc,), kwargs = svc._index_document_in_vector_store.await_args
+    # Doc rebuilt from the persisted row, mirroring ingest_runbook's construction.
+    assert doc.document_id == "kb_repairme"
+    assert doc.title == "Repair Me"
+    assert "Some content to chunk." in doc.content
+    assert doc.scope == "global"
+    assert doc.tags == ["postgres"]
+    # prechunked=None → the re-embed path, NOT pack passthrough.
+    assert kwargs["prechunked"] is None
+
+    # The SQL row is the source of truth and must be untouched by repair.
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text("SELECT title FROM knowledge_items WHERE item_id='kb_repairme'")
+            )
+        ).first()
+    assert row is not None and row[0] == "Repair Me"
+
+
+@pytest.mark.asyncio
+async def test_reindex_missing_vectors_absent_row_is_noop(fk_on_ingest_service):
+    """No row for the id → fail-safe 0, and the index path is never called."""
+    svc, _ = fk_on_ingest_service
+    svc._index_document_in_vector_store.reset_mock()
+
+    chunks = await svc.reindex_missing_vectors("kb_doesnotexist")
+
+    assert chunks == 0
+    svc._index_document_in_vector_store.assert_not_awaited()
+
+
+class TestRepairOrphanedRows:
+    """The bounded startup repair over the orphaned-row set reconcile produces."""
+
+    @staticmethod
+    def _service(reindex):
+        svc = MagicMock()
+        svc.reindex_missing_vectors = reindex
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_empty_is_noop(self):
+        svc = self._service(AsyncMock(return_value=3))
+        repaired, still = await kb_init._repair_orphaned_rows([], svc)
+        assert repaired == []
+        assert still == []
+        svc.reindex_missing_vectors.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_re_embeds_all_orphaned_rows(self):
+        svc = self._service(AsyncMock(return_value=3))
+        repaired, still = await kb_init._repair_orphaned_rows(
+            ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc
+        )
+        assert repaired == ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"]
+        assert still == []
+        assert svc.reindex_missing_vectors.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_zero_chunks_leaves_row_orphaned(self):
+        """Embedding model unavailable → 0 chunks → fail-safe: NOT repaired,
+        left for a later boot rather than reported as healed."""
+        svc = self._service(AsyncMock(return_value=0))
+        repaired, still = await kb_init._repair_orphaned_rows(["kb_aaaaaaaaaaaa"], svc)
+        assert repaired == []
+        assert still == ["kb_aaaaaaaaaaaa"]
+
+    @pytest.mark.asyncio
+    async def test_exception_leaves_row_orphaned(self):
+        """A repair error (e.g. ChromaDB down) never aborts the boot path."""
+        svc = self._service(AsyncMock(side_effect=RuntimeError("chroma down")))
+        repaired, still = await kb_init._repair_orphaned_rows(["kb_aaaaaaaaaaaa"], svc)
+        assert repaired == []
+        assert still == ["kb_aaaaaaaaaaaa"]
+
+    @pytest.mark.asyncio
+    async def test_mixed_success_and_failure(self):
+        async def _reindex(item_id):
+            return 3 if item_id == "kb_aaaaaaaaaaaa" else 0
+
+        svc = self._service(AsyncMock(side_effect=_reindex))
+        repaired, still = await kb_init._repair_orphaned_rows(
+            ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc
+        )
+        assert repaired == ["kb_aaaaaaaaaaaa"]
+        assert still == ["kb_bbbbbbbbbbbb"]
+
+    @pytest.mark.asyncio
+    async def test_over_cap_repairs_nothing(self):
+        """A mass orphan (bulk vector loss) is NOT the crash recovery this pass
+        handles — repair nothing (fast boot preserved), leave all warned."""
+        svc = self._service(AsyncMock(return_value=1))
+        rows = [f"kb_{i:012x}" for i in range(kb_init.KB_REPAIR_MAX_ROWS + 1)]
+        repaired, still = await kb_init._repair_orphaned_rows(rows, svc)
+        assert repaired == []
+        assert still == rows
+        svc.reindex_missing_vectors.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_at_row_cap_still_repairs_within_chunk_budget(self):
+        """Exactly at the row cap is targeted recovery, not a bulk anomaly — all
+        repair when the total chunk work stays under the per-boot budget (1 chunk
+        each here so KB_REPAIR_MAX_ROWS rows < KB_REPAIR_MAX_CHUNKS)."""
+        assert kb_init.KB_REPAIR_MAX_ROWS <= kb_init.KB_REPAIR_MAX_CHUNKS
+        svc = self._service(AsyncMock(return_value=1))
+        rows = [f"kb_{i:012x}" for i in range(kb_init.KB_REPAIR_MAX_ROWS)]
+        repaired, still = await kb_init._repair_orphaned_rows(rows, svc)
+        assert repaired == rows
+        assert still == []
+
+    @pytest.mark.asyncio
+    async def test_chunk_budget_defers_remaining_rows(self):
+        """The per-boot chunk budget bounds embedding WORK (not just row count):
+        once spent, remaining rows are deferred to the next boot, not embedded on
+        the startup path. Here the first row alone spends the whole budget."""
+        svc = self._service(AsyncMock(return_value=kb_init.KB_REPAIR_MAX_CHUNKS))
+        rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
+        repaired, still = await kb_init._repair_orphaned_rows(rows, svc)
+        assert repaired == ["kb_aaaaaaaaaaaa"]
+        assert still == ["kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
+        # The deferred rows are never embedded this boot.
+        assert svc.reindex_missing_vectors.await_count == 1
+
+
+class TestCrossStoreRepairSeam:
+    """DoD: a simulated mid-ingest failure (SQL row present, vectors missing)
+    leaves no silently-unretrievable runbook — reconcile detects the orphan and
+    repair re-embeds it, exactly as bootstrap_kb wires the two in sequence."""
+
+    @pytest.mark.asyncio
+    async def test_orphaned_row_is_detected_then_repaired(self):
+        reindexed: list[str] = []
+
+        async def _reindex(item_id):
+            reindexed.append(item_id)
+            return 3
+
+        async def _list():
+            # Only 'a' has vectors; 'b's Chroma write crashed mid-ingest.
+            return {"kb_aaaaaaaaaaaa"}
+
+        vector_store = MagicMock()
+        vector_store.list_parent_document_ids = AsyncMock(side_effect=_list)
+        vector_store.delete_documents_by_parents = AsyncMock(return_value=0)
+        svc = MagicMock()
+        svc._vector_store = vector_store
+        svc.reindex_missing_vectors = AsyncMock(side_effect=_reindex)
+
+        factory = TestReconcileVectors._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
+
+        # Step 1 — reconcile only DETECTS the orphaned row (cannot fix it alone).
+        _cleaned, orphaned = await kb_init._reconcile_vectors(svc, factory)
+        assert orphaned == ["kb_bbbbbbbbbbbb"]
+
+        # Step 2 — repair HEALS it by re-embedding from its persisted SQL row.
+        repaired, still = await kb_init._repair_orphaned_rows(orphaned, svc)
+        assert repaired == ["kb_bbbbbbbbbbbb"]
+        assert still == []
+        assert reindexed == ["kb_bbbbbbbbbbbb"]
+
+
+# ---------------------------------------------------------------------------
 # Per-Cause graph record persistence (the app half of the cross-repo pack
 # contract — see tests/integration/modules/knowledge/test_runbook_causes_contract.py)
 # ---------------------------------------------------------------------------
