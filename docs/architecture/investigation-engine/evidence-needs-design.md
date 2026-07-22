@@ -713,7 +713,8 @@ CATEGORY_MILESTONE_MAP = {
 }
 ```
 
-The map values are LLM **emission symbols** from `MilestoneUpdates`.
+The map values are milestone names consumed by the attribution
+intersect (`_infer_milestones`).
 `root_cause_identified` is no longer among them (INV-35): cause
 identification is engine-derived from the validated causal chain
 (`cause_state`), never an LLM-claimed milestone, and `MilestoneUpdates`
