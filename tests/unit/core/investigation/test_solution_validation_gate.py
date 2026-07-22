@@ -27,19 +27,23 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
+    _coerce_intervention_quadrant,
     _solution_cause_validated,
 )
 from faultmaven.core.investigation.schemas import SolutionToAdd
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
+    CausalNode,
     CauseState,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
+    InterventionQuadrant,
     InvestigationActionType,
+    NodeType,
     RootCauseConclusion,
     SolutionType,
     WorkingConclusion,
@@ -298,3 +302,126 @@ class TestM5SolutionGate:
         action = case.proposed_actions[-1]
         assert action.action_type == InvestigationActionType.MITIGATION
         assert action.downgrade_reason is None
+
+
+# ---------------------------------------------------------------------------
+# R9 — SolutionToAdd causal-graph linkage mapped onto Solution (honor-or-reject)
+# ---------------------------------------------------------------------------
+
+
+class TestCoerceInterventionQuadrant:
+    """The apply-path quadrant coercion is honor-or-reject: a recognized value
+    (case-insensitive) maps to the enum; anything else — a typo, empty, None —
+    yields None (recorded unquadranted), never a parse crash on a BEST_EFFORT
+    provider."""
+
+    def test_recognized_values_map(self):
+        assert (
+            _coerce_intervention_quadrant("remediation")
+            == InterventionQuadrant.REMEDIATION
+        )
+        assert (
+            _coerce_intervention_quadrant("DEFENSIVE_FIX")
+            == InterventionQuadrant.DEFENSIVE_FIX
+        )
+        assert (
+            _coerce_intervention_quadrant(" Mitigation ")
+            == InterventionQuadrant.MITIGATION
+        )
+
+    def test_unrecognized_or_missing_is_none(self):
+        assert _coerce_intervention_quadrant("bogus") is None
+        assert _coerce_intervention_quadrant("") is None
+        assert _coerce_intervention_quadrant(None) is None
+
+
+def _solution_update(**extra) -> _Updates:
+    """A solutions_to_add update carrying the R9 optional linkage fields."""
+    return _Updates(
+        solutions_to_add=[
+            SolutionToAdd(
+                description="Apply the permanent fix",
+                solution_type=SolutionType.CODE_FIX,
+                estimated_impact="resolves the failure",
+                risks="low",
+                commands=["kubectl apply -f fix.yaml"],
+                **extra,
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+class TestR9SolutionLinkageMapping:
+    """The R9 emission-mediated path: a quadrant-carrying SolutionToAdd maps its
+    quadrant/node_ref onto the persisted Solution. Recorded as DATA; the M5
+    downgrade logic is unchanged (a mapped Solution is still constructed even if
+    its ProposedAction downgrades)."""
+
+    async def test_linkage_mapped_onto_solution(self):
+        case = _make_case(CauseState.IDENTIFIED, with_symptom=True)
+        case.root_cause_conclusion = _rcc()
+        node = CausalNode(
+            statement="the connection pool is exhausted",
+            node_type=NodeType.ROOT,
+            generated_at_turn=1,
+        )
+        case.causal_nodes[node.node_id] = node
+        eng = _make_engine()
+
+        await eng._apply_investigation_updates(
+            case,
+            _solution_update(quadrant="remediation", node_ref=node.node_id),
+            _meta(),
+        )
+
+        sol = case.solutions[-1]
+        assert sol.quadrant == InterventionQuadrant.REMEDIATION
+        assert sol.node_id == node.node_id
+
+    async def test_proposed_solution_never_claims_verification(self):
+        """A proposed candidate solution must NOT populate ``verification_method``
+        (past-tense 'how the fix WAS verified', read by the resolution report +
+        confirmation gate). An unverified proposal claiming verification would
+        print a false 'Verified by' and stop the engine soliciting real
+        verification — so the R9 emission never writes that field."""
+        case = _make_case(CauseState.IDENTIFIED, with_symptom=True)
+        case.root_cause_conclusion = _rcc()
+        eng = _make_engine()
+
+        await eng._apply_investigation_updates(
+            case, _solution_update(quadrant="remediation"), _meta()
+        )
+
+        assert case.solutions[-1].verification_method is None
+
+    async def test_unknown_node_ref_and_quadrant_rejected(self):
+        """honor-or-reject: a node_ref not on the graph and an unrecognized
+        quadrant are dropped to None rather than persisted as bogus linkage."""
+        case = _make_case(CauseState.IDENTIFIED, with_symptom=True)
+        case.root_cause_conclusion = _rcc()
+        eng = _make_engine()
+
+        await eng._apply_investigation_updates(
+            case,
+            _solution_update(quadrant="not-a-quadrant", node_ref="cn_deadbeef0000"),
+            _meta(),
+        )
+
+        sol = case.solutions[-1]
+        assert sol.quadrant is None
+        assert sol.node_id is None
+
+    async def test_absent_linkage_maps_to_none(self):
+        """A plain SolutionToAdd (no R9 fields, the flag-off / unprompted case)
+        maps to a Solution with the linkage all None — unchanged from before R9."""
+        case = _make_case(CauseState.IDENTIFIED, with_symptom=True)
+        case.root_cause_conclusion = _rcc()
+        eng = _make_engine()
+
+        await eng._apply_investigation_updates(case, _solution_update(), _meta())
+
+        sol = case.solutions[-1]
+        assert sol.quadrant is None
+        assert sol.node_id is None
+        assert sol.verification_method is None

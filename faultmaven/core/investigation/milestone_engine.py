@@ -133,6 +133,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     EvidenceStance,
     HypothesisState,
+    InterventionQuadrant,
     InvestigationActionType,
     InvestigationMomentum,
     InvestigationProgress,
@@ -337,6 +338,24 @@ def _solution_cause_validated(case: Case) -> bool:
     from faultmaven.core.investigation.terminal_transitions import _cause_identified
 
     return _cause_identified(case)
+
+
+def _coerce_intervention_quadrant(raw: object) -> Optional[InterventionQuadrant]:
+    """Honor-or-reject a solution emission's ``quadrant`` string (R9).
+
+    The LLM may tag a ``SolutionToAdd`` with the intervention quadrant of a
+    surfaced runbook candidate. Coerce the free-text value to the enum; a missing
+    or unrecognized value yields ``None`` (recorded as unquadranted) rather than a
+    hard parse failure — BEST_EFFORT providers must not crash the turn on a typo.
+    Recorded as DATA only: M5's downgrade logic is unchanged (per-quadrant
+    exemptions are a separate, soundness-sensitive decision).
+    """
+    if not raw:
+        return None
+    try:
+        return InterventionQuadrant(str(raw).strip().lower())
+    except ValueError:
+        return None
 
 
 def _determine_action_type(
@@ -8201,6 +8220,17 @@ class MilestoneEngine:
         # opportunistically during INVESTIGATING.
         if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
             for s_item in updates.solutions_to_add:
+                # R9: causal-graph linkage carried by the emission (optional;
+                # honor-or-reject). ``quadrant`` is recorded as DATA — the M5
+                # downgrade below is unchanged. ``node_ref`` is kept only when it
+                # resolves to a real node on this case's graph. Note: no forward-
+                # looking "verification" is written to ``verification_method`` here
+                # — that field means *how the fix WAS verified* (past tense, read by
+                # the resolution report + resolution-confirmation gate), so writing
+                # a proposed check into it would claim a verification that never
+                # happened. The runbook's verification prose reaches the LLM via RAG.
+                node_ref = getattr(s_item, "node_ref", None)
+                node_id = node_ref if node_ref in case.causal_nodes else None
                 sol = Solution(
                     solution_id=f"sol_{uuid4().hex[:12]}",
                     solution_type=s_item.solution_type,
@@ -8208,6 +8238,10 @@ class MilestoneEngine:
                     immediate_action=s_item.description,
                     commands=s_item.commands or [],
                     risks=[s_item.risks] if s_item.risks else [],
+                    node_id=node_id,
+                    quadrant=_coerce_intervention_quadrant(
+                        getattr(s_item, "quadrant", None)
+                    ),
                     proposed_at=datetime.now(UTC),
                 )
                 case.solutions.append(sol)

@@ -22,10 +22,13 @@ from faultmaven.core.investigation.kb_cause_seeder import (
     KB_SEED_PRIOR,
     MAX_SEEDED_CAUSES,
     SEEDED_FROM_RUNBOOK_KEY,
+    SEEDED_INTERVENTIONS_KEY,
     SEEDED_RATIONALE_PREFIX,
     SeededRunbook,
     SkipClass,
     _emit_rung_needs,
+    _sanitize_interventions,
+    confirmed_cause_interventions,
     confirmed_root_seed_origin,
     seed_candidate_causes,
 )
@@ -949,6 +952,147 @@ def test_offer_gate_end_to_end_offers_self_discovered_resolution():
 
 
 # ---------------------------------------------------------------------------
+# R9: interventions -> seed-time capture + confirmed-cause read helper
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_interventions_keeps_wellformed_drops_junk():
+    """The verbatim metadata["causes"] interventions list is normalized: only
+    dict entries with non-empty text survive; fields are coerced to bounded
+    strings; a non-list input yields []."""
+    assert _sanitize_interventions("not a list") == []
+    assert _sanitize_interventions(None) == []
+    out = _sanitize_interventions(
+        [
+            {"quadrant": "remediation", "ref": "root", "text": "  fix the root  "},
+            "bad",  # not a dict
+            {"text": ""},  # empty text
+            {"quadrant": "mitigation", "text": "buy time"},  # missing ref ok
+            {"no": "text key"},  # no text
+        ]
+    )
+    assert out == [
+        {"quadrant": "remediation", "ref": "root", "text": "fix the root"},
+        {"quadrant": "mitigation", "ref": "", "text": "buy time"},
+    ]
+
+
+def test_interventions_captured_on_seeded_root():
+    """Seeding a cause stashes its interventions on the freshly-minted ROOT node
+    (read surface for the SOLUTION-stage render), not on the intermediate."""
+    case, root_id = _seed_case_with_root("rb_iv")
+    root = case.causal_nodes[root_id]
+    captured = (root.metadata or {}).get(SEEDED_INTERVENTIONS_KEY)
+    assert captured == [
+        {"quadrant": "remediation", "ref": "root", "text": "fix the root"}
+    ]
+    # No intermediate carries the interventions surface — root-only.
+    for nid, node in case.causal_nodes.items():
+        if node.node_type != NodeType.ROOT:
+            assert SEEDED_INTERVENTIONS_KEY not in (node.metadata or {})
+
+
+def test_interventions_not_captured_on_reused_self_generated_root():
+    """A reused (self-generated) root must stay origin-free: neither the runbook
+    marker nor the interventions surface may be stamped onto it — same discipline
+    as the SEEDED_FROM_RUNBOOK_KEY provenance stamp."""
+    stmt = "root A: the underlying fault"
+    case = _case()
+    reused = _add_unmarked_root(case, stmt)  # exists but heads no hypothesis
+    seed_candidate_causes(
+        case, [_runbook("rb_reuse", [_cause("A", root_stmt=stmt)])], current_turn=1
+    )
+    node = case.causal_nodes[reused]
+    assert SEEDED_INTERVENTIONS_KEY not in (node.metadata or {})
+    assert SEEDED_FROM_RUNBOOK_KEY not in (node.metadata or {})
+
+
+def test_malformed_interventions_do_not_break_seeding():
+    """A malformed interventions value must not fail seeding — the candidate is
+    still seeded, just without a captured interventions surface."""
+    cause = _cause("A")
+    cause["interventions"] = "not a list at all"
+    case = _case()
+    report = seed_candidate_causes(case, [_runbook("rb_bad", [cause])], current_turn=1)
+    assert report.seeded_anything
+    root = next(n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT)
+    assert SEEDED_INTERVENTIONS_KEY not in (root.metadata or {})
+
+
+def test_confirmed_cause_interventions_returned_when_confirmed():
+    case, root_id = _seed_case_with_root("rb_iv")
+    _confirm_root(case, root_id)
+    assert confirmed_cause_interventions(case) == [
+        {"quadrant": "remediation", "ref": "root", "text": "fix the root"}
+    ]
+
+
+def test_confirmed_cause_interventions_empty_when_only_candidate():
+    """A seeded candidate that never validated yields no interventions — the
+    render only fires once the cause is actually confirmed."""
+    case, _root_id = _seed_case_with_root("rb_iv")
+    assert confirmed_cause_interventions(case) == []
+
+
+def test_confirmed_cause_interventions_empty_when_self_discovered():
+    """A case resolved on a self-discovered cause (with a refuted seed for a
+    different cause present) surfaces no seeded interventions."""
+    case, _seeded = _seed_case_with_root("rb_unrelated")
+    own = _add_unmarked_root(case, "east-region network partition dropped traffic")
+    _confirm_root(case, own)
+    assert confirmed_cause_interventions(case) == []
+
+
+def test_confirmed_cause_interventions_via_cluster_duplicate():
+    """Cluster collapse (same as confirmed_root_seed_origin): a self-discovered
+    confirmed root that mirrors a seeded candidate still resolves to the seed's
+    captured interventions."""
+    stmt = "database connection pool exhausted under load"
+    case, _seeded = _seed_case_with_root("rb_dbpool", root_stmt=stmt)
+    dup = _add_unmarked_root(case, stmt)
+    _confirm_root(case, dup)
+    assert confirmed_cause_interventions(case) == [
+        {"quadrant": "remediation", "ref": "root", "text": "fix the root"}
+    ]
+
+
+def test_candidate_solutions_block_renders_only_when_confirmed():
+    """End-to-end through the real render helper: the <candidate_solutions> block
+    surfaces the confirmed seeded cause's interventions (quadrant + text) so the
+    LLM proposes them via solutions_to_add — and is EMPTY while the seed is still
+    a candidate (the block fires only once the cause is established)."""
+    from faultmaven.core.investigation.prompts.context_builder import (
+        _build_candidate_solutions_block,
+    )
+
+    case, root_id = _seed_case_with_root("rb_render")
+    # Candidate-only: nothing to offer as a fix yet.
+    assert _build_candidate_solutions_block(case) == ""
+
+    _confirm_root(case, root_id)
+    block = _build_candidate_solutions_block(case)
+    assert "<candidate_solutions>" in block
+    assert "[remediation] fix the root" in block
+    # It instructs the LLM to carry the quadrant through on the emission.
+    assert "quadrant" in block
+
+
+def test_candidate_solutions_block_empty_off_investigating():
+    """Only INVESTIGATING renders the block — a terminal case has its own
+    surface (and confirmed_cause_interventions is inert there anyway)."""
+    from faultmaven.core.investigation.prompts.context_builder import (
+        _build_candidate_solutions_block,
+    )
+
+    case, root_id = _seed_case_with_root("rb_render")
+    _confirm_root(case, root_id)
+    # Bypass the RESOLVED cross-field validator (needs resolved_at/closed_at) —
+    # we only need the state field flipped to exercise the non-INVESTIGATING guard.
+    object.__setattr__(case, "state", CaseState.RESOLVED)
+    assert _build_candidate_solutions_block(case) == ""
+
+
+# ---------------------------------------------------------------------------
 # R8: rung_indicators -> seeded evidence-needs
 # ---------------------------------------------------------------------------
 
@@ -1145,20 +1289,29 @@ def test_safety_mechanisms_are_provenance_blind():
     is what keeps a seed mechanically indistinguishable from a self-generated
     hypothesis.
 
-    Two provenance surfaces exist, and BOTH are checked: the node-metadata key
-    (SEEDED_FROM_RUNBOOK_KEY) and the hypothesis rationale text
-    (SEEDED_RATIONALE_PREFIX). Neither literal may appear in any safety module —
-    a mechanism must not sniff origin out of the rationale string either.
+    THREE provenance surfaces exist, and ALL are checked: the node-metadata origin
+    key (SEEDED_FROM_RUNBOOK_KEY), the hypothesis rationale text
+    (SEEDED_RATIONALE_PREFIX), and the R9 captured-interventions key
+    (SEEDED_INTERVENTIONS_KEY — present on a node only if it was seeded). No literal
+    may appear in any safety module — a mechanism must not sniff origin out of the
+    rationale string or the interventions surface either.
 
     The grep also bans the provenance SYMBOL NAMES themselves
-    (``SEEDED_FROM_RUNBOOK_KEY``/``SEEDED_RATIONALE_PREFIX``) and the case-level
-    origin helpers ``case_has_seeded_candidates`` and ``confirmed_root_seed_origin``:
-    a module could import the symbol and branch on origin without the literal
-    *value* ever appearing in its source, so the literal-value grep alone is only
-    a tripwire, not a proof. Banning the names closes that gap.
+    (``SEEDED_FROM_RUNBOOK_KEY``/``SEEDED_RATIONALE_PREFIX``/``SEEDED_INTERVENTIONS_KEY``)
+    and the case-level origin helpers ``case_has_seeded_candidates``,
+    ``confirmed_root_seed_origin``, and ``confirmed_cause_interventions``: a module
+    could import the symbol and branch on origin without the literal *value* ever
+    appearing in its source, so the literal-value grep alone is only a tripwire, not
+    a proof. Banning the names closes that gap.
     (``seed_candidate_causes`` — the write path — is NOT banned: milestone_engine
     legitimately imports it to *create* seeds, which is not a safety mechanism
     reading origin.)
+
+    The two R9 readers are NOT carved out here because no safety module reads them:
+    ``confirmed_cause_interventions`` is read only by the prompt-render path
+    (``context_builder._build_candidate_solutions_block``), which is not a safety
+    mechanism (it offers a prior to the LLM, gated by M5 + user accept/verify) and
+    is not in this module set — so the bare ban with no carve-out is exactly right.
 
     EXPLICIT CARVE-OUT (Phase 5.2b provenance-based uniqueness): exactly one
     origin reader — ``confirmed_root_seed_origin`` — is permitted in exactly one
@@ -1227,10 +1380,13 @@ def test_safety_mechanisms_are_provenance_blind():
         banned = (
             SEEDED_FROM_RUNBOOK_KEY,
             SEEDED_RATIONALE_PREFIX,
+            SEEDED_INTERVENTIONS_KEY,
             "SEEDED_FROM_RUNBOOK_KEY",
             "SEEDED_RATIONALE_PREFIX",
+            "SEEDED_INTERVENTIONS_KEY",
             "case_has_seeded_candidates",
             "confirmed_root_seed_origin",
+            "confirmed_cause_interventions",
         )
         for marker in banned:
             # Documented carve-out: the offer-gate origin reader is permitted in
