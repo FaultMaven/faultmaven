@@ -1441,6 +1441,34 @@ class KnowledgeService:
             logger.error(f"Failed to load causes for {item_id}: {e}")
             return None
 
+    async def get_runbook_title(self, item_id: str) -> Optional[str]:
+        """Return a knowledge item's display title, or None.
+
+        Used to name the runbook a resolved case was seeded from when the
+        runbook-generation offer is short-circuited for provenance-based
+        uniqueness (Phase 5.2b) — so the "already covered by X" message can name
+        X. Returns None when the id is falsy, the row is unknown, or lookup fails
+        (the caller degrades to a runbook-unnamed message; unlike the seeder
+        loader this applies no verification-level filter — naming an item the
+        user already applied is not a trust-boundary crossing).
+        """
+        try:
+            if not item_id or not self._db_session_factory:
+                return None
+
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
+            )
+
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                item = await repo.get_by_id(item_id)
+
+            return getattr(item, "title", None) if item is not None else None
+        except Exception as e:
+            logger.error(f"Failed to load title for {item_id}: {e}")
+            return None
+
     async def get_semantic_snippet(
         self,
         document_id: str,

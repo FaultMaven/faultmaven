@@ -8,6 +8,7 @@ seeded prior decays and is anchoring-flagged (NO COLLAPSE, NO INCORRECT
 CONCLUSION). Pass/fail is graph state, not a model judge.
 """
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -24,17 +25,28 @@ from faultmaven.core.investigation.kb_cause_seeder import (
     SEEDED_RATIONALE_PREFIX,
     SeededRunbook,
     SkipClass,
+    confirmed_root_seed_origin,
     seed_candidate_causes,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseState,
+    CausalNode,
+    ConfidenceLevel,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
+    EvidenceStance,
     HypothesisState,
     InquiryData,
+    NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    SolutionType,
 )
 
 pytestmark = pytest.mark.unit
@@ -756,6 +768,179 @@ def test_misleading_seed_decays_and_is_anchoring_flagged():
 
 
 # ---------------------------------------------------------------------------
+# confirmed_root_seed_origin — provenance-based runbook uniqueness (Phase 5.2b)
+# ---------------------------------------------------------------------------
+
+
+def _seed_case_with_root(
+    item_id: str = "rb_seed_1", root_stmt: str = "root A: the underlying fault"
+) -> "tuple[Case, str]":
+    """Seed one runbook cause and return (case, seeded_root_node_id)."""
+    case = _case()
+    hm = create_hypothesis_manager()
+    seed_candidate_causes(
+        case,
+        [_runbook(item_id, [_cause("A", root_stmt=root_stmt)])],
+        current_turn=1,
+        hypothesis_manager=hm,
+    )
+    root_id = next(
+        nid
+        for nid, node in case.causal_nodes.items()
+        if node.node_type == NodeType.ROOT
+        and SEEDED_FROM_RUNBOOK_KEY in (node.metadata or {})
+    )
+    return case, root_id
+
+
+def _add_unmarked_root(case: "Case", statement: str) -> str:
+    """A self-discovered ROOT node — no seed provenance marker."""
+    node = CausalNode(statement=statement, node_type=NodeType.ROOT, generated_at_turn=1)
+    case.causal_nodes[node.node_id] = node
+    return node.node_id
+
+
+def _confirm_root(case: "Case", node_id: str) -> None:
+    """Make a root counterfactually CONFIRMED: VALIDATED + a SUPPORTS link to a
+    causal_absence row (the gone⇒gone proof), mirroring the resolution stamp."""
+    row = Evidence(
+        summary="post-fix verification: cause no longer present",
+        category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        source_type=EvidenceSourceType.USER_DESCRIPTION,
+        collected_at=datetime.now(UTC),
+        collected_by="u",
+        primary_purpose="confirm root cause eliminated",
+        preprocessed_content="cause absent after fix",
+        content_size_bytes=40,
+        preprocessing_method="manual",
+        collected_at_turn=2,
+    )
+    case.evidence.append(row)
+    node = case.causal_nodes[node_id]
+    node.node_state = NodeState.VALIDATED
+    node.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=row.evidence_id,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="removing the cause removed the problem",
+            linked_at_turn=2,
+        )
+    )
+
+
+def test_origin_returned_when_confirmed_root_was_seeded():
+    """A case resolved by validating the seeded cause resolves to its runbook —
+    the direct 'this case duplicates runbook X' signal."""
+    case, root_id = _seed_case_with_root("rb_argocd")
+    _confirm_root(case, root_id)
+    assert confirmed_root_seed_origin(case) == "rb_argocd"
+
+
+def test_none_when_no_confirmed_root():
+    """A seeded candidate that never validated is not a resolution — no origin
+    (candidate-only seeds must never suppress a future offer)."""
+    case, _root_id = _seed_case_with_root("rb_argocd")
+    # Root left CANDIDATE — the seeder never validates.
+    assert confirmed_root_seed_origin(case) is None
+
+
+def test_none_when_confirmed_cause_was_self_discovered():
+    """The decisive R3 distinction vs ``case_has_seeded_candidates``: a case can
+    carry seeded candidates the LLM refuted while resolving a DIFFERENT,
+    self-discovered cause. That case must still be offered a runbook."""
+    case, _seeded_root = _seed_case_with_root("rb_unrelated")
+    # A distinct self-discovered cause (no shared tokens, no path) → its own
+    # cluster, no seed marker.
+    own = _add_unmarked_root(case, "east-region network partition dropped traffic")
+    _confirm_root(case, own)
+    assert confirmed_root_seed_origin(case) is None
+
+
+def test_origin_returned_via_cluster_when_seeded_duplicate_confirmed():
+    """Clustering ranges over ALL roots: a self-discovered confirmed root that is
+    a DUPLICATE (mutual mirror) of a seeded candidate collapses onto it, so the
+    origin is still found even though the confirmed node carries no marker."""
+    stmt = "database connection pool exhausted under load"
+    case, _seeded_root = _seed_case_with_root("rb_dbpool", root_stmt=stmt)
+    # Self-discovered restatement of the same cause (the LLM re-emitted it as a
+    # fresh node instead of referencing the seeded one) — mutual mirror merges.
+    dup = _add_unmarked_root(case, stmt)
+    _confirm_root(case, dup)
+    assert confirmed_root_seed_origin(case) == "rb_dbpool"
+
+
+def test_refuted_seeded_root_does_not_claim_resolution():
+    """A seeded root REFUTED by a failed fix must never be the basis for a
+    'resolved by applying X' signal, even when it would cluster (mutual mirror)
+    with a later-confirmed root — a disproven seed did not resolve the case, and
+    a refuted start node would otherwise poison the cluster via the descendant
+    walk's VALIDATED/count-held precondition."""
+    stmt = "database connection pool exhausted under load"
+    case, seeded_root = _seed_case_with_root("rb_disproven", root_stmt=stmt)
+    case.causal_nodes[seeded_root].node_state = NodeState.REFUTED
+    # The real, self-discovered cause (a mirror statement) is what got confirmed.
+    real = _add_unmarked_root(case, stmt)
+    _confirm_root(case, real)
+    assert confirmed_root_seed_origin(case) is None
+
+
+def test_none_on_empty_graph():
+    case = _case()
+    assert confirmed_root_seed_origin(case) is None
+
+
+def _make_conversion_ready(case: "Case") -> None:
+    """Add the RCC record + actionable solution a CONFIRMED case needs to clear
+    ``runbook_conversion_ready`` (problem definition already comes from ``_case``)."""
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="the underlying fault",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.85,
+        mechanism="fault propagates to the observed failure",
+    )
+    case.solutions.append(
+        Solution(
+            solution_type=SolutionType.CONFIG_CHANGE,
+            title="Apply the fix",
+            longterm_fix="reconfigure and redeploy",
+        )
+    )
+
+
+def test_offer_gate_end_to_end_suppresses_seeded_resolution():
+    """End-to-end through the REAL helper: a runbook-conversion-ready case whose
+    CONFIRMED cause was seeded is NOT offered the generate affordance — pinning
+    the wiring between the helper and its offer-gate reader."""
+    from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
+    from faultmaven.core.investigation.milestone_engine import _runbook_suggestion
+
+    case, root_id = _seed_case_with_root("rb_e2e")
+    _confirm_root(case, root_id)
+    _make_conversion_ready(case)
+
+    # The case is genuinely convertible — only provenance suppresses it.
+    assert runbook_conversion_ready(case) is True
+    assert confirmed_root_seed_origin(case) == "rb_e2e"
+    assert _runbook_suggestion(case) is None
+
+
+def test_offer_gate_end_to_end_offers_self_discovered_resolution():
+    """The mirror: a runbook-conversion-ready case whose CONFIRMED cause was
+    self-discovered (no seed) IS offered the affordance."""
+    from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
+    from faultmaven.core.investigation.milestone_engine import _runbook_suggestion
+
+    case = _case()
+    own = _add_unmarked_root(case, "east-region network partition dropped traffic")
+    _confirm_root(case, own)
+    _make_conversion_ready(case)
+
+    assert runbook_conversion_ready(case) is True
+    assert confirmed_root_seed_origin(case) is None
+    assert _runbook_suggestion(case) is not None
+
+
+# ---------------------------------------------------------------------------
 # GUARANTEE: provenance-blindness invariant
 # ---------------------------------------------------------------------------
 
@@ -774,12 +959,26 @@ def test_safety_mechanisms_are_provenance_blind():
 
     The grep also bans the provenance SYMBOL NAMES themselves
     (``SEEDED_FROM_RUNBOOK_KEY``/``SEEDED_RATIONALE_PREFIX``) and the case-level
-    origin helper ``case_has_seeded_candidates``: a module could import the symbol
-    and branch on origin without the literal *value* ever appearing in its source,
-    so the literal-value grep alone is only a tripwire, not a proof. Banning the
-    names closes that gap. (``seed_candidate_causes`` — the write path — is NOT
-    banned: milestone_engine legitimately imports it to *create* seeds, which is
-    not a safety mechanism reading origin.)
+    origin helpers ``case_has_seeded_candidates`` and ``confirmed_root_seed_origin``:
+    a module could import the symbol and branch on origin without the literal
+    *value* ever appearing in its source, so the literal-value grep alone is only
+    a tripwire, not a proof. Banning the names closes that gap.
+    (``seed_candidate_causes`` — the write path — is NOT banned: milestone_engine
+    legitimately imports it to *create* seeds, which is not a safety mechanism
+    reading origin.)
+
+    EXPLICIT CARVE-OUT (Phase 5.2b provenance-based uniqueness): exactly one
+    origin reader — ``confirmed_root_seed_origin`` — is permitted in exactly one
+    module — ``milestone_engine`` — and nowhere else. It backs the
+    runbook-generation OFFER gate, which is a knowledge-lifecycle decision, NOT a
+    safety mechanism: a wrong answer at that gate can only produce a missing or
+    redundant "generate runbook" affordance, never an incorrect conclusion or a
+    collapse under pressure (the manual create path and the async EXISTING_COVERS
+    similarity backstop both remain). Every VALIDATION / decay / anchoring /
+    demotion / state / gating path in this file's module set — including all the
+    OTHER provenance surfaces in milestone_engine itself — stays blind. The
+    carve-out is deliberately as narrow as one symbol in one module so it cannot
+    become a general escape hatch.
 
     The module set spans consume-side safety (decay / anchoring / demotion /
     node+hypothesis state derivation in causal_graph + hypothesis_manager;
@@ -816,7 +1015,7 @@ def test_safety_mechanisms_are_provenance_blind():
         with open(module.__file__, "r", encoding="utf-8") as fh:
             source = fh.read()
         # (a) the literal provenance VALUES may not appear inline, and
-        # (b) the provenance SYMBOL NAMES / case-level origin helper may not be
+        # (b) the provenance SYMBOL NAMES / case-level origin helpers may not be
         #     imported or referenced — a symbol import branches on origin with no
         #     literal value in the source.
         banned = (
@@ -825,8 +1024,13 @@ def test_safety_mechanisms_are_provenance_blind():
             "SEEDED_FROM_RUNBOOK_KEY",
             "SEEDED_RATIONALE_PREFIX",
             "case_has_seeded_candidates",
+            "confirmed_root_seed_origin",
         )
         for marker in banned:
+            # Documented carve-out: the offer-gate origin reader is permitted in
+            # exactly the offer module (see docstring). Nothing else is.
+            if marker == "confirmed_root_seed_origin" and module is engine:
+                continue
             assert marker not in source, (
                 f"{module.__name__} references seed provenance ({marker!r}) — a "
                 "safety mechanism must never branch on origin"
