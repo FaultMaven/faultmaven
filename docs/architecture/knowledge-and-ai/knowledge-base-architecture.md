@@ -204,7 +204,7 @@ Live (during investigation):
 
 KB and evidence use different chunking strategies. KB uses structure-aware splitting on markdown headers (each `##` section becomes one chunk; variable size 100–3000 chars). Evidence uses token-based section-aware chunking with smaller embedding units and context expansion at retrieval time. Parameters, rationale, and current-vs-target status for both strategies are canonical in [vector-retrieval-architecture.md §5](./vector-retrieval-architecture.md#5-evidence-retrieval).
 
-This difference affects how runbook content is authored — each `##` section becomes one chunk, so authors should aim for 400–900 characters per section. See [Runbook Content Architecture §3](./runbook-content-architecture.md#why-structure-matters-for-rag) for authoring guidance.
+This difference affects how runbook content is authored — each `### Cause` subsection becomes one chunk, so authors should aim for 400–1200 characters per subsection. See [Runbook Content Architecture §3](./runbook-content-architecture.md#why-structure-matters-for-rag) for authoring guidance.
 
 ### Metadata Stored Per Chunk
 
