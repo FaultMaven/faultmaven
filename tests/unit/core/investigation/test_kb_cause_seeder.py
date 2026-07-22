@@ -33,6 +33,7 @@ from faultmaven.modules.case.contracts import (
     CausalNode,
     CaseSeverity,
     CaseState,
+    ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -43,6 +44,9 @@ from faultmaven.modules.case.contracts import (
     NodeState,
     NodeType,
     ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    SolutionType,
 )
 
 pytestmark = pytest.mark.unit
@@ -868,6 +872,57 @@ def test_origin_returned_via_cluster_when_seeded_duplicate_confirmed():
 def test_none_on_empty_graph():
     case = _case()
     assert confirmed_root_seed_origin(case) is None
+
+
+def _make_conversion_ready(case: "Case") -> None:
+    """Add the RCC record + actionable solution a CONFIRMED case needs to clear
+    ``runbook_conversion_ready`` (problem definition already comes from ``_case``)."""
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="the underlying fault",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.85,
+        mechanism="fault propagates to the observed failure",
+    )
+    case.solutions.append(
+        Solution(
+            solution_type=SolutionType.CONFIG_CHANGE,
+            title="Apply the fix",
+            longterm_fix="reconfigure and redeploy",
+        )
+    )
+
+
+def test_offer_gate_end_to_end_suppresses_seeded_resolution():
+    """End-to-end through the REAL helper: a runbook-conversion-ready case whose
+    CONFIRMED cause was seeded is NOT offered the generate affordance — pinning
+    the wiring between the helper and its offer-gate reader."""
+    from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
+    from faultmaven.core.investigation.milestone_engine import _runbook_suggestion
+
+    case, root_id = _seed_case_with_root("rb_e2e")
+    _confirm_root(case, root_id)
+    _make_conversion_ready(case)
+
+    # The case is genuinely convertible — only provenance suppresses it.
+    assert runbook_conversion_ready(case) is True
+    assert confirmed_root_seed_origin(case) == "rb_e2e"
+    assert _runbook_suggestion(case) is None
+
+
+def test_offer_gate_end_to_end_offers_self_discovered_resolution():
+    """The mirror: a runbook-conversion-ready case whose CONFIRMED cause was
+    self-discovered (no seed) IS offered the affordance."""
+    from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
+    from faultmaven.core.investigation.milestone_engine import _runbook_suggestion
+
+    case = _case()
+    own = _add_unmarked_root(case, "east-region network partition dropped traffic")
+    _confirm_root(case, own)
+    _make_conversion_ready(case)
+
+    assert runbook_conversion_ready(case) is True
+    assert confirmed_root_seed_origin(case) is None
+    assert _runbook_suggestion(case) is not None
 
 
 # ---------------------------------------------------------------------------
