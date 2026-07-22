@@ -45,7 +45,8 @@ async def run(
         Job result dictionary with:
         - status: "completed", "skipped", or "failed"
         - ingested / skipped_unchanged / pruned / orphaned_vectors_cleaned /
-          orphaned_rows: counts from the bootstrap pass
+          repaired_rows / orphaned_rows: counts from the bootstrap pass
+          (orphaned_rows is the residual AFTER the cross-store repair)
         - failures: list of (runbook relpath, reason) for failed runbooks
         - error: Error message if the whole pass failed
     """
@@ -83,6 +84,7 @@ async def run(
         result["orphaned_vectors_cleaned"] = len(
             bootstrap_result.orphaned_vectors_cleaned
         )
+        result["repaired_rows"] = len(bootstrap_result.repaired_rows)
         result["orphaned_rows"] = len(bootstrap_result.orphaned_rows)
         result["failures"] = list(bootstrap_result.failed)
 

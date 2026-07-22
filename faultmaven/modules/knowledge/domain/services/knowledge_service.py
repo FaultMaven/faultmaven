@@ -995,6 +995,86 @@ class KnowledgeService:
 
         return chunks_created
 
+    async def reindex_missing_vectors(self, item_id: str) -> int:
+        """Re-chunk + re-embed an existing row's chunks into the vector store.
+
+        Cross-store repair for an ORPHANED row — a ``knowledge_items`` row whose
+        ChromaDB chunks are missing (a crash between the SQL commit and the
+        vector write in :meth:`ingest_runbook` leaves exactly this half-state;
+        the KB bootstrap reconcile pass can detect it but cannot fix it without
+        the embedding model). This re-derives the vectors from the row's
+        persisted ``content`` using the runtime chunker + BGE-M3 and writes them
+        under the row's ``item_id`` — the SQL row itself is NEVER touched (it is
+        the source of truth and already correct). Per-chunk RAG metadata
+        (scope/domain/service/…) is rebuilt by the shared indexing path, so a
+        repaired chunk carries the same retrieval filters as a fresh ingest.
+
+        Unlike the pack boot path this DOES load the embedding model (via the
+        non-prechunked branch of :meth:`_index_document_in_vector_store` →
+        ``model_cache.aembed_texts``, off the event loop). Callers MUST bound how
+        many rows they repair per boot: re-embedding the whole KB reintroduces
+        the on-pod CPU-embedding timeout the prechunked pack exists to avoid.
+
+        Repaired chunks use the runtime chunker/embedder, so their text
+        boundaries may differ from the pack's build-time chunks; the vectors are
+        BGE-M3 (guarded by the pack model-identity check) so they remain
+        query-compatible — a retrievable runbook beats a silently missing one.
+
+        Returns the number of chunks indexed. Fail-safe 0 (no raise) when the
+        row is absent, no vector store is wired, or the embedding model is
+        unavailable — leaving the row orphaned for a later boot to repair.
+
+        Caveat (pre-existing, narrow): if ``add_documents`` writes SOME chunks
+        then raises, ``_index_document_in_vector_store`` returns 0 but the parent
+        now has partial vectors — so the reconcile pass (which keys on parent
+        PRESENCE, not chunk completeness) no longer flags it and repair won't
+        re-attempt it. Acceptable: the caller only invokes this on genuinely
+        vectorless rows, and the leading ``delete_documents_by_parent_id`` makes
+        a re-run idempotent, so a partial write is at worst under-retrievable,
+        never mispaired.
+        """
+        from sqlalchemy import select as _select
+
+        from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
+        if self._db_session_factory is None:
+            return 0
+
+        async with self._db_session_factory() as session:
+            found = await session.execute(
+                _select(KnowledgeItemModel).where(KnowledgeItemModel.item_id == item_id)
+            )
+            row = found.scalar_one_or_none()
+
+        if row is None:
+            logger.warning(
+                f"reindex_missing_vectors: no knowledge_items row for {item_id} — "
+                "nothing to repair"
+            )
+            return 0
+
+        # Mirror the KnowledgeBaseDocument that ingest_runbook builds from the
+        # same fields (knowledge_service.py ~968) so the repaired index is
+        # metadata-identical to a normal ingest.
+        doc_model = KnowledgeBaseDocument(
+            document_id=row.item_id,
+            title=row.title,
+            content=row.content,
+            # item_type is the DURABLE source for document_type: ingest_runbook
+            # takes a separate document_type param but does not persist it, so the
+            # stored item_type is the faithful reconstruction. For all pack
+            # content item_type == "runbook" == the ingest default, so a repaired
+            # runbook's chunk metadata matches a fresh ingest exactly.
+            document_type=row.item_type,
+            tags=list(row.tags) if row.tags else [],
+            source_url=row.source_url,
+            scope=row.scope,
+            owner_id=row.owner_id,
+            created_at=to_json_compatible(row.created_at),
+            updated_at=to_json_compatible(row.updated_at),
+        )
+        return await self._index_document_in_vector_store(doc_model, prechunked=None)
+
     async def _delete_knowledge_item_row(self, item_id: str) -> None:
         """Best-effort cleanup of an orphaned knowledge_items row.
 
