@@ -188,7 +188,7 @@ Tools are registered conditionally — only available tools appear in the LLM's 
 
 **Additional DA system instruction elements:**
 
-- **Searchable evidence flag**: Evidence items in `<evidence_collected>` are tagged with `searchable="true"` when they have raw files on disk (`form=document` + valid `content_ref`). The instruction tells the LLM to only call `search_file` on evidence with this flag — other evidence items are investigation notes with no file to search.
+- **Searchable evidence flag**: Items in `<evidence_collected>` are tagged with `searchable="true"` when there is a raw file to search — an evidence item when it is backed by an uploaded file (`source_file_id` set and the referenced `UploadedFile` row found on the case), an `<uploaded_file>` entry when its `structural_index` passes `structural_index_is_searchable()` (`context_builder.py`, threshold shared with the engine's force_tools guards — #708). Chat-extracted evidence (no source file) is never searchable. The instruction tells the LLM to only call `search_file` on items with this flag — other evidence items are investigation notes with no file to search.
 - **Entity-first search**: Extract specific entities (IPs, usernames, timestamps, error codes) from the user's question and search for those exact terms
 - **Keyword-first search mode**: Use `search_type: "keyword"` by default; fall back to regex only for pattern matching
 - **PII token warnings**: Explicit instruction that PII tokens (IPs, hostnames, usernames) in uploaded evidence are NOT real PII and must not be redacted from tool calls
@@ -220,101 +220,11 @@ Evidence is user-submitted case data (logs, metrics, configs) — only user-subm
 
 See [Data Preprocessing Design §5.0](../data-processing/data-preprocessing-design-specification.md) for the scenario-driven processing model that determines when DA mode is selected.
 
-## 6. Terminal Metrics & Analytics
+## 6. Terminal Observability
 
-When a case reaches a terminal state (RESOLVED or CLOSED), the system emits structured metrics and log events for operational intelligence. These metrics follow the existing Prometheus bounded-label discipline — no case_id, user_id, or other unbounded identifiers.
+When a case reaches a terminal state (RESOLVED or CLOSED), today's emission surface is:
 
-### 6.1 Prometheus Metrics
+- **Invariant-scoped Prometheus counters** in `faultmaven/core/investigation/lifecycle_metrics.py`. These measure outcomes, follow the bounded-label discipline (no case_id, user_id, or other unbounded identifiers), and are no-ops unless `ENABLE_METRICS=true` and `prometheus_client` is installed (see `shims/metrics.py`). The terminal-relevant counter is `faultmaven_resolution_cause_leg_total{provider, leg}`, incremented at the top of `terminal_transitions.finalize_resolution_truth_surface` — the INV-41 backstop-reliance gate (see [Investigation Invariants](./investigation-invariants.md)).
+- **Standard log lines** from `terminal_transitions.py` recording each transition (e.g. `transitioned to RESOLVED (terminal state)`).
 
-**Implementation**: New module `faultmaven/infrastructure/observability/case_metrics.py`. Metrics are emitted in `terminal_transitions.py` immediately after the case state update.
-
-**Counters:**
-
-| Metric | Labels | Description |
-|--------|--------|-------------|
-| `faultmaven_case_terminal_total` | `status`, `closure_reason` | Cases reaching terminal state |
-| `faultmaven_case_created_total` | — | Total cases created |
-| `faultmaven_summary_generated_total` | `summary_type`, `status` | Auto-generated terminal summaries (success/failure) |
-
-**Histograms:**
-
-| Metric | Labels | Buckets | Description |
-|--------|--------|---------|-------------|
-| `faultmaven_case_duration_seconds` | `status`, `closure_reason` | 60, 300, 900, 1800, 3600, 7200, 14400, 43200, 86400 | Time from creation to terminal state |
-| `faultmaven_case_turn_count` | `status` | 1, 2, 3, 5, 8, 13, 21, 34, 55 | Agent turns per terminal case |
-| `faultmaven_case_evidence_count` | `status` | 0, 1, 2, 3, 5, 8, 13, 21 | Evidence items per terminal case |
-
-**Gauges:**
-
-| Metric | Labels | Description |
-|--------|--------|-------------|
-| `faultmaven_cases_active` | — | Currently active (non-terminal) cases |
-
-### 6.2 Label Values (Bounded)
-
-All labels use bounded, enumerated values:
-
-- `status`: `"resolved"` | `"closed"` (from `CaseState` enum)
-- `closure_reason`: `"closed_after_investigation"` | `"mitigation_sufficient"` | `"inquiry_only"` (from `VALID_CLOSURE_REASONS`, set by `derive_closure_reason()`)
-- `summary_type`: `"resolution_summary"` | `"closure_summary"` (from `ReportType` enum)
-
-### 6.3 Emission Point
-
-```python
-# In terminal_transitions.py, after case state update:
-
-def _emit_terminal_metrics(case: Case) -> None:
-    """Emit Prometheus metrics when case reaches terminal state."""
-    duration = (case.closed_at - case.created_at).total_seconds()
-
-    case_terminal_total.labels(
-        status=case.state.value,
-        closure_reason=case.closure_reason,
-    ).inc()
-
-    case_duration_seconds.labels(
-        status=case.state.value,
-        closure_reason=case.closure_reason,
-    ).observe(duration)
-
-    case_turn_count.labels(
-        status=case.state.value,
-    ).observe(case.current_turn)
-
-    case_evidence_count.labels(
-        status=case.state.value,
-    ).observe(len(case.evidence))
-
-    cases_active_gauge.dec()
-```
-
-### 6.4 Structured Log Event
-
-Alongside Prometheus metrics, a structured log event is emitted via structlog for log aggregation and ad-hoc analysis:
-
-```python
-structlog.get_logger().info(
-    "case.terminal",
-    case_status=case.state.value,
-    closure_reason=case.closure_reason,
-    duration_seconds=duration,
-    turn_count=case.current_turn,
-    evidence_count=len(case.evidence),
-    hypothesis_count=len(case.hypotheses),
-    milestones_reached=[m for m, v in case.progress.dict().items() if v is True],
-    investigation_path=case.path_selection.path.value if case.path_selection else None,
-    had_mitigation=any(a.action_type == "MITIGATION" for a in case.action_attempts),
-)
-```
-
-### 6.5 Operational Questions These Metrics Answer
-
-| Question | Metric / Query |
-|----------|---------------|
-| What % of cases resolve vs get abandoned? | `case_terminal_total` by `status` |
-| How long do investigations take? | `case_duration_seconds` p50/p90/p99 |
-| Are cases getting abandoned faster (triage failure)? | `case_duration_seconds{closure_reason="closed_after_investigation"}` trend |
-| Do cases with more evidence resolve faster? | Correlate `case_evidence_count` with `case_duration_seconds` |
-| Is mitigation becoming a terminal path too often? | `case_terminal_total{closure_reason="mitigation_sufficient"}` / total |
-| Are auto-summaries generating reliably? | `summary_generated_total` success vs failure rate |
-| How many cases are currently active? | `cases_active` gauge |
+A broader case-analytics suite — terminal-outcome counters by `closure_reason`, duration/turn-count/evidence-count histograms, an active-cases gauge, and a `case.terminal` structured log event — was designed in an earlier revision of this section but never implemented. That spec, with the schema corrections it now needs (current `VALID_CLOSURE_REASONS`, no `path_selection`), is tracked in [#791](https://github.com/FaultMaven/faultmaven/issues/791).

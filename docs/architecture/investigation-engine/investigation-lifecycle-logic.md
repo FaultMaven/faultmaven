@@ -132,8 +132,16 @@ async def handle_inquiry_turn(case: Case, user_message: str) -> str:
             user_corrections=extract_corrections(user_message)
         )
 
-    # Check if user confirms statement
-    if user_confirms(user_message):  # "Yes", "Yes, investigate", "That's right", etc.
+    # Confirmation is two-tier (§1.5.3, INV-01) — there is NO mechanical
+    # text matcher for free-typed "yes" (the historical user_confirms()
+    # regex fallback was removed in commit 06cfa834):
+    #   1. Click path: a DECIDE confirmation-suggestion click arrives as
+    #      intent_type="confirmation" + confirmation_value=True, routed
+    #      deterministically through IntentResolver.
+    #   2. LLM path: the LLM sets user_confirmed_investigation=True in
+    #      state_updates; accepted ONLY when proposed_problem_statement
+    #      existed on a PRIOR turn (same-turn-confirmation guard, 13ff2eae).
+    if confirmation_click_intent(intent) or llm_confirmation_accepted(updates, case):
         case.inquiry.problem_statement_confirmed = True
         case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
         case.inquiry.decided_to_investigate = True

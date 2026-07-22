@@ -278,31 +278,28 @@ and state what specific data or input would unblock you.
 
 **What it prevents**: Agent invents diagnostic procedures or solutions when an organizational Runbook already exists, or answers technical questions from training data when the KB has documented guidance.
 
-**Injection point**: INQUIRY template (YOUR TASK section) and INVESTIGATING base template (DIAGNOSIS instructions). Also enforced via the DA system instruction's TYPE B question routing (see [DA System Instruction](#da-system-instruction) below).
+**Injection point**: INQUIRY template (step 2 of the YOUR TASK list) and INVESTIGATING base template (DIAGNOSIS instructions, scoped to Zone 2). Also enforced via the DA system instruction's TYPE B question routing (see [DA System Instruction](#da-system-instruction) below). There is no free-standing "KNOWLEDGE FIRST" prompt block — the rule is realized by the two template excerpts below.
 
-**Prompt injection (INQUIRY)**:
-
-```text
-KNOWLEDGE FIRST: When the user asks a technical question (troubleshooting,
-best practices, procedures, common causes, how-to), search the knowledge base
-(kb_qa) BEFORE answering from your own knowledge. If kb_qa returns relevant
-results, ground your answer in them and cite the source. If no relevant
-results, answer from your own knowledge without mentioning the search.
-```
-
-**Prompt injection (INVESTIGATING)**:
+**Prompt realization (INQUIRY)** — mandatory KB check as a numbered task step (`templates.py`, `INQUIRY_TEMPLATE`):
 
 ```text
-KNOWLEDGE & RUNBOOK AUTHORITY:
-You MUST search the Knowledge Base (kb_qa) before relying on your own
-general knowledge or formulating manual diagnostic steps.
-If a Runbook matches, follow its steps as the default approach. State clearly:
-"Our runbook for [symptom] recommends [steps] because [reasoning]."
-If case evidence contradicts the runbook's assumptions (wrong technology,
-different architecture, cause already ruled out), note the conflict and adapt:
-"The runbook assumes [X], but our evidence shows [Y]."
-If tools return no results, proceed silently — do not mention the search.
+2. KNOWLEDGE BASE CHECK. Call kb_qa once for the symptom.
+   - Match found: record it for later use; do NOT propose the fix here
+     (solutions are emitted during INVESTIGATING, not INQUIRY).
+     Set knowledge_match in state_updates: ...
+   - No match: proceed without mentioning the search.
 ```
+
+**Prompt realization (INVESTIGATING)** — scoped to Zone 2, not unconditional (`templates.py`):
+
+```text
+**KNOWLEDGE & RUNBOOK AUTHORITY (CRITICAL INSTRUCTION — Zone 2 only):**
+□ MUST search KB (`kb_qa` / `search_knowledge`) for the symptom ONCE at the start of
+  Zone 2 (after symptom_verified=True, before forming hypotheses independently).
+  Do NOT call kb_qa in Zone 1 — it contains procedures, not incident facts.
+```
+
+The full block continues with the per-Cause runbook structure (Statement / Chain / Indicators / Interventions) and the cause-attribution procedure — matching each retrieved Cause's Indicators against current case evidence. See [Runbook Causal-Chain Template](../knowledge-and-ai/document-to-runbook-conversion.md) and `templates.py` for the complete text.
 
 **Prescribed behavior**:
 

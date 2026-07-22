@@ -356,7 +356,7 @@ Validation errors from multiple sources are merged into `system_feedback` on the
 | Source | Feedback Key | Content |
 |--------|-------------|---------|
 | Reasoning-first validator | `reasoning_validation_errors` | Missing milestone justifications |
-| Progress monitor | `breakout_prompt_injection` | Transparency guidance + repair-pattern injection (e.g., "try different category" on anchoring) |
+| Progress monitor | `breakout_action` (turn metadata; the monitor result also carries a `prompt_injection` field) | Transparency guidance + repair-pattern injection (e.g., "try different category" on anchoring) |
 | State validator | `validation_repairs` | Automatic state corrections applied |
 
 This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.

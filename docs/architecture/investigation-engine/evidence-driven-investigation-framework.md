@@ -685,7 +685,7 @@ INQUIRY → INVESTIGATING (mitigation insert, then RCA + permanent fix) → RESO
 
 ### 7.3 Direct vs Mitigated (no prospective fork)
 
-There is no system-determined path selection and no `InvestigationPath` enum. Whether a mitigation is inserted is an agent judgment re-evaluated turn-by-turn — most commonly assessed right after `symptom_verified` (the same point the old Gate 2 fired), but never an irreversible commitment. The agent *proposes* a mitigation when an Axis-B (impact-now) gap exists; the user accepts or declines. The descriptor `investigation_shape: DIRECT | MITIGATED` is derived retrospectively from `progress.mitigation is not None`.
+There is no system-determined path selection and no `InvestigationPath` enum. Whether a mitigation is inserted is an agent judgment re-evaluated turn-by-turn — most commonly assessed right after `symptom_verified` (the same point the old Gate 2 fired), but never an irreversible commitment. The agent *proposes* a mitigation when an Axis-B (impact-now) gap exists; the user accepts or declines. Whether an investigation ended up direct or mitigated is derivable retrospectively from `progress.mitigation is not None` — there is no named shape descriptor in code (no `investigation_shape` field, persisted or computed).
 
 See **[Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)** for the canonical unified-flow spec (assessment variables, mitigation triggers, and forwarding).
 
@@ -1024,8 +1024,9 @@ What replaces it:
 - **`progress.mitigation: MitigationRecord`** — a single forward-only insert
   (INV-24) that materializes from the LLM's `mitigation_accepted` / `mitigation_verified`
   emission symbols (the schema names were *not* renamed).
-- **`investigation_shape: DIRECT | MITIGATED`** — a *retrospective* descriptor
-  derived from `progress.mitigation is not None`, not a prospective fork.
+- **Direct-vs-mitigated shape** — not a prospective fork, and not a code
+  symbol: retrospectively derivable from `progress.mitigation is not None`
+  (§7.3); no `investigation_shape` field exists.
 
 See [Investigation Data Models](./investigation-data-models.md) and Lifecycle Logic
 §2 for the full assessment-variable model.
@@ -1271,7 +1272,7 @@ new.action_attempts = []
 | Evidence categories | 4 types | 4 claim-attached types: symptom, causal, mitigation, solution (contextual material moves to `uploaded_files`; rejection is the absence of an Evidence row) |
 | Prompt stage instructions | 4 templates | 3 templates (TREATMENT includes extended diagnosis) |
 | Mitigation | Path modifier (one-shot) | Distinct stage (iterative until verified) |
-| Path selection | USER_CHOICE in matrix | Removed — no prospective fork. Mitigation is an opportunistic insert; `investigation_shape: DIRECT / MITIGATED` is derived retrospectively (see [Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)) |
+| Path selection | USER_CHOICE in matrix | Removed — no prospective fork. Mitigation is an opportunistic insert; the direct-vs-mitigated shape is retrospectively derivable from `progress.mitigation is not None` — no shape field in code (see [Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)) |
 | Milestone validation | Consistency check (blocking) | Gate milestones inferred from behavior; progress milestones set by LLM (advisory, non-blocking) |
 | Compliance detection | N/A (explicit confirmation) | Post-LLM, default no-transition when ambiguous (Section 15, decisions 5-6) |
 | "Jump ahead" | Allowed and encouraged | Removed (no sub-stages to jump between) |
