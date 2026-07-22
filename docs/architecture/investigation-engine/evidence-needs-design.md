@@ -461,7 +461,10 @@ This is a **prior, not a gate**, and every property keeps a seeded need
 mechanically identical to an LLM-emitted one (it is subject to the same
 lifecycle, surfacing, and wall rules; nothing reads its origin):
 
-- **`priority=LOW`** so it never out-ranks a live-evidence need.
+- **`priority=LOW`** so it sinks in the rendered `<evidence_needs>`
+  ordering. (Surfacing *selection* itself is priority- and origin-blind —
+  it ranks by `request_text` rarity + rotation — so this is not a
+  suppression guarantee, just a rendering-order hint.)
 - **`obtainability=UNKNOWN`** (the fail-safe default), so it never
   contributes to the §5.3 declared-data-wall on its own — but it makes
   the wall honestly computable for the seeded candidate, which

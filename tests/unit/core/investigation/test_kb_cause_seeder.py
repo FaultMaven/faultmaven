@@ -1013,6 +1013,38 @@ def test_seeded_needs_supersede_when_their_hypothesis_retires():
         assert not need.is_outstanding
 
 
+def test_seeded_needs_gate_the_wall_only_once_declared_unobtainable():
+    # The soundness pair for R8's declared-data-wall interaction: a seeded
+    # candidate's UNKNOWN-obtainability needs never wall it on their own (fail-
+    # safe), but make the wall honestly computable once the model declares them
+    # ungettable — pinned directly rather than by decomposition.
+    from faultmaven.core.investigation.verification_status import (
+        _candidate_unresolvable,
+        _declared_wall,
+    )
+
+    case = _case()
+    report = seed_candidate_causes(
+        case, [_runbook("rb1", [_cause("A")])], current_turn=1
+    )
+    hyp_id = report.seeded_hypothesis_ids[0]
+    seeded_needs = [
+        n for n in case.evidence_needs if hyp_id in n.motivating_hypothesis_ids
+    ]
+    assert seeded_needs
+
+    # Fail-safe: UNKNOWN discriminators never wall the candidate on their own.
+    assert not _candidate_unresolvable(case, hyp_id)
+    assert not _declared_wall(case)
+
+    # Honestly computable: once every seeded rung is declared ungettable, the
+    # candidate is unresolvable and (being the sole residual) the wall fires.
+    for need in seeded_needs:
+        need.obtainability = NeedObtainability.UNOBTAINABLE
+    assert _candidate_unresolvable(case, hyp_id)
+    assert _declared_wall(case)
+
+
 def test_multiple_rung_indicators_each_emit_a_distinct_need():
     cause = _cause("A")
     cause["rung_indicators"] = {

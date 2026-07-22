@@ -516,8 +516,11 @@ def _emit_rung_needs(
     - **PENDING, never auto-fulfilled.** Fulfillment requires a real evidence row
       (``fulfilling_evidence_ids``); the seeder links none. A seeded need grounds
       only when an actual datum arrives, exactly like any other need.
-    - **priority=LOW.** A seeded ask never out-ranks a need the LLM raised from
-      live evidence in the surfacing view.
+    - **priority=LOW.** Sinks a seeded ask in the rendered ``<evidence_needs>``
+      ordering. Not a suppression guarantee: surfacing *selection*
+      (``select_surfaced_causal_needs``) is deliberately priority- and
+      origin-blind — it ranks by discriminating power (``request_text`` rarity)
+      plus rotation — so a discriminating seeded rung is shown like any other.
     - **obtainability=UNKNOWN (fail-safe).** A seeded need never contributes to the
       declared-data-wall (``verification_status._candidate_unresolvable`` counts a
       candidate walled only when *all* its discriminators are UNOBTAINABLE). It

@@ -290,7 +290,7 @@ identical to an LLM-emitted need:
 | Property | Effect |
 |---|---|
 | `state = PENDING`, no `fulfilling_evidence_ids` | Never auto-fulfilled — grounds only when a real datum arrives, like any need. |
-| `priority = LOW` | Never out-ranks a need the LLM raised from live evidence in the surfacing view. |
+| `priority = LOW` | Sinks a seeded ask in the rendered `<evidence_needs>` ordering. Not a suppression guarantee — surfacing *selection* is deliberately priority- and origin-blind (ranks by `request_text` rarity + rotation), so a discriminating seeded rung surfaces like any other need. |
 | `obtainability = UNKNOWN` (fail-safe) | Never contributes to the declared-data-wall on its own (`verification_status._candidate_unresolvable` walls a candidate only when *all* its discriminators are `UNOBTAINABLE`). It makes the wall *honestly computable* for a seeded candidate — a latent gap before R8, when a seeded hypothesis had zero discriminators — without ever moving a case toward INSUFFICIENT_EVIDENCE. |
 | Motivated solely by the seeded hypothesis | Cleared for free by the engine's motivator-based auto-supersession when that hypothesis is retired (evidence-needs-design §7.4) — no bespoke cleanup. |
 | Origin only in `rationale` (`SEEDED_RATIONALE_PREFIX`) | Provenance-blind to safety (see below) — nothing branches on it. |
