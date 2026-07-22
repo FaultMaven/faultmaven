@@ -587,8 +587,12 @@ class ConversionService:
         if request.root_cause_mechanism:
             source_parts.append(f"CAUSAL MECHANISM: {request.root_cause_mechanism}")
         if request.solutions:
+            # Each block is outcome-tagged (applied vs proposed) by
+            # CaseConversionRequest.from_case, which also drops superseded/failed
+            # attempts. A neutral header keeps that per-block outcome authoritative
+            # instead of asserting every listed fix was applied.
             solutions_text = "\n\n".join(request.solutions)
-            source_parts.append(f"SOLUTIONS APPLIED:\n{solutions_text}")
+            source_parts.append(f"SOLUTIONS:\n{solutions_text}")
         if request.hypotheses_summary:
             source_parts.append(f"VALIDATED HYPOTHESES: {request.hypotheses_summary}")
         if request.evidence_summary:
@@ -1437,30 +1441,6 @@ class ConversionService:
                     }
                 )
                 verified += 1
-            except ValueError as e:
-                error_msg = str(e)
-                if "already been verified" in error_msg:
-                    results.append(
-                        {
-                            "conversion_id": conversion_id,
-                            "draft_id": draft_id,
-                            "status": "skipped",
-                            "error": error_msg,
-                            "knowledge_item_id": None,
-                        }
-                    )
-                    skipped += 1
-                else:
-                    results.append(
-                        {
-                            "conversion_id": conversion_id,
-                            "draft_id": draft_id,
-                            "status": "failed",
-                            "error": error_msg,
-                            "knowledge_item_id": None,
-                        }
-                    )
-                    failed += 1
             except AuthorizationError as e:
                 # Global-tier authoring denial (multi-tenant / non-admin). Not a
                 # failure of THIS draft — a policy refusal; record it distinctly
@@ -1475,6 +1455,37 @@ class ConversionService:
                     }
                 )
                 forbidden += 1
+            except ConflictError as e:
+                # An already-verified draft is idempotent, not broken: the
+                # runbook is already published, so re-verifying it is a no-op
+                # to SKIP, not a failure (#784). ``verify_draft`` signals this
+                # with the typed ``ConflictError`` and a structured
+                # ``conflict_reason`` — classify on that field, never on the
+                # message string (which the exception-contract migration made a
+                # dead match). Every other conflict (draft discarded, or in an
+                # unexpected state) genuinely cannot be verified → ``failed``.
+                if e.conflict_reason == "already_verified":
+                    results.append(
+                        {
+                            "conversion_id": conversion_id,
+                            "draft_id": draft_id,
+                            "status": "skipped",
+                            "error": str(e),
+                            "knowledge_item_id": None,
+                        }
+                    )
+                    skipped += 1
+                else:
+                    results.append(
+                        {
+                            "conversion_id": conversion_id,
+                            "draft_id": draft_id,
+                            "status": "failed",
+                            "error": str(e),
+                            "knowledge_item_id": None,
+                        }
+                    )
+                    failed += 1
             except Exception as e:
                 logger.error(f"Batch verify failed for {draft_id}: {e}")
                 results.append(

@@ -16,6 +16,11 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from faultmaven.modules.case.contracts import (
+    SolutionOutcome,
+    classify_solution_outcome,
+)
+
 # =============================================================================
 # Enums
 # =============================================================================
@@ -314,9 +319,26 @@ class CaseConversionRequest(BaseModel):
         affected = (getattr(pv, "affected_services", []) or []) if pv else []
 
         # Solutions
-        solutions = []
+        #
+        # A solution whose matching ProposedAction was never executed —
+        # superseded/rejected or engine-downgraded to DIAGNOSTIC
+        # (SolutionOutcome.FAILED) — is dropped so its commands can't be laundered
+        # into the generated runbook. Surviving solutions are tagged with their
+        # outcome and ordered executed-first so the conversion prompt treats fixes
+        # the user actually ran as remediation material and unconfirmed proposals as
+        # candidates.
+        proposed_actions = getattr(case, "proposed_actions", []) or []
+        applied_blocks: List[str] = []
+        proposed_blocks: List[str] = []
         for sol in getattr(case, "solutions", []) or []:
+            outcome = classify_solution_outcome(sol, proposed_actions)
+            if outcome == SolutionOutcome.FAILED:
+                continue
             parts = []
+            if outcome == SolutionOutcome.APPLIED:
+                parts.append("Outcome: applied — the user executed this fix")
+            else:
+                parts.append("Outcome: proposed — not executed / not confirmed")
             if t := getattr(sol, "title", None):
                 parts.append(f"Solution: {t}")
             if v := getattr(sol, "immediate_action", None):
@@ -338,8 +360,14 @@ class CaseConversionRequest(BaseModel):
                         if attr != "risks"
                         else f"{label}: {fmt(v)}"
                     )
-            if parts:
-                solutions.append("\n".join(parts))
+            # parts always has the Outcome line; require substantive content too.
+            if len(parts) > 1:
+                block = "\n".join(parts)
+                if outcome == SolutionOutcome.APPLIED:
+                    applied_blocks.append(block)
+                else:
+                    proposed_blocks.append(block)
+        solutions = applied_blocks + proposed_blocks
 
         # Hypotheses
         hypotheses = getattr(case, "hypotheses", {}) or {}

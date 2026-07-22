@@ -169,6 +169,84 @@ class TestFieldHelpers:
 
 
 @pytest.mark.unit
+class TestHasActionableSolutionOutcomeAware:
+    """A solution whose matching ProposedAction was superseded/rejected is a
+    failed/replaced attempt — it must not count as an actionable solution, so a
+    case whose only actionable fix failed is not offered for conversion (its
+    runbook would launder a failed fix's commands into the remediation slot)."""
+
+    @staticmethod
+    def _sol(actionable: bool):
+        return SimpleNamespace(
+            commands=["kubectl delete pod x"] if actionable else None,
+            implementation_steps=None,
+            longterm_fix=None,
+            immediate_action="restart the pod" if actionable else None,
+        )
+
+    @staticmethod
+    def _action(state: str, *, action_type="solution", turn: int = 1):
+        return SimpleNamespace(
+            description="restart the pod",
+            commands=["kubectl delete pod x"],
+            state=state,
+            action_type=action_type,
+            proposed_in_turn=turn,
+        )
+
+    def test_only_superseded_solution_does_not_count(self):
+        # A never-executed offer replaced while pending.
+        case = SimpleNamespace(
+            solutions=[self._sol(actionable=True)],
+            proposed_actions=[self._action("superseded")],
+        )
+        assert not has_actionable_solution(case)
+
+    def test_only_diagnostic_downgraded_solution_does_not_count(self):
+        # A SOLUTION downgraded to DIAGNOSTIC (engine-refused as a fix) still leaves
+        # a Solution carrying the commands; accepted-on-resolution must not make the
+        # case convertible off an engine-refused fix.
+        case = SimpleNamespace(
+            solutions=[self._sol(actionable=True)],
+            proposed_actions=[self._action("accepted", action_type="diagnostic")],
+        )
+        assert not has_actionable_solution(case)
+
+    def test_accepted_solution_counts(self):
+        case = SimpleNamespace(
+            solutions=[self._sol(actionable=True)],
+            proposed_actions=[self._action("accepted")],
+        )
+        assert has_actionable_solution(case)
+
+    def test_failed_plus_applied_counts(self):
+        applied = SimpleNamespace(
+            commands=["kubectl set resources y"],
+            implementation_steps=None,
+            longterm_fix=None,
+            immediate_action="bump memory",
+        )
+        case = SimpleNamespace(
+            solutions=[self._sol(actionable=True), applied],
+            proposed_actions=[
+                self._action("superseded"),
+                SimpleNamespace(
+                    description="bump memory",
+                    commands=["kubectl set resources y"],
+                    state="accepted",
+                ),
+            ],
+        )
+        assert has_actionable_solution(case)
+
+    def test_no_proposed_actions_preserves_prior_behavior(self):
+        # No compliance chain (stub case) → PROPOSED → still counts, exactly as
+        # before this change.
+        case = SimpleNamespace(solutions=[self._sol(actionable=True)])
+        assert has_actionable_solution(case)
+
+
+@pytest.mark.unit
 class TestProvenanceUniquenessOffer:
     """Phase 5.2b: on top of the readiness predicate, the offer gate suppresses
     the runbook affordance when the confirmed cause was SEEDED from an existing
