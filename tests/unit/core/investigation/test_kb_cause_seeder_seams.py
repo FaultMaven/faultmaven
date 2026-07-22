@@ -626,3 +626,107 @@ async def test_loader_none_on_lookup_error(monkeypatch):
     # "prose-only source, nothing to seed", never a crash.
     svc = _service_with_repo(monkeypatch, raises=RuntimeError("db down"))
     assert await svc.get_runbook_causes("rb1") is None
+
+
+# ---------------------------------------------------------------------------
+# Action tier: _handle_runbook_creation provenance short-circuit (Phase 5.2b)
+# ---------------------------------------------------------------------------
+
+
+class _TitleKnowledgeStub:
+    """A knowledge service exposing ``get_runbook_title`` (and ``runbook_kb``)."""
+
+    runbook_kb = None
+
+    def __init__(self, titles=None):
+        self.titles = titles or {}
+        self.title_calls = []
+
+    async def get_runbook_title(self, item_id):
+        self.title_calls.append(item_id)
+        return self.titles.get(item_id)
+
+
+async def test_action_short_circuits_when_confirmed_cause_seeded(monkeypatch):
+    """The cheap SYNC provenance tier fires ABOVE the async EXISTING_COVERS
+    similarity backstop: a case whose confirmed cause was seeded from runbook X
+    returns the NAMED 'already covered' message without creating a draft."""
+    monkeypatch.setattr(
+        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
+        lambda case: "rb_cover",
+    )
+    ks = _TitleKnowledgeStub({"rb_cover": "ArgoCD sync failure"})
+    engine = _engine(ks)
+    engine.conversion_service = None  # must not be reached — no draft created
+
+    result = await engine._handle_runbook_creation(_case(), {})
+
+    assert ks.title_calls == ["rb_cover"]
+    assert "ArgoCD sync failure" in result["agent_response"]
+    assert result["suggested_follow_ups"] == []
+
+
+async def test_action_message_degrades_when_title_unavailable(monkeypatch):
+    # Title lookup returning None still yields a coherent (runbook-unnamed) message.
+    monkeypatch.setattr(
+        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
+        lambda case: "rb_cover",
+    )
+    ks = _TitleKnowledgeStub({})
+    engine = _engine(ks)
+    engine.conversion_service = None
+
+    result = await engine._handle_runbook_creation(_case(), {})
+    assert "an existing runbook" in result["agent_response"]
+
+
+async def test_action_proceeds_when_cause_self_discovered(monkeypatch):
+    """No seed origin → the provenance tier is skipped and the normal
+    readiness/dedup path runs (stubbed here to NOT_READY), and the title lookup
+    is never made."""
+    monkeypatch.setattr(
+        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
+        lambda case: None,
+    )
+    from faultmaven.core.investigation import terminal_transitions
+
+    async def _not_ready(case, runbook_kb=None):
+        return terminal_transitions.RunbookSuggestion(
+            terminal_transitions.RunbookSuggestion.NOT_READY, "not ready"
+        )
+
+    monkeypatch.setattr(terminal_transitions, "evaluate_runbook_suggestion", _not_ready)
+    ks = _TitleKnowledgeStub({"rb_cover": "should not be used"})
+    engine = _engine(ks)
+    engine.conversion_service = None
+
+    result = await engine._handle_runbook_creation(_case(), {})
+    assert result["agent_response"] == "not ready"
+    assert ks.title_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Loader: get_runbook_title — names the covering runbook for the offer message
+# ---------------------------------------------------------------------------
+
+
+async def test_get_runbook_title_returns_title(monkeypatch):
+    svc = _service_with_repo(
+        monkeypatch, item=SimpleNamespace(title="ArgoCD sync failure")
+    )
+    assert await svc.get_runbook_title("rb1") == "ArgoCD sync failure"
+
+
+async def test_get_runbook_title_none_when_falsy_id(monkeypatch):
+    svc = _service_with_repo(monkeypatch, item=SimpleNamespace(title="x"))
+    assert await svc.get_runbook_title("") is None
+
+
+async def test_get_runbook_title_none_when_item_missing(monkeypatch):
+    svc = _service_with_repo(monkeypatch, item=None)
+    assert await svc.get_runbook_title("rb1") is None
+
+
+async def test_get_runbook_title_none_on_lookup_error(monkeypatch):
+    svc = _service_with_repo(monkeypatch, raises=RuntimeError("db down"))
+    assert await svc.get_runbook_title("rb1") is None

@@ -203,6 +203,75 @@ def case_has_seeded_candidates(case: "Case") -> bool:
     )
 
 
+def confirmed_root_seed_origin(case: "Case") -> Optional[str]:
+    """The runbook a RESOLVED case's CONFIRMED root cause was SEEDED from, or
+    ``None`` if that cause was reached by exploration (or the case has no single
+    counterfactually-confirmed root).
+
+    This is the direct provenance signal behind runbook-generation UNIQUENESS
+    (Phase 5.2b): if a case was resolved by validating a cause the seeder planted
+    from an existing runbook, generating a runbook from it would only duplicate
+    that runbook. The offer gate reads this to skip the redundant offer and point
+    the user at the covering runbook instead.
+
+    Keyed on the CONFIRMED root's distinct-cause CLUSTER
+    (``distinct_cause_clusters``), NOT "does any seed exist on the case"
+    (``case_has_seeded_candidates``): a case routinely carries seeded candidates
+    the investigation later refuted, and those must never suppress a runbook for
+    a DIFFERENT, self-discovered cause. A seed marker anywhere in the confirmed
+    cause's cluster counts — the confirmed root itself, a re-emitted duplicate of
+    it, or a deepened rung on the same causal line all collapse into one cluster,
+    so a seeded candidate the LLM validated-then-restated still resolves to its
+    origin. Clustering ranges over ALL roots (not just the confirmed ones) so a
+    seeded *candidate* duplicate that never itself validated still collapses onto
+    the confirmed root.
+
+    NOT a safety mechanism, and deliberately outside the provenance-blindness
+    invariant that keeps a seed indistinguishable from a self-generated
+    hypothesis for every VALIDATION / decay / anchoring / gating path. The only
+    reader is the runbook-generation OFFER gate — a knowledge-lifecycle decision,
+    not a conclusion. The worst outcome of a wrong answer here is a missing or
+    redundant "generate runbook" affordance, never an incorrect conclusion or a
+    collapse under pressure: the manual ``POST /knowledge/runbooks/create``
+    escape hatch and the async ``EXISTING_COVERS`` similarity backstop both
+    remain. Known false-negatives (a reused node the seeder never restamped, a
+    ``BENIGN_DEDUP`` overlap, a retrieval miss) are exactly why this is a cheap
+    SYNC tier ABOVE the similarity backstop, not a replacement for it.
+    """
+    from faultmaven.core.investigation.causal_graph import distinct_cause_clusters
+    from faultmaven.core.investigation.cause_assurance import (
+        evidence_category_map,
+        root_counterfactually_confirmed,
+    )
+    from faultmaven.modules.case.contracts import NodeState
+
+    nodes = getattr(case, "causal_nodes", None) or {}
+    all_root_ids = {
+        nid for nid, node in nodes.items() if node.node_type == NodeType.ROOT
+    }
+    if not all_root_ids:
+        return None
+
+    cat_by_id = evidence_category_map(case)
+    confirmed_root_ids = {
+        rid
+        for rid in all_root_ids
+        if nodes[rid].node_state == NodeState.VALIDATED
+        and root_counterfactually_confirmed(nodes[rid], cat_by_id)
+    }
+    if not confirmed_root_ids:
+        return None
+
+    for cluster in distinct_cause_clusters(case, all_root_ids):
+        if not cluster & confirmed_root_ids:
+            continue
+        for member_id in cluster:
+            origin = (nodes[member_id].metadata or {}).get(SEEDED_FROM_RUNBOOK_KEY)
+            if origin:
+                return origin
+    return None
+
+
 def seed_candidate_causes(
     case: "Case",
     runbooks: list[SeededRunbook],

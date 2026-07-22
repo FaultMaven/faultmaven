@@ -2347,8 +2347,26 @@ def _runbook_suggestion(case) -> dict | None:
     manual POST /knowledge/runbooks/create path still exists for those cases;
     adding a redirect affordance is a separate suggestion-contract change, out of
     scope.)
+
+    Also suppressed when the confirmed cause was SEEDED from an existing runbook
+    (Phase 5.2b provenance-based uniqueness): generating one would only duplicate
+    the runbook the case was resolved by applying. That is a knowledge-lifecycle
+    decision, not a safety gate — the manual create path and the async
+    EXISTING_COVERS similarity backstop both remain for the residual
+    false-negatives (a reused node never restamped, a benign dedup overlap, a
+    retrieval miss).
     """
     if not runbook_conversion_ready(case):
+        return None
+    # Cheap SYNC provenance read via the single offer-gate helper the
+    # provenance-blindness invariant carves out for this module. Closes the #695
+    # offered-then-refused drift at the offer boundary rather than only at
+    # action time (where the async EXISTING_COVERS check runs).
+    from faultmaven.core.investigation.kb_cause_seeder import (
+        confirmed_root_seed_origin,
+    )
+
+    if confirmed_root_seed_origin(case):
         return None
     return {
         "label": "Generate runbook from this case",
@@ -2911,6 +2929,39 @@ class MilestoneEngine:
             RunbookSuggestion,
             evaluate_runbook_suggestion,
         )
+
+        # Step 0: Provenance-based uniqueness (Phase 5.2b). A case resolved by
+        # validating a cause the seeder planted from an existing runbook needs no
+        # new runbook — it would duplicate that one. This is the cheap SYNC tier
+        # ABOVE the async EXISTING_COVERS embedding-similarity backstop (Step 2):
+        # a direct, certain "you applied runbook X" signal, so we short-circuit
+        # with the covering runbook named before spending an embedding search.
+        # (The offer gate already suppresses the affordance for these cases; this
+        # covers the residual typed-exact-payload path and names the runbook.)
+        # A knowledge-lifecycle decision, not a safety gate — the manual
+        # POST /knowledge/runbooks/create path stays open.
+        from faultmaven.core.investigation.kb_cause_seeder import (
+            confirmed_root_seed_origin,
+        )
+
+        seed_origin = confirmed_root_seed_origin(case)
+        if seed_origin:
+            title = None
+            if self.knowledge_service and hasattr(
+                self.knowledge_service, "get_runbook_title"
+            ):
+                title = await self.knowledge_service.get_runbook_title(seed_origin)
+            named = f"**{title}**" if title else "an existing runbook"
+            return {
+                "agent_response": (
+                    f"This case was resolved by applying {named}, so it is already "
+                    "covered — no new runbook is needed. You can view or update it "
+                    "from the Dashboard Knowledge Base."
+                ),
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": metadata,
+            }
 
         # Step 1+2: Evaluate readiness and deduplication
         runbook_kb = None

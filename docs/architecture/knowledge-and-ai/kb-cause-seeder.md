@@ -316,7 +316,22 @@ node+hypothesis state derivation in `causal_graph` + `hypothesis_manager`;
 (`cause_assurance`, `terminal_transitions`, `progress_monitor`, `state_validator`,
 `working_conclusion_generator`) — a whole-file grep is deliberately coarse so the
 guard can never be silently narrowed below where the safety logic actually lives.
-A future edit cannot quietly grant a seed evidentiary weight.
+The grep also bans the origin **symbol names** themselves (a module could import
+the metadata-key constant and branch on it with no literal value in its source),
+so the literal-value grep alone is a tripwire, not a proof. A future edit cannot
+quietly grant a seed evidentiary weight.
+
+*Explicit carve-out (Phase 5.2b).* Exactly one origin reader —
+`confirmed_root_seed_origin` — is permitted in exactly one module —
+`milestone_engine` — and banned everywhere else (the invariant test allows the
+symbol only there). It backs the runbook-generation **offer** gate, a
+knowledge-lifecycle decision: a wrong answer at that gate produces only a missing
+or redundant "generate runbook" affordance, never an incorrect conclusion or a
+collapse under pressure. Every VALIDATION / decay / anchoring / demotion / state /
+gating path — including all the *other* provenance surfaces in `milestone_engine`
+itself — stays blind. The carve-out is scoped to one symbol in one module so it
+cannot become a general escape hatch. See the "Provenance-based uniqueness"
+subsection of `document-to-runbook-conversion.md` for how the gate reads it.
 
 **Honest limit — seed↔LLM anchoring interaction.** The `MAX_SEEDED_CAUSES`
 cap stops the seeder *alone* from tripping anchoring condition 1. But seeded
