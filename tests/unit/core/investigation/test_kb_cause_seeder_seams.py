@@ -29,7 +29,11 @@ from faultmaven.core.investigation.kb_cause_seeder import (
     MAX_SEEDED_RUNBOOKS,
     SEEDED_FROM_RUNBOOK_KEY,
 )
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine import (
+    KB_CONTEXT_MAX_ENTRIES,
+    KB_PREFETCH_FETCH_LIMIT,
+    MilestoneEngine,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -419,15 +423,18 @@ def test_scope_filter_owner_condition_keyed_on_owner_only():
 
 
 class _SearchRecordingStub:
-    """Records the ``filters`` passed to ``search_knowledge`` and returns a
-    configured result list (so the pre-fetch can build ``case.kb_context``)."""
+    """Records the ``filters`` + ``limit`` passed to ``search_knowledge`` and
+    returns a configured result list (so the pre-fetch can build
+    ``case.kb_context``)."""
 
     def __init__(self, results=None):
         self.results = results or []
         self.filters_seen = []
+        self.limits_seen = []
 
     async def search_knowledge(self, query, limit=10, filters=None):
         self.filters_seen.append(filters)
+        self.limits_seen.append(limit)
         return self.results
 
 
@@ -515,6 +522,111 @@ async def test_prefetch_global_only_when_no_owner():
     await engine._prefetch_kb_context(case, "X fails", "symptom")
 
     assert ks.filters_seen == [{"scope": "global"}]
+
+
+# ---------------------------------------------------------------------------
+# Pre-fetch: fetch depth vs. prompt-surface cap — the seeder's parent-runbook
+# dedup needs chunk diversity that a limit-3 fetch starves
+# ---------------------------------------------------------------------------
+
+
+async def test_prefetch_fetches_deeper_than_the_prompt_surface():
+    # The fetch depth is the deeper constant (so a long runbook's top chunks don't
+    # crowd out a second runbook), NOT the prompt-surface cap.
+    assert KB_PREFETCH_FETCH_LIMIT > KB_CONTEXT_MAX_ENTRIES
+    ks = _SearchRecordingStub([_search_hit()])
+    engine = _engine(ks)
+    await engine._prefetch_kb_context(_case(), "X fails", "symptom")
+    assert ks.limits_seen == [KB_PREFETCH_FETCH_LIMIT]
+
+
+async def test_prefetch_depth_lets_second_runbook_reach_the_seeder():
+    # Starvation regression: three chunks of runbook A rank above one chunk of
+    # runbook B (all >= 0.3). A limit-3 fetch would return only A's chunks and the
+    # parent-dedup would collapse to ONE runbook. The deeper fetch returns all
+    # four, so the seeder's parent-dedup sees BOTH parents, in ranked order.
+    results = [
+        _search_hit(score=0.90, parent_id="rb_a"),
+        _search_hit(score=0.85, parent_id="rb_a"),
+        _search_hit(score=0.80, parent_id="rb_a"),
+        _search_hit(score=0.75, parent_id="rb_b"),
+    ]
+    ks = _SearchRecordingStub(results)
+    engine = _engine(ks)
+    case = _case()
+    relevant = await engine._prefetch_kb_context(case, "X fails", "symptom")
+
+    # The full ranked list is returned — this is exactly what the seeder's
+    # parent-dedup consumes.
+    assert len(relevant) == 4
+    # Distinct parents, in ranked order: BOTH A and B reach the seeder.
+    seen = []
+    for r in relevant:
+        pid = r.parent_document_id
+        if pid not in seen:
+            seen.append(pid)
+    assert seen == ["rb_a", "rb_b"]
+
+    # The prompt surface stays capped at the top KB_CONTEXT_MAX_ENTRIES, and is
+    # byte-identical to the top-N slice of the ranked results.
+    assert len(case.kb_context) == KB_CONTEXT_MAX_ENTRIES
+    assert [c["parent_document_id"] for c in case.kb_context] == [
+        r.parent_document_id for r in relevant[:KB_CONTEXT_MAX_ENTRIES]
+    ]
+    assert [c["score"] for c in case.kb_context] == [
+        r.score for r in relevant[:KB_CONTEXT_MAX_ENTRIES]
+    ]
+
+
+class _PrefetchAndCausesStub:
+    """A knowledge_service exposing BOTH seams the engine path touches: the
+    prefetch's ``search_knowledge`` and the seeder's ``get_runbook_causes`` — so a
+    single test can drive prefetch → seed end-to-end."""
+
+    def __init__(self, search_results, causes_by_id):
+        self.search_results = search_results
+        self.causes_by_id = causes_by_id
+        self.limits_seen = []
+
+    async def search_knowledge(self, query, limit=10, filters=None):
+        self.limits_seen.append(limit)
+        return self.search_results
+
+    async def get_runbook_causes(self, item_id):
+        return self.causes_by_id.get(item_id)
+
+
+async def test_prefetch_then_seed_end_to_end_seeds_both_runbooks(enable_seeder):
+    # End-to-end starvation regression: three chunks of runbook A rank above one
+    # chunk of runbook B (all >= 0.3). The old limit-3 prefetch would return only
+    # A's chunks and starve B; the deeper fetch lets the seeder's parent-dedup
+    # reach BOTH parents, so a candidate hypothesis seeds from A AND from B.
+    search_results = [
+        _search_hit(score=0.90, parent_id="rb_a"),
+        _search_hit(score=0.85, parent_id="rb_a"),
+        _search_hit(score=0.80, parent_id="rb_a"),
+        _search_hit(score=0.75, parent_id="rb_b"),
+    ]
+    # Distinct roots AND statements so neither the exact-root nor the paraphrase
+    # dedup collapses them — both are genuinely distinct causes.
+    ca = _good_cause("A", root_stmt="alpha root distinct fault")
+    ca["cause_statement"] = "alpha distinct cause statement"
+    cb = _good_cause("B", root_stmt="beta root distinct fault")
+    cb["cause_statement"] = "beta distinct cause statement"
+    ks = _PrefetchAndCausesStub(search_results, {"rb_a": [ca], "rb_b": [cb]})
+    engine = _engine(ks)
+    case = _case()
+
+    relevant = await engine._prefetch_kb_context(case, "X fails", "symptom")
+    await engine._seed_candidate_causes_from_kb(case, relevant)
+
+    # Both runbooks contributed a seeded candidate (provenance stamped per parent).
+    origins = {
+        (n.metadata or {}).get(SEEDED_FROM_RUNBOOK_KEY)
+        for n in case.causal_nodes.values()
+    }
+    assert "rb_a" in origins and "rb_b" in origins
+    assert len(case.hypotheses) == 2
 
 
 # ---------------------------------------------------------------------------
