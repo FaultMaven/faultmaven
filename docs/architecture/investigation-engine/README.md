@@ -16,7 +16,7 @@ For understanding the investigation system, read in this order:
 
 ## Reference
 
-- **[Investigation Invariant Enforcement Matrix](./investigation-invariants.md)** — The lifecycle invariant registry (INV-01 … INV-24): enforcement tiers, pinning tests, and drift notes. Extracted from the lifecycle doc so it can be audited standalone.
+- **[Investigation Invariant Enforcement Matrix](./investigation-invariants.md)** — The lifecycle invariant registry: enforcement tiers, pinning tests, and drift notes. Extracted from the lifecycle doc so it can be audited standalone.
 - **[Two-Dimensional Hypothesis Methodology](./two-dimensional-hypothesis-methodology.md)** — The diagnostic reasoning methodology beneath the hypothesis lifecycle: forming candidate root causes (signature screening, family completeness), structuring them as causal chains on a 2D roadmap (OR roots / AND rungs), invalidation-first search (info-per-cost, intersection pruning), and the two grades of root-cause validation (mechanistic → treatment, counterfactual → resolved). Expands [Framework §6](./evidence-driven-investigation-framework.md#6-hypothesis-model).
 - **[Evidence Needs Design](./evidence-needs-design.md)** — Demand-side pool of outstanding evidence asks: creation triggers, lifecycle, engine backstop, context block, suggestion linkage. §11 is the as-built map (file:line, metrics, wire seam) for debugging the shipped feature.
 - **[Choice-Response Resolution](./choice-response-resolution.md)** — Resolving a user's response (clicked or typed) to an agent-offered choice: bounded choice classifier, hypothesis-action routing, resolution-readiness gate. *(Formerly "Intent Resolution".)*

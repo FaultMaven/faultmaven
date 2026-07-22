@@ -1,13 +1,12 @@
 # Evidence Needs Design
 
-**Status**: Design — Approved 2026-05-22, Implementation Pending
+**Status**: Shipped — approved 2026-05-22; shipped across PRs #384–#388 (§11 is the as-built map)
 **Date**: 2026-05-22 (revised after design review)
 **Related Documents**:
 
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md)
 - [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md)
 - [Investigation Data Models](./investigation-data-models.md)
-- [WIP: Evidence Needs Implementation Plan](../../working/WIP-evidence-needs-implementation.md)
 
 ---
 
@@ -708,17 +707,22 @@ Evidence needs map to the (now expanded) evidence taxonomy:
 ```python
 CATEGORY_MILESTONE_MAP = {
     EvidenceCategory.SYMPTOM_EVIDENCE:         ["symptom_verified"],
-    EvidenceCategory.CAUSAL_EVIDENCE:          ["root_cause_identified", "solution_proposed"],
-    EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: ["mitigation_verified", "solution_verified"],
-    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:  ["solution_verified"],
+    EvidenceCategory.CAUSAL_EVIDENCE:          ["solution_proposed"],
+    EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: [],
+    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:  [],
 }
 ```
 
-The map keys are the LLM **emission symbols** (`root_cause_identified` is
-the grounded cause signal that the engine materializes into
-`cause_state=IDENTIFIED`; `mitigation_verified` materializes into
-`mitigation.verified`) — the schema retained these names through the
-flow redesign.
+The map values are LLM **emission symbols** from `MilestoneUpdates`.
+`root_cause_identified` is no longer among them (INV-35): cause
+identification is engine-derived from the validated causal chain
+(`cause_state`), never an LLM-claimed milestone, and `MilestoneUpdates`
+no longer carries the boolean — a map entry for it could attribute to
+nothing. The absence categories map to `[]` deliberately: the
+verification gates (`mitigation_verified`, `solution_verified`) are set
+via the User-Agent Handshake / compliance detection, not by evidence
+category, and the absence rows' disposition role is read directly by the
+readiness gates.
 
 **Attribution, not auto-advancement.** The map is consumed via
 intersection with milestones the LLM has *already completed this turn*

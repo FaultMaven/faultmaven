@@ -524,7 +524,7 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="None for RESOLVED. For CLOSED: inquiry_only | closed_after_investigation. Engine-derived via derive_closure_reason(); never set by the LLM."
+        description="None for RESOLVED. For CLOSED: inquiry_only | closed_insufficient_evidence | closed_after_investigation. Engine-derived via derive_closure_reason(); never set by the LLM."
     )
 
     # ============================================================
@@ -1664,7 +1664,7 @@ class HypothesisState(str, Enum):
 
 **Hypothesis state transitions — LLM-driven, system-automated, and user-intent paths:**
 
-`ACTIVE → RETIRED` is the one transition with multiple legitimate paths. The LLM picks RETIRED for "no disproof" cases (`HypothesisUpdate` schema accepts this — see the schema's `refutation_reason` docstring). The system auto-retires on low confidence, anchoring drift, and deadlock repair. The engine sets RETIRED when the user explicitly clicks a retire DECIDE suggestion. All five paths converge on the same final state; only the rationale and the actor differ.
+`ACTIVE → RETIRED` is the one transition with multiple legitimate paths. The LLM picks RETIRED for "no disproof" cases (the `HypothesisUpdate` schema accepts this — see the schema's `refutation_reason` docstring; note the engine's LLM-update consumer, `_apply_hypothesis_updates`, currently applies only the REFUTED + likelihood slice — emitted RETIRED transitions are accepted by the schema but not yet engine-applied). The system auto-retires on low confidence, anchoring drift, and deadlock repair. The engine sets RETIRED when the user explicitly clicks a retire DECIDE suggestion. All five paths converge on the same final state; only the rationale and the actor differ.
 
 | Status | Trigger | Who sets it |
 |---|---|---|

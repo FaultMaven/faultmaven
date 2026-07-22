@@ -503,7 +503,7 @@ class StateValidator:
             if likelihood is None or likelihood == 0.0:
                 issues.append(ValidationIssue(
                     code="MILESTONE_INCOMPLETE_001",
-                    message="root_cause_identified=True but root_cause_likelihood is not set",
+                    message="cause_state=IDENTIFIED but root_cause_likelihood is not set",
                     severity=ValidationSeverity.WARNING,
                     field="progress.root_cause_likelihood",
                     suggested_fix="Set root_cause_likelihood to confidence value"

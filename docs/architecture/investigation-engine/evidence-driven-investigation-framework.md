@@ -22,7 +22,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 | **Stage model** | 2 core stages (DIAGNOSIS, TREATMENT) with optional MITIGATION detour |
 | **Stage transitions** | Inference-based (user compliance with proposed action implies acceptance) |
 | **Progress tracking** | 7 investigation milestones: 4 gate milestones (drive transitions) + 3 progress indicators (LLM context, non-driving) |
-| **Evidence types** | 4 claim-attached categories: symptom, causal, mitigation, solution. Contextual material lives on `uploaded_files`; rejection is the absence of an Evidence row. |
+| **Evidence types** | 4 claim-attached categories — the presence/absence quartet: symptom, causal, symptom-absence, causal-absence (§10.3). Contextual material lives on `uploaded_files`; rejection is the absence of an Evidence row. |
 | **Hypothesis constraint** | Required before causal_evidence classification |
 | **Mitigation** | Distinct stage with own prompt, evidence type, and iterative verification |
 | **Treatment failure** | Extended diagnosis within TREATMENT (new evidence required, not reprocessing) |
@@ -749,7 +749,7 @@ RESOLVED case
 
 **Auto-summary generation**: Terminal cases with investigation substance (evidence / hypotheses / completed milestones) get an auto-generated summary (`RESOLUTION_SUMMARY` or `CLOSURE_SUMMARY`), synthesized synchronously on terminal transition and rendered inline in the closure-turn chat reply. See [Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary) for the canonical spec (content-focus table, substance gate, regen rules).
 
-**Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `kb_qa` tool surfaces these runbooks, potentially enabling fast-track resolution (INQUIRY → RESOLVED) without a full investigation cycle.
+**Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `kb_qa` tool surfaces these runbooks, potentially enabling fast-track resolution (the KB-resolution path: INQUIRY → INVESTIGATING → RESOLVED with a same-turn collapse — there is no direct INQUIRY → RESOLVED edge, INV-04) without a full investigation cycle.
 
 ---
 
@@ -1110,7 +1110,7 @@ stateDiagram-v2
     }
 
     INQUIRY --> INVESTIGATING: problem_statement_confirmed<br/>+ decided_to_investigate
-    INQUIRY --> RESOLVED: Fast-Track<br/>KB resolution confirmed
+    INQUIRY --> INVESTIGATING: KB resolution confirmed<br/>rapid completion — no direct<br/>edge to RESOLVED, INV-04
     INQUIRY --> CLOSED: User closes<br/>without investigation
 
     state INVESTIGATING {
@@ -1220,7 +1220,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 3. **Update InvestigationProgress model** — Gate milestones + retained progress milestones
 4. **Add ProposedAction model** — action_type, expected_command, description (Section 10.5)
 5. **Add ActionAttempt tracking** — List on Case for solution and mitigation history (Section 10.6)
-6. **Update EvidenceCategory enum** — Add mitigation_evidence, rename resolution_evidence
+6. **Update EvidenceCategory enum** — Final shape is the presence/absence quartet: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence` (§10.3; the interim `mitigation_evidence`/`solution_evidence` categories were removed)
 7. **Update evidence_processor.py** — Validation rules for new evidence categories
 8. **Update milestone_engine.py** — Stage dispatch, compliance detection (post-LLM), progress monitoring
 9. **Update context_builder.py** (DONE) — Stage-specific context loading (hypothesis condensing per stage), ProposedAction in prompt context.
@@ -1269,7 +1269,7 @@ new.action_attempts = []
 | Proposal tracking | None (free text only) | ProposedAction with action_type, expected_command (Section 10.5) |
 | Action attempt tracking | None | ActionAttempt list covering both solution and mitigation cycles (Section 10.6) |
 | TREATMENT scope | Verify fix only | Verify fix + extended diagnosis when fix fails |
-| Evidence categories | 4 types | 4 claim-attached types: symptom, causal, mitigation, solution (contextual material moves to `uploaded_files`; rejection is the absence of an Evidence row) |
+| Evidence categories | 4 types | 4 claim-attached types — the presence/absence quartet: symptom, causal, symptom-absence, causal-absence (§10.3; contextual material moves to `uploaded_files`; rejection is the absence of an Evidence row) |
 | Prompt stage instructions | 4 templates | 3 templates (TREATMENT includes extended diagnosis) |
 | Mitigation | Path modifier (one-shot) | Distinct stage (iterative until verified) |
 | Path selection | USER_CHOICE in matrix | Removed — no prospective fork. Mitigation is an opportunistic insert; the direct-vs-mitigated shape is retrospectively derivable from `progress.mitigation is not None` — no shape field in code (see [Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)) |
