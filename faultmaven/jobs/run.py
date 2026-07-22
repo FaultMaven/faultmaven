@@ -77,6 +77,7 @@ class JobTenantScopeError(RuntimeError):
 # Available jobs registry
 AVAILABLE_JOBS: Dict[str, str] = {
     "case_cleanup": "faultmaven.jobs.case_cleanup",
+    "kb_seed": "faultmaven.jobs.kb_seed",
     "storage_cleanup": "faultmaven.modules.agent.jobs.storage_cleanup",
 }
 

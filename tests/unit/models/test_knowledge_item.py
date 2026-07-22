@@ -11,6 +11,7 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
     KnowledgeItem,
     KnowledgeItemType,
+    KnowledgeScope,
 )
 from tests.utils import generate_item_id, generate_org_id
 
@@ -23,10 +24,17 @@ def create_sample_item(
     item_type: KnowledgeItemType = KnowledgeItemType.TROUBLESHOOTING_GUIDE,
     **kwargs,
 ) -> KnowledgeItem:
-    """Create a sample knowledge item for testing."""
+    """Create a sample knowledge item for testing.
+
+    Global scope (the dataclass default) is the org-free platform tier
+    (#770), so an org id is only generated for org-owned scopes.
+    """
+    scope = kwargs.get("scope", KnowledgeScope.GLOBAL)
+    if scope != KnowledgeScope.GLOBAL:
+        organization_id = organization_id or generate_org_id()
     return KnowledgeItem(
         item_id=item_id or generate_item_id(),
-        organization_id=organization_id or generate_org_id(),
+        organization_id=organization_id,
         title=title,
         content=content,
         item_type=item_type,
@@ -69,8 +77,8 @@ class TestKnowledgeItemValidation:
                 item_type=KnowledgeItemType.FAQ,
             )
 
-    def test_empty_organization_id_fails(self):
-        """Test that empty organization_id raises ValueError."""
+    def test_empty_organization_id_fails_for_org_owned_scope(self):
+        """Org-owned scopes (personal/team) require an organization_id."""
         with pytest.raises(ValueError, match="organization_id is required"):
             KnowledgeItem(
                 item_id="ki_test",
@@ -78,7 +86,32 @@ class TestKnowledgeItemValidation:
                 title="Test",
                 content="Content",
                 item_type=KnowledgeItemType.FAQ,
+                scope=KnowledgeScope.TEAM,
             )
+
+    def test_global_scope_with_organization_id_fails(self):
+        """Global scope is the org-free platform tier (#770) — org forbidden."""
+        with pytest.raises(ValueError, match="platform tier"):
+            KnowledgeItem(
+                item_id="ki_test",
+                organization_id="org_test",
+                title="Test",
+                content="Content",
+                item_type=KnowledgeItemType.FAQ,
+                scope=KnowledgeScope.GLOBAL,
+            )
+
+    def test_global_scope_without_organization_id_succeeds(self):
+        """The platform tier stores organization_id as None."""
+        item = KnowledgeItem(
+            item_id="ki_test",
+            organization_id=None,
+            title="Test",
+            content="Content",
+            item_type=KnowledgeItemType.FAQ,
+            scope=KnowledgeScope.GLOBAL,
+        )
+        assert item.organization_id is None
 
     def test_empty_title_fails(self):
         """Test that empty title raises ValueError."""

@@ -494,7 +494,20 @@ class KnowledgeService:
                         await repo.update(item)
                         action = "unpublished"
                     else:
-                        await repo.delete(document_id)
+                        deleted = await repo.delete(document_id)
+                        if not deleted:
+                            # Zero rows matched — the RLS delete policy refused
+                            # (e.g. a tenant session targeting a platform-tier
+                            # global row under multi, #770) or a concurrent
+                            # delete won. NEVER touch the shared vector store
+                            # when the SQL row was not actually removed: the
+                            # ChromaDB collection is shared across tenants, so
+                            # an unguarded vector delete here would let any
+                            # org admin destroy platform content for everyone.
+                            return {
+                                "success": False,
+                                "error": f"Document {document_id} not deleted",
+                            }
                         action = "deleted"
 
                 # Cascade the item's team share rows on hard delete (source of
@@ -827,7 +840,9 @@ class KnowledgeService:
         Args:
             document_id: Stable id used for both the relational row and the
                 ChromaDB document.
-            organization_id: Required for the KnowledgeItem row (NOT NULL FK).
+            organization_id: Owning org for the org-owned tiers (personal/team).
+                Ignored for global scope — global rows are the org-free
+                platform tier (#770) and are stored with organization_id NULL.
             verified_by: A REAL user_id (from verify_draft) or None. Never a
                 sentinel string — it is an FK to users.user_id. When None and
                 no explicit verification_level is given, the item is
@@ -883,7 +898,14 @@ class KnowledgeService:
             )
         item = KnowledgeItem(
             item_id=document_id,
-            organization_id=organization_id,
+            # Global scope is the org-free platform tier (#770): the row carries
+            # NO organization_id (knowledge_items_global_org_check). Org-owned
+            # tiers (personal/team) keep the caller's org.
+            organization_id=(
+                None
+                if KnowledgeScope(scope) == KnowledgeScope.GLOBAL
+                else organization_id
+            ),
             title=title,
             content=content,
             item_type=KnowledgeItemType.RUNBOOK,

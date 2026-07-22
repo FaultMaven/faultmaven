@@ -64,6 +64,21 @@ async def reset_kb(
         ConversionDraftModel,
         KnowledgeItemModel,
     )
+    from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
+        requested_tenant_provider,
+    )
+
+    # Multi-tenant DBs hold every tenant's KB; a blanket wipe/rebuild through
+    # this script bypasses the audited maintenance path. Refuse — reseed the
+    # platform tier via `python -m faultmaven.jobs.run kb_seed
+    # --cross-tenant-maintenance` instead (#770).
+    if requested_tenant_provider() == BUILTIN_MULTI:
+        print(
+            "ERROR: reset_kb refuses to run under TENANT_PROVIDER=multi. "
+            "Use the audited kb_seed maintenance job to reseed the platform tier."
+        )
+        return 1
 
     project_root = get_project_root()
     chroma_dir = project_root / "data" / "chroma-kb"

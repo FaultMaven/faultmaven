@@ -53,7 +53,9 @@ def _mk_item(
 ):
     return KnowledgeItem(
         item_id=item_id,
-        organization_id=org,
+        # Global rows are the org-free platform tier (#770); only org-owned
+        # scopes (personal/team) carry an organization_id.
+        organization_id=None if scope == KnowledgeScope.GLOBAL else org,
         title=title,
         content="# body\nsteps",
         item_type=item_type,
@@ -194,12 +196,29 @@ class TestListForInventoryRBAC:
         all_items = await repo.list_for_inventory("org-1")
         assert {i.item_id for i in all_items} == {BUILTIN_ID, "faq-1"}
 
-    async def test_org_isolation(self):
+    async def test_org_isolation_on_org_owned_tiers(self):
+        # The per-query org predicate guards the org-owned arms: the same
+        # owner id in another org's rows must not leak across (defense-in-
+        # depth on top of RLS, ADR-011/ADR-013).
         repo = await self._repo_with(
-            [_mk_item("mine", org="org-1"), _mk_item("theirs", org="org-2")]
+            [
+                _mk_item(
+                    "mine", scope=KnowledgeScope.PERSONAL, owner_id="u", org="org-1"
+                ),
+                _mk_item(
+                    "theirs", scope=KnowledgeScope.PERSONAL, owner_id="u", org="org-2"
+                ),
+            ]
         )
-        got = await repo.list_for_inventory("org-1")
+        got = await repo.list_for_inventory("org-1", user_id="u")
         assert [i.item_id for i in got] == ["mine"]
+
+    async def test_global_platform_tier_visible_across_orgs(self):
+        # Global rows are the org-free platform corpus (#770): visible to a
+        # caller from ANY org, on the SQL inventory path as well as vector.
+        repo = await self._repo_with([_mk_item(BUILTIN_ID)])
+        got = await repo.list_for_inventory("org-2", user_id="someone-else")
+        assert [i.item_id for i in got] == [BUILTIN_ID]
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +410,30 @@ class TestInventoryServiceDB:
         svc._vector_store.delete_documents_by_parent_id.assert_awaited_once_with(
             BUILTIN_ID
         )
+
+    async def test_delete_refused_rows_never_touch_vectors(self, inventory_service):
+        """When the SQL delete matches zero rows (RLS refusal under multi, or a
+        concurrent delete), the shared vector store must NOT be touched — an
+        unguarded vector delete would let a tenant org admin destroy platform
+        content for every tenant (#770 security review H1)."""
+        from unittest.mock import patch
+
+        svc, factory = inventory_service
+        await svc._seed_item(_mk_item(AUTHORED_ID))
+
+        with patch.object(
+            DatabaseKnowledgeItemRepository,
+            "delete",
+            AsyncMock(return_value=False),
+        ):
+            result = await svc.delete_document(AUTHORED_ID)
+
+        assert result["success"] is False
+        svc._vector_store.delete_documents_by_parent_id.assert_not_awaited()
+        # Row untouched.
+        async with factory() as session:
+            repo = DatabaseKnowledgeItemRepository(session)
+            assert await repo.get_by_id(AUTHORED_ID) is not None
 
     async def test_delete_authored_hard_deletes_and_drops_vectors(
         self, inventory_service

@@ -14,19 +14,23 @@ Features:
 
 Tenancy posture: unlike the case repositories (whose reads ignore the org
 param and rely on PostgreSQL RLS alone, ADR-010), knowledge queries
-deliberately keep their per-query ``organization_id`` predicates alongside
-the scope-visibility clauses — defense-in-depth on top of RLS for the
-org-owned tiers (personal | team, ADR-011/ADR-013). Do NOT remove them by
-analogy with the case module. Global-tier rows are the platform corpus
-(seeded into the single-tenant default org), so under ``TENANT_PROVIDER=multi``
-they are invisible to these SQL read paths (inventory / list / fulltext)
-and to the RLS policy — cross-tenant global visibility is the platform-tier
-read exemption tracked in issue #770. The vector QA path is different: it is
-org-free by design (``build_kb_scope_filter`` = ``global ∪ owner ∪ team-share
+deliberately keep their per-query ``organization_id`` predicates on the
+org-owned tiers (personal | team, ADR-011/ADR-013) — defense-in-depth on top
+of RLS. Do NOT remove them by analogy with the case module. Global-tier rows
+are the org-free platform corpus (#770): they carry NO organization_id
+(``knowledge_items_global_org_check``) and are readable by every tenant on
+both paths — SQL via the org-free ``scope='global'`` visibility arm here plus
+the RLS read exemption (``knowledge_items_tenant_read``, migration 033), and
+vector via ``build_kb_scope_filter`` (``global ∪ owner ∪ team-share
 allowlist``, owner ids globally unique, share ids resolved from RLS-scoped
-SQL) and serves chunk content straight from ChromaDB, so any global chunks
-that exist ARE retrievable by every tenant — which is why #770 also gates
-global authoring/seeding on the platform operator.
+SQL). Writes to the global tier are platform operations: RLS write policies
+confine them to single-tenant sentinel sessions or the audited BYPASSRLS
+maintenance path (``jobs/run.py kb_seed``), never tenant sessions. Methods
+below that take only an ``organization_id`` (counts / org listings /
+text+tag search) are org-scoped queries that exclude the org-free platform
+tier; note they currently have NO production callers (the service uses only
+get/create/update/delete/list_for_inventory) — wire the global arm in
+explicitly if one is ever made live, or remove them.
 
 Usage:
     from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
@@ -529,28 +533,43 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
     @staticmethod
     def _inventory_visibility_clause(
-        user_id: Optional[str], team_ids: Optional[List[str]]
+        organization_id: str,
+        user_id: Optional[str],
+        team_ids: Optional[List[str]],
     ):
         """RBAC scope-visibility predicate for the inventory surface.
 
         Mirrors the vector-retrieval allowlist (``build_kb_scope_filter``):
-        ``global`` (everyone in the org) ∪ items the requester ``owns`` (any
-        scope — an author always sees their own) ∪ items ``shared to any of the
-        requester's teams`` via ``resource_shares``. The owner/team branches are
+        ``global`` (the org-free platform tier, visible to every tenant — #770)
+        ∪ own-org items the requester ``owns`` (an author always sees their own)
+        ∪ own-org items ``shared to any of the requester's teams`` via
+        ``resource_shares``. The ``organization_id`` predicate guards only the
+        org-owned arms (defense-in-depth on top of RLS for personal/team); the
+        global arm is deliberately org-free — global rows carry no org
+        (``knowledge_items_global_org_check``). The owner/team branches are
         added only when the requester has a user_id / team memberships, so an
         anonymous caller sees global content only. The share table is the single
         source of truth for team visibility (ADR-013 §D4 / ADR-011 D3).
         """
-        visibility = [KnowledgeItemModel.scope == "global"]
+        org_owned = []
         if user_id:
-            visibility.append(KnowledgeItemModel.owner_id == user_id)
+            org_owned.append(KnowledgeItemModel.owner_id == user_id)
         if team_ids:
             shared_ids = select(ResourceShareModel.resource_id).where(
                 ResourceShareModel.resource_type == "knowledge_item",
                 ResourceShareModel.scope_type == "team",
                 ResourceShareModel.scope_id.in_(list(team_ids)),
             )
-            visibility.append(KnowledgeItemModel.item_id.in_(shared_ids))
+            org_owned.append(KnowledgeItemModel.item_id.in_(shared_ids))
+
+        visibility = [KnowledgeItemModel.scope == "global"]
+        if org_owned:
+            visibility.append(
+                and_(
+                    KnowledgeItemModel.organization_id == organization_id,
+                    or_(*org_owned),
+                )
+            )
         return or_(*visibility)
 
     async def list_for_inventory(
@@ -563,9 +582,8 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         """List published items visible to a requester, RBAC enforced in-query."""
         try:
             conditions = [
-                KnowledgeItemModel.organization_id == organization_id,
                 KnowledgeItemModel.is_published == True,  # noqa: E712
-                self._inventory_visibility_clause(user_id, team_ids),
+                self._inventory_visibility_clause(organization_id, user_id, team_ids),
             ]
             if item_type:
                 conditions.append(KnowledgeItemModel.item_type == item_type.value)
@@ -966,14 +984,19 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         return [deepcopy(i) for i in paginated]
 
     @staticmethod
-    def _inventory_visible(item, user_id) -> bool:
+    def _inventory_visible(item, organization_id, user_id) -> bool:
         scope = item.scope.value if hasattr(item.scope, "value") else str(item.scope)
         if scope == "global":
+            # Org-free platform tier (#770) — visible regardless of caller org.
             return True
-        # Owner sees their own items (any scope). Team visibility lives in the
-        # share table (resource_shares), which this in-memory fallback does not
-        # model — team-shared items authored by others are not surfaced here.
-        return bool(user_id) and item.owner_id == user_id
+        # Owner sees their own org's items (any scope). Team visibility lives in
+        # the share table (resource_shares), which this in-memory fallback does
+        # not model — team-shared items authored by others are not surfaced here.
+        return (
+            item.organization_id == organization_id
+            and bool(user_id)
+            and item.owner_id == user_id
+        )
 
     async def list_for_inventory(
         self,
@@ -991,10 +1014,9 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         items = [
             i
             for i in self._items.values()
-            if i.organization_id == organization_id
-            and i.is_published
+            if i.is_published
             and (item_type is None or i.item_type == item_type)
-            and self._inventory_visible(i, user_id)
+            and self._inventory_visible(i, organization_id, user_id)
         ]
         items.sort(key=lambda x: x.created_at, reverse=True)
         return [deepcopy(i) for i in items]

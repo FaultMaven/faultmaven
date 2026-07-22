@@ -790,8 +790,24 @@ async def lifespan(app: FastAPI):
     # directly into knowledge_items + ChromaDB without passing through the
     # conversion_drafts table. Idempotent: unchanged files are skipped on
     # subsequent runs. See faultmaven/bootstrap/kb_init.py.
+    #
+    # Single-tenant only: the pack writes the org-free global platform tier,
+    # which under TENANT_PROVIDER=multi is seeded exclusively via the audited
+    # maintenance path (`python -m faultmaven.jobs.run kb_seed
+    # --cross-tenant-maintenance`), not by web workers on the RLS-enforced app
+    # role (#770).
     try:
-        if getattr(app.state, "knowledge_service", None):
+        from .providers.tenancy.factory import BUILTIN_MULTI as _BUILTIN_MULTI
+        from .providers.tenancy.factory import (
+            requested_tenant_provider as _requested_tenant_provider,
+        )
+
+        if _requested_tenant_provider() == _BUILTIN_MULTI:
+            logger.info(
+                "KB bootstrap skipped under multi-tenancy: seed the platform "
+                "KB pack via the kb_seed maintenance job (#770)."
+            )
+        elif getattr(app.state, "knowledge_service", None):
             from .bootstrap.kb_init import bootstrap_kb
             from .infrastructure.persistence.database import get_db_session
             from .providers.tenancy.single_tenant import SingleTenantProvider

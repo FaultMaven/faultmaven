@@ -162,7 +162,9 @@ class TestIngestRunbookDualWrite:
             assert row is not None
             assert row.title == "Redis OOM"
             assert row.scope == "global"
-            assert row.organization_id == DEFAULT_ORG_ID
+            # Global rows are the org-free platform tier (#770): the passed
+            # organization_id applies only to org-owned scopes.
+            assert row.organization_id is None
             assert row.item_type == KnowledgeItemType.RUNBOOK.value
             assert row.verification_level == int(VerificationLevel.COMMUNITY)
             assert row.verified_by == "user-1"

@@ -81,6 +81,9 @@ def _get_conversion_service(request: Request) -> ConversionService:
 
 
 from faultmaven.api.v1.auth_dependencies import require_authentication as _require_auth
+from faultmaven.modules.knowledge.api.platform_tier import (
+    require_global_authoring_allowed,
+)
 
 # =============================================================================
 # POST /knowledge/convert
@@ -107,12 +110,15 @@ async def convert_document(
             status_code=400, detail="team_id is required when scope is 'team'"
         )
 
-    # Access control
-    if scope == "global" and "admin" not in (current_user.roles or []):
-        raise HTTPException(
-            status_code=403,
-            detail="Global KB conversion requires platform admin role",
-        )
+    # Access control: global scope is the platform tier — never authorable
+    # from a tenant session under multi (#770), admin-only in single-tenant.
+    if scope == "global":
+        require_global_authoring_allowed()
+        if "admin" not in (current_user.roles or []):
+            raise HTTPException(
+                status_code=403,
+                detail="Global KB conversion requires platform admin role",
+            )
 
     # Validate file type
     content_type = file.content_type or ""
@@ -427,12 +433,15 @@ async def create_runbook_manually(
     current_user: DevUser = Depends(_require_auth),
 ):
     """Create a runbook manually from template fields. Returns a draft for review."""
-    # Access control
-    if body.scope == "global" and "admin" not in (current_user.roles or []):
-        raise HTTPException(
-            status_code=403,
-            detail="Global KB runbook creation requires platform admin role",
-        )
+    # Access control: global scope is the platform tier — never authorable
+    # from a tenant session under multi (#770), admin-only in single-tenant.
+    if body.scope == "global":
+        require_global_authoring_allowed()
+        if "admin" not in (current_user.roles or []):
+            raise HTTPException(
+                status_code=403,
+                detail="Global KB runbook creation requires platform admin role",
+            )
     if body.scope == "team" and not body.team_id:
         raise HTTPException(
             status_code=400, detail="team_id is required for team scope"

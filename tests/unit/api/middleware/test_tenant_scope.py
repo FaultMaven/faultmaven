@@ -113,9 +113,12 @@ async def test_multi_tenant_missing_org_fails_closed(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_multi_tenant_no_token_leaves_default(monkeypatch):
-    """Unauthenticated (public) requests carry no org; leave the default and let
-    the endpoint's own auth dependency 401 if it needs auth."""
+async def test_multi_tenant_no_token_binds_unscoped_org(monkeypatch):
+    """Unauthenticated (public) requests are bound to the empty non-org: they
+    match no org-owned rows AND can never satisfy the RLS write policies'
+    single-tenant sentinel arm (migration 033, #770) — structurally stronger
+    than leaving the contextvar's Standalone default. The endpoint's own auth
+    dependency still 401s where auth is required."""
     monkeypatch.setattr(
         tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
     )
@@ -123,16 +126,17 @@ async def test_multi_tenant_no_token_leaves_default(monkeypatch):
 
     await bind_request_org_context(authorization=None, auth_service=auth_service)
 
-    assert get_current_org_id() == STANDALONE_ORG_ID
+    assert get_current_org_id() == ""
     auth_service.extract_user_from_token_with_revocation_check.assert_not_awaited()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error", [AuthenticationError("bad"), TokenRevocationError()])
-async def test_multi_tenant_invalid_token_leaves_default(monkeypatch, error):
-    """An invalid or revoked token is not the org binder's job to reject — leave
-    the default and defer the 401/403 to the endpoint's auth dependency."""
+async def test_multi_tenant_invalid_token_binds_unscoped_org(monkeypatch, error):
+    """An invalid or revoked token is not the org binder's job to reject — bind
+    the empty non-org (no rows, no sentinel write license) and defer the
+    401/403 to the endpoint's auth dependency."""
     monkeypatch.setattr(
         tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
     )
@@ -143,4 +147,4 @@ async def test_multi_tenant_invalid_token_leaves_default(monkeypatch, error):
         authorization="Bearer bad-token", auth_service=auth_service
     )
 
-    assert get_current_org_id() == STANDALONE_ORG_ID
+    assert get_current_org_id() == ""

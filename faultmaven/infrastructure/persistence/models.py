@@ -1986,8 +1986,13 @@ class ReportModel(Base):
 
 class KnowledgeItemModel(Base):
     """Knowledge base item (RAG corpus). Scope determines visibility:
-    `personal` (one user), `team` (one team), `global` (platform-wide
-    built-in runbooks)."""
+    `personal` (one user), `team` (one team), `global` (platform corpus,
+    readable by every tenant).
+
+    Ownership invariant (#770, enforced by knowledge_items_global_org_check):
+    global rows are the org-free platform tier (organization_id IS NULL);
+    personal/team rows are always org-stamped. A tenant-org-owned global row
+    is unrepresentable."""
 
     __tablename__ = "knowledge_items"
 
@@ -1995,7 +2000,7 @@ class KnowledgeItemModel(Base):
     organization_id = Column(
         String(36),
         ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     scope = Column(String(20), nullable=False, server_default="global", index=True)
@@ -2060,6 +2065,11 @@ class KnowledgeItemModel(Base):
         CheckConstraint(
             "scope IN ('personal', 'team', 'global')",
             name="knowledge_items_scope_check",
+        ),
+        CheckConstraint(
+            "(scope = 'global' AND organization_id IS NULL) "
+            "OR (scope <> 'global' AND organization_id IS NOT NULL)",
+            name="knowledge_items_global_org_check",
         ),
         CheckConstraint(
             "item_type IN ('troubleshooting_guide', 'error_pattern', 'solution_template', "

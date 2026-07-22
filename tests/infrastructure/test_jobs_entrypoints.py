@@ -149,6 +149,100 @@ class TestCaseCleanupJob:
 
 
 # =============================================================================
+# KB Seed Job Tests (#770)
+# =============================================================================
+
+
+def _bootstrap_result(failed=None):
+    from faultmaven.bootstrap.kb_init import BootstrapResult
+
+    result = BootstrapResult()
+    result.ingested = ["a.md", "b.md"]
+    result.skipped_unchanged = ["c.md"]
+    result.failed = failed or []
+    return result
+
+
+class TestKbSeedJob:
+    """Tests for the kb_seed job entrypoint (platform KB pack seeding)."""
+
+    @pytest.mark.asyncio
+    async def test_kb_seed_completes(self, mock_container, mock_settings):
+        from faultmaven.jobs.kb_seed import run
+
+        mock_container.get_knowledge_service = MagicMock(return_value=MagicMock())
+        with patch(
+            "faultmaven.bootstrap.kb_init.bootstrap_kb",
+            new=AsyncMock(return_value=_bootstrap_result()),
+        ) as bootstrap:
+            result = await run(settings=mock_settings, container=mock_container)
+
+        assert result["status"] == "completed"
+        assert result["ingested"] == 2
+        assert result["skipped_unchanged"] == 1
+        assert result["failures"] == []
+        bootstrap.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_kb_seed_skips_without_knowledge_service(
+        self, mock_container, mock_settings
+    ):
+        from faultmaven.jobs.kb_seed import run
+
+        mock_container.get_knowledge_service = MagicMock(return_value=None)
+        result = await run(settings=mock_settings, container=mock_container)
+
+        assert result["status"] == "skipped"
+        assert result["reason"] == "knowledge_service_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_kb_seed_partial_failure_is_failed_status(
+        self, mock_container, mock_settings
+    ):
+        """A runbook that fails to seed is absent for every tenant — the job
+        must exit non-zero so the operator notices."""
+        from faultmaven.jobs.kb_seed import run
+
+        mock_container.get_knowledge_service = MagicMock(return_value=MagicMock())
+        with patch(
+            "faultmaven.bootstrap.kb_init.bootstrap_kb",
+            new=AsyncMock(return_value=_bootstrap_result(failed=[("bad.md", "boom")])),
+        ):
+            result = await run(settings=mock_settings, container=mock_container)
+
+        assert result["status"] == "failed"
+        assert result["failures"] == [("bad.md", "boom")]
+
+    @pytest.mark.asyncio
+    async def test_kb_seed_handles_errors(self, mock_container, mock_settings):
+        from faultmaven.jobs.kb_seed import run
+
+        mock_container.get_knowledge_service = MagicMock(return_value=MagicMock())
+        with patch(
+            "faultmaven.bootstrap.kb_init.bootstrap_kb",
+            new=AsyncMock(side_effect=RuntimeError("pack unreadable")),
+        ):
+            result = await run(settings=mock_settings, container=mock_container)
+
+        assert result["status"] == "failed"
+        assert "pack unreadable" in result["error"]
+
+    def test_kb_seed_is_cross_tenant(self):
+        """kb_seed writes the org-free global platform tier served to ALL
+        tenants — under multi it must only run on the audited maintenance
+        path, so the declaration must stay cross_tenant."""
+        from faultmaven.jobs import kb_seed
+
+        assert kb_seed.JOB_TENANT_SCOPE == "cross_tenant"
+        assert kb_seed.JOB_NAME == "kb_seed"
+
+    def test_kb_seed_registered(self):
+        from faultmaven.jobs.run import AVAILABLE_JOBS
+
+        assert AVAILABLE_JOBS["kb_seed"] == "faultmaven.jobs.kb_seed"
+
+
+# =============================================================================
 # CLI Runner Tests
 # =============================================================================
 
