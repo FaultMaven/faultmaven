@@ -992,6 +992,47 @@ class TestRepairOrphanedRows:
         # The deferred rows are never embedded this boot.
         assert svc.reindex_missing_vectors.await_count == 1
 
+    @pytest.mark.asyncio
+    async def test_honors_explicit_max_rows(self):
+        """The row cap is a parameter (deployment-configurable), not hardcoded."""
+        svc = self._service(AsyncMock(return_value=1))
+        rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
+        repaired, still = await kb_init._repair_orphaned_rows(rows, svc, max_rows=2)
+        assert repaired == []  # 3 > cap 2 → bulk-loss, repair nothing
+        assert still == rows
+        svc.reindex_missing_vectors.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_honors_explicit_max_chunks(self):
+        """The chunk budget is a parameter (deployment-configurable)."""
+        svc = self._service(AsyncMock(return_value=5))
+        rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
+        repaired, still = await kb_init._repair_orphaned_rows(
+            rows, svc, max_rows=10, max_chunks=5
+        )
+        # First row embeds 5 chunks (== budget) → the rest defer.
+        assert repaired == ["kb_aaaaaaaaaaaa"]
+        assert still == ["kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
+
+    def test_resolve_repair_bounds_reads_settings(self):
+        """_resolve_repair_bounds pulls the deployment-configured bounds."""
+        fake = MagicMock()
+        fake.database.kb_repair_max_rows = 7
+        fake.database.kb_repair_max_chunks = 13
+        with patch("faultmaven.config.settings.get_settings", return_value=fake):
+            assert kb_init._resolve_repair_bounds() == (7, 13)
+
+    def test_resolve_repair_bounds_falls_back_on_error(self):
+        """Settings unavailable (some test contexts) → module defaults, no raise."""
+        with patch(
+            "faultmaven.config.settings.get_settings",
+            side_effect=RuntimeError("no settings"),
+        ):
+            assert kb_init._resolve_repair_bounds() == (
+                kb_init.KB_REPAIR_MAX_ROWS,
+                kb_init.KB_REPAIR_MAX_CHUNKS,
+            )
+
 
 class TestCrossStoreRepairSeam:
     """DoD: a simulated mid-ingest failure (SQL row present, vectors missing)

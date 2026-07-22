@@ -177,8 +177,9 @@ async def bootstrap_kb(
     # boot. Bounded because repair loads the embedding model the pack path
     # deliberately skips — re-embedding the whole KB reintroduces the on-pod
     # timeout the pack exists to avoid.
+    max_rows, max_chunks = _resolve_repair_bounds()
     result.repaired_rows, result.orphaned_rows = await _repair_orphaned_rows(
-        orphaned_rows, knowledge_service
+        orphaned_rows, knowledge_service, max_rows=max_rows, max_chunks=max_chunks
     )
 
     logger.info(
@@ -466,18 +467,22 @@ async def _reconcile_vectors(
         return [], orphaned_rows
 
 
-# Bounds on the cross-store repair. Two distinct guards:
+# Default bounds on the cross-store repair. Overridable per deployment via
+# DatabaseSettings.kb_repair_max_rows / kb_repair_max_chunks (env
+# KB_REPAIR_MAX_ROWS / KB_REPAIR_MAX_CHUNKS); these constants are the fallback
+# used when settings are unavailable (some test contexts) and the direct-call
+# defaults. Two distinct guards:
 #
-#   KB_REPAIR_MAX_ROWS — a bulk-loss DISCRIMINATOR. A crash between the SQL
-#     commit and the Chroma write orphans a FEW rows (self-healing them is the
-#     whole point). But a mass orphan (e.g. the Chroma collection was wiped while
-#     knowledge_items stayed intact — a state the content-hash pack skip does NOT
-#     re-vector) is an operational problem, not a crash to paper over: above this
-#     many orphans we repair NOTHING and warn (recovery there is a full pack
-#     re-ingest / reset_kb, not per-row re-embedding on every boot).
+#   max_rows — a bulk-loss DISCRIMINATOR. A crash between the SQL commit and the
+#     Chroma write orphans a FEW rows (self-healing them is the whole point). But
+#     a mass orphan (e.g. the Chroma collection was wiped while knowledge_items
+#     stayed intact — a state the content-hash pack skip does NOT re-vector) is
+#     an operational problem, not a crash to paper over: above this many orphans
+#     we repair NOTHING and warn (recovery there is a full pack re-ingest /
+#     reset_kb, not per-row re-embedding on every boot).
 #
-#   KB_REPAIR_MAX_CHUNKS — a per-boot WORK budget. Repair is the one bootstrap
-#     step that loads BGE-M3 and embeds, and it runs on the lifespan startup path
+#   max_chunks — a per-boot WORK budget. Repair is the one bootstrap step that
+#     loads BGE-M3 and embeds, and (on the single-tenant web-startup path) it runs
 #     BEFORE the app serves readiness — so the risk is the on-pod CPU-embedding
 #     time (chunks x pod CPU), NOT the row count. Bounding rows alone is
 #     insufficient: even a sub-cap orphan set of small runbooks can be hundreds
@@ -489,9 +494,28 @@ KB_REPAIR_MAX_ROWS = 25
 KB_REPAIR_MAX_CHUNKS = 60
 
 
+def _resolve_repair_bounds() -> tuple[int, int]:
+    """Repair bounds from settings, falling back to the module defaults.
+
+    Settings can be unavailable in some test contexts (mirrors how bootstrap_kb
+    reads kb_pack_dir), so this degrades to the defaults rather than raising.
+    """
+    try:
+        from faultmaven.config.settings import get_settings
+
+        db = get_settings().database
+        return int(db.kb_repair_max_rows), int(db.kb_repair_max_chunks)
+    except Exception as exc:  # settings unavailable / misconfigured
+        logger.debug(f"Could not read KB repair bounds from settings: {exc}")
+        return KB_REPAIR_MAX_ROWS, KB_REPAIR_MAX_CHUNKS
+
+
 async def _repair_orphaned_rows(
     orphaned_rows: list[str],
     knowledge_service: Any,
+    *,
+    max_rows: int = KB_REPAIR_MAX_ROWS,
+    max_chunks: int = KB_REPAIR_MAX_CHUNKS,
 ) -> tuple[list[str], list[str]]:
     """Re-embed orphaned knowledge_items rows (SQL row present, vectors missing).
 
@@ -501,22 +525,24 @@ async def _repair_orphaned_rows(
     the service's own RLS-scoped session) — the SQL row, the source of truth, is
     never touched.
 
-    Cross-tenant-safe: repair only ADDS a row's own vectors, and bootstrap runs
-    single-tenant with an RLS-scoped session, so ``orphaned_rows`` is this
-    deployment's own rows. Contrast reconcile's DELETE side, restricted to
-    built-in ids precisely because deletion CAN cross tenants; addition cannot,
-    so ALL orphaned rows are eligible — a lost authored runbook is repaired the
-    same as a shipped one.
+    Cross-tenant-safe: repair only ADDS vectors for rows the caller's scoped
+    session already sees, writing each row's OWN scope/owner metadata — it can
+    never fabricate another tenant's vectors or mislabel scope. This holds on
+    both entry paths (the single-tenant web-startup bootstrap and the
+    cross-tenant ``kb_seed`` job seeding the org-free global tier). Contrast
+    reconcile's DELETE side, restricted to built-in ids precisely because
+    deletion CAN cross tenants; addition cannot, so ALL orphaned rows are
+    eligible — a lost authored runbook is repaired the same as a shipped one.
 
-    Bounded twice (see the module constants): ``KB_REPAIR_MAX_ROWS`` skips a
-    bulk-loss anomaly entirely, and ``KB_REPAIR_MAX_CHUNKS`` caps the embedding
-    work per boot (deferring the rest to the next boot) so startup readiness is
-    never gated on an unbounded re-embed.
+    Bounded twice (``max_rows`` / ``max_chunks``, deployment-configurable):
+    ``max_rows`` skips a bulk-loss anomaly entirely, and ``max_chunks`` caps the
+    embedding work per boot (deferring the rest to the next boot) so startup
+    readiness is never gated on an unbounded re-embed.
     """
     if not orphaned_rows:
         return [], []
 
-    if len(orphaned_rows) > KB_REPAIR_MAX_ROWS:
+    if len(orphaned_rows) > max_rows:
         logger.warning(
             "KB repair skipped: %d orphaned rows exceed the repair cap (%d) — "
             "treating as a bulk-loss anomaly (e.g. the vector collection was wiped), "
@@ -524,7 +550,7 @@ async def _repair_orphaned_rows(
             "the boot path would reintroduce the on-pod embedding timeout. Rows left "
             "unretrievable; recover with a full pack re-ingest.",
             len(orphaned_rows),
-            KB_REPAIR_MAX_ROWS,
+            max_rows,
         )
         return [], orphaned_rows
 
@@ -535,14 +561,14 @@ async def _repair_orphaned_rows(
         # Work budget: stop before starting a row once this boot's chunk budget is
         # spent. Overshoot is bounded by one runbook's chunk count (the row in
         # flight always finishes); the deferred rows self-heal on a later boot.
-        if chunks_embedded >= KB_REPAIR_MAX_CHUNKS:
+        if chunks_embedded >= max_chunks:
             deferred = orphaned_rows[i:]
             still_orphaned.extend(deferred)
             logger.warning(
                 "KB repair: per-boot chunk budget (%d) reached after %d row(s) — "
                 "deferring %d orphaned row(s) to the next boot (repair is "
                 "incremental to keep startup readiness off the embedding path).",
-                KB_REPAIR_MAX_CHUNKS,
+                max_chunks,
                 len(repaired),
                 len(deferred),
             )

@@ -685,6 +685,33 @@ class DatabaseSettings(BaseSettings):
     # populate it from object storage. Same core, different configuration.
     kb_pack_dir: str = Field(default="", validation_alias="KB_PACK_DIR")
 
+    # KB cross-store repair bounds (bootstrap self-heals an orphaned row — a
+    # knowledge_items row whose ChromaDB vectors went missing after a crash
+    # between the SQL commit and the vector write — by re-embedding it with
+    # BGE-M3). Both bounds cap that work; defaults live in
+    # faultmaven/bootstrap/kb_init.py (KB_REPAIR_MAX_ROWS / KB_REPAIR_MAX_CHUNKS).
+    kb_repair_max_rows: int = Field(
+        default=25,
+        validation_alias="KB_REPAIR_MAX_ROWS",
+        description=(
+            "Max orphaned KB rows to repair per boot before treating the set as a "
+            "bulk-loss anomaly (repair nothing + warn; recover via a full pack "
+            "re-ingest)."
+        ),
+    )
+    kb_repair_max_chunks: int = Field(
+        default=60,
+        validation_alias="KB_REPAIR_MAX_CHUNKS",
+        description=(
+            "Per-boot embedding-work budget (chunks) for KB orphan repair. When the "
+            "web-startup bootstrap runs the repair (single-tenant provider; under "
+            "TENANT_PROVIDER=multi it runs off the readiness path in the kb_seed "
+            "job), it embeds on the startup path before readiness — rows past this "
+            "budget defer to the next boot. Lower it if a tight k8s startupProbe "
+            "leaves too little time for the model load + re-embed."
+        ),
+    )
+
     # Vector Database Settings
     embedding_model: str = Field(default="BAAI/bge-m3")
     similarity_threshold: float = Field(default=0.7)
