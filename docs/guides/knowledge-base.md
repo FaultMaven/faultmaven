@@ -21,7 +21,7 @@ There are two ingestion paths, by source. **Pre-deployed runbooks** ship in the 
 
 ## Built-in runbooks (the KB pack)
 
-The 59 built-in runbooks ship pre-chunked and pre-embedded in the KB pack and are ingested automatically on startup — no Dashboard step is required. To add or update pre-deployed runbooks, rebuild the pack in the [KB Toolkit](../architecture/knowledge-and-ai/kb-pack-architecture.md) (`kb-build-pack`) and deliver it — vendor the committed baseline, or update a running deployment's `KB_PACK_DIR` (local bind-mount / cloud MinIO) with no app-image rebuild. See [KB Pack Architecture](../architecture/knowledge-and-ai/kb-pack-architecture.md).
+The 91 built-in runbooks ship pre-chunked and pre-embedded in the KB pack and are ingested automatically on startup — no Dashboard step is required. To add or update pre-deployed runbooks, rebuild the pack in the [KB Toolkit](../architecture/knowledge-and-ai/kb-pack-architecture.md) (`kb-build-pack`) and deliver it — vendor the committed baseline, or update a running deployment's `KB_PACK_DIR` (local bind-mount / cloud MinIO) with no app-image rebuild. See [KB Pack Architecture](../architecture/knowledge-and-ai/kb-pack-architecture.md).
 
 ## Tools the agent uses during investigation
 

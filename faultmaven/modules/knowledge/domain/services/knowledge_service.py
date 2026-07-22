@@ -831,11 +831,11 @@ class KnowledgeService:
         """Promote runbook content to a fully-published KnowledgeItem.
 
         Atomically maintains both stores by writing the relational source-of-
-        truth first, then the ChromaDB embeddings. On ChromaDB failure: leave
-        the SQL row, surface the error, do NOT roll back. The recovery path
-        is a future scan-and-recover pass that re-embeds rows missing from
-        ChromaDB; rolling back would erase the only evidence that the row
-        needs re-embedding.
+        truth first, then the ChromaDB embeddings. On ChromaDB failure (raise
+        OR 0 chunks): delete the just-written SQL row before re-raising, so
+        the two stores never diverge. The earlier "leave the SQL row for a
+        scan-and-recover re-embed" policy produced half-state rows that
+        downstream scans mis-classified, so rollback is now the contract.
 
         Args:
             document_id: Stable id used for both the relational row and the
@@ -860,8 +860,9 @@ class KnowledgeService:
                 runbooks. See :meth:`_index_document_in_vector_store`.
 
         Returns:
-            Number of chunks indexed in ChromaDB. The SQL row exists either
-            way (success or ChromaDB failure).
+            Number of chunks indexed in ChromaDB (always > 0 on success). On
+            ChromaDB failure the method raises after deleting the SQL row, so
+            a successful return always means both stores are populated.
         """
         # Lazy imports keep this method self-contained against the knowledge
         # vertical (avoids top-level cycles between service and persistence).
@@ -1074,9 +1075,19 @@ class KnowledgeService:
                 # Write content to disk
                 from pathlib import Path
 
-                scope_dir = Path(f"data/knowledge/{scope}")
-                domain = fm_meta.get("domain", "general")
-                target_dir = scope_dir / domain
+                # Flat by scope, matching the canonical layout the scan pass
+                # infers scope from (ConversionService._scope_dir): global/,
+                # team_{id}/, user_{id}/ — NO domain subdirectory (domain lives
+                # in frontmatter + ChromaDB metadata). Writing a literal
+                # "personal"/"team" folder would break scan scope-inference,
+                # which keys off the user_/team_ prefixes.
+                data_dir = Path("data/knowledge")
+                if scope == "team" and team_id:
+                    target_dir = data_dir / f"team_{team_id}"
+                elif scope == "personal" and owner_id:
+                    target_dir = data_dir / f"user_{owner_id}"
+                else:
+                    target_dir = data_dir / "global"
                 target_dir.mkdir(parents=True, exist_ok=True)
 
                 filename = (

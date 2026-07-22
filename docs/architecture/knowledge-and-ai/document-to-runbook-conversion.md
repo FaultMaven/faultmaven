@@ -390,16 +390,24 @@ def get_knowledge_provider(self) -> LLMProvider:
 
 ### 3.3 Model Selection per Provider
 
-Add to the per-provider model fields in `LLMSettings`:
+Each provider has an **optional** per-task knowledge-model override in `LLMSettings`, all defaulting to `None`:
 
 ```python
-# Knowledge transformation models (prefer strong instruction-following)
-openai_knowledge_model: str = Field(default="gpt-4o")
-anthropic_knowledge_model: str = Field(default="claude-3-5-sonnet-20241022")
-fireworks_knowledge_model: str = Field(default="accounts/fireworks/models/qwen2.5-72b-instruct")
-groq_knowledge_model: str = Field(default="llama-3.3-70b-versatile")
-gemini_knowledge_model: str = Field(default="gemini-2.0-flash")
+# Knowledge transformation models — optional per-task overrides.
+# None means "inherit the provider's base model" (see resolution below).
+openai_knowledge_model: Optional[str] = Field(default=None)
+anthropic_knowledge_model: Optional[str] = Field(default=None)
+fireworks_knowledge_model: Optional[str] = Field(default=None)
+gemini_knowledge_model: Optional[str] = Field(default=None)
+groq_knowledge_model: Optional[str] = Field(default=None)
+# ...also cohere_/huggingface_/openrouter_knowledge_model, all default=None
 ```
+
+Resolution (`_get_model_for_provider_and_task(provider, "knowledge")`): the
+per-task override `{PROVIDER}_KNOWLEDGE_MODEL` if set, else the provider's base
+`{PROVIDER}_MODEL`, else empty string. There are **no** hardcoded per-provider
+knowledge-model defaults — the knowledge task uses the provider's base model
+unless an operator sets an explicit override in `.env`.
 
 ### 3.4 Routing Rationale
 
@@ -409,7 +417,7 @@ gemini_knowledge_model: str = Field(default="gemini-2.0-flash")
 | Template-compliant generation | Not synthesis (SYNTHESIS) -- requires long-form structured writing, not fast JSON |
 | Technical content transformation | Not code (CODE) -- not generating executable code, generating technical documentation |
 
-The knowledge provider should default to a model with strong instruction-following (Anthropic Claude or OpenAI GPT-4o) because template compliance is the critical quality dimension. Cheaper models can be tested but are not recommended as defaults.
+The knowledge provider should be pointed at a model with strong instruction-following (Anthropic Claude or OpenAI GPT-class) because template compliance is the critical quality dimension. Since the knowledge task inherits the provider's base model by default, choose the base `{PROVIDER}_MODEL` (or set an explicit `{PROVIDER}_KNOWLEDGE_MODEL` override) accordingly. Cheaper models can be tested but are not recommended.
 
 ### 3.5 Model Resolution in ConversionService
 
@@ -647,7 +655,7 @@ async def _analyze_and_split(self, text: str, filename: str) -> AnalysisResult:
 
 When multiple failure modes are detected, the conversion prompt receives the **full source text** for each failure mode, not a pre-extracted excerpt. The LLM is instructed to focus on the specified failure mode and extract only the relevant content. This avoids lossy heuristic text splitting.
 
-For very large documents (over 12,000 tokens after extraction), the text is chunked by section headers and the LLM receives only the sections relevant to each failure mode, as identified in the analysis response.
+There is no section-header pre-chunking step: because the preprocessor hard-rejects anything over the 30,000-token limit (§5, §10.2), every document that reaches conversion already fits in context and is passed in full per failure mode.
 
 ### 5.3 ID Generation
 
@@ -874,13 +882,24 @@ class SourceType(str, Enum):
 
 
 class CaseConversionRequest(BaseModel):
-    """Carrier for the case-to-runbook flow (§1.4 'Case Source')."""
+    """Carrier for the case-to-runbook flow (§1.4 'Case Source').
+
+    A structured extraction of a RESOLVED Case: case_id, title, description,
+    root_cause(+mechanism), solutions, hypotheses/evidence summaries,
+    domain/service/symptom_class/severity, tags, and scope.
+    """
     case_id: str
-    requested_by: str  # user_id
+    title: str
+    description: str
+    # ...root_cause, solutions, hypotheses_summary, evidence_summary,
+    #    domain, service, symptom_class, severity, tags...
+    scope: str = "personal"
 
     @classmethod
-    def from_case(cls, case_id: str, requested_by: str) -> "CaseConversionRequest":
-        return cls(case_id=case_id, requested_by=requested_by)
+    def from_case(cls, case, scope: str = "personal") -> "CaseConversionRequest":
+        """Extract runbook-generation data from a RESOLVED Case domain object.
+        Reused by both the API route and the milestone engine."""
+        ...
 
 
 class FailureModeAnalysis(BaseModel):
@@ -1264,9 +1283,10 @@ The parser extracts plain text from supported file formats. It does not interpre
 
 | Limit | Value | Rationale |
 |-------|-------|-----------|
-| Max extracted text | 100,000 characters | Beyond this, LLM context window is exceeded. Reject with 413. |
-| Min extracted text | 200 characters | Below this, the source lacks sufficient content. Reject with 422. |
-| Target LLM input | 50,000 characters | For documents over this size, send summary + relevant sections per failure mode. |
+| Max extracted text | 30,000 tokens (`MAX_TOKEN_LIMIT`, ~120K chars) | Beyond this the LLM context window plus template/response headroom is exceeded. Hard-rejected with HTTP 413 (`DOCUMENT_TOO_LONG`) — no truncation, no section-routing. |
+| Min extracted text | 200 characters (`MIN_TEXT_LENGTH`) | Below this, the source lacks sufficient content. Rejected. |
+
+Measured in **tokens** (tiktoken `cl100k_base`), not characters — see `document_preprocessor.py`. Documents that pass the gate are converted in full per failure mode (§5.2); there is no 50K-character "target input" step or relevant-section extraction.
 
 ### 10.3 BeautifulSoup Dependency
 
@@ -1486,23 +1506,17 @@ def mock_analysis_response():
 
 ## 15. Rollback Procedures
 
-### 15.1 Feature Flag
+### 15.1 Route Registration
 
-Add to `faultmaven/config/feature_flags.py`:
-
-```python
-ENABLE_DOCUMENT_CONVERSION: bool = Field(
-    default=False,
-    description="Enable document-to-runbook conversion feature"
-)
-```
-
-The conversion routes are registered conditionally:
+Document conversion ships enabled — there is no feature flag. The conversion
+router is registered unconditionally in `faultmaven/main.py`:
 
 ```python
-if settings.features.enable_document_conversion:
-    app.include_router(conversion_router, prefix="/api/v1")
+app.include_router(conversion_router, prefix="/api/v1")
 ```
+
+To disable the feature, revert the registration (and, if needed, the database
+migration below); there is no runtime toggle.
 
 ### 15.2 Database Rollback
 

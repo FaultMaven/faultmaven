@@ -39,8 +39,8 @@ ChromaDB Instance
 │
 ├── faultmaven_kb               # All KB tiers (global, team, personal) — permanent
 │   ├── scope=global
-│   ├── scope=team, team_id=...
-│   └── scope=personal, owner_id=...
+│   └── scope=personal, owner_id=...   # team shares stay on this floor;
+│       #  team visibility comes from the resource_shares id-allowlist, not metadata
 │
 ├── case_{uuid}                 # Per-case evidence — ephemeral, tied to case lifecycle
 ├── case_{uuid}                 # ...
@@ -109,8 +109,10 @@ Each candidate chunk is scored across four weighted signals:
 | Chunk domain matches case context domain | +0.30 |
 | Chunk service matches case context service | +0.30 |
 | Status is `verified` | +0.40 |
-| Status is `deprecated` | -0.30 |
+| Status is `in-review` | +0.10 |
 | Status is `draft` | -0.10 |
+| Status is `stale` | -0.20 |
+| Status is `deprecated` | -0.30 |
 
 **Context metadata: hard filter vs soft boost.** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The `filter_mode` parameter on `hybrid_search()` is implemented — `"hard"` adds domain/service to the `where` clause (`_apply_hard_metadata_filter`), `"soft"` (default) applies the rerank boost only. The **soft** path is wired end-to-end: the engine feeds the case's affected service into `hybrid_search(context_metadata=…, filter_mode="soft")` on every KB retrieval, so the metadata-match signal fires on service alignment rather than status alone. What remains is the **hard** path — threading *high-confidence* context from copilot → API → `KBToolAdapter` so a caller can safely select `"hard"` and drop irrelevant chunks pre-retrieval. Today every live caller uses the soft rerank path. (Domain is not yet supplied by the engine: the case model has no domain field, and a fabricated default would create false exact-matches; only `service` is currently derived.)
 
@@ -164,10 +166,10 @@ The full list of fields stored on each chunk is canonical in [knowledge-base-arc
 
 | Field | Used by | Purpose |
 | ----- | ------- | ------- |
-| `scope`, `owner_id`, `team_id` | `where` clause | Scope filter (built by `AnswerFromKB`) |
+| `scope`, `owner_id`, `parent_document_id` | `where` clause | Scope filter (built by `build_kb_scope_filter`; team arm is a `parent_document_id` `$in` allowlist resolved from `resource_shares`, not a `team_id` metadata match) |
 | `domain`, `service` | Reranker metadata-match signal (soft boost, wired) + hard pre-filter (`filter_mode="hard"`, mechanism only) | `service` fed from the case's `problem_verification.affected_services[0]` as a soft boost; `domain` not yet supplied by the engine |
 | `symptom_class`, `severity` | Reranker metadata-match signal | Boost chunks whose taxonomy aligns with the query's failure-mode classification |
-| `status` | Reranker status weighting | `verified` +0.40, `draft` -0.10, `deprecated` -0.30 |
+| `status` | Reranker status weighting | `verified` +0.40, `in-review` +0.10, `draft` -0.10, `stale` -0.20, `deprecated` -0.30 |
 | `last_updated` | Reranker freshness signal + synthesis prompt | Half-life decay; `format_chunk_metadata()` injects age warnings into LLM context |
 
 ### Staleness-Aware Synthesis
