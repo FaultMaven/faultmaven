@@ -250,8 +250,22 @@ class CaseVectorStore(BaseExternalClient):
             retry_delay=1.0,
         )
 
-    async def cleanup_orphaned_collections(self, active_case_ids: List[str]) -> int:
-        """Clean up case collections without corresponding active cases."""
+    async def cleanup_orphaned_collections(
+        self, active_case_ids: List[str], case_exists=None
+    ) -> int:
+        """Clean up case collections without corresponding active cases.
+
+        Args:
+            active_case_ids: The reference set — every known case id; a
+                collection outside it is an orphan candidate.
+            case_exists: Optional async callback ``(case_id) -> bool`` that
+                re-checks the database immediately before each deletion. It
+                closes the snapshot race: a case created between the caller
+                building ``active_case_ids`` and ``list_collections()`` below
+                would otherwise be classified orphaned and lose its vector
+                data. When provided, a candidate whose case row exists at
+                delete time is skipped.
+        """
 
         async def _cleanup_wrapper():
             deleted_count = 0
@@ -268,6 +282,26 @@ class CaseVectorStore(BaseExternalClient):
                         continue
 
                     if collection.name not in expected_collections:
+                        candidate_case_id = collection.name[
+                            len(self.COLLECTION_PREFIX) :
+                        ]
+                        if case_exists is not None:
+                            try:
+                                if await case_exists(candidate_case_id):
+                                    self.logger.info(
+                                        f"Skipping collection {collection.name}: "
+                                        "case row exists (created after the id "
+                                        "snapshot)"
+                                    )
+                                    continue
+                            except Exception as e:
+                                # Fail safe: if the re-check errors, do NOT
+                                # delete on a stale snapshot alone.
+                                self.logger.warning(
+                                    f"Skipping collection {collection.name}: "
+                                    f"existence re-check failed ({e})"
+                                )
+                                continue
                         try:
                             self.client.delete_collection(name=collection.name)
                             deleted_count += 1

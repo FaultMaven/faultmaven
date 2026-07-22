@@ -118,6 +118,12 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.get(case_id)
 
+    async def list_all_case_ids(self) -> list[str]:
+        """Every case row's id, regardless of state (see CaseRepository)."""
+        async with get_db_session() as session:
+            repo = get_repository_for_session(session)
+            return await repo.list_all_case_ids()
+
     async def list_by_user(
         self,
         user_id: str,

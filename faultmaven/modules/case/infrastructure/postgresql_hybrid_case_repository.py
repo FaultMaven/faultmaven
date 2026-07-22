@@ -1077,6 +1077,20 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         except Exception as e:
             raise RepositoryException(f"Failed to list cases: {e}") from e
 
+    async def list_all_case_ids(self) -> List[str]:
+        """Every case row's id, regardless of state (see CaseRepository).
+
+        Under the multi-tenant provider RLS scopes this to the org bound in
+        the tenant context — a complete cross-tenant set requires the
+        maintenance DB role (BYPASSRLS), which the jobs runner enforces for
+        cross_tenant jobs.
+        """
+        try:
+            result = await self.db.execute(text("SELECT case_id FROM cases"))
+            return [row[0] for row in result.fetchall()]
+        except Exception as e:
+            raise RepositoryException(f"Failed to list case ids: {e}") from e
+
     async def delete(self, case_id: str) -> bool:
         """
         Delete case by ID (cascades to normalized tables via FK constraints).

@@ -95,6 +95,16 @@ class ICaseRepository(Protocol):
         """Retrieve case by ID."""
         ...
 
+    async def list_all_case_ids(self) -> List[str]:
+        """Every case row's id, regardless of state or owner.
+
+        The reference set for the orphaned-collection sweep (case_cleanup):
+        a collection is orphaned only when no case row exists at all. Under
+        the multi-tenant provider a complete set requires the maintenance DB
+        role (the jobs runner enforces this for cross_tenant jobs).
+        """
+        ...
+
     async def list(
         self,
         user_id: Optional[str] = None,

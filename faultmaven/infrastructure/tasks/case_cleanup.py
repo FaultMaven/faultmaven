@@ -12,7 +12,7 @@ Configuration:
 - Cleanup method: Lifecycle-based (checks against active cases)
 
 Usage:
-    scheduler = start_case_cleanup_scheduler(case_vector_store, case_store)
+    scheduler = start_case_cleanup_scheduler(case_vector_store, case_repository)
     # ... app runs ...
     scheduler.shutdown()
 """
@@ -25,46 +25,45 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
-from faultmaven.models.interfaces_case import ICaseStore
+from faultmaven.modules.case.contracts import ICaseRepository
 
 logger = logging.getLogger(__name__)
 
 
 async def cleanup_orphaned_collections_task(
-    case_vector_store: CaseVectorStore, case_store: ICaseStore
+    case_vector_store: CaseVectorStore, case_repository: ICaseRepository
 ):
     """
     Background task to clean up orphaned case collections.
 
-    An orphaned collection is one that doesn't have a corresponding active case.
-    This is a safety net for collections that weren't properly deleted.
+    An orphaned collection is one with NO corresponding case row at all (any
+    state — terminal/archived cases keep their collections). This is a safety
+    net for collections that weren't properly deleted.
 
     Args:
         case_vector_store: CaseVectorStore instance
-        case_store: CaseStore instance to get active case IDs
+        case_repository: Case repository for the reference case-id set
     """
     try:
         logger.info("Starting orphaned case collection cleanup task")
 
-        # Get all active case IDs from CaseStore
+        # The reference set: every case row's id, any state.
+        # Note: This might need pagination for very large deployments.
         try:
-            # Get all cases (we'll filter to just IDs)
-            # Note: This might need pagination for very large deployments
-            active_case_ids = await case_store.get_all_case_ids()
-            logger.debug(f"Found {len(active_case_ids)} active cases in case store")
-        except AttributeError:
-            # If get_all_case_ids doesn't exist, skip cleanup this run
-            logger.warning(
-                "CaseStore doesn't support get_all_case_ids(), skipping cleanup"
-            )
-            return
+            active_case_ids = await case_repository.list_all_case_ids()
+            logger.debug(f"Found {len(active_case_ids)} case rows in the database")
         except Exception as e:
-            logger.error(f"Failed to get active case IDs: {e}")
+            logger.error(f"Failed to get case IDs: {e}")
             return
 
-        # Clean up orphaned collections
+        # Clean up orphaned collections. The per-candidate re-check closes the
+        # snapshot race (a case created after list_all_case_ids() must not
+        # lose its collection).
+        async def _case_exists(case_id: str) -> bool:
+            return await case_repository.get(case_id) is not None
+
         deleted_count = await case_vector_store.cleanup_orphaned_collections(
-            active_case_ids
+            active_case_ids, case_exists=_case_exists
         )
 
         if deleted_count > 0:
@@ -78,21 +77,25 @@ async def cleanup_orphaned_collections_task(
         logger.error(f"Error during case cleanup task: {e}", exc_info=True)
 
 
-def _sync_cleanup_wrapper(case_vector_store: CaseVectorStore, case_store: ICaseStore):
+def _sync_cleanup_wrapper(
+    case_vector_store: CaseVectorStore, case_repository: ICaseRepository
+):
     """
     Synchronous wrapper for async cleanup task.
 
     APScheduler requires synchronous functions, so we use asyncio.run().
     """
     try:
-        asyncio.run(cleanup_orphaned_collections_task(case_vector_store, case_store))
+        asyncio.run(
+            cleanup_orphaned_collections_task(case_vector_store, case_repository)
+        )
     except Exception as e:
         logger.error(f"Error in sync cleanup wrapper: {e}", exc_info=True)
 
 
 def start_case_cleanup_scheduler(
     case_vector_store: CaseVectorStore,
-    case_store: ICaseStore,
+    case_repository: ICaseRepository,
     interval_hours: int = 6,
     is_multi_tenant: bool = False,
 ) -> Optional[BackgroundScheduler]:
@@ -101,7 +104,7 @@ def start_case_cleanup_scheduler(
 
     Args:
         case_vector_store: CaseVectorStore instance
-        case_store: CaseStore instance for getting active case IDs
+        case_repository: Case repository for the reference case-id set
         interval_hours: Cleanup interval in hours (default: 6)
         is_multi_tenant: Whether the deployment runs the multi-tenant provider.
             The cleanup task is cross-tenant scoped (it diffs the DB case-id
@@ -130,7 +133,7 @@ def start_case_cleanup_scheduler(
 
         # Schedule cleanup task to run every N hours
         scheduler.add_job(
-            func=lambda: _sync_cleanup_wrapper(case_vector_store, case_store),
+            func=lambda: _sync_cleanup_wrapper(case_vector_store, case_repository),
             trigger=IntervalTrigger(hours=interval_hours),
             id="case_collection_cleanup",
             name="Clean up orphaned case collections",

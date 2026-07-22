@@ -12,8 +12,11 @@ This is a safety net for collections that weren't properly deleted when cases cl
 Tenant scope: **cross_tenant**. ChromaDB collections are not org-partitioned, so
 "orphaned" is only decidable against the case-id set of ALL organizations; a
 partial (single-org) view would classify every other tenant's collections as
-orphaned and delete them. Under the multi-tenant provider the runner therefore
-refuses to run this job (see faultmaven.jobs.run, ADR-010 P3 / issue #629).
+orphaned and delete them. Under the multi-tenant provider the runner refuses to
+run this job except on the audited maintenance path (--cross-tenant-maintenance
++ the dedicated BYPASSRLS maintenance role, probe-verified); see
+faultmaven.jobs.run and docs/operations/evidence-job-scheduling.md (ADR-010 /
+issue #629).
 """
 
 import logging
@@ -58,7 +61,7 @@ async def run(
     try:
         # Get required services from container
         case_vector_store = getattr(container, "case_vector_store", None)
-        case_store = getattr(container, "case_store", None)
+        case_repository = getattr(container, "case_repository", None)
 
         if not case_vector_store:
             logger.warning("CaseVectorStore not available, skipping cleanup")
@@ -66,28 +69,29 @@ async def run(
             result["reason"] = "case_vector_store_unavailable"
             return result
 
-        if not case_store:
-            logger.warning("CaseStore not available, skipping cleanup")
+        if not case_repository:
+            logger.warning("Case repository not available, skipping cleanup")
             result["status"] = "skipped"
-            result["reason"] = "case_store_unavailable"
+            result["reason"] = "case_repository_unavailable"
             return result
 
-        # Get all active case IDs from CaseStore
-        try:
-            active_case_ids = await case_store.get_all_case_ids()
-            result["active_cases"] = len(active_case_ids)
-            logger.debug(f"Found {len(active_case_ids)} active cases in case store")
-        except AttributeError:
-            logger.warning(
-                "CaseStore doesn't support get_all_case_ids(), skipping cleanup"
-            )
-            result["status"] = "skipped"
-            result["reason"] = "get_all_case_ids_not_supported"
-            return result
+        # The reference set: EVERY case row's id (any state). A collection is
+        # orphaned only when no case row exists for it at all, so terminal/
+        # archived cases keep their collections. Under multi the jobs runner
+        # only lets this job run on the maintenance path (BYPASSRLS role), so
+        # the set is complete — never a partial single-org view.
+        active_case_ids = await case_repository.list_all_case_ids()
+        result["active_cases"] = len(active_case_ids)
+        logger.debug(f"Found {len(active_case_ids)} case rows in the database")
 
-        # Clean up orphaned collections
+        # Clean up orphaned collections. The per-candidate re-check closes the
+        # snapshot race (a case created after list_all_case_ids() must not
+        # lose its collection).
+        async def _case_exists(case_id: str) -> bool:
+            return await case_repository.get(case_id) is not None
+
         deleted_count = await case_vector_store.cleanup_orphaned_collections(
-            active_case_ids
+            active_case_ids, case_exists=_case_exists
         )
         result["deleted_count"] = deleted_count
 
