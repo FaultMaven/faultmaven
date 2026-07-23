@@ -33,7 +33,7 @@ These principles optimize for a small team (<15) building an AI-powered SRE tool
 | 7 | Observability by Default | Correlation IDs, structured logs, traces on external calls |
 | 8 | Boundary Enforcement | Import-linter enforces rules at build time; dead code is removed, not left behind |
 | 9 | Test Safety Net | 70% code coverage floor + 85% AI evaluation benchmarks |
-| 10 | Bounded AI Complexity | LangGraph owns state; LLM adapters are stateless |
+| 10 | Bounded AI Complexity | The milestone engine owns orchestration state; LLM adapters are stateless |
 | 11 | Clean Moves, Not Rewrites | Move code to its correct location; don't rewrite during the move; don't leave the origin behind |
 | 12 | Escape Hatches | Architectural exceptions are allowed but tracked, counted, and time-limited |
 
@@ -780,7 +780,7 @@ pytest -m "evaluation" --benchmark
 
 ### Layer Responsibilities
 
-| Concern | Orchestration (LangGraph) | LLM Adapter |
+| Concern | Orchestration (milestone engine) | LLM Adapter |
 |---------|---------------------------|-------------|
 | State management | ✅ Owns | ❌ None |
 | Retry logic | ✅ Owns | ❌ None |
@@ -949,7 +949,7 @@ def check_exceptions():
 | Error Handling | Not addressed | Domain exception hierarchies | (unchanged) |
 | Observability | Not addressed | Correlation IDs, structured logs | (unchanged) |
 | Testing | "Don't decrease coverage" | 70% floor + 85% AI evaluation | (unchanged) |
-| AI Architecture | Implicit | Explicit LangGraph/adapter boundary | (unchanged) |
+| AI Architecture | Implicit | Explicit orchestration/adapter boundary | (unchanged) |
 | Boundary Enforcement | Not addressed | Import-linter contracts | P8 extended: dead code intolerance |
 | Exceptions | Not addressed | 90-day sunsets with automation | Promoted to standalone P12 |
 | Code Movement | Not addressed | Not addressed | New P11: clean moves over rewrites; pre/post-launch distinction |

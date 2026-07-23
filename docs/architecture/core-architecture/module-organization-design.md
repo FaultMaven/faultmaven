@@ -212,12 +212,12 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 - **No `agent_*` tables** in the schema
 - Any `agent_tool_calls` table (if exists) stores case audit data, not agent state
 - Schema verification: `../data-and-storage/schemas/case-schema.md` Section 4.1 lists only case-owned tables; none are agent-owned
-- Agent's LangGraph state is ephemeral/in-memory
+- Agent's orchestration state is ephemeral/in-memory
 - **Result**: FAIL
 
 **Criterion 2: Business Logic Implementation** ✅
 - Implements business rules: "Investigation workflows", "Milestone orchestration", "Tool selection logic"
-- Contains complex domain workflows (LangGraph state machines)
+- Contains complex domain workflows (the milestone-based investigation state machine)
 - **Result**: PASS
 
 **Criterion 3: Domain Capability** ✅
@@ -227,7 +227,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 
 **Decision**: ❌ **DOMAIN SERVICE** (fails Criterion 1: no data ownership)
 
-**Key Insight**: Agent module provides **orchestration logic** via LangGraph but all persistent state flows through Case module's repository.
+**Key Insight**: Agent module provides **orchestration logic** via the milestone engine but all persistent state flows through Case module's repository.
 
 ---
 
@@ -548,7 +548,7 @@ High fan-in **does** indicate a horizontal layer when:
 Some modules implement **business logic** but operate on **data owned by other modules**:
 
 1. **Evidence Module**: Provides collection/validation logic but stores data in Case module's `evidence` table
-2. **Agent Module**: Provides LangGraph orchestration but all persistent state flows through Case module
+2. **Agent Module**: Provides milestone-based orchestration but all persistent state flows through Case module
 3. **Report Module**: Generates reports from Case data but stores in Case module's `reports` table (FK to cases) - TD-001 complete
 
 ### When to Use Domain Services
@@ -594,7 +594,7 @@ modules/evidence/          # Domain Service (NOT vertical)
 # NO infrastructure/       # Uses Case repository
 
 modules/agent/             # Domain Service (NOT vertical)
-├── domain/                # LangGraph orchestration
+├── domain/                # Milestone-based orchestration
 ├── tools/                 # Agent-specific tools (exception - see below)
 └── api/                   # Endpoints
 # NO contracts.py, NO infrastructure/
@@ -678,7 +678,7 @@ class AgentService:
         self.llm_provider = llm_provider
 
     async def investigate(self, case_id: str, query: str):
-        # LangGraph orchestration (ephemeral state)
+        # Milestone-based orchestration (ephemeral state)
         result = await self.orchestrate_investigation(case_id, query)
 
         # All persistent state via Case module's contract
@@ -784,7 +784,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import Inves
 - No independent data lifecycle
 
 **Agent Module**: Keep separate because:
-- Complex LangGraph orchestration logic
+- Complex milestone-based orchestration logic
 - Tool system (knowledge_base, web_search) is independent
 - Clear separation of concerns (orchestration vs data storage)
 
@@ -903,20 +903,20 @@ These modules implement **business logic** but **operate on data owned by other 
 **Note**: Consider merging Evidence domain logic into Case module since evidence is purely operational on Case-owned data.
 
 #### 2. **`modules/agent/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
-- **Business Logic**: AI agent orchestration via LangGraph, investigation workflows, milestone-based orchestration
+- **Business Logic**: AI agent orchestration, investigation workflows, milestone-based orchestration
 - **Data Ownership**: ❌ **NO** - No `agent_*` tables in schema
 - **Schema Verification**: `agent_tool_calls` table (if exists) stores case audit data, not agent state
 - **Reference**: See `../data-and-storage/schemas/case-schema.md` Section 4.1 (no agent-owned tables appear in the case schema)
 - **Rationale**: Agent orchestrates investigations but all persistent state flows through Case module
-- **Structure**: Keep as domain service (LangGraph orchestration, operates on Case data)
+- **Structure**: Keep as domain service (milestone-based orchestration, operates on Case data)
   ```
   modules/agent/
-  ├── domain/               # LangGraph orchestration, investigation workflows
+  ├── domain/               # Milestone-based orchestration, investigation workflows
   ├── tools/                # Agent tools (knowledge_base, web_search, etc.)
   └── api/                  # Agent query endpoints
   ```
 
-**Note**: Agent's LangGraph state is ephemeral/in-memory. All persistent state (investigations, tool calls) is stored in Case module's tables.
+**Note**: Agent's orchestration state is ephemeral/in-memory. All persistent state (investigations, tool calls) is stored in Case module's tables.
 
 #### 3. **`modules/preprocessing/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
 - **Business Logic**: Data classification, content extraction (11 extractors), structured chunking
@@ -1115,7 +1115,7 @@ faultmaven/
 │   │   # NO infrastructure/          # Uses Case repository via contracts
 │   │
 │   ├── agent/                        # ❌ Domain Service (no data ownership)
-│   │   ├── domain/                   # LangGraph orchestration, workflows
+│   │   ├── domain/                   # Milestone-based orchestration, workflows
 │   │   ├── tools/                    # Agent tools (knowledge_base, web_search)
 │   │   └── api/                      # Orchestrates via Case contracts
 │   │   # NO infrastructure/          # All state flows through Case module
