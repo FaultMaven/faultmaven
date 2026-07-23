@@ -1276,6 +1276,49 @@ def test_pack_load_model_less_pack_fails_open(tmp_path):
     assert pack is not None
 
 
+@pytest.mark.parametrize("bad_row", [-1, -2, 2, 99, "0", 1.5, True])
+def test_pack_load_rejects_out_of_range_vector_row(tmp_path, caplog, bad_row):
+    """A vector_row that is negative, out of range, or not a plain int refuses the
+    pack whole (returns None). A NEGATIVE row is the silent hazard: numpy indexing
+    wraps it (-1 -> the last vector) and pairs a chunk's text with the WRONG
+    embedding, undetectably. The pack here ships 2 vectors (rows 0 and 1), so
+    -1/-2/2/99, the string "0", the float 1.5, and bool True are all invalid."""
+    import json as _json
+    import logging
+
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack_dir = _write_pack(tmp_path)  # 2 chunks -> vectors rows 0, 1
+    manifest_path = pack_dir / "pack.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runbooks"][0]["chunks"][0]["vector_row"] = bad_row
+    manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
+
+    with caplog.at_level(logging.ERROR):
+        pack = KbPack.load(pack_dir)
+    assert pack is None
+    assert any("vector_row" in r.getMessage() for r in caplog.records)
+
+
+def test_pack_load_accepts_highest_valid_vector_row(tmp_path):
+    """Boundary: the highest in-range row (n_vectors - 1) loads — the guard is
+    `row < n_vectors`, so it must not reject the last valid row off-by-one."""
+    import json as _json
+
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack_dir = _write_pack(tmp_path)  # 2 vectors -> rows 0, 1
+    manifest_path = pack_dir / "pack.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    for c in manifest["runbooks"][0]["chunks"]:
+        c["vector_row"] = 1  # the last valid row
+    manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
+
+    pack = KbPack.load(pack_dir)
+    assert pack is not None
+    assert len(pack.runbooks[0].chunks) == 2
+
+
 def test_parse_json_dict_handles_dict_and_str_inputs():
     """The knowledge-item repo read must accept BOTH a JSON string (SQLite TEXT)
     and an already-decoded dict (PostgreSQL JSONB) — otherwise metadata['causes']

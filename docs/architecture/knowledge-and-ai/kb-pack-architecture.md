@@ -94,7 +94,7 @@ contract: runbook content + chunk text + vectors + the per-Cause `causes` record
 
 ### Integrity guards (load- and ingest-time)
 
-Because the pack ships pre-computed vectors and explicit chunk indices, two
+Because the pack ships pre-computed vectors and explicit chunk indices, three
 silent-corruption failure modes are guarded rather than left to chance:
 
 - **Embedding-model identity** (`KbPack.load`). The pack ships build-time
@@ -125,8 +125,22 @@ silent-corruption failure modes are guarded rather than left to chance:
   *update* must not delete a previously-good row and leave nothing behind. The
   per-runbook loop isolates the failure to that one runbook (recorded in
   `BootstrapResult.failed`) and the rest of the pack still ingests. (Per-chunk
-  `vector_row` is honoured directly at load, so text↔vector pairing is unaffected
-  by list order — only the derived index/id is guarded here.)
+  `vector_row` is honoured directly at load — bounds-checked below — so
+  text↔vector pairing is unaffected by list order; only the derived index/id is
+  guarded here.)
+
+- **`vector_row` bounds** (`KbPack.load`). Each chunk names the `vector_row` that
+  pairs its text with an embedding in the shared `vectors` matrix. A **negative**
+  row is the silent hazard: numpy indexing *wraps* it (`-1` → the last vector), so
+  the chunk's text would be stored against the **wrong** embedding — undetectably,
+  because the lookup succeeds and the dimension still matches (Phase-6's exact
+  target class). The loader requires every `vector_row` to be a plain int in
+  `[0, n_vectors)` (`bool` rejected — it is an `int` subclass, so `True` would
+  index row 1); any violation logs a loud `ERROR` and **refuses the pack whole**
+  (returns `None`, same fail-safe as the `dim`/model guards), so the misaligned
+  pair can never reach the store and an already-populated KB keeps its last-good
+  content. (An out-of-range *positive* row would at worst raise deep in load and
+  refuse the pack anyway; the explicit guard turns both into one targeted refusal.)
 
 ### Per-Cause `causes` record (the v4 cause-shape contract)
 

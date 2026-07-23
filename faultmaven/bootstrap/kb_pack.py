@@ -204,19 +204,55 @@ class KbPack:
                 return None
 
             runbooks_root = pack_dir / RUNBOOKS_SUBDIR
+            n_vectors = int(vectors.shape[0])
             runbooks: List[PackRunbook] = []
             for rb in meta.get("runbooks", []):
                 relpath = rb["relpath"]
                 content_path = runbooks_root / relpath
                 content = content_path.read_text(encoding="utf-8")
-                chunks = [
-                    PackChunk(
-                        chunk_index=c["chunk_index"],
-                        text=c["text"],
-                        embedding=vectors[c["vector_row"]].tolist(),
+                chunks: List[PackChunk] = []
+                for c in rb.get("chunks", []):
+                    # ``vector_row`` indexes the shared vectors matrix to pair a
+                    # chunk's text with its embedding. It must be a plain in-range
+                    # int. A NEGATIVE row would silently WRAP under numpy indexing
+                    # (e.g. -1 -> the last vector) and pair the text with the WRONG
+                    # embedding — undetectably, since the lookup succeeds and the
+                    # dimension still matches; an out-of-range positive row would
+                    # (at best) raise deep in load and refuse the pack anyway. Guard
+                    # both explicitly so the misalignment can never reach the store,
+                    # and refuse the pack WHOLE (like the dim/model guards) rather
+                    # than ingest silently-misaligned text<->vector pairs. ``bool``
+                    # is rejected as a malformed value (it is an int subclass, so
+                    # ``True`` would otherwise index row 1).
+                    row = c["vector_row"]
+                    if (
+                        not isinstance(row, int)
+                        or isinstance(row, bool)
+                        or not (0 <= row < n_vectors)
+                    ):
+                        logger.error(
+                            "KB pack at %s: runbook %r chunk_index %s has "
+                            "vector_row=%r, not a valid row in the pack's %d-vector "
+                            "matrix (must be an int in [0, %d)). A negative row would "
+                            "silently pair the chunk with the wrong vector. Ignoring "
+                            "the pack; no runbooks are ingested from it (an already-"
+                            "populated KB keeps its last-good content). Rebuild the "
+                            "pack.",
+                            pack_dir,
+                            rb.get("item_id"),
+                            c.get("chunk_index"),
+                            row,
+                            n_vectors,
+                            n_vectors,
+                        )
+                        return None
+                    chunks.append(
+                        PackChunk(
+                            chunk_index=c["chunk_index"],
+                            text=c["text"],
+                            embedding=vectors[row].tolist(),
+                        )
                     )
-                    for c in rb.get("chunks", [])
-                ]
                 runbooks.append(
                     PackRunbook(
                         item_id=rb["item_id"],

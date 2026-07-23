@@ -470,9 +470,10 @@ class RunbookValidator:
         # a passing draft parses into the causes the seeder consumes.
         self._validate_cause_graph(content, errors, warnings)
 
-        # Gate 2d: per-Cause retrieval-chunk guard — no ### Cause block may be CUT
-        # by ContentChunker (bounds/boundary imported FROM the chunker): oversize
-        # line-split, undersize neighbor-merge, embedded heading-boundary line.
+        # Gate 2d: per-Cause retrieval-chunk guard (bounds/boundary imported FROM
+        # the chunker) — no ### Cause block is CUT by ContentChunker (oversize
+        # line-split, embedded heading-boundary line) or whole-MERGED with a
+        # neighboring Cause (undersize).
         self._validate_cause_chunk_boundaries(content, errors, warnings)
 
         # Content quality checks
@@ -772,16 +773,22 @@ class RunbookValidator:
         self, content: str, errors: List[str], warnings: List[str]
     ) -> None:
         """Per-Cause retrieval-chunk guard (Gate 2d) — **ERROR** on any Cause
-        block the ``ContentChunker`` would CUT when chunking for retrieval.
+        block that would not survive chunking as its own clean retrieval unit:
+        one the ``ContentChunker`` would CUT, or one so small the chunker
+        whole-MERGES it into a neighboring Cause.
 
-        The hard guarantee: a passing Cause is never split — retrieval never
-        returns a Cause cut off mid-chain or mid-interventions. The chunker
-        splits the document on markdown heading boundaries, then merges any
-        section below ``MIN_CHUNK_CHARS`` into a neighbor and line-splits any section
-        above ``MAX_CHUNK_CHARS``. Three authoring shapes are blocked, per Cause:
+        Two hard properties of a passing Cause: it is never CUT (retrieval never
+        returns it split mid-chain or mid-interventions), and it is never so
+        small the chunker fuses it whole into a neighbor (two Causes in one
+        chunk). The chunker splits the document on markdown heading boundaries,
+        then merges any section below ``MIN_CHUNK_CHARS`` into a neighbor and
+        line-splits any section above ``MAX_CHUNK_CHARS``. Three authoring shapes
+        are blocked, per Cause:
 
-          1. **Oversized** (block > ``MAX_CHUNK_CHARS``): line-split mid-block.
-          2. **Undersized** (block < ``MIN_CHUNK_CHARS``): merged with a neighbor.
+          1. **Oversized** (block > ``MAX_CHUNK_CHARS``): line-split mid-block
+             (a CUT).
+          2. **Undersized** (block < ``MIN_CHUNK_CHARS``): fused WHOLE into a
+             neighboring section — not cut, but two Causes land in one chunk.
           3. **Internal heading boundary**: any body line matching the chunker's
              split pattern (``#{1,4}\\s+\\S`` at line start) — including a bash
              ``# comment`` inside a fenced code block, which the chunker does not
