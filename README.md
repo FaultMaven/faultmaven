@@ -209,7 +209,7 @@ Convenient scripts for managing the local development environment:
 ./scripts/faultmaven-dev.sh test    # Run tests (delegates to scripts/tests.py)
 ```
 
-For more detailed setup instructions, see [Development Setup](docs/development/local-setup.md).
+For more detailed setup instructions, see [Development Setup](docs/getting-started/local-setup.md).
 
 ---
 
@@ -386,7 +386,7 @@ faultmaven/
 │   └── performance/
 ├── docs/                    # Documentation
 ├── alembic/                 # Database migrations
-├── faultmaven.sh            # CLI wrapper (start/stop/test)
+├── faultmaven.sh            # Docker CLI wrapper (start/stop/health/logs)
 ├── docker-compose.yml       # Local services
 ├── Dockerfile               # Container image
 ├── pyproject.toml           # Dependencies and tools
@@ -420,7 +420,7 @@ On first startup, LLM settings are loaded from `.env`. Once you modify them thro
 |----------|-----------|-------------|
 | Database | `DATABASE_URL` | SQLite (default) or PostgreSQL |
 | Sessions | `REDIS_HOST`, `REDIS_URL` | FakeRedis (default) or real Redis |
-| Vectors | `VECTOR_STORAGE_TYPE` | `inmemory` (default) or `chromadb` |
+| Vectors | `VECTOR_STORAGE_TYPE`, `CHROMADB_URL` | `chromadb` (default, local PersistentClient); set `CHROMADB_URL` for an external server |
 | Security | `JWT_SECRET_KEY`, `CORS_ALLOW_ORIGINS` | Auth and CORS settings |
 
 See [.env.example](.env.example) for all options with detailed comments.
@@ -458,11 +458,11 @@ After the first startup, you can manage all LLM settings (provider, API keys, fa
 ### Testing
 
 ```bash
-# Run all tests
-./faultmaven.sh test
+# Run all tests (local dev runner)
+./scripts/faultmaven-dev.sh test
 
-# Run with coverage
-./faultmaven.sh test --coverage
+# Run a subset
+./scripts/faultmaven-dev.sh test --unit
 
 # Or use pytest directly
 pytest tests/unit/
@@ -512,7 +512,7 @@ alembic upgrade head
 
 ## User Interfaces
 
-FaultMaven provides two frontend interfaces. For setup instructions, see [Quick Start](#quick-start) or [Local Development Setup](docs/development/local-setup.md).
+FaultMaven provides two frontend interfaces. For setup instructions, see [Quick Start](#quick-start) or [Local Development Setup](docs/getting-started/local-setup.md).
 
 ### Dashboard
 
