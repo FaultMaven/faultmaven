@@ -205,6 +205,20 @@ class KbPack:
 
             runbooks_root = pack_dir / RUNBOOKS_SUBDIR
             n_vectors = int(vectors.shape[0])
+            # Every chunk in the pack must claim a DISTINCT vector_row. The
+            # builder assigns rows as one running counter across all runbooks
+            # (kb-toolkit pack_builder: ``vector_row = total_chunks + i``), so
+            # the shipped invariant is a global 1:1 chunk<->vector pairing. If
+            # two chunks share one row they get the SAME embedding, so at least
+            # one is paired with the WRONG vector — undetectably, since the
+            # lookup still succeeds and the dimension matches. The per-row
+            # bounds check below cannot catch this (both rows are individually
+            # in range). Track claimed rows pack-wide (across runbooks — the
+            # matrix is shared) and refuse the whole pack on the first
+            # collision. NOTE: this catches a SHARED row, not a swapped pair (A
+            # and B exchanging two still-distinct rows keeps every row unique
+            # and is unverifiable at load).
+            seen_rows: Dict[int, str] = {}
             runbooks: List[PackRunbook] = []
             for rb in meta.get("runbooks", []):
                 relpath = rb["relpath"]
@@ -246,6 +260,27 @@ class KbPack:
                             n_vectors,
                         )
                         return None
+                    prior = seen_rows.get(row)
+                    if prior is not None:
+                        logger.error(
+                            "KB pack at %s: vector_row=%d is claimed by two "
+                            "chunks (%s, and runbook %r chunk_index %s) — two "
+                            "chunks sharing one vector means at least one is "
+                            "paired with the wrong embedding. Ignoring the "
+                            "pack; no runbooks are ingested from it (an already-"
+                            "populated KB keeps its last-good content). Rebuild "
+                            "the pack.",
+                            pack_dir,
+                            row,
+                            prior,
+                            rb.get("item_id"),
+                            c.get("chunk_index"),
+                        )
+                        return None
+                    seen_rows[row] = (
+                        f"runbook {rb.get('item_id')!r} "
+                        f"chunk_index {c.get('chunk_index')}"
+                    )
                     chunks.append(
                         PackChunk(
                             chunk_index=c["chunk_index"],

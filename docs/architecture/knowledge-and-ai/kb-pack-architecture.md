@@ -94,7 +94,7 @@ contract: runbook content + chunk text + vectors + the per-Cause `causes` record
 
 ### Integrity guards (load- and ingest-time)
 
-Because the pack ships pre-computed vectors and explicit chunk indices, three
+Because the pack ships pre-computed vectors and explicit chunk indices, four
 silent-corruption failure modes are guarded rather than left to chance:
 
 - **Embedding-model identity** (`KbPack.load`). The pack ships build-time
@@ -141,6 +141,19 @@ silent-corruption failure modes are guarded rather than left to chance:
   pair can never reach the store and an already-populated KB keeps its last-good
   content. (An out-of-range *positive* row would at worst raise deep in load and
   refuse the pack anyway; the explicit guard turns both into one targeted refusal.)
+
+- **`vector_row` uniqueness** (`KbPack.load`). The bounds check above accepts
+  each row on its own; it cannot see that **two** chunks name the *same* valid
+  row. The builder assigns rows as a single running counter across all runbooks
+  (`pack_builder`: `vector_row = total_chunks + i`), so the shipped invariant is
+  a global 1:1 chunk↔vector pairing. If two chunks share one row they receive
+  the **same** embedding, so at least one is paired with the **wrong** vector —
+  undetectably (the lookup succeeds and the dimension matches). The loader tracks
+  claimed rows *pack-wide* (across runbooks — the `vectors` matrix is shared) and
+  on the first collision logs a loud `ERROR` and **refuses the pack whole**
+  (returns `None`, same fail-safe as the bounds/`dim`/model guards). This catches
+  a **shared** row; it does not catch a *swapped pair* (two chunks exchanging two
+  still-distinct rows keeps every row unique and is unverifiable at load).
 
 ### Per-Cause `causes` record (the v4 cause-shape contract)
 
