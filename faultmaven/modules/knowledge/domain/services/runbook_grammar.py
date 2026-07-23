@@ -24,12 +24,18 @@ LAYER NOTE — three grammar surfaces exist and must agree:
      no longer be looser than the parser it fronts. Only its message-oriented
      present-vs-empty wording is validator-private; the grammar is shared.
 
-The two repos cannot import one another, so (2) is a **manual mirror**. Two
-guards keep it honest: ``test_runbook_grammar`` (frozen-literal drift-guard —
-trips if a pattern here is edited without updating the test) and the golden
-cross-check in ``test_runbook_cause_extractor`` (pins the extractor's output to
-records computed by the kb-toolkit builder for vendored fixtures). A change to
-the upstream grammar MUST be mirrored here and vice-versa.
+The two repos cannot import one another, so (2) is a **manual mirror**. Three
+guards keep it honest. Two are in-repo and see only this checkout:
+``test_runbook_grammar`` (frozen-literal drift-guard — trips if a pattern here is
+edited without updating the test) and the golden cross-check in
+``test_runbook_cause_extractor`` (pins the extractor's output to records computed
+by the kb-toolkit builder for vendored fixtures). Neither can see the upstream
+grammar, so a corpus-invariant change upstream (e.g. a widened regex no vendored
+fixture exercises) slips both. The third guard closes that: kb-toolkit's
+``scripts/check_grammar_cross_repo.py`` CI job checks out BOTH repos and compares
+the shared regex primitives (pattern + flags) and ``CONVERGES_REF`` across the
+two ``runbook_grammar.py`` files. A change to the upstream grammar MUST be
+mirrored here and vice-versa.
 """
 
 import re
