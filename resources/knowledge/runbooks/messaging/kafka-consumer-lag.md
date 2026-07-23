@@ -5,7 +5,7 @@ domain: messaging
 service: kafka
 symptom_class:
   - latency
-  - throughput-degradation
+  - throughput_degradation
 severity: high
 scope: global
 version: "2.0.0"
