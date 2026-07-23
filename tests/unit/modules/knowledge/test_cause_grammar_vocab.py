@@ -98,6 +98,22 @@ class TestConversionPromptCoversVocabulary:
         assert FALLBACK_INDICATOR_TOKEN in self.PROMPT
         assert f"Cause {FALLBACK_CAUSE_LETTER}" in self.PROMPT
 
+    def test_prompt_cause_block_bound_stays_under_chunk_cap(self):
+        # The prompt instructs a whole-Cause-block size limit so generated drafts
+        # clear the validator's retrieval-chunk oversize gate (which rejects any
+        # block over ContentChunker.MAX_CHUNK_CHARS). The instructed number must
+        # sit strictly UNDER the chunker cap — headroom, so a draft written to the
+        # instruction can't land exactly on the hard bound.
+        import re
+
+        from faultmaven.modules.knowledge.domain.services.content_chunker import (
+            ContentChunker,
+        )
+
+        m = re.search(r"### Cause block[^.]*?under (\d+) characters", self.PROMPT)
+        assert m, "prompt no longer instructs a whole-Cause-block size limit"
+        assert int(m.group(1)) < ContentChunker.MAX_CHUNK_CHARS
+
 
 class TestValidatorUsesVocabulary:
     """The validator's structural lint must still be driven by the vocabulary:

@@ -233,7 +233,7 @@ RULES:
 2. ## Diagnostic Steps MUST contain fenced code blocks under numbered `### Step N: <title>` headers (number, colon, then a short inline title).
 3. ## Causes MUST have at least one real ### Cause A subsection AND the fallback ### Cause Z: Unidentified.
 4. Each ### Cause declares exactly ONE root — never two roots, never an AND-gate. Each ### Cause (except Z) needs **Statement**, **Indicators**, and **Interventions**; **Chain** is optional (omit it for a simple one-step cause). For two co-necessary conditions: when one enables the other, express them as sequential Chain rungs; when neither causes the other, fold the second into the root Statement.
-5. Statement ≤300 characters; each Chain rung ≤300 characters. Hard limits.
+5. Statement ≤300 characters; each Chain rung ≤300 characters. Each complete ### Cause block (heading through its last Intervention) under 2800 characters — split a sprawling failure mode into separate Causes. Hard limits.
 6. Each Indicator entry carries a rung ref (`root`, `s1`, …, or `D`) and at least one `[Step N]` (N matches an existing Diagnostic Step) or `[Symptom]`; the Cause Z fallback uses `- [Default]`.
 7. Each Intervention is tagged with exactly one quadrant — `remediation` / `defensive_fix` / `mitigation` / `loop_break` — names the rung it targets in `(parens)`, and carries a **Verification:**; every `mitigation` also carries **Risk** and **Duration**.
 8. If source material lacks enough information for a field, write "[INSUFFICIENT SOURCE DATA -- manual completion required]".

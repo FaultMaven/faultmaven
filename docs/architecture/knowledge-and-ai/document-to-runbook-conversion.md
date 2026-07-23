@@ -1385,6 +1385,14 @@ class ConversionService:
     #   -> ValidationResult(passed, errors, warnings)
 ```
 
+**Retrieval-chunk boundary gate (a Cause is never cut).** The validator also ERRORs, per Cause, when `ContentChunker` would CUT a `### Cause X:` block while chunking the runbook for retrieval — the hard guarantee is that search never returns a Cause cut off mid-chain or mid-interventions. The chunker splits on markdown heading boundaries, then merges any section below its minimum size into a neighbor and line-splits any section above its maximum. The gate measures each Cause block exactly as the chunker sees it (heading line through the block terminus, stripped) and rejects three authoring shapes:
+
+- **Oversized** (block over the chunk maximum) — the chunker would line-split it mid-block.
+- **Undersized** (block under the chunk minimum) — the chunker would merge it with a neighboring section.
+- **Embedded heading boundary** — any body line matching the chunker's split pattern (a line starting with `#`–`####` then whitespace and text), including a bash `# comment` inside a fenced code block (the chunker does not parse code fences), splits the Cause at that line regardless of size. The fix is to indent the line one space so it no longer starts at column 0.
+
+The size bounds and the split-boundary regex are **imported from `ContentChunker`** (`MAX_CHUNK_CHARS` / `MIN_CHUNK_CHARS` / `HEADER_SPLIT_BOUNDARY_RE`), never re-declared, so the gate can never drift from the code that actually chunks the runbook for retrieval.
+
 ### 12.2 Quality Scoring Integration
 
 ```python
