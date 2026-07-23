@@ -1302,7 +1302,9 @@ def test_pack_load_rejects_out_of_range_vector_row(tmp_path, caplog, bad_row):
 
 def test_pack_load_accepts_highest_valid_vector_row(tmp_path):
     """Boundary: the highest in-range row (n_vectors - 1) loads — the guard is
-    `row < n_vectors`, so it must not reject the last valid row off-by-one."""
+    `row < n_vectors`, so it must not reject the last valid row off-by-one. Rows
+    stay distinct (the first chunk takes the highest row) so the uniqueness guard
+    does not fire."""
     import json as _json
 
     from faultmaven.bootstrap.kb_pack import KbPack
@@ -1310,13 +1312,91 @@ def test_pack_load_accepts_highest_valid_vector_row(tmp_path):
     pack_dir = _write_pack(tmp_path)  # 2 vectors -> rows 0, 1
     manifest_path = pack_dir / "pack.json"
     manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
-    for c in manifest["runbooks"][0]["chunks"]:
-        c["vector_row"] = 1  # the last valid row
+    manifest["runbooks"][0]["chunks"][0]["vector_row"] = 1  # the last valid row
+    manifest["runbooks"][0]["chunks"][1]["vector_row"] = 0
     manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
 
     pack = KbPack.load(pack_dir)
     assert pack is not None
     assert len(pack.runbooks[0].chunks) == 2
+
+
+def test_pack_load_rejects_duplicate_vector_row_within_runbook(tmp_path, caplog):
+    """Two chunks in one runbook naming the SAME valid row refuse the pack whole
+    (returns None). Both rows pass the bounds check individually, so only the
+    uniqueness guard catches it: sharing one vector means at least one chunk is
+    paired with the wrong embedding."""
+    import json as _json
+    import logging
+
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack_dir = _write_pack(tmp_path)  # 2 chunks -> rows 0, 1
+    manifest_path = pack_dir / "pack.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    # Point the second chunk at the first chunk's (in-range) row.
+    manifest["runbooks"][0]["chunks"][1]["vector_row"] = 0
+    manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
+
+    with caplog.at_level(logging.ERROR):
+        pack = KbPack.load(pack_dir)
+    assert pack is None
+    assert any(
+        "vector_row=0" in r.getMessage() and "two" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_pack_load_rejects_duplicate_vector_row_across_runbooks(tmp_path, caplog):
+    """The uniqueness check is pack-wide: two chunks in DIFFERENT runbooks sharing
+    a row also refuse the pack. The `vectors` matrix is shared across runbooks, so
+    a collision anywhere means a misaligned text<->vector pairing."""
+    import json as _json
+    import logging
+
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack_dir = _write_pack(tmp_path)  # 1 runbook, 2 chunks -> rows 0, 1
+    manifest_path = pack_dir / "pack.json"
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    # A second runbook (reusing the same md file) whose only chunk reuses row 0.
+    first = manifest["runbooks"][0]
+    second = dict(first)
+    second["item_id"] = kb_init._item_id_from_runbook_id("second-runbook")
+    second["chunks"] = [{"chunk_index": 0, "vector_row": 0, "text": "other"}]
+    manifest["runbooks"].append(second)
+    manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
+
+    with caplog.at_level(logging.ERROR):
+        pack = KbPack.load(pack_dir)
+    assert pack is None
+    assert any("vector_row=0" in r.getMessage() for r in caplog.records)
+
+
+def test_pack_load_baseline_vector_rows_are_unique():
+    """No false positive: the shipped baseline pack pairs each chunk with a
+    distinct vector_row, so the uniqueness guard loads it clean. Skipped when the
+    pack is not vendored (local dev); the CI lane that vendors it runs it. Also
+    cross-checks the shipped pack.json directly (it, unlike the loaded PackChunk,
+    still carries vector_row) so the 1:1 invariant is pinned at its source."""
+    import json as _json
+    from pathlib import Path
+
+    import faultmaven
+    from faultmaven.bootstrap.kb_pack import KbPack, baseline_pack_dir
+
+    root = Path(faultmaven.__file__).resolve().parent.parent
+    pack_dir = baseline_pack_dir(root)
+    pack = KbPack.load(pack_dir)
+    if pack is None:
+        pytest.skip("KB pack not vendored in this tree")
+
+    manifest = _json.loads((pack_dir / "pack.json").read_text(encoding="utf-8"))
+    rows = [
+        c["vector_row"] for rb in manifest["runbooks"] for c in rb.get("chunks", [])
+    ]
+    assert rows, "baseline pack has no chunks"
+    assert len(rows) == len(set(rows)), "baseline pack has duplicate vector_row(s)"
 
 
 def test_parse_json_dict_handles_dict_and_str_inputs():
