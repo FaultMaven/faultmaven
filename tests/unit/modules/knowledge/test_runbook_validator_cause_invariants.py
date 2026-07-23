@@ -10,6 +10,7 @@ import pytest
 
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
+    _iter_cause_blocks,
     check_cause_statement_invariants,
 )
 
@@ -659,11 +660,12 @@ class TestWellFormedDraftStillPasses:
 
 
 # =============================================================================
-# Per-Cause retrieval-chunk guard (Gate 2d): no ### Cause block may be CUT by
-# ContentChunker — oversize line-split, undersize neighbor-merge, or a split at an
-# embedded heading-pattern line. (Whole-Cause FUSION via the chunker's small-
-# section merge is out of the gate's reach and deliberately unclaimed.) Bounds and
-# the split boundary are imported FROM the chunker so the gate cannot drift.
+# Per-Cause retrieval-chunk guard (Gate 2d): no ### Cause block is CUT by
+# ContentChunker (oversize line-split, or a split at an embedded heading-pattern
+# line) or whole-MERGED with a neighboring Cause (undersize). (Whole-Cause FUSION
+# behind a tiny PRECEDING section — the chunker's small-section merge — is out of
+# the gate's reach and deliberately unclaimed.) Bounds and the split boundary are
+# imported FROM the chunker so the gate cannot drift.
 # =============================================================================
 
 from pathlib import Path  # noqa: E402
@@ -768,6 +770,39 @@ class TestCauseChunkBoundaryGate:
         assert not any("retrieval-chunk undersize" in e for e in at_min), at_min
         under = _chunk_errors(_cause_block_of_size(ContentChunker.MIN_CHUNK_CHARS - 1))
         assert any("retrieval-chunk undersize" in e for e in under), under
+
+    def test_min_chunk_chars_stays_below_smallest_shipped_cause(self):
+        # MIN drift guard. The undersize check rejects any Cause block shorter
+        # than ContentChunker.MIN_CHUNK_CHARS. Unlike the oversize side (which the
+        # conversion prompt is coherent with), MIN has no authoring-side signal:
+        # raising it silently starts rejecting real shipped causes at upload/verify.
+        # Pin the invariant directly against the corpus — MIN must stay strictly
+        # below the smallest ### Cause block that actually ships (663 chars today
+        # vs MIN=100, wide headroom) — so a future MIN retune that would bite a
+        # real runbook fails HERE, not in production. (Lowering MIN only loosens
+        # the gate, so it needs no guard.)
+        pack_runbooks = (
+            Path(__file__).parents[4] / "resources" / "knowledge" / "pack" / "runbooks"
+        )
+        if not pack_runbooks.is_dir():
+            pytest.skip("shipped KB pack not present in this environment")
+        sizes = [
+            len(block.strip())
+            for md in pack_runbooks.rglob("*.md")
+            for _letter, _name, block in _iter_cause_blocks(
+                md.read_text(encoding="utf-8"), include_heading=True
+            )
+        ]
+        if not sizes:
+            pytest.skip(
+                "no parseable Cause blocks in the shipped pack (partial checkout)"
+            )
+        smallest = min(sizes)
+        assert smallest > ContentChunker.MIN_CHUNK_CHARS, (
+            f"MIN_CHUNK_CHARS={ContentChunker.MIN_CHUNK_CHARS} would flag the "
+            f"smallest shipped Cause block ({smallest} chars) as undersize — "
+            f"re-author those causes or reconsider the retune."
+        )
 
     def test_bounds_are_the_chunker_class_constants(self):
         # Drift guard: the gate's bound is ContentChunker.MAX_CHUNK_CHARS, not a
