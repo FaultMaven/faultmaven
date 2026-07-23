@@ -10,6 +10,15 @@ This is a pure domain component with no infrastructure dependencies.
 import re
 from typing import List
 
+# The structural split boundary: a newline immediately followed by an H1–H4 ATX
+# heading line with a non-space payload (``# Foo`` … ``#### Foo``). ``_split_by_structure``
+# breaks the document at every occurrence, so any line matching ``#{1,4}\s+\S`` inside
+# a section body starts a NEW chunk — including a bash ``# comment`` (the chunker does
+# not parse code fences). Single-sourced here so the knowledge module's one-cause-per-chunk
+# authoring gate can test the EXACT boundary the chunker enforces (it imports this
+# constant), and the two can never drift.
+HEADER_SPLIT_BOUNDARY_RE = re.compile(r"\n(?=#{1,4}\s+\S)")
+
 
 class ContentChunker:
     """Split document content into semantically meaningful chunks.
@@ -49,8 +58,7 @@ class ContentChunker:
     @staticmethod
     def _split_by_structure(content: str) -> List[str]:
         """Split at markdown structural boundaries (headers, horizontal rules)."""
-        header_pattern = re.compile(r"\n(?=#{1,4}\s+\S)")
-        parts = header_pattern.split(content)
+        parts = HEADER_SPLIT_BOUNDARY_RE.split(content)
         sections = [p.strip() for p in parts if p.strip()]
 
         if len(sections) > 1:

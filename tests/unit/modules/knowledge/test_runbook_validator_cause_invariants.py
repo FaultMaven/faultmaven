@@ -656,3 +656,171 @@ class TestWellFormedDraftStillPasses:
         result = RunbookValidator().validate_content(broken)
         assert not result.passed
         assert any("Malformed Cause heading" in e for e in result.errors)
+
+
+# =============================================================================
+# Per-Cause retrieval-chunk guard (Gate 2d): no ### Cause block may be CUT by
+# ContentChunker — oversize line-split, undersize neighbor-merge, or a split at an
+# embedded heading-pattern line. (Whole-Cause FUSION via the chunker's small-
+# section merge is out of the gate's reach and deliberately unclaimed.) Bounds and
+# the split boundary are imported FROM the chunker so the gate cannot drift.
+# =============================================================================
+
+from pathlib import Path  # noqa: E402
+
+from faultmaven.modules.knowledge.domain.services.content_chunker import (  # noqa: E402
+    ContentChunker,
+)
+
+_CHUNK_FAMILY = "retrieval-chunk "  # shared prefix of every Gate 2d message
+
+
+def _chunk_errors(content):
+    v = RunbookValidator()
+    errors, warnings = [], []
+    v._validate_cause_chunk_boundaries(content, errors, warnings)
+    return errors
+
+
+def _cause_block_of_size(size: int, letter: str = "A") -> str:
+    """A ``## Causes`` section whose single ``### Cause`` block strips to exactly
+    ``size`` chars (heading line + one filler line, no embedded heading pattern)."""
+    heading = f"### Cause {letter}: x"
+    filler = size - len(heading) - 1  # one newline between heading and body
+    assert filler >= 0, size
+    return f"## Causes\n\n{heading}\n{'x' * filler}"
+
+
+class TestCauseChunkBoundaryGate:
+    def test_oversized_cause_block_blocks_naming_letter_and_size(self):
+        errors = _chunk_errors(_cause_block_of_size(3500, letter="B"))
+        hit = [e for e in errors if "retrieval-chunk oversize" in e]
+        assert hit, errors
+        assert "Cause B" in hit[0]
+        assert "3500 chars" in hit[0]
+
+    def test_undersized_cause_block_blocks(self):
+        # A minimal block also trips other gates (missing sub-fields); assert the
+        # chunk-undersize error is PRESENT, not that it is the only one.
+        errors = _chunk_errors(_cause_block_of_size(60, letter="A"))
+        assert any("retrieval-chunk undersize" in e for e in errors), errors
+
+    def test_internal_subheading_boundary_blocks(self):
+        # A #### Note subheading inside the Cause body would split the Cause.
+        body = (
+            "### Cause A: A cause with plenty of descriptive text to clear the "
+            "minimum chunk threshold comfortably here\n"
+            "**Statement:** Something goes wrong under sustained load conditions.\n"
+            "#### Note: an internal heading the author did not intend as a split\n"
+            "More explanatory prose follows the stray heading line here.\n"
+        )
+        errors = _chunk_errors(f"## Causes\n\n{body}")
+        hit = [e for e in errors if "retrieval-chunk split" in e]
+        assert hit, errors
+        assert "#### Note" in hit[0]
+
+    def test_bash_comment_in_code_fence_boundary_blocks(self):
+        # The chunker does NOT parse code fences: a bash `# comment` at column 0
+        # inside a fenced block still matches the split boundary.
+        body = (
+            "### Cause A: A cause with plenty of descriptive text to clear the "
+            "minimum chunk threshold comfortably here\n"
+            "**Interventions:**\n"
+            "```bash\n"
+            "# check the queue\n"
+            "aws sqs receive-message\n"
+            "```\n"
+        )
+        errors = _chunk_errors(f"## Causes\n\n{body}")
+        hit = [e for e in errors if "retrieval-chunk split" in e]
+        assert hit, errors
+        assert "# check the queue" in hit[0]
+
+    def test_indented_bash_comment_is_not_a_boundary(self):
+        # The SAME comment indented by one space no longer starts at column 0, so
+        # the boundary pattern (anchored at line start) does not match → no split.
+        body = (
+            "### Cause A: A cause with plenty of descriptive text to clear the "
+            "minimum chunk threshold comfortably here\n"
+            "**Interventions:**\n"
+            "```bash\n"
+            " # check the queue\n"
+            "aws sqs receive-message\n"
+            "```\n"
+        )
+        errors = _chunk_errors(f"## Causes\n\n{body}")
+        assert not any("retrieval-chunk split" in e for e in errors), errors
+
+    def test_well_formed_runbook_has_no_chunk_boundary_errors(self):
+        # Reuse the well-formed conversion-shaped fixture: end-to-end, no Gate 2d
+        # error of any kind (the whole runbook validates clean).
+        result = RunbookValidator().validate_content(_VALID_RUNBOOK)
+        assert not any(_CHUNK_FAMILY in e for e in result.errors), result.errors
+
+    def test_block_exactly_at_max_passes_one_over_fails(self):
+        at_max = _chunk_errors(_cause_block_of_size(ContentChunker.MAX_CHUNK_CHARS))
+        assert not any("retrieval-chunk oversize" in e for e in at_max), at_max
+        over = _chunk_errors(_cause_block_of_size(ContentChunker.MAX_CHUNK_CHARS + 1))
+        assert any("retrieval-chunk oversize" in e for e in over), over
+
+    def test_block_exactly_at_min_passes_one_under_fails(self):
+        at_min = _chunk_errors(_cause_block_of_size(ContentChunker.MIN_CHUNK_CHARS))
+        assert not any("retrieval-chunk undersize" in e for e in at_min), at_min
+        under = _chunk_errors(_cause_block_of_size(ContentChunker.MIN_CHUNK_CHARS - 1))
+        assert any("retrieval-chunk undersize" in e for e in under), under
+
+    def test_bounds_are_the_chunker_class_constants(self):
+        # Drift guard: the gate's bound is ContentChunker.MAX_CHUNK_CHARS, not a
+        # hardcoded literal — the over-limit message reflects the class constant.
+        over = _chunk_errors(_cause_block_of_size(ContentChunker.MAX_CHUNK_CHARS + 1))
+        hit = [e for e in over if "retrieval-chunk oversize" in e]
+        assert hit
+        assert str(ContentChunker.MAX_CHUNK_CHARS) in hit[0]
+        assert (
+            str(ContentChunker.MIN_CHUNK_CHARS)
+            in _chunk_errors(_cause_block_of_size(ContentChunker.MIN_CHUNK_CHARS - 1))[
+                0
+            ]
+        )
+
+    def test_each_internal_boundary_line_reports_its_own_error(self):
+        # Two distinct boundary lines in one Cause body → two split errors, each
+        # naming its own line (the author sees every line to fix, not just the first).
+        body = (
+            "### Cause A: A cause with plenty of descriptive text to clear the "
+            "minimum chunk threshold comfortably here\n"
+            "**Statement:** Something goes wrong under sustained load conditions.\n"
+            "#### First stray heading\n"
+            "Some prose between the two offending lines to separate them.\n"
+            "# second stray line\n"
+        )
+        errors = _chunk_errors(f"## Causes\n\n{body}")
+        hits = [e for e in errors if "retrieval-chunk split" in e]
+        assert len(hits) == 2, errors
+        assert "#### First stray heading" in hits[0]
+        assert "# second stray line" in hits[1]
+
+    def test_cause_heading_outside_causes_section_is_not_gated(self):
+        # A ### Cause-style heading in ANOTHER section is outside the gate's scope
+        # (same scoping as every other per-Cause gate: the ## Causes section body).
+        content = (
+            "## Causes\n\n"
+            + _cause_block_of_size(500).split("\n\n", 1)[1]
+            + "\n\n## Appendix\n\n### Cause B: tiny\nshort\n"
+        )
+        errors = _chunk_errors(content)
+        assert not any("Cause B" in e for e in errors), errors
+
+    def test_golden_cause_extractor_fixture_stays_chunk_clean(self):
+        # The corpus-shaped golden fixture (cause blocks 653/351/247 chars) must
+        # carry no NEW chunk-boundary-family error through the full validator.
+        fixture = (
+            Path(__file__).parent
+            / "fixtures"
+            / "runbook_cause_extractor"
+            / "golden_runbook.md"
+        )
+        result = RunbookValidator().validate_content(
+            fixture.read_text(encoding="utf-8")
+        )
+        assert not any(_CHUNK_FAMILY in e for e in result.errors), result.errors

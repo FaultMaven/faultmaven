@@ -39,6 +39,14 @@ from faultmaven.modules.knowledge.domain.services.cause_grammar import (
     REQUIRED_CAUSE_SUBFIELDS,
 )
 
+# Same-package sibling (knowledge domain service): the chunk bounds and the split
+# boundary are imported, never re-declared, so the one-cause-per-chunk gate can
+# never drift from the chunker that actually splits the runbook for retrieval.
+from faultmaven.modules.knowledge.domain.services.content_chunker import (
+    HEADER_SPLIT_BOUNDARY_RE,
+    ContentChunker,
+)
+
 # Shared v4 parse grammar — the SAME regexes + sub-field parser the extractor
 # (``runbook_cause_extractor``) and the upstream pack builder consume. Anchoring
 # the validator's cause enumeration here is what keeps the gate from being looser
@@ -390,17 +398,22 @@ def _cause_fields(body: str) -> Dict[str, str]:
     return parse_cause_subfields(body, _CAUSE_SUBFIELDS)
 
 
-def _iter_cause_blocks(content: str):
-    """Yield ``(letter, name, body)`` for each strict ``### Cause X:`` block WITHIN
-    the ``## Causes`` section, using the shared ``CAUSE_HEADING_RE``. A heading that
-    is not the strict form (``#### Cause``, ``### Cause AA``, ``### Cause A :``) is
-    NOT yielded here — the extractor drops it too; it is surfaced separately by
-    ``_flag_malformed_cause_headings``."""
+def _iter_cause_blocks(content: str, include_heading: bool = False):
+    """Yield ``(letter, name, text)`` for each strict ``### Cause X:`` block WITHIN
+    the ``## Causes`` section, using the shared ``CAUSE_HEADING_RE``. By default
+    ``text`` is the post-heading BODY (what the sub-field parser consumes); with
+    ``include_heading=True`` it is the FULL span ``ContentChunker`` sees for the
+    Cause — the heading line THROUGH the block terminus (next strict Cause heading,
+    or the causes-section end) — so a length measured on it matches the chunker's
+    per-section length. A heading that is not the strict form (``#### Cause``,
+    ``### Cause AA``, ``### Cause A :``) is NOT yielded here — the extractor drops
+    it too; it is surfaced separately by ``_flag_malformed_cause_headings``."""
     body = _causes_section_body(content)
     heads = list(CAUSE_HEADING_RE.finditer(body))
     for i, h in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
-        yield h.group(1), h.group(2).strip(), body[h.end() : end]
+        start = h.start() if include_heading else h.end()
+        yield h.group(1), h.group(2).strip(), body[start:end]
 
 
 def _cause_is_fallback(fields: Dict[str, str]) -> bool:
@@ -456,6 +469,11 @@ class RunbookValidator:
         # token-anchored Indicators) — ERROR parity with the kb-toolkit validator so
         # a passing draft parses into the causes the seeder consumes.
         self._validate_cause_graph(content, errors, warnings)
+
+        # Gate 2d: per-Cause retrieval-chunk guard — no ### Cause block may be CUT
+        # by ContentChunker (bounds/boundary imported FROM the chunker): oversize
+        # line-split, undersize neighbor-merge, embedded heading-boundary line.
+        self._validate_cause_chunk_boundaries(content, errors, warnings)
 
         # Content quality checks
         self._validate_quality(content, warnings)
@@ -749,6 +767,71 @@ class RunbookValidator:
                 f"## Causes contains {fallback_count} Causes with "
                 f"{FALLBACK_INDICATOR_TOKEN}; exactly one fallback is required"
             )
+
+    def _validate_cause_chunk_boundaries(
+        self, content: str, errors: List[str], warnings: List[str]
+    ) -> None:
+        """Per-Cause retrieval-chunk guard (Gate 2d) — **ERROR** on any Cause
+        block the ``ContentChunker`` would CUT when chunking for retrieval.
+
+        The hard guarantee: a passing Cause is never split — retrieval never
+        returns a Cause cut off mid-chain or mid-interventions. The chunker
+        splits the document on markdown heading boundaries, then merges any
+        section below ``MIN_CHUNK_CHARS`` into a neighbor and line-splits any section
+        above ``MAX_CHUNK_CHARS``. Three authoring shapes are blocked, per Cause:
+
+          1. **Oversized** (block > ``MAX_CHUNK_CHARS``): line-split mid-block.
+          2. **Undersized** (block < ``MIN_CHUNK_CHARS``): merged with a neighbor.
+          3. **Internal heading boundary**: any body line matching the chunker's
+             split pattern (``#{1,4}\\s+\\S`` at line start) — including a bash
+             ``# comment`` inside a fenced code block, which the chunker does not
+             parse — splits the Cause at that line regardless of size.
+
+        (What the gate deliberately does NOT claim: literal one-Cause-per-chunk.
+        The chunker's small-section merge can still FUSE whole in-bounds Causes
+        behind a tiny preceding section — e.g. the bare ``## Causes`` heading
+        line, a section of its own — into one chunk. Fusion dilutes a chunk but
+        never cuts a Cause, and is not preventable from the authoring side; the
+        undersize check only removes Causes that would themselves seed a merge.)
+
+        Bounds and the boundary regex are imported FROM the chunker
+        (``ContentChunker.MAX_CHUNK_CHARS`` / ``MIN_CHUNK_CHARS`` /
+        ``HEADER_SPLIT_BOUNDARY_RE``), so the gate can never drift from the code that
+        actually chunks the runbook. The block is measured exactly as the chunker
+        sees it: the heading line through the block terminus, ``.strip()``-ed.
+        """
+        max_chars = ContentChunker.MAX_CHUNK_CHARS
+        min_chars = ContentChunker.MIN_CHUNK_CHARS
+        for letter, _name, block in _iter_cause_blocks(content, include_heading=True):
+            size = len(block.strip())
+            if size > max_chars:
+                errors.append(
+                    f"Cause {letter}: retrieval-chunk oversize — the block is "
+                    f"{size} chars (> {max_chars} chunk max), so retrieval would "
+                    f"line-split it into multiple chunks, cutting the Cause "
+                    f"mid-chain or mid-interventions. Split this failure mode into "
+                    f"separate Causes or trim the block."
+                )
+            elif size < min_chars:
+                errors.append(
+                    f"Cause {letter}: retrieval-chunk undersize — the block is "
+                    f"{size} chars (< {min_chars} chunk min), so retrieval would "
+                    f"merge it with a neighboring section, putting two Causes in one "
+                    f"chunk. Expand the Cause so it stands alone as a retrieval chunk."
+                )
+            # Internal heading-boundary lines. The block starts with the ``### Cause``
+            # heading (no leading newline within the span), so searching the split
+            # boundary finds only lines AFTER it — the extra split points.
+            for m in HEADER_SPLIT_BOUNDARY_RE.finditer(block):
+                offending = block[m.end() :].split("\n", 1)[0].strip()
+                errors.append(
+                    f"Cause {letter}: retrieval-chunk split — the line "
+                    f"{offending!r} matches a chunk-split boundary (a line starting "
+                    f"with '#'–'####' then text) inside the Cause body, so retrieval "
+                    f"would split the Cause at this line regardless of size. Indent "
+                    f"the line by one space so it no longer starts at column 0 and "
+                    f"the boundary pattern (anchored at line start) no longer matches."
+                )
 
     def _flag_malformed_cause_headings(
         self, causes_body: str, errors: List[str]
