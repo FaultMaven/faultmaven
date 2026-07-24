@@ -588,7 +588,7 @@ title: Database Connection Pool Exhaustion
 domain: database
 service: postgresql
 symptom_class:
-  - connection-errors
+  - connection_refused
 severity: high
 scope: global
 version: 1.0.0

@@ -53,9 +53,13 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_runbook_id,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    CONVERSION_SYSTEM_PROMPT,
     DEFAULT_ORGANIZATION_ID,
     ConversionRejectedError,
     ConversionService,
+)
+from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    VALID_SYMPTOM_CLASSES,
 )
 
 # =============================================================================
@@ -2144,3 +2148,135 @@ class TestScanReleasesLiveCaseKey:
         assert drained.live_case_id is None
         survivor = await _job_row(live_case_session_factory, "conv-scan-survivor")
         assert survivor.live_case_id == "case-scan-5"
+
+
+# =============================================================================
+# symptom_class controlled-vocabulary on the produce path (§7.1(b))
+# =============================================================================
+
+
+_IN_VOCAB_RUNBOOK = """---
+id: pg-pool-exhaustion
+title: "Database Connection Pool Exhaustion"
+domain: database
+service: postgresql
+symptom_class: [connection_refused]
+scope: personal
+tags: [postgres]
+difficulty: intermediate
+severity: high
+version: "1.0.0"
+last_updated: "2026-07-24"
+verified_by: ""
+status: draft
+---
+
+# Runbook: Database Connection Pool Exhaustion
+
+## Symptom Recognition
+- "ERROR: remaining connection slots are reserved"
+
+## Applicability
+PostgreSQL 14+. Requires pg_monitor role. Tools: psql.
+
+## Diagnostic Steps
+
+### Step 1: Check active connections
+```bash
+psql -c "SELECT count(*) FROM pg_stat_activity;"
+```
+Look for a count near max_connections.
+
+## Causes
+
+### Cause A: Pool leak in the application
+**Statement:** The application never returns pooled connections, exhausting the pool.
+**Indicators:**
+- root: [Step 1] active connections pinned at the ceiling
+**Interventions:**
+- **remediation** (root): fix the leak and cap the pool.
+  **Verification:** Re-run Step 1; the count drops.
+
+### Cause Z: Unidentified
+**Statement:** None of the documented causes match the observed evidence.
+**Indicators:**
+- [Default]
+**Interventions:**
+- **mitigation** (D): Capture full diagnostic output and consult an SME.
+  **Risk:** Diagnostic only. **Duration:** Until SME review. **Verification:** N/A.
+
+## Prevention
+- Add an alert on connection-slot saturation.
+
+## Sources
+- case-derived -- primary source for this runbook
+"""
+
+
+class TestSymptomClassProducePath:
+    """The produce path emits in-vocabulary ``symptom_class`` (never ``unknown``)
+    and the conversion prompt is authoritative about the controlled vocabulary."""
+
+    def test_prompt_injects_controlled_vocabulary(self):
+        """Every vocabulary term is bound into the prompt; the placeholder is
+        fully resolved so the model classifies within the curated set."""
+        assert "__SYMPTOM_CLASS_VOCAB__" not in CONVERSION_SYSTEM_PROMPT
+        for term in VALID_SYMPTOM_CLASSES:
+            assert term in CONVERSION_SYSTEM_PROMPT, f"vocab term missing: {term}"
+
+    def test_prompt_no_longer_freezes_symptom_class(self):
+        """Rule 9 no longer tells the model to pass ``symptom_class`` through
+        unchanged — that contract is what let an off-vocab hint (``unknown``)
+        reach the frontmatter verbatim."""
+        rule9 = next(
+            line
+            for line in CONVERSION_SYSTEM_PROMPT.splitlines()
+            if line.startswith("9.")
+        )
+        assert "Do not change domain, service, or symptom_class" not in rule9
+        assert "controlled vocabulary" in rule9
+
+    @pytest.mark.asyncio
+    async def test_empty_symptom_class_prompts_classification_not_unknown(
+        self, service, mock_llm_router, tmp_path
+    ):
+        """A case with no symptom_class taxonomy prompts the model to classify
+        from the vocabulary — it does NOT inject the off-vocab ``unknown``
+        placeholder — and the resulting draft validates clean on symptom_class."""
+        failure_mode = FailureModeAnalysis(
+            id="case-pool-exhaustion",
+            title="Database Connection Pool Exhaustion",
+            domain="database",
+            service="postgresql",
+            symptom_class=[],  # a case carries no symptom_class taxonomy
+            severity="high",
+            symptoms_summary="remaining connection slots are reserved",
+            resolution_summary="Fix the pool leak and cap the pool size.",
+        )
+        mock_llm_router.route.return_value = _make_llm_response(_IN_VOCAB_RUNBOOK)
+
+        with patch.object(
+            type(service),
+            "_data_dir",
+            new_callable=lambda: property(lambda self: tmp_path),
+        ):
+            draft = await service._convert_single_failure_mode(
+                text="SOURCE MATERIAL",
+                failure_mode=failure_mode,
+                scope="personal",
+                filename="case-derived",
+                conversion_id="conv_test",
+                user_id="user-123",
+            )
+
+        # The prompt sent to the model must not smuggle an off-vocab placeholder.
+        sent_user_message = mock_llm_router.route.call_args.kwargs["messages"][1][
+            "content"
+        ]
+        assert "unknown" not in sent_user_message
+        assert "classify from the controlled vocabulary" in sent_user_message
+
+        # And the produced draft is in-vocab, so the validator gate is clean.
+        assert isinstance(draft, ConversionDraft)
+        symptom_errors = [e for e in draft.validation.errors if "symptom_class" in e]
+        assert symptom_errors == []

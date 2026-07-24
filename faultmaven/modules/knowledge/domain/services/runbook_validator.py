@@ -315,6 +315,35 @@ VALID_DIFFICULTIES = ["beginner", "intermediate", "advanced", "expert"]
 
 VALID_STATUSES = ["draft", "in-review", "verified", "stale", "deprecated"]
 
+# Controlled vocabulary for `symptom_class` — the failure-mode taxonomy. Mirrors
+# the kb-toolkit producer side (``ValidationConfig.valid_symptom_classes``,
+# config.py) exactly: same 16 curated values, same order. Like ``VALID_DOMAINS``,
+# this is a hand-maintained copy — the repos can't import each other — so grow it
+# HERE and in kb-toolkit in lock-step with the taxonomy design rule
+# (runbook-content-architecture.md §Taxonomy-Design-Rules), never by loosening the
+# gate. An off-vocabulary value is a hard error: the author either extends the
+# vocabulary deliberately or moves a long-tail symptom into the free-text `tags`
+# escape valve. `service` stays free-text (technologies proliferate faster than a
+# curated list can track).
+VALID_SYMPTOM_CLASSES = [
+    "auth_failure",
+    "connection_refused",
+    "cpu_saturation",
+    "crash_loop",
+    "data_loss",
+    "deployment_failure",
+    "disk_full",
+    "image_pull_failure",
+    "latency",
+    "node_failure",
+    "oom",
+    "replication_lag",
+    "scheduling_failure",
+    "service_unavailable",
+    "throughput_degradation",
+    "timeout",
+]
+
 MAX_TITLE_LENGTH = 100
 MIN_CONTENT_LENGTH = 500
 MAX_TAG_COUNT = 10
@@ -570,14 +599,33 @@ class RunbookValidator:
                             f"Tag must be lowercase alphanumeric with hyphens: {tag}"
                         )
 
-        # Symptom class
+        # Symptom class — controlled vocabulary (faithfully mirrors kb-toolkit
+        # RunbookValidator._validate_symptom_class): shape, then format, then a
+        # hard error on any value outside VALID_SYMPTOM_CLASSES. The vocab check
+        # subsumes the old format-only gate — every off-vocab value (including a
+        # hyphenated one like `throughput-degradation`) is now rejected. The shape
+        # check matters: a YAML scalar (``symptom_class: unknown``) or a non-string
+        # item would otherwise slip past a list-only gate and persist unchecked —
+        # the exact drift this vocabulary exists to prevent, through the front door.
         if "symptom_class" in metadata:
             sc = metadata["symptom_class"]
-            if isinstance(sc, list):
+            if not isinstance(sc, list):
+                errors.append(f"symptom_class must be a list, got {type(sc).__name__}")
+            elif not sc:
+                warnings.append("No symptom classes specified")
+            else:
                 for item in sc:
-                    if isinstance(item, str) and not re.match(r"^[a-z0-9_-]+$", item):
+                    if not isinstance(item, str):
+                        errors.append(f"symptom_class items must be strings: {item!r}")
+                    elif not re.match(r"^[a-z0-9_-]+$", item):
                         errors.append(
                             f"symptom_class must be lowercase with hyphens/underscores: {item}"
+                        )
+                    elif item not in VALID_SYMPTOM_CLASSES:
+                        errors.append(
+                            f"Invalid symptom_class '{item}'. Must be one of the controlled "
+                            f"vocabulary ({', '.join(VALID_SYMPTOM_CLASSES)}), or move it to "
+                            f"`tags` if it is a long-tail symptom."
                         )
 
         # Version
