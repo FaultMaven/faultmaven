@@ -213,17 +213,13 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 - **remediation** (root): emit the matched route template instead of the raw path at the application layer.
 
   ```text
-  # Application-level fix per framework:
-  # Express.js:      use req.route?.path (template) instead of req.path
-  # Spring Boot:     micrometer's WebMvcMetricsFilter emits 'uri' as the matched mapping automatically
-  # Django/DRF:      use resolver_match.route from request.resolver_match
-  # Flask:           use request.url_rule.rule
-  # FastAPI:         use request.scope['route'].path
-  # Go (chi/gin/mux):use the router's matched pattern (RouteContext / FullPath / CurrentRoute)
-  # After the application is redeployed, the relabel rule below is no longer needed but is harmless to leave.
+  # Application-level fix per framework — emit the matched route template:
+  # Express.js:  req.route?.path            Spring Boot: WebMvcMetricsFilter 'uri' (automatic)
+  # Django/DRF:  request.resolver_match.route   Flask: request.url_rule.rule
+  # FastAPI:     request.scope['route'].path    Go (chi/gin/mux): router matched pattern
   ```
 
-  **Verification:** After redeploy, run `curl -sG 'http://localhost:9090/api/v1/query' --data-urlencode 'query=count(count by (path) (http_requests_total))'`; the result must be in the tens or low hundreds, matching the number of templated routes, not the number of unique URLs.
+  **Verification:** After redeploy, run `curl -sG 'http://localhost:9090/api/v1/query' --data-urlencode 'query=count(count by (path) (http_requests_total))'`; the result must fall to the number of templated routes, not unique URLs.
 - **mitigation** (s1): normalise common ID shapes to a placeholder at scrape time so `/users/12345` collapses to `/users/{id}`.
 
   ```yaml
@@ -244,7 +240,7 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
   curl -X POST http://localhost:9090/-/reload
   ```
 
-  **Risk:** Stripping path segments at scrape time loses the dimension entirely; collapsing to a single bucket discards useful breakdowns. Verify dashboards before rolling out. **Duration:** Permanent as a scrape-time guard, but fix the middleware to emit the matched route template instead. **Verification:** Re-run the per-label count query; distinct `path` values must collapse toward the number of templated routes.
+  **Risk:** Stripping path segments loses the dimension; verify dashboards first. **Duration:** Permanent scrape-time guard, but fix the middleware to emit the route template. **Verification:** Re-run the per-label count query; distinct `path` values must collapse toward the templated-route count.
 
 ### Cause C: Kubernetes pod or container label propagated onto an application metric
 
@@ -345,12 +341,12 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
 ### Cause E: Exporter emitting high-cardinality default metrics (kube-state-metrics, cAdvisor, node_exporter)
 
-**Statement:** A community exporter is enabled with its default metric set and exposes per-resource-version or per-container series that aren't consumed by any dashboard or alert.
+**Statement:** A community exporter runs with its default metric set, exposing per-object or per-container series that no dashboard or alert consumes.
 
 **Chain:**
 - root: a community exporter (kube-state-metrics, cAdvisor, node_exporter) runs with its default metric set and label collectors enabled.
-- s1: kube-state-metrics emits one series per Kubernetes object per metric, cAdvisor emits hundreds of `container_*` metrics per container per node, and node_exporter's `textfile`/`systemd` collectors expand with unit count.
-- s2: on a busy cluster with thousands of pods, these defaults account for the majority of head series — often for data nothing on the consuming side queries.
+- s1: kube-state-metrics emits one series per object per metric; cAdvisor emits hundreds of `container_*` metrics per container per node; node_exporter collectors expand with unit count.
+- s2: on a busy cluster these defaults dominate head series — often for data nothing queries.
 - D: head series and memory climb until OOM or query failure — the Symptom.
 
 **Indicators:**
@@ -359,21 +355,18 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 - s2: [Step 9] `mimirtool analyze` reports many of those metrics as unused.
 
 **Interventions:**
-- **remediation** (root): reduce exporter output at the source via resource/label allowlists and collector selection.
+- **remediation** (root): reduce exporter output at the source (resource/label allowlists, collector selection).
 
   ```bash
-  # Reduce exporter output at the source.
   # kube-state-metrics: restrict collected resources and labels.
   kubectl set args -n kube-system deployment/kube-state-metrics \
     --resources=pods,nodes,deployments,services \
     --metric-labels-allowlist='pods=[app,team],nodes=[node-role]'
-  # cAdvisor: configure kubelet flags to disable unneeded collectors via --disable-metrics on the kubelet args (cluster-specific).
-  # node_exporter: explicitly select collectors and disable others.
-  #   args: --collector.disable-defaults --collector.cpu --collector.meminfo --collector.filesystem --collector.netdev --collector.loadavg
+  # cAdvisor: kubelet --disable-metrics; node_exporter: --collector.disable-defaults then enable only needed collectors.
   ```
 
-  **Verification:** After rollout, re-run Step 2 and Step 4. The exporter job's `scrape_samples_post_metric_relabeling` must drop by the expected fraction, and the dropped metric families must no longer appear in `seriesCountByMetricName`.
-- **mitigation** (s1): drop the confirmed-unused exporter metrics at scrape time (run Step 9 first).
+  **Verification:** After rollout, re-run Step 2 and Step 4; the job's `scrape_samples_post_metric_relabeling` must drop and the dropped families must leave `seriesCountByMetricName`.
+- **mitigation** (s1): drop confirmed-unused exporter metrics at scrape time (run Step 9 first).
 
   ```yaml
   # Drop unused kube_pod_* and container_* metrics at scrape time.
@@ -395,16 +388,16 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
   curl -X POST http://localhost:9090/-/reload
   ```
 
-  **Risk:** Dropping exporter metrics removes them from the TSDB; any future dashboard or alert that needs them will return empty. Always run Step 9 first to confirm no consumer. **Duration:** Permanent. Re-evaluate every quarter with `mimirtool analyze`. **Verification:** Re-run Step 2; the dropped metric families must no longer appear.
+  **Risk:** Dropping exporter metrics removes them from the TSDB; run Step 9 first to confirm no consumer. **Duration:** Permanent; re-check quarterly with `mimirtool analyze`. **Verification:** Re-run Step 2; the dropped families must not appear.
 
 ### Cause F: No per-job sample_limit or target_limit allows a single misbehaving target to dominate
 
-**Statement:** Scrape jobs are configured without `sample_limit`, `target_limit`, or `label_value_length_limit`, so any target that starts emitting high-cardinality output is ingested in full.
+**Statement:** Scrape jobs lack `sample_limit`, `target_limit`, or `label_value_length_limit`, so any target emitting high-cardinality output is ingested in full.
 
 **Chain:**
 - root: scrape jobs lack `sample_limit` / `target_limit` / `label_value_length_limit`, so Prometheus accepts every sample a target emits regardless of cardinality.
-- s1: a buggy release introducing an unbounded label, or a new SD-discovered target, spikes `scrape_samples_post_metric_relabeling` for that job by 10x or more within minutes, with no cap to stop it.
-- s2: the new series flow uncapped into the head block, and the operator only learns of the spike after memory pressure or alert-evaluation degradation.
+- s1: a buggy release adding an unbounded label, or a new SD-discovered target, spikes that job's `scrape_samples_post_metric_relabeling` 10x within minutes, with no cap.
+- s2: the new series flow uncapped into the head block; the operator learns of the spike only after memory pressure or alert-eval degradation.
 - D: head series grow without bound until OOM — the Symptom.
 
 **Indicators:**
@@ -419,10 +412,10 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
   # prometheus.yml — apply scrape-side cardinality limits to every job.
   scrape_configs:
     - job_name: my-app
-      sample_limit: 50000          # tune per-job baseline + 50% headroom
-      label_limit: 30              # per-sample label-count cap
+      sample_limit: 50000          # per-job baseline + 50% headroom
+      label_limit: 30
       label_value_length_limit: 200
-      target_limit: 1000           # cap discovered targets per job
+      target_limit: 1000
   ```
 
   ```bash
@@ -430,16 +423,16 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
   curl -X POST http://localhost:9090/-/reload
   ```
 
-  **Verification:** Re-run Step 7; a breaching target must show `sample limit exceeded` (or similar) in `lastError`, and overall `prometheus_tsdb_head_series` must stabilise rather than continue growing. Alert on `prometheus_target_scrapes_exceeded_sample_limit_total` to catch breaches.
+  **Verification:** Re-run Step 7; a breaching target must show `sample limit exceeded` in `lastError` and `prometheus_tsdb_head_series` must stabilise. Alert on `prometheus_target_scrapes_exceeded_sample_limit_total`.
 - **mitigation** (s1): set a permissive `sample_limit` on the dominating job to cap the immediate breach.
 
   ```yaml
   scrape_configs:
     - job_name: my-app
-      sample_limit: 50000          # tune per job baseline + 50% headroom
-      label_limit: 30              # per-sample label count cap
+      sample_limit: 50000          # start permissive; tune to baseline later
+      label_limit: 30
       label_value_length_limit: 200
-      target_limit: 1000           # cap discovered targets per job
+      target_limit: 1000
   ```
 
   ```bash
@@ -447,16 +440,16 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
   curl -X POST http://localhost:9090/-/reload
   ```
 
-  **Risk:** Setting a `sample_limit` too low causes legitimate scrapes to fail with `sample limit exceeded`; the target's metrics disappear from the TSDB for the duration of the breach. Start permissive. **Duration:** Permanent. Tune the value over time based on observed `scrape_samples_post_metric_relabeling` baselines. **Verification:** Re-run Step 7; the breaching target must surface `sample limit exceeded` and head series must stabilise.
+  **Risk:** A `sample_limit` set too low fails legitimate scrapes with `sample limit exceeded`; the target's metrics vanish from the TSDB during the breach. Start permissive. **Duration:** Permanent; tune to observed `scrape_samples_post_metric_relabeling` baselines. **Verification:** Re-run Step 7; the breaching target must surface `sample limit exceeded` and head series must stabilise.
 
 ### Cause G: Missing recording rules force every dashboard query to evaluate over millions of raw series
 
-**Statement:** Dashboards and alerts query raw high-cardinality metrics at every refresh, so memory and CPU pressure comes from query evaluation rather than from ingestion alone.
+**Statement:** Dashboards and alerts query raw high-cardinality metrics at every refresh, so pressure comes from query evaluation, not ingestion.
 
 **Chain:**
 - root: dashboards and alerts query raw high-cardinality metrics directly, with no pre-aggregated recording rules.
-- s1: PromQL evaluation loads all selected series into memory before aggregating, so a panel running `sum by (service)(rate(http_requests_total[5m]))` over a 1M-series metric materialises 1M series per evaluation.
-- s2: with 30 s auto-refresh across multiple panels and users, the query layer dominates CPU and triggers `query processing would load too many samples into memory`.
+- s1: PromQL loads all selected series into memory before aggregating, so a panel over a 1M-series metric materialises 1M series per evaluation.
+- s2: with 30 s auto-refresh across many panels, the query layer dominates CPU and triggers `query processing would load too many samples into memory`.
 - D: memory, latency, and OOM/query failures look like a cardinality problem even when ingest is steady — the Symptom.
 
 **Indicators:**
@@ -465,10 +458,10 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 - s2: [Symptom] `prometheus_engine_query_duration_seconds` p99 climbs even when `prometheus_tsdb_head_series` is flat.
 
 **Interventions:**
-- **remediation** (root): pre-aggregate the high-cardinality metrics referenced by dashboards/alerts via recording rules.
+- **remediation** (root): pre-aggregate the metrics referenced by dashboards/alerts via recording rules.
 
   ```yaml
-  # rules/cardinality.yml — pre-aggregate the high-cardinality metrics referenced by dashboards/alerts.
+  # rules/cardinality.yml — pre-aggregate metrics referenced by dashboards/alerts.
   groups:
     - name: precompute
       interval: 30s
@@ -481,61 +474,49 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 
   ```bash
   promtool check rules rules/cardinality.yml
-  # Add 'rule_files: [rules/cardinality.yml]' to prometheus.yml if not already present.
+  # Add 'rule_files: [rules/cardinality.yml]' to prometheus.yml, then reload.
   curl -X POST http://localhost:9090/-/reload
-  # Point dashboards and alerts at the recorded series (service:http_requests:rate5m, service:http_request_duration:p99_5m).
   ```
 
-  **Verification:** After 5 minutes, run `curl -sG 'http://localhost:9090/api/v1/query' --data-urlencode 'query=service:http_requests:rate5m'`; the recording rule must return non-empty results. Dashboard p99 query duration should drop below 1 s.
-- **defensive_fix** (s1): land the recording rules and migrate dashboards/alerts to the recorded series so queries read pre-aggregated data instead of millions of raw series.
-
-  ```yaml
-  # rules/cardinality.yml
-  groups:
-    - name: precompute
-      interval: 30s
-      rules:
-        - record: service:http_requests:rate5m
-          expr: sum by (service, status_code) (rate(http_requests_total[5m]))
-        - record: service:http_request_duration:p99_5m
-          expr: histogram_quantile(0.99, sum by (service, le) (rate(http_request_duration_seconds_bucket[5m])))
-  ```
+  **Verification:** After 5 minutes, run `curl -sG 'http://localhost:9090/api/v1/query' --data-urlencode 'query=service:http_requests:rate5m'`; the rule must return non-empty results and dashboard p99 query duration should drop below 1 s.
+- **defensive_fix** (s1): migrate dashboards/alerts to the recorded series so queries read pre-aggregated data instead of millions of raw series.
 
   ```bash
+  # Repoint each dashboard panel and alert expr from the raw metric to its recorded
+  # series (http_requests_total -> service:http_requests:rate5m), then reload.
   promtool check rules rules/cardinality.yml
   curl -X POST http://localhost:9090/-/reload
   ```
 
-  **Verification:** After migrating dashboards, dashboard panels read tens to hundreds of recorded series instead of millions; query latency drops by 1–2 orders of magnitude and `too many samples` errors stop.
+  **Verification:** After migration, panels read hundreds of recorded series instead of millions; query latency drops 1–2 orders of magnitude and `too many samples` errors stop.
 
 ### Cause H: Series churn from short-lived targets prevents head block compaction
 
-**Statement:** Service discovery cycles many short-lived targets (CI runners, batch jobs, autoscaler-spawned pods) in and out, so the head block accumulates series faster than it compacts.
+**Statement:** Service discovery cycles many short-lived targets (CI runners, batch jobs, autoscaler pods) in and out, so the head block accumulates series faster than it compacts.
 
 **Chain:**
 - root: service discovery cycles many short-lived targets (CI runners, batch jobs, autoscaler pods) in and out, each scraping a few times then disappearing.
-- s1: a vanished target's series remain in the head block until `--storage.tsdb.min-block-duration` (default 2h) passes, so with aggressive turnover the head holds series for many dead cohorts simultaneously.
-- s2: `scrape_series_added` shows sustained churn and resident memory rises proportionally even though no single label exploded.
+- s1: a vanished target's series stay in the head block until `--storage.tsdb.min-block-duration` (default 2h) passes, so with aggressive turnover the head holds many dead cohorts at once.
+- s2: `scrape_series_added` shows sustained churn and resident memory rises proportionally though no single label exploded.
 - D: head series climb and the head block can't compact, driving memory pressure and OOM — the Symptom.
 
 **Indicators:**
 - root: [Step 3] `instance` and `pod` labels are near the top of `labelValueCountByLabelName` and grow continuously.
-- s1: [Step 4] `scrape_series_added` rate is high relative to `scrape_samples_post_metric_relabeling`, indicating new series per scrape.
-- s2: [Step 8] head series shows a sawtooth pattern aligned to deployment or batch-job cycles.
+- s1: [Step 4] `scrape_series_added` rate is high relative to `scrape_samples_post_metric_relabeling` — new series per scrape.
+- s2: [Step 8] head series shows a sawtooth aligned to deployment or batch-job cycles.
 
 **Interventions:**
 - **remediation** (root): route batch-job and short-lived workload metrics through Pushgateway instead of scrape.
 
   ```bash
-  # Route batch-job and short-lived workload metrics through Pushgateway instead of scrape.
-  # Deploy Pushgateway, configure a single scrape job for it with honor_labels: true,
-  # and have batch jobs POST their metrics on completion:
+  # Deploy Pushgateway, scrape it via one job with honor_labels: true, and have
+  # batch jobs POST their metrics on completion so series live on a single stable
+  # target instead of accumulating per-run in the TSDB head:
   echo 'job_duration_seconds 42.5' | curl --data-binary @- \
     http://pushgateway:9091/metrics/job/nightly-etl/instance/run-2026-05-12
-  # Series live on Pushgateway (a single stable target) instead of accumulating per-run in the TSDB head.
   ```
 
-  **Verification:** After 2 hours (one head-block boundary), `prometheus_tsdb_head_series` must plateau. `scrape_series_added` rate for the affected job must drop toward zero.
+  **Verification:** After 2 hours (one head-block boundary), `prometheus_tsdb_head_series` must plateau and `scrape_series_added` rate for the job must drop toward zero.
 - **mitigation** (s1): exclude the short-lived job pods from service discovery for the affected scrape job.
 
   ```yaml
@@ -555,7 +536,7 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
   curl -X POST http://localhost:9090/-/reload
   ```
 
-  **Risk:** Filtering short-lived targets in service discovery removes them from monitoring entirely; ensure the short-lived workload is monitored via push-based gateway or batch-job report instead. **Duration:** Permanent. Pair with Pushgateway for batch-job metrics. **Verification:** After one head-block boundary, `scrape_series_added` rate for the affected job must drop toward zero.
+  **Risk:** Filtering short-lived targets in service discovery removes them from monitoring; monitor the workload via Pushgateway or a batch-job report instead. **Duration:** Permanent; pair with Pushgateway for batch-job metrics. **Verification:** After one head-block boundary, `scrape_series_added` rate for the job must drop toward zero.
 
 ### Cause Z: Unidentified
 

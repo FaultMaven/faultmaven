@@ -376,28 +376,25 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 
 ### Cause E: Routing tree does not match the alert's labels and the alert falls through to an unintended receiver
 
-**Statement:** The Alertmanager routing tree's `matchers` / `match` / `match_re` select no child route for this alert, so it falls back to the root route's receiver instead of the intended specific receiver.
+**Statement:** The Alertmanager routing tree's `matchers` / `match` / `match_re` select no child route for this alert, so it falls back to the root route's receiver, not the intended one.
 
 **Chain:**
-- root: a routing matcher does not select the alert — a matcher label name/value typo (`servce` vs `service`, `Critical` vs `critical`), a `match_re` pattern that misses the label format, or a label the routing expects but the rule never sets (`team=payments` vs `service=payments`)
-- s1: Alertmanager walks the tree top-down, finds no matching child route, and delivers the alert to the root route's receiver (the silent default) rather than the intended channel
+- root: a routing matcher does not select the alert — a label name/value typo (`servce` vs `service`, `Critical` vs `critical`), a `match_re` that misses the label format, or a label the routing expects but the rule never sets (`team=payments` vs `service=payments`)
+- s1: Alertmanager walks the tree top-down, finds no matching child route, and delivers the alert to the root route's receiver (the silent default), not the intended channel
 - D: the alert reaches no useful receiver, so the intended channel produces no notification (points at Symptom Recognition)
 
 **Indicators:**
-- root: [Step 7] `amtool config routes test` with the alert's exact labels resolves to a receiver other than the one expected (often the root/default)
-- s1: [Step 5] the alert is present in `/api/v2/alerts` with `status.state == "active"` but the wrong receiver gets notified (or the silent default receiver gets it)
+- root: [Step 7] `amtool config routes test` with the alert's exact labels resolves to a receiver other than expected (often the root/default)
+- s1: [Step 5] the alert is present in `/api/v2/alerts` with `status.state == "active"` but the wrong (or silent default) receiver gets notified
 
 **Interventions:**
-- **remediation** (root): define child routes with explicit matchers for each label set and validate with `amtool config routes test` before reload.
+- **remediation** (root): define child routes with explicit matchers, validated with `amtool config routes test`.
 
   ```yaml
   # alertmanager.yml — child routes with explicit matchers; validate before reload.
   route:
     receiver: 'default-slack'
     group_by: ['alertname', 'service', 'severity']
-    group_wait: 30s
-    group_interval: 5m
-    repeat_interval: 4h
     routes:
       - matchers: [severity = "critical"]
         receiver: 'pagerduty-critical'
@@ -406,41 +403,31 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
   ```
 
   ```bash
-  amtool check-config /etc/alertmanager/alertmanager.yml
   amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml severity=critical alertname=ServiceDown service=my-app
   curl -X POST http://localhost:9093/-/reload
   ```
 
-  **Verification:** re-run Step 7 with the same label set — the output must name the expected receiver; send a synthetic alert via Step 12 with those exact labels and confirm delivery at the expected channel.
-- **mitigation** (root): apply explicit matchers for each child route, validating against representative label sets before reload to restore correct routing.
+  **Verification:** re-run Step 7 — the output must name the expected receiver; send a synthetic alert via Step 12 and confirm delivery.
+- **mitigation** (root): apply an explicit matcher per child route; validate before reload.
 
   ```yaml
-  # alertmanager.yml — explicit matchers for each child route.
+  # alertmanager.yml — explicit matcher per child route.
   route:
     receiver: 'default-slack'
-    group_by: ['alertname', 'service', 'severity']
-    group_wait: 30s
-    group_interval: 5m
-    repeat_interval: 4h
     routes:
-      - matchers:
-          - severity = "critical"
+      - matchers: [severity = "critical"]
         receiver: 'pagerduty-critical'
-        continue: false
-      - matchers:
-          - severity = "warning"
+      - matchers: [severity = "warning"]
         receiver: 'slack-warnings'
-        continue: false
   ```
 
   ```bash
-  amtool check-config /etc/alertmanager/alertmanager.yml
   amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml \
     severity=critical alertname=ServiceDown service=my-app
   curl -X POST http://localhost:9093/-/reload
   ```
 
-  **Risk:** routing changes affect every alert in the system; always validate with `amtool config routes test` against representative label sets before reload. **Duration:** permanent — keep test cases for representative label sets in CI alongside the routing config. **Verification:** re-run Step 7 and confirm the alert's labels resolve to the expected receiver.
+  **Risk:** routing changes affect every alert; validate before reload. **Duration:** permanent — keep test cases in CI. **Verification:** re-run Step 7 and confirm the labels resolve to the expected receiver.
 
 ### Cause F: Inhibition rule with broad target matchers suppresses the alert
 
@@ -548,12 +535,12 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 
 ### Cause H: Receiver credentials are invalid or expired (Slack, PagerDuty, webhook, SMTP)
 
-**Statement:** Alertmanager dispatches the alert to the receiver but the receiver endpoint rejects the request with an authentication error or unreachable status, so no notification reaches the destination channel.
+**Statement:** Alertmanager dispatches the alert but the receiver endpoint rejects the request with an auth error or unreachable status, so no notification reaches the channel.
 
 **Chain:**
-- root: the receiver credential is invalid (a webhook URL, integration key, SMTP password, or API token that expired, was rotated, or was pasted with a typo)
+- root: the receiver credential is invalid (a webhook URL, integration key, SMTP password, or API token that expired, was rotated, or has a typo)
 - s1: the receiver endpoint rejects the request — Alertmanager logs `msg="Notify for alerts failed"` with an HTTP `401`/`403`/`429`/`5xx`, `connection refused`, or `context deadline exceeded`
-- s2: Alertmanager retries per `retry` config, then drops the notification while `alertmanager_notifications_failed_total` increments
+- s2: Alertmanager retries per `retry` config, then drops the notification while `alertmanager_notifications_failed_total` climbs
 - D: the dispatched alert reaches no destination channel (points at Symptom Recognition)
 
 **Indicators:**
@@ -561,15 +548,14 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
 - s2: [Step 12] the synthetic alert reaches `/api/v2/alerts` but the receiver does not deliver a notification
 
 **Interventions:**
-- **remediation** (root): store credentials in `*_file` variants so secret rotation is a file write, not a config edit, and update the failing receiver's secret file.
+- **remediation** (root): store credentials in `*_file` variants and rotate the failing receiver's secret file.
 
   ```yaml
-  # alertmanager.yml — store credentials in *_file variants so secret rotation is a file write, not a config edit.
+  # alertmanager.yml — *_file variants make secret rotation a file write, not a config edit.
   receivers:
     - name: 'pagerduty-critical'
       pagerduty_configs:
         - routing_key_file: /etc/alertmanager/secrets/pagerduty-routing-key
-          severity: '{{ .CommonLabels.severity }}'
     - name: 'default-slack'
       slack_configs:
         - api_url_file: /etc/alertmanager/secrets/slack-webhook-url
@@ -581,8 +567,8 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
   curl -X POST http://localhost:9093/-/reload
   ```
 
-  **Verification:** re-run Step 12 (synthetic alert) with labels routed to this receiver and confirm a notification arrives; re-run Step 11 and confirm no further `Notify for alerts failed` entries for this receiver.
-- **mitigation** (root): update the credential inline for the failing receiver to restore delivery immediately, validating the receiver name before reload.
+  **Verification:** re-run Step 12 with labels routed to this receiver and confirm a notification arrives; re-run Step 11 and confirm no further `Notify for alerts failed` entries.
+- **mitigation** (root): update the credential inline for the failing receiver, validating the receiver name before reload.
 
   ```yaml
   # alertmanager.yml — update the credential for the failing receiver.
@@ -591,10 +577,6 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
       pagerduty_configs:
         - routing_key: '<NEW_INTEGRATION_KEY>'
           severity: '{{ .CommonLabels.severity }}'
-    - name: 'default-slack'
-      slack_configs:
-        - api_url_file: /etc/alertmanager/secrets/slack-webhook-url
-          channel: '#alerts'
   ```
 
   ```bash
@@ -602,28 +584,28 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
   curl -X POST http://localhost:9093/-/reload
   ```
 
-  **Risk:** pasting credentials into the wrong receiver block routes alerts to the wrong destination; validate the receiver name before reload. **Duration:** permanent (until the credential is rotated again). **Verification:** re-run Step 12 and confirm the receiver now delivers; re-run Step 11 and confirm no further failures for this receiver.
+  **Risk:** pasting credentials into the wrong receiver block misroutes alerts; validate the receiver name before reload. **Duration:** permanent (until the credential is rotated again). **Verification:** re-run Step 12 and confirm delivery; re-run Step 11 and confirm no further failures for this receiver.
 
 ### Cause I: Configuration file is invalid and the running config does not match disk
 
-**Statement:** A recent edit to `prometheus.yml`, an alert rule file, or `alertmanager.yml` failed validation, so the daemon kept its last good in-memory config and the on-disk changes never took effect.
+**Statement:** A recent edit to `prometheus.yml`, a rule file, or `alertmanager.yml` failed validation, so the daemon kept its last good in-memory config and the on-disk changes never took effect.
 
 **Chain:**
 - root: a recent edit introduced a syntax or schema error so `promtool check rules`/`promtool check config`/`amtool check-config` exits non-zero
-- s1: a `/-/reload` against the broken on-disk config logs an error and leaves the running config unchanged, so the daemon still serves the previous rules, routes, and receivers
-- s2: the operator believes the change is live (committed and deployed) but the intended rule/route/receiver is not actually running, and every subsequent reload re-loads the same broken file
+- s1: a `/-/reload` against the broken config logs an error and leaves the running config unchanged, so the daemon still serves the previous rules, routes, and receivers
+- s2: the operator believes the change is live but the intended rule/route/receiver is not running, and every reload re-loads the same broken file
 - D: the intended alert never fires or routes as expected, producing no notification (points at Symptom Recognition)
 
 **Indicators:**
 - root: [Step 10] `promtool check rules`, `promtool check config`, or `amtool check-config` exits non-zero with a parse or schema error
 - s1: [Step 11] Alertmanager logs contain `error loading config` or `msg="Loading configuration file failed"`
-- s2: [Symptom] a recent commit to the rules or routing config does not appear to take effect in Step 1 or Step 7
+- s2: [Symptom] a recent commit to the rules or routing config does not take effect in Step 1 or Step 7
 
 **Interventions:**
-- **remediation** (root): revert the broken commit on each side, validate, reload, then re-introduce the fix on a branch with passing validation.
+- **remediation** (root): revert the broken commit on each side, validate, reload, then re-introduce the fix on a passing branch.
 
   ```bash
-  # Revert broken commits on each side, validate, reload, then re-introduce the fix on a branch.
+  # Revert on each side, validate, reload, then re-introduce the fix on a branch.
   git -C /etc/prometheus revert <BROKEN_SHA> --no-edit
   promtool check config /etc/prometheus/prometheus.yml
   promtool check rules /etc/prometheus/rules/*.yml
@@ -633,23 +615,18 @@ Expected output: the synthetic alert appears in `/api/v2/alerts`, and within `gr
   curl -X POST http://localhost:9093/-/reload
   ```
 
-  **Verification:** re-run Step 10 — all three commands must exit 0; re-check Step 1 (Prometheus rules reflect the file on disk) and Step 7 (`amtool config routes show` matches the file on disk); the `prometheus_config_last_reload_successful` and `alertmanager_config_last_reload_successful` gauges must read `1`.
+  **Verification:** re-run Step 10 — all three commands must exit 0; re-check Step 1/Step 7 match disk; the `prometheus_config_last_reload_successful` and `alertmanager_config_last_reload_successful` gauges must read `1`.
 - **mitigation** (s1): revert to the last good config and reload so the daemon serves a valid config while the broken change is corrected offline.
 
   ```bash
-  # Revert the broken commit, validate, and reload.
-  git -C /etc/prometheus log -n 5 --oneline
+  # Revert, validate, reload (repeat the amtool pair for Alertmanager).
   git -C /etc/prometheus revert <BROKEN_SHA> --no-edit
   promtool check config /etc/prometheus/prometheus.yml
   promtool check rules /etc/prometheus/rules/*.yml
   curl -X POST http://localhost:9090/-/reload
-  # Alertmanager equivalent:
-  git -C /etc/alertmanager revert <BROKEN_SHA> --no-edit
-  amtool check-config /etc/alertmanager/alertmanager.yml
-  curl -X POST http://localhost:9093/-/reload
   ```
 
-  **Risk:** reverting to the last good config rolls back any intentional changes in the broken commit; capture the diff before reverting. **Duration:** permanent until the original change is corrected — cherry-pick the reverted commit back once the syntax is fixed. **Verification:** re-run Step 10 and confirm all three commands exit 0.
+  **Risk:** reverting rolls back any intentional changes in the broken commit; capture the diff first, then cherry-pick it back once the syntax is fixed. **Duration:** permanent until corrected. **Verification:** re-run Step 10 and confirm all three commands exit 0.
 
 ### Cause Z: Unidentified
 

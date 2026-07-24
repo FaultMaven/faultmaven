@@ -220,114 +220,86 @@ Expected output: the `VisibilityTimeout` from Step 3 must exceed the maximum obs
 
 ### Cause A: Visibility timeout shorter than consumer processing time
 
-**Statement:** The source queue's `VisibilityTimeout` is less than the time the consumer needs to process a message, so SQS makes the message visible again mid-processing, causing repeated redelivery until `maxReceiveCount` is exhausted.
+**Statement:** The source queue's `VisibilityTimeout` is shorter than the consumer's processing time, so SQS makes the message visible again mid-processing, causing repeated redelivery until `maxReceiveCount` is exhausted.
 
 **Chain:**
-- root: `VisibilityTimeout` is set shorter than the consumer's actual message processing time.
+- root: `VisibilityTimeout` is set shorter than the consumer's actual processing time.
 - s1: SQS makes the message visible again before the consumer calls `DeleteMessage`, incrementing `ApproximateReceiveCount`.
-- s2: each slow message is redelivered every visibility window, consuming one `maxReceiveCount` unit per cycle even though the consumer eventually succeeds.
+- s2: each slow message is redelivered every visibility window, consuming one `maxReceiveCount` unit per cycle even though it eventually succeeds.
 - D: once redeliveries exceed `maxReceiveCount`, messages move to the DLQ and DLQ depth rises (Symptom).
 
 **Indicators:**
-- root: [Step 3] `VisibilityTimeout` is 30 (the default) while any processing workload has non-trivial downstream I/O.
-- s1: [Step 6] maximum observed Lambda duration exceeds the `VisibilityTimeout` value returned in Step 3.
-- s2: [Step 2] DLQ messages show `ApproximateReceiveCount` equal to `maxReceiveCount`; consumer logs show no error for the same message IDs (the consumer succeeded eventually, but too late).
+- root: [Step 3] `VisibilityTimeout` is 30 (the default) while the workload has non-trivial downstream I/O.
+- s1: [Step 6] maximum observed Lambda duration exceeds the `VisibilityTimeout` from Step 3.
+- s2: [Step 2] DLQ messages show `ApproximateReceiveCount` equal to `maxReceiveCount`; consumer logs show no error for those IDs (it succeeded, but too late).
 
 **Interventions:**
-- **remediation** (root): set `VisibilityTimeout` to at least 6x the Lambda function timeout (or 6x observed p99), and align the Lambda timeout itself; for long-running consumers add a `ChangeMessageVisibility` heartbeat rather than relying solely on a high static timeout.
+- **remediation** (root): set `VisibilityTimeout` to at least 6x the Lambda timeout (or 6x observed p99) and align the Lambda timeout; for long-running consumers add a `ChangeMessageVisibility` heartbeat rather than a high static timeout.
 
   ```bash
-  # For long-running consumers, implement ChangeMessageVisibility as a heartbeat
-  # rather than relying solely on a high static timeout.
-  # Example AWS CLI extension during processing (run every 30s in a background thread):
+  # Long-running consumers: heartbeat via ChangeMessageVisibility (e.g. every 30s)
   aws sqs change-message-visibility \
     --queue-url "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue" \
     --receipt-handle "<receipt-handle>" \
     --visibility-timeout 120
 
-  # For Lambda: set function timeout and queue VisibilityTimeout together
+  # Lambda: set function timeout and queue VisibilityTimeout together
   aws lambda update-function-configuration \
-    --function-name my-queue-processor \
-    --timeout 120
-
+    --function-name my-queue-processor --timeout 120
   aws sqs set-queue-attributes \
     --queue-url "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue" \
     --attributes VisibilityTimeout=720
   ```
 
-  **Verification:** After the change, Step 6's maximum duration metric stays below the new `VisibilityTimeout`; Step 1 shows DLQ depth stable or decreasing (no new messages entering); Step 3 confirms the updated `VisibilityTimeout` value on the queue.
-- **mitigation** (s1): raise `VisibilityTimeout` to at least 6x the Lambda function timeout (or 6x observed p99 processing time) to stop mid-processing redelivery immediately.
+  **Verification:** Step 6 duration stays below the new `VisibilityTimeout`; Step 1 DLQ stable or decreasing; Step 3 confirms the updated value.
+- **mitigation** (s1): raise `VisibilityTimeout` to at least 6x the Lambda timeout (or 6x observed p99) to stop mid-processing redelivery immediately.
 
   ```bash
-  # Set VisibilityTimeout to at least 6x the Lambda function timeout (or 6x observed p99 processing time)
-  # Example: Lambda timeout=60s → VisibilityTimeout=360s
+  # Set VisibilityTimeout to 6x the Lambda timeout / p99 (e.g. 60s → 360s)
   aws sqs set-queue-attributes \
     --queue-url "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue" \
     --attributes VisibilityTimeout=360
   ```
 
-  **Risk:** Raising `VisibilityTimeout` extends the window before a genuinely stuck or crashed consumer's message becomes available for retry by another consumer — balance timeout tolerance against stuck-message detection latency. **Duration:** Immediate; takes effect on the next message receive cycle. **Verification:** Step 6 maximum duration now sits below the configured `VisibilityTimeout`; Step 1 shows DLQ depth no longer growing.
+  **Risk:** A higher `VisibilityTimeout` delays retry of a crashed consumer's message by another consumer. **Duration:** Immediate. **Verification:** Step 6 duration sits below the new `VisibilityTimeout`; Step 1 DLQ no longer growing.
 
 ### Cause B: Poison pill messages with malformed or incompatible payloads
 
-**Statement:** One or more messages in the source queue have payloads that consistently trigger unhandled exceptions in the consumer, causing every processing attempt to fail until `maxReceiveCount` is exhausted and the messages move to the DLQ.
+**Statement:** One or more messages carry payloads that consistently trigger unhandled consumer exceptions, so every attempt fails until `maxReceiveCount` is exhausted and they move to the DLQ.
 
 **Chain:**
-- root: a message carries content the consumer cannot handle — malformed JSON, missing required fields, oversized body, unexpected schema version, or invalid data type.
+- root: a message carries content the consumer cannot handle — malformed JSON, missing fields, oversized body, unexpected schema version, or invalid data type.
 - s1: the consumer throws an unhandled exception on every receive of that message, so `DeleteMessage` is never called.
-- s2: SQS requeues the message after each visibility timeout, exhausting `maxReceiveCount` attempts; on FIFO queues this also blocks every message in the same `MessageGroupId`.
-- D: after `maxReceiveCount` attempts the poison pill is permanently moved to the DLQ, growing DLQ depth (Symptom).
+- s2: SQS requeues the message each visibility timeout, exhausting `maxReceiveCount`; on FIFO this blocks every message in the same `MessageGroupId`.
+- D: after `maxReceiveCount` attempts the poison pill moves to the DLQ, growing DLQ depth (Symptom).
 
 **Indicators:**
-- root: [Step 2] DLQ messages share a common structural pattern in their body previews — missing fields, unusual encoding, consistent size outlier, or identical schema.
+- root: [Step 2] DLQ messages share a structural pattern in their body previews — missing fields, unusual encoding, size outlier, or identical schema.
 - s1: [Step 4] consumer logs show `JSONDecodeError`, `ValidationError`, `KeyError`, `NullPointerException`, or similar parsing/schema error for the same message IDs.
 - s2: [Step 2] all DLQ messages have `ApproximateReceiveCount` equal to `maxReceiveCount` (fully exhausted retries).
 
 **Interventions:**
-- **remediation** (root): add schema validation in the consumer before business logic so invalid payloads are logged and explicitly deleted rather than retried; for Lambda event source mappings also enable `ReportBatchItemFailures`. Fix the producer so it stops generating invalid payloads.
+- **remediation** (root): add schema validation before business logic so invalid payloads are logged and deleted rather than retried; for Lambda enable `ReportBatchItemFailures`; fix the producer emitting them.
 
   ```bash
-  # Add schema validation in the consumer before business logic processing.
-  # Python example (illustrative):
-  #   def process_message(body: str) -> None:
-  #       try:
-  #           msg = MessageSchema().loads(body)  # raises ValidationError on bad input
-  #       except (json.JSONDecodeError, ValidationError) as exc:
-  #           logger.error("Poison pill", extra={"body": body[:500], "error": str(exc)})
-  #           # Explicitly delete so the message does not exhaust maxReceiveCount
-  #           sqs.delete_message(QueueUrl=SOURCE_Q, ReceiptHandle=receipt_handle)
-  #           return
-  #       _handle_valid_message(msg)
-  #
-  # For Lambda SQS event source mappings, also enable ReportBatchItemFailures:
+  # Enable partial-batch reporting; the consumer must validate and delete bad payloads
   aws lambda update-event-source-mapping \
     --uuid "<event-source-mapping-uuid>" \
     --function-response-types ReportBatchItemFailures
   ```
 
-  **Verification:** After deploying the consumer fix, Step 4 logs show `Poison pill` log entries with the offending message body rather than unhandled exceptions; Step 1 shows DLQ depth is no longer growing; and a test message with the previously-failing schema structure is explicitly deleted (not DLQ'd) by the updated consumer.
-- **mitigation** (s2): log and delete the offending poison pill from the DLQ to clear the immediate buildup while the consumer fix is deployed.
+  **Verification:** Step 4 logs show `Poison pill` entries rather than unhandled exceptions; Step 1 DLQ no longer growing; a test message with the failing schema is deleted (not DLQ'd).
+- **mitigation** (s2): log and delete the poison pill from the DLQ to clear the buildup while the fix is deployed.
 
   ```bash
-  # Log the poison pill message body before deleting from DLQ
-  aws sqs receive-message \
-    --queue-url "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue-dlq" \
-    --max-number-of-messages 1 \
-    --attribute-names All \
-    --output json | tee /tmp/poison-pill-$(date +%s).json
-
-  # Extract receipt handle and delete the message from DLQ
-  RECEIPT=$(aws sqs receive-message \
-    --queue-url "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue-dlq" \
-    --max-number-of-messages 1 \
-    --query "Messages[0].ReceiptHandle" \
-    --output text)
-  aws sqs delete-message \
-    --queue-url "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue-dlq" \
-    --receipt-handle "$RECEIPT"
+  DLQ="https://sqs.us-east-1.amazonaws.com/123456789012/my-queue-dlq"
+  MSG=$(aws sqs receive-message --queue-url "$DLQ" --max-number-of-messages 1 \
+    --attribute-names All --output json | tee /tmp/poison-pill-$(date +%s).json)
+  RECEIPT=$(echo "$MSG" | python3 -c "import sys,json;print(json.load(sys.stdin)['Messages'][0]['ReceiptHandle'])")
+  aws sqs delete-message --queue-url "$DLQ" --receipt-handle "$RECEIPT"
   ```
 
-  **Risk:** Manually deleting messages from the source queue or DLQ is destructive — the underlying producer bug will generate new poison pills until the producer is fixed, and deleting without logging message content discards forensic data. **Duration:** Stop-gap until the consumer adds input validation and explicit poison-pill handling, and the producer stops generating invalid payloads. **Verification:** the logged body is captured in `/tmp/poison-pill-*.json`; Step 1 shows the DLQ depth dropped by the deleted message and is not regrowing once the producer is fixed.
+  **Risk:** Destructive — the producer regenerates poison pills until fixed; deleting without logging discards forensics. **Duration:** Stop-gap until the consumer validates input and the producer is fixed. **Verification:** body in `/tmp/poison-pill-*.json`; Step 1 DLQ drops by the deleted message and does not regrow.
 
 ### Cause C: maxReceiveCount set too low for the transient failure rate
 
@@ -361,107 +333,85 @@ Expected output: the `VisibilityTimeout` from Step 3 must exceed the maximum obs
 
 ### Cause D: Downstream dependency failure causes persistent consumer errors
 
-**Statement:** A downstream dependency — database, HTTP API, or internal service — is unavailable or slow, causing every consumer processing attempt to fail and accumulate DLQ entries at the rate of `maxReceiveCount` retries per message.
+**Statement:** A downstream dependency — database, HTTP API, or internal service — is unavailable or slow, so every consumer attempt fails and messages accumulate in the DLQ after `maxReceiveCount` retries.
 
 **Chain:**
 - root: a downstream dependency the consumer delegates to becomes unreachable or slow (DB down, API 5xx, network ACL blocking egress).
 - s1: every consumer processing attempt fails, so `DeleteMessage` is never called and SQS requeues each message.
 - s2: each message exhausts its `maxReceiveCount` retries during the outage window and is moved to the DLQ.
-- D: DLQ depth grows in proportion to message volume arriving during the outage, bounding potential message loss if retention expires (Symptom).
+- D: DLQ depth grows with message volume arriving during the outage, bounding message loss if retention expires (Symptom).
 
 **Indicators:**
-- root: [Step 4] consumer logs show `ConnectionRefused`, `ServiceUnavailable`, `ReadTimeout`, `ConnectionTimeout`, or `HTTPError 5xx` errors for the downstream dependency.
-- s1: [Step 1] DLQ growth rate tracks the source queue's incoming message rate exactly — every message being processed during the outage window ends up in the DLQ.
-- s2: [Step 2] DLQ message receive counts are clustered at `maxReceiveCount` and DLQ depth correlates with the downstream outage window.
+- root: [Step 4] consumer logs show `ConnectionRefused`, `ServiceUnavailable`, `ReadTimeout`, `ConnectionTimeout`, or `HTTPError 5xx` for the downstream dependency.
+- s1: [Step 1] DLQ growth rate tracks the source queue's incoming message rate — every message processed during the outage ends up in the DLQ.
+- s2: [Step 2] DLQ message receive counts cluster at `maxReceiveCount` and DLQ depth correlates with the downstream outage window.
 
 **Interventions:**
-- **remediation** (root): once the downstream is confirmed healthy, re-enable the event source mapping and redrive the DLQ messages back to the source queue for reprocessing.
+- **remediation** (root): once the downstream is healthy, re-enable the event source mapping and redrive the DLQ messages back to the source queue.
 
   ```bash
-  # Re-enable the event source mapping after the downstream is healthy
+  DLQ_ARN="arn:aws:sqs:us-east-1:123456789012:my-queue-dlq"
+  # Re-enable the consumer
   aws lambda update-event-source-mapping \
-    --uuid "<event-source-mapping-uuid>" \
-    --enabled true
-
-  # Redrive any messages that already reached the DLQ back to the source queue
-  aws sqs start-message-move-task \
-    --source-arn "arn:aws:sqs:us-east-1:123456789012:my-queue-dlq"
-
-  # Monitor redrive progress
-  aws sqs list-message-move-tasks \
-    --source-arn "arn:aws:sqs:us-east-1:123456789012:my-queue-dlq"
+    --uuid "<event-source-mapping-uuid>" --enabled true
+  # Redrive DLQ to source, then monitor progress
+  aws sqs start-message-move-task --source-arn "$DLQ_ARN"
+  aws sqs list-message-move-tasks --source-arn "$DLQ_ARN"
   ```
 
-  **Verification:** Step 4 logs no longer show downstream errors; Step 1 DLQ depth is stable or decreasing after the event source mapping is re-enabled; `ApproximateNumberOfMessages` on the source queue drains to zero within the expected processing window.
-- **mitigation** (s1): suspend consumer processing by disabling the Lambda event source mapping while the downstream is restored, so messages wait in the source queue instead of exhausting retries into the DLQ.
+  **Verification:** Step 4 logs no longer show downstream errors; Step 1 DLQ stable or decreasing after re-enable; source queue `ApproximateNumberOfMessages` drains to zero.
+- **mitigation** (s1): suspend the Lambda event source mapping while the downstream is restored, so messages wait in the source queue instead of exhausting retries.
 
   ```bash
-  # Pause consumer processing by temporarily suspending the Lambda event source mapping
-  # while the downstream dependency is restored
+  # Suspend the Lambda event source mapping (restore with --enabled true)
   ESM_UUID=$(aws lambda list-event-source-mappings \
     --function-name my-queue-processor \
     --query "EventSourceMappings[?contains(EventSourceArn,'my-queue')].UUID" \
     --output text)
-
-  aws lambda update-event-source-mapping \
-    --uuid "$ESM_UUID" \
-    --enabled false
-
-  echo "Event source mapping suspended. Restore with: aws lambda update-event-source-mapping --uuid $ESM_UUID --enabled true"
+  aws lambda update-event-source-mapping --uuid "$ESM_UUID" --enabled false
   ```
 
-  **Risk:** Increasing `maxReceiveCount` while the downstream is still down only delays the DLQ entry — messages accumulate in the source queue until `maxReceiveCount` is exhausted; the source queue's retention period bounds how long messages can wait for recovery. **Duration:** Hold until the downstream dependency is confirmed healthy; re-enable the event source mapping and monitor DLQ depth. **Verification:** Step 1 shows the DLQ stops growing while suspended and the source queue holds the backlog; re-enabling drains it cleanly.
+  **Risk:** Raising `maxReceiveCount` while the downstream is down only delays DLQ entry; queue retention bounds the wait. **Duration:** Hold until the downstream is healthy, then re-enable. **Verification:** Step 1 shows the DLQ stops growing while suspended and the source queue holds the backlog; re-enabling drains it.
 
 ### Cause E: Consumer does not call DeleteMessage after successful processing
 
-**Statement:** The consumer successfully processes messages but never calls `DeleteMessage`, causing SQS to requeue every processed message at the end of each visibility timeout until `maxReceiveCount` is exhausted and the message moves to the DLQ.
+**Statement:** The consumer processes messages successfully but never calls `DeleteMessage`, so SQS requeues each processed message at the end of every visibility timeout until `maxReceiveCount` is exhausted and it moves to the DLQ.
 
 **Chain:**
-- root: the consumer completes processing but omits the `DeleteMessage` call (missing `finally`, cleanup-branch exception, or a misread Lambda event-source-mapping contract).
-- s1: SQS never receives the success acknowledgement, so it treats the message as unprocessed and requeues it at the end of each visibility timeout.
-- s2: the message is redelivered repeatedly until `maxReceiveCount` is exhausted; with `ReportBatchItemFailures` disabled, one failed item redelivers the entire Lambda batch.
-- D: each phantom-redelivered message eventually moves to the DLQ, growing DLQ depth despite healthy processing (Symptom).
+- root: the consumer completes processing but omits the `DeleteMessage` call (missing `finally`, cleanup-branch exception, or misread Lambda ESM contract).
+- s1: SQS never gets the success ack, so it treats the message as unprocessed and requeues it each visibility timeout.
+- s2: the message is redelivered until `maxReceiveCount` is exhausted; with `ReportBatchItemFailures` disabled, one failed item redelivers the entire Lambda batch.
+- D: each phantom-redelivered message eventually moves to the DLQ, growing depth despite healthy processing (Symptom).
 
 **Indicators:**
 - root: [Step 5] `sqs:DeleteMessage` is `allowed` for the consumer role (ruling out an IAM cause).
-- s1: [Step 1] source queue `NumberOfMessagesNotVisible` is consistently non-zero even when processing throughput appears normal — messages are in flight indefinitely.
-- s2: [Step 4] consumer logs show successful processing log lines but no errors — the consumer appears healthy yet DLQ depth grows.
+- s1: [Step 1] source queue `NumberOfMessagesNotVisible` is consistently non-zero even when throughput appears normal — messages are in flight indefinitely.
+- s2: [Step 4] consumer logs show successful processing but no errors — the consumer appears healthy yet DLQ depth grows.
 
 **Interventions:**
-- **remediation** (root): ensure `DeleteMessage` is called (or the Lambda returns successfully) for every processed message, and enable `ReportBatchItemFailures` so partial batch failures do not redeliver the whole batch.
+- **remediation** (root): ensure `DeleteMessage` is called (or the Lambda returns successfully) for every message, and enable `ReportBatchItemFailures` so partial failures don't redeliver the batch.
 
   ```bash
-  # Enable ReportBatchItemFailures to prevent the entire batch from being redelivered
-  # when only a subset of items fail
+  # Prevent whole-batch redelivery on partial failure
   aws lambda update-event-source-mapping \
     --uuid "<event-source-mapping-uuid>" \
     --function-response-types ReportBatchItemFailures
-
-  # For non-Lambda consumers: ensure DeleteMessage is called in a finally block
-  # Python example (illustrative):
-  #   try:
-  #       process(message)
-  #   except Exception as exc:
-  #       logger.error("Processing failed", exc_info=exc)
-  #       raise  # Re-raise so the message is not deleted and retries occur
-  #   else:
-  #       sqs.delete_message(QueueUrl=SOURCE_Q, ReceiptHandle=receipt_handle)
+  # Non-Lambda: call sqs.delete_message only on success, else re-raise to retry.
   ```
 
-  **Verification:** Step 1's source queue `ApproximateNumberOfMessagesNotVisible` returns to near zero after processing each batch; DLQ depth stops growing; Step 4 logs show consistent successful processing without phantom redeliveries.
-- **mitigation** (s1): inspect Lambda REPORT lines to confirm the function completes without error (so the issue is a missing delete, not a thrown exception) before deploying the code fix.
+  **Verification:** Step 1 `ApproximateNumberOfMessagesNotVisible` returns to near zero after each batch; DLQ stops growing; Step 4 shows processing without phantom redeliveries.
+- **mitigation** (s1): inspect Lambda REPORT lines to confirm the function completes without error (missing delete, not thrown exception) before deploying the fix.
 
   ```bash
-  # For Lambda: check REPORT lines to see if the function completes without errors
+  # Check Lambda REPORT lines for clean completion
   aws logs filter-log-events \
     --log-group-name "/aws/lambda/my-queue-processor" \
     --filter-pattern "START END REPORT" \
     --start-time "$(date -u -d '30 minutes ago' +%s)000" \
-    --limit 20 \
-    --output text --query "events[*].message"
+    --limit 20 --output text --query "events[*].message"
   ```
 
-  **Risk:** Enabling `ReportBatchItemFailures` changes how Lambda handles partial batch failures — previously the entire batch would be retried on any single item failure, so enabling it may expose previously masked individual message failures. **Duration:** Diagnostic; if Lambda REPORT lines show `Billed Duration` with no corresponding error, the function is completing but may not be deleting messages correctly when using direct SDK calls rather than event source mapping auto-deletion. **Verification:** REPORT lines confirm clean completion, pointing to a missing `DeleteMessage` rather than a thrown exception.
+  **Risk:** Enabling `ReportBatchItemFailures` may expose message failures previously masked by whole-batch retry. **Duration:** Diagnostic; a `Billed Duration` REPORT line with no error means the function completes but isn't deleting via direct SDK calls. **Verification:** REPORT lines confirm clean completion, pointing to a missing `DeleteMessage`.
 
 ### Cause Z: Unidentified
 
