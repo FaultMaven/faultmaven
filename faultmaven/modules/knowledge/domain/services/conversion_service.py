@@ -103,6 +103,7 @@ Rules:
   return an empty list and set "is_actionable" to false.
 - Do NOT invent failure modes not present in the source material.
 - Failure modes must be distinct -- different symptoms OR different resolutions.
+- `symptom_class` values MUST come from this controlled vocabulary: __SYMPTOM_CLASS_VOCAB__. Choose the closest-fitting value(s); omit anything that doesn't fit (the runbook author uses free-text `tags` for long-tail symptoms). This is the same vocabulary the runbook frontmatter is validated against, and it keys failure-mode deduplication -- an off-vocabulary value here silently escapes both.
 
 Respond with JSON matching this schema:
 {
@@ -113,7 +114,7 @@ Respond with JSON matching this schema:
       "title": "Technology Failure Description",
       "domain": "database|networking|compute|application|security|storage|messaging",
       "service": "specific-service-name",
-      "symptom_class": ["symptom_type_1", "symptom_type_2"],
+      "symptom_class": ["<one or more values from the controlled vocabulary above>"],
       "severity": "critical|high|medium|low|info",
       "symptoms_summary": "Error messages and symptoms",
       "resolution_summary": "Brief resolution approach"
@@ -125,6 +126,17 @@ Respond with JSON matching this schema:
     "missing_information": ["list of missing info"]
   }
 }"""
+
+# Constrain the analysis LLM's `symptom_class` to the controlled vocabulary so the
+# extracted value is already in-vocab: it keys failure-mode dedup
+# (``_convert_all_failure_modes``) AND is validated in the produced frontmatter.
+# Without this, analysis free-picks an off-vocab label, the conversion prompt
+# (rule 9) later reclassifies it, and the dedup key no longer equals the persisted
+# symptom_class — so two modes that classify to the same value slip dedup and yield
+# duplicate runbooks. Sourced from the single VALID_SYMPTOM_CLASSES constant.
+ANALYSIS_SYSTEM_PROMPT = ANALYSIS_SYSTEM_PROMPT.replace(
+    "__SYMPTOM_CLASS_VOCAB__", ", ".join(VALID_SYMPTOM_CLASSES)
+)
 
 # DESIGN DECISION (predicate-less conversion — intentional, not a gap).
 # The conversion path (document -> runbook, case -> runbook) authors the v4 match
@@ -238,7 +250,7 @@ RULES:
 6. Each Indicator entry carries a rung ref (`root`, `s1`, …, or `D`) and at least one `[Step N]` (N matches an existing Diagnostic Step) or `[Symptom]`; the Cause Z fallback uses `- [Default]`.
 7. Each Intervention is tagged with exactly one quadrant — `remediation` / `defensive_fix` / `mitigation` / `loop_break` — names the rung it targets in `(parens)`, and carries a **Verification:**; every `mitigation` also carries **Risk** and **Duration**.
 8. If source material lacks enough information for a field, write "[INSUFFICIENT SOURCE DATA -- manual completion required]".
-9. Use the `domain` and `service` values provided; do not change them. `symptom_class` MUST be one or two values from this controlled vocabulary: __SYMPTOM_CLASS_VOCAB__. Choose the closest fit to this failure mode (use any suggested value only as a starting point); never invent a value — put a long-tail symptom in `tags` instead."""
+9. Use the `domain` and `service` values provided; do not change them. `symptom_class` MUST be one or more values from this controlled vocabulary: __SYMPTOM_CLASS_VOCAB__ — usually one; add another only if the failure mode genuinely spans a second class. Choose the closest fit to this failure mode (use any suggested value only as a starting point); never invent a value — put a long-tail symptom in `tags` instead."""
 
 # Bind the controlled `symptom_class` vocabulary into the rules so the produced
 # frontmatter is in-vocab for BOTH the document and case paths — the case path

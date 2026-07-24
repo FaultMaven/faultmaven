@@ -171,3 +171,18 @@ def test_empty_list_warns_not_errors():
     result = RunbookValidator().validate_content(_runbook("[]"))
     assert [e for e in result.errors if "symptom_class" in e] == []
     assert any("No symptom classes specified" in w for w in result.warnings)
+
+
+def test_offvocab_fails_the_upload_gate_contract():
+    """The runbook-upload endpoint (``routes.py`` ``upload_document``) rejects a
+    file with ``if not validation.passed`` → HTTP 422. This pins the boundary
+    contract that enforcement newly relies on: an off-vocab ``symptom_class`` must
+    make ``validate_content(...).passed`` False (``passed = len(errors) == 0``), so
+    the upload path 422s instead of persisting drift. An in-vocab runbook passes."""
+    off_vocab = RunbookValidator().validate_content(
+        _runbook("[definitely_not_a_class]")
+    )
+    assert off_vocab.passed is False
+
+    in_vocab = RunbookValidator().validate_content(_runbook("[timeout]"))
+    assert in_vocab.passed is True

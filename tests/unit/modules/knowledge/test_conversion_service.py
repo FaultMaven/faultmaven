@@ -53,6 +53,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_runbook_id,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    ANALYSIS_SYSTEM_PROMPT,
     CONVERSION_SYSTEM_PROMPT,
     DEFAULT_ORGANIZATION_ID,
     ConversionRejectedError,
@@ -2218,11 +2219,14 @@ class TestSymptomClassProducePath:
     and the conversion prompt is authoritative about the controlled vocabulary."""
 
     def test_prompt_injects_controlled_vocabulary(self):
-        """Every vocabulary term is bound into the prompt; the placeholder is
-        fully resolved so the model classifies within the curated set."""
-        assert "__SYMPTOM_CLASS_VOCAB__" not in CONVERSION_SYSTEM_PROMPT
-        for term in VALID_SYMPTOM_CLASSES:
-            assert term in CONVERSION_SYSTEM_PROMPT, f"vocab term missing: {term}"
+        """Every vocabulary term is bound into BOTH produce prompts; the
+        placeholder is fully resolved. The analysis prompt must be constrained too
+        so its symptom_class (the dedup key) is already in-vocab and matches the
+        reclassified frontmatter — otherwise duplicate runbooks slip dedup."""
+        for prompt in (CONVERSION_SYSTEM_PROMPT, ANALYSIS_SYSTEM_PROMPT):
+            assert "__SYMPTOM_CLASS_VOCAB__" not in prompt
+            for term in VALID_SYMPTOM_CLASSES:
+                assert term in prompt, f"vocab term missing: {term}"
 
     def test_prompt_no_longer_freezes_symptom_class(self):
         """Rule 9 no longer tells the model to pass ``symptom_class`` through
