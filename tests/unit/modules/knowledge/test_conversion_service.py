@@ -36,6 +36,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     CaseConversionRequest,
     ConversionDraft,
+    ConversionError,
     ConversionErrorCode,
     ConversionResponse,
     ConversionStatus,
@@ -2284,3 +2285,71 @@ class TestSymptomClassProducePath:
         assert isinstance(draft, ConversionDraft)
         symptom_errors = [e for e in draft.validation.errors if "symptom_class" in e]
         assert symptom_errors == []
+
+    @pytest.mark.asyncio
+    async def test_case_request_without_symptom_class_defaults_to_empty_not_unknown(
+        self, service, mock_settings
+    ):
+        """Regression guard on the §7.1(b) fix line itself
+        (``symptom_class=request.symptom_class or []`` in ``_convert_from_case_impl``):
+        a case request that omits symptom_class must build a FailureModeAnalysis with
+        an EMPTY list, never the off-vocab ``["unknown"]`` placeholder. Reverting the
+        default to ``["unknown"]`` must fail here."""
+        from faultmaven.modules.knowledge.domain.models.conversion import (
+            CaseConversionRequest,
+        )
+
+        request = CaseConversionRequest(
+            case_id="case-no-symptom",
+            title="Something broke",
+            domain="application",
+            service="test-svc",
+            # symptom_class deliberately omitted (defaults to []).
+            severity="high",
+            description="The thing failed",
+            root_cause="Pool exhausted because connections were never returned",
+            scope="personal",
+        )
+
+        # Stub the LLM/disk step and capture the FailureModeAnalysis it receives.
+        capture = AsyncMock(
+            return_value=ConversionError(
+                failure_mode_id="fm", error="stub", retryable=False
+            )
+        )
+        with patch.object(service, "_convert_single_failure_mode", capture):
+            await service._convert_from_case_impl(request, user_id="user-1")
+
+        built = capture.await_args.kwargs["failure_mode"]
+        assert built.symptom_class == []
+
+    @pytest.mark.asyncio
+    async def test_case_request_symptom_class_is_passed_through(
+        self, service, mock_settings
+    ):
+        """A provided symptom_class is used as-is (the conversion prompt then keeps
+        it in-vocab / reclassifies) — the `or []` default only fills the empty case."""
+        from faultmaven.modules.knowledge.domain.models.conversion import (
+            CaseConversionRequest,
+        )
+
+        request = CaseConversionRequest(
+            case_id="case-with-symptom",
+            title="Something broke",
+            domain="application",
+            service="test-svc",
+            symptom_class=["timeout"],
+            severity="high",
+            description="The thing failed",
+            root_cause="Downstream call never returned",
+            scope="personal",
+        )
+        capture = AsyncMock(
+            return_value=ConversionError(
+                failure_mode_id="fm", error="stub", retryable=False
+            )
+        )
+        with patch.object(service, "_convert_single_failure_mode", capture):
+            await service._convert_from_case_impl(request, user_id="user-1")
+
+        assert capture.await_args.kwargs["failure_mode"].symptom_class == ["timeout"]
