@@ -116,6 +116,15 @@ class ErrorResult:
     message: str
     error_code: Optional[str] = None
     retry_count: int = 0
+    # The exception that produced this result, preserved so the caller can
+    # surface its real message. Losing it turned an informative provider
+    # overflow ("prompt is too long: 250000 > 200000") into an opaque engine
+    # message. Callers fold this into their raised message text for
+    # diagnostics; they do NOT chain it via ``raise ... from`` when a semantic
+    # error_code is the authoritative signal, because a typed LLMException on
+    # the __cause__ chain would override that code at the HTTP boundary. Set in
+    # ``with_retry``.
+    original_exception: Optional[BaseException] = None
 
 
 class LLMErrorHandler:
@@ -332,6 +341,11 @@ class LLMErrorHandler:
                 return result, None
             except Exception as e:
                 error_result = await self.handle_error(e, retry_count)
+                # Preserve the triggering exception so the caller can chain it
+                # (``raise ... from``) — keeps the provider's real message on the
+                # __cause__ chain for diagnostics and for context-length
+                # classification downstream.
+                error_result.original_exception = e
                 last_error_result = error_result
 
                 if error_result.action == ErrorAction.RETRY:

@@ -887,7 +887,27 @@ def _is_context_length_error(exc: Exception) -> bool:
     length-specific phrases — deliberately NOT on a bare ``400 + "token"`` or the
     generic Pydantic phrase ``"string too long"``, which fire on ordinary
     request-validation errors and would trigger needless fallback retries.
+
+    Two shapes reach here. A **raw provider exception** (proxy/aggregator path)
+    carries the overflow wording in its message. The **retry-loop path**
+    (``with_retry`` → ``handle_error`` classifies the overflow as
+    ``COMPRESS_MEMORY`` → ``_generate_structured_output_inner`` re-raises a
+    ``MilestoneEngineError``) has already consumed the provider's wording, but it
+    stamps ``error_code == "TOKEN_LIMIT"`` on the raised exception. Recognizing
+    that deterministic engine signal — and walking the ``__cause__`` chain in case
+    it is wrapped — is what makes the degrade-recovery in
+    ``_generate_structured_output`` actually reachable for an overflow that
+    surfaced through the retry loop. Without it a *recoverable* overflow fails the
+    turn instead of degrading to the minimal fallback prompt (the NO-COLLAPSE
+    guarantee; #662).
     """
+    # Deterministic engine signal from the retry-loop path (see docstring).
+    cursor: Optional[BaseException] = exc
+    while cursor is not None:
+        if getattr(cursor, "error_code", None) == "TOKEN_LIMIT":
+            return True
+        cursor = cursor.__cause__
+
     msg = str(getattr(exc, "message", "") or exc).lower()
     # Shared with llm_error_handler.is_token_limit_error so the two overflow
     # classifiers cannot drift (see CONTEXT_OVERFLOW_PHRASES).
@@ -7064,9 +7084,20 @@ class MilestoneEngine:
         # All retries exhausted or non-retryable error
         if error_result:
             error_msg = error_result.message
-            logger.error(f"Structured generation failed after retries: {error_msg}")
+            # Fold the triggering provider wording into the message text (e.g.
+            # "prompt is too long: 250000 > 200000") so diagnostics keep it — the
+            # ErrorResult's own message is the generic classifier string. We do
+            # NOT chain via ``raise ... from``: that would put the provider's
+            # LLMException (a context overflow is HTTP 400) on the __cause__ chain,
+            # and llm_service_error_http_exception reads a provider status BEFORE
+            # the engine error_code, silently re-routing the documented
+            # TOKEN_LIMIT -> 503 to a 4xx -> 502. The engine error_code stays the
+            # authoritative signal for this failure.
+            orig = error_result.original_exception
+            detail = f"{error_msg} ({orig})" if orig is not None else error_msg
+            logger.error(f"Structured generation failed after retries: {detail}")
             raise MilestoneEngineError(
-                f"Structured output generation failed: {error_msg}",
+                f"Structured output generation failed: {detail}",
                 error_code=error_result.error_code,
             )
         else:

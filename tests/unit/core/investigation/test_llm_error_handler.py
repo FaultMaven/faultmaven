@@ -265,6 +265,22 @@ class TestWithRetry:
         assert error is not None
         assert error.action == ErrorAction.FAIL
 
+    @pytest.mark.asyncio
+    async def test_original_exception_preserved_on_failure(self, handler):
+        """The triggering exception must be carried back on the ErrorResult so
+        the caller can chain it (raise ... from) — losing it turned an
+        informative provider overflow into an opaque engine message and broke
+        context-length recovery downstream (#662)."""
+        boom = Exception("This model's maximum context length is 8192 tokens")
+        operation = AsyncMock(side_effect=boom)
+
+        result, error = await handler.with_retry(operation=operation)
+
+        assert result is None
+        assert error is not None
+        assert error.error_code == "TOKEN_LIMIT"
+        assert error.original_exception is boom
+
 
 class TestErrorTracking:
     """Test error counting and summary."""

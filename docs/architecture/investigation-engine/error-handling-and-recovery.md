@@ -281,6 +281,36 @@ class ErrorResult:
     retry_count: int = 0
 ```
 
+### 2.x Context-overflow degrade (NO-COLLAPSE)
+
+A context-window overflow is **recoverable**: the input is too large for the
+window, but the same turn recompiled with a minimal prompt fits. FaultMaven must
+degrade and answer, never fail the turn on a recoverable overflow (the
+NO-COLLAPSE guarantee). The recovery is two layers that compose:
+
+1. **Classification** — `LLMErrorHandler.handle_error` detects the overflow
+   (`is_token_limit_error`) and returns `ErrorAction.COMPRESS_MEMORY` with
+   `error_code="TOKEN_LIMIT"`. `with_retry` does not itself shrink the prompt (it
+   only holds the operation closure), so it treats the action as non-retryable
+   and returns the result; `_generate_structured_output_inner` then raises a
+   `MilestoneEngineError(error_code="TOKEN_LIMIT")`, **chaining the original
+   provider exception** on `__cause__` so its wording survives for diagnostics.
+
+2. **Degrade** — the outer `_generate_structured_output` catches that error,
+   recognizes it as a context-length failure via `_is_context_length_error`, and
+   retries **once** with the minimal `FALLBACK_*` prompt and tools dropped
+   (`get_fallback_prompt_for_case`). The turn completes degraded instead of
+   failing.
+
+The load-bearing seam is that `_is_context_length_error` keys on the deterministic
+engine signal (`error_code == "TOKEN_LIMIT"`, walking the `__cause__` chain), not
+only on provider phrasing in the message — because the retry loop has already
+consumed the provider's wording by the time the error reaches layer 2. Keying on
+the message alone left the degrade path unreachable, so a recoverable overflow
+hard-failed instead of degrading (#662). If even the minimal prompt overflows,
+the `TOKEN_LIMIT` error propagates and the API boundary maps it to a retryable
+503 — a genuinely over-limit turn, the only case that is not silently degraded.
+
 ---
 
 ## 3. Response Parsing Errors
