@@ -19,7 +19,7 @@ description: Triggers when modifying README positioning language, API descriptio
 That's the complete bare statement. The rule for audience qualifiers is: do not append qualifiers that *narrow* the audience to a single role — "for SRE teams", "for DevOps engineers", "for platform teams". Inclusive framings that describe a broad audience or use case are fine: "for Engineers, SREs, and DevOps professionals", "for modern engineering teams", "for technical troubleshooting". The rule is against shrinking the perceived audience, not against naming it.
 
 ### Extended description (when more context is needed)
-> FaultMaven is an AI-powered troubleshooting copilot. It correlates live telemetry with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation.
+> FaultMaven is an AI-powered troubleshooting copilot. It correlates the logs, metrics, and configs you share with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation.
 
 ### Product character — the four traits
 > **FaultMaven works a problem the way a seasoned engineer does — and never forgets what it learns.**
