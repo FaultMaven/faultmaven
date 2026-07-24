@@ -240,28 +240,26 @@ Expected output: zero rows during normal traffic. A row with `CREATE INDEX` (wit
   SELECT pg_terminate_backend(<ddl_pid>);
   ```
 
-  **Risk:** Medium. Rolls back partial work — a partially-built index is discarded, a table-rewrite's new file is dropped — wasting minutes-to-hours of build time. **Duration:** Locks release within seconds of a successful cancel; queued sessions drain in arrival order. **Verification:** re-run Step 8; no long-running DDL, queue drained.
+  **Risk:** Medium. Rolls back partial work (partially-built index discarded, table-rewrite file dropped). **Duration:** Locks release within seconds of a successful cancel. **Verification:** re-run Step 8; no long-running DDL, queue drained.
 - **remediation** (root): run schema changes in non-blocking forms and fail fast on lock acquisition.
 
   ```sql
-  -- Always set a lock_timeout on DDL sessions so they fail fast instead of
-  -- camping at the head of the lock queue.
+  -- Fail fast instead of camping at the head of the lock queue:
   SET lock_timeout = '2s';
 
-  -- Use CONCURRENTLY for index DDL (no AccessExclusiveLock on the table):
+  -- CONCURRENTLY for index DDL (no AccessExclusiveLock on the table):
   CREATE INDEX CONCURRENTLY idx_orders_customer ON orders (customer_id);
   REINDEX INDEX CONCURRENTLY idx_orders_customer;
 
-  -- For ALTER TABLE ADD COLUMN with default, PG 11+ stores the default in
-  -- catalog metadata and avoids the table rewrite:
+  -- ADD COLUMN with default is metadata-only on PG 11+ (no rewrite):
   ALTER TABLE orders ADD COLUMN created_at timestamptz DEFAULT now();
 
-  -- For constraints, use NOT VALID then VALIDATE in a separate transaction:
+  -- Constraints: NOT VALID then VALIDATE in a separate transaction:
   ALTER TABLE orders ADD CONSTRAINT chk_amount CHECK (amount > 0) NOT VALID;
-  ALTER TABLE orders VALIDATE CONSTRAINT chk_amount;   -- SHARE UPDATE EXCLUSIVE, non-blocking
+  ALTER TABLE orders VALIDATE CONSTRAINT chk_amount;   -- SHARE UPDATE EXCLUSIVE
   ```
 
-  Schedule any remaining unavoidable `AccessExclusiveLock` DDL during a maintenance window. **Verification:** re-run Step 3 after the DDL finishes — `AccessExclusiveLock` count returns to baseline (typically 0); re-run Step 8 — no long-running DDL; application p95 latency on affected endpoints returns to baseline within one traffic cycle.
+  Schedule any unavoidable `AccessExclusiveLock` DDL during a maintenance window. **Verification:** re-run Step 3 — `AccessExclusiveLock` count returns to baseline; re-run Step 8 — no long-running DDL; p95 latency returns to baseline within one traffic cycle.
 
 ### Cause C: Long-running query holds locks past application timeouts
 

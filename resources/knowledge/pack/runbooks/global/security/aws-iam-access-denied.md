@@ -297,12 +297,12 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
 
 ### Cause C: Permissions boundary excludes the action
 
-**Statement:** A permissions boundary attached to the caller's IAM user or role caps the effective permissions and does not include the action, so the intersection of identity policies and boundary excludes the action even when the identity policies permit it.
+**Statement:** A permissions boundary attached to the caller caps effective permissions to the intersection of identity policies and the boundary; the action is not in that intersection, so it is denied even when identity policies permit it.
 
 **Chain:**
 - root: a permissions boundary (a managed policy capping maximum permissions) is attached to the caller and either omits the action from any Allow or carries a `Deny` for it.
-- s1: the effective permissions are the intersection of identity-based policies and the boundary; an action must be allowed by both, and an explicit Deny in the boundary overrides any Allow.
-- s2: the action is excluded from the intersection (or explicitly denied by the boundary), so it is denied regardless of how permissive the identity policies are.
+- s1: the effective permissions are the intersection of identity policies and the boundary; an explicit Deny in the boundary also overrides any Allow.
+- s2: the action is excluded from the intersection (or explicitly denied), so it is denied regardless of how permissive the identity policies are.
 - D: AWS returns HTTP 403 with `because no permissions boundary allows` or `with an explicit deny in a permissions boundary` (Symptom Recognition).
 
 **Indicators:**
@@ -334,7 +334,7 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
     --set-as-default
   ```
 
-  **Verification:** `aws iam simulate-principal-policy ...` returns `AllowedByPermissionsBoundary: true` and `Decision: allowed`; the original call succeeds; `aws iam get-policy --policy-arn "$BOUNDARY_ARN" --query 'Policy.DefaultVersionId'` shows the updated version. Rollback with `aws iam set-default-policy-version --policy-arn "$BOUNDARY_ARN" --version-id <prior-version-id>`.
+  **Verification:** `aws iam simulate-principal-policy ...` returns `AllowedByPermissionsBoundary: true` and `Decision: allowed`; the original call succeeds. Rollback with `aws iam set-default-policy-version --policy-arn "$BOUNDARY_ARN" --version-id <prior-version-id>`.
 - **mitigation** (root): capture the current boundary for restoration before changing it.
 
   ```bash
@@ -342,72 +342,66 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
     > /tmp/boundary-backup.json
   ```
 
-  **Risk:** Detaching the boundary removes the entire guardrail and may expose other services it was restricting; never detach in production without security-team approval. **Duration:** Backup only — keep until the corrected boundary is applied. **Verification:** `/tmp/boundary-backup.json` holds the prior boundary reference for `aws iam put-role-permissions-boundary --role-name <caller-role-name> --permissions-boundary <prior-boundary-arn>`.
+  **Risk:** Detaching the boundary removes the entire guardrail; never detach in production without security-team approval. **Duration:** Backup only. **Verification:** `/tmp/boundary-backup.json` holds the prior boundary reference for `aws iam put-role-permissions-boundary --role-name <caller-role-name> --permissions-boundary <prior-boundary-arn>`.
 
 ### Cause D: Policy Condition excludes the request context
 
-**Statement:** A Condition clause on an otherwise-permissive identity-based or resource-based policy does not match the caller's request context (source VPC, source IP, requested region, MFA state, principal/resource tags, time-of-day), turning the Allow into an implicit deny for this specific request.
+**Statement:** A Condition clause on an otherwise-permissive policy does not match the caller's request context (source VPC/IP, region, MFA, tags), turning the Allow into an implicit deny.
 
 **Chain:**
-- root: a matching Allow statement carries a `Condition` (e.g., `aws:SourceVpc`, `aws:SourceIp`, `aws:RequestedRegion`, `aws:MultiFactorAuthPresent`, `aws:RequestTag/*`, `aws:ResourceTag/*`, `aws:PrincipalOrgID`) whose required value the caller's request context does not satisfy.
-- s1: the request arrives without the required context (no MFA, wrong region, missing tag), so the Condition evaluates false.
-- s2: IAM evaluates as if the conditioned Allow were absent, producing an implicit deny for this specific request.
-- D: AWS returns HTTP 403 with `because no identity-based policy allows the <action> action` even though the policies grammatically appear to permit the action (Symptom Recognition).
+- root: a matching Allow statement carries a `Condition` (e.g., `aws:SourceVpc`, `aws:SourceIp`, `aws:MultiFactorAuthPresent`) whose required value the caller's request context does not satisfy.
+- s1: the request arrives without the required context (no MFA, wrong region), so the Condition evaluates false.
+- s2: IAM evaluates as if the conditioned Allow were absent — an implicit deny for this request.
+- D: AWS returns HTTP 403 with `because no identity-based policy allows the <action> action` even though the policies appear to permit it (Symptom Recognition).
 
 **Indicators:**
-- root: [Step 9] grep shows a `Condition` block on the matching Allow statement referencing the caller's request context (`aws:SourceVpc`, `aws:SourceIp`, `aws:RequestedRegion`, `aws:MultiFactorAuthPresent`, `aws:RequestTag/*`, `aws:ResourceTag/*`, `aws:PrincipalOrgID`).
-- s2: [Step 3] `simulate-principal-policy` returns `implicitDeny` despite Step 4 showing a matching Allow statement on paper.
+- root: [Step 9] grep shows a `Condition` block on the matching Allow statement keyed on the caller's request context (`aws:SourceVpc`, `aws:SourceIp`, `aws:RequestedRegion`, `aws:MultiFactorAuthPresent`, `aws:RequestTag/*`, `aws:ResourceTag/*`, `aws:PrincipalOrgID`).
+- s2: [Step 3] `simulate-principal-policy` returns `implicitDeny` despite Step 4 showing a matching Allow on paper.
 - D: [Step 1] error message contains `because no identity-based policy allows`.
 
 **Interventions:**
-- **remediation** (root): satisfy the Condition by submitting the call from a matching context, adding the required tag, or (with security review) narrowing the Condition.
+- **remediation** (root): satisfy the Condition via a matching context, add the required tag, or (with security review) narrow the Condition.
 
   ```bash
-  # Option A: Submit the call from a context that matches the Condition (preferred).
-  aws --region <region-from-aws:RequestedRegion-allow-list> <service> <operation>
+  # Option A: Submit from a context matching the Condition (preferred).
+  aws --region <region-from-allow-list> <service> <operation>
   # Option B: Add a tag the policy requires.
   aws <service> tag-resource --resource-arn <arn> --tags Key=Environment,Value=production
-  # Option C: If the Condition is over-restrictive for a legitimate use, narrow it
-  # via a policy version edit. Example: add a second CIDR to aws:SourceIp.
+  # Option C: Narrow an over-restrictive Condition (policy version edit).
   aws iam create-policy-version --policy-arn <policy-arn> \
     --policy-document file:///tmp/policy-with-broader-condition.json --set-as-default
   ```
 
-  **Verification:** re-run the original call with the corrected context; it returns HTTP 200. `aws iam simulate-principal-policy --policy-source-arn <caller> --action-names <action> --resource-arns <resource> --context-entries ContextKeyName=aws:SourceVpc,ContextKeyValues=<vpc-id>,ContextKeyType=string` returns `Decision: allowed` when the simulated context matches. Option C rollback: `aws iam set-default-policy-version --policy-arn <policy-arn> --version-id <prior-version-id>`.
+  **Verification:** re-run the original call with the corrected context; it returns HTTP 200. `aws iam simulate-principal-policy ... --context-entries ...aws:SourceVpc...` returns `Decision: allowed` when the simulated context matches. Option C rollback: `aws iam set-default-policy-version --policy-arn <policy-arn> --version-id <prior-version-id>`.
 - **mitigation** (s1): re-establish the request context the Condition expects without changing any policy.
 
   ```bash
-  # Re-establish the request context the condition expects:
-  # MFA-enabled session:
+  # Re-establish the request context (MFA session shown; also region / source VPC):
   aws sts get-session-token --serial-number <mfa-arn> --token-code <code>
-  # Region:
   aws --region <required-region> <service> <operation>
-  # Source VPC: run from an instance inside the VPC, or use an interface endpoint
   ```
 
-  **Risk:** Satisfying the condition carries no IAM risk but may require operational changes (VPN, MFA-enabled session); do not weaken the condition without security review. **Duration:** Indefinite — this is the correct way to satisfy a Condition; no rollback required. **Verification:** the re-run from the matching context returns HTTP 200.
+  **Risk:** No IAM risk but may require operational changes (VPN, MFA); do not weaken the condition without security review. **Duration:** Indefinite — correct way to satisfy a Condition; no rollback. **Verification:** the re-run from the matching context returns HTTP 200.
 
 ### Cause E: Session policy over-restricts the assumed role
 
-**Statement:** A session policy supplied as the `Policy` or `PolicyArns` parameter to `sts:AssumeRole` (or to a federation call) does not allow the action, so the session's effective permissions — the intersection of the role's identity policies and the session policy — exclude the action.
+**Statement:** A session policy supplied as the `Policy` or `PolicyArns` parameter to `sts:AssumeRole` (or a federation call) does not allow the action, so the session's effective permissions — the intersection of the role's identity policies and the session policy — exclude it.
 
 **Chain:**
-- root: a session policy was passed at AssumeRole time (commonly by CI/CD code or an SDK wrapper) that omits an action the workload needs.
-- s1: the session's effective permissions are the intersection of the role's identity-based policies, the session policy, and any boundary — the missing action is excluded by the session policy.
+- root: a session policy passed at AssumeRole time (commonly by CI/CD or an SDK wrapper) omits an action the workload needs.
+- s1: the session's effective permissions are the intersection of the role's identity policies, the session policy, and any boundary — the session policy excludes the missing action.
 - D: AWS returns HTTP 403 with `because no session policy allows the <action> action` (implicit) or `with an explicit deny in a session policy` (Symptom Recognition).
 
 **Indicators:**
 - root: [Step 8] the AssumeRole CloudTrail event for the current session has a non-empty `requestParameters.policy` or `requestParameters.policyArns`.
-- s1: [Step 3] `simulate-principal-policy` against the role itself returns `allowed`, but the runtime call still fails — indicating a restriction beyond the role's identity policies.
+- s1: [Step 3] `simulate-principal-policy` against the role returns `allowed`, but the runtime call still fails — a restriction beyond the role's identity policies.
 - D: [Step 1] error message contains `session policy`.
 
 **Interventions:**
-- **remediation** (root): edit the caller (CI script, SDK wrapper, IAM Identity Center permission set) to drop the session policy or broaden it to include the missing action.
+- **remediation** (root): edit the caller (CI script, SDK wrapper, Identity Center permission set) to drop or broaden the session policy to include the missing action.
 
   ```bash
-  # Edit the caller (CI script, SDK wrapper, IAM Identity Center permission set) to
-  # either drop the session policy or broaden it to include the missing action.
-  # Example boto3 fix:
+  # Example boto3 fix — broaden (or drop) the session policy:
   python3 - <<'EOF'
   import boto3, json
   sts = boto3.client('sts')
@@ -425,7 +419,7 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
   EOF
   ```
 
-  **Verification:** a fresh AssumeRole produces a session whose decoded restrictions no longer include the missing action; re-run the failing call within that session — it succeeds with HTTP 200. Rollback by reverting the CI/SDK change; existing sessions pick up prior behaviour on next AssumeRole.
+  **Verification:** a fresh AssumeRole produces a session whose restrictions no longer exclude the action; re-run the failing call within it — HTTP 200. Rollback by reverting the CI/SDK change; existing sessions pick up prior behavior on next AssumeRole.
 - **mitigation** (s1): re-assume the role with no session policy as a stopgap.
 
   ```bash
@@ -434,10 +428,10 @@ Expected output: the role ARN being passed (from CloudTrail `requestParameters`)
     --role-arn <role-arn> \
     --role-session-name <session-name> \
     --duration-seconds 3600
-  # Export the returned credentials into the shell and retry the failing call
+  # Export returned credentials and retry the failing call
   ```
 
-  **Risk:** Re-assuming without the session policy temporarily restores full role permissions, which may exceed what the workload should have for the session. **Duration:** One session (≤ role's `MaxSessionDuration`). Restore session-policy usage as soon as the durable fix lands. **Verification:** the retried call within the unrestricted session succeeds with HTTP 200.
+  **Risk:** Re-assuming without the session policy temporarily restores full role permissions, exceeding what the workload should have. **Duration:** One session (≤ role's `MaxSessionDuration`); restore session-policy usage once the durable fix lands. **Verification:** the retried call within the unrestricted session succeeds with HTTP 200.
 
 ### Cause F: VPC endpoint policy denies the request
 

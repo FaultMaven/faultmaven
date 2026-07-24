@@ -217,21 +217,21 @@ Expected output: total response-header bytes and number of header fields. Header
 
 ### Cause C: Upstream prematurely closes the connection mid-response
 
-**Statement:** The upstream accepts the TCP connection but its worker process or request handler aborts before sending complete response headers, so NGINX returns 502 on the half-read response.
+**Statement:** The upstream accepts the connection but its worker or handler aborts before sending complete response headers, so NGINX returns 502 on the half-read response.
 
 **Chain:**
-- root: an application-tier fault (crash, OOM kill, signal shutdown without draining, or `pm.max_requests` recycling) terminates the upstream worker mid-request.
-- s1: NGINX is left with a half-read response and cannot recover the in-flight request body (especially with `proxy_request_buffering off`).
-- s2: NGINX logs `upstream prematurely closed connection while reading response header from upstream` and propagates the failure as 502.
+- root: an application-tier fault (crash, OOM kill, undrained shutdown, or `pm.max_requests` recycling) terminates the upstream worker mid-request.
+- s1: NGINX is left with a half-read response and cannot recover the in-flight request body (esp. with `proxy_request_buffering off`).
+- s2: NGINX logs `upstream prematurely closed connection while reading response header from upstream` and returns 502.
 - D: clients receive HTTP 502 Bad Gateway (Symptom Recognition).
 
 **Indicators:**
 - s2: [Step 1] error log contains `upstream prematurely closed connection while reading response header from upstream`
-- root: [Step 4] upstream status shows recent restarts, OOM kills (`dmesg | grep -i killed`), or `pm.max_children`/`pm.max_requests` recycling warnings in its log
-- root: [Step 7] 502 spikes coincide with upstream deploy/restart events or memory-pressure alerts on the upstream tier
+- root: [Step 4] upstream status shows recent restarts, OOM kills (`dmesg | grep -i killed`), or `pm.max_children`/`pm.max_requests` recycling warnings
+- root: [Step 7] 502 spikes coincide with upstream deploy/restart events or memory-pressure alerts
 
 **Interventions:**
-- **defensive_fix** (s1): let NGINX retry the most common transient upstream failures so a single aborted connection does not surface as a client 502.
+- **defensive_fix** (s1): let NGINX retry transient upstream failures so a single aborted connection does not surface as a 502.
 
   ```bash
   cat >/etc/nginx/conf.d/upstream-retry.conf <<'EOF'
@@ -242,61 +242,60 @@ Expected output: total response-header bytes and number of header fields. Header
   nginx -t && nginx -s reload
   ```
 
-  **Verification:** over a 15-minute window `awk '$9==502 {c++} END {print c+0}' /var/log/nginx/access.log` returns 0 or pre-incident baseline; transient aborts no longer reach clients.
-- **mitigation** (s1): bound the retry blast radius while the upstream is still unstable.
+  **Verification:** over 15 min `awk '$9==502 {c++} END {print c+0}' /var/log/nginx/access.log` returns 0 or baseline.
+- **mitigation** (s1): bound the retry blast radius while the upstream is unstable.
 
   ```bash
-  # Already bounded above; reduce tries if retries amplify load on a struggling backend
+  # Reduce tries if retries amplify backend load
   proxy_next_upstream_tries 2;
   ```
 
-  **Risk:** Retries add up to 3x request load to an already-struggling pool during incidents. **Duration:** Hours to days — resolve the upstream crashes within the next sprint. **Verification:** upstream CPU/memory pressure does not worsen after enabling retries.
-- **remediation** (root): fix the upstream fault that aborts the worker (segfault/OOM, handler bug, or recycling under load).
+  **Risk:** Retries add up to 3x load to a struggling pool. **Duration:** Hours to days — fix the crashes this sprint. **Verification:** upstream CPU/memory pressure does not worsen.
+- **remediation** (root): fix the upstream fault that aborts the worker (segfault/OOM, handler bug, or recycling).
 
   ```bash
-  # 1) PHP-FPM segfault or OOM
+  # 1) PHP-FPM segfault/OOM
   sed -i 's/^memory_limit = .*/memory_limit = 256M/' /etc/php.ini
   systemctl restart php-fpm
-  # 2) Node.js/Python worker crash — patch the handler, ship a new image, re-roll
+  # 2) Node/Python worker crash — patch handler, ship new image, re-roll
   kubectl rollout restart deployment/<upstream-deployment> -n <namespace>
-  # 3) Worker recycling under load — raise pm.max_children and pm.max_requests
+  # 3) Recycling under load — raise pm.max_children/pm.max_requests
   sed -i 's/^pm.max_children = .*/pm.max_children = 50/' /etc/php-fpm.d/www.conf
   sed -i 's/^pm.max_requests = .*/pm.max_requests = 1000/' /etc/php-fpm.d/www.conf
   systemctl restart php-fpm
   ```
 
-  **Verification:** over 15 minutes `awk '$9==502 {c++} END {print c+0}' /var/log/nginx/access.log` returns 0 (or baseline) and `grep "upstream prematurely closed" /var/log/nginx/error.log | wc -l` shows no growth.
+  **Verification:** over 15 min `grep "upstream prematurely closed" /var/log/nginx/error.log | wc -l` shows no growth and access-log 502s return to baseline.
 
 ### Cause D: Read or send timeout because the upstream is slow to respond
 
-**Statement:** The upstream eventually responds but takes longer than `proxy_read_timeout` (or `proxy_send_timeout`) between reads, so NGINX closes the connection and returns 502.
+**Statement:** The upstream responds but takes longer than `proxy_read_timeout` (or `proxy_send_timeout`) between reads, so NGINX closes the connection and returns 502.
 
 **Chain:**
-- root: a slow backend operation (long DB query, partial chunk streaming, or a slow third-party API) leaves the upstream alive but silent past `proxy_read_timeout` (default 60 s).
+- root: a slow backend operation (long DB query, partial chunk streaming, or slow third-party API) leaves the upstream alive but silent past `proxy_read_timeout` (default 60 s).
 - s1: NGINX exceeds the inter-read timeout and terminates the upstream connection.
 - s2: NGINX logs `upstream timed out (110: Connection timed out) while reading response header from upstream` and returns 502.
 - D: clients receive HTTP 502 Bad Gateway (Symptom Recognition).
 
 **Indicators:**
 - s2: [Step 1] error log contains `upstream timed out` followed by `while reading response header from upstream` or `while reading upstream`
-- root: [Step 7] access-log entries for affected routes show `$upstream_response_time` near or equal to the configured `proxy_read_timeout` value
-- root: [Step 4] upstream service is healthy (`active (running)`) and listening; CPU is high or single requests take >30 s in upstream-side traces
+- root: [Step 7] access-log entries for affected routes show `$upstream_response_time` near the configured `proxy_read_timeout`
+- root: [Step 4] upstream service is healthy (`active (running)`) and listening; CPU high or single requests take >30 s in upstream traces
 
 **Interventions:**
-- **mitigation** (s1): widen the per-location timeout for an endpoint known to be slow while the upstream is being optimised.
+- **mitigation** (s1): widen the per-location timeout for a known-slow endpoint while the upstream is optimised.
 
   ```nginx
-  # Per-location override for an endpoint known to be slow
   proxy_connect_timeout 30s;
   proxy_send_timeout 300s;
   proxy_read_timeout 300s;
   ```
 
-  **Risk:** Increasing `proxy_read_timeout` raises client wait time and ties up worker connections longer; combine with bounded `proxy_next_upstream_timeout`. **Duration:** Hours, while the upstream is optimised — long-term, push slow work into a job queue and return 202. **Verification:** the slow route returns 2xx and the inter-read timeout is no longer tripped.
+  **Risk:** Higher `proxy_read_timeout` raises client wait and ties up worker connections. **Duration:** Hours while optimising — long-term, push slow work to a job queue and return 202. **Verification:** the slow route returns 2xx and the inter-read timeout is no longer tripped.
 - **defensive_fix** (s1): apply the widened timeout only to the slow route, not globally, so other routes keep tight failure detection.
 
   ```nginx
-  # /etc/nginx/conf.d/<route>.conf — apply only to the slow route, not globally
+  # /etc/nginx/conf.d/<route>.conf
   location /reports/ {
       proxy_pass http://reports_backend;
       proxy_connect_timeout 30s;
@@ -309,15 +308,15 @@ Expected output: total response-header bytes and number of header fields. Header
   nginx -t && nginx -s reload
   ```
 
-  **Verification:** `time curl -sS -o /dev/null -w "%{http_code}\n" https://<host>/<slow-path>` returns 2xx with `$upstream_response_time` well below the new `proxy_read_timeout`; the error log shows no `upstream timed out ... while reading` entries for the next 30 minutes.
-- **remediation** (root): remove the slow operation from the synchronous path so the upstream responds within the timeout (optimise the query, cache, or move long work to an async job returning 202).
+  **Verification:** `time curl -sS -o /dev/null -w "%{http_code}\n" https://<host>/<slow-path>` returns 2xx with `$upstream_response_time` below the new `proxy_read_timeout`; no `upstream timed out ... while reading` entries for 30 min.
+- **remediation** (root): remove the slow operation from the synchronous path so the upstream responds within the timeout (optimise the query, cache, or move long work to an async 202 job).
 
   ```bash
-  # Optimise the slow upstream operation, then confirm the synchronous path is fast.
+  # Optimise the slow operation, then confirm the sync path is fast
   time curl -sS -o /dev/null -w "%{http_code}\n" https://<host>/<slow-path>
   ```
 
-  **Verification:** re-run the representative slow request (Step 7); `$upstream_response_time` is well below `proxy_read_timeout` even without the widened override.
+  **Verification:** re-run the slow request (Step 7); `$upstream_response_time` is well below `proxy_read_timeout` even without the override.
 
 ### Cause E: TLS handshake to the upstream fails
 

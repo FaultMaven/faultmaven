@@ -332,12 +332,12 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 
 ### Cause F: Message exceeds `max.request.size` or topic `max.message.bytes`
 
-**Statement:** One or more messages exceed the producer `max.request.size` (default 1 MB) or the topic-level `max.message.bytes`, causing the broker to reject them with `RecordTooLargeException`.
+**Statement:** Messages exceed the producer `max.request.size` (default 1 MB) or topic `max.message.bytes`, so the broker rejects them with `RecordTooLargeException`.
 
 **Chain:**
 - root: a record is larger than the producer `max.request.size` or the topic `max.message.bytes` / broker `message.max.bytes`.
 - s1: the producer rejects oversized records locally, or the broker returns `RecordTooLargeException` in the produce response.
-- s2: Kafka does not split messages, so delivery cannot succeed until the record shrinks or both limits are raised.
+- s2: Kafka does not split messages, so delivery fails until the record shrinks or both limits are raised.
 - D: the broker rejects the message with `RecordTooLargeException` (points at Symptom Recognition).
 
 **Indicators:**
@@ -349,33 +349,31 @@ Expected output: `kafka-console-producer.sh` exits cleanly without error. `kafka
 - **remediation** (root): raise the topic `max.message.bytes`, producer `max.request.size`, and broker `replica.fetch.max.bytes` together (or prefer `compression.type=lz4`).
 
   ```bash
-  # Raise the topic and broker replica-fetch limits so replicas can copy large records
+  # Raise topic + broker replica-fetch limits so replicas can copy large records
   kafka-configs.sh --bootstrap-server kafka1:9092 \
     --entity-type topics --entity-name <topic> \
     --alter --add-config max.message.bytes=5242880
   kafka-configs.sh --bootstrap-server kafka1:9092 \
     --entity-type brokers --entity-name 0 \
     --alter --add-config replica.fetch.max.bytes=5242880
-  # Raise the producer limit and restart
   kubectl set env deployment/<app> KAFKA_PRODUCER_MAX_REQUEST_SIZE=5242880
   kubectl rollout restart deployment/<app>
-  # Alternatively prefer compression: compression.type=lz4 reduces JSON/text 3-5x without schema changes
+  # Or prefer compression.type=lz4 (3-5x on JSON/text, no schema change)
   ```
 
-  **Verification:** Step 6 end-to-end health check passes with a message near the new size limit; Step 1 grep returns no new `RecordTooLargeException` lines.
+  **Verification:** Step 6 health check passes with a message near the new limit; Step 1 grep shows no new `RecordTooLargeException`.
 - **mitigation** (s1): raise the topic `max.message.bytes` and producer `max.request.size` to admit the oversized payload while a compression/schema fix is evaluated.
 
   ```bash
-  # Raise the topic limit (immediate, no broker restart required)
+  # Topic limit is immediate, no broker restart required
   kafka-configs.sh --bootstrap-server kafka1:9092 \
     --entity-type topics --entity-name <topic> \
     --alter --add-config max.message.bytes=5242880
-  # Raise the producer limit and restart
   kubectl set env deployment/<app> KAFKA_PRODUCER_MAX_REQUEST_SIZE=5242880
   kubectl rollout restart deployment/<app>
   ```
 
-  **Risk:** Raising `max.message.bytes` and `max.request.size` increases memory pressure on both sides — brokers allocate per-message receive buffers; producers allocate per-batch send buffers. Confirm broker `replica.fetch.max.bytes` is also raised or replicas cannot replicate the oversized records. **Duration:** Topic config change is immediate; producer restart takes effect on rollout. **Verification:** Step 1 grep returns no new `RecordTooLargeException` lines.
+  **Risk:** Raising both limits increases memory pressure (broker receive buffers, producer send buffers); also raise `replica.fetch.max.bytes` or replicas can't replicate the records. **Duration:** Topic change immediate; producer takes effect on rollout. **Verification:** Step 1 grep shows no new `RecordTooLargeException`.
 
 ### Cause G: Broker overloaded — request handler threads exhausted
 

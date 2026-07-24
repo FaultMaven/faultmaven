@@ -276,7 +276,7 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
 
 ### Cause C: Worker connection pool saturated, requests queue in the accept-queue
 
-**Statement:** Worker connections are fully consumed by in-flight requests and idle keepalives, so new connections wait in the kernel accept-queue before NGINX can handle them, adding constant latency before any application work starts.
+**Statement:** Worker connections are fully consumed by in-flight requests and idle keepalives, so new connections wait in the kernel accept-queue before NGINX can handle them, adding constant latency before any application work.
 
 **Chain:**
 - root: each worker accepts up to `worker_connections` simultaneous client connections, and that ceiling is hit under load.
@@ -293,7 +293,7 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
 - **remediation** (root): raise `worker_connections` and FD limits, enlarge the listen backlog, and widen `somaxconn`.
 
   ```nginx
-  # /etc/nginx/nginx.conf — top level
+  # nginx.conf — top level
   worker_processes auto;
   worker_rlimit_nofile 65535;
 
@@ -302,15 +302,14 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
       multi_accept on;
   }
 
-  # Per-server listen backlog — raise above the kernel default of 4096 if overflowing
+  # Raise the per-server backlog above the kernel default (4096) if overflowing
   # server { listen 443 ssl backlog=8192; }
   ```
 
   ```bash
-  # Kernel-side, so accept() can drain the larger backlog
+  # Widen somaxconn so accept() can drain the larger backlog
   sysctl -w net.core.somaxconn=8192
   echo 'net.core.somaxconn=8192' >/etc/sysctl.d/99-nginx.conf
-  # systemd drop-in for LimitNOFILE on the nginx unit
   mkdir -p /etc/systemd/system/nginx.service.d
   cat >/etc/systemd/system/nginx.service.d/limits.conf <<'EOF'
   [Service]
@@ -320,15 +319,14 @@ Expected output: client-side timing from `curl` paired with the NGINX-side acces
   systemctl restart nginx
   ```
 
-  **Verification:** Repeat Step 4; `Active connections` is well below the new ceiling under the same load and `Recv-Q` on the listen socket stays at 0. `nstat TcpExtListenOverflows` stops incrementing.
-- **mitigation** (s1): lift the FD ceiling on the running master to relieve pressure pending the restart.
+  **Verification:** Repeat Step 4; `Active connections` stays below the new ceiling under load, listen-socket `Recv-Q` stays at 0, and `nstat TcpExtListenOverflows` stops incrementing.
+- **mitigation** (s1): lift the FD ceiling on the running master pending the restart.
 
   ```bash
-  # Temporary FD ceiling lift on the running master pending reload
   prlimit --nofile=65535:65535 --pid $(cat /run/nginx.pid)
   ```
 
-  **Risk:** Raising `worker_connections` without raising `worker_rlimit_nofile` will exhaust file descriptors and surface as `socket() failed (24: Too many open files)` in the error log; raise both together. **Duration:** Until the next restart — `prlimit` does not persist; pair with the remediation config change in the same change window. **Verification:** error log no longer shows `Too many open files` and `Recv-Q` on the listen socket trends back toward 0.
+  **Risk:** Raising `worker_connections` without `worker_rlimit_nofile` exhausts FDs (`socket() failed (24: Too many open files)`); raise both together. **Duration:** Until restart — `prlimit` does not persist; pair with the remediation in the same window. **Verification:** error log clears `Too many open files` and `Recv-Q` trends back toward 0.
 
 ### Cause D: Proxy response buffers undersized, NGINX spills to disk
 

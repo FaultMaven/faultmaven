@@ -244,25 +244,23 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 
 ### Cause C: S3 Block Public Access strips a grant the bucket policy or ACL relied on
 
-**Statement:** Account-level or bucket-level S3 Block Public Access settings remove the public Allow grant in the bucket policy or ACL before evaluation, so callers relying on the public grant are denied.
+**Statement:** Account- or bucket-level S3 Block Public Access strips the public Allow grant (bucket policy or ACL) before evaluation, so callers relying on it are denied.
 
 **Chain:**
 - root: the access path depends on a public grant — a wildcard-principal Allow (`"Principal": "*"`) in the bucket policy or a public ACL.
-- s1: a Block Public Access setting (`BlockPublicAcls`/`IgnorePublicAcls` for ACLs, `BlockPublicPolicy`/`RestrictPublicBuckets` for policies) is `true` at account or bucket level, applying the most restrictive combination.
-- s2: S3 strips the public grant before evaluation, leaving no remaining Allow for the caller.
-- D: S3 returns `403 AccessDenied`, naming the BlockPublicAcls/BlockPublicPolicy setting (or `with an explicit deny in a resource-based policy` under `RestrictPublicBuckets`).
+- s1: a Block Public Access setting (`BlockPublicAcls`/`IgnorePublicAcls` for ACLs, `BlockPublicPolicy`/`RestrictPublicBuckets` for policies) is `true` at account/bucket scope.
+- s2: S3 strips the public grant before evaluation, leaving no Allow for the caller.
+- D: S3 returns `403 AccessDenied`, naming the BlockPublicAcls/BlockPublicPolicy setting (or a resource-policy deny under `RestrictPublicBuckets`).
 
 **Indicators:**
 - root: [Step 3] the bucket policy contains `"Principal": "*"` or `"Principal": {"AWS": "*"}` Allow statements
-- s1: [Step 5] account or bucket Block Public Access shows `BlockPublicAcls=true`, `IgnorePublicAcls=true`, `BlockPublicPolicy=true`, or `RestrictPublicBuckets=true`
+- s1: [Step 5] account or bucket Block Public Access shows any of the four flags `true`
 - D: [Step 1] error message contains the BlockPublicAcls setting hint
 
 **Interventions:**
-- **remediation** (root): replace the wildcard-principal Allow with a principal-scoped Allow (which Block Public Access does not strip) and re-tighten BPA to the secure default.
+- **remediation** (root): replace the wildcard-principal Allow with a principal-scoped Allow (BPA does not strip it), then re-tighten BPA.
 
   ```bash
-  # Preferred durable fix: replace the wildcard-principal Allow with a principal-scoped Allow,
-  # which Block Public Access does not strip.
   cat > /tmp/bucket-policy-scoped.json <<'EOF'
   {
     "Version": "2012-10-17",
@@ -278,92 +276,67 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
   EOF
   aws s3api put-bucket-policy --bucket <bucket> \
     --policy file:///tmp/bucket-policy-scoped.json
-  # Re-tighten Block Public Access to the secure default
+  # Re-tighten BPA to the secure default
   aws s3api put-public-access-block --bucket <bucket> \
     --public-access-block-configuration \
     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
   ```
 
-  **Verification:** `aws s3api get-public-access-block --bucket <bucket>` shows all four flags `true`; `aws accessanalyzer validate-policy --policy-type RESOURCE_POLICY --policy-document file:///tmp/bucket-policy-scoped.json` returns no `ERROR` or `SECURITY_WARNING` findings; the intended caller re-runs the operation and succeeds.
-- **mitigation** (s1): loosen only the single BPA control causing the deny while validating the policy is the right vehicle.
+  **Verification:** `get-public-access-block` shows all four flags `true`; `aws accessanalyzer validate-policy --policy-type RESOURCE_POLICY` on the scoped policy returns no `ERROR`/`SECURITY_WARNING`; the intended caller succeeds.
+- **mitigation** (s1): loosen only the single BPA control causing the deny.
 
   ```bash
-  # Loosen ONLY the specific control causing the deny, after confirming
-  # no unintended public grant exists.
+  # Relax ONLY the deny-causing control; confirm no unintended public grant first.
   aws s3api put-public-access-block --bucket <bucket> \
     --public-access-block-configuration \
     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=true
   ```
 
-  **Risk:** disabling a BPA setting exposes any latent public grant; relax only the single setting strictly needed (never all four). **Duration:** minutes — re-enable the disabled setting and switch to an authenticated IAM-based grant. **Verification:** the intended caller's request succeeds while the relaxed setting is in effect; re-enable and confirm the remediation grant holds.
+  **Risk:** disabling a BPA setting exposes any latent public grant; relax only the one needed. **Duration:** minutes — re-enable, then switch to an IAM grant. **Verification:** the caller succeeds while relaxed, and still holds after re-enabling.
 
 ### Cause D: Caller lacks KMS permissions for an SSE-KMS encrypted object
 
-**Statement:** The object is encrypted with SSE-KMS and S3 permissions allow the call, but the caller lacks `kms:Decrypt` (reads) or `kms:GenerateDataKey` (writes) on the encrypting KMS key.
+**Statement:** The object is SSE-KMS encrypted and S3 permits the call, but the caller lacks `kms:Decrypt` (reads) or `kms:GenerateDataKey` (writes) on the KMS key.
 
 **Chain:**
-- root: neither the KMS key policy nor any IAM policy/grant allows the caller's cryptographic action (`kms:Decrypt`/`kms:GenerateDataKey`) on the encrypting key.
-- s1: S3 asks KMS to decrypt/generate the per-object data key, and KMS evaluates its key policy plus IAM and grants.
-- s2: KMS returns `AccessDenied` for the cryptographic operation, so S3 cannot fulfil the request.
-- D: the SDK surfaces `403 AccessDenied` on the S3 operation, with a paired KMS `AccessDenied` event in CloudTrail.
+- root: neither the KMS key policy nor any IAM policy or grant allows the caller's crypto action (`kms:Decrypt`/`kms:GenerateDataKey`) on the encrypting key.
+- s1: S3 asks KMS to unwrap the per-object data key; KMS evaluates its key policy, IAM, and grants.
+- s2: KMS returns `AccessDenied` for the crypto operation, so S3 cannot fulfil the request.
+- D: the SDK surfaces `403 AccessDenied` on the S3 op, with a paired KMS `AccessDenied` event in CloudTrail.
 
 **Indicators:**
-- root: [Step 7] the KMS key policy has no Allow with `kms:Decrypt`/`kms:GenerateDataKey` whose Principal includes the caller, and `list-grants` returns no covering grant
+- root: [Step 7] the KMS key policy has no `kms:Decrypt`/`kms:GenerateDataKey` Allow whose Principal includes the caller, and `list-grants` shows no covering grant
 - s1: [Step 6] `head-object` reports `ServerSideEncryption: aws:kms` and a `SSEKMSKeyId`
-- s2: [Step 1] CloudTrail shows a `kms.amazonaws.com` event with `errorCode=AccessDenied` and `eventName=Decrypt` or `GenerateDataKey` correlated with the S3 403
+- s2: [Step 1] CloudTrail shows a `kms.amazonaws.com` event with `errorCode=AccessDenied` and `eventName=Decrypt`/`GenerateDataKey` correlated with the S3 403
 
 **Interventions:**
-- **remediation** (root): grant the caller's role `kms:Decrypt`/`kms:GenerateDataKey` on the key via both the key policy and an identity-based policy (defense in depth).
+- **remediation** (root): grant the caller's role `kms:Decrypt`/`kms:GenerateDataKey` on the encrypting key via the key policy (for cross-account access the caller's IAM policy must ALSO allow these actions — `aws iam put-role-policy`, see Prevention).
 
   ```bash
-  # Update the KMS key policy to grant the caller's role kms:Decrypt and kms:GenerateDataKey
+  # Grant caller kms:Decrypt/GenerateDataKey; keep root or you lock the account out.
   cat > /tmp/kms-policy.fixed.json <<'EOF'
   {
     "Version": "2012-10-17",
     "Statement": [
-      {
-        "Sid": "EnableRootPermissions",
-        "Effect": "Allow",
-        "Principal": {"AWS": "arn:aws:iam::<key-owner-account>:root"},
-        "Action": "kms:*",
-        "Resource": "*"
-      },
-      {
-        "Sid": "AllowS3CallerToUseKey",
-        "Effect": "Allow",
-        "Principal": {"AWS": "arn:aws:iam::<caller-account>:role/<caller-role>"},
-        "Action": ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
-        "Resource": "*"
-      }
+      {"Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::<key-owner-account>:root"}, "Action": "kms:*", "Resource": "*"},
+      {"Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::<caller-account>:role/<caller-role>"}, "Action": ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"], "Resource": "*"}
     ]
   }
   EOF
   aws kms put-key-policy --key-id <key-arn> --policy-name default \
     --policy file:///tmp/kms-policy.fixed.json
-  # Also grant the same actions on the caller's identity-based policy
-  aws iam put-role-policy --role-name <caller-role> --policy-name AllowKMSForS3 \
-    --policy-document '{
-      "Version": "2012-10-17",
-      "Statement": [{
-        "Effect": "Allow",
-        "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
-        "Resource": "<key-arn>"
-      }]
-    }'
   ```
 
-  **Verification:** `aws kms encrypt --key-id <key-arn> --plaintext "test" --query CiphertextBlob` succeeds when run as the caller; the original S3 GET succeeds and CloudTrail shows no further `AccessDenied` on `s3.amazonaws.com` or `kms.amazonaws.com` for 15 minutes.
-- **mitigation** (root): identify which principals already use the key to scope the grant before editing (read-only; no live mitigation possible — move directly to remediation).
+  **Verification:** `aws kms encrypt --key-id <key-arn> --plaintext test` succeeds as the caller; the S3 GET then succeeds with no further `AccessDenied` on `s3`/`kms` in CloudTrail.
+- **mitigation** (root): identify which principals already use the key to scope the grant before editing (read-only; move directly to remediation).
 
   ```bash
-  # Inspect which principals already use the key
-  aws cloudtrail lookup-events \
+  aws cloudtrail lookup-events --max-results 20 \
     --lookup-attributes AttributeKey=ResourceName,AttributeValue=<key-arn> \
-    --max-results 20 \
     --query 'Events[].{User:Username,Event:EventName,Time:EventTime}'
   ```
 
-  **Risk:** adding a broad `kms:Decrypt` Allow expands the key's blast radius; prefer granting to a specific role ARN. **Duration:** read-only command; no mitigation in place — apply remediation immediately. **Verification:** the returned principal list confirms the role to scope into the remediation grant.
+  **Risk:** a broad `kms:Decrypt` Allow widens the key's blast radius; prefer a specific role ARN. **Duration:** read-only; no live mitigation — remediate immediately. **Verification:** the list names the role to scope into the grant.
 
 ### Cause E: Object owned by a different account than the bucket and no policy grants the bucket owner access
 

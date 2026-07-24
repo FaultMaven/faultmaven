@@ -222,52 +222,46 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 
 ### Cause B: HTTP-01 self-check fails — solver endpoint unreachable from the public internet
 
-**Statement:** Let's Encrypt's validation servers cannot reach `http://<domain>/.well-known/acme-challenge/<token>` because port 80 is blocked, the public A record does not point at the cluster's external load balancer, or no ingress listens on the solver path.
+**Statement:** Let's Encrypt's validation servers cannot reach `http://<domain>/.well-known/acme-challenge/<token>` because TCP/80 is blocked, the public A record does not point at the cluster load balancer, or no ingress serves the solver path.
 
 **Chain:**
-- root: TCP/80 to the cluster ingress is blocked at ISP/firewall/security-group, OR the public A record points at an old environment, OR a CDN/WAF strips `/.well-known/`.
-- s1: cert-manager's in-cluster self check GET against the challenge URL fails to reach a 200 with the key authorization.
-- s2: The Challenge stays `pending` with `Waiting for HTTP-01 challenge propagation: failed to perform self check GET request`.
+- root: TCP/80 to the ingress is blocked (ISP/firewall/security-group), OR the public A record points at an old environment, OR a CDN/WAF strips `/.well-known/`.
+- s1: cert-manager's in-cluster self check GET against the challenge URL never returns a 200 with the key authorization.
+- s2: The Challenge stays `pending` with `Waiting for HTTP-01 challenge propagation`.
 - D: Validation never completes, so the Certificate stays `Ready=False` (Symptom Recognition).
 
 **Indicators:**
 - s1: [Step 3] controller log contains `failed to perform self check GET request`
 - s2: [Step 2] Challenge `status.reason` contains `Waiting for HTTP-01 challenge propagation`
-- root: [Step 5] `curl -v http://<domain>/.well-known/acme-challenge/<token>` returns `connection refused`, a TCP timeout, a 404 body, or redirects to HTTPS before serving the token
+- root: [Step 5] `curl -v http://<domain>/.well-known/acme-challenge/<token>` returns `connection refused`, a timeout, a 404, or an HTTPS redirect
 - root: [Step 5] `dig +short A <domain>` returns an address that is not the cluster's ingress external IP
 
 **Interventions:**
-- **remediation** (root): Restore public-side reachability — correct the A record, open TCP/80 on every layer, align the solver ingress class — then force re-issuance.
+- **remediation** (root): Restore public-side reachability (A record, TCP/80, solver ingress class), then re-issue.
 
   ```bash
-  # 1) Confirm public DNS points at the cluster ingress external IP/hostname.
-  INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
-    -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  # 1) Confirm public DNS points at the ingress IP; fix the A record if not.
+  kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
   dig +short A <domain>
-  # If the A record is wrong, update it at the DNS provider; do not proceed until dig matches $INGRESS_IP.
 
-  # 2) Open TCP/80 to the cluster ingress on every layer in front of it (cloud LB, security group, network ACL, on-prem firewall).
-  # Cloud-specific examples:
+  # 2) Open TCP/80 on every layer in front of the ingress (LB, SG, ACL, firewall).
   aws ec2 describe-security-groups --group-ids <ingress-sg> --query "SecurityGroups[].IpPermissions[?FromPort==\`80\`]"
-  gcloud compute firewall-rules list --filter="targetTags~ingress AND allowed.ports:80"
+  gcloud compute firewall-rules list --filter="targetTags~ingress AND allowed.ports:80"  # GCP equivalent
 
-  # 3) Make sure the solver Ingress class matches the cluster's ingress controller.
-  kubectl get ingressclass
+  # 3) Align the solver Ingress class, then re-issue.
   kubectl patch clusterissuer <issuer-name> --type=json \
     -p='[{"op":"replace","path":"/spec/acme/solvers/0/http01/ingress/ingressClassName","value":"nginx"}]'
-
-  # 4) Force re-issuance once reachability is fixed.
   cmctl renew -n <ns> <cert-name>
   ```
 
-  **Verification:** `curl -v http://<domain>/.well-known/acme-challenge/test` reaches the cluster ingress (200 or 404 with `server: nginx` header — not connection-refused/timeout); a freshly created Challenge transitions from `pending` to `valid` within 2 minutes; controller logs no longer contain `failed to perform self check GET request` for the affected name.
-- **mitigation** (s2): Issue a temporary self-signed certificate so the workload keeps serving TLS while reachability is restored.
+  **Verification:** `curl -v http://<domain>/.well-known/acme-challenge/test` reaches the ingress (200/404 with `server: nginx`, not refused/timeout); a fresh Challenge moves `pending`→`valid` within 2 minutes; logs no longer show `failed to perform self check GET request`.
+- **mitigation** (s2): Issue a temporary self-signed certificate so the workload keeps serving TLS.
 
   ```bash
   kubectl annotate certificate -n <ns> <cert-name> cert-manager.io/issue-temporary-certificate="true" --overwrite
   ```
 
-  **Risk:** Clients of the workload may temporarily see a self-signed or staging chain until the production issuance lands. **Duration:** Minutes-to-hours — keep the temporary certificate in place only until the public-side reachability is restored. **Verification:** the workload serves the temporary certificate; once reachability is fixed, `cmctl renew` lands a production chain and the annotation can be removed.
+  **Risk:** Clients temporarily see a self-signed chain until production issuance lands. **Duration:** Until reachability is restored. **Verification:** after the fix, `cmctl renew` lands a production chain.
 
 ### Cause C: HTTP-01 solver Ingress uses the wrong ingress class
 
@@ -329,9 +323,8 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 - **remediation** (root): Point the domain at the cluster ingress (or set the CDN edge to DNS-only mode), confirm propagation, then renew.
 
   ```bash
-  # 1) Point the domain at the cluster ingress (or, on CDN platforms, disable proxy / set the edge to DNS-only mode for the apex/sub-hostname).
-  # For Cloudflare: set the orange cloud to grey (DNS-only) on the relevant record, or move to DNS-01.
-  # For Route 53 alias records: set Alias Target to the cluster's NLB/ALB hostname.
+  # 1) Point the domain at the cluster ingress, or set the CDN edge to DNS-only mode
+  #    (Cloudflare: orange cloud → grey; Route53 alias: target the cluster NLB/ALB hostname).
 
   # 2) Confirm propagation, then renew.
   dig +short A <domain> @1.1.1.1
@@ -339,7 +332,7 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
   cmctl renew -n <ns> <cert-name>
   ```
 
-  **Verification:** `dig +short A <domain> @8.8.8.8` returns the cluster ingress external IP; `curl -sI http://<domain>/.well-known/acme-challenge/test` returns the cluster's ingress controller `server:` header; a fresh Challenge reaches `valid` within 2 minutes.
+  **Verification:** `dig +short A <domain> @8.8.8.8` returns the cluster ingress IP; `curl -sI http://<domain>/.well-known/acme-challenge/test` returns the cluster ingress `server:` header; a fresh Challenge reaches `valid` within 2 minutes.
 - **mitigation** (root): Switch the Certificate to a DNS-01 solver to remove the dependency on public HTTP reachability.
 
   ```bash
@@ -347,45 +340,41 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
     '{"spec":{"issuerRef":{"name":"<dns01-clusterissuer>","kind":"ClusterIssuer"}}}'
   ```
 
-  **Risk:** Requires the DNS provider to support cert-manager and credentials with permission to write `_acme-challenge` TXT records; wildcard certificates require DNS-01 anyway. **Duration:** Until the DNS routing is corrected; consider keeping DNS-01 as the long-term solver. **Verification:** the DNS-01 Challenge transitions to `valid` and the Certificate becomes `Ready=True` independent of the misrouted A record.
+  **Risk:** Requires a cert-manager-supported DNS provider with credentials to write `_acme-challenge` TXT records. **Duration:** Until DNS routing is corrected; consider keeping DNS-01 long-term. **Verification:** the DNS-01 Challenge reaches `valid` and the Certificate becomes `Ready=True` independent of the misrouted A record.
 
 ### Cause E: DNS-01 challenge fails — provider credentials, zone, or propagation
 
-**Statement:** cert-manager either could not create the `_acme-challenge.<domain>` TXT record (DNS-provider authentication or zone-id failure) or the record was created but is not visible to Let's Encrypt's recursive resolvers within the propagation-check timeout.
+**Statement:** cert-manager could not create the `_acme-challenge.<domain>` TXT record (auth or zone-id failure), or created it but it is not visible to Let's Encrypt within the propagation timeout.
 
 **Chain:**
-- root: DNS-provider credentials are wrong/under-permissioned, the wrong `hostedZoneID`/SOA-discovered zone is targeted, OR the record is published but not yet visible to the configured recursive resolvers.
-- s1: cert-manager fails to create the TXT record (`403 AccessDenied`/`InvalidSignatureException`, `failed to create TXT record`) OR publishes it to a zone that doesn't serve the domain OR the resolvers still return NXDOMAIN/REFUSED past the timeout.
-- s2: The propagation check fails — controller logs `propagation check failed` or `NS <ns> returned REFUSED` and the Challenge stays `pending`/`invalid`.
+- root: DNS-provider credentials are wrong/under-permissioned, the wrong zone is targeted, OR the record is published but not yet visible.
+- s1: cert-manager fails to create the TXT record (`403 AccessDenied`), publishes to a wrong zone, OR resolvers still return NXDOMAIN/REFUSED past the timeout.
+- s2: The propagation check fails — logs `propagation check failed` or `NS <ns> returned REFUSED` and the Challenge stays `pending`/`invalid`.
 - D: Validation never completes, so the Certificate stays `Ready=False` (Symptom Recognition).
 
 **Indicators:**
-- s1: [Step 6] `status.presented` is `false` or `status.reason` contains `Failed to create TXT record` / `Access Denied` / `Unauthorized`
+- s1: [Step 6] `status.presented` is `false` or `status.reason` contains `Failed to create TXT record` / `Access Denied`
 - s2: [Step 3] controller log contains `propagation check failed` or `NS <ns> returned REFUSED`
-- s2: [Step 6] `dig +short TXT _acme-challenge.<domain> @8.8.8.8` returns empty when `dig +short TXT _acme-challenge.<domain>` (authoritative) returns the published value
-- s2: [Step 6] `dig +short TXT _acme-challenge.<domain>` is empty against every public resolver and `status.presented` claims `true`
+- s2: [Step 6] `dig +short TXT _acme-challenge.<domain> @8.8.8.8` is empty while the authoritative dig returns the value
+- s2: [Step 6] `dig` is empty against every public resolver yet `status.presented` claims `true`
 
 **Interventions:**
-- **remediation** (root): Fix the DNS-provider credentials and pin the zone-id, verify end-to-end, then renew.
+- **remediation** (root): Fix the DNS-provider credentials and pin the zone-id, then renew.
 
   ```bash
-  # 1) Fix DNS-provider credentials.
-  # Route53 example: the IAM policy must include route53:GetChange, route53:ChangeResourceRecordSets, route53:ListHostedZonesByName.
-  aws iam get-role-policy --role-name <cert-manager-role> --policy-name cert-manager-dns01
+  # 1) Rotate DNS-provider credentials (Route53 IAM needs change-record + list-zones perms).
   kubectl create secret generic <dns-provider-secret> -n cert-manager \
     --from-literal=secret-access-key='<new-secret>' --dry-run=client -o yaml | kubectl apply -f -
 
-  # 2) Pin the zone-id in the Issuer to avoid SOA discovery surprises.
+  # 2) Pin the zone-id (avoid SOA-discovery surprises), then renew.
   kubectl patch clusterissuer <issuer-name> --type=json -p='[
     {"op":"replace","path":"/spec/acme/solvers/0/dns01/route53/hostedZoneID","value":"<Z123EXAMPLE>"}
   ]'
-
-  # 3) Verify the credential and zone are correct end-to-end, then renew.
   cmctl renew -n <ns> <cert-name>
   ```
 
-  **Verification:** `dig +short TXT _acme-challenge.<domain> @8.8.8.8` returns the value cert-manager published; the Challenge transitions to `valid` within the configured propagation-check window; controller logs no longer contain `propagation check failed` or provider auth errors over a 10-minute window.
-- **defensive_fix** (s2): Force cert-manager to use specific public recursive nameservers so propagation checks match Let's Encrypt's view.
+  **Verification:** `dig +short TXT _acme-challenge.<domain> @8.8.8.8` returns the published value; the Challenge reaches `valid`; logs no longer show `propagation check failed`.
+- **defensive_fix** (s2): Force cert-manager to use public recursive nameservers matching Let's Encrypt's view.
 
   ```bash
   kubectl patch deployment cert-manager -n cert-manager --type=json -p='[
@@ -395,50 +384,48 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
   kubectl rollout status -n cert-manager deploy/cert-manager
   ```
 
-  **Verification:** after rollout, the propagation check passes consistently and the Challenge transitions to `valid`; on clusters with split-horizon/private DNS, confirm the published record is still visible to these resolvers before relying on the flags.
+  **Verification:** after rollout, propagation checks pass and the Challenge reaches `valid`; on split-horizon DNS, confirm the record is visible to them first.
 
 ### Cause F: Let's Encrypt rate limit — Certificates per Registered Domain or Duplicate Certificate
 
-**Statement:** Let's Encrypt rejects the new-order request with HTTP 503 and `urn:ietf:params:acme:error:rateLimited` because the registered domain has issued more than 50 certificates in the trailing 7 days, or because the same exact set of identifiers has been issued more than 5 times in 7 days.
+**Statement:** Let's Encrypt rejects the new-order request with HTTP 503 and `urn:ietf:params:acme:error:rateLimited` because the registered domain issued more than 50 certificates in the trailing 7 days, or the same identifier set was issued more than 5 times in 7 days.
 
 **Chain:**
 - root: A CI loop (or per-deploy Helm/Kustomize bundle) recreates the Certificate, pushing the registered domain past 50 certs/7 days or the identifier set past 5 duplicates/7 days.
-- s1: The ACME new-order endpoint returns HTTP 503 + `Retry-After` with `urn:ietf:params:acme:error:rateLimited :: Error creating new order :: too many certificates already issued`.
-- s2: cert-manager backs off and retries, but the underlying Order stays `errored` until the trailing 7-day window clears.
+- s1: The ACME new-order endpoint returns HTTP 503 + `Retry-After` with `rateLimited :: too many certificates already issued`.
+- s2: cert-manager backs off and retries, but the underlying Order stays `errored` until the 7-day window clears.
 - D: The Certificate stays `Ready=False` (Symptom Recognition).
 
 **Indicators:**
 - s1: [Step 3] controller log contains `urn:ietf:params:acme:error:rateLimited`
 - s1: [Step 3] controller log contains `too many certificates already issued`
-- root: [Step 7] CT-log query against `https://crt.sh/?q=<registered-domain>` returns more than 50 certs in the last 7 days (per-RegisteredDomain limit) or more than 5 for an identical SAN set (duplicate limit)
+- root: [Step 7] CT-log query `https://crt.sh/?q=<registered-domain>` returns >50 certs in the last 7 days (per-domain limit) or >5 for an identical SAN set (duplicate limit)
 
 **Interventions:**
-- **remediation** (root): Stop the loop recreating the Certificate, wait for the 7-day window to clear, then re-issue from production.
+- **remediation** (root): Stop the loop recreating the Certificate, wait for the 7-day window, then re-issue from production.
 
   ```bash
-  # 1) Stop the loop that's burning the budget — identify what's recreating the Certificate.
+  # 1) Identify and stop what's recreating the Certificate (often a Helm/Kustomize overlay
+  #    that deletes-and-recreates per deploy — pin Certificates outside the per-deploy bundle).
   kubectl get events -A --field-selector involvedObject.kind=Certificate \
     --sort-by=.lastTimestamp | tail -20
-  # Common cause: a Helm chart or Kustomize overlay that deletes-and-recreates Certificates per deploy. Pin Certificates outside the per-deploy bundle.
 
-  # 2) Wait for the window to clear, then re-issue from production. The exact reset time
-  # appears in Retry-After; conservatively wait 7 days from the earliest of the over-budget issuances.
-  date -d '7 days ago' -Iseconds  # window cutoff
+  # 2) Wait 7 days from the earliest over-budget issuance (exact reset is in Retry-After), then re-issue.
   curl -s "https://crt.sh/?q=<registered-domain>&output=json" \
     | jq '[.[] | select(.entry_timestamp > "'$(date -d '7 days ago' -Iseconds)'")] | length'
 
-  # 3) For sustained high volume, request a rate-limit override at https://isrg.formstack.com/forms/rate_limit_adjustment_request.
+  # 3) For sustained high volume, request an override: https://isrg.formstack.com/forms/rate_limit_adjustment_request.
   ```
 
-  **Verification:** A test Certificate against the production issuer transitions to `Ready=True` without `rateLimited` in the controller log; the rolling 7-day CT-log count drops below 50 for the registered domain.
-- **mitigation** (root): Switch the Certificate to the staging issuer so non-production hostnames keep a (untrusted) chain while the window clears.
+  **Verification:** a test Certificate against the production issuer reaches `Ready=True` without `rateLimited`; the rolling 7-day CT-log count drops below 50.
+- **mitigation** (root): Switch the Certificate to the staging issuer for non-production hostnames while the window clears.
 
   ```bash
   kubectl patch certificate -n <ns> <cert-name> --type merge -p \
     '{"spec":{"issuerRef":{"name":"<letsencrypt-staging-issuer>","kind":"ClusterIssuer"}}}'
   ```
 
-  **Risk:** Staging produces an untrusted chain; any client without staging-CA trust will fail TLS verification — use only for the rate-limit window and only on non-production hostnames. **Duration:** Up to 7 days, until the production rate-limit window clears. **Verification:** the Certificate issues against staging (`Ready=True`); flip back with `kubectl patch ... issuerRef.name=<letsencrypt-prod-issuer>` once the window clears.
+  **Risk:** Staging produces an untrusted chain — use only on non-production hostnames. **Duration:** Up to 7 days. **Verification:** the Certificate issues against staging (`Ready=True`); flip back to `<letsencrypt-prod-issuer>` afterward.
 
 ### Cause G: Let's Encrypt rate limit — too many failed authorizations recently
 
@@ -484,43 +471,39 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
 
 ### Cause H: cert-manager controller, webhook, or cainjector pod is unhealthy
 
-**Statement:** A cert-manager control-plane component (`cert-manager`, `cert-manager-webhook`, or `cert-manager-cainjector`) is unhealthy, halting reconciliation cluster-wide or rejecting every `kubectl apply` of a cert-manager CRD with a webhook error.
+**Statement:** A cert-manager control-plane component (`cert-manager`, `cert-manager-webhook`, or `cert-manager-cainjector`) is unhealthy, halting reconciliation cluster-wide or rejecting every cert-manager CRD apply.
 
 **Chain:**
-- root: A control-plane pod fails — webhook evicted/OOMKilled, a private-cluster firewall blocks the webhook port, or cainjector lost leader election and stopped re-injecting the CA bundle.
-- s1: A down controller silently halts reconciliation, OR a down/unreachable webhook fails every CRD apply with `failed calling webhook "webhook.cert-manager.io": ... connection refused`/`i/o timeout`/`x509: certificate signed by unknown authority`.
-- s2: Issuance stops progressing cluster-wide (reconciliation halted) or no new Certificate manifests can be admitted.
+- root: A control-plane pod fails — webhook evicted/OOMKilled, a firewall blocks the webhook port, or cainjector lost leader election and stopped re-injecting the CA bundle.
+- s1: A down controller silently halts reconciliation; a down/unreachable webhook fails every CRD apply (`failed calling webhook "webhook.cert-manager.io"`, `x509: certificate signed by unknown authority`).
+- s2: Issuance stops cluster-wide, or no new Certificate manifests can be admitted.
 - D: Certificates fail to issue or renew (Symptom Recognition).
 
 **Indicators:**
-- root: [Step 8] `kubectl get pods -n cert-manager` shows one of the cert-manager Pods in `CrashLoopBackOff`, `Pending`, `OOMKilled`, or not Ready
+- root: [Step 8] `kubectl get pods -n cert-manager` shows a cert-manager Pod `CrashLoopBackOff`/`Pending`/`OOMKilled`/not Ready
 - s1: [Step 8] `kubectl get endpoints -n cert-manager cert-manager-webhook` returns no `<ip>:<port>` pair
-- s1: [Step 8] `kubectl apply -f <cert-manifest>.yaml` returns `failed calling webhook "webhook.cert-manager.io"`
+- s1: [Step 8] `kubectl apply` of a Certificate returns `failed calling webhook "webhook.cert-manager.io"`
 - s1: [Step 8] `kubectl apply` returns `x509: certificate signed by unknown authority`
 
 **Interventions:**
-- **remediation** (root): Restore the failed component — raise memory limits if OOMKilled, open the webhook port in private clusters, or force cainjector to re-inject the CA bundle.
+- **remediation** (root): Restore the failed component (memory if OOMKilled, webhook port in private clusters, or cainjector re-inject).
 
   ```bash
-  # 1) If OOMKilled, raise memory limits proportional to the Certificate count in the cluster.
+  # 1) If OOMKilled, raise memory limits proportional to the cluster's Certificate count.
   kubectl set resources -n cert-manager deploy/cert-manager \
     --limits=cpu=500m,memory=512Mi --requests=cpu=100m,memory=256Mi
-  kubectl set resources -n cert-manager deploy/cert-manager-webhook \
-    --limits=cpu=200m,memory=256Mi --requests=cpu=50m,memory=64Mi
 
-  # 2) If the webhook is unreachable in a private cluster, open the webhook port from the API server's pod-range.
-  # GKE private cluster: master-authorized-networks and firewall rule for TCP/10250 (or webhook.securePort).
-  # EKS with custom CNI: set hostNetwork=true and pick a free securePort.
+  # 2) If the webhook is unreachable in a private cluster, open its port to the API server
+  #    (GKE: authorized-networks + firewall TCP/10250; EKS custom CNI: hostNetwork + securePort).
   helm upgrade cert-manager jetstack/cert-manager -n cert-manager \
     --reuse-values --set webhook.hostNetwork=true --set webhook.securePort=10260
 
-  # 3) If x509 chain is broken, force cainjector to re-inject.
+  # 3) If the x509 chain is broken, force cainjector to re-inject.
   kubectl rollout restart -n cert-manager deploy/cert-manager-cainjector
-  kubectl rollout restart -n cert-manager deploy/cert-manager-webhook
   ```
 
-  **Verification:** `kubectl get pods -n cert-manager` shows all three Deployments at the desired replica count with `RESTARTS=0` for at least 10 minutes; `kubectl get endpoints -n cert-manager cert-manager-webhook` lists ready endpoints; `kubectl apply` of a test Certificate succeeds without webhook errors and the Certificate progresses to `Ready=True`.
-- **mitigation** (root): Scale up the webhook and controller to ride out a single pod failure while the persistent fix lands.
+  **Verification:** all three Deployments show `RESTARTS=0`; webhook endpoints are ready; a test `kubectl apply` succeeds and the Certificate reaches `Ready=True`.
+- **mitigation** (root): Scale up the webhook and controller to ride out a single pod failure.
 
   ```bash
   kubectl scale deploy -n cert-manager cert-manager-webhook --replicas=2
@@ -528,68 +511,46 @@ Expected output: the Secret exists with non-empty `tls.crt` / `tls.key`; `openss
   kubectl rollout status -n cert-manager deploy/cert-manager-webhook
   ```
 
-  **Risk:** Generally safe (both support leader election), but on resource-tight clusters the new pods may sit Pending and the issue persists. **Duration:** Hours, until the persistent fix lands. **Verification:** `kubectl get endpoints -n cert-manager cert-manager-webhook` lists ready endpoints and CRD applies succeed.
+  **Risk:** Generally safe (leader election), but on resource-tight clusters new pods may sit Pending. **Duration:** Hours, until the persistent fix lands. **Verification:** webhook endpoints become ready and CRD applies succeed.
 
 ### Cause I: ClusterIssuer/Issuer points at the wrong ACME server or solver scope is too narrow
 
-**Statement:** The issuer references the staging ACME server while production trust is required (or vice versa), or its `solvers[].selector` excludes the dnsName/namespace of the failing Certificate, so cert-manager has no solver to use and stalls before creating an Order.
+**Statement:** The issuer references the wrong ACME server (staging where production trust is required, or vice versa), or its `solvers[].selector` excludes the failing Certificate's dnsName/namespace, so no solver matches and issuance stalls.
 
 **Chain:**
 - root: The issuer's `spec.acme.server` targets the wrong environment, OR its `solvers[].selector` excludes the failing Certificate's namespace/dnsNames.
-- s1: With no matching solver, the Certificate stays `Ready: False` with `Reason: ConfigError` / `no configured challenge solvers can be used for this challenge`; with the wrong server, issuance succeeds but against the wrong (untrusted) ACME endpoint.
-- s2: Either the Certificate never creates an Order, or it serves a chain whose issuer is `(STAGING) Pretend Pear X1` and clients hit `x509: certificate signed by unknown authority`.
+- s1: With no matching solver, the Certificate stays `Ready: False` with `no configured challenge solvers can be used`; with the wrong server, issuance succeeds against the wrong (untrusted) endpoint.
+- s2: Either the Certificate never creates an Order, or it serves a chain issued by `(STAGING) Pretend Pear X1` and clients hit `x509: certificate signed by unknown authority`.
 - D: The Certificate is operationally broken even when it looks "fine" at the resource level (Symptom Recognition).
 
 **Indicators:**
-- root: [Step 4] `spec.acme.server` does not match the intended environment (staging URL in production issuer or vice versa)
+- root: [Step 4] `spec.acme.server` does not match the intended environment
 - s1: [Step 2] CertificateRequest / Order condition contains `no configured challenge solvers can be used`
 - s2: [Step 9] `openssl x509 ... -issuer` prints `(STAGING) Pretend Pear X1` when production was intended
 
 **Interventions:**
-- **remediation** (root): Point the issuer at the correct ACME server with a fresh account-key Secret and widen the solver selector to match the failing Certificate, then re-issue.
+- **remediation** (root): Point the issuer at the correct ACME server + fresh account-key Secret and widen the solver, then re-issue.
 
   ```bash
-  # 1) Point the issuer at the right ACME server and a fresh account-key Secret.
+  # 1) Point the issuer at the correct ACME server + fresh account-key Secret.
+  #    Merge patch preserves existing solvers (e.g. a dns01 solver for wildcards).
   kubectl patch clusterissuer <issuer-name> --type merge -p \
     '{"spec":{"acme":{"server":"https://acme-v02.api.letsencrypt.org/directory","privateKeySecretRef":{"name":"letsencrypt-prod-account-key"}}}}'
 
-  # 2) Widen the solver selector so it actually matches the failing Certificate.
-  kubectl apply -f - <<'EOF'
-  apiVersion: cert-manager.io/v1
-  kind: ClusterIssuer
-  metadata:
-    name: <issuer-name>
-  spec:
-    acme:
-      server: https://acme-v02.api.letsencrypt.org/directory
-      email: <sre-alerts>@<your-domain>
-      privateKeySecretRef:
-        name: letsencrypt-prod-account-key
-      solvers:
-        - http01:
-            ingress:
-              ingressClassName: nginx
-        - selector:
-            dnsZones:
-              - <your-domain>
-          dns01:
-            route53:
-              region: us-east-1
-              hostedZoneID: <Z123EXAMPLE>
-  EOF
-
-  # 3) Re-issue affected Certificates.
+  # 2) If a solver selector excludes the failing Certificate, widen it in place
+  #    (keeps existing http01/dns01 solvers), then re-issue.
+  kubectl edit clusterissuer <issuer-name>
   cmctl renew -n <ns> <cert-name>
   ```
 
-  **Verification:** `kubectl get clusterissuer <issuer-name>` shows `READY=True` and `spec.acme.server` matches the intended environment; a renewed Certificate's `openssl x509 ... -issuer` prints `O = Let's Encrypt, CN = R10` (or current production intermediate); the Ingress controller no longer returns `x509: certificate signed by unknown authority`.
-- **mitigation** (root): Survey every ClusterIssuer's server URL and readiness to confirm which environment each points at before patching.
+  **Verification:** `kubectl get clusterissuer <issuer-name>` shows `READY=True` and `spec.acme.server` matches the intended environment; a renewed Certificate's `openssl x509 ... -issuer` prints `O = Let's Encrypt, CN = R10`.
+- **mitigation** (root): Survey every ClusterIssuer's server URL and readiness before patching.
 
   ```bash
   kubectl get clusterissuer -o custom-columns=NAME:.metadata.name,SERVER:.spec.acme.server,READY:.status.conditions[0].status
   ```
 
-  **Risk:** Patching the issuer server URL re-registers the ACME account on next reconcile, consuming one of the per-IP account-registration quotas (10 per 3 hours), so don't flip back and forth. **Duration:** Diagnostic only. **Verification:** the column output confirms the offending issuer's server URL before any change is applied.
+  **Risk:** Patching the server URL re-registers the ACME account on next reconcile (per-IP quota: 10 per 3 hours) — don't flip back and forth. **Duration:** Diagnostic only. **Verification:** the column output confirms the issuer's server URL before any change.
 
 ### Cause Z: Unidentified
 

@@ -147,48 +147,40 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 ### Cause A: Per-batch processing exceeds `max.poll.interval.ms`
 
-**Statement:** The consumer's processing loop occasionally takes longer than `max.poll.interval.ms` to finish a batch and call `poll()` again, so the coordinator removes it from the group and triggers a rebalance.
+**Statement:** The processing loop occasionally exceeds `max.poll.interval.ms` before calling `poll()` again, so the coordinator removes the member and triggers a rebalance.
 
 **Chain:**
-- root: a slow downstream call, GC pause, or oversized batch pushes one batch's processing time past `max.poll.interval.ms` (default 300000 ms) before `poll()` is called again.
-- s1: the group coordinator marks the member dead and reassigns its partitions; the evicted member's next `commitSync`/`commitAsync` fails with `CommitFailedException`.
-- s2: while the rebalance runs no member is processing, so lag grows on every partition until the evicted member rejoins.
-- D: LAG rises across the group and the consumer logs poll-timeout / rebalance churn (Symptom Recognition).
+- root: a slow downstream call, GC pause, or oversized batch pushes a batch's processing past `max.poll.interval.ms` (default 300000 ms) before `poll()` is called again.
+- s1: the coordinator marks the member dead and reassigns its partitions; its next `commitSync`/`commitAsync` fails with `CommitFailedException`.
+- s2: while the rebalance runs no member processes, so lag grows until the evicted member rejoins.
+- D: LAG rises across the group and consumer logs show poll-timeout / rebalance churn (Symptom Recognition).
 
 **Indicators:**
 - root: [Step 2] consumer log contains the poll-timeout message.
 - s1: [Step 2] consumer log contains `CommitFailedException`.
-- s2: [Step 3] `kafka_consumer_coordinator_metrics_rebalance_rate_per_hour > 1` over the affected window.
+- s2: [Step 3] `kafka_consumer_coordinator_metrics_rebalance_rate_per_hour > 1`.
 
 **Interventions:**
-- **mitigation** (root): lower `max.poll.records` and raise `max.poll.interval.ms` so a batch fits inside the limit.
+- **mitigation** (root): lower `max.poll.records` and raise `max.poll.interval.ms` so a batch fits the limit.
 
   ```bash
-  # Edit application config — example for a Spring/Java client
-  # max.poll.records=100
-  # max.poll.interval.ms=600000
   kubectl set env deployment/<app> \
     KAFKA_CONSUMER_MAX_POLL_RECORDS=100 \
     KAFKA_CONSUMER_MAX_POLL_INTERVAL_MS=600000
   kubectl rollout restart deployment/<app>
   ```
 
-  **Risk:** Lowering `max.poll.records` increases the number of `poll()` round-trips per second — verify broker fetch capacity. Raising `max.poll.interval.ms` extends the time before a genuinely stuck consumer is detected as dead, so lag grows longer before recovery. **Duration:** Config-only stop-gap until the durable fix lands. **Verification:** poll-timeout log lines stop and Step 3's `rebalance-rate-per-hour` falls.
-- **remediation** (root): hand each `poll()` batch to a bounded worker pool and poll again immediately, so the poll thread keeps heartbeats flowing and respects `max.poll.interval.ms` while workers do the slow I/O.
+  **Risk:** Lowering `max.poll.records` raises `poll()` round-trips — verify broker fetch capacity. Raising `max.poll.interval.ms` delays detecting a stuck consumer, so lag grows longer before recovery. **Duration:** Config-only stop-gap until the durable fix lands. **Verification:** poll-timeout log lines stop and Step 3's `rebalance-rate-per-hour` falls.
+- **remediation** (root): hand each `poll()` batch to a bounded worker pool and poll again immediately, keeping heartbeats flowing while workers do slow I/O.
 
   ```bash
-  # Code-side: hand each batch from poll() to a bounded worker pool and
-  # call poll() again immediately. The poll thread keeps heartbeats flowing
-  # and respects max.poll.interval.ms; the workers do the slow I/O.
-  #
-  # Java sketch (illustrative — adapt to your client library):
-  #   while (running) {
-  #     ConsumerRecords<K,V> recs = consumer.poll(Duration.ofMillis(500));
-  #     workerPool.submit(() -> processBatch(recs));
-  #     consumer.commitAsync(offsetsAfterEnqueue(recs), this::handleCommit);
-  #   }
-  #
-  # Pair the code change with right-sized config:
+  # Java sketch: poll() enqueues to a bounded worker pool and polls again
+  # immediately, so the poll thread keeps heartbeats flowing while workers
+  # do slow I/O:
+  #   ConsumerRecords<K,V> recs = consumer.poll(Duration.ofMillis(500));
+  #   workerPool.submit(() -> processBatch(recs));
+  #   consumer.commitAsync(offsetsAfterEnqueue(recs), this::handleCommit);
+  # Pair with right-sized config:
   cat > /etc/<app>/consumer.properties.d/poll-tuning.properties <<'EOF'
   max.poll.records=200
   max.poll.interval.ms=600000
@@ -196,7 +188,7 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
   kubectl rollout restart deployment/<app>
   ```
 
-  **Verification:** After 30 minutes at production load, `kafka_consumer_coordinator_metrics_rebalance_rate_per_hour` returns to near zero, `consumer poll timeout has expired` no longer appears in logs, and Step 1's `total_lag` is decreasing. Decoupling poll from processing changes the at-least-once delivery boundary — commit only after the worker has durably handled the records, or use idempotent downstream writes. Rollback: remove the `poll-tuning.properties` drop-in (or revert the env vars) and `kubectl rollout undo deployment/<app>`.
+  **Verification:** After 30 minutes at load, `rebalance_rate_per_hour` nears zero, poll-timeout log lines stop, and Step 1's `total_lag` decreases. Decoupling shifts the at-least-once boundary — commit only after the worker durably handles records, or use idempotent writes. Rollback: remove the `poll-tuning.properties` drop-in and `kubectl rollout undo deployment/<app>`.
 
 ### Cause B: Consumer count is less than partition count — sustained under-capacity
 
@@ -260,45 +252,41 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 ### Cause D: Eager rebalance protocol causes stop-the-world pauses
 
-**Statement:** The consumer group is configured with `RangeAssignor` (or another eager-protocol assignor), so every membership change revokes all partitions from all members before reassignment, halting consumption for the duration of the rebalance.
+**Statement:** The group uses `RangeAssignor` (or another eager-protocol assignor), so every membership change revokes all partitions from all members before reassignment, halting consumption for the rebalance duration.
 
 **Chain:**
 - root: the group's `partition.assignment.strategy` is an eager-protocol assignor (`RangeAssignor`/`roundrobin`/`sticky`) rather than `CooperativeStickyAssignor`.
-- s1: on every membership change each member must revoke its full assignment, send a JoinGroup, and wait for the leader's SyncGroup before resuming.
-- s2: while that rebalance runs no member consumes any partition, so lag grows uniformly for its duration (seconds, up to minutes under load).
+- s1: on each membership change every member revokes its full assignment, sends a JoinGroup, and waits for the leader's SyncGroup before resuming.
+- s2: while that rebalance runs no member consumes, so lag grows uniformly for its duration (seconds to minutes at load).
 - D: LAG spikes across all partitions on every scale event (Symptom Recognition).
 
 **Indicators:**
 - root: [Step 2] `--state` reports `ASSIGNMENT-STRATEGY: range` (or `roundrobin`, `sticky`) rather than `cooperative-sticky`.
-- root: [Step 6] `partition.assignment.strategy` does not contain `CooperativeStickyAssignor`.
-- s1: [Step 2] consumer logs show `Revoking previously assigned partitions` followed by `(Re-)joining group` on every membership change.
+- root: [Step 6] `partition.assignment.strategy` lacks `CooperativeStickyAssignor`.
+- s1: [Step 2] consumer logs show `Revoking previously assigned partitions` then `(Re-)joining group` on each membership change.
 
 **Interventions:**
-- **mitigation** (root): first bounce — ADD `CooperativeStickyAssignor` alongside the existing eager assignor (a single-bounce swap is rejected by the broker and leaves the group stuck in `PreparingRebalance`).
+- **mitigation** (root): first bounce — ADD `CooperativeStickyAssignor` alongside the existing eager assignor.
 
   ```bash
-  # First bounce: ADD CooperativeStickyAssignor alongside the existing one.
-  # partition.assignment.strategy=org.apache.kafka.clients.consumer.CooperativeStickyAssignor,\
-  #                              org.apache.kafka.clients.consumer.RangeAssignor
+  # First bounce: ADD CooperativeStickyAssignor alongside the existing eager one.
   kubectl set env deployment/<app> \
     KAFKA_CONSUMER_PARTITION_ASSIGNMENT_STRATEGY="org.apache.kafka.clients.consumer.CooperativeStickyAssignor,org.apache.kafka.clients.consumer.RangeAssignor"
   kubectl rollout restart deployment/<app>
   ```
 
-  **Risk:** A single-bounce swap from eager to cooperative is rejected by the broker and the group will be stuck in `PreparingRebalance`; follow the documented two-step procedure exactly. **Duration:** Hold here until every replica has restarted and the group state is `Stable`, then proceed to the second bounce. **Verification:** every replica has restarted and `--state` reports `Stable`.
-- **remediation** (root): second bounce — REMOVE the eager assignor so the group runs incremental cooperative rebalancing on all future membership changes.
+  **Risk:** A single-bounce eager→cooperative swap is broker-rejected and stalls the group in `PreparingRebalance`; follow the two-step procedure exactly. **Duration:** Hold until every replica restarts and the group is `Stable`, then do the second bounce. **Verification:** all replicas restarted and `--state` reports `Stable`.
+- **remediation** (root): second bounce — REMOVE the eager assignor so all future membership changes use incremental cooperative rebalancing.
 
   ```bash
-  # Second bounce: REMOVE the eager assignor. Only run after every replica has
-  # completed the first bounce and the group is Stable.
+  # Second bounce: REMOVE the eager assignor (only after the first bounce is Stable).
   kubectl set env deployment/<app> \
     KAFKA_CONSUMER_PARTITION_ASSIGNMENT_STRATEGY="org.apache.kafka.clients.consumer.CooperativeStickyAssignor"
   kubectl rollout restart deployment/<app>
-  # Verify the switchover
   kafka-consumer-groups.sh --bootstrap-server $BS --describe --group $GROUP --state
   ```
 
-  **Verification:** `kafka-consumer-groups.sh ... --state` reports `ASSIGNMENT-STRATEGY: cooperative-sticky`; subsequent scale events show `Revoking previously assigned partitions` only for the partitions actually being moved, and Step 1's `total_lag` does not spike during a scale-up. Rollback: reverse the env var on the affected revision (`kubectl rollout undo deployment/<app>` twice) — the same two-bounce constraint applies in reverse.
+  **Verification:** `--state` reports `ASSIGNMENT-STRATEGY: cooperative-sticky`; subsequent scale events revoke only the partitions being moved, and Step 1's `total_lag` does not spike during scale-up. Rollback: reverse the env var (`kubectl rollout undo deployment/<app>` twice) — same two-bounce in reverse.
 
 ### Cause E: Transient consumer restarts trigger rebalances — static membership not configured
 
@@ -340,19 +328,19 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 ### Cause F: Partition assignment is skewed — hot keys concentrate traffic
 
-**Statement:** Production is partitioned by a key that does not distribute evenly across partitions, so a small number of partitions carry most of the traffic, and the consumers owning those partitions lag while others run idle.
+**Statement:** Production keys distribute unevenly across partitions, so a few carry most traffic and the consumers owning them lag while others idle.
 
 **Chain:**
-- root: the producer keys records on a skewed key space (high-traffic tenant IDs, geographic clustering, or near-constant keys), and `partition = hash(key) % partition_count` concentrates records on a few partitions.
-- s1: the consumer assigned to a hot partition processes the combined hot-key rate while its peers see LAG flat at 0; adding consumers or partitions does not redistribute existing hot keys (the hash still maps them to the same partition).
-- D: LAG is highly uneven — `max_partition_lag` dwarfs the median while other partitions sit at zero (Symptom Recognition).
+- root: the producer keys records on a skewed key space (high-traffic tenant IDs, geographic clustering, near-constant keys), so `partition = hash(key) % partition_count` concentrates records on a few partitions.
+- s1: the consumer on a hot partition processes the combined hot-key rate while peers see LAG at 0; adding consumers or partitions does not redistribute existing hot keys (the hash still maps them to the same partition).
+- D: LAG is highly uneven — `max_partition_lag` dwarfs the median while others sit at zero (Symptom Recognition).
 
 **Indicators:**
-- root: [Symptom] business metrics show a small number of keys (tenant IDs, hash buckets) dominating production rate.
-- s1: [Step 1] `max_partition_lag` is orders of magnitude larger than the median; [Step 4] the partition-count histogram is balanced yet [Step 1] LAG is uneven.
+- root: [Symptom] business metrics show a few keys (tenant IDs, hash buckets) dominating production rate.
+- s1: [Step 1] `max_partition_lag` is orders of magnitude above the median; [Step 4] the histogram is balanced yet [Step 1] LAG is uneven.
 
 **Interventions:**
-- **mitigation** (root): quantify the skew across partitions before changing the producer.
+- **mitigation** (root): quantify the skew before changing the producer.
 
   ```bash
   # Quantify the skew before changing the producer
@@ -365,25 +353,20 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
   done | sort -t= -k3 -n
   ```
 
-  **Risk:** Read-only measurement; no production change. **Duration:** Diagnostic only; the durable change is the remediation below. **Verification:** the per-partition `log_end` listing confirms a small set of partitions carries most offsets.
-- **remediation** (root): change the producer partitioning so hot keys spread, then drain the hot partitions.
+  **Risk:** Read-only; no production change. **Duration:** Diagnostic only. **Verification:** the `log_end` listing confirms a few partitions carry most offsets.
+- **remediation** (root): change producer partitioning so hot keys spread, then drain the hot partitions.
 
   ```bash
-  # Producer-side: switch to a partitioning strategy that spreads hot keys.
-  # Option A — append a random suffix to hot keys before producing:
-  #   record_key = original_key + "#" + random(0..N-1)
-  #   (consumer must merge by original_key downstream)
-  # Option B — use the built-in UniformStickyPartitioner for keyless / low-cardinality keys:
-  #   producer.properties: partitioner.class=org.apache.kafka.clients.producer.RoundRobinPartitioner
-  # Option C — increase partition count and use a custom partitioner that buckets hot keys
-  #   across multiple partitions while keeping cold keys stable.
-  #
-  # After deploying the producer change, drain the existing hot partitions:
+  # Producer-side: pick a partitioning strategy that spreads hot keys —
+  #   A — suffix hot keys: record_key = original_key + "#" + random(0..N-1)
+  #       (consumer merges by original_key downstream)
+  #   B — RoundRobinPartitioner for keyless / low-cardinality keys
+  #   C — custom partitioner bucketing hot keys, cold keys stable
+  # Then drain the existing hot partitions (no consumer-side change):
   kafka-consumer-groups.sh --bootstrap-server $BS --describe --group $GROUP
-  # Wait until lag on the hot partitions returns to 0 — no consumer-side change required.
   ```
 
-  **Verification:** Step 1's per-partition lag distribution after a full retention window shows a flat profile (max within 2x of median); Step 5's production rate is unchanged. This affects every producer of the topic; ordering by original key is no longer guaranteed across partitions — review downstream stateful processing (joins, aggregations keyed on the original key) before deploying. Rollback: revert the producer's `partitioner.class` (or key-suffixing logic) and redeploy the producer.
+  **Verification:** Step 1's per-partition lag distribution is flat after a full retention window (max within 2x of median); Step 5's production rate is unchanged. Affects every producer; original-key ordering is no longer guaranteed across partitions — review downstream stateful processing (joins, aggregations) first. Rollback: revert the producer's `partitioner.class` (or key-suffixing) and redeploy.
 
 ### Cause G: Producer throughput spike — burst exceeds steady-state consumer capacity
 
@@ -455,44 +438,42 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 
 ### Cause I: GC pauses on the consumer JVM exceed `max.poll.interval.ms`
 
-**Statement:** Long stop-the-world garbage-collection pauses on the consumer JVM block the poll thread for longer than `max.poll.interval.ms`, causing the coordinator to evict the member and triggering rebalances.
+**Statement:** Long stop-the-world GC pauses on the consumer JVM block the poll thread past `max.poll.interval.ms`, so the coordinator evicts the member and triggers rebalances.
 
 **Chain:**
-- root: heap pressure (buffering large batches, `max.poll.records` * record size, or unbounded application caches) drives a full GC (`FGC`) that freezes every Java thread, including the Kafka poll thread.
-- s1: the frozen poll thread fails to call `poll()` (and to heartbeat) before `max.poll.interval.ms` / `session.timeout.ms` expire, so the coordinator evicts the member and reassigns its partitions; the next poll sees `CommitFailedException`.
-- s2: the rebalance halts consumption while partitions move, so lag grows on every partition until the member rejoins.
+- root: heap pressure (large batches, `max.poll.records` * record size, or unbounded caches) drives a full GC (`FGC`) that freezes all Java threads, including the poll thread.
+- s1: the frozen poll thread misses `poll()` and heartbeats before `max.poll.interval.ms` / `session.timeout.ms` expire, so the coordinator evicts the member; the next poll sees `CommitFailedException`.
+- s2: the rebalance halts consumption while partitions move, so lag grows until the member rejoins.
 - D: LAG rises with poll-timeout / commit-failure log lines preceded by long GC pauses (Symptom Recognition).
 
 **Indicators:**
-- root: [Step 7] `jstat -gcutil` shows `O > 90` (old generation >90% full) and `FGC` increments during the affected window.
-- s1: [Step 2] `consumer poll timeout has expired` entries are preceded by GC log lines `Pause Full` lasting hundreds of ms to seconds; [Step 7] `jstack` shows the poll thread inside `Consumer.poll()`/`Fetcher.fetchedRecords()` while application threads pile up waiting for memory.
+- root: [Step 7] `jstat -gcutil` shows `O > 90` (old gen >90%) and `FGC` increments.
+- s1: [Step 2] `consumer poll timeout has expired` entries follow GC log `Pause Full` lines lasting hundreds of ms to seconds; [Step 7] `jstack` shows the poll thread inside `Consumer.poll()`/`Fetcher.fetchedRecords()` while app threads wait for memory.
 
 **Interventions:**
-- **mitigation** (root): take a heap snapshot for offline analysis and halve the batch size to cap heap growth per `poll()`.
+- **mitigation** (root): take a heap snapshot and halve the batch size to cap heap growth per `poll()`.
 
   ```bash
-  # Immediate: take a heap snapshot for offline analysis, then halve the batch size
+  # Snapshot the heap; halve the batch size
   jmap -dump:live,format=b,file=/tmp/consumer.hprof $(pgrep -of <app>)
   kubectl set env deployment/<app> KAFKA_CONSUMER_MAX_POLL_RECORDS=100
   kubectl rollout restart deployment/<app>
   ```
 
-  **Risk:** Reducing `max.poll.records` lowers the per-batch heap footprint but raises the fetch round-trip rate. **Duration:** Until the durable GC fix lands; this caps heap growth per `poll()` but does not address the root cause. **Verification:** Step 7's `FGC` rate drops and poll-timeout log lines stop after restart.
+  **Risk:** Reducing `max.poll.records` lowers per-batch heap footprint but raises the fetch round-trip rate. **Duration:** Until the durable GC fix lands; caps heap growth, not the root fix. **Verification:** Step 7's `FGC` rate drops and poll-timeout log lines stop after restart.
 - **remediation** (root): switch to a low-pause collector and right-size the heap.
 
   ```bash
-  # JVM-side: switch to a low-pause collector and right-size the heap.
-  # Example for JDK 17+ with ZGC:
+  # JVM-side: low-pause collector + right-sized heap (JDK 17+ ZGC example):
   JAVA_TOOL_OPTIONS="-Xms4g -Xmx4g -XX:+UseZGC -XX:+ZGenerational \
     -Xlog:gc*,gc+age=trace,safepoint:file=/var/log/<app>/gc.log:time,uptime,level,tags"
   kubectl set env deployment/<app> JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS"
   kubectl rollout restart deployment/<app>
-  # Verify
-  kubectl exec -it deployment/<app> -- jcmd 1 GC.heap_info
+  kubectl exec -it deployment/<app> -- jcmd 1 GC.heap_info  # confirm collector + heap
   kubectl exec -it deployment/<app> -- grep -E "Pause" /var/log/<app>/gc.log | tail -20
   ```
 
-  **Verification:** Step 7's `jstat -gcutil` shows `FGC` count stable over a 30-minute window; consumer logs contain no `consumer poll timeout has expired` for the same window; Step 1 shows lag draining. ZGC has higher CPU and memory overhead than G1 but pause times are sub-millisecond regardless of heap size — validate the JDK version supports the chosen collector (JDK 17+) before rollout. Rollback: restore the previous `JAVA_TOOL_OPTIONS` (or remove the env var to use the JDK default collector) and `kubectl rollout restart deployment/<app>`.
+  **Verification:** Step 7's `jstat -gcutil` shows `FGC` count stable over 30 minutes; no poll-timeout log lines in the same window; Step 1 shows lag draining. ZGC costs more CPU/memory than G1 but keeps pauses sub-millisecond at any heap size — confirm the JDK supports it (17+) first. Rollback: restore the previous `JAVA_TOOL_OPTIONS` (or remove it for the JDK default) and restart the rollout.
 
 ### Cause Z: Unidentified
 

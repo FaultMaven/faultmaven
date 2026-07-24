@@ -161,52 +161,52 @@ Expected output: a working-set time series. A monotonic upward slope across hour
 
 ### Cause B: Application memory leak driving unbounded growth
 
-**Statement:** Application code retains references that prevent garbage collection (or fails to free native allocations), causing working-set memory to grow monotonically until it crosses the container limit.
+**Statement:** Application code retains references (or fails to free native allocations), so working-set memory grows monotonically until it crosses the container limit.
 
 **Chain:**
 - root: application code retains references (unbounded caches, accumulating listeners, stuck pools, leaked native buffers) or fails to free native allocations.
-- s1: the heap grows with every request or background tick and the garbage collector cannot reclaim the retained space.
+- s1: the heap grows every request or background tick and GC cannot reclaim the retained space.
 - s2: resident memory rises monotonically until it crosses `limits.memory`.
 - s3: the cgroup OOM killer sends SIGKILL; container exits 137.
-- s4: the container restarts with a fresh heap and the cycle restarts on roughly the same time scale (predictable restart intervals).
+- s4: the container restarts with a fresh heap and the cycle repeats on the same time scale (predictable intervals).
 - D: container is OOMKilled (points at Symptom Recognition).
 
 **Indicators:**
-- s2: [Step 9] working-set memory shows a monotonic upward slope over hours or days, not correlated with traffic
+- s2: [Step 9] working-set memory shows a monotonic upward slope over hours/days, uncorrelated with traffic
 - s1: [Step 6] application logs show GC overhead warnings (`GC overhead limit exceeded`, `Mark-sweep ... allocation failed`) or `OutOfMemoryError` shortly before termination
-- s4: [Symptom] restart interval is roughly constant for a constant workload (each restart takes the same time to climb back to the limit)
+- s4: [Symptom] restart interval is roughly constant for a constant workload
 
 **Interventions:**
 - **remediation** (root): capture a heap dump/snapshot, find the retention path, fix it in code, and ship a new image.
 
   ```bash
-  # Java: capture a heap dump on OOM and pull it off the pod for analysis
+  # Java: heap dump on OOM, then pull it off the pod
   kubectl set env deployment/<deployment-name> -n <namespace> \
     JAVA_TOOL_OPTIONS="-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof"
   kubectl exec <pod-name> -n <namespace> -- jcmd 1 GC.heap_dump /tmp/live-heap.hprof
   kubectl cp <namespace>/<pod-name>:/tmp/live-heap.hprof ./live-heap.hprof
-  # Analyse the dump with Eclipse MAT or VisualVM, find the dominator tree, fix the retention path in code, ship a new image.
+  # Analyse in Eclipse MAT/VisualVM; fix the retention path.
   ```
 
   ```bash
-  # Node.js: generate a heap snapshot via the V8 inspector
+  # Node.js: V8 heap snapshot
   kubectl exec <pod-name> -n <namespace> -- node --inspect=0.0.0.0:9229 -e "require('v8').writeHeapSnapshot('/tmp/heap.heapsnapshot')"
   kubectl cp <namespace>/<pod-name>:/tmp/heap.heapsnapshot ./heap.heapsnapshot
-  # Load the snapshot in Chrome DevTools, look for retainers in the dominator view, fix and redeploy.
+  # Load in Chrome DevTools, inspect retainers, fix and redeploy.
   ```
 
-  **Verification:** After deploying the fixed image, run `kubectl top pod -l app=<label> -n <namespace> --containers` once per hour for 24 hours; working-set memory must plateau and remain below 75% of the limit instead of trending upward.
+  **Verification:** After deploy, run `kubectl top pod -l app=<label> -n <namespace> --containers` hourly for 24h; working-set must plateau below 75% of the limit, not trend upward.
 - **mitigation** (s2): periodically restart the deployment to reset the heap before it crosses the limit.
 
   ```bash
   kubectl rollout restart deployment/<deployment-name> -n <namespace>
   ```
 
-  **Risk:** Scheduled restarts hide the underlying bug and can mask data loss if the application has in-memory state. Use only as a holding pattern while a fix is developed. **Duration:** Hours, not days. Schedule a recurring restart via a CronJob only as a stopgap while leak investigation is in flight. **Verification:** re-run Step 9 after a restart; working-set drops to baseline and climbs again, confirming the restart reset the leak.
+  **Risk:** Scheduled restarts hide the bug and can mask data loss if the app holds in-memory state; use only as a holding pattern. **Duration:** Hours, not days — a stopgap CronJob while the leak fix is in flight. **Verification:** re-run Step 9 after a restart; working-set drops to baseline then climbs again.
 
 ### Cause C: Runtime heap sized larger than the container memory limit
 
-**Statement:** A JVM, V8, or other managed runtime is configured with a maximum heap (`-Xmx`, `--max-old-space-size`) that approaches or exceeds the container's memory limit, leaving no headroom for non-heap memory.
+**Statement:** A JVM, V8, or other managed runtime's max heap (`-Xmx`, `--max-old-space-size`) approaches or exceeds the container memory limit, leaving no headroom for non-heap memory.
 
 **Chain:**
 - root: the managed runtime's max heap (`-Xmx` / `--max-old-space-size` / `MaxRAMPercentage` near 100) is set at or near the full container limit.
@@ -217,26 +217,25 @@ Expected output: a working-set time series. A monotonic upward slope across hour
 
 **Indicators:**
 - s3: [Step 6] application logs show no `OutOfMemoryError` or GC overhead warning despite OOMKilled status
-- s2: [Step 3] `kubectl top` shows the container at the limit while heap-fill metrics (if exposed) are well below `-Xmx`
+- s2: [Step 3] `kubectl top` shows the container at the limit while heap-fill metrics are well below `-Xmx`
 - root: [Symptom] killed processes are JVM (`java`) or Node.js (`node`) and the runtime was launched with explicit `-Xmx <limit>` or `--max-old-space-size=<limit_in_mb>` equal to or near `limits.memory`
 
 **Interventions:**
 - **remediation** (root): use container-aware heap flags so the heap leaves headroom for off-heap memory.
 
   ```bash
-  # Java 11+ (UseContainerSupport is default on; do not pin -Xmx in container images)
+  # Java 11+: UseContainerSupport default on; do not pin -Xmx
   kubectl set env deployment/<deployment-name> -n <namespace> \
     JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof"
   ```
 
   ```bash
-  # Node.js: leave 25% headroom for V8 internals and external buffers
-  # For a 1Gi limit set --max-old-space-size to ~768 MB
+  # Node.js: ~75% of limit (768 MB for a 1Gi limit) leaves headroom for V8 internals
   kubectl set env deployment/<deployment-name> -n <namespace> \
     NODE_OPTIONS="--max-old-space-size=768"
   ```
 
-  **Verification:** After rollout, run `kubectl exec <pod-name> -n <namespace> -- jcmd 1 VM.flags | grep -E 'MaxHeapSize|MaxRAM'` (Java) or `kubectl exec <pod-name> -n <namespace> -- node -e "console.log(require('v8').getHeapStatistics().heap_size_limit)"` (Node.js); the reported heap ceiling must be ≤ 80% of `limits.memory` in bytes.
+  **Verification:** After rollout, run `kubectl exec <pod-name> -n <namespace> -- jcmd 1 VM.flags | grep -E 'MaxHeapSize|MaxRAM'` (Java) or the equivalent `node -e "console.log(require('v8').getHeapStatistics().heap_size_limit)"` (Node.js); the reported heap ceiling must be ≤ 80% of `limits.memory`.
 - **mitigation** (s1): apply container-aware percentage flags as a quick reconfiguration to cap heap below the limit.
 
   ```bash
@@ -244,7 +243,7 @@ Expected output: a working-set time series. A monotonic upward slope across hour
     JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0"
   ```
 
-  **Risk:** Setting heap too low causes legitimate `OutOfMemoryError` from the runtime. Aim for ~75% heap allocation initially, then tune from observed GC pressure. **Duration:** Permanent. Container-aware runtime flags auto-adjust if `limits.memory` is changed later. **Verification:** re-run Step 3; total RSS stays below `limits.memory` under load and no new OOMKilled occurs.
+  **Risk:** Heap set too low causes legitimate `OutOfMemoryError`; start ~75% then tune from GC pressure. **Duration:** Permanent — container-aware flags auto-adjust if `limits.memory` changes. **Verification:** re-run Step 3; total RSS stays below `limits.memory` under load, no new OOMKilled.
 
 ### Cause D: Memory-backed emptyDir or tmpfs volume consuming RAM against the limit
 

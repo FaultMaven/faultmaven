@@ -335,7 +335,7 @@ Expected output: Key name matches the file you are using. File permissions show 
 
 ### Cause E: Wrong SSH key file or wrong AMI username
 
-**Statement:** SSH authentication fails because the private key file does not match the instance's authorized key, or the AMI-specific default username is incorrect.
+**Statement:** SSH authentication fails because the private key does not match the instance's authorized key, or the AMI default username is wrong.
 
 **Chain:**
 - root: The operator uses the wrong `.pem` key file or wrong AMI default username for the instance.
@@ -361,11 +361,10 @@ Expected output: Key name matches the file you are using. File permissions show 
   ssh -vvv -i /path/to/correct-key.pem ubuntu@<EC2_PUBLIC_IP>
   ```
 
-  **Risk:** Low; trying the correct key/username does not modify the instance. **Duration:** Immediate. **Verification:** SSH with the correct key/username reaches a shell prompt.
+  **Risk:** Low; retrying does not modify the instance. **Duration:** Immediate. **Verification:** SSH with the correct key/username reaches a shell prompt.
 - **remediation** (root): If the original key is lost, replace `authorized_keys` via the rescue-instance procedure.
 
   ```bash
-  # If original key is lost, recover access via rescue instance procedure:
   # 1. Stop the instance
   aws ec2 stop-instances --instance-ids i-0abc123def456789
   aws ec2 wait instance-stopped --instance-ids i-0abc123def456789
@@ -379,13 +378,9 @@ Expected output: Key name matches the file you are using. File permissions show 
   aws ec2 attach-volume --volume-id "$ROOT_VOL" \
     --instance-id i-RESCUE --device /dev/sdf
 
-  # 3. On rescue instance: mount volume and replace authorized_keys
-  # sudo mkdir /mnt/rescue && sudo mount /dev/xvdf1 /mnt/rescue
-  # ssh-keygen -t rsa -b 4096 -f ~/.ssh/new-key
-  # sudo cp ~/.ssh/new-key.pub /mnt/rescue/home/ec2-user/.ssh/authorized_keys
-  # sudo chmod 600 /mnt/rescue/home/ec2-user/.ssh/authorized_keys
-  # sudo chmod 700 /mnt/rescue/home/ec2-user/.ssh
-  # sudo umount /mnt/rescue
+  # 3. On rescue: mount, add a new pubkey to authorized_keys, unmount
+  # sudo mkdir -p /mnt/rescue && sudo mount /dev/xvdf1 /mnt/rescue; ssh-keygen -f ~/.ssh/new-key
+  # cp new-key.pub /mnt/rescue/home/ec2-user/.ssh/authorized_keys; sudo umount /mnt/rescue
 
   # 4. Reattach to original instance and start
   aws ec2 detach-volume --volume-id "$ROOT_VOL"

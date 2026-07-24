@@ -260,22 +260,22 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
 
 ### Cause D: ECR authorization token expired or ECR credential helper absent
 
-**Statement:** The node pulls from Amazon ECR but the ECR authorization token has expired (default 12-hour lifetime) or the node's container runtime lacks an ECR credential helper, so the runtime sends no credentials and ECR replies `no basic auth credentials`.
+**Statement:** The node pulls from Amazon ECR but the authorization token has expired (12-hour lifetime) or the runtime lacks an ECR credential helper, so no credentials are sent and ECR replies `no basic auth credentials`.
 
 **Chain:**
-- root: the kubelet ECR credential provider (`ecr-credential-provider`) is missing/misconfigured, or the node IAM role lacks `ecr:GetAuthorizationToken` and `ecr:BatchGetImage` (region mismatch produces the same effect).
-- s1: ECR requires a 12-hour bearer token from `aws ecr get-authorization-token`, but none is minted, so the runtime falls through to anonymous auth.
-- s2: ECR responds HTTP 401 with body `code: DENIED, message: "Your authorization token has expired. Reauthenticate and try again."`.
+- root: the kubelet ECR credential provider (`ecr-credential-provider`) is missing/misconfigured, or the node IAM role lacks `ecr:GetAuthorizationToken` and `ecr:BatchGetImage` (region mismatch has the same effect).
+- s1: ECR needs a 12-hour bearer token from `aws ecr get-authorization-token`, but none is minted, so it falls through to anonymous auth.
+- s2: ECR responds HTTP 401 with body `code: DENIED, message: "Your authorization token has expired."`.
 - s3: containerd surfaces this as `no basic auth credentials` and the kubelet enters backoff.
 - D: the pod stays in ImagePullBackOff (see Symptom Recognition).
 
 **Indicators:**
 - s3: [Step 1] pull error contains `no basic auth credentials` or `Your authorization token has expired`.
 - root: [Step 2] image reference matches `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>`.
-- s2: [Step 9] containerd journal shows `failed to fetch oauth token` or `401 Unauthorized` against the ECR host.
+- s2: [Step 9] containerd journal shows `failed to fetch oauth token` or `401 Unauthorized`.
 
 **Interventions:**
-- **mitigation** (root): mint a 12-hour token manually and write it into a static secret.
+- **mitigation** (root): mint a 12-hour token and write it into a static secret.
 
   ```bash
   aws ecr get-login-password --region <region> | kubectl create secret docker-registry ecr-creds \
@@ -286,21 +286,20 @@ Expected output: two header lines — `ratelimit-limit: <N>;w=21600` (limit per 
     -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"ecr-creds"}]}}}}'
   ```
 
-  **Risk:** Works for one 12-hour window only; the workload breaks again on the next expiry unless automated. **Duration:** ≤12 hours; use only while a durable credential-provider fix is in flight. **Verification:** Re-run Step 1; the pod pulls and reaches `Running 1/1` for the token's lifetime.
-- **remediation** (root): use the kubelet credential provider — no Kubernetes secret, tokens refresh automatically.
+  **Risk:** Works for one 12-hour window; breaks on next expiry unless automated. **Duration:** ≤12 hours, while a durable fix is in flight. **Verification:** Re-run Step 1; the pod reaches `Running 1/1`.
+- **remediation** (root): use the kubelet credential provider — no secret, tokens refresh automatically.
 
   ```bash
-  # 1) Attach the managed read-only policy to the node IAM role (instance profile or IRSA):
+  # Attach the managed read-only policy to the node IAM role (instance profile or IRSA):
   aws iam attach-role-policy --role-name <node-role> \
     --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-  # 2) Verify the credential provider config exists on every node:
+  # Verify the credential provider config exists on every node, then roll the deployment:
   kubectl debug node/<node-name> -it --image=busybox -- chroot /host \
     cat /etc/eks/image-credential-provider/config.json
-  # 3) Roll the deployment so pods pick up a fresh pull attempt:
   kubectl rollout restart deployment/<deployment-name> -n <namespace>
   ```
 
-  **Verification:** `kubectl debug node/<node-name> -it --image=busybox -- chroot /host crictl pull <account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` succeeds; `kubectl get pod -n <namespace> -l app=<label>` reaches `Running 1/1`; no `Failed to pull image` events for one hour.
+  **Verification:** `crictl pull <account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` succeeds; pods reach `Running 1/1`; no `Failed to pull image` events for one hour.
 
 ### Cause E: Node cannot resolve the registry hostname (DNS failure)
 
