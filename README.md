@@ -7,7 +7,7 @@
 **AI Troubleshooting Copilot for Modern Engineering.**
 Built to solve, not to chat — fair-source, self-hostable, and optimized for cloud scale.
 
-FaultMaven is an AI-powered troubleshooting copilot. It correlates live telemetry with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation — answers grounded in your actual system, not generic guesses.
+FaultMaven is an AI-powered troubleshooting copilot. It correlates the logs, metrics, and configs you share with runbooks, documentation, and past fixes to deliver contextual AI-driven incident investigation — answers grounded in your actual system, not generic guesses.
 
 FaultMaven works a problem the way a seasoned engineer does — and never forgets what it learns:
 
