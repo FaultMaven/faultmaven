@@ -735,7 +735,7 @@ create_user() {
         echo ""
         if [ "$role_input" = "admin" ]; then
             echo "Note: To grant admin role, run:"
-            echo "  python scripts/auth/promote_to_admin.py $username"
+            echo "  python scripts/auth/promote_to_platform_admin.py $username"
         fi
     elif [ "$http_code" = "409" ]; then
         echo ""

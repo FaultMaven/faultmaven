@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Optional
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.modules.auth.domain.models.rbac import PLATFORM_ADMIN_ROLE
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -46,7 +47,8 @@ class DevUser:
         created_at: Account creation timestamp
         is_dev_user: Flag indicating development account
         is_active: Account active status
-        roles: List of user roles for access control (e.g., ['admin'], ['user'])
+        roles: List of user roles for access control (e.g., ['user'],
+            ['user', 'admin', 'platform_admin'])
         organization_id: Organization UUID (defaults to config.constants.STANDALONE_ORG_ID)
         account_kind: ADR-012 account kind — 'individual' (human) or 'slack'
             (service account owning a workspace's cases). Carried here because
@@ -62,16 +64,18 @@ class DevUser:
     created_at: datetime
     is_dev_user: bool = True
     is_active: bool = True
-    roles: list[str] = None  # Will be set to ['admin'] by default in __post_init__
+    roles: list[str] = None  # Will be set to ['user'] by default in __post_init__
     organization_id: str = None  # Will be set to STANDALONE_ORG_ID in __post_init__
     account_kind: str = "individual"
 
     def __post_init__(self):
         """Set default roles and organization_id if not provided"""
         if self.roles is None:
-            # Default: all dev users are admins for development
-            # In production, this should default to ['user']
-            self.roles = ["admin"]
+            # Least privilege. Any construction path that forgets to pass
+            # roles gets a baseline account, never a privileged one — a
+            # privileged default silently promotes every such caller,
+            # including service accounts. Callers wanting elevation say so.
+            self.roles = ["user"]
         if self.organization_id is None:
             # Implicit single-tenant org (standalone); see config.constants.
             self.organization_id = STANDALONE_ORG_ID
@@ -86,7 +90,7 @@ class DevUser:
             "created_at": to_json_compatible(self.created_at),
             "is_dev_user": self.is_dev_user,
             "is_active": self.is_active,
-            "roles": self.roles if self.roles else ["admin"],
+            "roles": self.roles if self.roles else ["user"],
             "organization_id": self.organization_id,
             "account_kind": self.account_kind,
         }
@@ -102,7 +106,7 @@ class DevUser:
             created_at=parse_utc_timestamp(data["created_at"]),
             is_dev_user=data.get("is_dev_user", True),
             is_active=data.get("is_active", True),
-            roles=data.get("roles", ["admin"]),  # Default to admin for dev users
+            roles=data.get("roles", ["user"]),  # Least privilege when absent
             organization_id=data.get("organization_id"),
             account_kind=data.get("account_kind", "individual"),
         )
@@ -253,13 +257,17 @@ class AuthenticatedUser:
         """
         return role in self.roles
 
-    def is_admin(self) -> bool:
-        """Check if user has admin role.
+    def is_platform_admin(self) -> bool:
+        """Check if user holds the cross-tenant operator role (ADR-012 D9).
+
+        This is the DEPLOYMENT-scoped operator role, not the organization-scoped
+        ``Role.ADMIN``. An org admin has full authority inside their own tenant
+        and none outside it; only a platform admin crosses tenants.
 
         Returns:
-            True if user is an admin
+            True if user is a platform admin
         """
-        return "admin" in self.roles
+        return PLATFORM_ADMIN_ROLE in self.roles
 
     def has_any_permission(self, permissions: list[str]) -> bool:
         """Check if user has any of the specified permissions.

@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.api.v1.role_dependencies import require_admin
+from faultmaven.api.v1.role_dependencies import require_platform_admin
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.api.conversion_routes import (
     _get_conversion_service,
@@ -49,7 +49,7 @@ def _admin_user() -> DevUser:
         email="admin@example.com",
         display_name="Admin",
         created_at=datetime.now(timezone.utc),
-        roles=["admin"],
+        roles=["admin", "platform_admin"],
     )
 
 
@@ -105,7 +105,7 @@ def upload_client():
     service = MagicMock()
     service.upload_document = AsyncMock(return_value={"document_id": "kb_1"})
     app.dependency_overrides[get_knowledge_service] = lambda: service
-    app.dependency_overrides[require_admin] = _admin_user
+    app.dependency_overrides[require_platform_admin] = _admin_user
     return TestClient(app), service
 
 
@@ -222,7 +222,7 @@ class TestSuggestionApprovalUnderMulti:
         service = MagicMock()
         service.approve_suggestion = AsyncMock()
         app.dependency_overrides[get_suggestion_service] = lambda: service
-        app.dependency_overrides[require_admin] = _admin_user
+        app.dependency_overrides[require_platform_admin] = _admin_user
         client = TestClient(app)
 
         with _MULTI:

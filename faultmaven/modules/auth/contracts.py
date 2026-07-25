@@ -18,6 +18,7 @@ from faultmaven.modules.auth.domain.models.auth import (
     DevUser,
     TokenPair,
 )
+from faultmaven.modules.auth.domain.models.rbac import PLATFORM_ADMIN_ROLE
 
 if TYPE_CHECKING:
     from faultmaven.modules.auth.domain.models.user import User
@@ -507,6 +508,8 @@ class ISSOIdentityProvider(ABC):
 # ============================================================
 
 __all__ = [
+    # Roles
+    "PLATFORM_ADMIN_ROLE",
     # DTOs
     "UserDTO",
     "SessionDTO",

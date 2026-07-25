@@ -20,11 +20,11 @@ from faultmaven.api.middleware.auth import (
     get_auth_service,
     get_current_user,
     get_current_user_optional,
-    require_admin,
     require_all_permissions,
     require_any_permission,
     require_any_role,
     require_permission,
+    require_platform_admin,
     require_role,
     set_auth_service,
 )
@@ -54,7 +54,7 @@ def sample_user() -> AuthenticatedUser:
         user_id="user-123",
         organization_id="org-456",
         email="test@example.com",
-        roles=["admin"],
+        roles=["admin", "platform_admin"],
         permissions=[
             "cases:read",
             "cases:write",
@@ -484,27 +484,48 @@ class TestRequireAnyRole:
 
 
 # ============================================================
-# require_admin Tests
+# require_platform_admin Tests
 # ============================================================
 
 
-class TestRequireAdmin:
-    """Tests for require_admin dependency."""
+class TestRequirePlatformAdmin:
+    """Tests for require_platform_admin dependency."""
 
     @pytest.mark.asyncio
-    async def test_allows_admin_user(self, sample_user):
-        """Allows admin user."""
-        result = await require_admin(current_user=sample_user)
+    async def test_allows_platform_admin_user(self, sample_user):
+        """Allows a user holding the platform_admin role."""
+        result = await require_platform_admin(current_user=sample_user)
         assert result == sample_user
 
     @pytest.mark.asyncio
     async def test_raises_403_for_non_admin(self, member_user):
-        """Raises 403 for non-admin user."""
+        """Raises 403 for a user with no admin role at all."""
         with pytest.raises(HTTPException) as exc_info:
-            await require_admin(current_user=member_user)
+            await require_platform_admin(current_user=member_user)
 
         assert exc_info.value.status_code == 403
-        assert "Administrator" in exc_info.value.detail
+        assert "Platform administrator" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_raises_403_for_org_admin_without_platform_admin(self):
+        """An ORG admin is not a platform admin (ADR-012 D9).
+
+        This is the whole point of the two-role split: org "admin" is
+        tenant-bounded, so holding it must NOT grant cross-tenant operator
+        reach. If this ever passes, the two axes have been re-conflated.
+        """
+        org_admin = AuthenticatedUser(
+            user_id="user-org-admin",
+            organization_id="org-456",
+            email="orgadmin@example.com",
+            roles=["user", "admin"],
+            permissions=["cases:read", "cases:write"],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await require_platform_admin(current_user=org_admin)
+
+        assert exc_info.value.status_code == 403
 
 
 # ============================================================
@@ -554,10 +575,10 @@ class TestAuthenticatedUserModel:
         assert sample_user.has_role("admin") is True
         assert sample_user.has_role("viewer") is False
 
-    def test_is_admin(self, sample_user, member_user):
-        """is_admin returns True only for admin role."""
-        assert sample_user.is_admin() is True
-        assert member_user.is_admin() is False
+    def test_is_platform_admin(self, sample_user, member_user):
+        """is_platform_admin returns True only for the platform_admin role."""
+        assert sample_user.is_platform_admin() is True
+        assert member_user.is_platform_admin() is False
 
     def test_has_any_permission(self, member_user):
         """has_any_permission returns True if any permission matches."""
@@ -576,7 +597,7 @@ class TestAuthenticatedUserModel:
         assert d["user_id"] == "user-123"
         assert d["organization_id"] == "org-456"
         assert d["email"] == "test@example.com"
-        assert d["roles"] == ["admin"]
+        assert d["roles"] == ["admin", "platform_admin"]
         assert "cases:read" in d["permissions"]
         assert d["token_jti"] == "token-789"
 

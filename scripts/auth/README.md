@@ -11,14 +11,17 @@ python scripts/auth/list_users.py
 # Create a new regular user
 python scripts/auth/create_user.py --username alice --role user
 
-# Create a new admin user
+# Create a new organization admin (tenant-bounded)
 python scripts/auth/create_user.py --username bob --role admin
 
-# Promote user to admin
-python scripts/auth/promote_to_admin.py alice
+# Create a new platform admin (deployment operator, cross-tenant)
+python scripts/auth/create_user.py --username carol --role platform_admin
 
-# Demote admin to regular user
-python scripts/auth/demote_from_admin.py bob
+# Promote an existing user to platform admin
+python scripts/auth/promote_to_platform_admin.py alice
+
+# Demote a platform admin back to a regular user
+python scripts/auth/demote_from_platform_admin.py bob
 
 # Mint the Slack service account an OAuth refresh-token credential
 # (AUTH_MODE=oauth only — see docs/operations/security/service-account-credentials.md)
@@ -92,7 +95,7 @@ python scripts/auth/create_user.py \
 - `--username, -u`: Username (required)
 - `--email, -e`: Email address (optional, auto-generated if not provided)
 - `--display-name, -d`: Display name (optional, auto-generated if not provided)
-- `--role, -r`: User role - `user` or `admin` (default: `user`)
+- `--role, -r`: User role - `user`, `admin` (org-scoped), or `platform_admin` (deployment operator). Default: `user`
 - `--interactive, -i`: Interactive mode (prompts for all values)
 
 **Example:**
@@ -119,21 +122,23 @@ User Details:
 
 ---
 
-### 3. `promote_to_admin.py` - Promote User to Admin
+### 3. `promote_to_platform_admin.py` - Promote User to Platform Admin
 
-Adds the `admin` role to an existing user.
+Adds the `platform_admin` role to an existing user — the DEPLOYMENT-scoped
+operator role (ADR-012 D9), which grants cross-tenant reach. This is **not** the
+organization-scoped `admin` role; the script leaves that one alone.
 
 **Usage:**
 ```bash
-python scripts/auth/promote_to_admin.py <username>
+python scripts/auth/promote_to_platform_admin.py <username>
 ```
 
 **Example:**
 ```bash
-$ python scripts/auth/promote_to_admin.py alice
+$ python scripts/auth/promote_to_platform_admin.py alice
 
 ================================================================================
-Promote User to Admin
+Promote User to Platform Admin
 ================================================================================
 
 Looking up user 'alice'...
@@ -141,52 +146,53 @@ Looking up user 'alice'...
    Email: alice@dev.faultmaven.local
    Current roles: ['user']
 
-Adding 'admin' role to user 'alice'...
-✅ User promoted to admin successfully!
+Adding 'platform_admin' role to user 'alice'...
+✅ User promoted to platform admin successfully!
 
-Updated roles: ['user', 'admin']
+Updated roles: ['user', 'platform_admin']
 
 User 'alice' can now:
-  ✅ Upload documents to Global KB
-  ✅ Update Global KB documents
-  ✅ Delete Global KB documents
-  ✅ Perform bulk operations on Global KB
+  ✅ List cases across all users and organizations
+  ✅ Administer user accounts
+  ✅ View and change LLM configuration
+  ✅ Manage the Global KB (upload, update, delete, bulk ops)
 ```
 
 ---
 
-### 4. `demote_from_admin.py` - Demote Admin to Regular User
+### 4. `demote_from_platform_admin.py` - Demote Platform Admin to Regular User
 
-Removes the `admin` role from a user account.
+Removes the `platform_admin` role from a user account, revoking cross-tenant
+reach. Any organization-scoped `admin` role the user holds is left untouched.
 
 **Usage:**
 ```bash
-python scripts/auth/demote_from_admin.py <username>
+python scripts/auth/demote_from_platform_admin.py <username>
 ```
 
 **Example:**
 ```bash
-$ python scripts/auth/demote_from_admin.py bob
+$ python scripts/auth/demote_from_platform_admin.py bob
 
 ================================================================================
-Demote Admin to Regular User
+Demote Platform Admin to Regular User
 ================================================================================
 
 Looking up user 'bob'...
 ✅ Found user: 3a94f837-013e-4538-a80c-07eacc5612ef
    Email: bob@dev.faultmaven.local
-   Current roles: ['user', 'admin']
+   Current roles: ['user', 'platform_admin']
 
-Removing 'admin' role from user 'bob'...
-✅ Admin role removed successfully!
+Removing 'platform_admin' role from user 'bob'...
+✅ Platform admin role removed successfully!
 
 Updated roles: ['user']
 
 User 'bob' can no longer:
-  ❌ Upload documents to Global KB
-  ❌ Update Global KB documents
-  ❌ Delete Global KB documents
-  ❌ Perform bulk operations on Global KB
+  ❌ List cases across all users and organizations
+  ❌ Administer user accounts
+  ❌ View or change LLM configuration
+  ❌ Manage the Global KB (upload, update, delete, bulk ops)
 
 User 'bob' can still:
   ✅ Search Global KB
@@ -211,12 +217,22 @@ User 'bob' can still:
 - ❌ Modify Global KB documents
 - ❌ Delete Global KB documents
 
-### Admin User (`user` + `admin` roles)
-**Can do everything regular users can, PLUS:**
-- ✅ Upload documents to Global KB
-- ✅ Update Global KB documents
-- ✅ Delete Global KB documents
-- ✅ Bulk update/delete operations on Global KB
+### Organization Admin (`user` + `admin` roles)
+Tenant-bounded: full authority inside ONE organization, none outside it.
+Assignable through the user-management API (`POST /admin/users/{id}/roles`).
+
+### Platform Admin (`user` + `admin` + `platform_admin` roles)
+The DEPLOYMENT operator (ADR-012 D9). Can do everything above, PLUS:
+- ✅ List cases across all users and organizations (`GET /admin/cases`)
+- ✅ Administer user accounts
+- ✅ View and change LLM configuration
+- ✅ Manage the Global KB (upload, update, delete, bulk ops)
+
+`platform_admin` is deliberately absent from the org `Role` enum, so it grants
+no org permissions on its own — and the user-management API cannot mint one.
+Grant it only with `promote_to_platform_admin.py`. The standalone deployment's
+seeded account holds all three roles: it is both its org's admin and the
+operator.
 
 ---
 
@@ -287,8 +303,7 @@ curl http://localhost:8090/api/v1/auth/me \
 
 **Default behavior:**
 - New users created via API default to `['user']` role (since `DevUser.__post_init__()` sets it)
-- Users created before RBAC implementation may have `['admin']` role
-- Use `promote_to_admin.py` to grant admin privileges
+- Use `promote_to_platform_admin.py` to grant operator privileges
 
 **Data persistence:**
 - Users persist across server restarts (stored in Redis)
@@ -319,7 +334,7 @@ python scripts/auth/create_user.py --username newuser --role user
 
 # 2. Send them login instructions
 # 3. If they need admin access later:
-python scripts/auth/promote_to_admin.py newuser
+python scripts/auth/promote_to_platform_admin.py newuser
 ```
 
 ### Audit User Accounts
@@ -334,7 +349,7 @@ python scripts/auth/list_users.py | grep alice
 ### Revoke Admin Access
 ```bash
 # Demote user back to regular user
-python scripts/auth/demote_from_admin.py username
+python scripts/auth/demote_from_platform_admin.py username
 ```
 
 ---

@@ -20,7 +20,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from starlette.requests import Request
 
-from faultmaven.api.middleware.auth import get_current_user, require_admin
+from faultmaven.api.middleware.auth import get_current_user, require_platform_admin
 from faultmaven.api.models import (
     AdminUserListItem,
     AdminUserListResponse,
@@ -60,7 +60,7 @@ router = APIRouter(
 
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_users(
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
     is_active: Optional[bool] = Query(
         None, description="Filter by active/inactive status"
     ),
@@ -147,7 +147,7 @@ async def list_users(
 @router.get("/users/{user_id}", response_model=UserDetailResponse)
 async def get_user_details(
     user_id: str = Path(..., description="User ID to retrieve"),
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
 ) -> UserDetailResponse:
     """Get detailed user information (admin only).
 
@@ -204,7 +204,7 @@ async def get_user_details(
 @router.post("/users/{user_id}/deactivate", response_model=UserStatusResponse)
 async def deactivate_user(
     user_id: str = Path(..., description="User ID to deactivate"),
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
 ) -> UserStatusResponse:
     """Deactivate user account (admin only).
 
@@ -262,7 +262,7 @@ async def deactivate_user(
 @router.post("/users/{user_id}/activate", response_model=UserStatusResponse)
 async def activate_user(
     user_id: str = Path(..., description="User ID to activate"),
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
 ) -> UserStatusResponse:
     """Activate user account (admin only).
 
@@ -313,7 +313,7 @@ async def activate_user(
 async def assign_role(
     user_id: str = Path(..., description="User ID to assign role to"),
     request: RoleAssignmentRequest = Body(...),
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
 ) -> RoleAssignmentResponse:
     """Assign role to user (admin only).
 
@@ -385,7 +385,7 @@ async def assign_role(
 async def remove_role(
     user_id: str = Path(..., description="User ID to remove role from"),
     role: str = Path(..., description="Role to remove (admin, member)"),
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
 ) -> RoleAssignmentResponse:
     """Remove role from user (admin only).
 
@@ -447,7 +447,7 @@ async def remove_role(
 
 @router.get("/debug/llm-routing", response_model=dict)
 async def get_llm_routing_health(
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
     llm_provider=Depends(get_llm_provider),
 ) -> dict:
     """Get LLM provider health and routing status (admin only).

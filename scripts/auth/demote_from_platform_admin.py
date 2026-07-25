@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Demote Admin to Regular User
+"""Demote Platform Admin to Regular User
 
-This script removes the 'admin' role from a user account.
+This script removes the 'platform_admin' role from a user account.
+
+That role is the DEPLOYMENT-scoped operator role (ADR-012 D9). Removing it
+revokes cross-tenant reach. It is NOT the organization-scoped 'admin' role,
+which is tenant-bounded; this script leaves that one untouched, so a user who
+also holds 'admin' keeps full authority inside their own organization.
 
 Usage:
-    python scripts/auth/demote_from_admin.py username
-    python scripts/auth/demote_from_admin.py bob
+    python scripts/auth/demote_from_platform_admin.py username
+    python scripts/auth/demote_from_platform_admin.py bob
 """
 
 import asyncio
@@ -17,12 +22,13 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from faultmaven.container import container
+from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
 
 
-async def demote_from_admin(username: str):
-    """Remove admin role from user"""
+async def demote_from_platform_admin(username: str):
+    """Remove platform_admin role from user"""
     print("=" * 80)
-    print("Demote Admin to Regular User")
+    print("Demote Platform Admin to Regular User")
     print("=" * 80)
 
     # Initialize container
@@ -48,14 +54,14 @@ async def demote_from_admin(username: str):
     print(f"   Email: {user.email}")
     print(f"   Current roles: {user.roles}")
 
-    # Check if user is admin
-    if "admin" not in user.roles:
-        print(f"\n⚠️  User '{username}' is not an admin!")
+    # Check if user is a platform admin
+    if PLATFORM_ADMIN_ROLE not in (user.roles or []):
+        print(f"\n⚠️  User '{username}' is not a platform admin!")
         return True
 
-    # Remove admin role
-    print(f"\nRemoving 'admin' role from user '{username}'...")
-    user.roles = [role for role in user.roles if role != "admin"]
+    # Remove platform_admin role
+    print(f"\nRemoving '{PLATFORM_ADMIN_ROLE}' role from user '{username}'...")
+    user.roles = [role for role in user.roles if role != PLATFORM_ADMIN_ROLE]
 
     # Ensure user still has 'user' role
     if "user" not in user.roles:
@@ -64,15 +70,15 @@ async def demote_from_admin(username: str):
     # Update user
     try:
         user = await user_store.update_user(user)
-        print("✅ Admin role removed successfully!")
+        print("✅ Platform admin role removed successfully!")
         print()
         print(f"Updated roles: {user.roles}")
         print()
         print(f"User '{username}' can no longer:")
-        print("  ❌ Upload documents to Global KB")
-        print("  ❌ Update Global KB documents")
-        print("  ❌ Delete Global KB documents")
-        print("  ❌ Perform bulk operations on Global KB")
+        print("  ❌ List cases across all users and organizations")
+        print("  ❌ Administer user accounts")
+        print("  ❌ View or change LLM configuration")
+        print("  ❌ Manage the Global KB (upload, update, delete, bulk ops)")
         print()
         print(f"User '{username}' can still:")
         print("  ✅ Search Global KB")
@@ -88,17 +94,17 @@ async def demote_from_admin(username: str):
 def main():
     """Main entry point"""
     if len(sys.argv) < 2:
-        print("Usage: python scripts/auth/demote_from_admin.py <username>")
+        print("Usage: python scripts/auth/demote_from_platform_admin.py <username>")
         print()
         print("Example:")
-        print("  python scripts/auth/demote_from_admin.py bob")
+        print("  python scripts/auth/demote_from_platform_admin.py bob")
         print()
         print("To see all users:")
         print("  python scripts/auth/list_users.py")
         sys.exit(1)
 
     username = sys.argv[1]
-    success = asyncio.run(demote_from_admin(username))
+    success = asyncio.run(demote_from_platform_admin(username))
     sys.exit(0 if success else 1)
 
 

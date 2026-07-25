@@ -37,17 +37,17 @@ python scripts/auth/create_user.py --username myadmin --role admin
 
 **Promote existing user to admin:**
 ```bash
-python scripts/auth/promote_to_admin.py username
+python scripts/auth/promote_to_platform_admin.py username
 ```
 
 ### For Developers
 
 **Check if user is admin in backend:**
 ```python
-from faultmaven.api.v1.auth_dependencies import require_admin
+from faultmaven.api.v1.auth_dependencies import require_platform_admin
 
 @router.post("/admin-endpoint")
-async def admin_only(current_user: DevUser = Depends(require_admin)):
+async def admin_only(current_user: DevUser = Depends(require_platform_admin)):
     # Only admins can access this
     ...
 ```
@@ -67,7 +67,7 @@ const isAdmin = user.roles.includes('admin');
 
 > **Two role vocabularies.** This document describes the **account roles**
 > (`user`, `admin`) that govern Global-KB access — the `roles` claim minted on
-> tokens, where `admin` is enforced by the `require_admin` dependency (a literal
+> tokens, where `admin` is enforced by the `require_platform_admin` dependency (a literal
 > `"admin"` membership check) and everyone else is baseline `user`. A separate,
 > org-scoped `Role` enum (`admin`, `member`, `viewer`) lives in
 > `modules/auth/domain/models/rbac.py` with a granular `Permission` mapping for
@@ -217,7 +217,7 @@ User Details:
 
 **Add admin role to existing user:**
 ```bash
-python scripts/auth/promote_to_admin.py alice
+python scripts/auth/promote_to_platform_admin.py alice
 ```
 
 **Output:**
@@ -237,7 +237,7 @@ User 'alice' can now:
 
 **Remove admin role from user:**
 ```bash
-python scripts/auth/demote_from_admin.py bob
+python scripts/auth/demote_from_platform_admin.py bob
 ```
 
 **Output:**
@@ -510,12 +510,12 @@ const MyComponent = () => {
 
 ```python
 # Backend enforcement
-from faultmaven.api.v1.auth_dependencies import require_admin
+from faultmaven.api.v1.auth_dependencies import require_platform_admin
 
 @router.post("/knowledge/documents")
 async def upload_document(
     file: UploadFile,
-    current_user: DevUser = Depends(require_admin)  # Enforced server-side
+    current_user: DevUser = Depends(require_platform_admin)  # Enforced server-side
 ):
     """This endpoint is protected - admins only"""
     ...
@@ -669,7 +669,7 @@ python scripts/auth/list_users.py | grep username
 **Solution:**
 ```bash
 # Promote user to admin
-python scripts/auth/promote_to_admin.py username
+python scripts/auth/promote_to_platform_admin.py username
 
 # User must re-login to get updated roles in token
 ```

@@ -33,6 +33,7 @@ from fastapi.security import HTTPBearer
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.config.tenant_context import get_current_org_id
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.domain.models.rbac import PLATFORM_ADMIN_ROLE
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
@@ -470,15 +471,22 @@ async def get_optional_user_context(
 
 
 # Development Utilities (remove in production)
-async def require_admin(user: DevUser = Depends(require_authentication)) -> DevUser:
-    """Require admin role.
+async def require_platform_admin(
+    user: DevUser = Depends(require_authentication),
+) -> DevUser:
+    """Require the cross-tenant operator role (ADR-012 D9).
+
+    This is the DEPLOYMENT-scoped operator role, not the organization-scoped
+    ``Role.ADMIN``.
 
     Raises:
-        HTTPException: 403 if user does not have the admin role
+        HTTPException: 403 if user does not have the platform_admin role
     """
-    if "admin" not in (user.roles or []):
-        logger.warning(f"Admin access denied for user: {user.user_id}")
-        raise HTTPException(status_code=403, detail="Administrator access required")
+    if PLATFORM_ADMIN_ROLE not in (user.roles or []):
+        logger.warning(f"Platform admin access denied for user: {user.user_id}")
+        raise HTTPException(
+            status_code=403, detail="Platform administrator access required"
+        )
     return user
 
 

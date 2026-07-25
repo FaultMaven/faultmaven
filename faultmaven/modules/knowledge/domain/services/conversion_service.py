@@ -1466,11 +1466,11 @@ class ConversionService:
         draft_refs: list[tuple[str, str]],  # (conversion_id, draft_id)
         user_id: str,
         username: str,
-        is_admin: bool = False,
+        is_platform_admin: bool = False,
     ) -> dict:
         """Verify multiple drafts sequentially. Returns summary with per-item status.
 
-        ``is_admin`` is threaded into each :meth:`verify_draft` so the global-tier
+        ``is_platform_admin`` is threaded into each :meth:`verify_draft` so the global-tier
         authoring gate applies per item: a global draft the caller may not author
         is recorded ``forbidden`` (never published) while the rest of the batch
         proceeds (#770, R4).
@@ -1488,7 +1488,7 @@ class ConversionService:
                     draft_id=draft_id,
                     user_id=user_id,
                     username=username,
-                    is_admin=is_admin,
+                    is_platform_admin=is_platform_admin,
                 )
                 results.append(
                     {
@@ -1575,11 +1575,11 @@ class ConversionService:
         draft_id: str,
         user_id: str,
         username: str,
-        is_admin: bool = False,
+        is_platform_admin: bool = False,
     ) -> Optional[VerifyResponse]:
         """Promote draft to verified status, update frontmatter, trigger ingestion.
 
-        ``is_admin`` gates publication at ``global`` scope: verifying a draft
+        ``is_platform_admin`` gates publication at ``global`` scope: verifying a draft
         ingests it into the KB at ``job.scope``, and a global runbook is the
         org-free platform corpus (readable by every tenant, seeder-consumed), so
         publishing one is a platform-operator action. The draft's scope is only
@@ -1615,7 +1615,7 @@ class ConversionService:
             # and regardless of job ownership — a "system"-owned global draft
             # (e.g. from a disk scan) must not be publishable by a non-admin.
             if job.scope == "global":
-                ensure_global_authoring_allowed(is_admin)
+                ensure_global_authoring_allowed(is_platform_admin)
 
             draft_result = await session.execute(
                 select(ConversionDraftModel).where(
@@ -1956,7 +1956,7 @@ status: draft
         self,
         user_id: str,
         organization_id: Optional[str] = None,
-        is_admin: bool = False,
+        is_platform_admin: bool = False,
     ) -> dict:
         """Scan data/knowledge/ for .md files not tracked in the database.
 
@@ -1970,7 +1970,7 @@ status: draft
             user_id: User triggering the scan (recorded as conversion job owner).
             organization_id: Org for scoping the conversion job + source upload.
                 Falls back to DEFAULT_ORGANIZATION_ID when None.
-            is_admin: Whether the caller may author global-scope KB. A file whose
+            is_platform_admin: Whether the caller may author global-scope KB. A file whose
                 inferred scope is ``global`` (the org-free platform corpus) is
                 SKIPPED when the caller is not a platform operator (any tenant
                 session under multi, or a non-admin single-tenant) — minting a
@@ -1982,14 +1982,14 @@ status: draft
         """
         async with self._scan_lock:
             return await self._scan_for_runbooks_impl(
-                user_id, organization_id, is_admin
+                user_id, organization_id, is_platform_admin
             )
 
     async def _scan_for_runbooks_impl(
         self,
         user_id: str,
         organization_id: Optional[str] = None,
-        is_admin: bool = False,
+        is_platform_admin: bool = False,
     ) -> dict:
         import re as _re
 
@@ -1998,7 +1998,7 @@ status: draft
         # Whether this caller may mint global-scope drafts. Computed once (the
         # policy is per-caller, not per-file); global-inferred files are skipped
         # below when this is False.
-        global_authoring_allowed = is_global_authoring_allowed(is_admin)
+        global_authoring_allowed = is_global_authoring_allowed(is_platform_admin)
 
         discovered = []
         skipped = 0
