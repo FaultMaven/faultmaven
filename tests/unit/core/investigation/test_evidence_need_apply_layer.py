@@ -3,8 +3,8 @@
 - ``TestEvidenceNeedUpdateApplyLayer`` — create/update mechanics,
   same-turn ``new_index_N`` resolution, FK validation, immutable-purpose
   rule, SUPERSEDED-is-terminal.
-- ``TestNeedSupersessionOnHypothesisRetirement`` — deterministic engine
-  rule across the four retirement sites (post-hoc snapshot-diff in
+- ``TestNeedSupersessionOnTerminalHypothesis`` — deterministic engine
+  rule across every terminal-transition site (post-hoc snapshot-diff in
   ``_process_turn_impl``).
 - ``TestNeedFulfillmentJunctionApply`` — fulfilling_evidence_ids
   resolution + dangling-reference handling.
