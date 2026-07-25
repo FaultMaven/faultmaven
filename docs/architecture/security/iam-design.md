@@ -218,12 +218,37 @@ credentials from a revoked token), and revocation *writes* propagate store
 errors so revoke endpoints never report success while the token remains
 usable.
 
-Known limitation: bulk **per-user** revocation (admin
-`POST /auth/users/{id}/revoke-tokens`, user deactivate/delete flows) is
-effectively a no-op — the store is keyed by jti and there is no per-user
-index of issued JTIs, so outstanding tokens cannot be enumerated. Exposure is
-bounded by the short access-token expiry (15 min) and the user-liveness check on
-refresh. Implementing it requires per-user JTI tracking (follow-up to #767).
+**Per-user revocation (#769).** Bulk revocation — admin
+`POST /auth/users/{id}/revoke-tokens`, and the deactivate/delete, password
+change/reset and role-change flows in `UserService` — goes through
+`AuthService.revoke_user_tokens`, which writes a **revocation watermark** to
+that same store at `{token_revocation_prefix}user:{user_id}`
+(`revoked:token:user:{user_id}` by default), holding the revocation instant
+with a TTL that outlives the longest-lived refresh token. Every validate path
+then rejects a token whose `iat` is at or before its user's watermark.
+
+The watermark is used instead of an index of issued JTIs because it is
+complete by construction: FaultMaven mints tokens from three implementations
+(`AuthService.generate_access_token`, plus the RS256 and HS256 generators),
+one of them synchronous, and a watermark covers all of them — including any
+added later — with no bookkeeping at mint time. An index would silently
+under-revoke whenever a mint path forgot to register, while still reporting a
+complete revocation. The trade-off is that there is no count of revoked
+tokens to report, so the endpoint returns the watermark
+(`{"message": ..., "revoked_before": "<ISO 8601>"}`) rather than a token
+count.
+
+Comparison is `iat <= watermark`, not `<`: `iat` has whole-second
+granularity, and honouring a token minted in the same second as a revocation
+is the more dangerous of the two rounding errors. A user who re-authenticates
+within that same second gets one rejected token and succeeds on retry.
+
+Both revocation arms share one rule (`revocation_reason` in
+`jwt_token_generator.py`) so no validate path can diverge from another, and
+both inherit the failure posture above: the per-request check fails open,
+generator refresh validation fails closed, and the watermark *write*
+propagates store errors — an admin never gets a revocation confirmation while
+the user's tokens keep authenticating.
 
 ## Local Mode Authentication
 
@@ -1162,8 +1187,8 @@ records current behavior, since several rows are aspirational.
 | **Logout** | Revoke the presented access token; drop associated session state | Partial — the presented token is revoked by `jti`; no session/investigation-state cleanup |
 | **Token Revocation** | Delete session associated with revoked token | Token is revoked in the shared store; session cleanup not wired |
 | **New Login (same client_id)** | Replace previous session with new one | Intended |
-| **Password Change** | Invalidate all sessions | No — bulk per-user revocation is a no-op (no per-user JTI index; see #767) |
-| **Account Deactivation** | Delete all sessions immediately | No — same bulk-revocation limitation |
+| **Password Change** | Invalidate all sessions | Partial — every outstanding token is invalidated via the per-user watermark (#769); session/investigation-state cleanup not wired |
+| **Account Deactivation** | Delete all sessions immediately | Partial — same: tokens invalidated by watermark, session state not deleted |
 
 **Implementation (logout, actual):**
 
@@ -1184,12 +1209,11 @@ async def logout(current_user, auth_service, ...) -> LogoutResponse:
 ```
 
 > [!NOTE]
-> Logout revokes only the token presented on the request; it does **not**
-> enumerate or revoke the user's other outstanding tokens (there is no per-user
-> JTI index — the same limitation described under
-> [Token Validation Middleware](#token-validation-middleware)), and it does not
-> delete investigation/session state. Broadening logout to full session teardown
-> depends on the per-user revocation follow-up to #767.
+> Logout revokes only the token presented on the request — by design, so
+> signing out on one device does not sign the user out everywhere. Revoking
+> every token for a user is the separate per-user watermark path described
+> under [Token Validation Middleware](#token-validation-middleware). Logout
+> still does not delete investigation/session state.
 
 ## Frontend Implementation
 

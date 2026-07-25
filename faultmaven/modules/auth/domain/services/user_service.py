@@ -865,10 +865,11 @@ class UserService(BaseService):
         updated_user = await self.user_repo.save(user)
 
         # Revoke all user tokens (roles changed, tokens stale)
-        tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
+        revoked_before = await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(
-            f"Role assigned: {user_id} -> {role}, tokens revoked: {tokens_revoked}"
+            f"Role assigned: {user_id} -> {role}, "
+            f"tokens revoked before: {revoked_before.isoformat()}"
         )
         return updated_user
 
@@ -929,11 +930,11 @@ class UserService(BaseService):
         updated_user = await self.user_repo.save(user)
 
         # Revoke all user tokens (roles changed, tokens stale)
-        tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
+        revoked_before = await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(
             f"Role removed: {user_id}, role={role}, downgraded to viewer, "
-            f"tokens revoked: {tokens_revoked}"
+            f"tokens revoked before: {revoked_before.isoformat()}"
         )
         return updated_user
 

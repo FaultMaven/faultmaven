@@ -7,18 +7,19 @@ authentication system, including token management, user storage, and
 security utilities.
 
 Key Components:
-- RedisTokenManager: Token generation, validation, and lifecycle management (works with FakeRedis)
 - RedisUserStore: User account storage and retrieval (works with FakeRedis)
 - DatabaseUserStore: Database-backed user storage (SQLite/PostgreSQL) for persistent local deployment
-- Authentication utilities: Token hashing, validation, cleanup
+
+Token lifecycle lives in the auth module: JWTs are minted by the generators in
+``modules/auth/domain/services/jwt_token_generator.py`` and revoked through the
+single deployment-wide store in
+``modules/auth/infrastructure/stores/token_revocation_store.py``.
 """
 
 from .database_user_store import DatabaseUserStore
-from .token_manager import RedisTokenManager
 from .user_store import RedisUserStore
 
 __all__ = [
-    "RedisTokenManager",
     "RedisUserStore",
     "DatabaseUserStore",
 ]

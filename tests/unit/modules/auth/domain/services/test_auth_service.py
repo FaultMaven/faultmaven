@@ -30,6 +30,7 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     AuthService,
     TokenRevocationError,
 )
+from tests.utils import InMemoryRevocationStore
 
 # ============================================================
 # Test Fixtures
@@ -56,26 +57,10 @@ def mock_settings():
     return settings
 
 
-class FakeRevocationStore:
-    """In-memory ITokenRevocationStore: records jti -> ttl."""
-
-    def __init__(self):
-        self.revoked: dict = {}
-
-    async def add_revoked_token(self, jti: str, ttl: int) -> None:
-        self.revoked[jti] = ttl
-
-    async def is_revoked(self, jti: str) -> bool:
-        return jti in self.revoked
-
-    async def cleanup_expired(self) -> int:
-        return 0
-
-
 @pytest.fixture
 def revocation_store():
     """In-memory revocation store for revocation testing."""
-    return FakeRevocationStore()
+    return InMemoryRevocationStore()
 
 
 @pytest.fixture

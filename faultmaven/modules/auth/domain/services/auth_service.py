@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
         ITokenRevocationStore,
     )
+
 from faultmaven.exceptions import AuthorizationError, ServiceError, ValidationException
 from faultmaven.modules.auth.domain.models.auth import (
     AuthenticatedUser,
@@ -34,6 +35,9 @@ from faultmaven.modules.auth.domain.models.auth import (
     TokenPair,
 )
 from faultmaven.modules.auth.domain.models.rbac import get_permissions_for_roles
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    revocation_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -450,9 +454,8 @@ class AuthService:
         # First, verify the token
         claims = self.verify_token(token, token_type)
 
-        # Check revocation status
-        jti = claims.get("jti")
-        if jti and await self._is_token_revoked(jti):
+        # Check revocation status (per-token jti and per-user watermark)
+        if await self._is_revoked(claims):
             raise TokenRevocationError()
 
         return claims
@@ -492,29 +495,50 @@ class AuthService:
     async def revoke_user_tokens(
         self,
         user_id: str,
-    ) -> int:
-        """Revoke all tokens for a user.
+    ) -> datetime:
+        """Revoke every outstanding token for a user (#769).
 
-        Not implemented: the revocation store is keyed by jti and there is no
-        per-user index of issued JTIs, so outstanding tokens cannot be
-        enumerated. Callers (user deactivate/delete in UserService) rely on
-        token expiry (<30 min access tokens) plus the user-liveness check on
-        refresh. Implementing this requires tracking issued JTIs per user.
+        Writes a revocation watermark to the shared store; the request path
+        and both generators then reject any token for this user whose ``iat``
+        is at or before that instant. Nothing indexes issued JTIs, so there is
+        no token count to report — and no need for one: the watermark covers
+        every token from every mint path, which a JTI index could not
+        guarantee.
 
         Args:
             user_id: User ID to revoke tokens for
 
         Returns:
-            Number of tokens revoked (always 0 without per-user tracking)
-        """
-        logger.warning(
-            f"revoke_user_tokens called for {user_id}, "
-            "but per-user token tracking is not implemented"
-        )
-        return 0
+            The revocation instant. Tokens issued at or before it are invalid.
 
-    async def _is_token_revoked(self, jti: str) -> bool:
-        """Check if a token is revoked.
+        Raises:
+            ServiceError: The revocation could not be recorded. Callers must
+                not report a revocation as successful when this raises.
+        """
+        if self._revocation_store is None:
+            raise ServiceError("Token revocation failed: no revocation store")
+
+        revoked_at = datetime.now(timezone.utc)
+        # The watermark must outlive the longest-lived token that could still
+        # be presented, or a long refresh token would outlive the entry that
+        # revokes it and spring back to life.
+        ttl = self._refresh_token_expire_days * 86400
+        try:
+            await self._revocation_store.revoke_user_tokens_before(
+                user_id, int(revoked_at.timestamp()), ttl
+            )
+        except Exception as e:
+            logger.error(f"Failed to revoke user tokens: {e}")
+            raise ServiceError(f"Token revocation failed: {e}")
+
+        logger.info(
+            "All tokens revoked for user",
+            extra={"user_id": user_id, "revoked_before": revoked_at.isoformat()},
+        )
+        return revoked_at
+
+    async def _is_revoked(self, claims: Dict[str, Any]) -> bool:
+        """Check whether a token's claims are revoked.
 
         Fail-open by design: if the store is unavailable, the request-path
         check treats the token as not revoked rather than rejecting all
@@ -524,15 +548,17 @@ class AuthService:
         so a store outage cannot mint new credentials from a revoked token.
 
         Args:
-            jti: JWT ID to check
+            claims: Verified token claims (``jti``, ``sub`` and ``iat`` are
+                read; the composite rule lives in ``revocation_reason``)
 
         Returns:
-            True if token is revoked
+            True if the token is revoked
         """
         if self._revocation_store is None:
             return False
         try:
-            return await self._revocation_store.is_revoked(jti)
+            reason = await revocation_reason(self._revocation_store, claims)
+            return reason is not None
         except Exception as e:
             logger.error(f"Failed to check token revocation: {e}")
             # Fail open for availability, but log for monitoring

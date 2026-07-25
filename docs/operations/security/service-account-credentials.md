@@ -85,10 +85,12 @@ Deactivate the account. Both refresh paths reload the user and reject an
 inactive one, so the credential stops renewing and the last access token expires
 within `JWT_ACCESS_TOKEN_EXPIRY` (default 15 minutes).
 
-There is no "revoke all tokens for this user" operation — the revocation store
-is keyed by token id with no per-user index, so outstanding access tokens cannot
-be enumerated. Deactivation plus short access-token expiry *is* the containment
-mechanism; budget for that expiry window when responding to a compromise.
+To cut off outstanding access tokens immediately rather than waiting out that
+window, also call `POST /api/v1/auth/users/{user_id}/revoke-tokens` (admin).
+It writes a per-user revocation watermark, which invalidates every token the
+account already holds (#769). Deactivation remains the durable control — it
+stops the credential renewing — while the watermark closes the access-token
+expiry window.
 
 ## Rolling back to dev-login
 

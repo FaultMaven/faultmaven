@@ -464,12 +464,12 @@ class OAuthServiceImpl(IOAuthService):
                 error_code="USER_NOT_FOUND",
             )
 
-        # A deactivated account must not be able to refresh. This is the only
-        # containment lever there is: revoke_user_tokens() is a documented no-op
-        # (no per-user JTI index), so deactivation relies entirely on short
-        # access-token expiry plus this check. Without it, a refresh credential
-        # on a deactivated account keeps minting access tokens indefinitely on a
-        # sliding window. POST /auth/refresh already enforces this.
+        # A deactivated account must not be able to refresh. Deactivation also
+        # writes a per-user revocation watermark (#769), which invalidates the
+        # refresh credential itself; this check stays as defence in depth for
+        # accounts deactivated by any path that does not revoke. Without it, a
+        # refresh credential on a deactivated account could keep minting access
+        # tokens on a sliding window. POST /auth/refresh already enforces this.
         if not getattr(user, "is_active", True):
             logger.warning(
                 "OAuth token refresh failed: user inactive",

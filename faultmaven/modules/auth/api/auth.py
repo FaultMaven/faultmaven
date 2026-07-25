@@ -35,7 +35,6 @@ from pydantic import BaseModel, ValidationError
 from faultmaven.api.v1.auth_dependencies import (
     check_auth_services_health,
     extract_bearer_token,
-    get_token_manager,
     get_token_revocation_store,
     get_user_store,
     require_admin,
@@ -52,6 +51,7 @@ from faultmaven.modules.auth.domain.models.api_auth import (
     AuthTokenResponse,
     DevLoginRequest,
     LogoutResponse,
+    RevokeUserTokensResponse,
     TokenRefreshRequest,
     TokenRefreshResponse,
     TokenValidationError,
@@ -827,18 +827,11 @@ async def get_current_user_profile(
 ) -> UserInfoResponse:
     """Get current user profile
 
-    Returns detailed information about the currently authenticated user,
-    including profile data and token statistics.
+    Returns detailed information about the currently authenticated user.
     """
     correlation_id = str(uuid.uuid4())
 
     try:
-        token_manager = await get_token_manager(request)
-
-        # Get user's active tokens for statistics
-        user_tokens = await token_manager.get_user_tokens(current_user.user_id)
-        active_token_count = len([token for token in user_tokens if token.is_valid])
-
         # Build extended user profile
         user_info = UserInfoResponse(
             user_id=current_user.user_id,
@@ -851,7 +844,6 @@ async def get_current_user_profile(
                 current_user.roles if current_user.roles else ["admin"]
             ),  # Ensure roles are included
             last_login=None,  # TODO: Implement last login tracking
-            token_count=active_token_count,
         )
 
         logger.debug(
@@ -928,24 +920,43 @@ async def auth_health_check():
         }
 
 
-@router.post("/users/{user_id}/revoke-tokens", response_model=LogoutResponse)
+@router.post("/users/{user_id}/revoke-tokens", response_model=RevokeUserTokensResponse)
 @trace("auth_revoke_user_tokens")
 async def revoke_user_tokens(
     user_id: str,
     request: Request,
     _: DevUser = Depends(require_admin),
-) -> LogoutResponse:
-    """Revoke all tokens for a user. Admin only."""
-    try:
-        token_manager = await get_token_manager(request)
-        revoked_count = await token_manager.revoke_user_tokens(user_id)
+) -> RevokeUserTokensResponse:
+    """Revoke all tokens for a user. Admin only.
 
-        logger.info(f"Revoked all tokens for user {user_id}, count: {revoked_count}")
-        return LogoutResponse(
-            message=f"Revoked all {revoked_count} tokens for user",
-            revoked_tokens=revoked_count,
+    Writes a per-user revocation watermark to the shared revocation store; the
+    request path and both token generators then reject every token for this
+    user issued at or before that instant (#769). A store write failure is a
+    500 — an admin must never get a revocation confirmation while the user's
+    tokens keep authenticating.
+    """
+    try:
+        auth_service = getattr(request.app.state, "auth_service", None)
+        if auth_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service unavailable. Please check server startup logs.",
+            )
+
+        # Raises ServiceError on store failure, which surfaces as a 500 below.
+        revoked_before = await auth_service.revoke_user_tokens(user_id)
+
+        logger.info(
+            "Revoked all tokens for user",
+            extra={"user_id": user_id, "revoked_before": revoked_before.isoformat()},
+        )
+        return RevokeUserTokensResponse(
+            message="All tokens revoked for user",
+            revoked_before=revoked_before.isoformat(),
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Token revocation failed: {e}")
         raise HTTPException(

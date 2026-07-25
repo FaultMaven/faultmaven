@@ -335,7 +335,10 @@ async def lifespan(app: FastAPI):
 
         # Verify critical services are available IMMEDIATELY after initialization
         user_store = container.get_user_store()
-        token_manager = container.get_token_manager()
+        # Without the revocation store, every revoke path silently fails open
+        # (#767/#769), so treat it as critical rather than discovering it on
+        # the first logout or admin revocation.
+        token_revocation_store = container.get_service("token_revocation_store")
 
         logger.info(
             f"Container initialization complete. Checking authentication services..."
@@ -344,15 +347,16 @@ async def lifespan(app: FastAPI):
             f"   - user_store: {type(user_store).__name__ if user_store else 'None'}"
         )
         logger.info(
-            f"   - token_manager: {type(token_manager).__name__ if token_manager else 'None'}"
+            "   - token_revocation_store: "
+            f"{type(token_revocation_store).__name__ if token_revocation_store else 'None'}"
         )
 
-        if user_store is None or token_manager is None:
+        if user_store is None or token_revocation_store is None:
             logger.error(
                 f"❌ Critical authentication services missing after container initialization:"
             )
             logger.error(f"   - user_store: {user_store}")
-            logger.error(f"   - token_manager: {token_manager}")
+            logger.error(f"   - token_revocation_store: {token_revocation_store}")
             logger.error(f"   - Container initialized: {container.is_initialized}")
             logger.error(
                 f"   - Container has user_store attr: {hasattr(container, 'user_store')}"
@@ -446,12 +450,9 @@ async def lifespan(app: FastAPI):
 
         # CRITICAL: Set authentication services FIRST - they're required for the API to work
         # These were already verified above, so they must be available
-        app.state.token_manager = token_manager
         # Deployment-wide token revocation store (#767): the single store all
         # revoke paths write to and the request-path check reads from.
-        app.state.token_revocation_store = container.get_service(
-            "token_revocation_store"
-        )
+        app.state.token_revocation_store = token_revocation_store
         app.state.user_store = user_store
         app.state.user_service = container.get_user_service()
         app.state.auth_service = container.get_auth_service()
