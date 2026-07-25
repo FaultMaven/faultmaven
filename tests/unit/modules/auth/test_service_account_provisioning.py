@@ -178,3 +178,33 @@ class TestProvisioning:
         )
 
         generator.revoke_refresh_token.assert_not_awaited()
+
+
+class TestAccountKindValidation:
+    async def test_rejects_an_unknown_account_kind(self):
+        """``cases.source`` matches 'slack' exactly and the column has no CHECK,
+        so a typo would be persisted, reported as a successful correction, and
+        then stamp every case the account opens with the wrong source."""
+        store = _FakeUserStore(_user())
+
+        with pytest.raises(
+            ServiceAccountProvisioningError, match="Unknown account_kind"
+        ):
+            await provision_service_account_credential(
+                username="slack-agent",
+                user_store=store,
+                token_generator=_token_generator(),
+                account_kind="Slack",  # capitalised typo
+            )
+
+        assert store.updated == []
+
+    async def test_accepts_individual(self):
+        credential = await provision_service_account_credential(
+            username="someone",
+            user_store=_FakeUserStore(),
+            token_generator=_token_generator(),
+            account_kind="individual",
+        )
+
+        assert credential.user.account_kind == "individual"

@@ -220,3 +220,49 @@ class TestServiceAccountRefreshLifecycle:
         assert claims is not None
         assert claims["sub"] == "user-slack-agent"
         assert claims["type"] == "access"
+
+    async def test_a_deactivated_account_cannot_refresh(
+        self, credential, oauth_service, user_store
+    ):
+        """Deactivation is the only containment lever there is.
+
+        ``revoke_user_tokens`` is a documented no-op (no per-user JTI index), so
+        deactivation relies on short access-token expiry plus the liveness check
+        on refresh. Without it here, a credential on a deactivated account keeps
+        minting access tokens forever on a sliding window.
+        """
+        user_store.users["user-slack-agent"].is_active = False
+
+        with pytest.raises(InvalidGrantError):
+            await oauth_service.refresh_access_token(
+                refresh_token=credential.refresh_token,
+                client_id=CLIENT_ID,
+            )
+
+    async def test_the_replacement_is_minted_before_the_old_one_is_revoked(
+        self, credential, oauth_service, token_generator
+    ):
+        """Revoking first would leave a caller holding a revoked credential and
+        no replacement if the mint failed — a lockout only an operator can undo.
+        """
+        order: list[str] = []
+        real_mint = token_generator.generate_refresh_token
+        real_revoke = token_generator.revoke_refresh_token
+
+        async def mint(user):
+            order.append("mint")
+            return await real_mint(user)
+
+        async def revoke(token):
+            order.append("revoke")
+            return await real_revoke(token)
+
+        token_generator.generate_refresh_token = mint
+        token_generator.revoke_refresh_token = revoke
+
+        await oauth_service.refresh_access_token(
+            refresh_token=credential.refresh_token,
+            client_id=CLIENT_ID,
+        )
+
+        assert order == ["mint", "revoke"]

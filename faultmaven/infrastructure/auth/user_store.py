@@ -225,6 +225,11 @@ class RedisUserStore:
                 created_at=now,
                 is_dev_user=True,
                 is_active=True,
+                # Explicit: DevUser.__post_init__ defaults roles to ['admin'],
+                # so omitting this would silently create every account on the
+                # Redis-fallback path — including service accounts — with admin
+                # privileges, while the DatabaseUserStore path creates ['user'].
+                roles=["user"],
                 account_kind=account_kind,
             )
 

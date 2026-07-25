@@ -40,6 +40,7 @@ from faultmaven.config.settings import AuthMode, get_settings  # noqa: E402
 from faultmaven.container import container  # noqa: E402
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (  # noqa: E402
     SERVICE_ACCOUNT_KIND,
+    VALID_ACCOUNT_KINDS,
     ServiceAccountProvisioningError,
     provision_service_account_credential,
 )
@@ -154,6 +155,7 @@ def main():
         "--account-kind",
         "-k",
         default=SERVICE_ACCOUNT_KIND,
+        choices=sorted(VALID_ACCOUNT_KINDS),
         help=f"ADR-012 account kind to enforce (default: {SERVICE_ACCOUNT_KIND})",
     )
     parser.add_argument(

@@ -79,6 +79,17 @@ credentials, so it is safe to run against a still-healthy agent.
 The agent reports an expired or revoked credential as a re-bootstrap error
 rather than retrying, so this shows up in its logs as a clear operator action.
 
+## Revoking access
+
+Deactivate the account. Both refresh paths reload the user and reject an
+inactive one, so the credential stops renewing and the last access token expires
+within `JWT_ACCESS_TOKEN_EXPIRY` (default 15 minutes).
+
+There is no "revoke all tokens for this user" operation — the revocation store
+is keyed by token id with no per-user index, so outstanding access tokens cannot
+be enumerated. Deactivation plus short access-token expiry *is* the containment
+mechanism; budget for that expiry window when responding to a compromise.
+
 ## Rolling back to dev-login
 
 Only possible while the backend is in `local` mode — `oauth` mode does not serve

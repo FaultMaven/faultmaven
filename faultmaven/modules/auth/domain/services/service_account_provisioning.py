@@ -25,6 +25,8 @@ from faultmaven.modules.auth.domain.models.auth import DevUser
 # ADR-012 account kinds. 'slack' is the service account that owns a workspace's
 # cases; 'individual' is a human.
 SERVICE_ACCOUNT_KIND = "slack"
+INDIVIDUAL_ACCOUNT_KIND = "individual"
+VALID_ACCOUNT_KINDS = frozenset({INDIVIDUAL_ACCOUNT_KIND, SERVICE_ACCOUNT_KIND})
 
 
 class ServiceAccountProvisioningError(Exception):
@@ -92,6 +94,16 @@ async def provision_service_account_credential(
     if not username or not username.strip():
         raise ServiceAccountProvisioningError("username is required")
     username = username.strip()
+
+    # The column has no CHECK constraint and case derivation matches 'slack'
+    # exactly, so an unvalidated typo ('Slack') would be persisted, reported as
+    # a successful correction, and then silently stamp every case the account
+    # opens with the wrong source.
+    if account_kind not in VALID_ACCOUNT_KINDS:
+        raise ServiceAccountProvisioningError(
+            f"Unknown account_kind {account_kind!r}; "
+            f"expected one of {sorted(VALID_ACCOUNT_KINDS)}"
+        )
 
     if token_generator is None:
         raise ServiceAccountProvisioningError(
