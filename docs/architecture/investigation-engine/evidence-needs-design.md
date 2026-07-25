@@ -646,6 +646,13 @@ def on_hypothesis_terminal(case: Case, terminal_hyp_id: str):
                     and need.state != NeedState.FULFILLED):
                 need.state = NeedState.SUPERSEDED
                 need.superseded_reason = "all motivating hypotheses are terminal"
+
+
+# End of every turn, before save: sweep the whole terminal set.
+def sweep_needs_for_terminal_hypotheses(case: Case):
+    for h_id, h in case.hypotheses.items():
+        if h.state in TERMINAL_HYPOTHESIS_STATES:
+            on_hypothesis_terminal(case, h_id)
 ```
 
 Notes:
@@ -668,12 +675,26 @@ Notes:
   what *was* collected, even if the hypothesis later goes terminal.
 - The LLM can supersede explicitly at any time via update emissions.
 
-The rule is wired as an end-of-turn snapshot diff, so it fires only for
-hypotheses that turn terminal *during* the turn. The apply-layer closes the
-matching entry point: a need emitted with an *already*-terminal motivator has
-that ID dropped at create/update time (and a causal need left with no valid
-motivator is rejected outright), so no need can be born beyond the sweep's
-reach.
+The rule is wired as an end-of-turn sweep over **every** terminal hypothesis,
+not a diff of the ones that turned terminal this turn. The supersession helper
+is idempotent — it removes the hypothesis id from each motivating list on the
+first pass, so later passes short-circuit — which makes re-sweeping free in the
+steady state and buys two things a diff cannot give:
+
+- A need already carrying a terminal motivator heals itself. A diff can only
+  ever reach needs whose motivator turned terminal in the *same* turn, so a
+  need anchored to a hypothesis that went terminal before this rule existed
+  would stay `PENDING` for the life of the case. The same applies to the
+  subtler shape: a need motivated by `[terminal, active]` keeps the stale id
+  (nothing pruned it), so when the active motivator later goes terminal the
+  list still is not empty and the need survives. Sweeping everything resolves
+  both without a backfill migration.
+- There is no pre-turn snapshot to keep in sync with the post-turn diff.
+
+The apply-layer closes the matching entry point: a need emitted with an
+*already*-terminal motivator has that id dropped at create/update time (and a
+causal need left with no valid motivator is rejected outright), so a need that
+the sweep would immediately supersede is never created in the first place.
 
 ### 7.5 Re-Verification After Mitigation/Solution
 
