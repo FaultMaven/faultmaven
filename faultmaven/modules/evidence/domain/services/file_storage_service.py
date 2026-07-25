@@ -309,13 +309,21 @@ class FileStorageService(BaseService):
 
         return payload
 
-    async def list_sidecar_keys(self) -> List[str]:
-        """List the storage keys of every stored file that has a sidecar.
+    async def survey_sidecars(self) -> Tuple[List[str], List[str]]:
+        """Enumerate sidecars, split into sweepable candidates and strays.
 
-        Returns file keys (sidecar suffix stripped), so callers can feed them
-        straight back into `read_sidecar` / `delete_file`. Used by the
-        orphan-cleanup job, which must enumerate candidates without assuming
-        it can walk a local directory.
+        Returns ``(candidates, strays)``:
+
+        - ``candidates`` are file keys (sidecar suffix stripped) whose file is
+          actually stored, so callers can feed them straight back into
+          `read_sidecar` / `delete_file`.
+        - ``strays`` are sidecar keys whose file is absent. They are never
+          swept — see the phantom-base reasoning below — so they are reported
+          instead, because an unbounded set of objects that no job will ever
+          touch should be a number someone can see rather than silence.
+
+        Used by the orphan-cleanup job, which must enumerate candidates
+        without assuming it can walk a local directory.
         """
         keys = await self.backend.list_keys()
         stored = set(keys)
@@ -331,12 +339,18 @@ class FileStorageService(BaseService):
         # that reservation existed — the mangle is generation-time only and
         # cannot reach them. It is also what would have caught the truncation
         # ordering bug that briefly reopened the hole.
-        return [
-            base
-            for k in keys
-            if k.endswith(SIDECAR_SUFFIX)
-            and (base := k[: -len(SIDECAR_SUFFIX)]) in stored
-        ]
+        candidates: List[str] = []
+        strays: List[str] = []
+        for key in keys:
+            if not key.endswith(SIDECAR_SUFFIX):
+                continue
+            base = key[: -len(SIDECAR_SUFFIX)]
+            if base in stored:
+                candidates.append(base)
+            else:
+                strays.append(key)
+
+        return candidates, strays
 
     async def retrieve_file(self, storage_key: str) -> bytes:
         """Retrieve a file from the configured storage backend.
@@ -564,16 +578,15 @@ class FileStorageService(BaseService):
 
         # The sidecar protocol reserves names ending in SIDECAR_SUFFIX. An
         # upload actually named "notes.meta.json" would otherwise be
-        # enumerated by list_sidecar_keys() as some other file's sidecar, its
+        # enumerated by survey_sidecars() as some other file's sidecar, its
         # user-controlled content parsed as orphan metadata, and the file
         # itself deleted as that phantom's companion.
         #
-        # This MUST be the last step. Truncation above rebuilds the name from
-        # `{name[:N]}.{ext}` and can reconstitute the very suffix a earlier
-        # an earlier mangle removed — a >200-char name ending `.metaXXXX.json`
-        # truncates
-        # straight back to `.meta.json`. The substitution is length-preserving,
-        # so applying it here cannot push the name back over the limit.
+        # This MUST be the last step. Truncation above rebuilds the name as
+        # `{name[:N]}.{ext}`, which can reconstitute the very suffix an earlier
+        # mangle had removed: a >200-char name ending `.metaXXXX.json`
+        # truncates straight back to `.meta.json`. Because the substitution is
+        # length-preserving, running it here cannot re-break the length cap.
         if safe.lower().endswith(SIDECAR_SUFFIX):
             safe = f"{safe[: -len(SIDECAR_SUFFIX)]}.meta_json"
 

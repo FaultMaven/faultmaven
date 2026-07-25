@@ -503,7 +503,8 @@ The sweep (`faultmaven.modules.agent.jobs.storage_cleanup`) enumerates sidecars 
 # Simplified sweep — full implementation in faultmaven/modules/agent/jobs/storage_cleanup.py
 async def cleanup_orphaned_files(storage, ttl_hours, dry_run):
     cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
-    for storage_key in await storage.list_sidecar_keys():
+    candidates, strays = await storage.survey_sidecars()   # strays: file already gone
+    for storage_key in candidates:
         # read_sidecar returns None only for a genuinely absent sidecar and
         # RAISES if it cannot be read — the job counts that as an error and
         # skips, so unknown state never becomes a deletion.

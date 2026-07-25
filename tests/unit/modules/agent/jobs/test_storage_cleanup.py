@@ -174,7 +174,7 @@ class TestFileStorageServiceSidecar:
         assert not sidecar_path.exists()
 
     @pytest.mark.asyncio
-    async def test_list_sidecar_keys_returns_file_keys(self, storage_service):
+    async def test_survey_sidecars_returns_file_keys(self, storage_service):
         """Sidecar listing yields the FILE key, not the sidecar key.
 
         The cleanup job feeds these straight back into read_sidecar /
@@ -188,10 +188,11 @@ class TestFileStorageServiceSidecar:
             mime_type="text/plain",
         )
 
-        keys = await storage_service.list_sidecar_keys()
+        candidates, strays = await storage_service.survey_sidecars()
 
-        assert keys == [result["storage_key"]]
-        assert not keys[0].endswith(SIDECAR_SUFFIX)
+        assert candidates == [result["storage_key"]]
+        assert not candidates[0].endswith(SIDECAR_SUFFIX)
+        assert strays == []
 
 
 # ============================================================
@@ -440,3 +441,29 @@ class TestCleanupErrorAccounting:
         assert result["errors"] == 1
         assert result["deleted"] == 0
         assert target.exists()
+
+
+class TestStraySidecarReporting:
+    @pytest.mark.asyncio
+    async def test_stray_sidecars_are_counted_not_silent(
+        self, storage_service, storage_root
+    ):
+        """A sidecar whose file is gone is never swept — so it must be visible.
+
+        The phantom-base guard deliberately excludes these (that is what stops
+        a hostile key getting another object deleted), which means they would
+        otherwise accumulate forever with no signal at all.
+        """
+        stray = Path(storage_root) / "org/case/1/vanished.log.meta.json"
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        stray.write_text(
+            json.dumps({"linked": False, "uploaded_at": "2000-01-01T00:00:00+00:00"})
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service, ttl_hours=24, dry_run=False
+        )
+
+        assert result["stray_sidecars"] == 1
+        assert result["deleted"] == 0
+        assert stray.exists()  # left in place, but reported

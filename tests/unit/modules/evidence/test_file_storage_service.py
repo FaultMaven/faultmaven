@@ -785,7 +785,7 @@ class TestSidecarSuffixIsReserved:
         self, file_storage_service, sample_file_data
     ):
         """A file literally named '*.meta.json' would otherwise be listed by
-        list_sidecar_keys() as some other object's sidecar, its user-controlled
+        survey_sidecars() as some other object's sidecar, its user-controlled
         content parsed as orphan metadata, and the file deleted as that
         phantom's companion.
         """
@@ -799,7 +799,9 @@ class TestSidecarSuffixIsReserved:
 
         assert not result["storage_key"].endswith(".meta.json")
         # Its own sidecar is still the only thing the sweep sees.
-        assert await file_storage_service.list_sidecar_keys() == [result["storage_key"]]
+        candidates, strays = await file_storage_service.survey_sidecars()
+        assert candidates == [result["storage_key"]]
+        assert strays == []
 
     def test_no_filename_length_reconstitutes_the_suffix(self, file_storage_service):
         """The reservation is a PROPERTY over all lengths, not one example.
@@ -824,7 +826,7 @@ class TestSidecarSuffixIsReserved:
         """Objects stored BEFORE the reservation existed must still be safe.
 
         The mangle is generation-time only, so it structurally cannot protect
-        keys already on disk. `list_sidecar_keys` therefore also requires a
+        keys already on disk. `survey_sidecars` therefore also requires a
         stripped base to name a genuinely stored object, or the phantom base
         would let the sweep read this object's own bytes as orphan metadata.
         """
@@ -836,9 +838,10 @@ class TestSidecarSuffixIsReserved:
 
         # The phantom base "…/abc123_evil" is not a stored object, so it must
         # not be offered to the sweep as a cleanup candidate.
-        assert "org1/case1/2020-01-01/abc123_evil" not in (
-            await service.list_sidecar_keys()
-        )
+        candidates, strays = await service.survey_sidecars()
+        assert "org1/case1/2020-01-01/abc123_evil" not in candidates
+        # ...and it is reported rather than silently ignored.
+        assert strays == [legacy]
 
     @pytest.mark.asyncio
     async def test_hostile_upload_does_not_get_itself_deleted(

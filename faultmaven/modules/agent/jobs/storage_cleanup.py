@@ -84,8 +84,8 @@ async def cleanup_orphaned_files(
     Returns:
         Dict with keys: ``status``, ``storage_backend``, ``ttl_hours``,
         ``dry_run``, ``scanned``, ``skipped_no_sidecar``,
-        ``skipped_linked``, ``skipped_within_ttl``, ``found``, ``deleted``,
-        ``errors``.
+        ``skipped_linked``, ``skipped_within_ttl``, ``stray_sidecars``,
+        ``found``, ``deleted``, ``errors``.
     """
     result: dict[str, Any] = {
         "status": "completed",
@@ -94,6 +94,7 @@ async def cleanup_orphaned_files(
         "dry_run": dry_run,
         "scanned": 0,
         "skipped_no_sidecar": 0,
+        "stray_sidecars": 0,
         "skipped_linked": 0,
         "skipped_within_ttl": 0,
         "found": 0,
@@ -103,7 +104,22 @@ async def cleanup_orphaned_files(
 
     cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
 
-    for storage_key in await storage.list_sidecar_keys():
+    candidates, strays = await storage.survey_sidecars()
+
+    # Sidecars whose file is already gone are never swept (a phantom base is
+    # how a hostile key gets another object deleted). Report the count so an
+    # unbounded set of objects no job will ever touch is visible rather than
+    # silent.
+    result["stray_sidecars"] = len(strays)
+    if strays:
+        logger.warning(
+            "%d sidecar(s) have no corresponding file and were left in place; "
+            "first few: %s",
+            len(strays),
+            strays[:5],
+        )
+
+    for storage_key in candidates:
         result["scanned"] += 1
 
         try:
@@ -184,7 +200,8 @@ async def cleanup_orphaned_files(
 
     logger.info(
         "Storage cleanup %s — scanned=%d, found=%d, deleted=%d, "
-        "skipped_linked=%d, skipped_within_ttl=%d, skipped_no_sidecar=%d, errors=%d",
+        "skipped_linked=%d, skipped_within_ttl=%d, skipped_no_sidecar=%d, "
+        "stray_sidecars=%d, errors=%d",
         "DRY RUN" if dry_run else "live",
         result["scanned"],
         result["found"],
@@ -192,6 +209,7 @@ async def cleanup_orphaned_files(
         result["skipped_linked"],
         result["skipped_within_ttl"],
         result["skipped_no_sidecar"],
+        result["stray_sidecars"],
         result["errors"],
     )
     return result
