@@ -101,7 +101,11 @@ def _auth_service_settings():
     generators are built with, ``settings.security``'s has no env alias.
     """
     return SimpleNamespace(
-        auth=SimpleNamespace(auth_mode="local", jwt_refresh_token_expire_days=7),
+        auth=SimpleNamespace(
+            auth_mode="local",
+            jwt_refresh_token_expire_days=7,
+            jwt_access_token_expire_minutes=60,
+        ),
         security=SimpleNamespace(
             jwt_algorithm="HS256",
             jwt_access_token_expire_minutes=60,
@@ -224,10 +228,45 @@ class TestAdminEndpointActuallyRevokes:
             )
 
         assert exc_info.value.status_code == 404
-        # No watermark was written for the mistyped id, and the real user's
-        # token is untouched — nothing was silently half-done.
-        assert await store.is_user_revoked("revoked-user", 1_700_000_000) is False
+        # The real user is untouched — the mistyped id revoked nothing of theirs.
         assert await generator.validate_access_token(access) is not None
+
+    async def test_revocation_is_not_gated_on_the_user_lookup(self):
+        """An auth-DB outage must not be able to suppress a revocation.
+
+        ``DatabaseUserStore.get_user`` swallows its exceptions and returns
+        None, so a DB failure is indistinguishable from an absent user (#703
+        is exactly that DB freezing). If the revocation were gated on the
+        lookup, a DB blip would answer "user not found" to an admin containing
+        a live compromise, having revoked nothing. Revocation needs only
+        Redis, so it must land on Redis alone.
+        """
+        from faultmaven.modules.auth.api import auth as auth_routes
+
+        class _BrokenUserStore:
+            """Stands in for the store swallowing a DB error into None."""
+
+            async def get_user(self, user_id: str):
+                return None
+
+        store = _store()
+        generator = _generator(store)
+        auth_service = _auth_service(store)
+
+        access = await generator.generate_access_token(_user())
+
+        with pytest.raises(HTTPException) as exc_info:
+            await auth_routes.revoke_user_tokens(
+                USER_ID,
+                _admin_request(auth_service),
+                _=_user(),
+                user_store=_BrokenUserStore(),
+            )
+
+        # The caller is told the lookup failed...
+        assert exc_info.value.status_code == 404
+        # ...but the tokens are genuinely dead regardless.
+        assert await generator.validate_access_token(access) is None
 
     async def test_endpoint_500s_when_the_write_fails(self):
         """A failed revocation must never read as a successful one."""
@@ -342,6 +381,45 @@ class TestWatermarkCoversEveryMintPath:
                 await auth_service.verify_token_with_revocation_check(
                     token, token_type="access"
                 )
+
+    async def test_every_minter_emits_the_claims_the_watermark_needs(self):
+        """The watermark matches on ``sub`` + ``iat``; a token missing either
+        skips the per-user arm entirely and survives revocation.
+
+        "Complete by construction" is only true while every mint path emits
+        both, and keys ``sub`` to the same user_id the watermark is written
+        under. Nothing in the type system enforces that, so pin it here: a new
+        or altered minter that drops ``iat`` must fail this test rather than
+        silently open a hole.
+        """
+        import jwt as jwt_lib
+
+        store = _store()
+        generator = _generator(store)
+        auth_service = _auth_service(store)
+        user = _user()
+
+        tokens = {
+            "hs256_access": await generator.generate_access_token(user),
+            "hs256_refresh": await generator.generate_refresh_token(user),
+        }
+        with patch(
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=_auth_service_settings(),
+        ):
+            tokens["auth_service_access"] = auth_service.generate_access_token(
+                user_id=USER_ID,
+                organization_id="org-769",
+                email="revoked@local.faultmaven",
+                roles=["user"],
+            )
+
+        for name, token in tokens.items():
+            claims = jwt_lib.decode(
+                token, options={"verify_signature": False, "verify_exp": False}
+            )
+            assert claims.get("iat") is not None, f"{name} emits no iat"
+            assert claims.get("sub") == USER_ID, f"{name} sub is not the user_id"
 
     async def test_other_users_are_unaffected(self):
         store = _store()
@@ -536,14 +614,20 @@ class TestServiceFailurePosture:
         with pytest.raises(ServiceError):
             await auth_service.revoke_user_tokens(USER_ID)
 
-    async def test_userservice_flows_revoke_before_persisting(self):
-        """A revocation failure must abort with nothing committed.
+    async def test_userservice_flows_persist_before_revoking(self):
+        """Ordering invariant: persist FIRST, revoke second.
 
-        These flows raise where they used to no-op, and they all run against
-        an already-loaded user, so revoking after the save would leave the
-        password changed / account deactivated with old sessions alive AND an
-        error returned to the caller. Revoking first makes that failure a
-        clean no-op.
+        Revoking first opens a TOCTOU. During the gap the DB still holds the
+        OLD password/roles/active flag, so a login landing in it authenticates
+        against pre-change state and mints a token whose ``iat`` is AFTER the
+        watermark — surviving the very revocation meant to kill it. Persisting
+        first inverts that: anything minted in the gap has ``iat`` at or before
+        the watermark and dies with it.
+
+        The cost is accepted deliberately: a store-write failure leaves the
+        change committed while returning an error. That is the #767 posture
+        (never report a revocation that did not land), and it is strictly
+        preferable to a window that hands out valid old-role credentials.
         """
         from unittest.mock import AsyncMock, MagicMock
 
@@ -552,36 +636,100 @@ class TestServiceFailurePosture:
         )
         from faultmaven.modules.auth.domain.services.user_service import UserService
 
+        order: list[str] = []
+
         repo = InMemoryUserRepository()
+        real_save = repo.save
+
+        async def tracking_save(user):
+            order.append("save")
+            return await real_save(user)
+
+        repo.save = tracking_save
+
         auth_service = MagicMock()
-        auth_service.revoke_user_tokens = AsyncMock(
-            side_effect=ServiceError("store down")
-        )
+
+        async def tracking_revoke(user_id):
+            order.append("revoke")
+            return datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+
+        auth_service.revoke_user_tokens = tracking_revoke
         service = UserService(user_repo=repo, auth_service=auth_service)
 
         user = await service.register_user(
-            email="reorder@local.faultmaven",
+            email="ordering@local.faultmaven",
             password="Str0ng-P4ssw0rd!",
-            full_name="Reorder Check",
+            full_name="Ordering Check",
         )
 
-        # Spy on the persistence boundary. Asserting on the entity itself
-        # cannot distinguish here: InMemoryUserRepository hands back the same
-        # object, so an in-memory field mutation looks identical to a commit.
-        # `save` never being reached is the invariant that actually matters.
-        repo.save = AsyncMock(side_effect=AssertionError("persisted before revoking"))
+        order.clear()
+        await service.change_password(
+            user_id=user.user_id,
+            current_password="Str0ng-P4ssw0rd!",
+            new_password="An0ther-P4ssw0rd!",
+        )
+        assert order == ["save", "revoke"], "change_password must persist first"
 
-        with pytest.raises(ServiceError):
-            await service.change_password(
-                user_id=user.user_id,
-                current_password="Str0ng-P4ssw0rd!",
-                new_password="An0ther-P4ssw0rd!",
-            )
-        repo.save.assert_not_called()
+        order.clear()
+        await service.deactivate_user(user.user_id)
+        assert order == ["save", "revoke"], "deactivate_user must persist first"
 
-        with pytest.raises(ServiceError):
-            await service.deactivate_user(user.user_id)
-        repo.save.assert_not_called()
+    async def test_role_changes_persist_before_revoking(self):
+        """Same ordering invariant on the role flows.
+
+        These are the sharpest case: revoking before the save would let a
+        login in the gap mint a token carrying the OLD (possibly elevated)
+        role with an ``iat`` past the watermark.
+        """
+        from unittest.mock import MagicMock
+
+        from faultmaven.infrastructure.persistence.user_repository import (
+            InMemoryUserRepository,
+        )
+        from faultmaven.modules.auth.domain.services.user_service import UserService
+
+        order: list[str] = []
+        repo = InMemoryUserRepository()
+        real_save = repo.save
+
+        async def tracking_save(user):
+            order.append("save")
+            return await real_save(user)
+
+        repo.save = tracking_save
+
+        auth_service = MagicMock()
+
+        async def tracking_revoke(user_id):
+            order.append("revoke")
+            return datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+
+        auth_service.revoke_user_tokens = tracking_revoke
+        service = UserService(user_repo=repo, auth_service=auth_service)
+
+        user = await service.register_user(
+            email="roles@local.faultmaven",
+            password="Str0ng-P4ssw0rd!",
+            full_name="Role Check",
+        )
+
+        order.clear()
+        await service.assign_role(
+            user_id=user.user_id,
+            role="admin",
+            organization_id="org-769",
+            admin_user_id="some-admin",
+        )
+        assert order == ["save", "revoke"], "assign_role must persist first"
+
+        order.clear()
+        await service.remove_role(
+            user_id=user.user_id,
+            role="admin",
+            organization_id="org-769",
+            admin_user_id="some-admin",
+        )
+        assert order == ["save", "revoke"], "remove_role must persist first"
 
     async def test_request_path_fails_open_on_store_read_failure(self):
         """Documented posture (#767): the request path prefers availability."""

@@ -208,9 +208,9 @@ erroring.
 **Single revocation store (#767).** Every per-token revocation writer — OAuth
 `POST /auth/oauth/revoke`, refresh-token rotation in both modes, and logout —
 writes to the same deployment-wide store the check above reads:
-`RedisTokenRevocationStore`, keyed `{token_revocation_prefix}{jti}`
-(`revoked:token:{jti}` by default), created once in the DI container for both
-auth modes and shared by instance. There is no secondary revocation
+`RedisTokenRevocationStore`, keyed `{token_revocation_prefix}jti:{jti}`
+(`revoked:token:jti:{jti}` by default), created once in the DI container for
+both auth modes and shared by instance. There is no secondary revocation
 namespace or SQL table. Failure posture: the per-request check fails **open**
 on store errors (availability; access tokens are short-lived), refresh-token
 validation in the generators fails **closed** (a store outage cannot mint new
@@ -246,10 +246,40 @@ generators are constructed with. Reading only `settings.security`'s would cap
 the watermark at its 7-day default while refresh tokens lived for the
 configured 30, resurrecting revoked tokens on day 8.
 
-`UserService` revokes **before** mutating and persisting the user. Revocation
-raises when the store write fails, so revoking first makes such a failure a
-clean no-op instead of committing a password change or deactivation while old
-sessions stay valid and an error is returned to the caller.
+`UserService` persists **before** revoking, deliberately. Revoking first opens
+a TOCTOU: during the gap the database still holds the old password, roles and
+active flag, so a login landing in it authenticates against pre-change state
+and mints a token whose `iat` falls *after* the watermark — surviving the very
+revocation meant to kill it. Persisting first inverts that, at the accepted
+cost that a store-write failure leaves the change committed while returning an
+error (the #767 posture: never report a revocation that did not land).
+
+The admin endpoint performs the revocation *before* resolving the user, and
+never conditions it on that lookup. `DatabaseUserStore.get_user` swallows its
+exceptions and returns `None`, making a database outage indistinguishable from
+an absent user; gating revocation on it would let a DB blip answer "user not
+found" to an admin containing a live compromise, having revoked nothing.
+Revocation needs only Redis, so it runs on Redis alone and the lookup only
+shapes the response.
+
+**Limits of the watermark, stated precisely:**
+
+- Matching is on `sub` + `iat`, so completeness holds only while every mint
+  path emits both and keys `sub` to the same user_id the watermark is written
+  under. All current minters do; a test pins it, because nothing in the type
+  system enforces it.
+- With clock skew between the revoking and minting processes, "every token
+  issued at or before the revocation instant" is measured on the *revoker's*
+  clock. If a minter's clock runs ahead by S seconds, tokens minted up to S
+  seconds before the revocation can survive it.
+- Revocation state is Redis-only and is **not** durable in standalone
+  deployments, which run FakeRedis in-process: a restart clears every
+  watermark and revoked jti, restoring revoked-but-unexpired tokens for the
+  rest of their lifetime. Account deactivation is in the database and does
+  survive; revocation alone does not.
+- Password-reset tokens (`type: password_reset`) are validated on their own
+  path and carry no revocation check, so per-user revocation does not
+  invalidate an outstanding reset link.
 
 The admin endpoint resolves `user_id` against the user store and returns 404 if
 it does not exist. A watermark write succeeds for any string, so an admin who

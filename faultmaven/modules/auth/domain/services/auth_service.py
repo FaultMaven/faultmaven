@@ -493,30 +493,45 @@ class AuthService:
             raise ServiceError(f"Token revocation failed: {e}")
 
     def _longest_token_lifetime_seconds(self) -> int:
-        """Longest refresh-token lifetime any mint path could have used.
+        """Longest lifetime any token this deployment mints could have.
 
-        The refresh expiry is declared in BOTH settings halves under the same
-        name: ``settings.auth``'s carries the ``JWT_REFRESH_TOKEN_EXPIRY``
-        validation alias and is the half the token generators are built with,
-        while ``settings.security``'s has no alias and never moves off its
-        default. A per-user watermark that expired before the tokens it
-        revokes would resurrect them, so take whichever is larger instead of
-        betting on one half.
+        A per-user watermark that expired before the tokens it revokes would
+        resurrect them, so this must bound EVERY token type, not just the
+        obvious one:
+
+        - Both settings halves are consulted because each declares the expiry
+          fields under the same names, but only ``settings.auth``'s carry the
+          ``JWT_*_EXPIRY`` validation aliases — and that is the half the token
+          generators are constructed with. ``settings.security``'s never move
+          off their defaults.
+        - Access-token expiry is included even though it is normally minutes:
+          ``JWT_ACCESS_TOKEN_EXPIRY`` has no upper bound in the schema and
+          nothing ties it to the refresh expiry, so a large value would
+          otherwise outlive the watermark exactly like the refresh case.
+
+        Attributes are read directly rather than via ``getattr`` defaults: a
+        missing or mis-wired settings half must fail loudly here, not quietly
+        collapse to the 7-day fallback below and silently under-cover.
         """
-        days = max(
-            getattr(self._settings.auth, "jwt_refresh_token_expire_days", 0) or 0,
-            getattr(self._settings.security, "jwt_refresh_token_expire_days", 0) or 0,
+        refresh_days = max(
+            self._settings.auth.jwt_refresh_token_expire_days,
+            self._settings.security.jwt_refresh_token_expire_days,
         )
-        if days <= 0:
+        access_minutes = max(
+            self._settings.auth.jwt_access_token_expire_minutes,
+            self._settings.security.jwt_access_token_expire_minutes,
+        )
+        seconds = max(int(refresh_days) * 86400, int(access_minutes) * 60)
+        if seconds <= 0:
             # A non-positive TTL is rejected by SETEX, which would turn every
             # revocation into a store error. Fall back to the schema default
             # rather than letting misconfiguration disable revocation.
             logger.warning(
-                "No positive refresh-token expiry configured; "
-                "defaulting the revocation watermark TTL to 7 days"
+                "No positive token expiry configured; defaulting the "
+                "revocation watermark TTL to 7 days"
             )
-            days = 7
-        return int(days) * 86400
+            seconds = 7 * 86400
+        return seconds
 
     async def revoke_user_tokens(
         self,

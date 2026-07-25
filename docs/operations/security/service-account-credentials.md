@@ -92,6 +92,22 @@ account already holds (#769). Deactivation remains the durable control — it
 stops the credential renewing — while the watermark closes the access-token
 expiry window.
 
+Two operational limits to know before relying on it:
+
+- **Revocation state lives only in Redis.** Standalone runs FakeRedis
+  in-process, so every watermark and revoked jti is lost on API restart, and
+  revoked-but-unexpired tokens become usable again for the remainder of their
+  lifetime. Deactivation (which is in the database) survives a restart;
+  revocation does not. Treat a restart during incident response as re-opening
+  the window, and deactivate as well as revoke.
+- **Upgrading across the #769 key-namespace change orphans older entries.**
+  Per-token keys moved from `{prefix}{jti}` to `{prefix}jti:{jti}`, so
+  revocations recorded by an earlier build are no longer read. Access tokens
+  age out within `JWT_ACCESS_TOKEN_EXPIRY`, but a refresh token revoked by
+  rotation or logout would come back for its full lifetime. Flush the
+  `{prefix}*` keyspace (default prefix `revoked:token:`) as part of that
+  upgrade if any previously revoked credential must stay dead.
+
 ## Rolling back to dev-login
 
 Only possible while the backend is in `local` mode — `oauth` mode does not serve

@@ -940,6 +940,15 @@ async def revoke_user_tokens(
     mistypes an id) while containing a compromised account would otherwise get
     a "revoked" confirmation while the real account kept authenticating —
     the same false-confirmation failure this endpoint was fixed for.
+
+    The revocation happens BEFORE that lookup and is never conditional on it.
+    ``DatabaseUserStore.get_user`` swallows its exceptions and returns None, so
+    an auth-DB outage is indistinguishable from a genuinely absent user (see
+    #703, where exactly that DB froze). Gating on it would let a DB blip answer
+    "user not found" to an admin containing a live compromise, having revoked
+    nothing. Revocation only needs Redis, so it runs on Redis alone; the lookup
+    only shapes the response. A watermark written for an id that turns out not
+    to exist is inert and expires on its own.
     """
     try:
         auth_service = getattr(request.app.state, "auth_service", None)
@@ -949,11 +958,17 @@ async def revoke_user_tokens(
                 detail="Authentication service unavailable. Please check server startup logs.",
             )
 
-        if await user_store.get_user(user_id) is None:
-            raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
-
         # Raises ServiceError on store failure, which surfaces as a 500 below.
         revoked_before = await auth_service.revoke_user_tokens(user_id)
+
+        if await user_store.get_user(user_id) is None:
+            logger.warning(
+                "Revoke-tokens called for an unresolvable user_id; watermark "
+                "written anyway (the lookup cannot distinguish absent from "
+                "store failure)",
+                extra={"user_id": user_id},
+            )
+            raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
 
         logger.info(
             "Revoked all tokens for user",
