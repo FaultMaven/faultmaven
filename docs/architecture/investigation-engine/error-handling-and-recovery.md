@@ -281,6 +281,81 @@ class ErrorResult:
     retry_count: int = 0
 ```
 
+### 2.x Context-overflow degrade (NO-COLLAPSE)
+
+A context-window overflow is **recoverable**: the input is too large for the
+window, but the same turn recompiled with a minimal prompt fits. FaultMaven must
+degrade and answer, never fail the turn on a recoverable overflow (the
+NO-COLLAPSE guarantee). The recovery is two layers that compose:
+
+1. **Classification** — `LLMErrorHandler.handle_error` detects the overflow
+   (`is_token_limit_error`) and returns `ErrorAction.COMPRESS_MEMORY` with the
+   shared `TOKEN_LIMIT` error_code. `with_retry` does not itself shrink the prompt
+   (it only holds the operation closure), so it treats the action as non-retryable
+   and returns the result; `_generate_structured_output_inner` then raises a
+   `MilestoneEngineError(error_code=TOKEN_LIMIT)`, **folding the provider's wording
+   into the message text** so it survives for diagnostics.
+
+   It deliberately does **not** chain the provider exception via `raise ... from`:
+   a context overflow is an HTTP 400 at the provider, and
+   `llm_service_error_http_exception` reads a provider `status_code` off the
+   `__cause__` chain *before* the engine `error_code` — so chaining would silently
+   re-route the documented `TOKEN_LIMIT → 503` to `4xx → 502`. The engine
+   `error_code` is the authoritative signal for this failure.
+
+2. **Degrade** — the outer `_generate_structured_output` catches that error,
+   recognizes it as a context-length failure via `_is_context_length_error`, and
+   retries **once** with the minimal `FALLBACK_*` prompt and tools dropped
+   (`get_fallback_prompt_for_case`). The turn completes degraded instead of
+   failing.
+
+The load-bearing seam is that `_is_context_length_error` keys on the deterministic
+engine signal (the shared `TOKEN_LIMIT` error_code, walking the `__cause__` chain),
+not only on provider phrasing in the message — because the retry loop has already
+consumed the provider's wording by the time the error reaches layer 2. Keying on
+the message alone left the degrade path unreachable, so a recoverable overflow
+hard-failed instead of degrading (#662). If even the minimal prompt overflows,
+the `TOKEN_LIMIT` error propagates and the API boundary maps it to a retryable
+503 — a genuinely over-limit turn, the only case that is not silently degraded.
+
+`TOKEN_LIMIT` is defined once in `faultmaven/exceptions.py` beside
+`QUOTA_EXHAUSTED`, because three modules participate in it (error handler sets it,
+engine reads it, API boundary maps it) and a typo in any one would silently
+disable the degrade path rather than fail loudly.
+
+**Output truncation shares this path.** `is_token_limit_error` also matches
+truncation signatures (a response cut off at the generation cap, so the JSON fails
+to parse), which likewise yield `TOKEN_LIMIT`. Those turns therefore also get the
+minimal-prompt retry. That is a smaller *input* rather than a larger output cap,
+so it is not a targeted fix — the inner loop's `max_tokens` escalation is — but it
+frees budget and is strictly better than the hard failure it replaced.
+
+### 2.x.1 Surfacing a degraded turn
+
+A silent degrade is its own (softer) risk to guarantee 1: the user cannot tell a
+context-starved answer from a normal one. Two things make it visible.
+
+**To the operator** — `prompt_context_recovery_total`, labeled `reason`
+(`input_overflow` | `output_truncation` | `unclassified`), alongside the
+`prompt_context_error_recovered` log line which carries the case id. Read the
+metric as a *rate*: an occasional degrade is the guarantee working; a sustained
+rate means turns are routinely over the window, which points at prompt sizing
+rather than at this recovery. A rising `output_truncation` share is the signal to
+reach for the `max_tokens` escalation instead.
+
+**To the user** — the recovery appends `DEGRADED_NO_TOOLS_NOTICE` to the fallback
+body, instructing the agent to say in one sentence that it could not inspect the
+evidence this turn and not to present a cause as established. This is *required,
+not cosmetic*: the fallback body renders addressable file stubs (see
+`_fallback_current_turn_evidence`, written for a tool-capable turn) while this
+retry drops the tool set — so without the notice the agent is invited to search
+files it cannot reach.
+
+The notice is appended **only** on this runtime recovery, never by the two
+compile-time fallbacks (`prompt_starvation_fallback`,
+`prompt_overflow_fallback`), which keep their tools and where the text would
+therefore be false.
+
 ---
 
 ## 3. Response Parsing Errors

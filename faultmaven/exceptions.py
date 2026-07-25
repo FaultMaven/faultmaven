@@ -97,6 +97,17 @@ class KnowledgeBaseException(FaultMavenException):
 QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
 
 
+# Stable error_code identifying a RECOVERABLE context-window overflow or output
+# truncation. Unlike QUOTA_EXHAUSTED this is not terminal: the engine re-runs the
+# turn with a minimal prompt and answers degraded (the NO-COLLAPSE guarantee).
+# It is a cross-module contract with three participants — the error handler sets
+# it, ``milestone_engine._is_context_length_error`` reads it to reach the degrade
+# path, and the API boundary maps it to a retryable 503 — so it lives here rather
+# than as a literal in each. A typo in any one of them would silently disable the
+# degrade path and hard-fail the turn instead (the #662 regression).
+TOKEN_LIMIT = "TOKEN_LIMIT"
+
+
 # Billing/quota-exhaustion markers found in provider error bodies. These signal
 # a PERMANENT account-level condition — out of credits, billing not enabled, or a
 # hard spend/quota cap — that NO amount of retrying or waiting will clear; only an

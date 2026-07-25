@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
+    TOKEN_LIMIT,
     AuthorizationError,
     ConflictError,
     LLMException,
@@ -124,7 +125,7 @@ def _first_engine_error_code(exc: BaseException) -> Optional[str]:
 # that describe a transient LLM-call failure worth retrying: retries were
 # exhausted, the context/output hit a token limit, or the failure could not be
 # classified but still originated from an LLM call (not arbitrary server logic).
-_RETRYABLE_ENGINE_CODES = frozenset({"RETRY_EXHAUSTED", "TOKEN_LIMIT", "UNKNOWN_ERROR"})
+_RETRYABLE_ENGINE_CODES = frozenset({"RETRY_EXHAUSTED", TOKEN_LIMIT, "UNKNOWN_ERROR"})
 # Semantic engine codes describing a permanent provider/config rejection — the
 # model is misnamed or the credentials are bad; retrying cannot help.
 _TERMINAL_ENGINE_CODES = frozenset({"MODEL_NOT_FOUND", "AUTH_FAILED"})

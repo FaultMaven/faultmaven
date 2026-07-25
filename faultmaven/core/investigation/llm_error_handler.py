@@ -19,6 +19,7 @@ from typing import Awaitable, Callable, Optional, Tuple, TypeVar
 
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
+    TOKEN_LIMIT,
     LLMException,
     is_billing_error,
 )
@@ -65,6 +66,34 @@ _PARAM_ERROR_GUARD_PHRASES: Tuple[str, ...] = (
     "unsupported_parameter",
     "is not supported with this model",
 )
+
+# Reason labels for the degrade-recovery metric. Both classes yield TOKEN_LIMIT
+# and both route through the same minimal-prompt retry, but they are different
+# failures worth telling apart in the data: INPUT_OVERFLOW is what the recovery
+# actually targets, while OUTPUT_TRUNCATION is served incidentally (a smaller
+# prompt frees budget but the targeted fix is the max_tokens escalation).
+RECOVERY_REASON_INPUT_OVERFLOW = "input_overflow"
+RECOVERY_REASON_OUTPUT_TRUNCATION = "output_truncation"
+RECOVERY_REASON_UNCLASSIFIED = "unclassified"
+
+
+def classify_token_limit_reason(error: BaseException) -> str:
+    """Which class of token failure *error* is, for metric labeling.
+
+    Lives here so the phrase lists stay encapsulated with the classifier that
+    owns them (same reason ``CONTEXT_OVERFLOW_PHRASES`` is shared rather than
+    copied). Input overflow is checked FIRST: a message can carry both kinds of
+    wording once the engine folds the provider text into its own message, and
+    the input-overflow reading is the one the recovery is designed for.
+    ``unclassified`` covers a pure engine ``TOKEN_LIMIT`` signal whose provider
+    wording did not survive — reportable, not an error.
+    """
+    msg = str(getattr(error, "message", "") or error).lower()
+    if any(p in msg for p in CONTEXT_OVERFLOW_PHRASES):
+        return RECOVERY_REASON_INPUT_OVERFLOW
+    if any(p in msg for p in _OUTPUT_TRUNCATION_PHRASES):
+        return RECOVERY_REASON_OUTPUT_TRUNCATION
+    return RECOVERY_REASON_UNCLASSIFIED
 
 
 class ErrorAction(str, Enum):
@@ -116,6 +145,15 @@ class ErrorResult:
     message: str
     error_code: Optional[str] = None
     retry_count: int = 0
+    # The exception that produced this result, preserved so the caller can
+    # surface its real message. Losing it turned an informative provider
+    # overflow ("prompt is too long: 250000 > 200000") into an opaque engine
+    # message. Callers fold this into their raised message text for
+    # diagnostics; they do NOT chain it via ``raise ... from`` when a semantic
+    # error_code is the authoritative signal, because a typed LLMException on
+    # the __cause__ chain would override that code at the HTTP boundary. Set in
+    # ``with_retry``.
+    original_exception: Optional[BaseException] = None
 
 
 class LLMErrorHandler:
@@ -269,7 +307,7 @@ class LLMErrorHandler:
             return ErrorResult(
                 action=ErrorAction.COMPRESS_MEMORY,
                 message="Context too large. Compressing conversation history...",
-                error_code="TOKEN_LIMIT",
+                error_code=TOKEN_LIMIT,
             )
 
         # Check for retryable errors
@@ -332,6 +370,10 @@ class LLMErrorHandler:
                 return result, None
             except Exception as e:
                 error_result = await self.handle_error(e, retry_count)
+                # Preserve the triggering exception so the caller can surface its
+                # real message (see ErrorResult.original_exception — callers fold
+                # it into their message text, deliberately NOT onto __cause__).
+                error_result.original_exception = e
                 last_error_result = error_result
 
                 if error_result.action == ErrorAction.RETRY:

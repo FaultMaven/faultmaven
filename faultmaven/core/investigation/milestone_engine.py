@@ -76,12 +76,14 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_recovered_total,
     narration_overclaim_total,
     pending_action_superseded_stale_total,
+    prompt_context_recovery_total,
     solution_offer_superseded_total,
     work_gate_crossed_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
     CONTEXT_OVERFLOW_PHRASES,
     LLMErrorHandler,
+    classify_token_limit_reason,
 )
 from faultmaven.core.investigation.progress_monitor import (
     ProgressMonitor,
@@ -111,6 +113,7 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
     generate_working_conclusion,
 )
+from faultmaven.exceptions import TOKEN_LIMIT
 from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
@@ -887,7 +890,34 @@ def _is_context_length_error(exc: Exception) -> bool:
     length-specific phrases — deliberately NOT on a bare ``400 + "token"`` or the
     generic Pydantic phrase ``"string too long"``, which fire on ordinary
     request-validation errors and would trigger needless fallback retries.
+
+    Two shapes reach here. A **raw provider exception** (proxy/aggregator path)
+    carries the overflow wording in its message. The **retry-loop path**
+    (``with_retry`` → ``handle_error`` classifies the overflow as
+    ``COMPRESS_MEMORY`` → ``_generate_structured_output_inner`` re-raises a
+    ``MilestoneEngineError``) has already consumed the provider's wording, but it
+    stamps the shared ``TOKEN_LIMIT`` error_code on the raised exception. Recognizing
+    that deterministic engine signal — and walking the ``__cause__`` chain in case
+    it is wrapped — is what makes the degrade-recovery in
+    ``_generate_structured_output`` actually reachable for an overflow that
+    surfaced through the retry loop. Without it a *recoverable* overflow fails the
+    turn instead of degrading to the minimal fallback prompt (the NO-COLLAPSE
+    guarantee; #662).
     """
+    # Deterministic engine signal from the retry-loop path (see docstring).
+    # ``seen`` bounds the walk: ``__cause__`` is assignable, so a hand-built cycle
+    # would otherwise spin here — and hanging this classifier would stall the very
+    # turn the degrade path exists to rescue. (We cannot reuse
+    # ``api.exception_handlers._walk_cause_chain``; core importing the API layer
+    # breaks import-linter contract 2.)
+    cursor: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while cursor is not None and id(cursor) not in seen:
+        if getattr(cursor, "error_code", None) == TOKEN_LIMIT:
+            return True
+        seen.add(id(cursor))
+        cursor = cursor.__cause__
+
     msg = str(getattr(exc, "message", "") or exc).lower()
     # Shared with llm_error_handler.is_token_limit_error so the two overflow
     # classifiers cannot drift (see CONTEXT_OVERFLOW_PHRASES).
@@ -6758,17 +6788,29 @@ class MilestoneEngine:
                 and _is_context_length_error(exc)
             ):
                 from faultmaven.core.investigation.prompts.templates import (
+                    DEGRADED_NO_TOOLS_NOTICE,
                     get_fallback_prompt_for_case,
                 )
 
+                reason = classify_token_limit_reason(exc)
                 logger.warning(
                     "prompt_context_error_recovered: provider rejected prompt as "
-                    "too long (case %s); retrying once with the minimal fallback "
-                    "prompt. Original error: %s",
+                    "too long (case %s, reason %s); retrying once with the minimal "
+                    "fallback prompt. Original error: %s",
                     getattr(case, "case_id", "?"),
+                    reason,
                     exc,
                 )
+                # Observability half of the degrade: the log line carries the case
+                # id, this carries the rate. A SUSTAINED rate means turns are
+                # routinely over the window — a prompt-sizing problem, not a
+                # recovery problem.
+                prompt_context_recovery_total.labels(reason=reason).inc()
+                # The notice is required, not cosmetic: the fallback body lists
+                # addressable files, but this retry drops the tools to reach them,
+                # so without it the agent is told to search what it cannot.
                 fb_prompt = get_fallback_prompt_for_case(case, user_message)
+                fb_prompt += DEGRADED_NO_TOOLS_NOTICE
                 # Minimal retry: drop tools to shrink the request further.
                 return await self._generate_structured_output_inner(
                     fb_prompt,
@@ -7064,9 +7106,20 @@ class MilestoneEngine:
         # All retries exhausted or non-retryable error
         if error_result:
             error_msg = error_result.message
-            logger.error(f"Structured generation failed after retries: {error_msg}")
+            # Fold the triggering provider wording into the message text (e.g.
+            # "prompt is too long: 250000 > 200000") so diagnostics keep it — the
+            # ErrorResult's own message is the generic classifier string. We do
+            # NOT chain via ``raise ... from``: that would put the provider's
+            # LLMException (a context overflow is HTTP 400) on the __cause__ chain,
+            # and llm_service_error_http_exception reads a provider status BEFORE
+            # the engine error_code, silently re-routing the documented
+            # TOKEN_LIMIT -> 503 to a 4xx -> 502. The engine error_code stays the
+            # authoritative signal for this failure.
+            orig = error_result.original_exception
+            detail = f"{error_msg} ({orig})" if orig is not None else error_msg
+            logger.error(f"Structured generation failed after retries: {detail}")
             raise MilestoneEngineError(
-                f"Structured output generation failed: {error_msg}",
+                f"Structured output generation failed: {detail}",
                 error_code=error_result.error_code,
             )
         else:

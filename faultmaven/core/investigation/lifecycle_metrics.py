@@ -467,3 +467,23 @@ resolution_cause_leg_total = Counter(
     "resolution.",
     ["provider", "leg"],
 )
+
+
+# A turn that hit a RECOVERABLE token failure and answered from the minimal
+# fallback prompt instead of failing (#662, the NO-COLLAPSE guarantee). Labeled
+# by ``reason`` (input_overflow | output_truncation | unclassified) because the
+# recovery targets input overflow and serves truncation only incidentally — a
+# rising truncation share is the signal to reach for the max_tokens escalation
+# instead. One increment per degraded turn.
+#
+# Read as a RATE, never per case: an occasional degrade is the guarantee working.
+# A sustained rate means turns are routinely too large for the window, which
+# points at the prompt-sizing work (#610-#614), not at this recovery. Pairs with
+# the ``prompt_context_error_recovered`` log line, which carries the case id.
+prompt_context_recovery_total = Counter(
+    "faultmaven_prompt_context_recovery_total",
+    "Turns that degraded to the minimal fallback prompt (tools dropped) after a "
+    "recoverable context/token failure rather than failing the turn, labeled by "
+    "``reason`` (input_overflow | output_truncation | unclassified).",
+    ["reason"],
+)

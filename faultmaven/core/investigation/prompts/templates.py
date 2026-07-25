@@ -2499,6 +2499,24 @@ Answer questions about the findings. Do not reopen investigation.
 """
 
 
+# Appended ONLY on the runtime context-overflow recovery (#662), never by the
+# compile-time starvation/overflow fallbacks — those keep their tools, so this
+# text would be false there. It exists because that recovery drops the tool set
+# while the fallback body still lists addressable files (see
+# ``_fallback_current_turn_evidence``, written for a tool-capable turn): without
+# this, the agent is invited to search files it cannot reach, and the user cannot
+# tell a context-starved answer from a normal one.
+DEGRADED_NO_TOOLS_NOTICE = """
+
+CONTEXT LIMIT — DEGRADED TURN: the full case context did not fit this model's
+window, so you are working from the reduced summary above and have NO
+evidence-inspection tools this turn — any files listed above cannot be searched
+right now. Say so plainly in one sentence (e.g. "I hit a context limit this turn
+and couldn't re-read the logs"), and do NOT present a cause as established from
+what little remains — name what you would need to confirm it instead.
+"""
+
+
 def _fallback_current_turn_evidence(case: Case) -> str:
     """Compact addressable stub(s) for files uploaded THIS turn (INV-1).
 
