@@ -225,9 +225,7 @@ class RedisUserStore:
                 created_at=now,
                 is_dev_user=True,
                 is_active=True,
-                # Explicit rather than relying on DevUser's default, so this
-                # Redis-fallback path and the DatabaseUserStore path provably
-                # agree on what a newly created account may do.
+                # Explicit, so this path and DatabaseUserStore visibly agree.
                 roles=["user"],
                 account_kind=account_kind,
             )

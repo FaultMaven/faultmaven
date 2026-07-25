@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
+from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE_SET
 
 logger = logging.getLogger(__name__)
 
@@ -211,18 +211,12 @@ async def _create_admin_user(user_store: Any) -> Any:
     return user
 
 
-# Roles held by the standalone deployment's single account. It is legitimately
-# both (ADR-012 D9): the admin of the implicit single organization, and the
-# operator who runs the deployment.
-#
-#   "user"           — baseline authenticated principal
-#   "admin"          — organization-scoped (Role.ADMIN); grants org permissions
-#   "platform_admin" — deployment-scoped operator; grants cross-tenant reach
-DEFAULT_OPERATOR_ROLES = ["user", "admin", PLATFORM_ADMIN_ROLE]
-
-
 async def _assign_operator_roles(user_store: Any, user: Any) -> Any:
     """Ensure the given user holds the operator roles; grants any that are missing.
+
+    The standalone deployment's single account is legitimately both its
+    organization's admin and the deployment operator (ADR-012 D9); see
+    ``PLATFORM_ADMIN_ROLE_SET`` for why the two are granted together.
 
     Args:
         user_store: Initialised user store instance
@@ -231,17 +225,12 @@ async def _assign_operator_roles(user_store: Any, user: Any) -> Any:
     Returns:
         User (updated if roles were granted, unchanged otherwise)
     """
-    current = list(user.roles or [])
-    missing = [role for role in DEFAULT_OPERATOR_ROLES if role not in current]
+    missing = [r for r in PLATFORM_ADMIN_ROLE_SET if r not in (user.roles or [])]
     if not missing:
         return user
 
     logger.info(f"User '{user.username}' missing operator roles {missing} — granting")
-    # Preserve DEFAULT_OPERATOR_ROLES ordering for the roles it defines, then
-    # append anything the account already carried beyond them.
-    user.roles = DEFAULT_OPERATOR_ROLES + [
-        role for role in current if role not in DEFAULT_OPERATOR_ROLES
-    ]
+    user.roles = list(user.roles or []) + missing
     user = await user_store.update_user(user)
     logger.info(f"Operator roles granted to '{user.username}': {user.roles}")
     return user

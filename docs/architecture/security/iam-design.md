@@ -1033,12 +1033,12 @@ Two role vocabularies coexist in the codebase:
 - **Operator role (`platform_admin`).** The deployment-scoped operator role
   (ADR-012 D9), defined as `PLATFORM_ADMIN_ROLE` in
   `modules/auth/domain/models/rbac.py` and re-exported from the auth contracts.
-  It is enforced by the `require_platform_admin` dependency
-  (`api/middleware/auth.py`, `api/v1/role_dependencies.py`,
-  `api/v1/auth_dependencies.py`, plus `AuthenticatedUser.is_platform_admin`) and
-  guards everything that acts on the deployment as a whole: cross-tenant case
-  listing, user administration, LLM configuration, and Global KB authoring. It
-  is granted out-of-band by `scripts/auth/promote_to_platform_admin.py` — never
+  It is enforced by the `require_platform_admin` dependency — one per user
+  representation (`api/middleware/auth.py` for `AuthenticatedUser`,
+  `api/v1/auth_dependencies.py` for `DevUser`), both delegating to that type's
+  `is_platform_admin()`. It guards everything acting on the deployment as a
+  whole: cross-tenant case listing, user administration, LLM configuration, and
+  Global KB authoring. It is granted out-of-band by `scripts/auth/promote_to_platform_admin.py` — never
   through the user-management API, whose `assign_role` validates against the
   org `Role` enum and so cannot mint an operator.
 - **Org-scoped roles (`Role` enum).** Separately,

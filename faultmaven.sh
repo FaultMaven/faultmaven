@@ -1197,7 +1197,7 @@ cmd_create_user() {
         print_info "You can now log in at http://localhost:3333"
         echo ""
         echo "Note: If you specified 'admin' role, you'll need to promote the user:"
-        echo "  docker compose exec api python scripts/auth/promote_to_admin.py $username"
+        echo "  docker compose exec api python scripts/auth/promote_to_platform_admin.py $username"
     elif [ "$http_code" = "409" ]; then
         echo ""
         print_error "User '$username' already exists"

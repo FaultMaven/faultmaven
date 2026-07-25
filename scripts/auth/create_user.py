@@ -28,15 +28,16 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from faultmaven.container import container
-from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
+from faultmaven.modules.auth.contracts import (
+    PLATFORM_ADMIN_ROLE,
+    PLATFORM_ADMIN_ROLE_SET,
+)
 
-# Role choice -> the roles actually stored on the account. A platform admin also
-# holds the org-scoped "admin" role: the operator axis grants cross-tenant reach
-# but no org permissions on its own (it is deliberately absent from ROLE_PERMISSIONS).
+# Role choice -> the roles actually stored on the account.
 ROLE_SETS = {
     "user": ["user"],
     "admin": ["user", "admin"],
-    PLATFORM_ADMIN_ROLE: ["user", "admin", PLATFORM_ADMIN_ROLE],
+    PLATFORM_ADMIN_ROLE: PLATFORM_ADMIN_ROLE_SET,
 }
 
 

@@ -15,8 +15,10 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.api.v1.role_dependencies import require_platform_admin
+from faultmaven.api.v1.auth_dependencies import (
+    require_authentication,
+    require_platform_admin,
+)
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.api.conversion_routes import (
     _get_conversion_service,

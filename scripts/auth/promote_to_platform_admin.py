@@ -5,8 +5,9 @@ This script adds the 'platform_admin' role to an existing user account.
 
 That role is the DEPLOYMENT-scoped operator role (ADR-012 D9) — it grants
 cross-tenant reach: the admin case list, user administration, LLM configuration
-and Global KB management. It is NOT the organization-scoped 'admin' role, which
-is tenant-bounded; this script does not grant or remove that one.
+and Global KB management. It is distinct from the organization-scoped 'admin'
+role, which is tenant-bounded, but an operator needs authority in its own org
+too, so this grants the full operator set (see PLATFORM_ADMIN_ROLE_SET).
 
 Usage:
     python scripts/auth/promote_to_platform_admin.py username
@@ -22,7 +23,10 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from faultmaven.container import container
-from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
+from faultmaven.modules.auth.contracts import (
+    PLATFORM_ADMIN_ROLE,
+    PLATFORM_ADMIN_ROLE_SET,
+)
 
 
 async def promote_to_platform_admin(username: str):
@@ -59,13 +63,11 @@ async def promote_to_platform_admin(username: str):
         print(f"\n⚠️  User '{username}' is already a platform admin!")
         return True
 
-    # Add platform_admin role
-    print(f"\nAdding '{PLATFORM_ADMIN_ROLE}' role to user '{username}'...")
-    roles = list(user.roles or [])
-    if "user" not in roles:
-        roles.insert(0, "user")
-    roles.append(PLATFORM_ADMIN_ROLE)
-    user.roles = roles
+    # Grant the full operator role set, so an account promoted here is
+    # identical to one created with `create_user.py --role platform_admin`.
+    missing = [r for r in PLATFORM_ADMIN_ROLE_SET if r not in (user.roles or [])]
+    print(f"\nGranting operator roles {missing} to user '{username}'...")
+    user.roles = list(user.roles or []) + missing
 
     # Update user
     try:

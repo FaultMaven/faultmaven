@@ -80,6 +80,14 @@ class DevUser:
             # Implicit single-tenant org (standalone); see config.constants.
             self.organization_id = STANDALONE_ORG_ID
 
+    def is_platform_admin(self) -> bool:
+        """Check if user holds the cross-tenant operator role.
+
+        See :meth:`AuthenticatedUser.is_platform_admin` — same predicate, for
+        the other user representation.
+        """
+        return PLATFORM_ADMIN_ROLE in (self.roles or [])
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization"""
         return {
@@ -258,14 +266,10 @@ class AuthenticatedUser:
         return role in self.roles
 
     def is_platform_admin(self) -> bool:
-        """Check if user holds the cross-tenant operator role (ADR-012 D9).
+        """Check if user holds the cross-tenant operator role.
 
-        This is the DEPLOYMENT-scoped operator role, not the organization-scoped
-        ``Role.ADMIN``. An org admin has full authority inside their own tenant
-        and none outside it; only a platform admin crosses tenants.
-
-        Returns:
-            True if user is a platform admin
+        The org-scoped ``Role.ADMIN`` does not satisfy this; see
+        ``PLATFORM_ADMIN_ROLE`` for why the two axes are separate.
         """
         return PLATFORM_ADMIN_ROLE in self.roles
 

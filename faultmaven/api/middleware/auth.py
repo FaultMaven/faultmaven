@@ -365,14 +365,11 @@ def require_any_role(*roles: str) -> Callable:
 async def require_platform_admin(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> AuthenticatedUser:
-    """Require the cross-tenant operator role (ADR-012 D9).
+    """Require the cross-tenant operator role (see ``PLATFORM_ADMIN_ROLE``).
 
-    Shortcut dependency for operator-only endpoints — those that act on the
-    deployment as a whole (cross-tenant case listing, user administration, LLM
-    configuration, the global KB) rather than on one organization.
-
-    This is NOT the organization-scoped ``Role.ADMIN``. An org admin governs
-    their own tenant and must not reach these endpoints.
+    Shortcut dependency for operator-only endpoints — those acting on the
+    deployment as a whole rather than on one organization. The org-scoped
+    ``Role.ADMIN`` does not satisfy it.
 
     Usage:
         @router.get("/admin/cases", dependencies=[Depends(require_platform_admin)])

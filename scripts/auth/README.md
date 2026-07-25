@@ -124,9 +124,10 @@ User Details:
 
 ### 3. `promote_to_platform_admin.py` - Promote User to Platform Admin
 
-Adds the `platform_admin` role to an existing user — the DEPLOYMENT-scoped
-operator role (ADR-012 D9), which grants cross-tenant reach. This is **not** the
-organization-scoped `admin` role; the script leaves that one alone.
+Grants the operator role set (`user` + `admin` + `platform_admin`) to an existing
+user. `platform_admin` is the DEPLOYMENT-scoped role (ADR-012 D9) that carries
+cross-tenant reach; the org-scoped `admin` is granted alongside it because an
+operator also needs authority inside its own organization.
 
 **Usage:**
 ```bash
@@ -146,10 +147,10 @@ Looking up user 'alice'...
    Email: alice@dev.faultmaven.local
    Current roles: ['user']
 
-Adding 'platform_admin' role to user 'alice'...
+Granting operator roles ['admin', 'platform_admin'] to user 'alice'...
 ✅ User promoted to platform admin successfully!
 
-Updated roles: ['user', 'platform_admin']
+Updated roles: ['user', 'admin', 'platform_admin']
 
 User 'alice' can now:
   ✅ List cases across all users and organizations
@@ -163,7 +164,9 @@ User 'alice' can now:
 ### 4. `demote_from_platform_admin.py` - Demote Platform Admin to Regular User
 
 Removes the `platform_admin` role from a user account, revoking cross-tenant
-reach. Any organization-scoped `admin` role the user holds is left untouched.
+reach. The organization-scoped `admin` role is deliberately left in place —
+withdrawing operator status should not also strip authority inside the user's
+own organization. Remove that separately if you mean to.
 
 **Usage:**
 ```bash
@@ -181,12 +184,12 @@ Demote Platform Admin to Regular User
 Looking up user 'bob'...
 ✅ Found user: 3a94f837-013e-4538-a80c-07eacc5612ef
    Email: bob@dev.faultmaven.local
-   Current roles: ['user', 'platform_admin']
+   Current roles: ['user', 'admin', 'platform_admin']
 
 Removing 'platform_admin' role from user 'bob'...
 ✅ Platform admin role removed successfully!
 
-Updated roles: ['user']
+Updated roles: ['user', 'admin']
 
 User 'bob' can no longer:
   ❌ List cases across all users and organizations

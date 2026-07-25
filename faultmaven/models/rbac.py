@@ -21,6 +21,15 @@ class Role(str, Enum):
     Roles define the level of access a user has within an organization.
     Each role maps to a set of permissions.
 
+    These are tenant-bounded, and this enum is load-bearing beyond permissions:
+    ``UserService.assign_role`` validates against it, so a role added here
+    becomes assignable through ``POST /admin/users/{id}/roles``. The
+    cross-tenant operator role ``platform_admin``
+    (``modules.auth.domain.models.rbac.PLATFORM_ADMIN_ROLE``) is therefore
+    deliberately NOT a member — adding it here would let the user-management
+    API mint deployment operators. Grant it via
+    ``scripts/auth/promote_to_platform_admin.py`` instead.
+
     Attributes:
         ADMIN: Full access to organization resources
         MEMBER: Standard investigator access
@@ -204,15 +213,3 @@ def has_role(user_roles: List[str], required_role: str) -> bool:
         True if user has the required role
     """
     return required_role in user_roles
-
-
-def is_admin(user_roles: List[str]) -> bool:
-    """Check if user is an admin.
-
-    Args:
-        user_roles: List of role names the user has
-
-    Returns:
-        True if user has admin role
-    """
-    return Role.ADMIN.value in user_roles

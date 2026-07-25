@@ -6,6 +6,11 @@ import os
 from pathlib import Path
 import sqlite3
 
+# Mirrors faultmaven.modules.auth.contracts.PLATFORM_ADMIN_ROLE. Duplicated as a
+# literal on purpose: this script reads SQLite directly and imports nothing from
+# the app, which is the entire reason it is the "fast" lister.
+PLATFORM_ADMIN_ROLE = "platform_admin"
+
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -44,18 +49,18 @@ def list_users():
             ):
                 roles_list = roles.split(",") if roles else []
                 roles_str = ", ".join(roles_list) if roles_list else "none"
-                is_admin = "admin" in roles_list
-                if is_admin:
+                is_platform_admin = PLATFORM_ADMIN_ROLE in roles_list
+                if is_platform_admin:
                     admin_count += 1
 
-                admin_indicator = "👑 " if is_admin else "   "
+                admin_indicator = "👑 " if is_platform_admin else "   "
                 print(
                     f"{admin_indicator}{idx:<4} {username:<20} {email:<30} {roles_str:<20} {user_id[:36]}"
                 )
 
             print("\n" + "=" * 100)
             print(
-                f"Total: {len(users)} user(s) | Admins: {admin_count} | Regular: {len(users) - admin_count}"
+                f"Total: {len(users)} user(s) | Platform admins: {admin_count} | Regular: {len(users) - admin_count}"
             )
             print("=" * 100)
         else:

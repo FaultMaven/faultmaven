@@ -32,6 +32,14 @@ from typing import FrozenSet, List, Set
 # account legitimately holds both.
 PLATFORM_ADMIN_ROLE = "platform_admin"
 
+# The roles an operator account holds. An operator needs authority inside its
+# own organization too — `platform_admin` grants none, by construction — so
+# every path that provisions one grants the org role alongside it. Defined here
+# rather than at a provisioning site so the bootstrap seed, `create_user.py`,
+# and `promote_to_platform_admin.py` cannot answer "does platform_admin imply
+# admin?" differently and produce operators with unequal in-org authority.
+PLATFORM_ADMIN_ROLE_SET = ["user", "admin", PLATFORM_ADMIN_ROLE]
+
 
 class Role(str, Enum):
     """Organization-level roles.
@@ -225,15 +233,3 @@ def has_role(user_roles: List[str], required_role: str) -> bool:
         True if user has the required role
     """
     return required_role in user_roles
-
-
-def is_admin(user_roles: List[str]) -> bool:
-    """Check if user is an admin.
-
-    Args:
-        user_roles: List of role names the user has
-
-    Returns:
-        True if user has admin role
-    """
-    return Role.ADMIN.value in user_roles

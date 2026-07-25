@@ -43,8 +43,10 @@ from fastapi import (
     UploadFile,
 )
 
-from faultmaven.api.v1.auth_dependencies import get_current_user_optional
-from faultmaven.api.v1.role_dependencies import require_platform_admin
+from faultmaven.api.v1.auth_dependencies import (
+    get_current_user_optional,
+    require_platform_admin,
+)
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
 from faultmaven.exceptions import FaultMavenException
 from faultmaven.infrastructure.observability.tracing import trace
