@@ -822,7 +822,6 @@ async def logout(
 @router.get("/me", response_model=UserInfoResponse)
 @trace("auth_get_current_user")
 async def get_current_user_profile(
-    request: Request,
     current_user: DevUser = Depends(require_authentication),
 ) -> UserInfoResponse:
     """Get current user profile
