@@ -76,12 +76,14 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_recovered_total,
     narration_overclaim_total,
     pending_action_superseded_stale_total,
+    prompt_context_recovery_total,
     solution_offer_superseded_total,
     work_gate_crossed_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
     CONTEXT_OVERFLOW_PHRASES,
     LLMErrorHandler,
+    classify_token_limit_reason,
 )
 from faultmaven.core.investigation.progress_monitor import (
     ProgressMonitor,
@@ -6786,17 +6788,29 @@ class MilestoneEngine:
                 and _is_context_length_error(exc)
             ):
                 from faultmaven.core.investigation.prompts.templates import (
+                    DEGRADED_NO_TOOLS_NOTICE,
                     get_fallback_prompt_for_case,
                 )
 
+                reason = classify_token_limit_reason(exc)
                 logger.warning(
                     "prompt_context_error_recovered: provider rejected prompt as "
-                    "too long (case %s); retrying once with the minimal fallback "
-                    "prompt. Original error: %s",
+                    "too long (case %s, reason %s); retrying once with the minimal "
+                    "fallback prompt. Original error: %s",
                     getattr(case, "case_id", "?"),
+                    reason,
                     exc,
                 )
+                # Observability half of the degrade: the log line carries the case
+                # id, this carries the rate. A SUSTAINED rate means turns are
+                # routinely over the window — a prompt-sizing problem, not a
+                # recovery problem.
+                prompt_context_recovery_total.labels(reason=reason).inc()
+                # The notice is required, not cosmetic: the fallback body lists
+                # addressable files, but this retry drops the tools to reach them,
+                # so without it the agent is told to search what it cannot.
                 fb_prompt = get_fallback_prompt_for_case(case, user_message)
+                fb_prompt += DEGRADED_NO_TOOLS_NOTICE
                 # Minimal retry: drop tools to shrink the request further.
                 return await self._generate_structured_output_inner(
                     fb_prompt,

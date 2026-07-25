@@ -138,7 +138,9 @@ async def test_token_limit_triggers_minimal_prompt_retry_and_degrades():
     _, retry_kwargs = inner.await_args_list[1]
     assert retry_kwargs["investigation_tools"] is None
     assert retry_kwargs["tool_context"] is None
-    assert inner.await_args_list[1].args[0] == "MINIMAL FALLBACK PROMPT"
+    # The minimal body, plus the degraded-turn notice appended by the recovery
+    # (pinned in detail by test_degraded_prompt_tells_the_agent_it_has_no_tools).
+    assert inner.await_args_list[1].args[0].startswith("MINIMAL FALLBACK PROMPT")
 
 
 @pytest.mark.asyncio
@@ -309,3 +311,172 @@ def test_propagated_token_limit_maps_to_retryable_503():
     http = llm_service_error_http_exception(service_err)
     assert http.status_code == 503
     assert http.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+
+
+# ---------------------------------------------------------------------------
+# Honest surfacing + the truncation class (Fable sign-off follow-ups)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_degraded_prompt_tells_the_agent_it_has_no_tools():
+    """The recovery drops the tool set, but the fallback body still lists
+    addressable files (written for a tool-capable turn). Without the notice the
+    agent is invited to search what it cannot reach, and the user cannot tell a
+    context-starved answer from a normal one. Pin that the notice is appended and
+    that it states both facts: reduced context AND no tools."""
+    from faultmaven.core.investigation.prompts.templates import (
+        DEGRADED_NO_TOOLS_NOTICE,
+    )
+
+    engine = _make_engine()
+    case = MagicMock()
+    case.case_id = "case_test"
+    overflow = MilestoneEngineError("prompt is too long", error_code=TOKEN_LIMIT)
+    inner = AsyncMock(side_effect=[overflow, MagicMock(name="degraded")])
+
+    with (
+        patch.object(engine, "_generate_structured_output_inner", inner),
+        patch(
+            "faultmaven.core.investigation.prompts.templates."
+            "get_fallback_prompt_for_case",
+            return_value="MINIMAL FALLBACK PROMPT",
+        ),
+    ):
+        await engine._generate_structured_output(
+            prompt="huge",
+            schema_model=MagicMock(),
+            case=case,
+            user_message="what is wrong?",
+        )
+
+    retry_prompt = inner.await_args_list[1].args[0]
+    assert retry_prompt.startswith("MINIMAL FALLBACK PROMPT")
+    assert DEGRADED_NO_TOOLS_NOTICE in retry_prompt
+    lowered = DEGRADED_NO_TOOLS_NOTICE.lower()
+    assert "no" in lowered and "tools" in lowered, "must state tools are gone"
+    assert "cannot be searched" in lowered, "must retract the file affordance"
+
+
+@pytest.mark.asyncio
+async def test_output_truncation_also_takes_the_degrade_path():
+    """The D-path. Output truncation also classifies as TOKEN_LIMIT, so it
+    reaches this recovery too — via the error_code, since truncation wording is
+    NOT in CONTEXT_OVERFLOW_PHRASES. Pins that it degrades rather than failing,
+    and that it is labeled as truncation (not silently counted as an overflow)
+    so a rising truncation share is visible in the metric."""
+    from faultmaven.core.investigation.llm_error_handler import (
+        RECOVERY_REASON_OUTPUT_TRUNCATION,
+        classify_token_limit_reason,
+    )
+
+    truncated = MilestoneEngineError(
+        "Structured output generation failed: Context too large. "
+        "(Unterminated string starting at line 3)",
+        error_code=TOKEN_LIMIT,
+    )
+    # It must reach the recovery, and be attributed to truncation.
+    assert _is_context_length_error(truncated) is True
+    assert (
+        classify_token_limit_reason(truncated) == RECOVERY_REASON_OUTPUT_TRUNCATION
+    ), "truncation must not be mislabeled as an input overflow"
+
+    engine = _make_engine()
+    case = MagicMock()
+    case.case_id = "case_test"
+    degraded = MagicMock(name="degraded_response")
+    inner = AsyncMock(side_effect=[truncated, degraded])
+
+    with (
+        patch.object(engine, "_generate_structured_output_inner", inner),
+        patch(
+            "faultmaven.core.investigation.prompts.templates."
+            "get_fallback_prompt_for_case",
+            return_value="MINIMAL FALLBACK PROMPT",
+        ),
+    ):
+        result = await engine._generate_structured_output(
+            prompt="huge",
+            schema_model=MagicMock(),
+            case=case,
+            user_message="what is wrong?",
+        )
+
+    assert result is degraded
+    assert inner.await_count == 2
+
+
+def test_recovery_reason_classification():
+    """The metric label must distinguish the class the recovery targets (input
+    overflow) from the one it only serves incidentally (truncation), and must not
+    guess when the provider wording did not survive."""
+    from faultmaven.core.investigation.llm_error_handler import (
+        RECOVERY_REASON_INPUT_OVERFLOW,
+        RECOVERY_REASON_OUTPUT_TRUNCATION,
+        RECOVERY_REASON_UNCLASSIFIED,
+        classify_token_limit_reason,
+    )
+
+    assert (
+        classify_token_limit_reason(Exception("prompt is too long: 250000 > 200000"))
+        == RECOVERY_REASON_INPUT_OVERFLOW
+    )
+    assert (
+        classify_token_limit_reason(Exception("EOF while parsing a value"))
+        == RECOVERY_REASON_OUTPUT_TRUNCATION
+    )
+    # Pure engine signal, provider wording gone -> reported, never guessed.
+    assert (
+        classify_token_limit_reason(
+            MilestoneEngineError("boom", error_code=TOKEN_LIMIT)
+        )
+        == RECOVERY_REASON_UNCLASSIFIED
+    )
+    # Both kinds present (the engine folds provider text into its message):
+    # input-overflow wins, because that is what the recovery is designed for.
+    assert (
+        classify_token_limit_reason(
+            Exception("prompt is too long ... unterminated string")
+        )
+        == RECOVERY_REASON_INPUT_OVERFLOW
+    )
+
+
+@pytest.mark.asyncio
+async def test_degrade_emits_the_recovery_metric_with_its_reason():
+    """Emission must actually happen and carry the reason label — an unwired
+    metric reads as 'this never occurs', which is the opposite of the truth this
+    counter exists to surface."""
+    engine = _make_engine()
+    case = MagicMock()
+    case.case_id = "case_test"
+    overflow = MilestoneEngineError(
+        "Structured output generation failed: Context too large. "
+        "(prompt is too long: 250000 > 200000)",
+        error_code=TOKEN_LIMIT,
+    )
+    inner = AsyncMock(side_effect=[overflow, MagicMock(name="degraded")])
+    metric = MagicMock()
+
+    with (
+        patch.object(engine, "_generate_structured_output_inner", inner),
+        patch(
+            "faultmaven.core.investigation.milestone_engine."
+            "prompt_context_recovery_total",
+            metric,
+        ),
+        patch(
+            "faultmaven.core.investigation.prompts.templates."
+            "get_fallback_prompt_for_case",
+            return_value="MINIMAL FALLBACK PROMPT",
+        ),
+    ):
+        await engine._generate_structured_output(
+            prompt="huge",
+            schema_model=MagicMock(),
+            case=case,
+            user_message="what is wrong?",
+        )
+
+    metric.labels.assert_called_once_with(reason="input_overflow")
+    metric.labels.return_value.inc.assert_called_once()

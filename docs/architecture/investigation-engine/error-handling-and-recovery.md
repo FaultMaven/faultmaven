@@ -330,6 +330,32 @@ minimal-prompt retry. That is a smaller *input* rather than a larger output cap,
 so it is not a targeted fix — the inner loop's `max_tokens` escalation is — but it
 frees budget and is strictly better than the hard failure it replaced.
 
+### 2.x.1 Surfacing a degraded turn
+
+A silent degrade is its own (softer) risk to guarantee 1: the user cannot tell a
+context-starved answer from a normal one. Two things make it visible.
+
+**To the operator** — `prompt_context_recovery_total`, labeled `reason`
+(`input_overflow` | `output_truncation` | `unclassified`), alongside the
+`prompt_context_error_recovered` log line which carries the case id. Read the
+metric as a *rate*: an occasional degrade is the guarantee working; a sustained
+rate means turns are routinely over the window, which points at prompt sizing
+rather than at this recovery. A rising `output_truncation` share is the signal to
+reach for the `max_tokens` escalation instead.
+
+**To the user** — the recovery appends `DEGRADED_NO_TOOLS_NOTICE` to the fallback
+body, instructing the agent to say in one sentence that it could not inspect the
+evidence this turn and not to present a cause as established. This is *required,
+not cosmetic*: the fallback body renders addressable file stubs (see
+`_fallback_current_turn_evidence`, written for a tool-capable turn) while this
+retry drops the tool set — so without the notice the agent is invited to search
+files it cannot reach.
+
+The notice is appended **only** on this runtime recovery, never by the two
+compile-time fallbacks (`prompt_starvation_fallback`,
+`prompt_overflow_fallback`), which keep their tools and where the text would
+therefore be false.
+
 ---
 
 ## 3. Response Parsing Errors
