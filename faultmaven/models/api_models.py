@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -274,6 +274,46 @@ class CaseListFilter(BaseModel):
         default=True,
         description="Include cases with no conversation (current_turn == 0)",
     )
+
+
+class OperatorAccessAuditEntry(BaseModel):
+    """One recorded platform-operator access (ADR-012 D8/D9).
+
+    Carries identifiers, an action and context counts only — never case titles
+    or content, which is what lets the trail be read without a break-glass
+    grant.
+    """
+
+    # Built from the OperatorAccessAudit domain object by model_validate.
+    # Only declared fields are populated, so a column #815 adds to the domain
+    # object stays out of the API until it is declared here deliberately.
+    model_config = ConfigDict(from_attributes=True)
+
+    audit_id: int
+    operator_user_id: Optional[str] = None
+    operator_username: Optional[str] = None
+    action: str
+    # None = the access spanned all tenants (a cross-tenant list).
+    target_organization_id: Optional[str] = None
+    # None = the access was not scoped to a single case.
+    target_case_id: Optional[str] = None
+    # Break-glass provenance; None for ambient access.
+    reason: Optional[str] = None
+    grant_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    deployment_mode: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    created_at: datetime
+
+
+class OperatorAccessAuditListResponse(BaseModel):
+    """Paginated operator access trail, newest first."""
+
+    entries: List[OperatorAccessAuditEntry]
+    total_count: int
+    limit: int
+    offset: int
+    has_more: bool
 
 
 class CaseListResponse(BaseModel):

@@ -74,9 +74,22 @@ def mock_case_service():
     return service
 
 
-def _make_app(current_user, mock_case_service):
-    """Wire dependency overrides for require_platform_admin's user + the case service."""
+@pytest.fixture
+def mock_audit_repo():
+    """The operator audit trail (ADR-012 D8/D9).
+
+    The route resolves this as a dependency and fails closed without it, so it
+    must be wired here even for the cloud-403 case — dependencies resolve
+    before the handler body runs.
+    """
+    return AsyncMock()
+
+
+def _make_app(current_user, mock_case_service, mock_audit_repo=None):
+    """Wire overrides for require_platform_admin's user, the case service, and
+    the operator audit repository."""
     from faultmaven.api.middleware.auth import get_current_user
+    from faultmaven.api.operator_audit import get_operator_audit_repository
     from faultmaven.api.routes.admin_cases import get_case_service
 
     async def _get_user():
@@ -85,8 +98,12 @@ def _make_app(current_user, mock_case_service):
     async def _get_service():
         return mock_case_service
 
+    async def _get_audit_repo():
+        return mock_audit_repo if mock_audit_repo is not None else AsyncMock()
+
     main_app.dependency_overrides[get_current_user] = _get_user
     main_app.dependency_overrides[get_case_service] = _get_service
+    main_app.dependency_overrides[get_operator_audit_repository] = _get_audit_repo
     return main_app
 
 
@@ -120,6 +137,31 @@ async def test_admin_list_all_cases_success(
     owners = {c["user_id"] for c in body["cases"]}
     assert owners == {"copilot_user", "slack-agent"}
     assert body["has_more"] is False
+
+
+async def test_admin_list_all_cases_records_the_access(
+    admin_user, mock_case_service, mock_audit_repo, cleanup_overrides
+):
+    """The cross-tenant read leaves a durable audit row (ADR-012 D8/D9).
+
+    Asserted end-to-end through the real app rather than only at the unit
+    level: this is the whole-stack path an auditor's evidence comes from.
+    """
+    from faultmaven.models.interfaces_operator_audit import OperatorAction
+
+    mock_case_service.list_all_cases.return_value = ([], 0)
+    app = _make_app(admin_user, mock_case_service, mock_audit_repo)
+
+    async with await _client(app) as client:
+        resp = await client.get("/api/v1/admin/cases")
+
+    assert resp.status_code == status.HTTP_200_OK
+    mock_audit_repo.record_access.assert_awaited_once()
+    kwargs = mock_audit_repo.record_access.await_args.kwargs
+    assert kwargs["action"] is OperatorAction.LIST
+    assert kwargs["operator_user_id"] == admin_user.user_id
+    # A cross-tenant list spans every tenant, so it is stamped with no org.
+    assert kwargs["target_organization_id"] is None
 
 
 async def test_admin_list_all_cases_forbidden_for_non_admin(

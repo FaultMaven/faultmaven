@@ -565,6 +565,73 @@ class UserAuditLogModel(Base):
     )
 
 
+class OperatorAccessAuditModel(Base):
+    """Append-only record of platform-operator access to tenant data (ADR-012 D8/D9).
+
+    Distinct from ``user_audit_log``, which is RLS-tenanted: its policy keys on
+    ``organization_id``, so it structurally cannot hold a *cross-tenant* event —
+    a list spanning every tenant has no single organization to stamp. This table
+    is deliberately NOT tenant-scoped for that reason, and carries a nullable
+    ``target_organization_id`` (NULL = the access spanned all tenants).
+
+    Append-only is enforced by database triggers (migration 035), not by
+    convention: an operator must not be able to edit or erase the record of
+    their own access, which is the whole evidentiary value of the table.
+
+    ``reason``/``expires_at``/``grant_id`` are nullable because they only become
+    meaningful once break-glass exists (#815). Ambient list access has no grant;
+    a break-glass content read fills all three.
+    """
+
+    __tablename__ = "operator_access_audit"
+
+    audit_id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Deliberately NOT a foreign key. Evidence must outlive the account it
+    # describes, so the row keeps a denormalised username and an unreferenced
+    # id. An FK would also be actively harmful: any ondelete action is executed
+    # as a write against this table, which the append-only triggers reject —
+    # ON DELETE SET NULL would make deleting an operator who has ever been
+    # audited fail outright.
+    operator_user_id = Column(String(36), nullable=True)
+    operator_username = Column(String(255), nullable=True)
+
+    # 'list' (metadata) or 'content_open' (title/transcript/evidence). The
+    # metadata/content boundary is the thing D8/D9 governs, so it is a column
+    # rather than a detail-blob key.
+    action = Column(String(32), nullable=False)
+
+    # NULL target_organization_id = access spanned all tenants (a cross-tenant
+    # list). NULL target_case_id = the access was not scoped to one case.
+    target_organization_id = Column(String(36), nullable=True)
+    target_case_id = Column(String(36), nullable=True)
+
+    # Break-glass fields (#815). Nullable until that path exists.
+    reason = Column(Text, nullable=True)
+    grant_id = Column(String(36), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Deployment mode at access time — the same operator action carries
+    # different governance weight in standalone vs cloud.
+    deployment_mode = Column(String(32), nullable=True)
+    # JSON blob for non-authorizing context (filters applied, result counts).
+    details = Column(Text, nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+
+    __table_args__ = (
+        Index("ix_operator_access_audit_operator", "operator_user_id", "created_at"),
+        Index(
+            "ix_operator_access_audit_target_org",
+            "target_organization_id",
+            "created_at",
+        ),
+        Index("ix_operator_access_audit_case", "target_case_id", "created_at"),
+    )
+
+
 class OAuthAuthorizationCodeModel(Base):
     """OAuth 2.0 PKCE authorization codes."""
 

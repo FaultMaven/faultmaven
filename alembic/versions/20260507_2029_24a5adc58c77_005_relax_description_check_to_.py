@@ -38,9 +38,7 @@ def upgrade() -> None:
     on both dialects.
     """
     with op.batch_alter_table("cases") as batch:
-        batch.drop_constraint(
-            "cases_description_required_post_inquiry", type_="check"
-        )
+        batch.drop_constraint("cases_description_required_post_inquiry", type_="check")
         batch.create_check_constraint(
             "cases_description_required_for_investigation",
             "status IN ('inquiry', 'closed') OR LENGTH(TRIM(description)) > 0",

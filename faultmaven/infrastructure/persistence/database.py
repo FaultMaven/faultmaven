@@ -159,6 +159,12 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
                 cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.execute("PRAGMA busy_timeout=5000")
                 cursor.execute("PRAGMA foreign_keys=ON")
+                # recursive_triggers=ON so an INSERT OR REPLACE fires the
+                # DELETE trigger of the row it displaces. Without it, REPLACE's
+                # implicit delete is silent, which would let it overwrite a row
+                # in the append-only operator_access_audit table (migration 035)
+                # straight past the trigger meant to forbid exactly that.
+                cursor.execute("PRAGMA recursive_triggers=ON")
                 # Performance PRAGMAs (safe defaults under WAL).
                 cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.execute("PRAGMA temp_store=MEMORY")

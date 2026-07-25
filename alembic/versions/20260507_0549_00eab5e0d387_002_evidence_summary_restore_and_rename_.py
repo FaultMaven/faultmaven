@@ -31,9 +31,7 @@ def upgrade() -> None:
     # passthrough on PostgreSQL where ALTER TABLE handles it directly.
     with op.batch_alter_table("evidence") as batch:
         # New columns first.
-        batch.add_column(
-            sa.Column("summary", sa.String(length=500), nullable=False)
-        )
+        batch.add_column(sa.Column("summary", sa.String(length=500), nullable=False))
         batch.add_column(sa.Column("extract", sa.Text(), nullable=True))
 
         # Drop the old content column and its CHECK.

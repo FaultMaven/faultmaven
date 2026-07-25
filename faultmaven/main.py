@@ -469,6 +469,17 @@ async def lifespan(app: FastAPI):
         # request instead.
         app.state.jwt_token_generator = container.get_service("jwt_token_generator")
 
+        # Durable, append-only operator access trail (ADR-012 D8/D9). Wired
+        # beside the auth services rather than in the "may fail gracefully"
+        # block below: the operator routes fail closed without it, which is the
+        # intended behaviour — an unrecorded cross-tenant read is the failure
+        # this table exists to prevent.
+        from faultmaven.infrastructure.persistence.sessionless_operator_audit_repository import (  # noqa: E501
+            SessionlessOperatorAuditRepository,
+        )
+
+        app.state.operator_audit_repository = SessionlessOperatorAuditRepository()
+
         # Shared Redis client (real Redis in cloud, FakeRedis in standalone).
         # Single source of truth for Redis-dependent middleware (deduplication,
         # idempotency), which resolve it lazily from app.state on first request —
