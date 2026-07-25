@@ -111,6 +111,7 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
     generate_working_conclusion,
 )
+from faultmaven.exceptions import TOKEN_LIMIT
 from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
@@ -893,7 +894,7 @@ def _is_context_length_error(exc: Exception) -> bool:
     (``with_retry`` → ``handle_error`` classifies the overflow as
     ``COMPRESS_MEMORY`` → ``_generate_structured_output_inner`` re-raises a
     ``MilestoneEngineError``) has already consumed the provider's wording, but it
-    stamps ``error_code == "TOKEN_LIMIT"`` on the raised exception. Recognizing
+    stamps the shared ``TOKEN_LIMIT`` error_code on the raised exception. Recognizing
     that deterministic engine signal — and walking the ``__cause__`` chain in case
     it is wrapped — is what makes the degrade-recovery in
     ``_generate_structured_output`` actually reachable for an overflow that
@@ -902,10 +903,17 @@ def _is_context_length_error(exc: Exception) -> bool:
     guarantee; #662).
     """
     # Deterministic engine signal from the retry-loop path (see docstring).
+    # ``seen`` bounds the walk: ``__cause__`` is assignable, so a hand-built cycle
+    # would otherwise spin here — and hanging this classifier would stall the very
+    # turn the degrade path exists to rescue. (We cannot reuse
+    # ``api.exception_handlers._walk_cause_chain``; core importing the API layer
+    # breaks import-linter contract 2.)
     cursor: Optional[BaseException] = exc
-    while cursor is not None:
-        if getattr(cursor, "error_code", None) == "TOKEN_LIMIT":
+    seen: set[int] = set()
+    while cursor is not None and id(cursor) not in seen:
+        if getattr(cursor, "error_code", None) == TOKEN_LIMIT:
             return True
+        seen.add(id(cursor))
         cursor = cursor.__cause__
 
     msg = str(getattr(exc, "message", "") or exc).lower()

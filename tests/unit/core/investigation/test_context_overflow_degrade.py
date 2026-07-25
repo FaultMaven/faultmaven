@@ -10,7 +10,7 @@ The failure mode this pins:
       → LLMErrorHandler.handle_error → COMPRESS_MEMORY        (not RETRY)
       → with_retry returns (None, ErrorResult TOKEN_LIMIT)
       → _generate_structured_output_inner raises
-            MilestoneEngineError(error_code="TOKEN_LIMIT")
+            MilestoneEngineError(error_code=TOKEN_LIMIT)
       → outer _generate_structured_output must recognize THAT as a
             context-length error and retry once with the minimal prompt.
 
@@ -28,6 +28,9 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngineError,
     _is_context_length_error,
 )
+from faultmaven.exceptions import TOKEN_LIMIT
+
+pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
 # _is_context_length_error — the classifier that gates the degrade-recovery
@@ -41,7 +44,7 @@ def test_recognizes_engine_token_limit_error_code():
     exc = MilestoneEngineError(
         "Structured output generation failed: Context too large. "
         "Compressing conversation history...",
-        error_code="TOKEN_LIMIT",
+        error_code=TOKEN_LIMIT,
     )
     assert _is_context_length_error(exc) is True
 
@@ -49,7 +52,7 @@ def test_recognizes_engine_token_limit_error_code():
 def test_walks_cause_chain_for_token_limit():
     """When the overflow is chained under an outer wrapper, the classifier must
     walk __cause__ to find the deterministic engine signal."""
-    inner = MilestoneEngineError("boom", error_code="TOKEN_LIMIT")
+    inner = MilestoneEngineError("boom", error_code=TOKEN_LIMIT)
     try:
         raise RuntimeError("wrapper") from inner
     except RuntimeError as outer:
@@ -106,7 +109,7 @@ async def test_token_limit_triggers_minimal_prompt_retry_and_degrades():
     overflow = MilestoneEngineError(
         "Structured output generation failed: Context too large. "
         "Compressing conversation history...",
-        error_code="TOKEN_LIMIT",
+        error_code=TOKEN_LIMIT,
     )
 
     inner = AsyncMock(side_effect=[overflow, degraded])
@@ -149,7 +152,7 @@ async def test_double_overflow_propagates_without_infinite_retry():
 
     overflow = MilestoneEngineError(
         "Structured output generation failed: Context too large.",
-        error_code="TOKEN_LIMIT",
+        error_code=TOKEN_LIMIT,
     )
     inner = AsyncMock(side_effect=[overflow, overflow])
 
@@ -169,9 +172,37 @@ async def test_double_overflow_propagates_without_infinite_retry():
                 user_message="what is wrong?",
             )
 
-    assert exc_info.value.error_code == "TOKEN_LIMIT"
+    assert exc_info.value.error_code == TOKEN_LIMIT
     # Exactly two attempts: the original + one minimal-prompt recovery.
     assert inner.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_non_overflow_failure_does_not_trigger_fallback_retry():
+    """The wrapper must recover ONLY for overflows. A different failure (quota)
+    has to propagate on the first attempt — retrying it with a smaller prompt
+    burns a second provider call and cannot help. This is the integration-level
+    counterpart to the classifier's negative cases: it catches an over-broad
+    classifier change at the seam where the retry is actually spent."""
+    engine = _make_engine()
+    case = MagicMock()
+    case.case_id = "case_test"
+
+    quota = MilestoneEngineError("out of credits", error_code="QUOTA_EXHAUSTED")
+    inner = AsyncMock(side_effect=quota)
+
+    with patch.object(engine, "_generate_structured_output_inner", inner):
+        with pytest.raises(MilestoneEngineError) as exc_info:
+            await engine._generate_structured_output(
+                prompt="hi",
+                schema_model=MagicMock(),
+                case=case,
+                user_message="what is wrong?",
+            )
+
+    assert exc_info.value.error_code == "QUOTA_EXHAUSTED"
+    # Exactly one attempt — no minimal-prompt retry for a non-overflow failure.
+    assert inner.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -182,7 +213,7 @@ async def test_no_user_message_skips_recovery_and_raises():
     case = MagicMock()
     case.case_id = "case_test"
 
-    overflow = MilestoneEngineError("boom", error_code="TOKEN_LIMIT")
+    overflow = MilestoneEngineError("boom", error_code=TOKEN_LIMIT)
     inner = AsyncMock(side_effect=overflow)
 
     with patch.object(engine, "_generate_structured_output_inner", inner):
@@ -194,7 +225,7 @@ async def test_no_user_message_skips_recovery_and_raises():
                 user_message=None,
             )
 
-    assert exc_info.value.error_code == "TOKEN_LIMIT"
+    assert exc_info.value.error_code == TOKEN_LIMIT
     assert inner.await_count == 1
 
 
@@ -237,7 +268,7 @@ async def test_inner_raise_does_not_chain_provider_exception():
     err = ErrorResult(
         action=ErrorAction.COMPRESS_MEMORY,
         message="Context too large. Compressing conversation history...",
-        error_code="TOKEN_LIMIT",
+        error_code=TOKEN_LIMIT,
         original_exception=provider_overflow,
     )
 
@@ -250,7 +281,7 @@ async def test_inner_raise_does_not_chain_provider_exception():
             )
 
     raised = exc_info.value
-    assert raised.error_code == "TOKEN_LIMIT"
+    assert raised.error_code == TOKEN_LIMIT
     # The provider LLMException must NOT be chained (would flip 503 → 502).
     assert raised.__cause__ is None
     assert raised.__context__ is None
@@ -268,7 +299,7 @@ def test_propagated_token_limit_maps_to_retryable_503():
 
     engine_err = MilestoneEngineError(
         "Structured output generation failed: Context too large.",
-        error_code="TOKEN_LIMIT",
+        error_code=TOKEN_LIMIT,
     )
     service_err = ServiceException(
         "Turn processing failed", details={"error_code": "TOKEN_LIMIT"}

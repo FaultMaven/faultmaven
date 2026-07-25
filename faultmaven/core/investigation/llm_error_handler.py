@@ -19,6 +19,7 @@ from typing import Awaitable, Callable, Optional, Tuple, TypeVar
 
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
+    TOKEN_LIMIT,
     LLMException,
     is_billing_error,
 )
@@ -278,7 +279,7 @@ class LLMErrorHandler:
             return ErrorResult(
                 action=ErrorAction.COMPRESS_MEMORY,
                 message="Context too large. Compressing conversation history...",
-                error_code="TOKEN_LIMIT",
+                error_code=TOKEN_LIMIT,
             )
 
         # Check for retryable errors
@@ -341,10 +342,9 @@ class LLMErrorHandler:
                 return result, None
             except Exception as e:
                 error_result = await self.handle_error(e, retry_count)
-                # Preserve the triggering exception so the caller can chain it
-                # (``raise ... from``) — keeps the provider's real message on the
-                # __cause__ chain for diagnostics and for context-length
-                # classification downstream.
+                # Preserve the triggering exception so the caller can surface its
+                # real message (see ErrorResult.original_exception — callers fold
+                # it into their message text, deliberately NOT onto __cause__).
                 error_result.original_exception = e
                 last_error_result = error_result
 
