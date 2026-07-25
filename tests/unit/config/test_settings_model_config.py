@@ -29,13 +29,21 @@ def test_model_config_is_declared_exactly_once():
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef) and node.name == "FaultMavenSettings"
     )
-    declarations = [
-        target.id
-        for stmt in class_def.body
-        if isinstance(stmt, ast.Assign)
-        for target in stmt.targets
-        if isinstance(target, ast.Name) and target.id == "model_config"
-    ]
+    # Match BOTH plain and annotated assignment. Pydantic's own idiom is
+    # `model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(...)`,
+    # an ast.AnnAssign — counting only ast.Assign would let a duplicate added
+    # that way slip past the very check meant to catch it.
+    declarations = []
+    for stmt in class_def.body:
+        if isinstance(stmt, ast.Assign):
+            targets = stmt.targets
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            targets = [stmt.target]
+        else:
+            continue
+        declarations += [
+            t.id for t in targets if isinstance(t, ast.Name) and t.id == "model_config"
+        ]
 
     assert len(declarations) == 1, (
         f"FaultMavenSettings declares model_config {len(declarations)} times; "
