@@ -318,7 +318,25 @@ class FileStorageService(BaseService):
         it can walk a local directory.
         """
         keys = await self.backend.list_keys()
-        return [k[: -len(SIDECAR_SUFFIX)] for k in keys if k.endswith(SIDECAR_SUFFIX)]
+        stored = set(keys)
+
+        # A stripped base names a real file only if that file is actually
+        # stored. Without this check, an object whose own key ends in
+        # SIDECAR_SUFFIX yields a PHANTOM base, and the sweep then reads that
+        # object's user-controlled content as the phantom's orphan metadata and
+        # deletes the object as its companion.
+        #
+        # `_sanitize_filename` reserves the suffix so no NEW upload can create
+        # that shape, but this is what covers objects already stored before
+        # that reservation existed — the mangle is generation-time only and
+        # cannot reach them. It is also what would have caught the truncation
+        # ordering bug that briefly reopened the hole.
+        return [
+            base
+            for k in keys
+            if k.endswith(SIDECAR_SUFFIX)
+            and (base := k[: -len(SIDECAR_SUFFIX)]) in stored
+        ]
 
     async def retrieve_file(self, storage_key: str) -> bytes:
         """Retrieve a file from the configured storage backend.
@@ -532,14 +550,6 @@ class FileStorageService(BaseService):
         if not safe:
             safe = "unnamed_file"
 
-        # The sidecar protocol reserves keys ending in SIDECAR_SUFFIX. An
-        # upload actually named "notes.meta.json" would otherwise be
-        # enumerated by list_sidecar_keys() as some other file's sidecar, its
-        # user-controlled content parsed as orphan metadata, and the file
-        # itself deleted as that phantom's companion. Reserve the suffix.
-        if safe.lower().endswith(SIDECAR_SUFFIX):
-            safe = f"{safe[: -len(SIDECAR_SUFFIX)]}.meta_json"
-
         # Limit filename length (preserve extension)
         max_length = 200
         if len(safe) > max_length:
@@ -551,6 +561,21 @@ class FileStorageService(BaseService):
                 safe = f"{name}.{ext}"
             else:
                 safe = safe[:max_length]
+
+        # The sidecar protocol reserves names ending in SIDECAR_SUFFIX. An
+        # upload actually named "notes.meta.json" would otherwise be
+        # enumerated by list_sidecar_keys() as some other file's sidecar, its
+        # user-controlled content parsed as orphan metadata, and the file
+        # itself deleted as that phantom's companion.
+        #
+        # This MUST be the last step. Truncation above rebuilds the name from
+        # `{name[:N]}.{ext}` and can reconstitute the very suffix a earlier
+        # an earlier mangle removed — a >200-char name ending `.metaXXXX.json`
+        # truncates
+        # straight back to `.meta.json`. The substitution is length-preserving,
+        # so applying it here cannot push the name back over the limit.
+        if safe.lower().endswith(SIDECAR_SUFFIX):
+            safe = f"{safe[: -len(SIDECAR_SUFFIX)]}.meta_json"
 
         return safe
 

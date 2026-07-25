@@ -801,6 +801,45 @@ class TestSidecarSuffixIsReserved:
         # Its own sidecar is still the only thing the sweep sees.
         assert await file_storage_service.list_sidecar_keys() == [result["storage_key"]]
 
+    def test_no_filename_length_reconstitutes_the_suffix(self, file_storage_service):
+        """The reservation is a PROPERTY over all lengths, not one example.
+
+        Length truncation rebuilds the name as `{name[:N]}.{ext}` and can
+        reconstitute the very suffix the reservation removed: a >200-char name
+        ending `.metaXXXX.json` truncates straight back to `.meta.json`. The
+        single-example test above passed while the property did not hold, so
+        sweep the whole adversarial family.
+        """
+        for pad in range(150, 260):
+            for ext in ("json", "j" * 20):
+                name = f"{'a' * pad}.metaXXXX.{ext}"
+                safe = file_storage_service._sanitize_filename(name)
+                assert not safe.lower().endswith(
+                    ".meta.json"
+                ), f"reserved suffix reconstituted (pad={pad}, ext={ext}): {safe!r}"
+                assert len(safe) <= 200, f"mangle broke the length cap: {len(safe)}"
+
+    @pytest.mark.asyncio
+    async def test_preexisting_hostile_object_is_not_swept(self, temp_storage_dir):
+        """Objects stored BEFORE the reservation existed must still be safe.
+
+        The mangle is generation-time only, so it structurally cannot protect
+        keys already on disk. `list_sidecar_keys` therefore also requires a
+        stripped base to name a genuinely stored object, or the phantom base
+        would let the sweep read this object's own bytes as orphan metadata.
+        """
+        backend = FilesystemStorageBackend(storage_root=temp_storage_dir)
+        service = FileStorageService(backend=backend)
+
+        legacy = "org1/case1/2020-01-01/abc123_evil.meta.json"
+        await backend.store_file(legacy, b'{"linked": false}')
+
+        # The phantom base "…/abc123_evil" is not a stored object, so it must
+        # not be offered to the sweep as a cleanup candidate.
+        assert "org1/case1/2020-01-01/abc123_evil" not in (
+            await service.list_sidecar_keys()
+        )
+
     @pytest.mark.asyncio
     async def test_hostile_upload_does_not_get_itself_deleted(
         self, file_storage_service

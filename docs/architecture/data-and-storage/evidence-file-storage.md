@@ -97,10 +97,18 @@ exists. The `storage_cleanup` job sweeps sidecars via
 is *never* deleted, and neither is one whose sidecar cannot be read — unknown
 state is not a licence to delete.
 
-The suffix is **reserved**: an upload whose own name ends in `.meta.json` has
-it mangled at key-generation time. Without that, the file would be enumerated
-as some other object's sidecar, its user-controlled content parsed as orphan
-metadata, and the file deleted as that phantom's companion.
+The suffix is **reserved**, in two independent layers. Without them an object
+whose own key ends in `.meta.json` is enumerated as some other object's
+sidecar, its user-controlled content parsed as orphan metadata, and the object
+deleted as that phantom's companion.
+
+1. **At key generation**, a filename whose sanitized form ends in the suffix is
+   mangled to `.meta_json`. This runs *after* length truncation, because
+   truncation rebuilds the name as `{name}.{ext}` and can otherwise
+   reconstitute the suffix it just removed.
+2. **At sweep time**, a stripped base is only treated as a candidate if that
+   base names a genuinely stored object. Layer 1 is generation-time only and
+   so cannot protect keys written before it existed; this is what covers them.
 
 Because sidecars are ordinary backend objects rather than local files, orphan
 cleanup works identically on S3 and on the filesystem.
