@@ -52,7 +52,7 @@ def admin_user():
         user_id="admin_1",
         organization_id="org_1",
         email="admin@example.com",
-        roles=["admin"],
+        roles=["admin", "platform_admin"],
         permissions=["admin:all"],
     )
 
@@ -75,7 +75,7 @@ def mock_case_service():
 
 
 def _make_app(current_user, mock_case_service):
-    """Wire dependency overrides for require_admin's user + the case service."""
+    """Wire dependency overrides for require_platform_admin's user + the case service."""
     from faultmaven.api.middleware.auth import get_current_user
     from faultmaven.api.routes.admin_cases import get_case_service
 
@@ -125,7 +125,7 @@ async def test_admin_list_all_cases_success(
 async def test_admin_list_all_cases_forbidden_for_non_admin(
     member_user, mock_case_service, cleanup_overrides
 ):
-    """A non-admin user is rejected by require_admin."""
+    """A non-admin user is rejected by require_platform_admin."""
     app = _make_app(member_user, mock_case_service)
 
     async with await _client(app) as client:

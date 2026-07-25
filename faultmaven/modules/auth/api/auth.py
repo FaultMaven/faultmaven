@@ -37,8 +37,8 @@ from faultmaven.api.v1.auth_dependencies import (
     extract_bearer_token,
     get_token_revocation_store,
     get_user_store,
-    require_admin,
     require_authentication,
+    require_platform_admin,
 )
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.config.settings import AuthMode, get_settings
@@ -364,7 +364,7 @@ async def local_login(
             display_name=user.display_name,
             created_at=to_json_compatible(user.created_at),
             is_dev_user=user.is_dev_user,
-            roles=user.roles if user.roles else ["admin"],  # Ensure roles are included
+            roles=user.roles if user.roles else ["user"],  # Least privilege when absent
         )
 
         token_response = AuthTokenResponse(
@@ -509,7 +509,7 @@ async def local_register(
             display_name=user.display_name,
             created_at=to_json_compatible(user.created_at),
             is_dev_user=user.is_dev_user,
-            roles=user.roles if user.roles else ["admin"],  # Ensure roles are included
+            roles=user.roles if user.roles else ["user"],  # Least privilege when absent
         )
 
         token_response = AuthTokenResponse(
@@ -671,7 +671,7 @@ async def refresh_tokens(
 @trace("auth_list_users")
 async def list_users(
     request: Request,
-    _: DevUser = Depends(require_admin),
+    _: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """List all users. Admin only."""
     try:
@@ -711,7 +711,7 @@ async def list_users(
 async def delete_user(
     username: str,
     request: Request,
-    _: DevUser = Depends(require_admin),
+    _: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """Delete a user by username. Admin only."""
     try:
@@ -840,8 +840,8 @@ async def get_current_user_profile(
             created_at=to_json_compatible(current_user.created_at),
             is_dev_user=current_user.is_dev_user,
             roles=(
-                current_user.roles if current_user.roles else ["admin"]
-            ),  # Ensure roles are included
+                current_user.roles if current_user.roles else ["user"]
+            ),  # Ensure roles are included; least privilege when absent
             last_login=None,  # TODO: Implement last login tracking
         )
 
@@ -924,10 +924,10 @@ async def auth_health_check():
 async def revoke_user_tokens(
     user_id: str,
     request: Request,
-    _: DevUser = Depends(require_admin),
+    _: DevUser = Depends(require_platform_admin),
     user_store=Depends(get_user_store),
 ) -> RevokeUserTokensResponse:
-    """Revoke all tokens for a user. Admin only.
+    """Revoke all tokens for a user. Platform admin only.
 
     Writes a per-user revocation watermark to the shared revocation store; the
     request path and both token generators then reject every token for this

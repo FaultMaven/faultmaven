@@ -43,8 +43,10 @@ from fastapi import (
     UploadFile,
 )
 
-from faultmaven.api.v1.auth_dependencies import get_current_user_optional
-from faultmaven.api.v1.role_dependencies import require_admin
+from faultmaven.api.v1.auth_dependencies import (
+    get_current_user_optional,
+    require_platform_admin,
+)
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
 from faultmaven.exceptions import FaultMavenException
 from faultmaven.infrastructure.observability.tracing import trace
@@ -92,7 +94,7 @@ async def upload_document(
     description: Optional[str] = Form(None),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     response: Response = Response(),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """
     Upload a document to the knowledge base
@@ -432,7 +434,7 @@ async def get_document_snippet(
 async def delete_document(
     document_id: str,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ):
     """
     Delete a knowledge base document
@@ -634,7 +636,7 @@ async def update_document(
     document_id: str,
     update_data: dict,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """Update document metadata and content."""
     logger = logging.getLogger(__name__)
@@ -667,7 +669,7 @@ async def update_document(
 async def bulk_update_documents(
     request: Dict[str, Any],
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """Bulk update document metadata."""
     logger = logging.getLogger(__name__)
@@ -701,7 +703,7 @@ async def bulk_update_documents(
 async def bulk_delete_documents(
     request: Dict[str, List[str]],
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """Bulk delete documents."""
     logger = logging.getLogger(__name__)
@@ -790,7 +792,7 @@ async def list_suggestions(
     offset: int = Query(default=0, ge=0, description="Pagination offset"),
     request: Request = None,
     suggestion_service=Depends(get_suggestion_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """
     List knowledge suggestions with optional filtering.
@@ -843,7 +845,7 @@ async def list_suggestions(
 async def get_suggestion(
     suggestion_id: str,
     suggestion_service=Depends(get_suggestion_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """
     Get a specific knowledge suggestion by ID.
@@ -881,7 +883,7 @@ async def update_suggestion(
     suggestion_id: str,
     update_data: dict,
     suggestion_service=Depends(get_suggestion_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """
     Update a suggestion's content.
@@ -927,7 +929,7 @@ async def approve_suggestion(
     suggestion_id: str,
     request_body: Optional[dict] = None,
     suggestion_service=Depends(get_suggestion_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """
     Approve a suggestion and create a knowledge item.
@@ -992,7 +994,7 @@ async def reject_suggestion(
     suggestion_id: str,
     request_body: dict,
     suggestion_service=Depends(get_suggestion_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """
     Reject a suggestion.
@@ -1046,7 +1048,7 @@ async def reject_suggestion(
 async def remediate_pii(
     suggestion_id: str,
     suggestion_service=Depends(get_suggestion_service),
-    current_user: DevUser = Depends(require_admin),
+    current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """
     Mark PII as remediated after manual review.

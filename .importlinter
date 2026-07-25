@@ -217,6 +217,7 @@ ignore_imports =
     faultmaven.models -> faultmaven.modules.auth.domain.models.session
     faultmaven.modules.auth.contracts -> faultmaven.modules.auth.domain.models.auth
     faultmaven.modules.auth.contracts -> faultmaven.modules.auth.domain.models.user
+    faultmaven.modules.auth.contracts -> faultmaven.modules.auth.domain.models.rbac
     faultmaven.infrastructure.llm.router -> faultmaven.models
     # Container is the composition root - allowed to wire all module internals
     faultmaven.container.providers.services -> faultmaven.modules.auth.domain.services.*

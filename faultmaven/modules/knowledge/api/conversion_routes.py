@@ -114,7 +114,7 @@ async def convert_document(
     # from a tenant session under multi (#770), admin-only in single-tenant.
     if scope == "global":
         require_global_authoring_allowed()
-        if "admin" not in (current_user.roles or []):
+        if not current_user.is_platform_admin():
             raise HTTPException(
                 status_code=403,
                 detail="Global KB conversion requires platform admin role",
@@ -263,7 +263,7 @@ async def scan_for_runbooks(
         return await service.scan_for_runbooks(
             user_id=current_user.user_id,
             organization_id=getattr(current_user, "organization_id", None),
-            is_admin="admin" in (current_user.roles or []),
+            is_platform_admin=current_user.is_platform_admin(),
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -340,7 +340,7 @@ async def verify_batch(
         draft_refs=[(ref.conversion_id, ref.draft_id) for ref in body.draft_ids],
         user_id=current_user.user_id,
         username=current_user.username,
-        is_admin="admin" in (current_user.roles or []),
+        is_platform_admin=current_user.is_platform_admin(),
     )
     return result
 
@@ -375,7 +375,7 @@ async def verify_draft(
         draft_id=draft_id,
         user_id=current_user.user_id,
         username=current_user.username,
-        is_admin="admin" in (current_user.roles or []),
+        is_platform_admin=current_user.is_platform_admin(),
     )
     if not result:
         raise HTTPException(
@@ -449,7 +449,7 @@ async def create_runbook_manually(
     # from a tenant session under multi (#770), admin-only in single-tenant.
     if body.scope == "global":
         require_global_authoring_allowed()
-        if "admin" not in (current_user.roles or []):
+        if not current_user.is_platform_admin():
             raise HTTPException(
                 status_code=403,
                 detail="Global KB runbook creation requires platform admin role",

@@ -4,7 +4,7 @@ A platform-admin read path that lists cases across ALL users/orgs, so an
 operator can see Copilot- and Slack-originated cases in one place instead of
 logging in as each user. It is gated by:
 
-  - ``require_admin`` (platform-admin role), and
+  - ``require_platform_admin`` (platform-admin role), and
   - deployment mode: served in **standalone**; **403 in cloud** until an
     audited break-glass override exists (ADR-012 D7/D8). In cloud/Postgres,
     Row-Level Security would also scope the result to the operator's own org,
@@ -20,7 +20,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.requests import Request
 
-from faultmaven.api.middleware.auth import require_admin
+from faultmaven.api.middleware.auth import require_platform_admin
 from faultmaven.config.settings import get_settings
 from faultmaven.models.api_models import CaseListFilter, CaseListResponse
 from faultmaven.models.interfaces_case import ICaseService
@@ -49,7 +49,7 @@ router = APIRouter(
 
 @router.get("/cases", response_model=CaseListResponse)
 async def list_all_cases(
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
     case_service: ICaseService = Depends(get_case_service),
     state: Optional[CaseState] = Query(None, description="Filter by state"),
     source: Optional[Literal["copilot", "slack", "api"]] = Query(
