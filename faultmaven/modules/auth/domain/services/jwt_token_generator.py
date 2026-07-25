@@ -911,9 +911,17 @@ class ITokenRevocationStore(ABC):
       deactivate/delete/role-change flows (#769). Enumerating a user's
       outstanding JTIs is not possible — nothing indexes them — so per-user
       revocation records *when* the revocation happened and rejects every
-      token issued at or before that instant. This is complete by
-      construction: it covers tokens from every mint path, including ones
-      added later, so a per-user revocation cannot silently under-revoke.
+      token issued at or before that instant. It needs no bookkeeping at mint
+      time, which is why it covers mint paths added later.
+
+      **That coverage is conditional, not absolute:** matching is on ``sub`` +
+      ``iat``, so it holds only while every mint path emits both and keys
+      ``sub`` to the same user_id the watermark is written under. A test pins
+      this; the type system does not. A future minter that omits ``iat`` would
+      under-revoke silently on the generator ``validate_*`` paths, which —
+      unlike ``AuthService.verify_token`` — do not ``require`` it. See
+      ``docs/architecture/security/iam-design.md`` for the full limits
+      (clock skew, Redis-only durability, password-reset tokens).
 
     Entries carry a TTL matching token expiration; once a token can no longer
     be presented, its revocation entry is redundant and expires.

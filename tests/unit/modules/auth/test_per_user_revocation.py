@@ -674,6 +674,78 @@ class TestServiceFailurePosture:
         await service.deactivate_user(user.user_id)
         assert order == ["save", "revoke"], "deactivate_user must persist first"
 
+    async def test_reset_password_persists_before_revoking(self):
+        """The ordering pin `reset_password` was missing.
+
+        It is the sharpest threat model of the five: the flow exists precisely
+        because credentials may be compromised, so a gap that mints a token
+        authenticated by the OLD password is the worst case. Same code shape as
+        the others today — the pin is here to catch a regression.
+        """
+        from unittest.mock import MagicMock
+
+        from faultmaven.infrastructure.persistence.user_repository import (
+            InMemoryUserRepository,
+        )
+        from faultmaven.modules.auth.domain.services.user_service import UserService
+
+        order: list[str] = []
+        repo = InMemoryUserRepository()
+        real_save = repo.save
+
+        async def tracking_save(user):
+            order.append("save")
+            return await real_save(user)
+
+        auth_service = MagicMock()
+
+        async def tracking_revoke(user_id):
+            order.append("revoke")
+            return datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+
+        auth_service.revoke_user_tokens = tracking_revoke
+
+        # Reset tokens are signed with the auth service's keys under the
+        # deployment's configured algorithm (RS256), so the double needs a real
+        # keypair rather than a MagicMock attribute.
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        auth_service._private_key = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+        auth_service._public_key = (
+            key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        )
+
+        redis = _fake_redis()
+        service = UserService(
+            user_repo=repo, auth_service=auth_service, redis_client=redis
+        )
+
+        user = await service.register_user(
+            email="reset@local.faultmaven",
+            password="Str0ng-P4ssw0rd!",
+            full_name="Reset Check",
+        )
+        reset_token = await service.request_password_reset(email=user.email)
+
+        repo.save = tracking_save
+        order.clear()
+        await service.reset_password(
+            reset_token=reset_token, new_password="An0ther-P4ssw0rd!"
+        )
+
+        assert order == ["save", "revoke"], "reset_password must persist first"
+
     async def test_role_changes_persist_before_revoking(self):
         """Same ordering invariant on the role flows.
 

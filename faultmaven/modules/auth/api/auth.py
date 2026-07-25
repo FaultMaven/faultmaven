@@ -968,7 +968,19 @@ async def revoke_user_tokens(
                 "store failure)",
                 extra={"user_id": user_id},
             )
-            raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
+            # Say that the revocation landed. A bare "user not found" would be
+            # actively misleading when the cause is a lookup failure rather
+            # than a bad id: the admin would assume nothing happened and that
+            # they still need to act, which is the false-signal problem this
+            # endpoint was fixed for, inverted.
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Revocation recorded for '{user_id}', but no such user "
+                    "could be resolved — verify the user ID (or, if the user "
+                    "does exist, the user store is failing)."
+                ),
+            )
 
         logger.info(
             "Revoked all tokens for user",
