@@ -32,6 +32,7 @@ Security implementation guides.
 | Document | Description |
 |----------|-------------|
 | [Role-Based Access Control](./security/role-based-access-control.md) | RBAC implementation |
+| [Service Account Credentials](./security/service-account-credentials.md) | Slack-agent auth under `AUTH_MODE=oauth`; minting, rotation, lockout recovery |
 | [PII Sanitization](./security/pii-sanitization-configuration.md) | Privacy protection |
 | [Client Protection](./security/client-protection.md) | Client-side security |
 | [Implementation Guide](./security/implementation-guide.md) | Security implementation |

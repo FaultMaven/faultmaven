@@ -19,6 +19,10 @@ python scripts/auth/promote_to_admin.py alice
 
 # Demote admin to regular user
 python scripts/auth/demote_from_admin.py bob
+
+# Mint the Slack service account an OAuth refresh-token credential
+# (AUTH_MODE=oauth only — see docs/operations/security/service-account-credentials.md)
+python scripts/auth/provision_service_account.py --username slack-agent
 ```
 
 ---

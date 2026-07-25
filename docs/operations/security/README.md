@@ -7,6 +7,7 @@ Security implementation and configuration guides.
 | Document | Description |
 |----------|-------------|
 | [Role-Based Access Control](./role-based-access-control.md) | RBAC implementation |
+| [Service Account Credentials](./service-account-credentials.md) | How the Slack agent authenticates under `AUTH_MODE=oauth`; minting, rotation, lockout recovery |
 | [Implementation Guide](./implementation-guide.md) | Security architecture |
 
 ## Protection
