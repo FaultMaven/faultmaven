@@ -68,30 +68,7 @@ class DatabaseUserStore:
             is_dev_user=True,
             is_active=user.is_active,
             roles=user.roles if user.roles else ["user"],
-        )
-
-    def _devuser_to_user(self, dev_user: DevUser) -> User:
-        """Convert DevUser (auth model) to User (repository model)"""
-        return User(
-            user_id=dev_user.user_id,
-            username=dev_user.username,
-            email=dev_user.email,
-            display_name=dev_user.display_name,
-            avatar_url=None,
-            timezone="UTC",
-            locale="en-US",
-            hashed_password=None,
-            is_active=dev_user.is_active,
-            is_email_verified=False,
-            email_verified_at=None,
-            sso_provider=None,
-            sso_provider_id=None,
-            created_at=dev_user.created_at,
-            updated_at=datetime.now(timezone.utc),
-            last_login_at=None,
-            last_password_change_at=None,
-            deleted_at=None,
-            roles=dev_user.roles if dev_user.roles else ["user"],
+            account_kind=user.account_kind,
         )
 
     async def get_user(self, user_id: str) -> Optional[DevUser]:
@@ -164,7 +141,11 @@ class DatabaseUserStore:
             return None
 
     async def create_user(
-        self, username: str, email: str = None, display_name: str = None
+        self,
+        username: str,
+        email: str = None,
+        display_name: str = None,
+        account_kind: str = "individual",
     ) -> DevUser:
         """Create new development user
 
@@ -172,6 +153,9 @@ class DatabaseUserStore:
             username: Unique username
             email: User email address (optional, auto-generated if not provided)
             display_name: Human-readable display name (optional, auto-generated if not provided)
+            account_kind: ADR-012 account kind — 'individual' (human) or 'slack'
+                (service account). Set at creation so a service account is never
+                briefly persisted as an individual.
 
         Returns:
             Created DevUser
@@ -246,6 +230,7 @@ class DatabaseUserStore:
                 last_password_change_at=None,
                 deleted_at=None,
                 roles=["user"],
+                account_kind=account_kind,
             )
 
             # Save via repository (upsert behavior - handles both insert and update)
@@ -260,7 +245,14 @@ class DatabaseUserStore:
             raise
 
     async def update_user(self, user: DevUser) -> DevUser:
-        """Update existing user
+        """Update the fields a DevUser carries, leaving the rest of the record.
+
+        DevUser is a partial view of a stored user, and ``UserRepository.update``
+        writes every column. Rebuilding a User from a DevUser would therefore
+        write NULL over everything DevUser has no concept of — password hash,
+        SSO linkage, verification and login timestamps — silently locking the
+        account out of both auth modes. So the DevUser's fields are applied onto
+        the stored record instead.
 
         Args:
             user: DevUser with updated fields
@@ -281,11 +273,15 @@ class DatabaseUserStore:
                     message=f"User {user.user_id} not found",
                 )
 
-            # Convert DevUser to User and update
-            updated_user = self._devuser_to_user(user)
-            updated_user.updated_at = datetime.now(timezone.utc)
+            existing_user.username = user.username
+            existing_user.email = user.email
+            existing_user.display_name = user.display_name
+            existing_user.is_active = user.is_active
+            existing_user.roles = user.roles if user.roles else ["user"]
+            existing_user.account_kind = user.account_kind
+            existing_user.updated_at = datetime.now(timezone.utc)
 
-            saved_user = await self.user_repository.update(updated_user)
+            saved_user = await self.user_repository.update(existing_user)
             return self._user_to_devuser(saved_user)
 
         except Exception as e:

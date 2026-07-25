@@ -417,7 +417,6 @@ class OAuthServiceImpl(IOAuthService):
             "OAuth token refresh requested",
             extra={
                 "client_id": client_id,
-                "token_rotation": self.settings.jwt_rotate_refresh_tokens,
             },
         )
 
@@ -465,23 +464,47 @@ class OAuthServiceImpl(IOAuthService):
                 error_code="USER_NOT_FOUND",
             )
 
+        # A deactivated account must not be able to refresh. This is the only
+        # containment lever there is: revoke_user_tokens() is a documented no-op
+        # (no per-user JTI index), so deactivation relies entirely on short
+        # access-token expiry plus this check. Without it, a refresh credential
+        # on a deactivated account keeps minting access tokens indefinitely on a
+        # sliding window. POST /auth/refresh already enforces this.
+        if not getattr(user, "is_active", True):
+            logger.warning(
+                "OAuth token refresh failed: user inactive",
+                extra={
+                    "user_id": user_id,
+                    "client_id": client_id,
+                    "error": "USER_INACTIVE",
+                },
+            )
+            raise InvalidGrantError(
+                "User account is inactive",
+                error_code="USER_INACTIVE",
+            )
+
         # Generate new access token
         new_access_token = await self.token_generator.generate_access_token(user)
 
-        # Rotate refresh token (security best practice)
-        new_refresh_token = refresh_token
-        if self.settings.jwt_rotate_refresh_tokens:
-            # Revoke old refresh token
-            await self.token_generator.revoke_refresh_token(refresh_token)
-            # Generate new refresh token
-            new_refresh_token = await self.token_generator.generate_refresh_token(user)
-            logger.debug(
-                "OAuth refresh token rotated",
-                extra={
-                    "user_id": user.user_id,
-                    "client_id": client_id,
-                },
-            )
+        # Rotate the refresh token: the presented token is single-use. Matches
+        # POST /auth/refresh, so both refresh paths carry the same contract and a
+        # client can persist the rotated token unconditionally.
+        #
+        # Mint BEFORE revoking, as /auth/refresh does. Revoking first would mean
+        # a failure to mint leaves the caller holding a revoked credential and
+        # no replacement — a lockout only an operator can undo. This order costs
+        # nothing: if the revoke fails the caller simply retries with a token
+        # that is still valid.
+        new_refresh_token = await self.token_generator.generate_refresh_token(user)
+        await self.token_generator.revoke_refresh_token(refresh_token)
+        logger.debug(
+            "OAuth refresh token rotated",
+            extra={
+                "user_id": user.user_id,
+                "client_id": client_id,
+            },
+        )
 
         logger.info(
             "OAuth tokens refreshed",
@@ -489,7 +512,7 @@ class OAuthServiceImpl(IOAuthService):
                 "user_id": user.user_id,
                 "username": user.username,
                 "client_id": client_id,
-                "token_rotated": self.settings.jwt_rotate_refresh_tokens,
+                "token_rotated": True,
             },
         )
 
