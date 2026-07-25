@@ -146,7 +146,11 @@ class RedisUserStore:
             return None
 
     async def create_user(
-        self, username: str, email: str = None, display_name: str = None
+        self,
+        username: str,
+        email: str = None,
+        display_name: str = None,
+        account_kind: str = "individual",
     ) -> DevUser:
         """Create new development user
 
@@ -154,6 +158,9 @@ class RedisUserStore:
             username: Unique username
             email: User email address (optional)
             display_name: Human-readable display name (optional)
+            account_kind: ADR-012 account kind — 'individual' or 'slack'. Kept
+                in step with DatabaseUserStore: the container picks between the
+                two at runtime, so a caller cannot know which one it holds.
 
         Returns:
             Created DevUser
@@ -218,6 +225,7 @@ class RedisUserStore:
                 created_at=now,
                 is_dev_user=True,
                 is_active=True,
+                account_kind=account_kind,
             )
 
             # Store in Redis

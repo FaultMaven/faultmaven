@@ -48,6 +48,11 @@ class DevUser:
         is_active: Account active status
         roles: List of user roles for access control (e.g., ['admin'], ['user'])
         organization_id: Organization UUID (defaults to config.constants.STANDALONE_ORG_ID)
+        account_kind: ADR-012 account kind — 'individual' (human) or 'slack'
+            (service account owning a workspace's cases). Carried here because
+            the user store round-trips users through DevUser on update; dropping
+            it would rewrite a service account as 'individual' and change the
+            derived ``cases.source`` for everything it later creates.
     """
 
     user_id: str
@@ -59,6 +64,7 @@ class DevUser:
     is_active: bool = True
     roles: list[str] = None  # Will be set to ['admin'] by default in __post_init__
     organization_id: str = None  # Will be set to STANDALONE_ORG_ID in __post_init__
+    account_kind: str = "individual"
 
     def __post_init__(self):
         """Set default roles and organization_id if not provided"""
@@ -82,6 +88,7 @@ class DevUser:
             "is_active": self.is_active,
             "roles": self.roles if self.roles else ["admin"],
             "organization_id": self.organization_id,
+            "account_kind": self.account_kind,
         }
 
     @classmethod
@@ -97,6 +104,7 @@ class DevUser:
             is_active=data.get("is_active", True),
             roles=data.get("roles", ["admin"]),  # Default to admin for dev users
             organization_id=data.get("organization_id"),
+            account_kind=data.get("account_kind", "individual"),
         )
 
 

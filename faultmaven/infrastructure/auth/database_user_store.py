@@ -68,6 +68,7 @@ class DatabaseUserStore:
             is_dev_user=True,
             is_active=user.is_active,
             roles=user.roles if user.roles else ["user"],
+            account_kind=user.account_kind,
         )
 
     def _devuser_to_user(self, dev_user: DevUser) -> User:
@@ -92,6 +93,7 @@ class DatabaseUserStore:
             last_password_change_at=None,
             deleted_at=None,
             roles=dev_user.roles if dev_user.roles else ["user"],
+            account_kind=dev_user.account_kind,
         )
 
     async def get_user(self, user_id: str) -> Optional[DevUser]:
@@ -164,7 +166,11 @@ class DatabaseUserStore:
             return None
 
     async def create_user(
-        self, username: str, email: str = None, display_name: str = None
+        self,
+        username: str,
+        email: str = None,
+        display_name: str = None,
+        account_kind: str = "individual",
     ) -> DevUser:
         """Create new development user
 
@@ -172,6 +178,9 @@ class DatabaseUserStore:
             username: Unique username
             email: User email address (optional, auto-generated if not provided)
             display_name: Human-readable display name (optional, auto-generated if not provided)
+            account_kind: ADR-012 account kind — 'individual' (human) or 'slack'
+                (service account). Set at creation so a service account is never
+                briefly persisted as an individual.
 
         Returns:
             Created DevUser
@@ -246,6 +255,7 @@ class DatabaseUserStore:
                 last_password_change_at=None,
                 deleted_at=None,
                 roles=["user"],
+                account_kind=account_kind,
             )
 
             # Save via repository (upsert behavior - handles both insert and update)
