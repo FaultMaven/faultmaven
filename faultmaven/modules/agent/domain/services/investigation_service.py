@@ -1264,7 +1264,16 @@ class InvestigationService:
         )
         if mark_linked is not None and storage_ref:
             try:
-                await mark_linked(storage_ref)
+                # Check the result, don't just call it: mark_linked reports
+                # failure by returning False rather than raising, so without
+                # this the warning below could never fire and an at-risk file
+                # would be reclaimed at TTL with no operator signal.
+                if not await mark_linked(storage_ref):
+                    logger.warning(
+                        "mark_linked returned False for %s (non-fatal, file "
+                        "stays as orphan candidate until TTL)",
+                        storage_ref,
+                    )
             except Exception as e:
                 logger.warning(
                     "mark_linked failed for %s (non-fatal, file stays as "
