@@ -200,7 +200,8 @@ async def get_file_storage_service(
 ) -> FileStorageService:
     """Get file storage service for request.
 
-    Creates a FileStorageService with default settings from configuration.
+    Creates a FileStorageService with default settings from configuration,
+    backed by whichever storage backend STORAGE_BACKEND selects.
 
     Args:
         factory: Service factory from get_service_factory
@@ -209,11 +210,12 @@ async def get_file_storage_service(
         FileStorageService instance
 
     Example:
-        @app.get("/storage/stats")
-        async def get_storage_stats(
+        @app.get("/evidence/{key}/info")
+        async def get_evidence_info(
+            key: str,
             file_storage: FileStorageService = Depends(get_file_storage_service)
         ):
-            return await file_storage.get_storage_stats()
+            return await file_storage.get_file_info(key)
     """
     return factory.create_file_storage_service()
 

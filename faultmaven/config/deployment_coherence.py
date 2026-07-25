@@ -105,10 +105,50 @@ def _check_cloud(settings: Any) -> List[str]:
             "docs/operations/workos-sso-setup.md)."
         )
 
+    # 5. Object storage, if selected, must be usable. The container builds the
+    # storage backend fail-soft (evidence tools degrade rather than crash the
+    # process), so a bucket-less STORAGE_BACKEND=s3 would otherwise boot and
+    # only surface when a user tries to upload evidence.
+    storage_backend = str(
+        getattr(getattr(settings, "providers", None), "storage_backend", "")
+    )
+    if storage_backend.endswith("s3") and not _plain(
+        getattr(settings, "evidence_storage", None), "s3_bucket_name"
+    ):
+        problems.append(
+            "STORAGE_BACKEND=s3 requires S3_BUCKET_NAME. Without it the "
+            "storage backend cannot be built and evidence upload fails at "
+            "request time instead of at boot."
+        )
+
     # Tenancy (TENANT_PROVIDER single/multi) is an INDEPENDENT axis — a cloud
     # deployment may serve a single organization (many users) or many isolated
     # tenants (SaaS). The gate validates cloud-native infra + real auth, not tenancy.
     return problems
+
+
+def _check_cloud_warnings(settings: Any) -> List[str]:
+    """Return non-fatal coherence warnings for a cloud deployment.
+
+    Kept separate from :func:`_check_cloud` because these describe a
+    deployment that works but is fragile, not one that is invalid. Promoting
+    a warning here to a fatal problem there is a deliberate act — it will
+    refuse to boot a deployment that is currently running.
+    """
+    warnings: List[str] = []
+
+    storage_backend = str(
+        getattr(getattr(settings, "providers", None), "storage_backend", "")
+    )
+    if storage_backend.endswith("filesystem"):
+        warnings.append(
+            "STORAGE_BACKEND=filesystem on a cloud deployment. Filesystem "
+            "storage is single-node: replicas must share one RWX volume, "
+            "making that volume a single point of failure for all evidence "
+            "I/O. Set STORAGE_BACKEND=s3 with S3_BUCKET_NAME."
+        )
+
+    return warnings
 
 
 def _check_standalone(settings: Any) -> List[str]:
@@ -181,6 +221,8 @@ def validate_deployment_coherence(settings: Any) -> None:
                 "llm-configuration-design.md → Deployment Coherence Gate) or correct "
                 "DEPLOYMENT_MODE."
             )
+        for warning in _check_cloud_warnings(settings):
+            logger.warning("Deployment coherence (cloud): %s", warning)
     else:
         for warning in _check_standalone(settings):
             logger.warning("Deployment coherence (standalone): %s", warning)

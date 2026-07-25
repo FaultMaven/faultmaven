@@ -128,14 +128,15 @@ class ServiceFactory:
 
     def create_file_storage_service(
         self,
-        storage_root: Optional[str] = None,
         max_file_size_bytes: Optional[int] = None,
         allowed_mime_types: Optional[list] = None,
     ) -> FileStorageService:
         """Create file storage service.
 
+        The storage backend is resolved from STORAGE_BACKEND by
+        ``get_storage_backend()``; it is not a parameter here.
+
         Args:
-            storage_root: Optional override for storage root directory
             max_file_size_bytes: Optional override for max file size
             allowed_mime_types: Optional override for allowed MIME types
 
@@ -145,8 +146,6 @@ class ServiceFactory:
         settings = get_settings()
 
         return FileStorageService(
-            storage_root=storage_root
-            or getattr(settings, "evidence_storage_root", "./data/evidence"),
             max_file_size_bytes=max_file_size_bytes
             or getattr(settings, "max_evidence_file_size", 100 * 1024 * 1024),
             allowed_mime_types=allowed_mime_types

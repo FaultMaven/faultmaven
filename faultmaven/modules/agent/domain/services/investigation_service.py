@@ -1237,7 +1237,7 @@ class InvestigationService:
                 case_id=case.case_id,
                 mime_type=attachment.content_type,
             )
-            storage_ref = storage_result.get("file_path")
+            storage_ref = storage_result.get("storage_key")
 
         uploaded_file = UploadedFile(
             file_id=f"file_{uuid4().hex[:12]}",

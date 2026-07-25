@@ -15,6 +15,11 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 
 ### Core Architecture
 
+- **[evidence-file-storage.md](./evidence-file-storage.md)** - Where raw evidence blobs live
+  - The FileStorageService → IFileStorageBackend seam (domain vs vendor)
+  - Backend selection via `STORAGE_BACKEND` (filesystem / S3)
+  - Storage-key layout, orphan-tracking sidecars, async discipline
+
 - **[overview.md](./overview.md)** - Complete storage architecture overview
   - Three storage technologies: SQLite/PostgreSQL, ChromaDB, Redis/FakeRedis
   - ChromaDB collection layout (faultmaven_kb, faultmaven_runbooks, knowledge_items, case_{id})

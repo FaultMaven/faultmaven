@@ -1,55 +1,55 @@
-"""File Storage Service Module (TASK-013)
+"""File Storage Service Module
 
-Purpose: Low-level file storage operations for evidence artifacts.
+Purpose: Evidence-domain file storage — validation, key naming, and the
+orphan-tracking sidecar protocol.
 
-This service handles actual file I/O with:
-- Local filesystem storage (initial implementation)
-- File path generation (organized by org/case/date)
-- File validation (size, type, malware scanning placeholder)
-- Future: S3/Azure/GCS support
+This service owns the *domain* half of evidence storage and is deliberately
+backend-agnostic: it holds no filesystem paths and performs no file I/O of its
+own. Raw bytes cross into infrastructure through ``IFileStorageBackend``, which
+``STORAGE_BACKEND`` resolves to a filesystem or S3 implementation.
 
 Architecture:
-    APIEvidenceArtifactService → FileStorageService → Filesystem
+    InvestigationService / agent tools
+        → FileStorageService  (validation, key naming, sidecars)
+        → IFileStorageBackend (bytes; filesystem or S3)
 
-Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
+Design Reference: docs/architecture/data-and-storage/evidence-file-storage.md
 """
 
 import json
-import os
 import re
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-
-import aiofiles
-import aiofiles.os
 
 from faultmaven.exceptions import ServiceError, ValidationException
 from faultmaven.services.base import BaseService
 
 # Sidecar metadata suffix for orphan-file tracking
 # (evidence-failure-modes.md).
-# Written alongside each stored file; the orphan-cleanup job reads these
-# to decide what's safe to delete.
+# Stored as a companion object under `{key}.meta.json`; the orphan-cleanup job
+# reads these to decide what's safe to delete. Being an ordinary backend object
+# rather than a local file is what lets cleanup work on S3 too.
 SIDECAR_SUFFIX = ".meta.json"
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
+    from faultmaven.infrastructure.storage.base import IFileStorageBackend
     from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class FileStorageService(BaseService):
-    """Service for file storage operations.
+    """Service for evidence file storage operations.
 
-    Handles actual file I/O with:
-    - Local filesystem storage (initial implementation)
-    - File path generation (organized by org/case/date)
-    - File validation (size, type, malware scanning placeholder)
-    - Future: S3/Azure/GCS support
+    Owns the backend-independent concerns:
+    - File validation (size, MIME type, filename safety)
+    - Storage-key generation (organized by org/case/date)
+    - The orphan-tracking sidecar protocol
+
+    Byte I/O is delegated to the injected ``IFileStorageBackend``.
 
     Attributes:
-        storage_root: Root directory for file storage
+        backend: The storage backend bytes are read from and written to
         max_file_size_bytes: Maximum file size allowed
         allowed_mime_types: Allowed MIME types (empty = allow all)
     """
@@ -61,25 +61,36 @@ class FileStorageService(BaseService):
 
     def __init__(
         self,
-        storage_root: str = "./data/evidence",
+        backend: Optional["IFileStorageBackend"] = None,
         max_file_size_bytes: int = 100 * 1024 * 1024,  # 100MB default
         allowed_mime_types: Optional[List[str]] = None,
     ):
         """Initialize file storage service.
 
         Args:
-            storage_root: Root directory for file storage
+            backend: Storage backend to use. Defaults to the configured
+                backend from ``get_storage_backend()`` — so every construction
+                site honours ``STORAGE_BACKEND`` without having to plumb one
+                through. Tests inject an explicit backend.
             max_file_size_bytes: Maximum file size allowed
             allowed_mime_types: Allowed MIME types (None = allow all)
         """
         super().__init__("file_storage_service")
-        self.storage_root = os.path.abspath(storage_root)
+
+        if backend is None:
+            # Lazy import: keeps the evidence domain free of an import-time
+            # dependency on the storage infrastructure package.
+            from faultmaven.infrastructure.storage.factory import get_storage_backend
+
+            backend = get_storage_backend()
+
+        self.backend = backend
         self.max_file_size_bytes = max_file_size_bytes
         self.allowed_mime_types = allowed_mime_types or []
 
         self.log_operation(
             "initialized",
-            storage_root=self.storage_root,
+            storage_backend=self.backend.get_storage_type().value,
             max_file_size_bytes=max_file_size_bytes,
             allowed_mime_types_count=len(self.allowed_mime_types),
         )
@@ -92,21 +103,21 @@ class FileStorageService(BaseService):
         case_id: str,
         mime_type: str,
     ) -> Dict[str, Any]:
-        """Store file to filesystem.
+        """Store a file via the configured storage backend.
 
-        Generates path: {storage_root}/{organization_id}/{case_id}/{date}/{uuid}_{filename}
+        Generates key: {organization_id}/{case_id}/{date}/{uuid}_{filename}
 
         Args:
             file_data: Raw file bytes
             original_filename: Original filename from upload
-            organization_id: Organization ID for path organization
-            case_id: Case ID for path organization
+            organization_id: Organization ID for key organization
+            case_id: Case ID for key organization
             mime_type: File MIME type
 
         Returns:
             Dictionary with:
-            - stored_filename: Filename on disk (with UUID prefix)
-            - file_path: Relative path from storage_root
+            - stored_filename: Filename component (with UUID prefix)
+            - storage_key: Backend key for the stored object
             - file_size: Size in bytes
 
         Raises:
@@ -130,28 +141,23 @@ class FileStorageService(BaseService):
                 original_filename=original_filename,
             )
 
-            # Generate storage path
-            stored_filename, file_path = self._generate_storage_path(
+            # Generate storage key
+            stored_filename, storage_key = self._generate_storage_key(
                 organization_id=organization_id,
                 case_id=case_id,
                 original_filename=original_filename,
             )
 
-            # Full absolute path
-            full_path = os.path.join(self.storage_root, file_path)
-            directory = os.path.dirname(full_path)
+            await self.backend.store_file(
+                key=storage_key,
+                data=file_data,
+                content_type=mime_type,
+            )
 
-            # Create directories if they don't exist
-            await aiofiles.os.makedirs(directory, exist_ok=True)
-
-            # Write file to disk
-            async with aiofiles.open(full_path, "wb") as f:
-                await f.write(file_data)
-
-            # Write orphan-tracking sidecar alongside the file.
+            # Write orphan-tracking sidecar beside the file.
             # Cleanup job reads these to decide what's safe to delete.
             await self._write_sidecar(
-                full_path=full_path,
+                storage_key=storage_key,
                 case_id=case_id,
                 organization_id=organization_id,
                 linked=False,
@@ -162,21 +168,18 @@ class FileStorageService(BaseService):
             self.log_operation(
                 "store_file_success",
                 stored_filename=stored_filename,
-                file_path=file_path,
+                storage_key=storage_key,
                 file_size=file_size,
             )
 
             return {
                 "stored_filename": stored_filename,
-                "file_path": file_path,
+                "storage_key": storage_key,
                 "file_size": file_size,
             }
 
         except ValidationException:
             raise
-        except OSError as e:
-            self.log_error("store_file", e, original_filename=original_filename)
-            raise ServiceError(f"Failed to store file: {e}")
         except Exception as e:
             self.log_error("store_file", e, original_filename=original_filename)
             raise ServiceError(f"Failed to store file: {e}")
@@ -184,12 +187,12 @@ class FileStorageService(BaseService):
     async def _write_sidecar(
         self,
         *,
-        full_path: str,
+        storage_key: str,
         case_id: str,
         organization_id: str,
         linked: bool,
     ) -> None:
-        """Write the sidecar metadata JSON next to a stored file.
+        """Write the sidecar metadata object beside a stored file.
 
         Sidecar format (stable schema — read by the orphan-cleanup job):
             {
@@ -205,7 +208,7 @@ class FileStorageService(BaseService):
         is linked. Safer to have a file without a sidecar than to fail the
         upload.
         """
-        sidecar_path = f"{full_path}{SIDECAR_SUFFIX}"
+        sidecar_key = f"{storage_key}{SIDECAR_SUFFIX}"
         payload = {
             "case_id": case_id,
             "organization_id": organization_id,
@@ -214,20 +217,23 @@ class FileStorageService(BaseService):
             "schema_version": 1,
         }
         try:
-            async with aiofiles.open(sidecar_path, "w") as f:
-                await f.write(json.dumps(payload))
-        except OSError as e:
-            self.log_error("write_sidecar", e, sidecar_path=sidecar_path)
+            await self.backend.store_file(
+                key=sidecar_key,
+                data=json.dumps(payload).encode("utf-8"),
+                content_type="application/json",
+            )
+        except Exception as e:
+            self.log_error("write_sidecar", e, sidecar_key=sidecar_key)
 
-    async def mark_linked(self, file_path: str) -> bool:
+    async def mark_linked(self, storage_key: str) -> bool:
         """Flip a stored file's sidecar `linked` flag to True.
 
         Called after Evidence is created referencing this file so the
         orphan-cleanup job knows not to delete it.
 
         Args:
-            file_path: Relative path from storage_root (as returned by
-                `store_file` in the `file_path` field).
+            storage_key: Backend key (as returned by `store_file` in the
+                `storage_key` field).
 
         Returns:
             True if the sidecar was successfully updated, False if no
@@ -235,34 +241,31 @@ class FileStorageService(BaseService):
             shouldn't depend on the return value.
         """
         try:
-            self._validate_path(file_path)
-            full_path = os.path.join(self.storage_root, file_path)
-            sidecar_path = f"{full_path}{SIDECAR_SUFFIX}"
-
-            if not await aiofiles.os.path.exists(sidecar_path):
-                # No sidecar — file was stored before the M1 sidecar path
+            payload = await self.read_sidecar(storage_key)
+            if payload is None:
+                # No sidecar — file was stored before the sidecar protocol
                 # landed, or the sidecar write failed at store time.
                 # Either way: nothing to update. Not an error.
-                self.log_operation("mark_linked_no_sidecar", file_path=file_path)
+                self.log_operation("mark_linked_no_sidecar", storage_key=storage_key)
                 return False
-
-            async with aiofiles.open(sidecar_path, "r") as f:
-                payload = json.loads(await f.read())
 
             if payload.get("linked") is True:
                 return True  # already linked — idempotent
 
             payload["linked"] = True
-            async with aiofiles.open(sidecar_path, "w") as f:
-                await f.write(json.dumps(payload))
+            await self.backend.store_file(
+                key=f"{storage_key}{SIDECAR_SUFFIX}",
+                data=json.dumps(payload).encode("utf-8"),
+                content_type="application/json",
+            )
 
-            self.log_operation("mark_linked_success", file_path=file_path)
+            self.log_operation("mark_linked_success", storage_key=storage_key)
             return True
         except Exception as e:
-            self.log_error("mark_linked", e, file_path=file_path)
+            self.log_error("mark_linked", e, storage_key=storage_key)
             return False
 
-    async def read_sidecar(self, file_path: str) -> Optional[Dict[str, Any]]:
+    async def read_sidecar(self, storage_key: str) -> Optional[Dict[str, Any]]:
         """Read a stored file's sidecar metadata.
 
         Used by the orphan-cleanup job. Returns None if the sidecar is
@@ -270,22 +273,31 @@ class FileStorageService(BaseService):
         and skip the file rather than deleting it.
         """
         try:
-            self._validate_path(file_path)
-            full_path = os.path.join(self.storage_root, file_path)
-            sidecar_path = f"{full_path}{SIDECAR_SUFFIX}"
-            if not await aiofiles.os.path.exists(sidecar_path):
+            self._validate_key(storage_key)
+            raw = await self.backend.retrieve_file(f"{storage_key}{SIDECAR_SUFFIX}")
+            if raw is None:
                 return None
-            async with aiofiles.open(sidecar_path, "r") as f:
-                return json.loads(await f.read())
+            return json.loads(raw.decode("utf-8"))
         except Exception as e:
-            self.log_error("read_sidecar", e, file_path=file_path)
+            self.log_error("read_sidecar", e, storage_key=storage_key)
             return None
 
-    async def retrieve_file(self, file_path: str) -> bytes:
-        """Retrieve file from storage.
+    async def list_sidecar_keys(self) -> List[str]:
+        """List the storage keys of every stored file that has a sidecar.
+
+        Returns file keys (sidecar suffix stripped), so callers can feed them
+        straight back into `read_sidecar` / `delete_file`. Used by the
+        orphan-cleanup job, which must enumerate candidates without assuming
+        it can walk a local directory.
+        """
+        keys = await self.backend.list_keys()
+        return [k[: -len(SIDECAR_SUFFIX)] for k in keys if k.endswith(SIDECAR_SUFFIX)]
+
+    async def retrieve_file(self, storage_key: str) -> bytes:
+        """Retrieve a file from the configured storage backend.
 
         Args:
-            file_path: Relative path from storage_root
+            storage_key: Backend key for the stored object
 
         Returns:
             Raw file bytes
@@ -294,27 +306,22 @@ class FileStorageService(BaseService):
             NotFoundError: If file doesn't exist
             ServiceError: If read fails
         """
-        self.log_operation("retrieve_file", file_path=file_path)
+        self.log_operation("retrieve_file", storage_key=storage_key)
 
         try:
-            # Validate path doesn't contain traversal attacks
-            self._validate_path(file_path)
+            # Reject traversal / absolute keys before the backend sees them
+            self._validate_key(storage_key)
 
-            full_path = os.path.join(self.storage_root, file_path)
+            data = await self.backend.retrieve_file(storage_key)
 
-            # Check if file exists
-            if not await aiofiles.os.path.exists(full_path):
+            if data is None:
                 from faultmaven.exceptions import NotFoundError
 
-                raise NotFoundError("File", file_path)
-
-            # Read file
-            async with aiofiles.open(full_path, "rb") as f:
-                data = await f.read()
+                raise NotFoundError("File", storage_key)
 
             self.log_operation(
                 "retrieve_file_success",
-                file_path=file_path,
+                storage_key=storage_key,
                 file_size=len(data),
             )
 
@@ -323,89 +330,79 @@ class FileStorageService(BaseService):
         except Exception as e:
             if hasattr(e, "resource_type"):  # NotFoundError
                 raise
-            self.log_error("retrieve_file", e, file_path=file_path)
+            self.log_error("retrieve_file", e, storage_key=storage_key)
             raise ServiceError(f"Failed to retrieve file: {e}")
 
-    async def delete_file(self, file_path: str) -> bool:
-        """Delete file from storage.
+    async def delete_file(self, storage_key: str) -> bool:
+        """Delete a file and its sidecar from storage.
+
+        The sidecar is deleted regardless of whether the file itself was
+        still present: a sidecar outliving its file would otherwise be swept
+        forever by the cleanup job, which reads it and finds nothing to do.
 
         Args:
-            file_path: Relative path from storage_root
+            storage_key: Backend key for the stored object
 
         Returns:
-            True if deleted, False if not found
+            True if the file was deleted, False if it was not found
         """
-        self.log_operation("delete_file", file_path=file_path)
+        self.log_operation("delete_file", storage_key=storage_key)
 
         try:
-            # Validate path doesn't contain traversal attacks
-            self._validate_path(file_path)
+            self._validate_key(storage_key)
 
-            full_path = os.path.join(self.storage_root, file_path)
+            deleted = await self.backend.delete_file(storage_key)
 
-            # Check if file exists
-            if not await aiofiles.os.path.exists(full_path):
-                self.log_operation("delete_file_not_found", file_path=file_path)
-                return False
-
-            # Delete file
-            await aiofiles.os.remove(full_path)
-
-            # Delete companion sidecar if present. Best-effort: a leftover
-            # sidecar is inert (cleanup job will read it and find the file
-            # missing).
-            sidecar_path = f"{full_path}{SIDECAR_SUFFIX}"
+            # Best-effort companion sidecar removal.
             try:
-                if await aiofiles.os.path.exists(sidecar_path):
-                    await aiofiles.os.remove(sidecar_path)
-            except OSError:
+                await self.backend.delete_file(f"{storage_key}{SIDECAR_SUFFIX}")
+            except Exception:
                 pass
 
-            self.log_operation("delete_file_success", file_path=file_path)
+            if not deleted:
+                self.log_operation("delete_file_not_found", storage_key=storage_key)
+                return False
+
+            self.log_operation("delete_file_success", storage_key=storage_key)
 
             return True
 
         except Exception as e:
-            self.log_error("delete_file", e, file_path=file_path)
+            self.log_error("delete_file", e, storage_key=storage_key)
             return False
 
-    async def get_file_info(self, file_path: str) -> Optional[Dict[str, Any]]:
+    async def get_file_info(self, storage_key: str) -> Optional[Dict[str, Any]]:
         """Get file metadata without reading content.
 
         Args:
-            file_path: Relative path from storage_root
+            storage_key: Backend key for the stored object
 
         Returns:
-            Dictionary with file_size, modified_time, etc., or None if not found
+            Dictionary with file_size, created_time and storage_key, or None
+            if not found.
         """
-        self.log_operation("get_file_info", file_path=file_path)
+        self.log_operation("get_file_info", storage_key=storage_key)
 
         try:
-            # Validate path doesn't contain traversal attacks
-            self._validate_path(file_path)
+            self._validate_key(storage_key)
 
-            full_path = os.path.join(self.storage_root, file_path)
-
-            # Check if file exists
-            if not await aiofiles.os.path.exists(full_path):
+            stored = await self.backend.get_file_info(storage_key)
+            if stored is None:
                 return None
 
-            # Get file stats
-            stat = await aiofiles.os.stat(full_path)
-
             info = {
-                "file_size": stat.st_size,
-                "modified_time": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                "created_time": datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc),
-                "file_path": file_path,
+                "file_size": stored.size_bytes,
+                "created_time": stored.created_at,
+                "content_type": stored.content_type,
+                "storage_key": storage_key,
             }
 
-            self.log_operation("get_file_info_success", file_path=file_path)
+            self.log_operation("get_file_info_success", storage_key=storage_key)
 
             return info
 
         except Exception as e:
-            self.log_error("get_file_info", e, file_path=file_path)
+            self.log_error("get_file_info", e, storage_key=storage_key)
             return None
 
     def validate_file(
@@ -474,12 +471,15 @@ class FileStorageService(BaseService):
                 details={"original_filename": original_filename},
             )
 
-    def _generate_storage_path(
+    def _generate_storage_key(
         self, organization_id: str, case_id: str, original_filename: str
     ) -> Tuple[str, str]:
-        """Generate storage path and stored filename.
+        """Generate the storage key and stored filename.
 
-        Path format: {organization_id}/{case_id}/{YYYY-MM-DD}/{uuid}_{filename}
+        Key format: {organization_id}/{case_id}/{YYYY-MM-DD}/{uuid}_{filename}
+
+        Keys always use forward slashes: they are backend keys, not local
+        paths, and S3 has no notion of an OS-specific separator.
 
         Args:
             organization_id: Organization ID
@@ -487,7 +487,7 @@ class FileStorageService(BaseService):
             original_filename: Original filename
 
         Returns:
-            Tuple of (stored_filename, file_path)
+            Tuple of (stored_filename, storage_key)
         """
         # Sanitize filename
         safe_filename = self._sanitize_filename(original_filename)
@@ -505,12 +505,12 @@ class FileStorageService(BaseService):
         safe_org_id = self._sanitize_path_component(organization_id)
         safe_case_id = self._sanitize_path_component(case_id)
 
-        # Build relative path
-        file_path = os.path.join(
-            safe_org_id, safe_case_id, date_folder, stored_filename
+        # Build the backend key (always POSIX-separated)
+        storage_key = "/".join(
+            (safe_org_id, safe_case_id, date_folder, stored_filename)
         )
 
-        return stored_filename, file_path
+        return stored_filename, storage_key
 
     def _sanitize_filename(self, filename: str) -> str:
         """Sanitize filename for safe storage.
@@ -568,116 +568,32 @@ class FileStorageService(BaseService):
 
         return safe
 
-    def _validate_path(self, file_path: str) -> None:
-        """Validate file path for security.
+    def _validate_key(self, storage_key: str) -> None:
+        """Validate a storage key for security.
+
+        Defence in depth: the filesystem backend rejects traversal too, but a
+        key that escapes its prefix is a domain-level violation regardless of
+        which backend is configured.
 
         Args:
-            file_path: Path to validate
+            storage_key: Key to validate
 
         Raises:
-            ValidationException: If path is invalid or contains traversal
+            ValidationException: If the key is invalid or contains traversal
         """
-        if not file_path or not file_path.strip():
-            raise ValidationException("file_path: Path is required")
+        if not storage_key or not storage_key.strip():
+            raise ValidationException("storage_key: Key is required")
 
         # Check for path traversal
-        if self.PATH_TRAVERSAL_PATTERN.search(file_path):
+        if self.PATH_TRAVERSAL_PATTERN.search(storage_key):
             raise ValidationException(
-                "file_path: Path contains invalid traversal sequences",
-                details={"file_path": file_path},
+                "storage_key: Key contains invalid traversal sequences",
+                details={"storage_key": storage_key},
             )
 
-        # Ensure path doesn't start with / (absolute path)
-        if file_path.startswith("/") or file_path.startswith("\\"):
+        # Ensure the key is relative, not absolute
+        if storage_key.startswith("/") or storage_key.startswith("\\"):
             raise ValidationException(
-                "file_path: Path must be relative, not absolute",
-                details={"file_path": file_path},
+                "storage_key: Key must be relative, not absolute",
+                details={"storage_key": storage_key},
             )
-
-    async def ensure_storage_directory(self) -> bool:
-        """Ensure storage root directory exists.
-
-        Returns:
-            True if directory exists or was created
-        """
-        try:
-            await aiofiles.os.makedirs(self.storage_root, exist_ok=True)
-            return True
-        except Exception as e:
-            self.log_error(
-                "ensure_storage_directory", e, storage_root=self.storage_root
-            )
-            return False
-
-    async def get_storage_stats(self) -> Dict[str, Any]:
-        """Get storage statistics.
-
-        Returns:
-            Dictionary with storage stats (total_files, total_size_bytes, etc.)
-        """
-        try:
-            total_files = 0
-            total_size_bytes = 0
-
-            # Walk through storage directory
-            for root, dirs, files in os.walk(self.storage_root):
-                for file in files:
-                    # Sidecars are internal tracking metadata, not user-stored
-                    # content — exclude from stats.
-                    if file.endswith(SIDECAR_SUFFIX):
-                        continue
-                    file_path = os.path.join(root, file)
-                    try:
-                        stat = os.stat(file_path)
-                        total_files += 1
-                        total_size_bytes += stat.st_size
-                    except OSError:
-                        pass  # Skip files we can't stat
-
-            return {
-                "storage_root": self.storage_root,
-                "total_files": total_files,
-                "total_size_bytes": total_size_bytes,
-                "total_size_mb": total_size_bytes / (1024 * 1024),
-                "max_file_size_bytes": self.max_file_size_bytes,
-            }
-
-        except Exception as e:
-            self.log_error("get_storage_stats", e)
-            return {
-                "storage_root": self.storage_root,
-                "total_files": 0,
-                "total_size_bytes": 0,
-                "error": str(e),
-            }
-
-    async def health_check(self) -> Dict[str, Any]:
-        """Perform health check for the file storage service.
-
-        Returns:
-            Dictionary containing health status information
-        """
-        try:
-            # Check if storage directory is accessible
-            await self.ensure_storage_directory()
-
-            # Try to get stats
-            stats = await self.get_storage_stats()
-
-            return {
-                "service": self.service_name,
-                "status": "healthy",
-                "storage_root": self.storage_root,
-                "storage_accessible": True,
-                "total_files": stats.get("total_files", 0),
-                "total_size_mb": stats.get("total_size_mb", 0),
-            }
-
-        except Exception as e:
-            return {
-                "service": self.service_name,
-                "status": "unhealthy",
-                "storage_root": self.storage_root,
-                "storage_accessible": False,
-                "error": str(e),
-            }

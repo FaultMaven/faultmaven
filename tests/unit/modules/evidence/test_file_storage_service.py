@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.exceptions import NotFoundError, ServiceError, ValidationException
+from faultmaven.infrastructure.storage.filesystem import FilesystemStorageBackend
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
@@ -38,7 +39,7 @@ def temp_storage_dir():
 def file_storage_service(temp_storage_dir):
     """Create FileStorageService with temporary directory."""
     return FileStorageService(
-        storage_root=temp_storage_dir,
+        backend=FilesystemStorageBackend(storage_root=temp_storage_dir),
         max_file_size_bytes=10 * 1024 * 1024,  # 10MB for tests
         allowed_mime_types=[],  # Allow all
     )
@@ -48,7 +49,7 @@ def file_storage_service(temp_storage_dir):
 def restricted_file_storage_service(temp_storage_dir):
     """Create FileStorageService with MIME type restrictions."""
     return FileStorageService(
-        storage_root=temp_storage_dir,
+        backend=FilesystemStorageBackend(storage_root=temp_storage_dir),
         max_file_size_bytes=10 * 1024 * 1024,
         allowed_mime_types=["image/png", "image/jpeg", "text/plain"],
     )
@@ -58,7 +59,7 @@ def restricted_file_storage_service(temp_storage_dir):
 def small_limit_file_storage_service(temp_storage_dir):
     """Create FileStorageService with small size limit."""
     return FileStorageService(
-        storage_root=temp_storage_dir,
+        backend=FilesystemStorageBackend(storage_root=temp_storage_dir),
         max_file_size_bytes=1024,  # 1KB limit
         allowed_mime_types=[],
     )
@@ -103,7 +104,7 @@ class TestStoreFile:
             mime_type="text/plain",
         )
 
-        full_path = os.path.join(temp_storage_dir, result["file_path"])
+        full_path = os.path.join(temp_storage_dir, result["storage_key"])
         assert os.path.exists(full_path)
 
     @pytest.mark.asyncio
@@ -120,7 +121,7 @@ class TestStoreFile:
         )
 
         # Check path format
-        parts = result["file_path"].split(os.sep)
+        parts = result["storage_key"].split("/")
         assert len(parts) == 4  # org/case/date/filename
         assert parts[0] == "org_123"
         assert parts[1] == "case_456"
@@ -205,7 +206,7 @@ class TestStoreFile:
 
         assert result["file_size"] == 0
         # File was actually written to disk (0 bytes is fine).
-        full_path = os.path.join(temp_storage_dir, result["file_path"])
+        full_path = os.path.join(temp_storage_dir, result["storage_key"])
         assert os.path.exists(full_path)
         assert os.path.getsize(full_path) == 0
 
@@ -257,7 +258,7 @@ class TestStoreFile:
         )
 
         assert result is not None
-        assert "file_path" in result
+        assert "storage_key" in result
 
 
 # ============================================================
@@ -282,7 +283,7 @@ class TestRetrieveFile:
         )
 
         retrieved_data = await file_storage_service.retrieve_file(
-            store_result["file_path"]
+            store_result["storage_key"]
         )
 
         assert retrieved_data == sample_file_data
@@ -311,7 +312,7 @@ class TestRetrieveFile:
         )
 
         retrieved_data = await file_storage_service.retrieve_file(
-            store_result["file_path"]
+            store_result["storage_key"]
         )
 
         assert retrieved_data == sample_image_data
@@ -338,10 +339,10 @@ class TestDeleteFile:
             mime_type="text/plain",
         )
 
-        full_path = os.path.join(temp_storage_dir, store_result["file_path"])
+        full_path = os.path.join(temp_storage_dir, store_result["storage_key"])
         assert os.path.exists(full_path)
 
-        deleted = await file_storage_service.delete_file(store_result["file_path"])
+        deleted = await file_storage_service.delete_file(store_result["storage_key"])
 
         assert deleted is True
         assert not os.path.exists(full_path)
@@ -359,7 +360,7 @@ class TestDeleteFile:
             mime_type="text/plain",
         )
 
-        result = await file_storage_service.delete_file(store_result["file_path"])
+        result = await file_storage_service.delete_file(store_result["storage_key"])
         assert result is True
 
     @pytest.mark.asyncio
@@ -390,13 +391,12 @@ class TestGetFileInfo:
             mime_type="text/plain",
         )
 
-        info = await file_storage_service.get_file_info(store_result["file_path"])
+        info = await file_storage_service.get_file_info(store_result["storage_key"])
 
         assert info is not None
         assert info["file_size"] == len(sample_file_data)
-        assert "modified_time" in info
         assert "created_time" in info
-        assert info["file_path"] == store_result["file_path"]
+        assert info["storage_key"] == store_result["storage_key"]
 
     @pytest.mark.asyncio
     async def test_get_file_info_returns_none_if_not_found(self, file_storage_service):
@@ -522,17 +522,17 @@ class TestValidateFile:
 
 
 class TestGenerateStoragePath:
-    """Test _generate_storage_path method."""
+    """Test _generate_storage_key method."""
 
-    def test_generate_storage_path_creates_unique_paths(self, file_storage_service):
+    def test_generate_storage_key_creates_unique_paths(self, file_storage_service):
         """Test that paths are unique (UUID-based)."""
-        path1 = file_storage_service._generate_storage_path(
+        path1 = file_storage_service._generate_storage_key(
             organization_id="org_123",
             case_id="case_456",
             original_filename="test.txt",
         )
 
-        path2 = file_storage_service._generate_storage_path(
+        path2 = file_storage_service._generate_storage_key(
             organization_id="org_123",
             case_id="case_456",
             original_filename="test.txt",
@@ -541,11 +541,9 @@ class TestGenerateStoragePath:
         # Paths should be different due to UUID
         assert path1[1] != path2[1]
 
-    def test_generate_storage_path_includes_uuid_in_filename(
-        self, file_storage_service
-    ):
+    def test_generate_storage_key_includes_uuid_in_filename(self, file_storage_service):
         """Test that stored filename includes UUID prefix."""
-        stored_filename, file_path = file_storage_service._generate_storage_path(
+        stored_filename, file_path = file_storage_service._generate_storage_key(
             organization_id="org_123",
             case_id="case_456",
             original_filename="document.pdf",
@@ -556,24 +554,24 @@ class TestGenerateStoragePath:
         assert len(parts) == 2
         assert len(parts[0]) == 12  # UUID hex
 
-    def test_generate_storage_path_includes_date_folder(self, file_storage_service):
+    def test_generate_storage_key_includes_date_folder(self, file_storage_service):
         """Test that date folder is created (YYYY-MM-DD format)."""
-        stored_filename, file_path = file_storage_service._generate_storage_path(
+        stored_filename, file_path = file_storage_service._generate_storage_key(
             organization_id="org_123",
             case_id="case_456",
             original_filename="test.txt",
         )
 
-        parts = file_path.split(os.sep)
+        parts = file_path.split("/")
         date_folder = parts[2]
 
         # Verify YYYY-MM-DD format
         assert len(date_folder) == 10
         assert date_folder.count("-") == 2
 
-    def test_generate_storage_path_sanitizes_filename(self, file_storage_service):
+    def test_generate_storage_key_sanitizes_filename(self, file_storage_service):
         """Test that dangerous characters are sanitized."""
-        stored_filename, file_path = file_storage_service._generate_storage_path(
+        stored_filename, file_path = file_storage_service._generate_storage_key(
             organization_id="org_123",
             case_id="case_456",
             original_filename='<script>alert("xss")</script>.txt',
@@ -645,66 +643,97 @@ class TestValidatePath:
     def test_validate_path_rejects_empty_path(self, file_storage_service):
         """Test that empty path raises ValidationException."""
         with pytest.raises(ValidationException):
-            file_storage_service._validate_path("")
+            file_storage_service._validate_key("")
 
     def test_validate_path_rejects_path_traversal(self, file_storage_service):
         """Test that path traversal raises ValidationException."""
         with pytest.raises(ValidationException):
-            file_storage_service._validate_path("../etc/passwd")
+            file_storage_service._validate_key("../etc/passwd")
 
         with pytest.raises(ValidationException):
-            file_storage_service._validate_path("foo/../../bar")
+            file_storage_service._validate_key("foo/../../bar")
 
     def test_validate_path_rejects_absolute_path(self, file_storage_service):
         """Test that absolute path raises ValidationException."""
         with pytest.raises(ValidationException):
-            file_storage_service._validate_path("/etc/passwd")
+            file_storage_service._validate_key("/etc/passwd")
 
 
 # ============================================================
-# Storage Stats Tests
+# Backend Delegation Tests
 # ============================================================
 
 
-class TestGetStorageStats:
-    """Test get_storage_stats method."""
+class TestBackendDelegation:
+    """The service must not do file I/O itself — it delegates to the backend.
+
+    This is the invariant #689 restored: evidence storage went straight to the
+    local filesystem, so STORAGE_BACKEND=s3 was silently inert. These tests
+    fail if anyone reintroduces direct I/O.
+    """
 
     @pytest.mark.asyncio
-    async def test_get_storage_stats_counts_files(
-        self, file_storage_service, sample_file_data
+    async def test_store_file_writes_through_the_backend(
+        self, temp_storage_dir, sample_file_data
     ):
-        """Test that storage stats count files correctly."""
-        # Store a few files
-        for i in range(3):
-            await file_storage_service.store_file(
-                file_data=sample_file_data,
-                original_filename=f"file{i}.txt",
-                organization_id="org_123",
-                case_id="case_456",
-                mime_type="text/plain",
-            )
+        backend = FilesystemStorageBackend(storage_root=temp_storage_dir)
+        backend.store_file = AsyncMock(wraps=backend.store_file)
+        service = FileStorageService(backend=backend)
 
-        stats = await file_storage_service.get_storage_stats()
+        result = await service.store_file(
+            file_data=sample_file_data,
+            original_filename="test.txt",
+            organization_id="org_123",
+            case_id="case_456",
+            mime_type="text/plain",
+        )
 
-        assert stats["total_files"] == 3
-        assert stats["total_size_bytes"] == len(sample_file_data) * 3
-
-
-# ============================================================
-# Health Check Tests
-# ============================================================
-
-
-class TestHealthCheck:
-    """Test health_check method."""
+        # Once for the file, once for its orphan-tracking sidecar.
+        written_keys = [c.kwargs["key"] for c in backend.store_file.call_args_list]
+        assert written_keys == [
+            result["storage_key"],
+            f"{result['storage_key']}.meta.json",
+        ]
 
     @pytest.mark.asyncio
-    async def test_health_check_returns_healthy(self, file_storage_service):
-        """Test that health check returns healthy status."""
-        health = await file_storage_service.health_check()
+    async def test_retrieve_file_reads_through_the_backend(self, temp_storage_dir):
+        backend = FilesystemStorageBackend(storage_root=temp_storage_dir)
+        backend.retrieve_file = AsyncMock(return_value=b"from the backend")
+        service = FileStorageService(backend=backend)
 
-        assert health["status"] == "healthy"
-        assert health["storage_accessible"] is True
+        data = await service.retrieve_file("org/case/2026-01-01/abc_test.txt")
+
+        assert data == b"from the backend"
+        backend.retrieve_file.assert_awaited_once_with(
+            "org/case/2026-01-01/abc_test.txt"
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_object_raises_not_found(self, temp_storage_dir):
+        """A backend returning None means 'no such object', not an empty file."""
+        backend = FilesystemStorageBackend(storage_root=temp_storage_dir)
+        backend.retrieve_file = AsyncMock(return_value=None)
+        service = FileStorageService(backend=backend)
+
+        with pytest.raises(NotFoundError):
+            await service.retrieve_file("org/case/2026-01-01/missing.txt")
+
+    def test_default_backend_comes_from_the_configured_factory(self, temp_storage_dir):
+        """No injected backend → whatever STORAGE_BACKEND resolves to.
+
+        This is what makes the on-demand construction sites (read_file_tool,
+        agent_orchestration_service) honour the setting without each having to
+        plumb a backend through.
+        """
+        sentinel = FilesystemStorageBackend(storage_root=temp_storage_dir)
+        with patch(
+            "faultmaven.infrastructure.storage.factory.get_storage_backend",
+            return_value=sentinel,
+        ) as factory:
+            service = FileStorageService()
+
+        assert service.backend is sentinel
+        factory.assert_called_once()
 
 
 # ============================================================
@@ -729,7 +758,7 @@ class TestEdgeCases:
         )
 
         # Should sanitize the organization_id in path
-        assert "/" not in result["file_path"].split(os.sep)[0]
+        assert "/" not in result["storage_key"].split("/")[0]
 
     @pytest.mark.asyncio
     async def test_store_file_with_unicode_filename(
@@ -745,7 +774,7 @@ class TestEdgeCases:
         )
 
         assert result is not None
-        assert "file_path" in result
+        assert "storage_key" in result
 
     @pytest.mark.asyncio
     async def test_store_and_retrieve_empty_extension(
@@ -760,7 +789,7 @@ class TestEdgeCases:
             mime_type="text/plain",
         )
 
-        data = await file_storage_service.retrieve_file(result["file_path"])
+        data = await file_storage_service.retrieve_file(result["storage_key"])
         assert data == sample_file_data
 
     @pytest.mark.asyncio
@@ -777,7 +806,7 @@ class TestEdgeCases:
                 case_id="case_456",
                 mime_type="text/plain",
             )
-            paths.append(result["file_path"])
+            paths.append(result["storage_key"])
 
         # All paths should be unique
         assert len(set(paths)) == 3

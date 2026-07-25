@@ -251,3 +251,58 @@ def test_unknown_provider_fails_closed():
     with pytest.raises(DeploymentCoherenceError) as exc:
         validate_deployment_coherence(s)
     assert "not a recognized provider" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_cloud_with_filesystem_storage_warns_but_boots(caplog):
+    """Filesystem storage in cloud is fragile, not invalid — warn, don't die.
+
+    Cloud replicas sharing one RWX volume make that volume a single point of
+    failure for all evidence I/O (#689). It is a real deployment though, and
+    one that is currently running: promoting this to a fatal problem would
+    refuse to boot it, so that flip is gated on the object-storage migration.
+    """
+    s = _cloud_ok()
+    s.providers.storage_backend = "StorageBackend.filesystem"
+
+    with caplog.at_level("WARNING"):
+        validate_deployment_coherence(s)  # must not raise
+
+    assert any("STORAGE_BACKEND=filesystem" in r.message for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_cloud_with_object_storage_does_not_warn(caplog):
+    s = _cloud_ok()
+    s.providers.storage_backend = "StorageBackend.s3"
+    s.evidence_storage = SimpleNamespace(s3_bucket_name="faultmaven-evidence")
+
+    with caplog.at_level("WARNING"):
+        validate_deployment_coherence(s)
+
+    assert not any("STORAGE_BACKEND" in r.message for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_cloud_s3_without_bucket_fails():
+    """STORAGE_BACKEND=s3 with no bucket must not boot.
+
+    The container builds storage fail-soft, so without this gate a bucket-less
+    S3 config boots healthy and only fails when a user uploads evidence.
+    """
+    s = _cloud_ok()
+    s.providers.storage_backend = "StorageBackend.s3"
+    s.evidence_storage = SimpleNamespace(s3_bucket_name=None)
+
+    with pytest.raises(DeploymentCoherenceError) as exc:
+        validate_deployment_coherence(s)
+    assert "S3_BUCKET_NAME" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_cloud_s3_with_bucket_passes():
+    s = _cloud_ok()
+    s.providers.storage_backend = "StorageBackend.s3"
+    s.evidence_storage = SimpleNamespace(s3_bucket_name="faultmaven-evidence")
+
+    validate_deployment_coherence(s)  # must not raise

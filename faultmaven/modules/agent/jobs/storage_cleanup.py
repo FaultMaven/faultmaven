@@ -35,16 +35,16 @@ logs, fix any unexpected entries in the `mark_linked` path, then flip
     python -m faultmaven.jobs.run storage_cleanup --dry-run
 """
 
-import json
 import logging
-import os
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_ORPHAN_FILES_DELETED_TOTAL,
     EVIDENCE_ORPHAN_FILES_FOUND_TOTAL,
+)
+from faultmaven.modules.evidence.domain.services.file_storage_service import (
+    FileStorageService,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,19 +53,21 @@ JOB_DESCRIPTION = (
     "Delete stored files whose sidecar metadata shows linked=False and "
     "uploaded_at older than the TTL (PLAN-evidence-failure-modes M1)."
 )
-# Filesystem-only sweep driven by sidecar metadata written at upload time —
-# no tenanted DB reads, so it runs identically in both tenancy modes.
+# Backend sweep driven by sidecar metadata written at upload time — no tenanted
+# DB reads, so it runs identically in both tenancy modes.
 JOB_TENANT_SCOPE = "tenant_neutral"
-
-SIDECAR_SUFFIX = ".meta.json"
 
 
 async def cleanup_orphaned_files(
-    storage_root: str,
+    storage: FileStorageService,
     ttl_hours: int,
     dry_run: bool,
 ) -> dict[str, Any]:
-    """Sweep the storage root and delete orphaned files.
+    """Sweep stored files and delete orphans.
+
+    Enumerates sidecars through the storage backend rather than walking a
+    local directory, so the sweep works whichever backend STORAGE_BACKEND
+    selects.
 
     Returns a stats dict with counts for observability / CLI output.
     Emits two Prometheus counters per run:
@@ -74,21 +76,20 @@ async def cleanup_orphaned_files(
         not incremented when dry_run is True)
 
     Args:
-        storage_root: Absolute path to the FileStorageService storage root.
+        storage: FileStorageService owning the sidecar protocol.
         ttl_hours: Delete only files whose sidecar `uploaded_at` is older
             than this many hours. Younger files are always safe.
         dry_run: When True, log `would delete` without deleting.
 
     Returns:
-        Dict with keys: ``status``, ``storage_root``, ``ttl_hours``,
+        Dict with keys: ``status``, ``storage_backend``, ``ttl_hours``,
         ``dry_run``, ``scanned``, ``skipped_no_sidecar``,
         ``skipped_linked``, ``skipped_within_ttl``, ``found``, ``deleted``,
         ``errors``.
     """
-    root = Path(storage_root)
     result: dict[str, Any] = {
         "status": "completed",
-        "storage_root": str(root),
+        "storage_backend": storage.backend.get_storage_type().value,
         "ttl_hours": ttl_hours,
         "dry_run": dry_run,
         "scanned": 0,
@@ -100,20 +101,16 @@ async def cleanup_orphaned_files(
         "errors": 0,
     }
 
-    if not root.exists():
-        logger.info("Storage root %s does not exist — nothing to clean", root)
-        return result
-
     cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
 
-    for sidecar_path in root.rglob(f"*{SIDECAR_SUFFIX}"):
+    for storage_key in await storage.list_sidecar_keys():
         result["scanned"] += 1
-        file_path = Path(str(sidecar_path)[: -len(SIDECAR_SUFFIX)])
 
-        try:
-            payload = json.loads(sidecar_path.read_text())
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning("Corrupt sidecar %s — skipping: %s", sidecar_path, e)
+        payload = await storage.read_sidecar(storage_key)
+        if payload is None:
+            # Listed a moment ago but unreadable now (deleted concurrently, or
+            # corrupt). Unknown state is not a licence to delete.
+            logger.warning("Unreadable sidecar for %s — skipping", storage_key)
             result["errors"] += 1
             continue
 
@@ -123,7 +120,7 @@ async def cleanup_orphaned_files(
 
         uploaded_at_str = payload.get("uploaded_at")
         if not uploaded_at_str:
-            logger.warning("Sidecar %s missing uploaded_at — skipping", sidecar_path)
+            logger.warning("Sidecar for %s missing uploaded_at — skipping", storage_key)
             result["errors"] += 1
             continue
 
@@ -131,8 +128,8 @@ async def cleanup_orphaned_files(
             uploaded_at = datetime.fromisoformat(uploaded_at_str)
         except ValueError:
             logger.warning(
-                "Sidecar %s has unparseable uploaded_at=%r — skipping",
-                sidecar_path,
+                "Sidecar for %s has unparseable uploaded_at=%r — skipping",
+                storage_key,
                 uploaded_at_str,
             )
             result["errors"] += 1
@@ -152,16 +149,16 @@ async def cleanup_orphaned_files(
         if dry_run:
             logger.info(
                 "[DRY RUN] would delete orphan: %s (uploaded=%s, linked=False)",
-                file_path,
+                storage_key,
                 uploaded_at_str,
             )
             continue
 
-        # Actually delete.
+        # Actually delete. delete_file removes the sidecar too, and reports
+        # False only when the file itself was already gone — which still
+        # counts as reclaimed, since the sidecar is what kept it findable.
         try:
-            if file_path.exists():
-                file_path.unlink()
-            sidecar_path.unlink()
+            await storage.delete_file(storage_key)
             result["deleted"] += 1
             try:
                 EVIDENCE_ORPHAN_FILES_DELETED_TOTAL.inc()
@@ -169,11 +166,11 @@ async def cleanup_orphaned_files(
                 pass
             logger.info(
                 "Deleted orphan: %s (uploaded=%s)",
-                file_path,
+                storage_key,
                 uploaded_at_str,
             )
-        except OSError as e:
-            logger.error("Failed to delete orphan %s: %s", file_path, e)
+        except Exception as e:
+            logger.error("Failed to delete orphan %s: %s", storage_key, e)
             result["errors"] += 1
 
     logger.info(
@@ -238,17 +235,18 @@ async def run(
             "reason": "orphan_cleanup_disabled",
         }
 
-    storage_root = os.path.abspath(ev_settings.evidence_storage_root)
+    storage = FileStorageService()
     logger.info(
-        "Storage cleanup starting (root=%s, ttl_hours=%d, dry_run=%s, " "enabled=%s)",
-        storage_root,
+        "Storage cleanup starting (backend=%s, ttl_hours=%d, dry_run=%s, "
+        "enabled=%s)",
+        storage.backend.get_storage_type().value,
         effective_ttl_hours,
         effective_dry_run,
         ev_settings.orphan_cleanup_enabled,
     )
 
     return await cleanup_orphaned_files(
-        storage_root=storage_root,
+        storage=storage,
         ttl_hours=effective_ttl_hours,
         dry_run=effective_dry_run,
     )

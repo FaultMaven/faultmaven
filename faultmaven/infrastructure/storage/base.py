@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +226,23 @@ class IFileStorageBackend(ABC):
 
         Returns:
             StoredFile with metadata, or None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def list_keys(self, prefix: str = "") -> List[str]:
+        """List the keys of every stored object under a prefix.
+
+        Required by sweep-style maintenance (orphan cleanup, storage stats),
+        which cannot walk a local directory once the backend may be remote.
+
+        Args:
+            prefix: Only return keys starting with this string. Empty string
+                lists everything the backend holds.
+
+        Returns:
+            Storage keys, in unspecified order. Empty list if nothing matches
+            or the backing store does not exist yet.
         """
         pass
 

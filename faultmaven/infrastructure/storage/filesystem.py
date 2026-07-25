@@ -12,11 +12,12 @@ Usage:
     url = await backend.generate_download_url("org123/case456/file.log")
 """
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiofiles
 import aiofiles.os
@@ -311,6 +312,33 @@ class FilesystemStorageBackend(IFileStorageBackend):
             created_at=created_at,
             metadata=metadata,
         )
+
+    async def list_keys(self, prefix: str = "") -> List[str]:
+        """List stored keys under a prefix by walking the storage root.
+
+        Args:
+            prefix: Only return keys starting with this string.
+
+        Returns:
+            Storage keys relative to the storage root, POSIX-separated so
+            they round-trip through the same form ``store_file`` accepted.
+        """
+        if not self.storage_root.exists():
+            return []
+
+        def _walk() -> List[str]:
+            keys = []
+            for path in self.storage_root.rglob("*"):
+                if not path.is_file():
+                    continue
+                key = path.relative_to(self.storage_root).as_posix()
+                if key.startswith(prefix):
+                    keys.append(key)
+            return keys
+
+        # rglob over a large evidence tree is blocking I/O — keep it off the
+        # event loop like every other sweep in this codebase.
+        return await asyncio.to_thread(_walk)
 
     def get_storage_type(self) -> StorageType:
         """Get the storage backend type.

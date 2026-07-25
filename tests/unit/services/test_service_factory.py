@@ -20,6 +20,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     InvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.storage.factory import get_storage_backend
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
@@ -324,15 +325,18 @@ class TestFileStorageServiceCreation:
         assert service is not None
         assert isinstance(service, FileStorageService)
 
-    def test_create_file_storage_service_with_custom_root(self, mock_session):
-        """Test file storage service with custom storage root."""
+    def test_create_file_storage_service_uses_configured_backend(self, mock_session):
+        """The factory must not choose a storage root of its own.
+
+        Storage location is the backend's business, resolved from
+        STORAGE_BACKEND — a factory that passed its own root is how
+        STORAGE_BACKEND=s3 became inert (#689).
+        """
         factory = ServiceFactory(mock_session)
 
-        service = factory.create_file_storage_service(
-            storage_root="/custom/path/evidence"
-        )
+        service = factory.create_file_storage_service()
 
-        assert service.storage_root == "/custom/path/evidence"
+        assert service.backend is get_storage_backend()
 
     def test_create_file_storage_service_with_custom_max_size(self, mock_session):
         """Test file storage service with custom max file size."""
