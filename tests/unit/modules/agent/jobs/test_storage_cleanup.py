@@ -24,6 +24,7 @@ import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -302,9 +303,11 @@ class TestCleanupOrphanedFiles:
         service = FileStorageService(
             backend=FilesystemStorageBackend(storage_root=nonexistent)
         )
-        # Constructing the backend creates the root; remove it again so the
-        # listing genuinely hits a missing directory.
-        Path(nonexistent).rmdir()
+        assert not Path(nonexistent).exists(), (
+            "constructing the backend must not touch the filesystem — it "
+            "happens lazily on request paths where the root may be a network "
+            "mount"
+        )
 
         result = await cleanup_orphaned_files(
             storage=service, ttl_hours=24, dry_run=False
@@ -379,3 +382,61 @@ class TestRunSettingsGate:
         settings = self._settings(enabled=True, dry_run=True, ttl_hours=24)
         result = await run(settings=settings, ttl_hours=72)
         assert result["ttl_hours"] == 72
+
+
+class TestCleanupErrorAccounting:
+    """A sweep must never report storage it did not actually reclaim."""
+
+    @pytest.mark.asyncio
+    async def test_failed_delete_counts_as_error_not_deleted(
+        self, storage_service, storage_root
+    ):
+        """An S3 AccessDenied (etc.) must not be logged as a deletion.
+
+        delete_file used to swallow backend failures and return False, so the
+        job counted the file as deleted and incremented the deletion metric
+        for a file still sitting in the bucket.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        target = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/undeletable.log",
+            linked=False,
+            uploaded_at=old,
+        )
+        storage_service.backend.delete_file = AsyncMock(
+            side_effect=PermissionError("AccessDenied")
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service, ttl_hours=24, dry_run=False
+        )
+
+        assert result["found"] == 1
+        assert result["deleted"] == 0
+        assert result["errors"] == 1
+        assert target.exists()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_sidecar_never_deletes_the_file(
+        self, storage_service, storage_root
+    ):
+        """A backend fault must not present a live file as an unlinked orphan."""
+        old = datetime.now(UTC) - timedelta(hours=48)
+        target = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/live.log",
+            linked=True,
+            uploaded_at=old,
+        )
+        storage_service.backend.retrieve_file = AsyncMock(
+            side_effect=ConnectionError("transient S3 fault")
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service, ttl_hours=24, dry_run=False
+        )
+
+        assert result["errors"] == 1
+        assert result["deleted"] == 0
+        assert target.exists()

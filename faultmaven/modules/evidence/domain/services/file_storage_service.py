@@ -267,19 +267,35 @@ class FileStorageService(BaseService):
     async def read_sidecar(self, storage_key: str) -> Optional[Dict[str, Any]]:
         """Read a stored file's sidecar metadata.
 
-        Used by the orphan-cleanup job. Returns None if the sidecar is
-        missing or unreadable — treat a missing sidecar as 'unknown state'
-        and skip the file rather than deleting it.
+        Returns None only when the sidecar genuinely does not exist. A backend
+        failure or corrupt payload RAISES.
+
+        The distinction is load-bearing. The orphan-cleanup job deletes any
+        file whose sidecar does not say ``linked=true``, so collapsing "the
+        backend is erroring" into "no metadata" would let a transient S3 fault
+        present a live, referenced evidence file as an unlinked orphan.
+        Callers must be able to tell "this file has no metadata" from "I could
+        not find out".
+
+        Raises:
+            ServiceError: If the sidecar exists but cannot be read or parsed
         """
+        self._validate_key(storage_key)
+
         try:
-            self._validate_key(storage_key)
             raw = await self.backend.retrieve_file(f"{storage_key}{SIDECAR_SUFFIX}")
-            if raw is None:
-                return None
-            return json.loads(raw.decode("utf-8"))
         except Exception as e:
             self.log_error("read_sidecar", e, storage_key=storage_key)
+            raise ServiceError(f"Failed to read sidecar: {e}")
+
+        if raw is None:
             return None
+
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            self.log_error("read_sidecar", e, storage_key=storage_key)
+            raise ServiceError(f"Corrupt sidecar for {storage_key}: {e}")
 
     async def list_sidecar_keys(self) -> List[str]:
         """List the storage keys of every stored file that has a sidecar.
@@ -339,36 +355,42 @@ class FileStorageService(BaseService):
         still present: a sidecar outliving its file would otherwise be swept
         forever by the cleanup job, which reads it and finds nothing to do.
 
+        A backend failure RAISES rather than returning False. The two outcomes
+        are not interchangeable: the orphan-cleanup job counts a return value
+        as reclaimed storage, so swallowing (say) an S3 AccessDenied here would
+        report deletions that never happened and increment the deletion metric
+        for files still sitting in the bucket.
+
         Args:
             storage_key: Backend key for the stored object
 
         Returns:
-            True if the file was deleted, False if it was not found
+            True if the file was deleted, False if it was already gone
+
+        Raises:
+            ValidationException: If the key is invalid
+            ServiceError: If the backend fails to delete
         """
         self.log_operation("delete_file", storage_key=storage_key)
 
+        self._validate_key(storage_key)
+
         try:
-            self._validate_key(storage_key)
-
             deleted = await self.backend.delete_file(storage_key)
-
-            # Best-effort companion sidecar removal.
-            try:
-                await self.backend.delete_file(f"{storage_key}{SIDECAR_SUFFIX}")
-            except Exception:
-                pass
-
-            if not deleted:
-                self.log_operation("delete_file_not_found", storage_key=storage_key)
-                return False
-
-            self.log_operation("delete_file_success", storage_key=storage_key)
-
-            return True
-
+            # The sidecar is what makes a file discoverable to the sweep, so
+            # its removal is part of the delete, not a best-effort extra.
+            await self.backend.delete_file(f"{storage_key}{SIDECAR_SUFFIX}")
         except Exception as e:
             self.log_error("delete_file", e, storage_key=storage_key)
+            raise ServiceError(f"Failed to delete file: {e}")
+
+        if not deleted:
+            self.log_operation("delete_file_not_found", storage_key=storage_key)
             return False
+
+        self.log_operation("delete_file_success", storage_key=storage_key)
+
+        return True
 
     async def get_file_info(self, storage_key: str) -> Optional[Dict[str, Any]]:
         """Get file metadata without reading content.

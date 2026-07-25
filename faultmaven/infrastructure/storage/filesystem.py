@@ -61,8 +61,11 @@ class FilesystemStorageBackend(IFileStorageBackend):
         self.storage_root = Path(storage_root)
         self.base_url = base_url.rstrip("/")
 
-        # Ensure storage root exists
-        self.storage_root.mkdir(parents=True, exist_ok=True)
+        # No mkdir here. Construction happens lazily via get_storage_backend(),
+        # which agent tools reach on a request path, and the storage root may
+        # be a network mount where a synchronous mkdir blocks the event loop.
+        # store_file creates directories asynchronously when it needs them;
+        # every read path already tolerates a root that does not exist yet.
         logger.info(f"Filesystem storage initialized at {self.storage_root}")
 
     def _get_full_path(self, key: str) -> Path:

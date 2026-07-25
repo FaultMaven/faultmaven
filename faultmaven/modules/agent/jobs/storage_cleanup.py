@@ -106,12 +106,19 @@ async def cleanup_orphaned_files(
     for storage_key in await storage.list_sidecar_keys():
         result["scanned"] += 1
 
-        payload = await storage.read_sidecar(storage_key)
-        if payload is None:
-            # Listed a moment ago but unreadable now (deleted concurrently, or
-            # corrupt). Unknown state is not a licence to delete.
-            logger.warning("Unreadable sidecar for %s — skipping", storage_key)
+        try:
+            payload = await storage.read_sidecar(storage_key)
+        except Exception as e:
+            # Corrupt payload, or the backend failed to answer. Either way we
+            # do not know this file's state, and unknown state is never a
+            # licence to delete.
+            logger.warning("Unreadable sidecar for %s — skipping: %s", storage_key, e)
             result["errors"] += 1
+            continue
+
+        if payload is None:
+            # Listed a moment ago, gone now — deleted concurrently.
+            result["skipped_no_sidecar"] += 1
             continue
 
         if payload.get("linked") is True:
@@ -154,9 +161,11 @@ async def cleanup_orphaned_files(
             )
             continue
 
-        # Actually delete. delete_file removes the sidecar too, and reports
-        # False only when the file itself was already gone — which still
-        # counts as reclaimed, since the sidecar is what kept it findable.
+        # Actually delete. delete_file removes the sidecar too, and raises if
+        # the backend refuses — so a failed delete is counted as an error
+        # rather than reported as reclaimed storage. A False return means the
+        # file was already gone, which still counts: the sidecar that kept it
+        # findable is now removed.
         try:
             await storage.delete_file(storage_key)
             result["deleted"] += 1

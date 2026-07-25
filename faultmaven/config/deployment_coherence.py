@@ -39,6 +39,20 @@ def _plain(obj: Any, name: str) -> str:
     return getter() if callable(getter) else str(val)
 
 
+def _storage_backend_name(settings: Any) -> str:
+    """Return the configured storage backend as a plain lowercase name.
+
+    ``StorageBackend`` is a ``(str, Enum)``, so ``str(member)`` yields
+    ``'StorageBackend.S3'`` — matching on that is how both storage gates below
+    were silently never firing. Read ``.value`` when present, and normalize so
+    a plain-string override matches too.
+    """
+    backend = getattr(getattr(settings, "providers", None), "storage_backend", None)
+    if backend is None:
+        return ""
+    return str(getattr(backend, "value", backend)).strip().lower()
+
+
 def _check_cloud(settings: Any) -> List[str]:
     """Return the list of reasons the config is NOT a valid cloud deployment."""
     problems: List[str] = []
@@ -109,10 +123,7 @@ def _check_cloud(settings: Any) -> List[str]:
     # storage backend fail-soft (evidence tools degrade rather than crash the
     # process), so a bucket-less STORAGE_BACKEND=s3 would otherwise boot and
     # only surface when a user tries to upload evidence.
-    storage_backend = str(
-        getattr(getattr(settings, "providers", None), "storage_backend", "")
-    )
-    if storage_backend.endswith("s3") and not _plain(
+    if _storage_backend_name(settings) == "s3" and not _plain(
         getattr(settings, "evidence_storage", None), "s3_bucket_name"
     ):
         problems.append(
@@ -137,10 +148,7 @@ def _check_cloud_warnings(settings: Any) -> List[str]:
     """
     warnings: List[str] = []
 
-    storage_backend = str(
-        getattr(getattr(settings, "providers", None), "storage_backend", "")
-    )
-    if storage_backend.endswith("filesystem"):
+    if _storage_backend_name(settings) == "filesystem":
         warnings.append(
             "STORAGE_BACKEND=filesystem on a cloud deployment. Filesystem "
             "storage is single-node: replicas must share one RWX volume, "

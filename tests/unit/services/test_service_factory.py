@@ -20,7 +20,6 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     InvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.infrastructure.storage.factory import get_storage_backend
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
@@ -331,12 +330,21 @@ class TestFileStorageServiceCreation:
         Storage location is the backend's business, resolved from
         STORAGE_BACKEND — a factory that passed its own root is how
         STORAGE_BACKEND=s3 became inert (#689).
+
+        The real factory is patched rather than invoked: building the true
+        singleton would bind this unit test to global state shared with every
+        other test in the session.
         """
         factory = ServiceFactory(mock_session)
+        sentinel = MagicMock()
 
-        service = factory.create_file_storage_service()
+        with patch(
+            "faultmaven.infrastructure.storage.factory.get_storage_backend",
+            return_value=sentinel,
+        ):
+            service = factory.create_file_storage_service()
 
-        assert service.backend is get_storage_backend()
+        assert service.backend is sentinel
 
     def test_create_file_storage_service_with_custom_max_size(self, mock_session):
         """Test file storage service with custom max file size."""
