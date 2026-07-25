@@ -14,10 +14,9 @@ Usage:
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import aiofiles
 import aiofiles.os
@@ -184,8 +183,10 @@ class FilesystemStorageBackend(IFileStorageBackend):
         """
         full_path = self._get_full_path(key)
 
-        # Create parent directories
-        full_path.parent.mkdir(parents=True, exist_ok=True)
+        # Create parent directories. Async, not Path.mkdir: the storage root
+        # may be a network mount (an RWX volume shared between replicas), where
+        # a synchronous mkdir is a blocking round-trip on the event loop.
+        await aiofiles.os.makedirs(str(full_path.parent), exist_ok=True)
 
         # Write file
         async with aiofiles.open(full_path, "wb") as f:

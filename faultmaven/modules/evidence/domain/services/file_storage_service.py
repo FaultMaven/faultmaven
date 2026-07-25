@@ -35,7 +35,6 @@ SIDECAR_SUFFIX = ".meta.json"
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.infrastructure.storage.base import IFileStorageBackend
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class FileStorageService(BaseService):

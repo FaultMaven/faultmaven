@@ -1215,7 +1215,7 @@ class InvestigationService:
 
         # Post-010 strict evidence model: file upload creates only an
         # UploadedFile row (with preprocessing artifacts attached).
-        # 1. Store raw content; storage_result.file_path becomes the
+        # 1. Store raw content; storage_result.storage_key becomes the
         #    UploadedFile.storage_ref the backend uses to retrieve.
         # 2. Construct UploadedFile carrying file-level metadata
         #    (filename, size, hash, mime, upload provenance).
