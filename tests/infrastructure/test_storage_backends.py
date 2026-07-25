@@ -7,6 +7,7 @@ Verifies:
 4. Factory correctly selects backend based on STORAGE_BACKEND
 """
 
+import importlib.util
 import os
 import tempfile
 from datetime import timedelta
@@ -14,6 +15,15 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+# boto3 ships only in the cloud extra: `requirements/test.txt` (the Standalone
+# CI install) deliberately omits it, and that job asserts its absence. Tests
+# that patch `boto3.client` must therefore skip there — `mock.patch` imports
+# the target module, so an unguarded patch is a hard error, not a skip.
+_BOTO3_AVAILABLE = importlib.util.find_spec("boto3") is not None
+_REQUIRES_BOTO3 = pytest.mark.skipif(
+    not _BOTO3_AVAILABLE, reason="boto3 is a cloud-only dependency"
+)
 
 # =============================================================================
 # Fixtures
@@ -426,6 +436,7 @@ class TestStorageFactory:
 class TestStorageIntegration:
     """Integration tests for storage backends."""
 
+    @_REQUIRES_BOTO3
     @pytest.mark.asyncio
     async def test_evidence_storage_honours_s3_backend_selection(
         self, clean_env, mock_boto3_client
@@ -485,6 +496,7 @@ class TestStorageIntegration:
         # see the file on an S3 deployment.
         assert f"{result['storage_key']}.meta.json" in stored
 
+    @_REQUIRES_BOTO3
     @pytest.mark.asyncio
     async def test_s3_calls_do_not_run_on_the_event_loop(self, mock_boto3_client):
         """boto3 is synchronous — its calls must not block the event loop.
