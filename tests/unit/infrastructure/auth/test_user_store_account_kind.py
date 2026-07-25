@@ -23,9 +23,9 @@ from faultmaven.infrastructure.persistence.user_repository import User
 pytestmark = pytest.mark.asyncio
 
 
-def _repo_user(account_kind: str = "slack") -> User:
+def _repo_user(account_kind: str = "slack", **overrides) -> User:
     now = datetime.now(timezone.utc)
-    return User(
+    fields = dict(
         user_id="user-123",
         username="slack-agent",
         email="slack-agent@faultmaven.example",
@@ -36,6 +36,8 @@ def _repo_user(account_kind: str = "slack") -> User:
         roles=["user"],
         account_kind=account_kind,
     )
+    fields.update(overrides)
+    return User(**fields)
 
 
 def _store(existing: User | None = None) -> tuple[DatabaseUserStore, AsyncMock]:
@@ -88,3 +90,49 @@ class TestAccountKindRoundTrip:
 
         assert created.account_kind == "individual"
         assert repo.save.call_args.args[0].account_kind == "individual"
+
+
+class TestUpdatePreservesTheStoredRecord:
+    """``update_user`` must not write NULL over what DevUser doesn't model.
+
+    DevUser is a partial view; ``UserRepository.update`` writes every column.
+    Rebuilding a User from a DevUser wiped the password hash, the SSO linkage
+    and the verification/login timestamps — so a role change through
+    scripts/auth/promote_to_admin.py locked the account out of BOTH auth modes.
+    """
+
+    async def test_update_preserves_credentials_and_identity_links(self):
+        stored = _repo_user(
+            account_kind="individual",
+            username="alice",
+            email="alice@example.com",
+            hashed_password="$2b$12$bcrypt-hash",
+            sso_provider="workos",
+            sso_provider_id="wos_123",
+            is_email_verified=True,
+        )
+        store, repo = _store(stored)
+        user = await store.get_user("user-123")
+
+        user.roles = ["user", "admin"]  # what promote_to_admin.py does
+        await store.update_user(user)
+
+        written = repo.update.call_args.args[0]
+        assert written.hashed_password == "$2b$12$bcrypt-hash"
+        assert written.sso_provider == "workos"
+        assert written.sso_provider_id == "wos_123"
+        assert written.is_email_verified is True
+
+    async def test_update_still_applies_the_fields_devuser_owns(self):
+        store, repo = _store(_repo_user(account_kind="individual"))
+        user = await store.get_user("user-123")
+
+        user.roles = ["user", "admin"]
+        user.display_name = "Renamed"
+        user.is_active = False
+        await store.update_user(user)
+
+        written = repo.update.call_args.args[0]
+        assert written.roles == ["user", "admin"]
+        assert written.display_name == "Renamed"
+        assert written.is_active is False

@@ -71,31 +71,6 @@ class DatabaseUserStore:
             account_kind=user.account_kind,
         )
 
-    def _devuser_to_user(self, dev_user: DevUser) -> User:
-        """Convert DevUser (auth model) to User (repository model)"""
-        return User(
-            user_id=dev_user.user_id,
-            username=dev_user.username,
-            email=dev_user.email,
-            display_name=dev_user.display_name,
-            avatar_url=None,
-            timezone="UTC",
-            locale="en-US",
-            hashed_password=None,
-            is_active=dev_user.is_active,
-            is_email_verified=False,
-            email_verified_at=None,
-            sso_provider=None,
-            sso_provider_id=None,
-            created_at=dev_user.created_at,
-            updated_at=datetime.now(timezone.utc),
-            last_login_at=None,
-            last_password_change_at=None,
-            deleted_at=None,
-            roles=dev_user.roles if dev_user.roles else ["user"],
-            account_kind=dev_user.account_kind,
-        )
-
     async def get_user(self, user_id: str) -> Optional[DevUser]:
         """Get user by ID
 
@@ -270,7 +245,14 @@ class DatabaseUserStore:
             raise
 
     async def update_user(self, user: DevUser) -> DevUser:
-        """Update existing user
+        """Update the fields a DevUser carries, leaving the rest of the record.
+
+        DevUser is a partial view of a stored user, and ``UserRepository.update``
+        writes every column. Rebuilding a User from a DevUser would therefore
+        write NULL over everything DevUser has no concept of — password hash,
+        SSO linkage, verification and login timestamps — silently locking the
+        account out of both auth modes. So the DevUser's fields are applied onto
+        the stored record instead.
 
         Args:
             user: DevUser with updated fields
@@ -291,11 +273,15 @@ class DatabaseUserStore:
                     message=f"User {user.user_id} not found",
                 )
 
-            # Convert DevUser to User and update
-            updated_user = self._devuser_to_user(user)
-            updated_user.updated_at = datetime.now(timezone.utc)
+            existing_user.username = user.username
+            existing_user.email = user.email
+            existing_user.display_name = user.display_name
+            existing_user.is_active = user.is_active
+            existing_user.roles = user.roles if user.roles else ["user"]
+            existing_user.account_kind = user.account_kind
+            existing_user.updated_at = datetime.now(timezone.utc)
 
-            saved_user = await self.user_repository.update(updated_user)
+            saved_user = await self.user_repository.update(existing_user)
             return self._user_to_devuser(saved_user)
 
         except Exception as e:
