@@ -34,7 +34,6 @@ from fastapi.security import HTTPBearer
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.config.tenant_context import get_current_org_id
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.modules.auth.domain.models.rbac import PLATFORM_ADMIN_ROLE
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
@@ -474,7 +473,7 @@ async def get_optional_user_context(
 async def require_platform_admin(
     user: DevUser = Depends(require_authentication),
 ) -> DevUser:
-    """Require the cross-tenant operator role (see ``PLATFORM_ADMIN_ROLE``).
+    """Require the cross-tenant operator role (``platform_admin``).
 
     Guards the endpoints that act on the deployment as a whole rather than on
     one organization. The org-scoped ``Role.ADMIN`` does not satisfy it.

@@ -218,6 +218,14 @@ async def _assign_operator_roles(user_store: Any, user: Any) -> Any:
     organization's admin and the deployment operator (ADR-012 D9); see
     ``PLATFORM_ADMIN_ROLE_SET`` for why the two are granted together.
 
+    This runs on EVERY startup, not only at creation, so that upgrading a
+    deployment whose account predates the operator/org role split re-grants the
+    operator role without manual intervention. The consequence is that the
+    bootstrap account cannot be demoted durably — the next restart restores it.
+    That is intended for *this* account (a standalone deployment with no
+    operator is unusable), and ``demote_from_platform_admin.py`` says so when
+    aimed at it. Every other account demotes permanently.
+
     Args:
         user_store: Initialised user store instance
         user: DevUser to check and update
