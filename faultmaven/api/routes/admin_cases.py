@@ -97,7 +97,15 @@ async def list_all_cases(
         audit_repo=audit_repo,
         operator=current_user,
         action=OperatorAction.LIST,
-        deployment_mode=str(settings.deployment_mode),
+        # `deployment_mode` is a plain str on some settings paths and a
+        # DeploymentMode member on others, so unwrap it the way `is_cloud`
+        # does. A bare `str()` on the enum member yields
+        # "DeploymentMode.STANDALONE"; these rows are append-only, so that
+        # would leave the system of record permanently holding a value no
+        # `deployment_mode = 'standalone'` query ever matches.
+        deployment_mode=str(
+            getattr(settings.deployment_mode, "value", settings.deployment_mode)
+        ),
         details={
             "state_filter": state.value if state else None,
             "source_filter": source,
@@ -173,8 +181,10 @@ async def list_operator_access_audit(
     )
 
     return OperatorAccessAuditListResponse(
-        # model_validate rather than a field-by-field copy, so a column added
-        # by #815 surfaces automatically instead of being silently dropped.
+        # model_validate rather than a field-by-field copy — one mapping to
+        # keep in step instead of twelve. A field #815 adds to the domain
+        # object is IGNORED until it is declared here too: Pydantic populates
+        # only declared fields, so the API surface never widens by accident.
         entries=[OperatorAccessAuditEntry.model_validate(e) for e in entries],
         total_count=total,
         limit=limit,

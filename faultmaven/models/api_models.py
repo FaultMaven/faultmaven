@@ -284,8 +284,9 @@ class OperatorAccessAuditEntry(BaseModel):
     grant.
     """
 
-    # Built from the OperatorAccessAudit domain object by model_validate, so a
-    # column added by break-glass (#815) reaches the API without a second edit.
+    # Built from the OperatorAccessAudit domain object by model_validate.
+    # Only declared fields are populated, so a column #815 adds to the domain
+    # object stays out of the API until it is declared here deliberately.
     model_config = ConfigDict(from_attributes=True)
 
     audit_id: int

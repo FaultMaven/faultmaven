@@ -92,6 +92,47 @@ class TestListAccessIsRecorded:
             audit_repo.record_access.await_args.kwargs["target_organization_id"] is None
         )
 
+    def test_records_the_deployment_mode_as_its_value(self, client, audit_repo):
+        """The stored value must be "standalone", not "DeploymentMode.STANDALONE".
+
+        `DeploymentMode` is a str-Enum whose `str()` is the member repr, so
+        `str(mode)` silently writes the wrong text. The rows are append-only,
+        which makes a wrong value here uncorrectable: no later fix can repair
+        rows already written, leaving the system of record permanently mixed.
+        """
+        client.get("/api/v1/admin/cases")
+        recorded = audit_repo.record_access.await_args.kwargs["deployment_mode"]
+        assert recorded in ("standalone", "cloud"), recorded
+        assert "DeploymentMode" not in recorded
+
+    def test_deployment_mode_is_unwrapped_when_settings_hold_the_enum(
+        self, client, audit_repo, monkeypatch
+    ):
+        """`settings.deployment_mode` is a plain str on some paths, the enum on
+        others. The str path alone would pass even with a bare `str()`, so pin
+        the enum path explicitly — that is where the wrong text comes from.
+        """
+        from faultmaven.api.routes import admin_cases
+        from faultmaven.config.settings import DeploymentMode
+
+        real_settings = admin_cases.get_settings()
+
+        class _EnumModeSettings:
+            deployment_mode = DeploymentMode.STANDALONE
+            is_cloud = False
+
+            def __getattr__(self, name):
+                return getattr(real_settings, name)
+
+        monkeypatch.setattr(admin_cases, "get_settings", _EnumModeSettings)
+
+        client.get("/api/v1/admin/cases")
+
+        assert (
+            audit_repo.record_access.await_args.kwargs["deployment_mode"]
+            == "standalone"
+        )
+
     def test_records_the_filters_applied(self, client, audit_repo):
         client.get("/api/v1/admin/cases?limit=10&offset=20")
         details = audit_repo.record_access.await_args.kwargs["details"]
