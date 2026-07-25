@@ -11,9 +11,8 @@ logging in as each user. It is gated by:
     so a cloud response would be misleadingly partial — fail closed instead.
 
 Every access is recorded in the durable, append-only ``operator_access_audit``
-table (ADR-012 D8/D9) **before** any case data is returned, and the request
-fails closed if that record cannot be written — an operator read that leaves no
-evidence is the thing the table exists to prevent.
+table before any case data is returned; see ``api/operator_audit.py`` for that
+policy and why it fails closed.
 """
 
 import logging
@@ -23,6 +22,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.requests import Request
 
 from faultmaven.api.middleware.auth import require_platform_admin
+from faultmaven.api.operator_audit import (
+    get_operator_audit_repository,
+    record_operator_access,
+)
 from faultmaven.config.settings import get_settings
 from faultmaven.models.api_models import (
     CaseListFilter,
@@ -50,63 +53,6 @@ async def get_case_service(request: Request) -> ICaseService:
             detail="Case service not available",
         )
     return case_service
-
-
-async def get_operator_audit_repository(request: Request) -> IOperatorAuditRepository:
-    """Get the operator audit repository from app.state (Composition Root)."""
-    repo = getattr(request.app.state, "operator_audit_repository", None)
-    if repo is None:
-        # Fail closed: without the audit path there is no way to record the
-        # access, and an unrecorded operator read is exactly what D8/D9 forbids.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Operator audit trail not available",
-        )
-    return repo
-
-
-async def record_operator_access(
-    audit_repo: IOperatorAuditRepository,
-    operator: AuthenticatedUser,
-    action: OperatorAction,
-    deployment_mode: str,
-    target_organization_id: Optional[str] = None,
-    target_case_id: Optional[str] = None,
-    details: Optional[dict] = None,
-) -> None:
-    """Record one operator access, or refuse the request.
-
-    Called BEFORE the data is served. A failure here becomes a 503, not a
-    logged warning: degrading to "served but unaudited" would silently remove
-    the control, and the failure mode a compliance auditor cares about is
-    precisely the access with no row behind it.
-    """
-    try:
-        await audit_repo.record_access(
-            operator_user_id=operator.user_id,
-            action=action,
-            operator_username=getattr(operator, "email", None),
-            target_organization_id=target_organization_id,
-            target_case_id=target_case_id,
-            deployment_mode=deployment_mode,
-            details=details,
-        )
-    except Exception as exc:
-        logger.error(
-            "operator_access_audit_write_failed",
-            extra={
-                "operator_user_id": operator.user_id,
-                "action": action.value,
-                "error": str(exc),
-            },
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Operator access could not be recorded in the audit trail; "
-                "the request was refused rather than served unaudited."
-            ),
-        ) from exc
 
 
 router = APIRouter(
@@ -163,16 +109,14 @@ async def list_all_cases(
     filters = CaseListFilter(state=state, source=source, limit=limit, offset=offset)
     summaries, total = await case_service.list_all_cases(filters)
 
+    # Operational visibility only — the audit row above is the system of record.
+    # Carries just the result sizes, which are known only after the query.
     logger.info(
         "admin_case_list_access",
         extra={
             "admin_user_id": current_user.user_id,
-            "deployment_mode": str(settings.deployment_mode),
             "result_count": len(summaries),
             "total_count": total,
-            "state_filter": state.value if state else None,
-            "limit": limit,
-            "offset": offset,
         },
     )
 
@@ -229,23 +173,9 @@ async def list_operator_access_audit(
     )
 
     return OperatorAccessAuditListResponse(
-        entries=[
-            OperatorAccessAuditEntry(
-                audit_id=e.audit_id,
-                operator_user_id=e.operator_user_id,
-                operator_username=e.operator_username,
-                action=e.action,
-                target_organization_id=e.target_organization_id,
-                target_case_id=e.target_case_id,
-                reason=e.reason,
-                grant_id=e.grant_id,
-                expires_at=e.expires_at,
-                deployment_mode=e.deployment_mode,
-                details=e.details,
-                created_at=e.created_at,
-            )
-            for e in entries
-        ],
+        # model_validate rather than a field-by-field copy, so a column added
+        # by #815 surfaces automatically instead of being silently dropped.
+        entries=[OperatorAccessAuditEntry.model_validate(e) for e in entries],
         total_count=total,
         limit=limit,
         offset=offset,

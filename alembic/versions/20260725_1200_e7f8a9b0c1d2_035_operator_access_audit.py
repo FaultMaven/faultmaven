@@ -52,8 +52,12 @@ def upgrade() -> None:
     op.create_table(
         "operator_access_audit",
         sa.Column("audit_id", sa.Integer(), autoincrement=True, nullable=False),
-        # SET NULL, not CASCADE: removing an operator account must never remove
-        # the evidence of what that account did.
+        # Deliberately NOT a foreign key to users.user_id. Evidence must outlive
+        # the account it describes, and every ondelete action is executed as a
+        # write against this table, which the append-only triggers below reject:
+        # ON DELETE SET NULL would make deleting an audited operator fail, and
+        # ON DELETE CASCADE would try to erase the evidence. The denormalised
+        # operator_username keeps the trail readable after the account is gone.
         sa.Column("operator_user_id", sa.String(length=36), nullable=True),
         sa.Column("operator_username", sa.String(length=255), nullable=True),
         sa.Column("action", sa.String(length=32), nullable=False),
@@ -70,9 +74,6 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["operator_user_id"], ["users.user_id"], ondelete="SET NULL"
-        ),
         sa.PrimaryKeyConstraint("audit_id"),
         # Constrain the governed distinction (metadata vs content) at the schema
         # layer, so a typo cannot silently create a third, unaudited category.
@@ -81,12 +82,12 @@ def upgrade() -> None:
             name="operator_access_audit_action_valid",
         ),
     )
-    op.create_index(
-        "ix_operator_access_audit_action", "operator_access_audit", ["action"]
-    )
-    op.create_index(
-        "ix_operator_access_audit_grant_id", "operator_access_audit", ["grant_id"]
-    )
+    # Indexed for the queries that exist: the default newest-first listing and
+    # the three filters the review path offers. `action` is deliberately not
+    # indexed (the CHECK pins it to two values, so it is ~50% selective and
+    # loses to created_at under the ORDER BY), nor is `grant_id` (100% NULL
+    # until break-glass); on an append-only table an index no query uses is
+    # pure write amplification. #815 adds the grant_id index with the reader.
     op.create_index(
         "ix_operator_access_audit_created_at", "operator_access_audit", ["created_at"]
     )
@@ -116,61 +117,27 @@ def upgrade() -> None:
             END;
             $$ LANGUAGE plpgsql;
             """)
-        op.execute(
-            "CREATE TRIGGER operator_access_audit_no_update "
-            "BEFORE UPDATE ON operator_access_audit "
-            "FOR EACH ROW EXECUTE FUNCTION operator_access_audit_append_only()"
-        )
-        op.execute(
-            "CREATE TRIGGER operator_access_audit_no_delete "
-            "BEFORE DELETE ON operator_access_audit "
-            "FOR EACH ROW EXECUTE FUNCTION operator_access_audit_append_only()"
-        )
+        for event in ("UPDATE", "DELETE"):
+            op.execute(
+                f"CREATE TRIGGER operator_access_audit_no_{event.lower()} "
+                f"BEFORE {event} ON operator_access_audit "
+                "FOR EACH ROW EXECUTE FUNCTION operator_access_audit_append_only()"
+            )
     elif dialect == "sqlite":
-        op.execute(
-            "CREATE TRIGGER operator_access_audit_no_update "
-            "BEFORE UPDATE ON operator_access_audit "
-            f"BEGIN SELECT RAISE(ABORT, '{_APPEND_ONLY_MESSAGE}'); END"
-        )
-        op.execute(
-            "CREATE TRIGGER operator_access_audit_no_delete "
-            "BEFORE DELETE ON operator_access_audit "
-            f"BEGIN SELECT RAISE(ABORT, '{_APPEND_ONLY_MESSAGE}'); END"
-        )
+        for event in ("UPDATE", "DELETE"):
+            op.execute(
+                f"CREATE TRIGGER operator_access_audit_no_{event.lower()} "
+                f"BEFORE {event} ON operator_access_audit "
+                f"BEGIN SELECT RAISE(ABORT, '{_APPEND_ONLY_MESSAGE}'); END"
+            )
 
 
 def downgrade() -> None:
-    """Drop the triggers, then the table.
+    """Drop the table, and the PostgreSQL function it left behind.
 
-    The triggers must go first: on PostgreSQL a DELETE-blocking trigger does not
-    prevent DROP TABLE, but dropping them explicitly keeps the teardown
-    symmetric with upgrade() and leaves no orphaned function behind.
+    Both engines drop a table's own indexes and triggers with it, so only the
+    standalone plpgsql function needs explicit teardown.
     """
-    dialect = op.get_context().dialect.name
-    if dialect == "postgresql":
-        # PostgreSQL scopes DROP TRIGGER to a table; SQLite does not.
-        for trigger in ("no_update", "no_delete"):
-            op.execute(
-                f"DROP TRIGGER IF EXISTS operator_access_audit_{trigger} "
-                "ON operator_access_audit"
-            )
-        op.execute("DROP FUNCTION IF EXISTS operator_access_audit_append_only()")
-    elif dialect == "sqlite":
-        for trigger in ("no_update", "no_delete"):
-            op.execute(f"DROP TRIGGER IF EXISTS operator_access_audit_{trigger}")
-
-    op.drop_index("ix_operator_access_audit_case", table_name="operator_access_audit")
-    op.drop_index(
-        "ix_operator_access_audit_target_org", table_name="operator_access_audit"
-    )
-    op.drop_index(
-        "ix_operator_access_audit_operator", table_name="operator_access_audit"
-    )
-    op.drop_index(
-        "ix_operator_access_audit_created_at", table_name="operator_access_audit"
-    )
-    op.drop_index(
-        "ix_operator_access_audit_grant_id", table_name="operator_access_audit"
-    )
-    op.drop_index("ix_operator_access_audit_action", table_name="operator_access_audit")
     op.drop_table("operator_access_audit")
+    if op.get_context().dialect.name == "postgresql":
+        op.execute("DROP FUNCTION IF EXISTS operator_access_audit_append_only()")

@@ -41,6 +41,11 @@ _MAX_ID_LENGTH = 36
 _MAX_DEPLOYMENT_MODE_LENGTH = 32
 
 
+def _clip(value: Optional[str], limit: int) -> Optional[str]:
+    """Truncate to a column bound, preserving None."""
+    return value[:limit] if value else None
+
+
 def _model_to_domain(model: OperatorAccessAuditModel) -> OperatorAccessAudit:
     """Convert ORM model to domain object."""
     details: Optional[Dict[str, Any]] = None
@@ -84,38 +89,23 @@ class OperatorAuditRepository(IOperatorAuditRepository):
         expires_at: Optional[datetime] = None,
         deployment_mode: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
-    ) -> bool:
+    ) -> None:
         """Append one access record. Raises if it cannot be persisted."""
         model = OperatorAccessAuditModel(
-            operator_user_id=(
-                operator_user_id[:_MAX_ID_LENGTH] if operator_user_id else None
-            ),
-            operator_username=(
-                operator_username[:_MAX_USERNAME_LENGTH] if operator_username else None
-            ),
-            action=action.value if isinstance(action, OperatorAction) else str(action),
-            target_organization_id=(
-                target_organization_id[:_MAX_ID_LENGTH]
-                if target_organization_id
-                else None
-            ),
-            target_case_id=(
-                target_case_id[:_MAX_ID_LENGTH] if target_case_id else None
-            ),
+            operator_user_id=_clip(operator_user_id, _MAX_ID_LENGTH),
+            operator_username=_clip(operator_username, _MAX_USERNAME_LENGTH),
+            action=OperatorAction(action).value,
+            target_organization_id=_clip(target_organization_id, _MAX_ID_LENGTH),
+            target_case_id=_clip(target_case_id, _MAX_ID_LENGTH),
             reason=reason,
-            grant_id=grant_id[:_MAX_ID_LENGTH] if grant_id else None,
+            grant_id=_clip(grant_id, _MAX_ID_LENGTH),
             expires_at=expires_at,
-            deployment_mode=(
-                deployment_mode[:_MAX_DEPLOYMENT_MODE_LENGTH]
-                if deployment_mode
-                else None
-            ),
+            deployment_mode=_clip(deployment_mode, _MAX_DEPLOYMENT_MODE_LENGTH),
             details=json.dumps(details, default=str) if details else None,
             created_at=datetime.now(timezone.utc),
         )
         self.db.add(model)
         await self.db.commit()
-        return True
 
     async def list_access(
         self,
@@ -141,19 +131,20 @@ class OperatorAuditRepository(IOperatorAuditRepository):
             filters.append(OperatorAccessAuditModel.target_case_id == target_case_id)
         if action:
             filters.append(
-                OperatorAccessAuditModel.action
-                == (action.value if isinstance(action, OperatorAction) else str(action))
+                OperatorAccessAuditModel.action == OperatorAction(action).value
             )
 
-        count_stmt = select(func.count()).select_from(OperatorAccessAuditModel)
-        page_stmt = select(OperatorAccessAuditModel)
-        for condition in filters:
-            count_stmt = count_stmt.where(condition)
-            page_stmt = page_stmt.where(condition)
-
-        total = (await self.db.execute(count_stmt)).scalar_one()
+        total = (
+            await self.db.execute(
+                select(func.count())
+                .select_from(OperatorAccessAuditModel)
+                .where(*filters)
+            )
+        ).scalar_one()
         page_stmt = (
-            page_stmt.order_by(
+            select(OperatorAccessAuditModel)
+            .where(*filters)
+            .order_by(
                 OperatorAccessAuditModel.created_at.desc(),
                 # Tiebreak on the monotonic PK: bulk access in the same
                 # transaction shares a timestamp, and an unstable sort would

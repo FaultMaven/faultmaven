@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -283,6 +283,10 @@ class OperatorAccessAuditEntry(BaseModel):
     or content, which is what lets the trail be read without a break-glass
     grant.
     """
+
+    # Built from the OperatorAccessAudit domain object by model_validate, so a
+    # column added by break-glass (#815) reaches the API without a second edit.
+    model_config = ConfigDict(from_attributes=True)
 
     audit_id: int
     operator_user_id: Optional[str] = None

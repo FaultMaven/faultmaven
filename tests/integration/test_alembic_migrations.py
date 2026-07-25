@@ -566,5 +566,111 @@ class TestDatabaseSchemaIntegrity:
             ), f"Missing column in config_overrides: {col}. Available: {list(columns.keys())}"
 
 
+class TestOperatorAccessAuditAppendOnly:
+    """``operator_access_audit`` is append-only at the DATABASE layer (#813).
+
+    The threat is the audited operator themselves. If UPDATE/DELETE were
+    prevented only by "the repository exposes no such method", anyone reaching
+    the database — including the operator whose access is recorded — could amend
+    or erase their own trail, and the table would have no evidentiary value.
+    These run the real migration and assert the triggers reject the writes.
+    """
+
+    @staticmethod
+    def _insert(conn) -> int:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO operator_access_audit (action, operator_user_id, created_at) "
+            "VALUES ('list', 'op-1', datetime('now'))"
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+    def test_update_and_delete_are_rejected(self, clean_database, database_url):
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            row_id = self._insert(conn)
+            assert row_id > 0, "INSERT must be allowed — the table is append-ONLY"
+
+            for sql in (
+                "UPDATE operator_access_audit SET action='content_open' "
+                f"WHERE audit_id={row_id}",
+                f"DELETE FROM operator_access_audit WHERE audit_id={row_id}",
+            ):
+                with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+                    conn.execute(sql)
+            conn.rollback()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT action FROM operator_access_audit WHERE audit_id={row_id}"
+            )
+            assert cursor.fetchone() == (
+                "list",
+            ), "the record must be intact after tampering attempts"
+        finally:
+            conn.close()
+
+    def test_unknown_action_is_rejected(self, clean_database, database_url):
+        """A third, un-enumerated action would be an access category nobody
+        classified as either metadata or content."""
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="action_valid"):
+                conn.execute(
+                    "INSERT INTO operator_access_audit (action, created_at) "
+                    "VALUES ('sneaky', datetime('now'))"
+                )
+        finally:
+            conn.close()
+
+    def test_deleting_an_audited_operator_is_not_blocked(
+        self, clean_database, database_url
+    ):
+        """Removing a user must not be blocked by their own audit rows.
+
+        A foreign key with ON DELETE SET NULL would execute as an UPDATE against
+        this table, which the append-only trigger rejects — so deleting any
+        operator who had ever been audited would fail. The column is
+        deliberately not a foreign key for that reason; this pins it.
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute(
+                "INSERT INTO users (user_id, enterprise_id, username, email, "
+                "display_name, timezone, locale, is_active, is_email_verified, "
+                "created_at, updated_at, account_kind) "
+                "SELECT 'u-1', enterprise_id, 'op', 'op@example.com', 'Op', 'UTC', "
+                "'en', 1, 0, datetime('now'), datetime('now'), 'individual' "
+                "FROM enterprises LIMIT 1"
+            )
+            conn.execute(
+                "INSERT INTO operator_access_audit (action, operator_user_id, created_at) "
+                "VALUES ('list', 'u-1', datetime('now'))"
+            )
+            conn.commit()
+
+            conn.execute("DELETE FROM users WHERE user_id='u-1'")
+            conn.commit()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM operator_access_audit WHERE operator_user_id='u-1'"
+            )
+            assert cursor.fetchone()[0] == 1, "the evidence must outlive the account"
+        finally:
+            conn.close()
+
+
 # Test markers for different categories
 pytestmark = pytest.mark.integration

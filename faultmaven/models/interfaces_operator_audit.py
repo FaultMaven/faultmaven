@@ -67,12 +67,14 @@ class IOperatorAuditRepository(ABC):
         expires_at: Optional[datetime] = None,
         deployment_mode: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
-    ) -> bool:
+    ) -> None:
         """Append one access record.
 
-        Returns True when the row was persisted. Implementations must not raise
-        into the caller's request path — see the implementation for why a failed
-        audit write is surfaced rather than swallowed.
+        Implementations MUST let write failures propagate. Callers record the
+        access before serving the data and fail the request if this raises; an
+        implementation that swallowed the error would silently convert the
+        control into "served but unaudited", which is the outcome this table
+        exists to prevent.
         """
 
     @abstractmethod

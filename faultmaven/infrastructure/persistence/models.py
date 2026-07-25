@@ -587,18 +587,19 @@ class OperatorAccessAuditModel(Base):
 
     audit_id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # SET NULL rather than CASCADE: deleting an operator account must never
-    # delete the evidence of what that account did.
-    operator_user_id = Column(
-        String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
-    )
-    # Denormalised so the trail survives the account row being removed.
+    # Deliberately NOT a foreign key. Evidence must outlive the account it
+    # describes, so the row keeps a denormalised username and an unreferenced
+    # id. An FK would also be actively harmful: any ondelete action is executed
+    # as a write against this table, which the append-only triggers reject —
+    # ON DELETE SET NULL would make deleting an operator who has ever been
+    # audited fail outright.
+    operator_user_id = Column(String(36), nullable=True)
     operator_username = Column(String(255), nullable=True)
 
     # 'list' (metadata) or 'content_open' (title/transcript/evidence). The
     # metadata/content boundary is the thing D8/D9 governs, so it is a column
     # rather than a detail-blob key.
-    action = Column(String(32), nullable=False, index=True)
+    action = Column(String(32), nullable=False)
 
     # NULL target_organization_id = access spanned all tenants (a cross-tenant
     # list). NULL target_case_id = the access was not scoped to one case.
@@ -607,7 +608,7 @@ class OperatorAccessAuditModel(Base):
 
     # Break-glass fields (#815). Nullable until that path exists.
     reason = Column(Text, nullable=True)
-    grant_id = Column(String(36), nullable=True, index=True)
+    grant_id = Column(String(36), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
 
     # Deployment mode at access time — the same operator action carries
