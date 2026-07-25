@@ -504,9 +504,12 @@ The sweep (`faultmaven.modules.agent.jobs.storage_cleanup`) enumerates sidecars 
 async def cleanup_orphaned_files(storage, ttl_hours, dry_run):
     cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
     for storage_key in await storage.list_sidecar_keys():
+        # read_sidecar returns None only for a genuinely absent sidecar and
+        # RAISES if it cannot be read — the job counts that as an error and
+        # skips, so unknown state never becomes a deletion.
         payload = await storage.read_sidecar(storage_key)
         if payload is None:
-            continue  # unreadable — never delete on unknown state
+            continue  # raced deletion — nothing to reclaim
         if payload["linked"] is True:
             continue
         uploaded_at = datetime.fromisoformat(payload["uploaded_at"])

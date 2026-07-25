@@ -9706,7 +9706,9 @@ class MilestoneEngine:
             uploaded_at_turn=turn_number,
             uploaded_at=datetime.now(UTC),
             upload_source=attachment.get("source_type", "file_upload"),
-            storage_ref=attachment.get("s3_uri", attachment.get("file_id", "unknown")),
+            storage_ref=attachment.get(
+                "storage_ref", attachment.get("file_id", "unknown")
+            ),
         )
 
         return uploaded_file

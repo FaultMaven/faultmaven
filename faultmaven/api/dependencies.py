@@ -210,12 +210,12 @@ async def get_file_storage_service(
         FileStorageService instance
 
     Example:
-        @app.get("/evidence/{key}/info")
-        async def get_evidence_info(
+        @app.get("/evidence/{key}")
+        async def read_evidence(
             key: str,
             file_storage: FileStorageService = Depends(get_file_storage_service)
         ):
-            return await file_storage.get_file_info(key)
+            return await file_storage.retrieve_file(key)
     """
     return factory.create_file_storage_service()
 

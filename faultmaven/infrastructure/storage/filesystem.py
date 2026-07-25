@@ -327,10 +327,13 @@ class FilesystemStorageBackend(IFileStorageBackend):
             Storage keys relative to the storage root, POSIX-separated so
             they round-trip through the same form ``store_file`` accepted.
         """
-        if not self.storage_root.exists():
-            return []
 
         def _walk() -> List[str]:
+            # The existence check belongs in here too: on a network mount even
+            # a stat is a blocking round-trip.
+            if not self.storage_root.exists():
+                return []
+
             keys = []
             for path in self.storage_root.rglob("*"):
                 if not path.is_file():

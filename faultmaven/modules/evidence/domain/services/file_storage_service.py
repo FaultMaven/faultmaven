@@ -292,10 +292,22 @@ class FileStorageService(BaseService):
             return None
 
         try:
-            return json.loads(raw.decode("utf-8"))
+            payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             self.log_error("read_sidecar", e, storage_key=storage_key)
             raise ServiceError(f"Corrupt sidecar for {storage_key}: {e}")
+
+        # Valid JSON is not necessarily a sidecar. A bare list or scalar would
+        # reach the sweep and blow up on .get(), aborting the entire run over
+        # one bad object — so reject the shape here, where it is counted as a
+        # single skipped file.
+        if not isinstance(payload, dict):
+            raise ServiceError(
+                f"Corrupt sidecar for {storage_key}: expected an object, got "
+                f"{type(payload).__name__}"
+            )
+
+        return payload
 
     async def list_sidecar_keys(self) -> List[str]:
         """List the storage keys of every stored file that has a sidecar.
@@ -391,40 +403,6 @@ class FileStorageService(BaseService):
         self.log_operation("delete_file_success", storage_key=storage_key)
 
         return True
-
-    async def get_file_info(self, storage_key: str) -> Optional[Dict[str, Any]]:
-        """Get file metadata without reading content.
-
-        Args:
-            storage_key: Backend key for the stored object
-
-        Returns:
-            Dictionary with file_size, created_time and storage_key, or None
-            if not found.
-        """
-        self.log_operation("get_file_info", storage_key=storage_key)
-
-        try:
-            self._validate_key(storage_key)
-
-            stored = await self.backend.get_file_info(storage_key)
-            if stored is None:
-                return None
-
-            info = {
-                "file_size": stored.size_bytes,
-                "created_time": stored.created_at,
-                "content_type": stored.content_type,
-                "storage_key": storage_key,
-            }
-
-            self.log_operation("get_file_info_success", storage_key=storage_key)
-
-            return info
-
-        except Exception as e:
-            self.log_error("get_file_info", e, storage_key=storage_key)
-            return None
 
     def validate_file(
         self, file_size: int, mime_type: str, original_filename: str
@@ -553,6 +531,14 @@ class FileStorageService(BaseService):
         # If empty after sanitization, use a default name
         if not safe:
             safe = "unnamed_file"
+
+        # The sidecar protocol reserves keys ending in SIDECAR_SUFFIX. An
+        # upload actually named "notes.meta.json" would otherwise be
+        # enumerated by list_sidecar_keys() as some other file's sidecar, its
+        # user-controlled content parsed as orphan metadata, and the file
+        # itself deleted as that phantom's companion. Reserve the suffix.
+        if safe.lower().endswith(SIDECAR_SUFFIX):
+            safe = f"{safe[: -len(SIDECAR_SUFFIX)]}.meta_json"
 
         # Limit filename length (preserve extension)
         max_length = 200

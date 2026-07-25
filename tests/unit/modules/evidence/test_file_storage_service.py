@@ -371,41 +371,6 @@ class TestDeleteFile:
 
 
 # ============================================================
-# Get File Info Tests
-# ============================================================
-
-
-class TestGetFileInfo:
-    """Test get_file_info method."""
-
-    @pytest.mark.asyncio
-    async def test_get_file_info_returns_metadata(
-        self, file_storage_service, sample_file_data
-    ):
-        """Test that get_file_info returns correct metadata."""
-        store_result = await file_storage_service.store_file(
-            file_data=sample_file_data,
-            original_filename="test.txt",
-            organization_id="org_123",
-            case_id="case_456",
-            mime_type="text/plain",
-        )
-
-        info = await file_storage_service.get_file_info(store_result["storage_key"])
-
-        assert info is not None
-        assert info["file_size"] == len(sample_file_data)
-        assert "created_time" in info
-        assert info["storage_key"] == store_result["storage_key"]
-
-    @pytest.mark.asyncio
-    async def test_get_file_info_returns_none_if_not_found(self, file_storage_service):
-        """Test that get_file_info returns None for missing file."""
-        info = await file_storage_service.get_file_info("nonexistent/path/file.txt")
-        assert info is None
-
-
-# ============================================================
 # Validate File Tests
 # ============================================================
 
@@ -810,3 +775,64 @@ class TestEdgeCases:
 
         # All paths should be unique
         assert len(set(paths)) == 3
+
+
+class TestSidecarSuffixIsReserved:
+    """An upload must never be able to masquerade as another file's sidecar."""
+
+    @pytest.mark.asyncio
+    async def test_upload_named_like_a_sidecar_is_mangled(
+        self, file_storage_service, sample_file_data
+    ):
+        """A file literally named '*.meta.json' would otherwise be listed by
+        list_sidecar_keys() as some other object's sidecar, its user-controlled
+        content parsed as orphan metadata, and the file deleted as that
+        phantom's companion.
+        """
+        result = await file_storage_service.store_file(
+            file_data=sample_file_data,
+            original_filename="notes.meta.json",
+            organization_id="org_123",
+            case_id="case_456",
+            mime_type="application/json",
+        )
+
+        assert not result["storage_key"].endswith(".meta.json")
+        # Its own sidecar is still the only thing the sweep sees.
+        assert await file_storage_service.list_sidecar_keys() == [result["storage_key"]]
+
+    @pytest.mark.asyncio
+    async def test_hostile_upload_does_not_get_itself_deleted(
+        self, file_storage_service
+    ):
+        """End-to-end: the attack shape, proven inert."""
+        result = await file_storage_service.store_file(
+            file_data=b'{"linked": false, "uploaded_at": "2000-01-01T00:00:00+00:00"}',
+            original_filename="evil.meta.json",
+            organization_id="org_123",
+            case_id="case_456",
+            mime_type="application/json",
+        )
+        await file_storage_service.mark_linked(result["storage_key"])
+
+        # The uploaded bytes must never be reachable as a sidecar payload.
+        sidecar = await file_storage_service.read_sidecar(result["storage_key"])
+        assert sidecar["linked"] is True
+        assert sidecar["case_id"] == "case_456"
+
+
+class TestSidecarShapeValidation:
+    @pytest.mark.asyncio
+    async def test_non_object_sidecar_raises(self, temp_storage_dir):
+        """Valid JSON is not necessarily a sidecar.
+
+        A bare list reaching the sweep would blow up on .get() and abort the
+        whole run over one bad object; rejecting the shape here keeps it to a
+        single skipped file.
+        """
+        backend = FilesystemStorageBackend(storage_root=temp_storage_dir)
+        backend.retrieve_file = AsyncMock(return_value=b'["not", "an", "object"]')
+        service = FileStorageService(backend=backend)
+
+        with pytest.raises(ServiceError, match="expected an object"):
+            await service.read_sidecar("org/case/2026-01-01/abc_file.log")

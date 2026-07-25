@@ -846,7 +846,7 @@ class InvestigationService:
                             "size": uf.size_bytes,
                             "source_type": source,
                             "summary": uf.summary or "",
-                            "s3_uri": uf.storage_ref,
+                            "storage_ref": uf.storage_ref,
                         }
                     )
                 # DA evidence search is handled inside MilestoneEngine's

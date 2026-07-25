@@ -45,9 +45,9 @@ Consumers depend on `FileStorageService`. Nothing outside
 `STORAGE_BACKEND` to a singleton backend instance and is the single
 construction point. `FileStorageService` accepts a backend by injection and
 falls back to the factory when none is supplied, so every construction site —
-the DI container, the request-scoped service factory, and the two on-demand
-sites in agent code — honours the configured backend without each having to
-plumb one through.
+the DI container, the request-scoped service factory, and the on-demand sites
+in `read_file_tool`, `agent_orchestration_service`, and the `storage_cleanup`
+job — honours the configured backend without each having to plumb one through.
 
 | Setting | Backend | Deployment |
 |---------|---------|------------|
@@ -94,7 +94,13 @@ a companion **sidecar object** at key `{key}.meta.json`:
 exists. The `storage_cleanup` job sweeps sidecars via
 `IFileStorageBackend.list_keys()` and deletes only files that are both
 `linked=false` and older than `ORPHAN_FILE_TTL_HOURS`. A file with no sidecar
-is *never* deleted — unknown state is not a licence to delete.
+is *never* deleted, and neither is one whose sidecar cannot be read — unknown
+state is not a licence to delete.
+
+The suffix is **reserved**: an upload whose own name ends in `.meta.json` has
+it mangled at key-generation time. Without that, the file would be enumerated
+as some other object's sidecar, its user-controlled content parsed as orphan
+metadata, and the file deleted as that phantom's companion.
 
 Because sidecars are ordinary backend objects rather than local files, orphan
 cleanup works identically on S3 and on the filesystem.
