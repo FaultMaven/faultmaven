@@ -88,26 +88,38 @@ def upgrade() -> None:
         """))
 
         bind.execute(sa.text("DROP INDEX IF EXISTS ix_conversion_drafts_conversion_id"))
-        bind.execute(sa.text("DROP INDEX IF EXISTS ix_conversion_drafts_organization_id"))
+        bind.execute(
+            sa.text("DROP INDEX IF EXISTS ix_conversion_drafts_organization_id")
+        )
         bind.execute(sa.text("DROP INDEX IF EXISTS ix_conversion_drafts_tags"))
         bind.execute(sa.text("DROP TABLE conversion_drafts"))
-        bind.execute(sa.text("ALTER TABLE conversion_drafts_new RENAME TO conversion_drafts"))
+        bind.execute(
+            sa.text("ALTER TABLE conversion_drafts_new RENAME TO conversion_drafts")
+        )
 
-        bind.execute(sa.text(
-            "CREATE INDEX ix_conversion_drafts_conversion_id ON conversion_drafts(conversion_id)"
-        ))
-        bind.execute(sa.text(
-            "CREATE INDEX ix_conversion_drafts_organization_id ON conversion_drafts(organization_id)"
-        ))
+        bind.execute(
+            sa.text(
+                "CREATE INDEX ix_conversion_drafts_conversion_id ON conversion_drafts(conversion_id)"
+            )
+        )
+        bind.execute(
+            sa.text(
+                "CREATE INDEX ix_conversion_drafts_organization_id ON conversion_drafts(organization_id)"
+            )
+        )
 
         bind.execute(sa.text("PRAGMA foreign_keys=ON"))
 
     else:
         # PostgreSQL: ALTER TABLE supports DROP/ADD CONSTRAINT directly.
-        op.drop_constraint("conversion_drafts_status_check", "conversion_drafts", type_="check")
-        bind.execute(sa.text(
-            "UPDATE conversion_drafts SET status = 'discarded' WHERE status IN ('rejected', 'archived')"
-        ))
+        op.drop_constraint(
+            "conversion_drafts_status_check", "conversion_drafts", type_="check"
+        )
+        bind.execute(
+            sa.text(
+                "UPDATE conversion_drafts SET status = 'discarded' WHERE status IN ('rejected', 'archived')"
+            )
+        )
         op.create_check_constraint(
             "conversion_drafts_status_check",
             "conversion_drafts",
@@ -171,25 +183,37 @@ def downgrade() -> None:
         """))
 
         bind.execute(sa.text("DROP INDEX IF EXISTS ix_conversion_drafts_conversion_id"))
-        bind.execute(sa.text("DROP INDEX IF EXISTS ix_conversion_drafts_organization_id"))
+        bind.execute(
+            sa.text("DROP INDEX IF EXISTS ix_conversion_drafts_organization_id")
+        )
         bind.execute(sa.text("DROP INDEX IF EXISTS ix_conversion_drafts_tags"))
         bind.execute(sa.text("DROP TABLE conversion_drafts"))
-        bind.execute(sa.text("ALTER TABLE conversion_drafts_old RENAME TO conversion_drafts"))
+        bind.execute(
+            sa.text("ALTER TABLE conversion_drafts_old RENAME TO conversion_drafts")
+        )
 
-        bind.execute(sa.text(
-            "CREATE INDEX ix_conversion_drafts_conversion_id ON conversion_drafts(conversion_id)"
-        ))
-        bind.execute(sa.text(
-            "CREATE INDEX ix_conversion_drafts_organization_id ON conversion_drafts(organization_id)"
-        ))
+        bind.execute(
+            sa.text(
+                "CREATE INDEX ix_conversion_drafts_conversion_id ON conversion_drafts(conversion_id)"
+            )
+        )
+        bind.execute(
+            sa.text(
+                "CREATE INDEX ix_conversion_drafts_organization_id ON conversion_drafts(organization_id)"
+            )
+        )
 
         bind.execute(sa.text("PRAGMA foreign_keys=ON"))
 
     else:
-        op.drop_constraint("conversion_drafts_status_check", "conversion_drafts", type_="check")
-        bind.execute(sa.text(
-            "UPDATE conversion_drafts SET status = 'archived' WHERE status = 'discarded'"
-        ))
+        op.drop_constraint(
+            "conversion_drafts_status_check", "conversion_drafts", type_="check"
+        )
+        bind.execute(
+            sa.text(
+                "UPDATE conversion_drafts SET status = 'archived' WHERE status = 'discarded'"
+            )
+        )
         op.create_check_constraint(
             "conversion_drafts_status_check",
             "conversion_drafts",

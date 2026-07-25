@@ -22,6 +22,7 @@ Usage:
     alembic -x database=auth upgrade head   # Migrate auth_db
     alembic -x database=cases upgrade head  # Migrate cases_db
 """
+
 import os
 import sys
 from logging.config import fileConfig

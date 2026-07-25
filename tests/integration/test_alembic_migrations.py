@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "d6e7f8a9b0c1"  # current head (034 — conversion live-case uniqueness)
+HEAD_REVISION = "e7f8a9b0c1d2"  # current head (035 — operator access audit)
 # Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
 # (029) regardless of no-op migrations stacked above it — more robust than a
 # relative "downgrade -1", which follows whatever the current head is.
@@ -142,6 +142,7 @@ EXPECTED_TABLES = [
     "knowledge_suggestions",
     "config_overrides",
     "oauth_authorization_codes",
+    "operator_access_audit",
     "organization_members",
     "organizations",
     "permissions",

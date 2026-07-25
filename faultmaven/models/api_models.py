@@ -276,6 +276,41 @@ class CaseListFilter(BaseModel):
     )
 
 
+class OperatorAccessAuditEntry(BaseModel):
+    """One recorded platform-operator access (ADR-012 D8/D9).
+
+    Carries identifiers, an action and context counts only — never case titles
+    or content, which is what lets the trail be read without a break-glass
+    grant.
+    """
+
+    audit_id: int
+    operator_user_id: Optional[str] = None
+    operator_username: Optional[str] = None
+    action: str
+    # None = the access spanned all tenants (a cross-tenant list).
+    target_organization_id: Optional[str] = None
+    # None = the access was not scoped to a single case.
+    target_case_id: Optional[str] = None
+    # Break-glass provenance; None for ambient access.
+    reason: Optional[str] = None
+    grant_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    deployment_mode: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    created_at: datetime
+
+
+class OperatorAccessAuditListResponse(BaseModel):
+    """Paginated operator access trail, newest first."""
+
+    entries: List[OperatorAccessAuditEntry]
+    total_count: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
 class CaseListResponse(BaseModel):
     """Response for case listing."""
 

@@ -1,0 +1,88 @@
+"""Operator access audit — domain types and repository interface (ADR-012 D8/D9).
+
+The durable, queryable record of platform-operator access to tenant data, kept
+distinct from ``user_audit_log`` (which is RLS-tenanted and therefore cannot
+express a cross-tenant event; see ``interfaces_user.IAuditRepository``).
+
+The write path is deliberately narrow: callers state *what kind* of access
+happened and *what it targeted*, and the repository stamps the rest. There is
+no update or delete operation on this interface, and the database refuses both
+(migration 035) — an operator must not be able to alter the record of their own
+access.
+"""
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+
+class OperatorAction(str, Enum):
+    """The metadata/content boundary D8/D9 governs.
+
+    ``LIST`` is ambient metadata (ids, org, state, timestamps, counts — never
+    titles). ``CONTENT_OPEN`` is tenant content: title, transcript, evidence.
+    Title counts as content because it is user free-text and leaks.
+    """
+
+    LIST = "list"
+    CONTENT_OPEN = "content_open"
+
+
+@dataclass
+class OperatorAccessAudit:
+    """One recorded operator access."""
+
+    audit_id: int
+    operator_user_id: Optional[str]
+    operator_username: Optional[str]
+    action: OperatorAction
+    created_at: datetime
+    # None = the access spanned all tenants (a cross-tenant list).
+    target_organization_id: Optional[str] = None
+    # None = the access was not scoped to a single case.
+    target_case_id: Optional[str] = None
+    # Break-glass provenance (#815); None for ambient access.
+    reason: Optional[str] = None
+    grant_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    deployment_mode: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+
+
+class IOperatorAuditRepository(ABC):
+    """Append-only persistence for operator access records."""
+
+    @abstractmethod
+    async def record_access(
+        self,
+        operator_user_id: Optional[str],
+        action: OperatorAction,
+        operator_username: Optional[str] = None,
+        target_organization_id: Optional[str] = None,
+        target_case_id: Optional[str] = None,
+        reason: Optional[str] = None,
+        grant_id: Optional[str] = None,
+        expires_at: Optional[datetime] = None,
+        deployment_mode: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Append one access record.
+
+        Returns True when the row was persisted. Implementations must not raise
+        into the caller's request path — see the implementation for why a failed
+        audit write is surfaced rather than swallowed.
+        """
+
+    @abstractmethod
+    async def list_access(
+        self,
+        operator_user_id: Optional[str] = None,
+        target_organization_id: Optional[str] = None,
+        target_case_id: Optional[str] = None,
+        action: Optional[OperatorAction] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[List[OperatorAccessAudit], int]:
+        """Query the trail, newest first. Returns (page, total_matching)."""

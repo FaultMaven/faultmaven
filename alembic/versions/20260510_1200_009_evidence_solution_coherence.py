@@ -115,9 +115,7 @@ def upgrade() -> None:
         # / Solution.verified_at). Eliminates the read/write mismatch the
         # repo currently bridges by silently dropping the values.
         batch.alter_column("implemented_at", new_column_name="applied_at")
-        batch.alter_column(
-            "verification_timestamp", new_column_name="verified_at"
-        )
+        batch.alter_column("verification_timestamp", new_column_name="verified_at")
 
         # Sentinel-friendly actor columns (per case_actions.triggered_by
         # precedent — VARCHAR not FK so 'agent' is a legal value).
@@ -129,9 +127,7 @@ def upgrade() -> None:
                 server_default="agent",
             )
         )
-        batch.add_column(
-            sa.Column("applied_by", sa.String(length=50), nullable=True)
-        )
+        batch.add_column(sa.Column("applied_by", sa.String(length=50), nullable=True))
 
         # Verification metadata that the Pydantic model has been carrying
         # but the schema never stored.
@@ -139,9 +135,7 @@ def upgrade() -> None:
             sa.Column("verification_method", sa.String(length=500), nullable=True)
         )
         batch.add_column(
-            sa.Column(
-                "verification_evidence_id", sa.String(length=36), nullable=True
-            )
+            sa.Column("verification_evidence_id", sa.String(length=36), nullable=True)
         )
         batch.add_column(sa.Column("effectiveness", sa.Float(), nullable=True))
 
@@ -165,9 +159,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     with op.batch_alter_table("solutions") as batch:
-        batch.drop_constraint(
-            "fk_solutions_verification_evidence", type_="foreignkey"
-        )
+        batch.drop_constraint("fk_solutions_verification_evidence", type_="foreignkey")
 
     with op.batch_alter_table("solutions") as batch:
         batch.drop_constraint("solutions_effectiveness_range", type_="check")
