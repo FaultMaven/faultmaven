@@ -278,7 +278,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         1. Signature verification (RS256)
         2. Expiration check
         3. Token type check (must be "access")
-        4. Revocation check (if jti present)
+        4. Revocation check (jti and per-user watermark)
 
         Args:
             token: JWT access token
@@ -309,19 +309,19 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 )
                 return None
 
-            # Check revocation status
+            # Check revocation status (per-token jti and per-user watermark)
             jti = payload.get("jti")
-            if jti:
-                is_revoked = await self.revocation_store.is_revoked(jti)
-                if is_revoked:
-                    logger.info(
-                        "JWT validation failed: token revoked",
-                        extra={
-                            "jti": jti,
-                            "user_id": payload.get("sub"),
-                        },
-                    )
-                    return None
+            reason = await revocation_reason(self.revocation_store, payload)
+            if reason:
+                logger.info(
+                    "JWT validation failed: token revoked",
+                    extra={
+                        "jti": jti,
+                        "user_id": payload.get("sub"),
+                        "reason": reason,
+                    },
+                )
+                return None
 
             logger.debug(
                 "JWT access token validated",
@@ -352,7 +352,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         1. Signature verification (RS256)
         2. Expiration check
         3. Token type check (must be "refresh")
-        4. Revocation check (CRITICAL for refresh tokens)
+        4. Revocation check (jti and per-user watermark; CRITICAL for refresh)
 
         Args:
             token: JWT refresh token
@@ -392,13 +392,14 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 )
                 return None
 
-            is_revoked = await self.revocation_store.is_revoked(jti)
-            if is_revoked:
+            reason = await revocation_reason(self.revocation_store, payload)
+            if reason:
                 logger.info(
                     "JWT validation failed: refresh token revoked",
                     extra={
                         "jti": jti,
                         "user_id": payload.get("sub"),
+                        "reason": reason,
                     },
                 )
                 return None
@@ -517,6 +518,36 @@ async def _revoke_token_by_jti(
             "ttl_seconds": ttl,
         },
     )
+
+
+async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
+    """Return why a token's claims are revoked, or None if they are not.
+
+    The single place the two revocation arms are combined, so no validate path
+    can apply a different rule than another (the disagreement that #767 fixed
+    for the per-token arm):
+
+    - ``"token_revoked"`` — this specific jti was revoked.
+    - ``"user_revoked"`` — the user's watermark is at or after this token's
+      ``iat``, i.e. the token predates a bulk per-user revocation (#769).
+
+    A token missing ``sub``/``iat`` cannot be matched against a watermark, so
+    only the jti arm applies to it. Comparison is ``iat <= watermark`` rather
+    than ``<``: ``iat`` has whole-second granularity, and honouring a token
+    minted in the same second as a revocation is the more dangerous of the two
+    rounding errors.
+    """
+    jti = payload.get("jti")
+    if jti and await revocation_store.is_revoked(jti):
+        return "token_revoked"
+
+    user_id = payload.get("sub")
+    issued_at = payload.get("iat")
+    if user_id and issued_at is not None:
+        if await revocation_store.is_user_revoked(user_id, int(issued_at)):
+            return "user_revoked"
+
+    return None
 
 
 class HS256JWTTokenGenerator(IJWTTokenGenerator):
@@ -699,7 +730,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         2. Expiration check
         3. Issuer/Audience check
         4. Token type check (must be "access")
-        5. Revocation check (if jti present)
+        5. Revocation check (jti and per-user watermark)
 
         Args:
             token: JWT access token
@@ -730,19 +761,19 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 )
                 return None
 
-            # Check revocation status
+            # Check revocation status (per-token jti and per-user watermark)
             jti = payload.get("jti")
-            if jti:
-                is_revoked = await self.revocation_store.is_revoked(jti)
-                if is_revoked:
-                    logger.info(
-                        "JWT validation failed: token revoked",
-                        extra={
-                            "jti": jti,
-                            "user_id": payload.get("sub"),
-                        },
-                    )
-                    return None
+            reason = await revocation_reason(self.revocation_store, payload)
+            if reason:
+                logger.info(
+                    "JWT validation failed: token revoked",
+                    extra={
+                        "jti": jti,
+                        "user_id": payload.get("sub"),
+                        "reason": reason,
+                    },
+                )
+                return None
 
             logger.debug(
                 "JWT access token validated (HS256)",
@@ -797,19 +828,19 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 )
                 return None
 
-            # Check revocation status
+            # Check revocation status (per-token jti and per-user watermark)
             jti = payload.get("jti")
-            if jti:
-                is_revoked = await self.revocation_store.is_revoked(jti)
-                if is_revoked:
-                    logger.info(
-                        "JWT validation failed: refresh token revoked",
-                        extra={
-                            "jti": jti,
-                            "user_id": payload.get("sub"),
-                        },
-                    )
-                    return None
+            reason = await revocation_reason(self.revocation_store, payload)
+            if reason:
+                logger.info(
+                    "JWT validation failed: refresh token revoked",
+                    extra={
+                        "jti": jti,
+                        "user_id": payload.get("sub"),
+                        "reason": reason,
+                    },
+                )
+                return None
 
             logger.debug(
                 "JWT refresh token validated (HS256)",
@@ -870,8 +901,30 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
 class ITokenRevocationStore(ABC):
     """Interface for token revocation tracking.
 
-    Stores revoked token JTIs (JWT IDs) with TTL matching token expiration.
-    After token expires, revocation entry can be removed (no longer needed).
+    Two revocation granularities, both served by the one deployment-wide store
+    (#767):
+
+    - **Per token** (``add_revoked_token``/``is_revoked``): a single JTI, used
+      by logout, OAuth ``/revoke`` and refresh rotation.
+    - **Per user** (``revoke_user_tokens_before``/``is_user_revoked``): a
+      timestamp watermark, used by the admin revoke-tokens endpoint and the
+      deactivate/delete/role-change flows (#769). Enumerating a user's
+      outstanding JTIs is not possible — nothing indexes them — so per-user
+      revocation records *when* the revocation happened and rejects every
+      token issued at or before that instant. It needs no bookkeeping at mint
+      time, which is why it covers mint paths added later.
+
+      **That coverage is conditional, not absolute:** matching is on ``sub`` +
+      ``iat``, so it holds only while every mint path emits both and keys
+      ``sub`` to the same user_id the watermark is written under. A test pins
+      this; the type system does not. A future minter that omits ``iat`` would
+      under-revoke silently on the generator ``validate_*`` paths, which —
+      unlike ``AuthService.verify_token`` — do not ``require`` it. See
+      ``docs/architecture/security/iam-design.md`` for the full limits
+      (clock skew, Redis-only durability, password-reset tokens).
+
+    Entries carry a TTL matching token expiration; once a token can no longer
+    be presented, its revocation entry is redundant and expires.
     """
 
     @abstractmethod
@@ -893,6 +946,39 @@ class ITokenRevocationStore(ABC):
 
         Returns:
             True if revoked, False otherwise
+        """
+        ...
+
+    @abstractmethod
+    async def revoke_user_tokens_before(
+        self, user_id: str, revoked_at: int, ttl: int
+    ) -> None:
+        """Set the user's revocation watermark.
+
+        Every token for this user issued at or before ``revoked_at`` becomes
+        invalid. Overwrites any earlier watermark — a later revocation is
+        strictly stronger, and the caller has already decided to invalidate
+        everything outstanding.
+
+        Args:
+            user_id: User whose tokens are being revoked
+            revoked_at: Revocation instant as a Unix timestamp (seconds)
+            ttl: Time to live in seconds; must outlive the longest-lived token
+                the deployment issues, or tokens could outlive the watermark
+                that revokes them
+        """
+        ...
+
+    @abstractmethod
+    async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
+        """Check a token's ``iat`` against the user's revocation watermark.
+
+        Args:
+            user_id: User ID from the token's ``sub`` claim
+            issued_at: Token's ``iat`` claim as a Unix timestamp (seconds)
+
+        Returns:
+            True if the user has a watermark at or after ``issued_at``
         """
         ...
 

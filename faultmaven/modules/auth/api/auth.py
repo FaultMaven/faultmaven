@@ -35,7 +35,6 @@ from pydantic import BaseModel, ValidationError
 from faultmaven.api.v1.auth_dependencies import (
     check_auth_services_health,
     extract_bearer_token,
-    get_token_manager,
     get_token_revocation_store,
     get_user_store,
     require_authentication,
@@ -52,6 +51,7 @@ from faultmaven.modules.auth.domain.models.api_auth import (
     AuthTokenResponse,
     DevLoginRequest,
     LogoutResponse,
+    RevokeUserTokensResponse,
     TokenRefreshRequest,
     TokenRefreshResponse,
     TokenValidationError,
@@ -822,23 +822,15 @@ async def logout(
 @router.get("/me", response_model=UserInfoResponse)
 @trace("auth_get_current_user")
 async def get_current_user_profile(
-    request: Request,
     current_user: DevUser = Depends(require_authentication),
 ) -> UserInfoResponse:
     """Get current user profile
 
-    Returns detailed information about the currently authenticated user,
-    including profile data and token statistics.
+    Returns detailed information about the currently authenticated user.
     """
     correlation_id = str(uuid.uuid4())
 
     try:
-        token_manager = await get_token_manager(request)
-
-        # Get user's active tokens for statistics
-        user_tokens = await token_manager.get_user_tokens(current_user.user_id)
-        active_token_count = len([token for token in user_tokens if token.is_valid])
-
         # Build extended user profile
         user_info = UserInfoResponse(
             user_id=current_user.user_id,
@@ -851,7 +843,6 @@ async def get_current_user_profile(
                 current_user.roles if current_user.roles else ["user"]
             ),  # Ensure roles are included; least privilege when absent
             last_login=None,  # TODO: Implement last login tracking
-            token_count=active_token_count,
         )
 
         logger.debug(
@@ -928,24 +919,80 @@ async def auth_health_check():
         }
 
 
-@router.post("/users/{user_id}/revoke-tokens", response_model=LogoutResponse)
+@router.post("/users/{user_id}/revoke-tokens", response_model=RevokeUserTokensResponse)
 @trace("auth_revoke_user_tokens")
 async def revoke_user_tokens(
     user_id: str,
     request: Request,
     _: DevUser = Depends(require_platform_admin),
-) -> LogoutResponse:
-    """Revoke all tokens for a user. Admin only."""
-    try:
-        token_manager = await get_token_manager(request)
-        revoked_count = await token_manager.revoke_user_tokens(user_id)
+    user_store=Depends(get_user_store),
+) -> RevokeUserTokensResponse:
+    """Revoke all tokens for a user. Platform admin only.
 
-        logger.info(f"Revoked all tokens for user {user_id}, count: {revoked_count}")
-        return LogoutResponse(
-            message=f"Revoked all {revoked_count} tokens for user",
-            revoked_tokens=revoked_count,
+    Writes a per-user revocation watermark to the shared revocation store; the
+    request path and both token generators then reject every token for this
+    user issued at or before that instant (#769). A store write failure is a
+    500 — an admin must never get a revocation confirmation while the user's
+    tokens keep authenticating.
+
+    Unknown ``user_id`` is a 404 rather than a vacuous success. The watermark
+    write would succeed for any string, so an admin who pastes a username (or
+    mistypes an id) while containing a compromised account would otherwise get
+    a "revoked" confirmation while the real account kept authenticating —
+    the same false-confirmation failure this endpoint was fixed for.
+
+    The revocation happens BEFORE that lookup and is never conditional on it.
+    ``DatabaseUserStore.get_user`` swallows its exceptions and returns None, so
+    an auth-DB outage is indistinguishable from a genuinely absent user (see
+    #703, where exactly that DB froze). Gating on it would let a DB blip answer
+    "user not found" to an admin containing a live compromise, having revoked
+    nothing. Revocation only needs Redis, so it runs on Redis alone; the lookup
+    only shapes the response. A watermark written for an id that turns out not
+    to exist is inert and expires on its own.
+    """
+    try:
+        auth_service = getattr(request.app.state, "auth_service", None)
+        if auth_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service unavailable. Please check server startup logs.",
+            )
+
+        # Raises ServiceError on store failure, which surfaces as a 500 below.
+        revoked_before = await auth_service.revoke_user_tokens(user_id)
+
+        if await user_store.get_user(user_id) is None:
+            logger.warning(
+                "Revoke-tokens called for an unresolvable user_id; watermark "
+                "written anyway (the lookup cannot distinguish absent from "
+                "store failure)",
+                extra={"user_id": user_id},
+            )
+            # Say that the revocation landed. A bare "user not found" would be
+            # actively misleading when the cause is a lookup failure rather
+            # than a bad id: the admin would assume nothing happened and that
+            # they still need to act, which is the false-signal problem this
+            # endpoint was fixed for, inverted.
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Revocation recorded for '{user_id}', but no such user "
+                    "could be resolved — verify the user ID (or, if the user "
+                    "does exist, the user store is failing)."
+                ),
+            )
+
+        logger.info(
+            "Revoked all tokens for user",
+            extra={"user_id": user_id, "revoked_before": revoked_before.isoformat()},
+        )
+        return RevokeUserTokensResponse(
+            message="All tokens revoked for user",
+            revoked_before=revoked_before.isoformat(),
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Token revocation failed: {e}")
         raise HTTPException(
