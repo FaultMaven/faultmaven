@@ -148,10 +148,10 @@ class TestEvidenceNeedValidators:
         n = _make_need(
             case_id="case_abc123def456",
             state=NeedState.SUPERSEDED,
-            superseded_reason="all motivating hypotheses retired",
+            superseded_reason="all motivating hypotheses are terminal",
         )
         assert n.state == NeedState.SUPERSEDED
-        assert n.superseded_reason == "all motivating hypotheses retired"
+        assert n.superseded_reason == "all motivating hypotheses are terminal"
 
     def test_fulfilled_requires_fulfilling_evidence(self):
         with pytest.raises(ValidationError, match="fulfilling_evidence_id"):
@@ -169,6 +169,49 @@ class TestEvidenceNeedValidators:
         )
         assert n.state == NeedState.FULFILLED
         assert n.fulfilling_evidence_ids == ["ev_abc123def456"]
+
+    def test_admissible_state_demotes_unbacked_fulfillment(self):
+        """#620: the FULFILLED admission rule has ONE owner.
+
+        ``_validate_state_consistency`` only fires on construction, and
+        ``validate_assignment`` is off, so an in-place ``need.state =
+        FULFILLED`` with no evidence survives until the Case is persisted and
+        then 500s far from its cause. Every apply-layer site routes the
+        caller-supplied state through ``admissible_state`` instead of carrying
+        its own copy of the check.
+        """
+        assert (
+            EvidenceNeed.admissible_state(NeedState.FULFILLED, [])
+            == NeedState.PARTIALLY_MET
+        )
+
+    def test_admissible_state_passes_backed_and_other_states_through(self):
+        assert (
+            EvidenceNeed.admissible_state(NeedState.FULFILLED, ["ev_abc123def456"])
+            == NeedState.FULFILLED
+        )
+        for state in NeedState:
+            if state == NeedState.FULFILLED:
+                continue
+            assert EvidenceNeed.admissible_state(state, []) == state
+        # ``None`` means "no state change requested" on the update path.
+        assert EvidenceNeed.admissible_state(None, []) is None
+
+    def test_admissible_state_result_always_constructs(self):
+        """The rule's output must be a state the model will actually accept
+        with the evidence in hand — that is the whole point of routing through
+        it. Sweeps every state rather than asserting the one demotion."""
+        for state in NeedState:
+            admitted = EvidenceNeed.admissible_state(state, [])
+            need = _make_need(
+                case_id="case_abc123def456",
+                state=admitted,
+                fulfilling_evidence_ids=[],
+                superseded_reason=(
+                    "moot" if admitted == NeedState.SUPERSEDED else None
+                ),
+            )
+            assert need.state == admitted
 
     def test_whitespace_only_request_text_rejected(self):
         with pytest.raises(ValidationError):
@@ -329,7 +372,7 @@ class TestRepositoryRoundTrip:
             case_id=case.case_id,
             purpose=NeedPurpose.CAUSAL_VERIFICATION,
             state=NeedState.SUPERSEDED,
-            superseded_reason="all motivating hypotheses retired",
+            superseded_reason="all motivating hypotheses are terminal",
         )
         case.evidence_needs.append(need)
 
@@ -338,7 +381,7 @@ class TestRepositoryRoundTrip:
 
         loaded = retrieved.evidence_needs[0]
         assert loaded.state == NeedState.SUPERSEDED
-        assert loaded.superseded_reason == "all motivating hypotheses retired"
+        assert loaded.superseded_reason == "all motivating hypotheses are terminal"
 
     @pytest.mark.asyncio
     async def test_obtainability_round_trips(self, repository):

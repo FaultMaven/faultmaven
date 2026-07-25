@@ -33,7 +33,7 @@ from faultmaven.core.investigation.kb_cause_seeder import (
     seed_candidate_causes,
 )
 from faultmaven.core.investigation.milestone_engine import (
-    _supersede_needs_on_hypothesis_retirement,
+    _supersede_needs_on_terminal_hypothesis,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -1379,7 +1379,7 @@ def test_seeded_needs_supersede_when_their_hypothesis_retires():
     assert seeded
 
     # The inherited motivator-based supersession (evidence-needs-design §7.4).
-    flipped = _supersede_needs_on_hypothesis_retirement(case, hyp_id, current_turn=2)
+    flipped = _supersede_needs_on_terminal_hypothesis(case, hyp_id, current_turn=2)
 
     assert flipped == len(seeded)
     for need in seeded:
