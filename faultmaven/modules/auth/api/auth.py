@@ -873,21 +873,34 @@ async def get_available_scopes(
 ) -> AvailableScopesResponse:
     """Return the scopes the calling user can target for team collaboration.
 
-    ``personal`` (author-only) and ``global`` (platform-wide) are always
-    available. ``team`` is reported only when the deployment is team-enabled
+    ``personal`` (author-only) is always available.
+
+    ``team`` is reported only when the deployment is team-enabled
     (``team_service`` is wired — a Cloud collaboration feature, unwired in
     standalone) AND the caller actually belongs to at least one Team, since a
-    user with no Team has nothing to target. Frontends gate their team UI (KB
-    team-publish, case share-to-team) on this signal, so it must reflect the
-    caller's real capability rather than a hardcoded assumption. Scopes are
-    returned narrowest-to-widest: ``personal | team | global``.
+    user with no Team has nothing to target.
+
+    ``global`` is the platform tier, so it is reported only to a
+    ``platform_admin``: every route that publishes at global scope requires
+    that role (``POST /knowledge/documents`` unconditionally; the conversion
+    routes for ``scope == "global"``). Reporting it to everyone made the
+    dashboard offer a target the backend then refused, which is the drift this
+    endpoint exists to prevent — its whole point is to reflect the caller's
+    real capability rather than a hardcoded assumption.
+
+    Scopes are returned narrowest-to-widest: ``personal | team | global``.
     """
-    scopes = ["personal", "global"]
+    scopes = ["personal"]
+
     team_service = getattr(request.app.state, "team_service", None)
     if team_service:
         team_ids = await team_service.list_all_user_team_ids(current_user.user_id)
         if team_ids:
-            scopes.insert(1, "team")
+            scopes.append("team")
+
+    if current_user.is_platform_admin():
+        scopes.append("global")
+
     return AvailableScopesResponse(scopes=scopes)
 
 
