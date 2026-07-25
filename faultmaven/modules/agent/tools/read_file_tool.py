@@ -174,20 +174,14 @@ class ReadFileTool(AgentTool):
                     ),
                 )
 
-            # Load via FileStorageService. We construct it on-demand using the
-            # configured storage root rather than plumbing a new dependency
-            # through ToolContext.
-            from faultmaven.config.settings import get_settings
+            # Load via FileStorageService. We construct it on-demand rather
+            # than plumbing a new dependency through ToolContext; it resolves
+            # the configured storage backend itself.
             from faultmaven.modules.evidence.domain.services.file_storage_service import (
                 FileStorageService,
             )
 
-            settings = get_settings()
-            storage = FileStorageService(
-                storage_root=getattr(
-                    settings, "evidence_storage_root", "./data/evidence"
-                ),
-            )
+            storage = FileStorageService()
             try:
                 file_data = await storage.retrieve_file(storage_ref)
             except Exception as e:

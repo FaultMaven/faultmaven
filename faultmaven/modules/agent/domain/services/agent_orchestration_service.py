@@ -1714,12 +1714,7 @@ class AgentOrchestrationService:
                 FileStorageService,
             )
 
-            settings = get_settings()
-            storage = FileStorageService(
-                storage_root=getattr(
-                    settings, "evidence_storage_root", "./data/evidence"
-                ),
-            )
+            storage = FileStorageService()
             file_data = await storage.retrieve_file(storage_ref)
             return file_data.decode("utf-8", errors="replace")
         except Exception:

@@ -25,7 +25,9 @@ The systemic fix requires three invariants that this test enforces:
 3. ``services.py`` must not construct a second ``FileStorageService``
    instance. Centralizing construction in the infrastructure layer gives
    a single source of truth and prevents two-instance footguns (e.g. one
-   with a different storage_root than the other).
+   pointed at a different backend than the other).
+4. No production call site passes a ``storage_root``. Storage location is
+   the backend's business (#689); a pinned root re-inerts ``STORAGE_BACKEND``.
 
 The test is deliberately source-level rather than exercising the real
 ``register_infrastructure`` function — it directly asserts the invariants
@@ -36,6 +38,7 @@ registration, duplicates construction, or re-introduces the stale key
 will see this fail immediately.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -97,6 +100,29 @@ class TestFileStorageServiceWiring:
             "tools.py still uses the old 'storage_service' registry key. "
             "That name was never registered; consumers using it silently "
             "received None. Rename to 'file_storage_service'."
+        )
+
+    def test_no_construction_site_pins_a_storage_root(self):
+        """No production caller may hand FileStorageService a storage root.
+
+        Storage location belongs to the backend that STORAGE_BACKEND selects
+        (#689). Before that fix, four sites each passed their own local root —
+        two of them inline in feature code — which is why repairing only the
+        composition roots would have looked complete while
+        ``STORAGE_BACKEND=s3`` stayed inert for the agent's read paths.
+        """
+        offenders = []
+        for path in (_REPO_ROOT / "faultmaven").rglob("*.py"):
+            source = path.read_text()
+            for match in re.finditer(r"FileStorageService\((.*?)\)", source, re.S):
+                if "storage_root" in match.group(1):
+                    offenders.append(str(path.relative_to(_REPO_ROOT)))
+
+        assert not offenders, (
+            "These call sites pass a storage_root to FileStorageService: "
+            f"{sorted(set(offenders))}. The service takes an "
+            "IFileStorageBackend; a hardcoded root silently pins evidence to "
+            "the local filesystem no matter what STORAGE_BACKEND says."
         )
 
     def test_services_provider_does_not_duplicate_construction(self):

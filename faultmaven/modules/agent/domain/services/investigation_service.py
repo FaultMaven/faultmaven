@@ -846,7 +846,7 @@ class InvestigationService:
                             "size": uf.size_bytes,
                             "source_type": source,
                             "summary": uf.summary or "",
-                            "s3_uri": uf.storage_ref,
+                            "storage_ref": uf.storage_ref,
                         }
                     )
                 # DA evidence search is handled inside MilestoneEngine's
@@ -1215,7 +1215,7 @@ class InvestigationService:
 
         # Post-010 strict evidence model: file upload creates only an
         # UploadedFile row (with preprocessing artifacts attached).
-        # 1. Store raw content; storage_result.file_path becomes the
+        # 1. Store raw content; storage_result.storage_key becomes the
         #    UploadedFile.storage_ref the backend uses to retrieve.
         # 2. Construct UploadedFile carrying file-level metadata
         #    (filename, size, hash, mime, upload provenance).
@@ -1237,7 +1237,7 @@ class InvestigationService:
                 case_id=case.case_id,
                 mime_type=attachment.content_type,
             )
-            storage_ref = storage_result.get("file_path")
+            storage_ref = storage_result.get("storage_key")
 
         uploaded_file = UploadedFile(
             file_id=f"file_{uuid4().hex[:12]}",
@@ -1264,7 +1264,16 @@ class InvestigationService:
         )
         if mark_linked is not None and storage_ref:
             try:
-                await mark_linked(storage_ref)
+                # Check the result, don't just call it: mark_linked reports
+                # failure by returning False rather than raising, so without
+                # this the warning below could never fire and an at-risk file
+                # would be reclaimed at TTL with no operator signal.
+                if not await mark_linked(storage_ref):
+                    logger.warning(
+                        "mark_linked returned False for %s (non-fatal, file "
+                        "stays as orphan candidate until TTL)",
+                        storage_ref,
+                    )
             except Exception as e:
                 logger.warning(
                     "mark_linked failed for %s (non-fatal, file stays as "

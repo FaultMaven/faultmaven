@@ -12,11 +12,11 @@ Usage:
     url = await backend.generate_download_url("org123/case456/file.log")
 """
 
+import asyncio
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, List, Optional
 
 import aiofiles
 import aiofiles.os
@@ -61,8 +61,11 @@ class FilesystemStorageBackend(IFileStorageBackend):
         self.storage_root = Path(storage_root)
         self.base_url = base_url.rstrip("/")
 
-        # Ensure storage root exists
-        self.storage_root.mkdir(parents=True, exist_ok=True)
+        # No mkdir here. Construction happens lazily via get_storage_backend(),
+        # which agent tools reach on a request path, and the storage root may
+        # be a network mount where a synchronous mkdir blocks the event loop.
+        # store_file creates directories asynchronously when it needs them;
+        # every read path already tolerates a root that does not exist yet.
         logger.info(f"Filesystem storage initialized at {self.storage_root}")
 
     def _get_full_path(self, key: str) -> Path:
@@ -183,8 +186,10 @@ class FilesystemStorageBackend(IFileStorageBackend):
         """
         full_path = self._get_full_path(key)
 
-        # Create parent directories
-        full_path.parent.mkdir(parents=True, exist_ok=True)
+        # Create parent directories. Async, not Path.mkdir: the storage root
+        # may be a network mount (an RWX volume shared between replicas), where
+        # a synchronous mkdir is a blocking round-trip on the event loop.
+        await aiofiles.os.makedirs(str(full_path.parent), exist_ok=True)
 
         # Write file
         async with aiofiles.open(full_path, "wb") as f:
@@ -311,6 +316,36 @@ class FilesystemStorageBackend(IFileStorageBackend):
             created_at=created_at,
             metadata=metadata,
         )
+
+    async def list_keys(self, prefix: str = "") -> List[str]:
+        """List stored keys under a prefix by walking the storage root.
+
+        Args:
+            prefix: Only return keys starting with this string.
+
+        Returns:
+            Storage keys relative to the storage root, POSIX-separated so
+            they round-trip through the same form ``store_file`` accepted.
+        """
+
+        def _walk() -> List[str]:
+            # The existence check belongs in here too: on a network mount even
+            # a stat is a blocking round-trip.
+            if not self.storage_root.exists():
+                return []
+
+            keys = []
+            for path in self.storage_root.rglob("*"):
+                if not path.is_file():
+                    continue
+                key = path.relative_to(self.storage_root).as_posix()
+                if key.startswith(prefix):
+                    keys.append(key)
+            return keys
+
+        # rglob over a large evidence tree is blocking I/O — keep it off the
+        # event loop like every other sweep in this codebase.
+        return await asyncio.to_thread(_walk)
 
     def get_storage_type(self) -> StorageType:
         """Get the storage backend type.

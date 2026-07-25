@@ -495,26 +495,31 @@ Every file stored via `FileStorageService.store_file()` gets a companion `{filen
 }
 ```
 
-`FileStorageService.mark_linked(file_path)` flips `linked=true` once an Evidence row references the file. Called from `InvestigationService._preprocess_attachment` after `store_file` returns.
+`FileStorageService.mark_linked(storage_key)` flips `linked=true` once an Evidence row references the file. Called from `InvestigationService._preprocess_attachment` after `store_file` returns.
 
-The sweep (`faultmaven.modules.agent.jobs.storage_cleanup`) walks the storage root, reads each sidecar, and deletes any file where `linked=false` AND `uploaded_at` is older than `ORPHAN_FILE_TTL_HOURS` (default 24). Files without sidecars are skipped (unknown state is not license to delete). Corrupt sidecars count as errors and their files stay.
+The sweep (`faultmaven.modules.agent.jobs.storage_cleanup`) enumerates sidecars **through the storage backend** — not by walking a directory, so it works whichever backend `STORAGE_BACKEND` selects — and deletes any file where `linked=false` AND `uploaded_at` is older than `ORPHAN_FILE_TTL_HOURS` (default 24). Files without sidecars are skipped (unknown state is not license to delete). Unreadable sidecars count as errors and their files stay.
 
 ```python
 # Simplified sweep — full implementation in faultmaven/modules/agent/jobs/storage_cleanup.py
-async def cleanup_orphaned_files(storage_root, ttl_hours, dry_run):
+async def cleanup_orphaned_files(storage, ttl_hours, dry_run):
     cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
-    for sidecar in Path(storage_root).rglob("*.meta.json"):
-        payload = json.loads(sidecar.read_text())
+    candidates, strays = await storage.survey_sidecars()   # strays: file already gone
+    for storage_key in candidates:
+        # read_sidecar returns None only for a genuinely absent sidecar and
+        # RAISES if it cannot be read — the job counts that as an error and
+        # skips, so unknown state never becomes a deletion.
+        payload = await storage.read_sidecar(storage_key)
+        if payload is None:
+            continue  # raced deletion — nothing to reclaim
         if payload["linked"] is True:
             continue
         uploaded_at = datetime.fromisoformat(payload["uploaded_at"])
         if uploaded_at > cutoff:
             continue  # within TTL — might still be in-flight
         if dry_run:
-            logger.info(f"would delete: {file_path}")
+            logger.info(f"would delete: {storage_key}")
         else:
-            file_path.unlink()
-            sidecar.unlink()
+            await storage.delete_file(storage_key)  # removes the sidecar too
             EVIDENCE_ORPHAN_FILES_DELETED_TOTAL.inc()
 ```
 

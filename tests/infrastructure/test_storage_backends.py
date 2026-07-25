@@ -7,6 +7,7 @@ Verifies:
 4. Factory correctly selects backend based on STORAGE_BACKEND
 """
 
+import importlib.util
 import os
 import tempfile
 from datetime import timedelta
@@ -14,6 +15,15 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+# boto3 ships only in the cloud extra: `requirements/test.txt` (the Standalone
+# CI install) deliberately omits it, and that job asserts its absence. Tests
+# that patch `boto3.client` must therefore skip there — `mock.patch` imports
+# the target module, so an unguarded patch is a hard error, not a skip.
+_BOTO3_AVAILABLE = importlib.util.find_spec("boto3") is not None
+_REQUIRES_BOTO3 = pytest.mark.skipif(
+    not _BOTO3_AVAILABLE, reason="boto3 is a cloud-only dependency"
+)
 
 # =============================================================================
 # Fixtures
@@ -425,6 +435,97 @@ class TestStorageFactory:
 
 class TestStorageIntegration:
     """Integration tests for storage backends."""
+
+    @_REQUIRES_BOTO3
+    @pytest.mark.asyncio
+    async def test_evidence_storage_honours_s3_backend_selection(
+        self, clean_env, mock_boto3_client
+    ):
+        """STORAGE_BACKEND=s3 must actually route evidence blobs to S3.
+
+        This is the #689 regression. The evidence path used to write straight
+        to the local filesystem, so the whole storage-backend abstraction —
+        interface, S3 implementation, factory, setting — was inert: flipping
+        STORAGE_BACKEND changed nothing. Asserting on the backend alone cannot
+        catch that, so this drives the real FileStorageService and checks that
+        the bytes reached the S3 client.
+        """
+        from faultmaven.infrastructure.storage import (
+            get_storage_backend,
+            reset_storage_backend,
+        )
+        from faultmaven.modules.evidence.domain.services.file_storage_service import (
+            FileStorageService,
+        )
+
+        try:
+            with patch("faultmaven.config.settings.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(
+                    providers=MagicMock(storage_backend=MagicMock(value="s3")),
+                    evidence_storage=MagicMock(
+                        s3_bucket_name="evidence-bucket",
+                        s3_region="us-east-1",
+                        s3_key_prefix="",
+                        s3_endpoint_url=None,
+                    ),
+                )
+                with patch("boto3.client", return_value=mock_boto3_client):
+                    # Resolved exactly as production does: the service takes
+                    # whatever STORAGE_BACKEND selects.
+                    service = FileStorageService(
+                        backend=get_storage_backend(reset=True)
+                    )
+
+                    result = await service.store_file(
+                        file_data=b"kernel panic at 03:14",
+                        original_filename="error.log",
+                        organization_id="org123",
+                        case_id="case456",
+                        mime_type="text/plain",
+                    )
+        finally:
+            reset_storage_backend()
+
+        # The blob went to S3, not to any local directory.
+        stored = {
+            call.kwargs["Key"]: call.kwargs["Body"]
+            for call in mock_boto3_client.put_object.call_args_list
+        }
+        assert stored[result["storage_key"]] == b"kernel panic at 03:14"
+        # ...and so did its orphan-tracking sidecar, or cleanup would never
+        # see the file on an S3 deployment.
+        assert f"{result['storage_key']}.meta.json" in stored
+
+    @_REQUIRES_BOTO3
+    @pytest.mark.asyncio
+    async def test_s3_calls_do_not_run_on_the_event_loop(self, mock_boto3_client):
+        """boto3 is synchronous — its calls must not block the event loop.
+
+        A blocking S3 round-trip stalls every other request in the process,
+        including /health, which a Kubernetes liveness probe escalates into a
+        pod kill. Asserting on the thread identity is the mechanical way to
+        prove the call was offloaded.
+        """
+        import threading
+
+        from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+
+        loop_thread = threading.get_ident()
+        call_threads = []
+
+        def _record(**kwargs):
+            call_threads.append(threading.get_ident())
+            return {}
+
+        mock_boto3_client.put_object.side_effect = _record
+
+        with patch("boto3.client", return_value=mock_boto3_client):
+            backend = S3StorageBackend(bucket_name="test-bucket")
+
+        await backend.store_file(key="k", data=b"payload")
+
+        assert call_threads, "put_object was never called"
+        assert loop_thread not in call_threads
 
     @pytest.mark.asyncio
     async def test_evidence_upload_flow_uses_interface(self, filesystem_backend):

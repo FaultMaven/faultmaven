@@ -290,10 +290,10 @@ spec:
               - name: STORAGE_BACKEND
                 value: "s3"
 
-              - name: S3_BUCKET
+              - name: S3_BUCKET_NAME
                 value: "faultmaven-evidence"
 
-              - name: AWS_REGION
+              - name: S3_REGION
                 value: "us-east-1"
 
             resources:

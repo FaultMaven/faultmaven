@@ -17,9 +17,11 @@ Configuration:
     3. IAM role (when running on AWS infrastructure)
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from functools import partial
+from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
@@ -124,6 +126,18 @@ class S3StorageBackend(IFileStorageBackend):
         """
         return f"{self.prefix}{key}"
 
+    async def _call(self, method_name: str, **kwargs: Any) -> Any:
+        """Run a blocking boto3 client call off the event loop.
+
+        boto3 is synchronous: awaiting a client call directly would block the
+        whole loop for the duration of the S3 round-trip, stalling unrelated
+        requests — including ``/health``, which a Kubernetes liveness probe
+        escalates into a pod kill. Every S3 call in this backend goes through
+        here.
+        """
+        method = getattr(self._client, method_name)
+        return await asyncio.to_thread(partial(method, **kwargs))
+
     async def generate_upload_url(
         self,
         key: str,
@@ -156,7 +170,8 @@ class S3StorageBackend(IFileStorageBackend):
         if metadata:
             params["Metadata"] = metadata
 
-        url = self._client.generate_presigned_url(
+        url = await self._call(
+            "generate_presigned_url",
             ClientMethod="put_object",
             Params=params,
             ExpiresIn=expires_seconds,
@@ -199,7 +214,7 @@ class S3StorageBackend(IFileStorageBackend):
 
         # Check if object exists
         try:
-            self._client.head_object(Bucket=self.bucket_name, Key=full_key)
+            await self._call("head_object", Bucket=self.bucket_name, Key=full_key)
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "404":
                 raise FileNotFoundError(f"File not found: {key}")
@@ -215,7 +230,8 @@ class S3StorageBackend(IFileStorageBackend):
         if filename:
             params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
 
-        url = self._client.generate_presigned_url(
+        url = await self._call(
+            "generate_presigned_url",
             ClientMethod="get_object",
             Params=params,
             ExpiresIn=expires_seconds,
@@ -261,7 +277,7 @@ class S3StorageBackend(IFileStorageBackend):
         if metadata:
             put_kwargs["Metadata"] = metadata
 
-        self._client.put_object(**put_kwargs)
+        await self._call("put_object", **put_kwargs)
 
         logger.info(f"Stored file to S3: {full_key} ({len(data)} bytes)")
 
@@ -284,12 +300,18 @@ class S3StorageBackend(IFileStorageBackend):
         """
         full_key = self._get_full_key(key)
 
-        try:
+        def _get() -> bytes:
+            # get_object and the streaming body read are both blocking, so
+            # they belong in the same worker thread — splitting them would
+            # put the (potentially large) download back on the event loop.
             response = self._client.get_object(
                 Bucket=self.bucket_name,
                 Key=full_key,
             )
-            data = response["Body"].read()
+            return response["Body"].read()
+
+        try:
+            data = await asyncio.to_thread(_get)
             logger.debug(f"Retrieved file from S3: {full_key} ({len(data)} bytes)")
             return data
         except ClientError as e:
@@ -310,13 +332,13 @@ class S3StorageBackend(IFileStorageBackend):
 
         # Check if exists first
         try:
-            self._client.head_object(Bucket=self.bucket_name, Key=full_key)
+            await self._call("head_object", Bucket=self.bucket_name, Key=full_key)
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "404":
                 return False
             raise
 
-        self._client.delete_object(Bucket=self.bucket_name, Key=full_key)
+        await self._call("delete_object", Bucket=self.bucket_name, Key=full_key)
 
         logger.info(f"Deleted file from S3: {full_key}")
         return True
@@ -333,7 +355,7 @@ class S3StorageBackend(IFileStorageBackend):
         full_key = self._get_full_key(key)
 
         try:
-            self._client.head_object(Bucket=self.bucket_name, Key=full_key)
+            await self._call("head_object", Bucket=self.bucket_name, Key=full_key)
             return True
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "404":
@@ -352,7 +374,8 @@ class S3StorageBackend(IFileStorageBackend):
         full_key = self._get_full_key(key)
 
         try:
-            response = self._client.head_object(
+            response = await self._call(
+                "head_object",
                 Bucket=self.bucket_name,
                 Key=full_key,
             )
@@ -368,6 +391,33 @@ class S3StorageBackend(IFileStorageBackend):
             if e.response.get("Error", {}).get("Code") == "404":
                 return None
             raise
+
+    async def list_keys(self, prefix: str = "") -> List[str]:
+        """List object keys under a prefix.
+
+        Args:
+            prefix: Only return keys starting with this string. Combined with
+                the backend's configured key prefix before the request.
+
+        Returns:
+            Storage keys with the backend prefix stripped, so they round-trip
+            through the same form ``store_file`` accepted.
+        """
+        full_prefix = self._get_full_key(prefix)
+
+        def _list() -> List[str]:
+            # Paginate: list_objects_v2 caps at 1000 keys per response, and an
+            # evidence bucket will exceed that. A single call would silently
+            # truncate the sweep, which for orphan cleanup means quietly
+            # leaking every file past the first page.
+            keys = []
+            paginator = self._client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=full_prefix):
+                for obj in page.get("Contents", []):
+                    keys.append(obj["Key"][len(self.prefix) :])
+            return keys
+
+        return await asyncio.to_thread(_list)
 
     def get_storage_type(self) -> StorageType:
         """Get the storage backend type.

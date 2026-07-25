@@ -588,8 +588,9 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             FileStorageService,
         )
 
+        # No storage root here: the backend (filesystem or S3, per
+        # STORAGE_BACKEND) is resolved by get_storage_backend().
         file_storage_service = FileStorageService(
-            storage_root=settings.evidence_storage_root,
             max_file_size_bytes=settings.max_evidence_file_size,
         )
         container._register_service("file_storage_service", file_storage_service)
