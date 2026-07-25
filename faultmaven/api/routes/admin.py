@@ -61,6 +61,7 @@ router = APIRouter(
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_users(
     current_user: AuthenticatedUser = Depends(require_platform_admin),
+    user_service=Depends(get_user_service),
     is_active: Optional[bool] = Query(
         None, description="Filter by active/inactive status"
     ),
@@ -94,8 +95,6 @@ async def list_users(
         422 Unprocessable Entity: Invalid query parameters
     """
     try:
-        user_service = get_user_service()
-
         users, total = await user_service.list_users(
             is_active=is_active,
             role=role,
@@ -148,6 +147,7 @@ async def list_users(
 async def get_user_details(
     user_id: str = Path(..., description="User ID to retrieve"),
     current_user: AuthenticatedUser = Depends(require_platform_admin),
+    user_service=Depends(get_user_service),
 ) -> UserDetailResponse:
     """Get detailed user information (admin only).
 
@@ -166,8 +166,6 @@ async def get_user_details(
         404 Not Found: User does not exist
     """
     try:
-        user_service = get_user_service()
-
         user_data = await user_service.get_user_with_metadata(user_id=user_id)
 
         if not user_data:
@@ -205,6 +203,7 @@ async def get_user_details(
 async def deactivate_user(
     user_id: str = Path(..., description="User ID to deactivate"),
     current_user: AuthenticatedUser = Depends(require_platform_admin),
+    user_service=Depends(get_user_service),
 ) -> UserStatusResponse:
     """Deactivate user account (admin only).
 
@@ -231,8 +230,6 @@ async def deactivate_user(
         )
 
     try:
-        user_service = get_user_service()
-
         updated_user = await user_service.deactivate_user_admin(
             user_id=user_id,
             organization_id=current_user.organization_id,
@@ -263,6 +260,7 @@ async def deactivate_user(
 async def activate_user(
     user_id: str = Path(..., description="User ID to activate"),
     current_user: AuthenticatedUser = Depends(require_platform_admin),
+    user_service=Depends(get_user_service),
 ) -> UserStatusResponse:
     """Activate user account (admin only).
 
@@ -281,8 +279,6 @@ async def activate_user(
         409 Conflict: User already active
     """
     try:
-        user_service = get_user_service()
-
         updated_user = await user_service.activate_user_admin(
             user_id=user_id,
             organization_id=current_user.organization_id,
@@ -314,6 +310,7 @@ async def assign_role(
     user_id: str = Path(..., description="User ID to assign role to"),
     request: RoleAssignmentRequest = Body(...),
     current_user: AuthenticatedUser = Depends(require_platform_admin),
+    user_service=Depends(get_user_service),
 ) -> RoleAssignmentResponse:
     """Assign role to user (admin only).
 
@@ -337,8 +334,6 @@ async def assign_role(
         422 Unprocessable Entity: Invalid role
     """
     try:
-        user_service = get_user_service()
-
         updated_user = await user_service.assign_role(
             user_id=user_id,
             role=request.role,
@@ -386,6 +381,7 @@ async def remove_role(
     user_id: str = Path(..., description="User ID to remove role from"),
     role: str = Path(..., description="Role to remove (admin, member)"),
     current_user: AuthenticatedUser = Depends(require_platform_admin),
+    user_service=Depends(get_user_service),
 ) -> RoleAssignmentResponse:
     """Remove role from user (admin only).
 
@@ -406,8 +402,6 @@ async def remove_role(
         422 Unprocessable Entity: Invalid role or attempting to remove viewer role
     """
     try:
-        user_service = get_user_service()
-
         updated_user = await user_service.remove_role(
             user_id=user_id,
             role=role,
