@@ -38,7 +38,10 @@ def mock_auth_service():
         access_token="access-token",
         refresh_token="refresh-token",
     )
-    auth_service.revoke_user_tokens = AsyncMock()
+    # Returns the revocation watermark (#769), not a token count.
+    auth_service.revoke_user_tokens = AsyncMock(
+        return_value=datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+    )
     return auth_service
 
 

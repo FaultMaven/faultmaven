@@ -30,33 +30,47 @@ FaultMaven implements a role-based access control system to manage user permissi
 python scripts/auth/list_users.py
 ```
 
-**Create admin user:**
+**Create a platform admin (deployment operator, cross-tenant reach):**
+```bash
+python scripts/auth/create_user.py --username myoperator --role platform_admin
+```
+
+**Create an organization admin (tenant-bounded):**
 ```bash
 python scripts/auth/create_user.py --username myadmin --role admin
 ```
 
-**Promote existing user to admin:**
+**Promote an existing user to platform admin:**
 ```bash
 python scripts/auth/promote_to_platform_admin.py username
 ```
 
+> **Upgrading an existing deployment.** The `admin` role no longer grants
+> operator access. The bootstrap account (`admin` / `admin@local.faultmaven`) is
+> re-granted the operator roles automatically at startup, but any *other*
+> account that was an operator under the old single-role model — one created
+> with `--role admin`, or promoted by the former `promote_to_admin.py` — holds
+> only the org-scoped `admin` and will get 403 on every operator endpoint until
+> it is promoted with the command above.
+
 ### For Developers
 
-**Check if user is admin in backend:**
+**Check if user is a platform admin in backend:**
 ```python
 from faultmaven.api.v1.auth_dependencies import require_platform_admin
 
 @router.post("/admin-endpoint")
 async def admin_only(current_user: DevUser = Depends(require_platform_admin)):
-    # Only admins can access this
+    # Only platform admins can access this
     ...
 ```
 
-**Check if user is admin in frontend:**
+**Check if user is a platform admin in frontend:**
 ```typescript
-const isAdmin = user.roles.includes('admin');
+// The operator role, NOT the org-scoped `admin` — see the note below.
+const isPlatformAdmin = user.roles.includes('platform_admin');
 
-{isAdmin && (
+{isPlatformAdmin && (
   <button onClick={uploadToGlobalKB}>Upload to Global KB</button>
 )}
 ```
@@ -65,16 +79,17 @@ const isAdmin = user.roles.includes('admin');
 
 ## User Roles
 
-> **Two role vocabularies.** This document describes the **account roles**
-> (`user`, `admin`) that govern Global-KB access — the `roles` claim minted on
-> tokens, where `admin` is enforced by the `require_platform_admin` dependency (a literal
-> `"admin"` membership check) and everyone else is baseline `user`. A separate,
-> org-scoped `Role` enum (`admin`, `member`, `viewer`) lives in
-> `modules/auth/domain/models/rbac.py` with a granular `Permission` mapping for
-> organization/team RBAC. The two overlap only on `admin`; a role string not in
-> the enum (such as the baseline `user`) maps to no granular permissions.
-> Consolidating the two vocabularies is tracked as a separate RBAC
-> reconciliation. See
+> **Two role vocabularies, deliberately disjoint (ADR-012 D9).** The
+> **operator** role `platform_admin` is deployment-scoped: it governs Global-KB
+> authoring, cross-tenant case listing, user administration and LLM
+> configuration, and is enforced by the `require_platform_admin` dependency.
+> Separately, an **org-scoped** `Role` enum (`admin`, `member`, `viewer`) in
+> `modules/auth/domain/models/rbac.py` carries a granular `Permission` mapping
+> for organization/team RBAC; `admin` there is tenant-bounded and never crosses
+> tenants. `platform_admin` is intentionally **not** a member of that enum —
+> which is what stops `POST /admin/users/{id}/roles` from minting operators —
+> so it maps to no granular permissions on its own. Wiring those permissions to
+> endpoint checks is tracked as a separate RBAC reconciliation (#706). See
 > [iam-design.md § Role Implementation](iam-design.md#role-implementation).
 
 ### 1. Regular User (`user` role)
@@ -97,7 +112,7 @@ const isAdmin = user.roles.includes('admin');
 - ❌ Cannot delete Global KB documents
 - ❌ Cannot perform bulk operations on Global KB
 
-### 2. Admin User (`user` + `admin` roles)
+### 2. Platform Admin (`user` + `admin` + `platform_admin` roles)
 
 **Enhanced permissions for KB content management**
 
@@ -115,19 +130,19 @@ All regular user permissions, PLUS:
 
 ### Admin-Only Endpoints
 
-All Global KB management endpoints require `admin` role:
+All Global KB management endpoints require the `platform_admin` role:
 
 | Method | Endpoint | Description | Required Role |
 |--------|----------|-------------|---------------|
-| POST | `/api/v1/knowledge/documents` | Upload document to Global KB | `admin` |
-| PUT | `/api/v1/knowledge/documents/{id}` | Update Global KB document | `admin` |
-| DELETE | `/api/v1/knowledge/documents/{id}` | Delete Global KB document | `admin` |
-| POST | `/api/v1/knowledge/documents/bulk-update` | Bulk update documents | `admin` |
-| POST | `/api/v1/knowledge/documents/bulk-delete` | Bulk delete documents | `admin` |
+| POST | `/api/v1/knowledge/documents` | Upload document to Global KB | `platform_admin` |
+| PUT | `/api/v1/knowledge/documents/{id}` | Update Global KB document | `platform_admin` |
+| DELETE | `/api/v1/knowledge/documents/{id}` | Delete Global KB document | `platform_admin` |
+| POST | `/api/v1/knowledge/documents/bulk-update` | Bulk update documents | `platform_admin` |
+| POST | `/api/v1/knowledge/documents/bulk-delete` | Bulk delete documents | `platform_admin` |
 
 ### Public Endpoints (All Authenticated Users)
 
-These endpoints are accessible to all users (both `user` and `admin` roles):
+These endpoints are accessible to every authenticated user, whatever their roles:
 
 | Method | Endpoint | Description | Required Role |
 |--------|----------|-------------|---------------|
@@ -135,9 +150,9 @@ These endpoints are accessible to all users (both `user` and `admin` roles):
 | GET | `/api/v1/knowledge/documents` | List Global KB documents | Any authenticated user |
 | GET | `/api/v1/knowledge/documents/{id}` | Get specific document | Any authenticated user |
 | GET | `/api/v1/knowledge/stats` | Get KB statistics | Any authenticated user |
-| POST | `/api/v1/users/{user_id}/kb/documents` | Upload to User KB | Owner or admin |
-| GET | `/api/v1/users/{user_id}/kb/documents` | List User KB documents | Owner or admin |
-| DELETE | `/api/v1/users/{user_id}/kb/documents/{id}` | Delete from User KB | Owner or admin |
+| POST | `/api/v1/users/{user_id}/kb/documents` | Upload to User KB | Owner or platform admin |
+| GET | `/api/v1/users/{user_id}/kb/documents` | List User KB documents | Owner or platform admin |
+| DELETE | `/api/v1/users/{user_id}/kb/documents/{id}` | Delete from User KB | Owner or platform admin |
 
 ---
 
@@ -164,7 +179,7 @@ Found 5 user(s):
 
 #    USERNAME             EMAIL                          ROLES                USER_ID
 ----------------------------------------------------------------------------------------------------
-👑 1    admin@company.com    admin@company.com              admin                860e6629-1e12-4921...
+👑 1    admin@company.com    admin@company.com   user, admin, platform_admin   860e6629-1e12-4921...
    2    alice                alice@company.com              user                 225bae2f-f459-4a54...
    3    bob                  bob@company.com                user                 3a94f837-013e-4538...
 
@@ -189,8 +204,11 @@ python scripts/auth/create_user.py --interactive
 # Create regular user
 python scripts/auth/create_user.py --username alice --role user
 
-# Create admin user
+# Create an organization admin (tenant-bounded)
 python scripts/auth/create_user.py --username bob --role admin
+
+# Create a platform admin (deployment operator)
+python scripts/auth/create_user.py --username carol --role platform_admin
 
 # With custom email and display name
 python scripts/auth/create_user.py \
@@ -215,16 +233,16 @@ User Details:
 
 #### 3. Promote to Admin
 
-**Add admin role to existing user:**
+**Grant the operator role to an existing user:**
 ```bash
 python scripts/auth/promote_to_platform_admin.py alice
 ```
 
 **Output:**
 ```
-✅ User promoted to admin successfully!
+✅ User promoted to platform admin successfully!
 
-Updated roles: ['user', 'admin']
+Updated roles: ['user', 'admin', 'platform_admin']
 
 User 'alice' can now:
   ✅ Upload documents to Global KB
@@ -235,7 +253,7 @@ User 'alice' can now:
 
 #### 4. Demote from Admin
 
-**Remove admin role from user:**
+**Revoke the operator role from a user:**
 ```bash
 python scripts/auth/demote_from_platform_admin.py bob
 ```
@@ -293,7 +311,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 ```json
 {
   "user": {
-    "roles": ["user", "admin"]
+    "roles": ["user", "admin", "platform_admin"]
   }
 }
 ```
@@ -311,10 +329,9 @@ curl http://localhost:8000/api/v1/auth/me \
   "username": "alice",
   "email": "alice@company.com",
   "display_name": "Alice Smith",
-  "roles": ["user", "admin"],
+  "roles": ["user", "admin", "platform_admin"],
   "created_at": "2025-10-23T12:00:00Z",
-  "last_login": null,
-  "token_count": 1
+  "last_login": null
 }
 ```
 
@@ -355,10 +372,10 @@ class RoleChecker {
   }
 
   /**
-   * Check if user has admin role
+   * Check if user holds the platform_admin operator role
    */
   isAdmin(user: User): boolean {
-    return this.hasRole(user, 'admin');
+    return this.hasRole(user, 'platform_admin');
   }
 
   /**
@@ -394,7 +411,7 @@ const KnowledgeBasePanel = () => {
     // Fetch current user
     fetchCurrentUser().then(userData => {
       setUser(userData);
-      setIsAdmin(userData.roles.includes('admin'));
+      setIsAdmin(userData.roles.includes('platform_admin'));
     });
   }, []);
 
@@ -479,7 +496,7 @@ export function useRoles(): UseRolesReturn {
     return user?.roles?.includes(role) ?? false;
   };
 
-  const isAdmin = user?.roles?.includes('admin') ?? false;
+  const isAdmin = user?.roles?.includes('platform_admin') ?? false;
 
   return { user, isAdmin, hasRole, loading };
 }
@@ -517,7 +534,7 @@ async def upload_document(
     file: UploadFile,
     current_user: DevUser = Depends(require_platform_admin)  # Enforced server-side
 ):
-    """This endpoint is protected - admins only"""
+    """This endpoint is protected - platform admins only"""
     ...
 ```
 
@@ -533,7 +550,7 @@ sequenceDiagram
     Frontend->>API: POST /knowledge/documents (+ Bearer token)
     API->>Auth: Validate token
     Auth-->>API: User (with roles)
-    API->>API: Check if 'admin' in user.roles
+    API->>API: Check if 'platform_admin' in user.roles
     alt Is Admin
         API->>KB Service: Upload document
         KB Service-->>API: Success
@@ -556,7 +573,7 @@ sequenceDiagram
 ```json
 {
   "error": "Forbidden",
-  "message": "This operation requires administrator privileges",
+  "message": "This operation requires platform administrator privileges",
   "required_role": "admin",
   "user_roles": ["user"]
 }
@@ -701,7 +718,7 @@ python scripts/auth/promote_to_platform_admin.py username
 **Solution:**
 ```typescript
 // Correct role checking
-const isAdmin = user?.roles?.includes('admin') ?? false;
+const isAdmin = user?.roles?.includes('platform_admin') ?? false;
 
 // Force token refresh
 await authManager.refreshToken();

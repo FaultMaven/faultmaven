@@ -30,6 +30,7 @@ from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceIm
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (
     provision_service_account_credential,
 )
+from tests.utils import InMemoryRevocationStore
 
 pytestmark = pytest.mark.asyncio
 
@@ -52,19 +53,6 @@ def _rsa_keypair() -> tuple[str, str]:
         .decode()
     )
     return private_pem, public_pem
-
-
-class _RevocationStore:
-    """Stand-in for the deployment-wide Redis store, same contract."""
-
-    def __init__(self):
-        self.revoked: set[str] = set()
-
-    async def add_revoked_token(self, jti: str, ttl: int) -> None:
-        self.revoked.add(jti)
-
-    async def is_revoked(self, jti: str) -> bool:
-        return jti in self.revoked
 
 
 class _UserStore:
@@ -112,8 +100,8 @@ def auth_settings() -> AuthSettings:
 
 
 @pytest.fixture
-def revocation_store() -> _RevocationStore:
-    return _RevocationStore()
+def revocation_store() -> InMemoryRevocationStore:
+    return InMemoryRevocationStore()
 
 
 @pytest.fixture
@@ -224,12 +212,12 @@ class TestServiceAccountRefreshLifecycle:
     async def test_a_deactivated_account_cannot_refresh(
         self, credential, oauth_service, user_store
     ):
-        """Deactivation is the only containment lever there is.
+        """Deactivation must stop the credential renewing.
 
-        ``revoke_user_tokens`` is a documented no-op (no per-user JTI index), so
-        deactivation relies on short access-token expiry plus the liveness check
-        on refresh. Without it here, a credential on a deactivated account keeps
-        minting access tokens forever on a sliding window.
+        Per-user revocation (#769) invalidates the tokens an account already
+        holds, but this liveness check is what stops a refresh credential on a
+        deactivated account from minting new access tokens forever on a
+        sliding window. The two are independent controls.
         """
         user_store.users["user-slack-agent"].is_active = False
 

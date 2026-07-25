@@ -33,7 +33,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE, DevUser
+from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     DraftUpdateRequest,

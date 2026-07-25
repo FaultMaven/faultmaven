@@ -28,21 +28,9 @@ from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
 )
+from tests.utils import InMemoryRevocationStore
 
 pytestmark = pytest.mark.asyncio
-
-
-class _InMemoryRevocationStore:
-    """Minimal revocation store: tracks revoked jtis in a set."""
-
-    def __init__(self) -> None:
-        self._revoked: set[str] = set()
-
-    async def add_revoked_token(self, jti: str, ttl: int) -> None:
-        self._revoked.add(jti)
-
-    async def is_revoked(self, jti: str) -> bool:
-        return jti in self._revoked
 
 
 class _FakeUserStore:
@@ -105,7 +93,7 @@ def _patches(generator):
 
 async def test_refresh_returns_new_token_pair_and_rotates():
     user = _make_user()
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_generator(store)
     old_refresh = await generator.generate_refresh_token(user)
 
@@ -138,7 +126,7 @@ async def test_refresh_returns_new_token_pair_and_rotates():
 
 async def test_refresh_rejects_reused_old_token_after_rotation():
     user = _make_user()
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_generator(store)
     old_refresh = await generator.generate_refresh_token(user)
 
@@ -161,7 +149,7 @@ async def test_refresh_rejects_reused_old_token_after_rotation():
 
 async def test_refresh_rejects_an_access_token_in_place_of_refresh():
     user = _make_user()
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_generator(store)
     access_token = await generator.generate_access_token(user)
 
@@ -179,7 +167,7 @@ async def test_refresh_rejects_an_access_token_in_place_of_refresh():
 
 async def test_refresh_rejects_when_user_no_longer_exists():
     user = _make_user()
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_generator(store)
     refresh = await generator.generate_refresh_token(user)
 

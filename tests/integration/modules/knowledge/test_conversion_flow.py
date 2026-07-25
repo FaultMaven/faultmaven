@@ -225,7 +225,24 @@ def regular_user():
 
 @pytest.fixture
 def admin_user():
-    return _make_user(roles=["admin", "user"])
+    """A platform admin — the deployment operator (ADR-012 D9).
+
+    Global-scope authoring is operator-only, so this fixture must carry
+    ``platform_admin``; the org-scoped ``admin`` alone does not grant it.
+    """
+    return _make_user(roles=["user", "admin", "platform_admin"])
+
+
+@pytest.fixture
+def org_admin_user():
+    """An ORGANIZATION admin: full authority in one tenant, none outside it."""
+    return _make_user(roles=["user", "admin"])
+
+
+@pytest.fixture
+def app_with_org_admin(mock_conversion_service, org_admin_user):
+    """App authenticated as an org admin that is NOT a platform admin."""
+    return _build_app(mock_conversion_service, org_admin_user)
 
 
 @pytest.fixture
@@ -434,10 +451,29 @@ class TestGlobalScopeAuthorization:
         assert "admin" in response.json()["detail"].lower()
         mock_conversion_service.convert_document.assert_not_awaited()
 
+    async def test_org_admin_global_scope_forbidden(
+        self, app_with_org_admin, mock_conversion_service
+    ):
+        """An ORG admin cannot author global scope (ADR-012 D9).
+
+        Global KB is the platform tier, so it takes the deployment operator
+        role. If this ever returns 201, the two admin axes have been
+        re-conflated on the route that first exposed the confusion.
+        """
+        async with await _client(app_with_org_admin) as client:
+            response = await client.post(
+                f"{API_PREFIX}/convert",
+                files=_txt_file(),
+                data={"scope": "global"},
+            )
+
+        assert response.status_code == 403
+        mock_conversion_service.convert_document.assert_not_awaited()
+
     async def test_admin_global_scope_succeeds(
         self, app_with_admin, mock_conversion_service
     ):
-        """An admin user can use global scope."""
+        """A platform admin can use global scope."""
         async with await _client(app_with_admin) as client:
             response = await client.post(
                 f"{API_PREFIX}/convert",

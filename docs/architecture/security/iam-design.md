@@ -208,9 +208,9 @@ erroring.
 **Single revocation store (#767).** Every per-token revocation writer — OAuth
 `POST /auth/oauth/revoke`, refresh-token rotation in both modes, and logout —
 writes to the same deployment-wide store the check above reads:
-`RedisTokenRevocationStore`, keyed `{token_revocation_prefix}{jti}`
-(`revoked:token:{jti}` by default), created once in the DI container for both
-auth modes and shared by instance. There is no secondary revocation
+`RedisTokenRevocationStore`, keyed `{token_revocation_prefix}jti:{jti}`
+(`revoked:token:jti:{jti}` by default), created once in the DI container for
+both auth modes and shared by instance. There is no secondary revocation
 namespace or SQL table. Failure posture: the per-request check fails **open**
 on store errors (availability; access tokens are short-lived), refresh-token
 validation in the generators fails **closed** (a store outage cannot mint new
@@ -218,12 +218,96 @@ credentials from a revoked token), and revocation *writes* propagate store
 errors so revoke endpoints never report success while the token remains
 usable.
 
-Known limitation: bulk **per-user** revocation (admin
-`POST /auth/users/{id}/revoke-tokens`, user deactivate/delete flows) is
-effectively a no-op — the store is keyed by jti and there is no per-user
-index of issued JTIs, so outstanding tokens cannot be enumerated. Exposure is
-bounded by the short access-token expiry (15 min) and the user-liveness check on
-refresh. Implementing it requires per-user JTI tracking (follow-up to #767).
+**Per-user revocation (#769).** Bulk revocation — admin
+`POST /auth/users/{id}/revoke-tokens`, and the deactivate/delete, password
+change/reset and role-change flows in `UserService` — goes through
+`AuthService.revoke_user_tokens`, which writes a **revocation watermark** to
+that same store at `{token_revocation_prefix}user:{user_id}`
+(`revoked:token:user:{user_id}` by default), holding the revocation instant
+with a TTL that outlives the longest-lived refresh token. Every validate path
+then rejects a token whose `iat` is at or before its user's watermark.
+
+Per-token entries are namespaced separately, at
+`{token_revocation_prefix}jti:{jti}`. The two namespaces must sit under
+distinct literal segments because **jti values are attacker-controlled**: RFC
+7009 revocation (`POST /auth/oauth/revoke`) is unauthenticated and reads `jti`
+from a token decoded *without* signature verification. Were the per-user keys a
+direct child of the shared prefix, a submitted jti of `user:<victim>` would
+overwrite that victim's watermark with a non-numeric body, and the subsequent
+watermark read would raise — disabling per-user revocation for the victim on
+the fail-open request path while locking them out of refresh on the fail-closed
+generator path.
+
+The watermark TTL is the **maximum** of `settings.auth` and
+`settings.security`'s `jwt_refresh_token_expire_days`. Both halves declare that
+field under the same name, but only `settings.auth`'s carries the
+`JWT_REFRESH_TOKEN_EXPIRY` validation alias — and that is the half the token
+generators are constructed with. Reading only `settings.security`'s would cap
+the watermark at its 7-day default while refresh tokens lived for the
+configured 30, resurrecting revoked tokens on day 8.
+
+`UserService` persists **before** revoking, deliberately. Revoking first opens
+a TOCTOU: during the gap the database still holds the old password, roles and
+active flag, so a login landing in it authenticates against pre-change state
+and mints a token whose `iat` falls *after* the watermark — surviving the very
+revocation meant to kill it. Persisting first inverts that, at the accepted
+cost that a store-write failure leaves the change committed while returning an
+error (the #767 posture: never report a revocation that did not land).
+
+The admin endpoint performs the revocation *before* resolving the user, and
+never conditions it on that lookup. `DatabaseUserStore.get_user` swallows its
+exceptions and returns `None`, making a database outage indistinguishable from
+an absent user; gating revocation on it would let a DB blip answer "user not
+found" to an admin containing a live compromise, having revoked nothing.
+Revocation needs only Redis, so it runs on Redis alone and the lookup only
+shapes the response.
+
+**Limits of the watermark, stated precisely:**
+
+- Matching is on `sub` + `iat`, so completeness holds only while every mint
+  path emits both and keys `sub` to the same user_id the watermark is written
+  under. All current minters do; a test pins it, because nothing in the type
+  system enforces it.
+- With clock skew between the revoking and minting processes, "every token
+  issued at or before the revocation instant" is measured on the *revoker's*
+  clock. If a minter's clock runs ahead by S seconds, tokens minted up to S
+  seconds before the revocation can survive it.
+- Revocation state is Redis-only and is **not** durable in standalone
+  deployments, which run FakeRedis in-process: a restart clears every
+  watermark and revoked jti, restoring revoked-but-unexpired tokens for the
+  rest of their lifetime. Account deactivation is in the database and does
+  survive; revocation alone does not.
+- Password-reset tokens (`type: password_reset`) are validated on their own
+  path and carry no revocation check, so per-user revocation does not
+  invalidate an outstanding reset link.
+
+The admin endpoint resolves `user_id` against the user store and returns 404 if
+it does not exist. A watermark write succeeds for any string, so an admin who
+pastes a username or mistypes an id would otherwise get a revocation
+confirmation while the real account kept authenticating.
+
+The watermark is used instead of an index of issued JTIs because it is
+complete by construction: FaultMaven mints tokens from three implementations
+(`AuthService.generate_access_token`, plus the RS256 and HS256 generators),
+one of them synchronous, and a watermark covers all of them — including any
+added later — with no bookkeeping at mint time. An index would silently
+under-revoke whenever a mint path forgot to register, while still reporting a
+complete revocation. The trade-off is that there is no count of revoked
+tokens to report, so the endpoint returns the watermark
+(`{"message": ..., "revoked_before": "<ISO 8601>"}`) rather than a token
+count.
+
+Comparison is `iat <= watermark`, not `<`: `iat` has whole-second
+granularity, and honouring a token minted in the same second as a revocation
+is the more dangerous of the two rounding errors. A user who re-authenticates
+within that same second gets one rejected token and succeeds on retry.
+
+Both revocation arms share one rule (`revocation_reason` in
+`jwt_token_generator.py`) so no validate path can diverge from another, and
+both inherit the failure posture above: the per-request check fails open,
+generator refresh validation fails closed, and the watermark *write*
+propagates store errors — an admin never gets a revocation confirmation while
+the user's tokens keep authenticating.
 
 ## Local Mode Authentication
 
@@ -1115,8 +1199,7 @@ Authorization: Bearer {access_token}
   "display_name": "Alice Smith",
   "roles": ["user", "admin"],
   "auth_mode": "local",
-  "created_at": "2025-10-23T12:00:00Z",
-  "token_count": 1
+  "created_at": "2025-10-23T12:00:00Z"
 }
 ```
 
@@ -1170,8 +1253,8 @@ records current behavior, since several rows are aspirational.
 | **Logout** | Revoke the presented access token; drop associated session state | Partial — the presented token is revoked by `jti`; no session/investigation-state cleanup |
 | **Token Revocation** | Delete session associated with revoked token | Token is revoked in the shared store; session cleanup not wired |
 | **New Login (same client_id)** | Replace previous session with new one | Intended |
-| **Password Change** | Invalidate all sessions | No — bulk per-user revocation is a no-op (no per-user JTI index; see #767) |
-| **Account Deactivation** | Delete all sessions immediately | No — same bulk-revocation limitation |
+| **Password Change** | Invalidate all sessions | Partial — every outstanding token is invalidated via the per-user watermark (#769); session/investigation-state cleanup not wired |
+| **Account Deactivation** | Delete all sessions immediately | Partial — same: tokens invalidated by watermark, session state not deleted |
 
 **Implementation (logout, actual):**
 
@@ -1192,12 +1275,11 @@ async def logout(current_user, auth_service, ...) -> LogoutResponse:
 ```
 
 > [!NOTE]
-> Logout revokes only the token presented on the request; it does **not**
-> enumerate or revoke the user's other outstanding tokens (there is no per-user
-> JTI index — the same limitation described under
-> [Token Validation Middleware](#token-validation-middleware)), and it does not
-> delete investigation/session state. Broadening logout to full session teardown
-> depends on the per-user revocation follow-up to #767.
+> Logout revokes only the token presented on the request — by design, so
+> signing out on one device does not sign the user out everywhere. Revoking
+> every token for a user is the separate per-user watermark path described
+> under [Token Validation Middleware](#token-validation-middleware). Logout
+> still does not delete investigation/session state.
 
 ## Frontend Implementation
 

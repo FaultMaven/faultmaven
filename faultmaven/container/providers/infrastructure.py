@@ -404,18 +404,6 @@ def create_session_store(redis_client: Any, settings: FaultMavenSettings) -> Any
     return store
 
 
-def create_token_manager(
-    redis_client: Any,
-    settings: FaultMavenSettings,
-) -> Any:
-    """Create token manager backed by Redis (real or FakeRedis)."""
-    from faultmaven.infrastructure.auth.token_manager import RedisTokenManager
-
-    manager = RedisTokenManager(redis_client=redis_client)
-    logger.info("✅ Token manager: Redis")
-    return manager
-
-
 def create_case_repository(settings: FaultMavenSettings) -> Any | None:
     """Create case repository based on deployment configuration.
 
@@ -691,7 +679,6 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     container._register_service("session_store", session_store)
 
     # User store (provider pattern: Database → Redis)
-    # Create user_store first so it can be injected into token_manager
     try:
         user_store = create_user_store(redis_client, settings)
         if user_store is None:
@@ -710,21 +697,6 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             raise ValueError("User store registration failed - attribute not set")
     except Exception as e:
         logger.error(f"❌ Failed to create user store: {e}", exc_info=True)
-        raise
-
-    # Token manager (Redis-backed, real or FakeRedis)
-    try:
-        token_manager = create_token_manager(redis_client, settings)
-        if token_manager is None:
-            logger.error(
-                "❌ Failed to create token manager: create_token_manager returned None"
-            )
-            raise ValueError("Token manager creation returned None")
-        container.token_manager = token_manager
-        container._register_service("token_manager", token_manager)
-        logger.debug(f"✅ Token manager registered: {type(token_manager).__name__}")
-    except Exception as e:
-        logger.error(f"❌ Failed to create token manager: {e}", exc_info=True)
         raise
 
     # Case repository (database persistence for cases)

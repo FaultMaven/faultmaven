@@ -21,6 +21,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from faultmaven.bootstrap.data_init import DEFAULT_ADMIN_USERNAME
 from faultmaven.container import container
 from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
 
@@ -58,6 +59,21 @@ async def demote_from_platform_admin(username: str):
     if PLATFORM_ADMIN_ROLE not in (user.roles or []):
         print(f"\n⚠️  User '{username}' is not a platform admin!")
         return True
+
+    # The bootstrap account is re-granted the operator roles on every startup
+    # (a standalone deployment with no operator is unusable), so demoting it
+    # does not survive a restart. Say so rather than reporting a success that
+    # quietly reverts.
+    if user.username == DEFAULT_ADMIN_USERNAME:
+        print(
+            f"\n⚠️  '{username}' is the bootstrap operator account. Startup"
+            " re-grants its operator roles, so this demotion will be undone by"
+            " the next restart."
+        )
+        confirm = input("Demote anyway? (yes/no): ").strip().lower()
+        if confirm not in ("yes", "y"):
+            print("❌ Cancelled")
+            return False
 
     # Remove platform_admin role
     print(f"\nRemoving '{PLATFORM_ADMIN_ROLE}' role from user '{username}'...")

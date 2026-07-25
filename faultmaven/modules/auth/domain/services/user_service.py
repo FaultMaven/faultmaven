@@ -442,7 +442,14 @@ class UserService(BaseService):
         # Save user
         updated_user = await self.user_repo.save(user)
 
-        # Revoke all user's JWT tokens (force re-login)
+        # Persist FIRST, then revoke. Revoking first opens a TOCTOU: during the
+        # gap the DB still holds the OLD password/roles/active flag, so a login
+        # landing in it mints a token with `iat` AFTER the watermark that
+        # carries pre-change state — surviving the very revocation meant to
+        # kill it. Saving first inverts that: anything minted in the gap has
+        # `iat` at or before the watermark and dies with it. The cost is that a
+        # store-write failure leaves the change committed while reporting an
+        # error (#767 posture: never report a revocation that did not land).
         await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(f"Password reset successfully for user: {user_id}")
@@ -510,7 +517,8 @@ class UserService(BaseService):
         # Save user
         updated_user = await self.user_repo.save(user)
 
-        # Revoke all user's JWT tokens (force re-login)
+        # Persist first, then revoke — see reset_password for why the reverse
+        # order opens a TOCTOU.
         await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(f"Password changed successfully for user: {user_id}")
@@ -617,6 +625,9 @@ class UserService(BaseService):
         user.updated_at = datetime.now(timezone.utc)
 
         deactivated_user = await self.user_repo.save(user)
+
+        # Persist first, then revoke — see reset_password for why the reverse
+        # order opens a TOCTOU.
         await self.auth_service.revoke_user_tokens(user_id)
         return deactivated_user
 
@@ -864,11 +875,14 @@ class UserService(BaseService):
         user.updated_at = datetime.now(timezone.utc)
         updated_user = await self.user_repo.save(user)
 
-        # Revoke all user tokens (roles changed, tokens stale)
-        tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
+        # Revoke AFTER persisting (roles changed, tokens stale). Revoking first
+        # would let a login in the gap mint a token carrying the OLD role with
+        # an `iat` past the watermark — see reset_password.
+        revoked_before = await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(
-            f"Role assigned: {user_id} -> {role}, tokens revoked: {tokens_revoked}"
+            f"Role assigned: {user_id} -> {role}, "
+            f"tokens revoked before: {revoked_before.isoformat()}"
         )
         return updated_user
 
@@ -928,12 +942,14 @@ class UserService(BaseService):
         user.updated_at = datetime.now(timezone.utc)
         updated_user = await self.user_repo.save(user)
 
-        # Revoke all user tokens (roles changed, tokens stale)
-        tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
+        # Revoke AFTER persisting: revoking first would let a login in the gap
+        # mint a token carrying the ELEVATED role with an `iat` past the
+        # watermark — see reset_password.
+        revoked_before = await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(
             f"Role removed: {user_id}, role={role}, downgraded to viewer, "
-            f"tokens revoked: {tokens_revoked}"
+            f"tokens revoked before: {revoked_before.isoformat()}"
         )
         return updated_user
 
