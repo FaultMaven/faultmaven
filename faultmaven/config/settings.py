@@ -2443,12 +2443,6 @@ class FaultMavenSettings(BaseSettings):
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "case_sensitive": False,
-        "extra": "ignore",
-    }
     upload: UploadSettings = Field(default_factory=UploadSettings)
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
@@ -2504,6 +2498,22 @@ class FaultMavenSettings(BaseSettings):
         """True iff DEPLOYMENT_MODE=standalone (not cloud)."""
         return not self.is_cloud
 
+    # ⚠️ ``use_enum_values`` means an Enum-ANNOTATED field holds the enum's
+    # `.value` (a plain ``str``) at runtime, not the member. So
+    # ``settings.deployment_mode`` is ``"standalone"``, and
+    # ``settings.deployment_mode.value`` raises AttributeError even though the
+    # annotation says ``DeploymentMode``.
+    #
+    # The annotation is still load-bearing — it validates and coerces the env
+    # value on construction — but read sites must not assume a member. Anything
+    # that can also receive a member (a test stub, a directly-constructed
+    # Settings) should unwrap defensively, as ``is_cloud`` below does:
+    #
+    #     getattr(x, "value", x)
+    #
+    # A bare ``str()`` on a member yields "DeploymentMode.STANDALONE"; that got
+    # written into an append-only audit column once (#827), where it could not
+    # be corrected afterwards.
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
