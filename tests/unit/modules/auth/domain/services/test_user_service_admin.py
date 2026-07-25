@@ -74,9 +74,15 @@ def DevUser(**kwargs) -> RepositoryUser:
 
 @pytest.fixture
 def mock_auth_service():
-    """Create mock auth service."""
+    """Create mock auth service.
+
+    ``revoke_user_tokens`` returns the revocation watermark (#769), not a
+    token count — there is no per-user JTI index to count.
+    """
     service = MagicMock()
-    service.revoke_user_tokens = AsyncMock(return_value=1)
+    service.revoke_user_tokens = AsyncMock(
+        return_value=datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+    )
     return service
 
 

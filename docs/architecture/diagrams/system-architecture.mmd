@@ -92,7 +92,7 @@ flowchart TB
             LLMCache --> LLMRouter
         end
         Sanitizer["security/redaction.py<br/>Presidio + regex (PII scrubbing)"]
-        TokenMgr["auth/token_manager.py<br/>JWT · JTI revocation"]
+        TokenRevocation["modules/auth/.../token_revocation_store.py<br/>JTI · per-user watermark"]
         Observability["observability/<br/>tracing · metrics<br/>apm · sla"]
     end
 
@@ -182,8 +182,9 @@ flowchart TB
     KBStore & EvStore -.embedding model.-> LLMs
 
     AuthMod --> SessionStore
-    AuthMod --> TokenMgr
-    TokenMgr --> SessionStore
+    AuthMod --> TokenRevocation
+    TokenRevocation -.-> Redis
+    TokenRevocation -.-> FakeRedis
     VERTICAL --> CaseRepo
     KnowledgeMod --> KBStore
     KnowledgeMod --> RunbookKB
@@ -225,6 +226,6 @@ flowchart TB
     class AgentMod,EvidenceMod,PreprocessMod,ReportMod domain
     class Milestone,HypMgr,ProgMon,IntentRes,Prompts engine
     class KbQa,CaseEvQa,SearchFile,ReadFile,WebSearchT tools
-    class LLMRouter,LLMCache,Sanitizer,TokenMgr,Observability infra
+    class LLMRouter,LLMCache,Sanitizer,TokenRevocation,Observability infra
     class SQLite,Postgres,CaseRepo,KBClient,EvClient,KBStore,RunbookKB,EvStore,Redis,FakeRedis,SessionStore,LocalFS,S3Back storage
     class Root root

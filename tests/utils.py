@@ -7,6 +7,10 @@ and other shared test infrastructure.
 from typing import Iterable, Optional
 from uuid import uuid4
 
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    ITokenRevocationStore,
+)
+
 # Default enterprise UUID — mirrors SingleTenantProvider.DEFAULT_ENTERPRISE_ID
 # and migration 006's seeded row. Tests that build orgs/users without a
 # specific enterprise context anchor to this row.
@@ -297,3 +301,41 @@ def bridge_flat_hypotheses_to_graph(case) -> None:
         )
         hyp.root_node_id = root.node_id
         hyp.path = [root.node_id, d_id]
+
+
+class InMemoryRevocationStore(ITokenRevocationStore):
+    """In-memory implementation of the full token-revocation contract.
+
+    Records what production Redis would: revoked JTIs with their TTLs, and
+    per-user revocation watermarks. Tests may inspect ``revoked`` and
+    ``user_watermarks`` directly.
+
+    Subclasses ``ITokenRevocationStore`` on purpose. The #767 bug was a store
+    that silently did not implement the interface — the resulting
+    AttributeError was swallowed by the fail-open request-path check — so a
+    duck-typed double is exactly the shape to avoid here: adding an interface
+    method must break these tests loudly at instantiation instead of quietly
+    reading as "not revoked".
+    """
+
+    def __init__(self) -> None:
+        self.revoked: dict[str, int] = {}
+        self.user_watermarks: dict[str, tuple[int, int]] = {}
+
+    async def add_revoked_token(self, jti: str, ttl: int) -> None:
+        self.revoked[jti] = ttl
+
+    async def is_revoked(self, jti: str) -> bool:
+        return jti in self.revoked
+
+    async def revoke_user_tokens_before(
+        self, user_id: str, revoked_at: int, ttl: int
+    ) -> None:
+        self.user_watermarks[user_id] = (revoked_at, ttl)
+
+    async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
+        entry = self.user_watermarks.get(user_id)
+        return entry is not None and issued_at <= entry[0]
+
+    async def cleanup_expired(self) -> int:
+        return 0

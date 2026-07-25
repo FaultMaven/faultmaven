@@ -328,6 +328,8 @@ class TestDIFactoryUsesConfiguredPrefix:
 
         await store.add_revoked_token("jti-1", 60)
         keys = [k async for k in redis.scan_iter("*")]
-        assert keys == ["revoked:token:jti-1"]
+        # Per-token entries live under a "jti:" sub-namespace so no jti value
+        # can ever collide with a per-user watermark key (#769).
+        assert keys == ["revoked:token:jti:jti-1"]
         assert await store.is_revoked("jti-1") is True
         assert await store.is_revoked("jti-2") is False

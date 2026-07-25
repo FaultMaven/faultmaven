@@ -62,16 +62,16 @@ class TestCompositionRootPattern:
         """Test that auth dependencies use request.app.state"""
         import inspect
 
-        from faultmaven.api.v1.auth_dependencies import get_token_manager
+        from faultmaven.api.v1.auth_dependencies import get_token_revocation_store
 
-        source = inspect.getsource(get_token_manager)
+        source = inspect.getsource(get_token_revocation_store)
 
         assert (
             "container.get_" not in source
-        ), "get_token_manager should not use container.get_*"
+        ), "get_token_revocation_store should not use container.get_*"
         assert (
             "request.app.state" in source or "app.state" in source
-        ), "get_token_manager should use request.app.state"
+        ), "get_token_revocation_store should use request.app.state"
 
     def test_middleware_auth_uses_app_state(self):
         """Test that middleware auth uses app.state"""
@@ -123,7 +123,7 @@ class TestDependencyFunctionSignatures:
 
         # These functions should accept Request parameter
         auth_dependency_functions = [
-            "get_token_manager",
+            "get_token_revocation_store",
             "get_user_store",
         ]
 

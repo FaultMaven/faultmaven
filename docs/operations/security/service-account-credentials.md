@@ -85,10 +85,28 @@ Deactivate the account. Both refresh paths reload the user and reject an
 inactive one, so the credential stops renewing and the last access token expires
 within `JWT_ACCESS_TOKEN_EXPIRY` (default 15 minutes).
 
-There is no "revoke all tokens for this user" operation — the revocation store
-is keyed by token id with no per-user index, so outstanding access tokens cannot
-be enumerated. Deactivation plus short access-token expiry *is* the containment
-mechanism; budget for that expiry window when responding to a compromise.
+To cut off outstanding access tokens immediately rather than waiting out that
+window, also call `POST /api/v1/auth/users/{user_id}/revoke-tokens` (admin).
+It writes a per-user revocation watermark, which invalidates every token the
+account already holds (#769). Deactivation remains the durable control — it
+stops the credential renewing — while the watermark closes the access-token
+expiry window.
+
+Two operational limits to know before relying on it:
+
+- **Revocation state lives only in Redis.** Standalone runs FakeRedis
+  in-process, so every watermark and revoked jti is lost on API restart, and
+  revoked-but-unexpired tokens become usable again for the remainder of their
+  lifetime. Deactivation (which is in the database) survives a restart;
+  revocation does not. Treat a restart during incident response as re-opening
+  the window, and deactivate as well as revoke.
+- **Upgrading across the #769 key-namespace change orphans older entries.**
+  Per-token keys moved from `{prefix}{jti}` to `{prefix}jti:{jti}`, so
+  revocations recorded by an earlier build are no longer read. Access tokens
+  age out within `JWT_ACCESS_TOKEN_EXPIRY`, but a refresh token revoked by
+  rotation or logout would come back for its full lifetime. Flush the
+  `{prefix}*` keyspace (default prefix `revoked:token:`) as part of that
+  upgrade if any previously revoked credential must stay dead.
 
 ## Rolling back to dev-login
 

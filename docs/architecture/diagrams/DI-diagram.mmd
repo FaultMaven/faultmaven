@@ -30,7 +30,7 @@ flowchart TB
         direction TB
         Infra_LLM["<b>LLM stack</b><br/>create_llm_provider() → LLMRouter<br/>create_da_provider() → DA override<br/>create_sanitizer() → PII redactor<br/>create_tracer() → Opik / noop"]
         Infra_Vec["<b>Vector stack (ChromaDB × 2)</b><br/>create_kb_chromadb_client()<br/>create_evidence_chromadb_client()<br/>create_vector_store() → ChromaDBVectorStore<br/>create_knowledge_vector_store() → faultmaven_kb<br/>create_case_vector_store() → case_{id}"]
-        Infra_Session["<b>Session / Cache</b><br/>create_redis_client() → Redis or FakeRedis<br/>create_session_store() → RedisSessionStore<br/>create_token_manager() → RedisTokenManager"]
+        Infra_Session["<b>Session / Cache</b><br/>create_redis_client() → Redis or FakeRedis<br/>create_session_store() → RedisSessionStore"]
         Infra_Persist["<b>Relational / Identity</b><br/>create_case_repository() → SessionlessCaseRepository<br/>create_user_store() → Database / Redis user store"]
         Infra_Prep["<b>Preprocessing</b><br/>create_data_classifier() · create_extractors() (11)<br/>create_chunking_service() · create_preprocessing_service()"]
     end

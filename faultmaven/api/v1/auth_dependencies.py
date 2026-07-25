@@ -7,7 +7,7 @@ across all FastAPI routes. It handles token extraction, validation, and user
 resolution with proper error handling and logging.
 
 Key Dependencies:
-- get_token_manager: Access via app.state (Composition Root)
+- get_token_revocation_store: Access via app.state (Composition Root)
 - get_user_store: Access via app.state (Composition Root)
 - extract_bearer_token: Clean token extraction from Authorization header
 - get_current_user_optional: Optional user authentication
@@ -45,37 +45,6 @@ security = HTTPBearer(auto_error=False)
 
 
 # Service Dependencies (Composition Root pattern - access via app.state)
-async def get_token_manager(request: Request):
-    """Get token manager from app.state (Composition Root)
-
-    Returns:
-        Token manager instance (RedisTokenManager)
-
-    Raises:
-        HTTPException: 503 if service unavailable
-    """
-    try:
-        token_manager = getattr(request.app.state, "token_manager", None)
-        if not token_manager:
-            logger.error("Token manager not available from app.state")
-            raise HTTPException(
-                status_code=503,
-                detail="Authentication service unavailable. Please check server startup logs.",
-            )
-        return token_manager
-    except HTTPException:
-        raise
-    except AttributeError as e:
-        logger.error(f"Token manager attribute not found in app.state: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="Authentication service not initialized. Please check server startup logs.",
-        )
-    except Exception as e:
-        logger.error(f"Failed to get token manager: {e}")
-        raise HTTPException(status_code=503, detail="Authentication service error")
-
-
 async def get_token_revocation_store(request: Request):
     """Get the deployment-wide token revocation store from app.state.
 
@@ -358,15 +327,15 @@ async def check_auth_services_health(request: Request) -> dict:
     """
     health_status = {"authentication": {"status": "unknown", "services": {}}}
 
-    # Check token manager
+    # Check token revocation store (#767: revocation is unenforceable without it)
     try:
-        token_manager = getattr(request.app.state, "token_manager", None)
-        health_status["authentication"]["services"]["token_manager"] = {
-            "status": "available" if token_manager else "unavailable",
-            "type": type(token_manager).__name__ if token_manager else None,
+        revocation_store = getattr(request.app.state, "token_revocation_store", None)
+        health_status["authentication"]["services"]["token_revocation_store"] = {
+            "status": "available" if revocation_store else "unavailable",
+            "type": type(revocation_store).__name__ if revocation_store else None,
         }
     except Exception as e:
-        health_status["authentication"]["services"]["token_manager"] = {
+        health_status["authentication"]["services"]["token_revocation_store"] = {
             "status": "error",
             "error": str(e),
         }

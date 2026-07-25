@@ -68,10 +68,17 @@ TEST_PRIVATE_KEY, TEST_PUBLIC_KEY = _generate_test_rsa_keypair()
 
 @pytest.fixture
 def mock_revocation_store():
-    """Mock token revocation store."""
+    """Mock token revocation store.
+
+    Every read method must be stubbed explicitly: a bare AsyncMock returns a
+    truthy Mock for anything unstubbed, which a revocation check reads as
+    "revoked".
+    """
     store = AsyncMock()
     store.is_revoked = AsyncMock(return_value=False)
+    store.is_user_revoked = AsyncMock(return_value=False)
     store.add_revoked_token = AsyncMock()
+    store.revoke_user_tokens_before = AsyncMock()
     return store
 
 

@@ -199,6 +199,33 @@ class LogoutResponse(BaseModel):
     )
 
 
+class RevokeUserTokensResponse(BaseModel):
+    """Per-user token revocation response (#769).
+
+    Reports the revocation watermark rather than a token count: revocation is
+    enforced by rejecting every token issued at or before ``revoked_before``,
+    and nothing indexes a user's outstanding JTIs to count.
+    """
+
+    message: str = Field(..., description="Revocation confirmation message")
+    revoked_before: str = Field(
+        ...,
+        description=(
+            "Revocation watermark (ISO 8601). Every token for this user "
+            "issued at or before this instant is now invalid."
+        ),
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "message": "All tokens revoked for user",
+                "revoked_before": "2026-07-25T14:30:00+00:00",
+            }
+        }
+    )
+
+
 class AuthError(BaseModel):
     """Authentication error response
 
@@ -255,9 +282,6 @@ class UserInfoResponse(UserProfile):
     last_login: Optional[str] = Field(
         None, description="Last login timestamp (ISO format)"
     )
-    token_count: int = Field(
-        default=0, description="Number of active tokens for this user"
-    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -270,7 +294,6 @@ class UserInfoResponse(UserProfile):
                 "is_dev_user": True,
                 "roles": ["user", "admin"],
                 "last_login": "2025-01-15T14:30:00Z",
-                "token_count": 2,
             }
         }
     )

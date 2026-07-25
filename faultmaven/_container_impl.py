@@ -1997,15 +1997,6 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "auth_service", None)
 
-    def get_token_manager(self):
-        """Get the token manager for authentication token operations"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Token manager requested but container not initialized")
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        return getattr(self, "token_manager", None)
-
     def get_user_store(self):
         """Get the user store for user account management"""
         if not self._initialized:

@@ -29,6 +29,7 @@ from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     RS256JWTTokenGenerator,
 )
+from tests.utils import InMemoryRevocationStore
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,19 +57,6 @@ def _generate_test_rsa_keypair() -> tuple[str, str]:
         .decode("utf-8")
     )
     return private_pem, public_pem
-
-
-class _InMemoryRevocationStore:
-    """Minimal revocation store: tracks revoked jtis in a set."""
-
-    def __init__(self) -> None:
-        self._revoked: set[str] = set()
-
-    async def add_revoked_token(self, jti: str, ttl: int) -> None:
-        self._revoked.add(jti)
-
-    async def is_revoked(self, jti: str) -> bool:
-        return jti in self._revoked
 
 
 class _FakeUserStore:
@@ -133,7 +121,7 @@ def _oauth_settings_patch():
 
 async def test_oauth_refresh_returns_new_pair_and_rotates():
     user = _make_user()
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
     old_refresh = await generator.generate_refresh_token(user)
 
@@ -164,7 +152,7 @@ async def test_oauth_refresh_returns_new_pair_and_rotates():
 
 async def test_oauth_refresh_rejects_replayed_rotated_token():
     user = _make_user()
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
     old_refresh = await generator.generate_refresh_token(user)
 
@@ -184,7 +172,7 @@ async def test_oauth_refresh_rejects_replayed_rotated_token():
 
 async def test_oauth_refresh_rejects_access_token_in_place_of_refresh():
     user = _make_user()
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
     access_token = await generator.generate_access_token(user)
 
@@ -201,7 +189,7 @@ async def test_oauth_refresh_rejects_access_token_in_place_of_refresh():
 
 async def test_oauth_refresh_rejects_when_user_gone():
     user = _make_user()
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
     refresh = await generator.generate_refresh_token(user)
 
@@ -218,7 +206,7 @@ async def test_oauth_refresh_rejects_when_user_gone():
 
 async def test_oauth_refresh_rejects_inactive_user():
     user = _make_user(is_active=False)
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
     refresh = await generator.generate_refresh_token(user)
 
@@ -236,7 +224,7 @@ async def test_oauth_refresh_rejects_inactive_user():
 async def test_oauth_refresh_503_when_generator_not_attached():
     """Oauth mode with no composition-root generator must 503, not 500."""
     user = _make_user()
-    store = _InMemoryRevocationStore()
+    store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
     refresh = await generator.generate_refresh_token(user)
 
