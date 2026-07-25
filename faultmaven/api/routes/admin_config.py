@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from faultmaven.api.middleware.auth import get_current_user, require_admin
+from faultmaven.api.middleware.auth import require_platform_admin
 from faultmaven.api.models import (
     EnvConfigStatusResponse,
     LLMConfigResponse,
@@ -52,7 +52,7 @@ PROVIDER_DISPLAY_NAMES = {
 
 @router.get("/llm/config", response_model=LLMConfigResponse)
 async def get_llm_config(
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
     llm_provider=Depends(get_llm_provider),
 ) -> LLMConfigResponse:
     """Get LLM provider configuration and status.
@@ -176,7 +176,7 @@ async def get_llm_config(
 @router.put("/llm/config", response_model=LLMConfigUpdateResponse)
 async def update_llm_config(
     request: LLMConfigUpdateRequest,
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
     llm_provider=Depends(get_llm_provider),
 ) -> LLMConfigUpdateResponse:
     """Update LLM provider configuration.
@@ -287,7 +287,7 @@ async def update_llm_config(
 @router.post("/llm/config/test", response_model=LLMConnectionTestResponse)
 async def check_llm_connection(
     request: LLMConnectionTestRequest,
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
     llm_provider=Depends(get_llm_provider),
 ) -> LLMConnectionTestResponse:
     """Test connectivity to a specific LLM provider.
@@ -381,7 +381,7 @@ async def check_llm_connection(
 
 @router.get("/config/status", response_model=EnvConfigStatusResponse)
 async def get_env_config_status(
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
 ) -> EnvConfigStatusResponse:
     """Get environment configuration status (read-only).
 

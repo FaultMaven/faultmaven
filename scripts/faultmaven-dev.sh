@@ -680,12 +680,12 @@ create_user() {
 
     read -p "Email (optional, will auto-generate if empty): " email
     read -p "Display Name (optional, will auto-generate if empty): " display_name
-    read -p "Role (user/admin) [default: user]: " role_input
+    read -p "Role (user/admin/platform_admin) [default: user]: " role_input
 
     role_input=${role_input:-user}
     role_input=$(echo "$role_input" | tr '[:upper:]' '[:lower:]')
 
-    if [ "$role_input" != "admin" ] && [ "$role_input" != "user" ]; then
+    if [ "$role_input" != "admin" ] && [ "$role_input" != "user" ] && [ "$role_input" != "platform_admin" ]; then
         print_warning "Invalid role '$role_input', defaulting to 'user'"
         role_input="user"
     fi
@@ -733,9 +733,17 @@ create_user() {
         echo ""
         print_info "You can now log in at http://localhost:3333"
         echo ""
+        # dev-register always creates the account with the baseline 'user' role.
+        # The two elevated roles are separate axes (ADR-012 D9) and are granted
+        # by different paths, so name the right one for what was asked.
         if [ "$role_input" = "admin" ]; then
-            echo "Note: To grant admin role, run:"
-            echo "  python scripts/auth/promote_to_admin.py $username"
+            echo "Note: dev-register created '$username' with the 'user' role."
+            echo "  To grant the ORGANIZATION-scoped admin role (tenant-bounded):"
+            echo "    POST /api/v1/admin/users/{user_id}/roles  with  {\"role\": \"admin\"}"
+        elif [ "$role_input" = "platform_admin" ]; then
+            echo "Note: dev-register created '$username' with the 'user' role."
+            echo "  To grant the DEPLOYMENT operator role (cross-tenant reach), run:"
+            echo "    python scripts/auth/promote_to_platform_admin.py $username"
         fi
     elif [ "$http_code" = "409" ]; then
         echo ""

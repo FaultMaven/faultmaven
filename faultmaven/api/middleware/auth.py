@@ -7,7 +7,7 @@ This module provides reusable authentication dependencies:
 - get_current_user_optional: Optional authentication (returns None if no token)
 - require_permission: Check if user has specific permission
 - require_role: Check if user has specific role
-- require_admin: Shortcut for requiring admin role
+- require_platform_admin: Shortcut for requiring the cross-tenant operator role
 
 Usage:
     from faultmaven.api.middleware.auth import get_current_user, require_permission
@@ -362,27 +362,31 @@ def require_any_role(*roles: str) -> Callable:
     return role_checker
 
 
-async def require_admin(
+async def require_platform_admin(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> AuthenticatedUser:
-    """Require admin role.
+    """Require the cross-tenant operator role (see ``PLATFORM_ADMIN_ROLE``).
 
-    Shortcut dependency for admin-only endpoints.
+    Shortcut dependency for operator-only endpoints — those acting on the
+    deployment as a whole rather than on one organization. The org-scoped
+    ``Role.ADMIN`` does not satisfy it.
 
     Usage:
-        @router.delete("/org", dependencies=[Depends(require_admin)])
+        @router.get("/admin/cases", dependencies=[Depends(require_platform_admin)])
 
     Returns:
-        AuthenticatedUser if admin
+        AuthenticatedUser if a platform admin
 
     Raises:
-        HTTPException 403: User is not admin
+        HTTPException 403: User is not a platform admin
     """
-    if not current_user.is_admin():
-        logger.debug(f"Admin required: user {current_user.user_id} is not admin")
+    if not current_user.is_platform_admin():
+        logger.debug(
+            f"Platform admin required: user {current_user.user_id} is not a platform admin"
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Administrator access required",
+            detail="Platform administrator access required",
         )
     return current_user
 

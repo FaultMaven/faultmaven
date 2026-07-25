@@ -436,8 +436,8 @@ class ICaseService(ABC):
 
         Unlike ``list_user_cases``, this is NOT scoped by ``user_id``. It backs
         the platform-admin case view (ADR-012 D9). Authorization
-        (``require_admin``) and deployment-mode gating are enforced at the API
-        layer — this method must only be reached for an admin.
+        (``require_platform_admin``) and deployment-mode gating are enforced at
+        the API layer — this method must only be reached for a platform admin.
 
         Args:
             filters: Optional filter criteria (state, limit, offset, include_empty)

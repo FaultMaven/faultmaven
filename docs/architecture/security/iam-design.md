@@ -470,7 +470,7 @@ DEVELOPMENT_ONLY_ENDPOINTS = [
     "/debug/llm-providers",
 ]
 
-# Admin-only endpoints — always registered, gated by require_admin
+# Admin-only endpoints — always registered, gated by require_platform_admin
 ADMIN_ENDPOINTS = [
     # User management (auth module)
     "/api/v1/auth/users",                        # GET: list all users
@@ -500,7 +500,7 @@ def create_app(config: AppConfig) -> FastAPI:
     # Always register common endpoints
     app.include_router(common_auth_router)
 
-    # User management and admin routes — always registered, gated by require_admin
+    # User management and admin routes — always registered, gated by require_platform_admin
     app.include_router(admin_users_router)   # User management (admin only)
     app.include_router(admin_config_router)  # LLM config + env status (authenticated)
 
@@ -1053,7 +1053,7 @@ oauth:
 OAuth scopes are advertised on the access token to describe the resource
 access a Copilot session intends to use. They are **not** the authorization
 mechanism: server-side authorization is enforced by the RBAC layer (roles plus
-the `require_authentication` / `require_admin` dependencies — see
+the `require_authentication` / `require_platform_admin` dependencies — see
 [Role-Based Access Control](#role-based-access-control)). There is no
 scope-to-permission validator in the request path; a scope on the token does
 not by itself grant access.
@@ -1114,21 +1114,29 @@ Enhanced permissions:
 
 Two role vocabularies coexist in the codebase:
 
-- **Account roles (`roles` claim).** The `roles` claim on the access token
-  carries account-level role strings. `admin` is the elevated role, enforced by
-  the `require_admin` dependency, which checks for literal `"admin"` membership
-  in `user.roles` (`api/v1/auth_dependencies.py`, `AuthenticatedUser.is_admin`).
-  Every other authenticated user is baseline (`user`); baseline access is gated
-  by `require_authentication`, not by a specific role string. Token generators
-  default the claim to `["user"]` when the user carries no roles.
+- **Operator role (`platform_admin`).** The deployment-scoped operator role
+  (ADR-012 D9), defined as `PLATFORM_ADMIN_ROLE` in
+  `modules/auth/domain/models/rbac.py` and re-exported from the auth contracts.
+  It is enforced by the `require_platform_admin` dependency — one per user
+  representation (`api/middleware/auth.py` for `AuthenticatedUser`,
+  `api/v1/auth_dependencies.py` for `DevUser`), both delegating to that type's
+  `is_platform_admin()`. It guards everything acting on the deployment as a
+  whole: cross-tenant case listing, user administration, LLM configuration, and
+  Global KB authoring. It is granted out-of-band by `scripts/auth/promote_to_platform_admin.py` — never
+  through the user-management API, whose `assign_role` validates against the
+  org `Role` enum and so cannot mint an operator.
 - **Org-scoped roles (`Role` enum).** Separately,
   `modules/auth/domain/models/rbac.py` defines a `Role` enum — `admin`,
   `member`, `viewer` — with a granular `Permission` mapping
-  (`get_permissions_for_roles`) for organization/team-scoped RBAC. The two
-  vocabularies overlap only on `admin`; a role string not in the enum (such as
-  the baseline `user`) maps to no granular permissions. Consolidating the
-  account and org-scoped role vocabularies is tracked as a separate RBAC
-  reconciliation.
+  (`get_permissions_for_roles`) for organization/team-scoped RBAC. `admin` here
+  is **tenant-bounded**: full authority inside one organization, none outside
+  it. `platform_admin` is deliberately NOT a member of this enum, so holding it
+  grants no org permissions by itself; the standalone deployment's single
+  account legitimately holds both. Wiring the granular permissions to actual
+  endpoint checks is tracked as a separate RBAC reconciliation (#706).
+- **Baseline (`user`).** Every other authenticated user; baseline access is
+  gated by `require_authentication`, not by a specific role string. Token
+  generators default the claim to `["user"]` when the user carries no roles.
 
 **User contract (`UserDTO`):**
 
@@ -1151,12 +1159,12 @@ class UserDTO:
 **Protected Endpoints:**
 
 ```python
-from faultmaven.api.dependencies import require_admin, require_authentication
+from faultmaven.api.dependencies import require_platform_admin, require_authentication
 
 @router.post("/knowledge/documents")
 async def upload_document(
     file: UploadFile,
-    current_user: User = Depends(require_admin)  # Admin only
+    current_user: User = Depends(require_platform_admin)  # Admin only
 ):
     """Upload document to Global KB (admin only)"""
     ...

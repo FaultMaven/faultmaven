@@ -450,8 +450,8 @@ python scripts/frontend_verification_smoke_test.py  # Frontend smoke test
 python scripts/auth/create_user.py         # Create a new user
 python scripts/auth/list_users.py          # List all users
 python scripts/auth/list_users_fast.py     # Fast user listing
-python scripts/auth/promote_to_admin.py    # Promote user to admin
-python scripts/auth/demote_from_admin.py   # Remove admin privileges
+python scripts/auth/promote_to_platform_admin.py    # Promote user to platform admin (deployment operator)
+python scripts/auth/demote_from_platform_admin.py   # Remove platform admin privileges
 
 # Security (scripts/security/)
 ./scripts/security/cleanup_exposed_keys_from_history.sh  # Clean secrets from git history

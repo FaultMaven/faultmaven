@@ -836,7 +836,7 @@ This endpoint:
 | `team` | Team admin only | Team admin only |
 | `personal` | Any authenticated user (own KB) | Any authenticated user (own KB) |
 
-Implementation: Reuse existing `require_admin` dependency for global scope. Add `require_team_admin(team_id)` dependency for team scope. Personal scope uses standard auth with user ID scoping.
+Implementation: Reuse existing `require_platform_admin` dependency for global scope. Add `require_team_admin(team_id)` dependency for team scope. Personal scope uses standard auth with user ID scoping.
 
 ### 6.7 Error Responses
 

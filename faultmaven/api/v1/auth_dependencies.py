@@ -12,6 +12,7 @@ Key Dependencies:
 - extract_bearer_token: Clean token extraction from Authorization header
 - get_current_user_optional: Optional user authentication
 - require_authentication: Mandatory user authentication
+- require_platform_admin: Mandatory cross-tenant operator role
 - get_current_user_id: Extract just the user ID for service layer
 
 Design Principles:
@@ -438,16 +439,26 @@ async def get_optional_user_context(
         }
 
 
-# Development Utilities (remove in production)
-async def require_admin(user: DevUser = Depends(require_authentication)) -> DevUser:
-    """Require admin role.
+async def require_platform_admin(
+    user: DevUser = Depends(require_authentication),
+) -> DevUser:
+    """Require the cross-tenant operator role (``platform_admin``).
+
+    Guards the endpoints that act on the deployment as a whole rather than on
+    one organization. The org-scoped ``Role.ADMIN`` does not satisfy it.
+
+    The ``AuthenticatedUser`` equivalent is
+    ``api.middleware.auth.require_platform_admin`` — same policy, other user
+    representation. Keep the two in step.
 
     Raises:
-        HTTPException: 403 if user does not have the admin role
+        HTTPException: 403 if user does not have the platform_admin role
     """
-    if "admin" not in (user.roles or []):
-        logger.warning(f"Admin access denied for user: {user.user_id}")
-        raise HTTPException(status_code=403, detail="Administrator access required")
+    if not user.is_platform_admin():
+        logger.warning(f"Platform admin access denied for user: {user.user_id}")
+        raise HTTPException(
+            status_code=403, detail="Platform administrator access required"
+        )
     return user
 
 

@@ -15,7 +15,7 @@ platform-operator action, not a tenant one:
   write policies enforce the same invariant at the database layer
   (defense-in-depth, migration 033).
 * **Single-tenant** (standalone / today's cloud-single): the deployment operator
-  IS the platform operator, so the ``admin`` role is required.
+  IS the platform operator, so the ``platform_admin`` role is required.
 
 This is the single source of truth for that policy. It is enforced at EVERY
 point global content is authored:
@@ -54,24 +54,27 @@ GLOBAL_AUTHORING_ADMIN_MSG = (
 )
 
 
-def ensure_global_authoring_allowed(is_admin: bool) -> None:
+def ensure_global_authoring_allowed(is_platform_admin: bool) -> None:
     """Enforce the global-tier authoring policy, raising on refusal.
 
     Args:
-        is_admin: Whether the caller carries the ``admin`` role. Ignored under
-            multi-tenant deployment (no tenant session may author global scope).
+        is_platform_admin: Whether the caller carries the ``platform_admin``
+            role (the deployment operator, NOT the org-scoped ``admin``).
+            Ignored under multi-tenant deployment (no tenant session may
+            author global scope).
 
     Raises:
-        AuthorizationError: multi-tenant (any role) or single-tenant non-admin.
+        AuthorizationError: multi-tenant (any role) or single-tenant
+            non-platform-admin.
             The global exception handler maps it to HTTP 403.
     """
     if requested_tenant_provider() == BUILTIN_MULTI:
         raise AuthorizationError(GLOBAL_AUTHORING_MULTI_MSG)
-    if not is_admin:
+    if not is_platform_admin:
         raise AuthorizationError(GLOBAL_AUTHORING_ADMIN_MSG)
 
 
-def is_global_authoring_allowed(is_admin: bool) -> bool:
+def is_global_authoring_allowed(is_platform_admin: bool) -> bool:
     """Non-raising form of :func:`ensure_global_authoring_allowed`.
 
     Used where a mixed-scope operation (e.g. a disk scan discovering runbooks of
@@ -79,7 +82,7 @@ def is_global_authoring_allowed(is_admin: bool) -> bool:
     processing the personal/team ones, rather than refusing the whole request.
     """
     try:
-        ensure_global_authoring_allowed(is_admin)
+        ensure_global_authoring_allowed(is_platform_admin)
         return True
     except AuthorizationError:
         return False

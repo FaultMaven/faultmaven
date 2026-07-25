@@ -21,6 +21,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE_SET
+
 logger = logging.getLogger(__name__)
 
 # Default admin credentials for local development
@@ -209,32 +211,43 @@ async def _create_admin_user(user_store: Any) -> Any:
     return user
 
 
-async def _assign_admin_role(user_store: Any, user: Any) -> Any:
-    """Ensure the given user has the admin role; grants it if missing.
+async def _assign_operator_roles(user_store: Any, user: Any) -> Any:
+    """Ensure the given user holds the operator roles; grants any that are missing.
+
+    The standalone deployment's single account is legitimately both its
+    organization's admin and the deployment operator (ADR-012 D9); see
+    ``PLATFORM_ADMIN_ROLE_SET`` for why the two are granted together.
+
+    This runs on EVERY startup, not only at creation, so that upgrading a
+    deployment whose account predates the operator/org role split re-grants the
+    operator role without manual intervention. The consequence is that the
+    bootstrap account cannot be demoted durably — the next restart restores it.
+    That is intended for *this* account (a standalone deployment with no
+    operator is unusable), and ``demote_from_platform_admin.py`` says so when
+    aimed at it. Every other account demotes permanently.
 
     Args:
         user_store: Initialised user store instance
         user: DevUser to check and update
 
     Returns:
-        User (updated if role was granted, unchanged otherwise)
+        User (updated if roles were granted, unchanged otherwise)
     """
-    if "admin" in (user.roles or []):
+    missing = [r for r in PLATFORM_ADMIN_ROLE_SET if r not in (user.roles or [])]
+    if not missing:
         return user
 
-    logger.info(f"User '{user.username}' missing admin role — granting")
-    user.roles = list(user.roles or []) + ["admin"]
-    if "user" not in user.roles:
-        user.roles = ["user"] + user.roles
+    logger.info(f"User '{user.username}' missing operator roles {missing} — granting")
+    user.roles = list(user.roles or []) + missing
     user = await user_store.update_user(user)
-    logger.info(f"Admin role granted to '{user.username}': {user.roles}")
+    logger.info(f"Operator roles granted to '{user.username}': {user.roles}")
     return user
 
 
 async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
     """Ensure the default local admin account exists and has the admin role.
 
-    Orchestrates _create_admin_user() + _assign_admin_role() so each
+    Orchestrates _create_admin_user() + _assign_operator_roles() so each
     step is independently testable.
 
     Args:
@@ -263,7 +276,7 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
         )
 
         user = await _create_admin_user(user_store)
-        await _assign_admin_role(user_store, user)
+        await _assign_operator_roles(user_store, user)
 
         if was_new:
             return user

@@ -3,7 +3,7 @@
 ``get_current_user_optional`` (``api/v1/auth_dependencies``) previously did a
 bare ``jwt.decode``: a revoked-but-unexpired access token still authenticated
 on every optional-auth endpoint (and on the ``require_authentication`` /
-``require_admin`` wrappers built on it). It now delegates to the same
+``require_platform_admin`` wrappers built on it). It now delegates to the same
 ``AuthService.verify_token_with_revocation_check`` the mandatory-auth
 middleware and the tenant binder use.
 

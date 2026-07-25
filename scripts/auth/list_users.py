@@ -18,6 +18,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from faultmaven.container import container
+from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
 from datetime import datetime
 
 
@@ -62,10 +63,10 @@ async def main():
 
     for idx, user in enumerate(users, 1):
         roles_str = ", ".join(user.roles if user.roles else ["none"])
-        is_admin = "admin" in (user.roles or [])
+        is_platform_admin = PLATFORM_ADMIN_ROLE in (user.roles or [])
 
-        # Add visual indicator for admins
-        admin_indicator = "👑 " if is_admin else "   "
+        # Add visual indicator for platform admins (the deployment operators)
+        admin_indicator = "👑 " if is_platform_admin else "   "
 
         print(
             f"{admin_indicator}{idx:<4} {user.username:<20} {user.email:<30} {roles_str:<20} {user.user_id}"
@@ -74,11 +75,11 @@ async def main():
     print("\n" + "=" * 80)
     print(f"Total: {total_count} user(s)")
 
-    # Count admins
-    admin_count = sum(1 for u in users if "admin" in (u.roles or []))
+    # Count platform admins
+    admin_count = sum(1 for u in users if PLATFORM_ADMIN_ROLE in (u.roles or []))
     regular_count = total_count - admin_count
 
-    print(f"  Admins: {admin_count}")
+    print(f"  Platform admins: {admin_count}")
     print(f"  Regular users: {regular_count}")
     print("=" * 80)
 

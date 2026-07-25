@@ -7,7 +7,7 @@ were the open R4 holes in single-tenant / cloud-single:
 
 * the shared domain policy (:mod:`faultmaven.modules.knowledge.domain.global_authoring`);
 * ``ConversionService.verify_draft`` — publishing a global draft into the KB;
-* the ``verify_draft`` / ``verify-batch`` / ``scan`` routes thread ``is_admin``.
+* the ``verify_draft`` / ``verify-batch`` / ``scan`` routes thread ``is_platform_admin``.
 
 ``scan``'s per-file skip behaviour is covered end-to-end in
 ``tests/integration/modules/knowledge/test_scan_for_runbooks.py``.
@@ -51,22 +51,22 @@ def _patch_provider(monkeypatch, value):
 class TestGlobalAuthoringPolicy:
     def test_single_tenant_admin_allowed(self, monkeypatch):
         _patch_provider(monkeypatch, BUILTIN_SINGLE)
-        ensure_global_authoring_allowed(is_admin=True)  # no raise
-        assert is_global_authoring_allowed(is_admin=True) is True
+        ensure_global_authoring_allowed(is_platform_admin=True)  # no raise
+        assert is_global_authoring_allowed(is_platform_admin=True) is True
 
     def test_single_tenant_non_admin_refused(self, monkeypatch):
         _patch_provider(monkeypatch, BUILTIN_SINGLE)
         with pytest.raises(AuthorizationError) as exc:
-            ensure_global_authoring_allowed(is_admin=False)
+            ensure_global_authoring_allowed(is_platform_admin=False)
         assert str(exc.value) == GLOBAL_AUTHORING_ADMIN_MSG
-        assert is_global_authoring_allowed(is_admin=False) is False
+        assert is_global_authoring_allowed(is_platform_admin=False) is False
 
     def test_multi_tenant_refused_even_for_admin(self, monkeypatch):
         _patch_provider(monkeypatch, BUILTIN_MULTI)
         with pytest.raises(AuthorizationError) as exc:
-            ensure_global_authoring_allowed(is_admin=True)
+            ensure_global_authoring_allowed(is_platform_admin=True)
         assert str(exc.value) == GLOBAL_AUTHORING_MULTI_MSG
-        assert is_global_authoring_allowed(is_admin=True) is False
+        assert is_global_authoring_allowed(is_platform_admin=True) is False
 
 
 # ===========================================================================
@@ -128,7 +128,7 @@ class TestVerifyDraftGlobalGate:
                 draft_id="d",
                 user_id="user_x",
                 username="alice",
-                is_admin=False,
+                is_platform_admin=False,
             )
         assert str(exc.value) == GLOBAL_AUTHORING_ADMIN_MSG
 
@@ -141,7 +141,7 @@ class TestVerifyDraftGlobalGate:
                 draft_id="d",
                 user_id="user_x",
                 username="alice",
-                is_admin=True,
+                is_platform_admin=True,
             )
         assert str(exc.value) == GLOBAL_AUTHORING_MULTI_MSG
 
@@ -157,13 +157,13 @@ class TestVerifyDraftGlobalGate:
                 draft_id="d",
                 user_id="user_x",
                 username="alice",
-                is_admin=True,
+                is_platform_admin=True,
             )
         assert exc.value.resource_type == "draft"
 
     async def test_non_global_scope_never_gated(self, monkeypatch):
         # A personal draft is not platform-tier authoring — the gate is skipped
-        # regardless of is_admin / tenant provider (reach the draft lookup).
+        # regardless of is_platform_admin / tenant provider (reach the draft lookup).
         _patch_provider(monkeypatch, BUILTIN_MULTI)
         service = _service(job=_job("personal"), draft=None)
         with pytest.raises(NotFoundError) as exc:
@@ -172,7 +172,7 @@ class TestVerifyDraftGlobalGate:
                 draft_id="d",
                 user_id="user_x",
                 username="alice",
-                is_admin=False,
+                is_platform_admin=False,
             )
         assert exc.value.resource_type == "draft"
 
@@ -187,7 +187,7 @@ class TestVerifyBatchInheritsGate:
             draft_refs=[("c", "d")],
             user_id="user_x",
             username="alice",
-            is_admin=False,
+            is_platform_admin=False,
         )
         assert result["forbidden"] == 1
         assert result["verified"] == 0
@@ -196,7 +196,7 @@ class TestVerifyBatchInheritsGate:
 
 
 # ===========================================================================
-# Route wiring: is_admin derived from the caller's roles
+# Route wiring: is_platform_admin derived from the caller's roles
 # ===========================================================================
 
 
@@ -212,7 +212,7 @@ def _user(*, roles) -> DevUser:
 
 
 class TestRouteThreadsIsAdmin:
-    """The routes must pass is_admin = ('admin' in roles) to the service."""
+    """The routes must pass is_platform_admin = ('platform_admin' in roles) to the service."""
 
     def _client(self, service, user):
         from fastapi import FastAPI
@@ -237,10 +237,10 @@ class TestRouteThreadsIsAdmin:
         service.verify_draft = AsyncMock(
             return_value=MagicMock(model_dump=lambda: {"ok": True})
         )
-        client = self._client(service, _user(roles=["admin"]))
+        client = self._client(service, _user(roles=["admin", "platform_admin"]))
         resp = client.post("/knowledge/conversions/c1/drafts/d1/verify")
         assert resp.status_code == 200
-        assert service.verify_draft.await_args.kwargs["is_admin"] is True
+        assert service.verify_draft.await_args.kwargs["is_platform_admin"] is True
 
     def test_verify_route_passes_admin_false_for_member(self):
         service = MagicMock()
@@ -250,7 +250,7 @@ class TestRouteThreadsIsAdmin:
         client = self._client(service, _user(roles=["user"]))
         resp = client.post("/knowledge/conversions/c1/drafts/d1/verify")
         assert resp.status_code == 200
-        assert service.verify_draft.await_args.kwargs["is_admin"] is False
+        assert service.verify_draft.await_args.kwargs["is_platform_admin"] is False
 
     def test_scan_route_passes_admin_flag(self):
         service = MagicMock()
@@ -258,15 +258,15 @@ class TestRouteThreadsIsAdmin:
         client = self._client(service, _user(roles=["user"]))
         resp = client.post("/knowledge/scan")
         assert resp.status_code == 200
-        assert service.scan_for_runbooks.await_args.kwargs["is_admin"] is False
+        assert service.scan_for_runbooks.await_args.kwargs["is_platform_admin"] is False
 
     def test_verify_batch_route_passes_admin_flag(self):
         service = MagicMock()
         service.verify_batch = AsyncMock(return_value={"total": 1})
-        client = self._client(service, _user(roles=["admin"]))
+        client = self._client(service, _user(roles=["admin", "platform_admin"]))
         resp = client.post(
             "/knowledge/drafts/verify-batch",
             json={"draft_ids": [{"conversion_id": "c1", "draft_id": "d1"}]},
         )
         assert resp.status_code == 200
-        assert service.verify_batch.await_args.kwargs["is_admin"] is True
+        assert service.verify_batch.await_args.kwargs["is_platform_admin"] is True

@@ -13,11 +13,11 @@ from .auth import (
     get_auth_service,
     get_current_user,
     get_current_user_optional,
-    require_admin,
     require_all_permissions,
     require_any_permission,
     require_any_role,
     require_permission,
+    require_platform_admin,
     require_role,
     set_auth_service,
 )
@@ -37,7 +37,7 @@ __all__ = [
     "require_all_permissions",
     "require_role",
     "require_any_role",
-    "require_admin",
+    "require_platform_admin",
     "get_auth_service",
     "set_auth_service",
 ]

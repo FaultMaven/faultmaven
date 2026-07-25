@@ -2,7 +2,11 @@
 """Create New User Account
 
 This script creates a new user account in the FaultMaven system.
-You can specify the role (regular user or admin).
+
+Roles (ADR-012 D9 keeps these two axes distinct):
+    user            baseline authenticated principal
+    admin           organization-scoped; full authority inside ONE org
+    platform_admin  deployment-scoped operator; cross-tenant reach (implies admin)
 
 Usage:
     # Interactive mode
@@ -11,6 +15,7 @@ Usage:
     # Command-line mode
     python scripts/auth/create_user.py --username alice --email alice@example.com --role user
     python scripts/auth/create_user.py --username bob --role admin
+    python scripts/auth/create_user.py --username carol --role platform_admin
 """
 
 import asyncio
@@ -23,10 +28,21 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from faultmaven.container import container
+from faultmaven.modules.auth.contracts import (
+    PLATFORM_ADMIN_ROLE,
+    PLATFORM_ADMIN_ROLE_SET,
+)
+
+# Role choice -> the roles actually stored on the account.
+ROLE_SETS = {
+    "user": ["user"],
+    "admin": ["user", "admin"],
+    PLATFORM_ADMIN_ROLE: PLATFORM_ADMIN_ROLE_SET,
+}
 
 
 async def create_user(
-    username: str, email: str = None, display_name: str = None, is_admin: bool = False
+    username: str, email: str = None, display_name: str = None, role: str = "user"
 ):
     """Create a new user account"""
     print("=" * 80)
@@ -60,11 +76,8 @@ async def create_user(
             username=username, email=email, display_name=display_name
         )
 
-        # Set roles based on admin flag
-        if is_admin:
-            user.roles = ["user", "admin"]
-        else:
-            user.roles = ["user"]
+        # Set roles based on the requested role
+        user.roles = list(ROLE_SETS[role])
 
         # Update user with correct roles
         user = await user_store.update_user(user)
@@ -122,15 +135,19 @@ async def interactive_create():
         display_name = None
 
     # Get role
-    role_input = input("Role (user/admin) [default: user]: ").strip().lower()
-    is_admin = role_input == "admin"
+    role_input = (
+        input(f"Role (user/admin/{PLATFORM_ADMIN_ROLE}) [default: user]: ")
+        .strip()
+        .lower()
+    )
+    role = role_input if role_input in ROLE_SETS else "user"
 
     print()
     print("Creating user with:")
     print(f"  Username: {username}")
     print(f"  Email: {email or '(auto-generated)'}")
     print(f"  Display Name: {display_name or '(auto-generated)'}")
-    print(f"  Role: {'admin' if is_admin else 'user'}")
+    print(f"  Role: {role} (roles: {', '.join(ROLE_SETS[role])})")
     print()
 
     confirm = input("Create this user? (yes/no): ").strip().lower()
@@ -138,7 +155,7 @@ async def interactive_create():
         print("❌ Cancelled")
         return False
 
-    return await create_user(username, email, display_name, is_admin)
+    return await create_user(username, email, display_name, role)
 
 
 def main():
@@ -156,7 +173,7 @@ def main():
     parser.add_argument(
         "--role",
         "-r",
-        choices=["user", "admin"],
+        choices=list(ROLE_SETS),
         default="user",
         help="User role (default: user)",
     )
@@ -174,13 +191,12 @@ def main():
         success = asyncio.run(interactive_create())
     else:
         # Command-line mode
-        is_admin = args.role == "admin"
         success = asyncio.run(
             create_user(
                 username=args.username,
                 email=args.email,
                 display_name=args.display_name,
-                is_admin=is_admin,
+                role=args.role,
             )
         )
 
