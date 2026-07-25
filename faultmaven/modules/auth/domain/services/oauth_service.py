@@ -417,7 +417,6 @@ class OAuthServiceImpl(IOAuthService):
             "OAuth token refresh requested",
             extra={
                 "client_id": client_id,
-                "token_rotation": self.settings.jwt_rotate_refresh_tokens,
             },
         )
 
@@ -468,20 +467,18 @@ class OAuthServiceImpl(IOAuthService):
         # Generate new access token
         new_access_token = await self.token_generator.generate_access_token(user)
 
-        # Rotate refresh token (security best practice)
-        new_refresh_token = refresh_token
-        if self.settings.jwt_rotate_refresh_tokens:
-            # Revoke old refresh token
-            await self.token_generator.revoke_refresh_token(refresh_token)
-            # Generate new refresh token
-            new_refresh_token = await self.token_generator.generate_refresh_token(user)
-            logger.debug(
-                "OAuth refresh token rotated",
-                extra={
-                    "user_id": user.user_id,
-                    "client_id": client_id,
-                },
-            )
+        # Rotate the refresh token: the presented token is single-use. Matches
+        # POST /auth/refresh, so both refresh paths carry the same contract and a
+        # client can persist the rotated token unconditionally.
+        await self.token_generator.revoke_refresh_token(refresh_token)
+        new_refresh_token = await self.token_generator.generate_refresh_token(user)
+        logger.debug(
+            "OAuth refresh token rotated",
+            extra={
+                "user_id": user.user_id,
+                "client_id": client_id,
+            },
+        )
 
         logger.info(
             "OAuth tokens refreshed",
@@ -489,7 +486,7 @@ class OAuthServiceImpl(IOAuthService):
                 "user_id": user.user_id,
                 "username": user.username,
                 "client_id": client_id,
-                "token_rotated": self.settings.jwt_rotate_refresh_tokens,
+                "token_rotated": True,
             },
         )
 

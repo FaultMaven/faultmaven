@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
+from faultmaven.config.settings import AuthSettings
 from faultmaven.models.exceptions import InvalidGrantError, InvalidRequestError
 from faultmaven.modules.auth.contracts import (
     OAuthAuthorizationDTO,
@@ -61,17 +62,24 @@ def mock_token_generator():
 
 @pytest.fixture
 def mock_settings():
-    """Mock OAuth settings."""
-    settings = Mock()
-    settings.oauth_allowed_clients = ["faultmaven-copilot", "test-client"]
-    settings.oauth_code_expiry_seconds = 600  # 10 minutes
-    settings.oauth_redirect_uri_patterns = [
-        r"^chrome-extension://[a-z0-9]+/callback\.html$",
-        r"^https://dashboard\.faultmaven\.ai/auth/callback$",
-    ]
-    settings.jwt_access_token_expire_minutes = 60
-    settings.jwt_refresh_token_expire_days = 7
-    return settings
+    """OAuth settings.
+
+    A REAL ``AuthSettings`` — the exact type the composition root passes
+    (``settings=settings.auth``). A ``Mock()`` here auto-creates whatever
+    attribute the service reads, which silently hid a live defect: the service
+    read ``jwt_rotate_refresh_tokens``, a field that only ever existed on
+    ``SecuritySettings``, so every ``grant_type=refresh_token`` request raised
+    ``AttributeError`` → HTTP 500 in production while these tests stayed green.
+    Keep this bound to the real type so missing wiring fails loudly.
+    """
+    return AuthSettings(
+        oauth_allowed_clients=["faultmaven-copilot", "test-client"],
+        oauth_redirect_uri_patterns=[
+            r"^chrome-extension://[a-z0-9]+/callback\.html$",
+            r"^https://dashboard\.faultmaven\.ai/auth/callback$",
+        ],
+        jwt_access_token_expire_minutes=60,
+    )
 
 
 @pytest.fixture
@@ -428,9 +436,6 @@ class TestRefreshToken:
 
         # Verify new tokens generated
         assert token_dto.access_token == "access_token_123"
-        assert (
-            token_dto.refresh_token == "refresh_token_456"
-        )  # New rotated refresh token
         assert token_dto.user_id == "user_123"
         assert token_dto.username == "testuser"
 
@@ -438,6 +443,39 @@ class TestRefreshToken:
         mock_token_generator.validate_refresh_token.assert_called_once_with(
             refresh_token
         )
+
+    @pytest.mark.asyncio
+    async def test_refresh_access_token_rotates_the_presented_token(
+        self,
+        oauth_service,
+        mock_token_generator,
+        mock_user_repository,
+    ):
+        """The presented refresh token is single-use.
+
+        It is revoked and a *different* token is returned. Asserted with a
+        distinct mint value, because a generator that echoes the presented token
+        cannot tell rotation apart from pass-through. Clients (notably the Slack
+        service account, ADR-012 D10) persist the returned token write-before-use
+        and depend on this contract holding unconditionally.
+        """
+        presented = "presented_refresh_token"
+        mock_token_generator.generate_refresh_token.return_value = (
+            "rotated_refresh_token"
+        )
+
+        user_obj = Mock()
+        user_obj.user_id = "user_123"
+        user_obj.username = "testuser"
+        mock_user_repository.get.return_value = user_obj
+
+        token_dto = await oauth_service.refresh_access_token(
+            refresh_token=presented,
+            client_id="faultmaven-copilot",
+        )
+
+        assert token_dto.refresh_token == "rotated_refresh_token"
+        mock_token_generator.revoke_refresh_token.assert_awaited_once_with(presented)
 
     @pytest.mark.asyncio
     async def test_refresh_access_token_invalid_token(

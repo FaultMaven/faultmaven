@@ -952,11 +952,6 @@ class SecuritySettings(BaseSettings):
     jwt_access_token_expire_minutes: int = Field(default=15)
     jwt_refresh_token_expire_days: int = Field(default=7)
 
-    # Refresh token rotation (security best practice)
-    jwt_rotate_refresh_tokens: bool = Field(
-        default=True,
-        description="Rotate refresh tokens on use (one-time use tokens)",
-    )
     jwt_issuer: str = Field(default="faultmaven-api")
     jwt_audience: str = Field(default="faultmaven-app")
 
