@@ -2171,8 +2171,8 @@ class NeedState(str, Enum):
     PARTIALLY_MET  — Some evidence collected but insufficient.
     FULFILLED      — Sufficient evidence collected (terminal-positive).
     SUPERSEDED     — No longer relevant (terminal-negative). Either all
-                     motivating hypotheses retired (engine rule) or LLM
-                     judged irrelevant (LLM update emission).
+                     motivating hypotheses went terminal (engine rule) or
+                     LLM judged irrelevant (LLM update emission).
 
     FULFILLED and SUPERSEDED are terminal — a need cannot resurrect from
     SUPERSEDED. If the LLM later concludes the underlying data is
@@ -2239,11 +2239,12 @@ class EvidenceNeed(BaseModel):
       creation (causal needs).
     - Updated by the LLM as evidence arrives (state, fulfilling
       evidence linkage, motivating hypothesis IDs).
-    - Auto-superseded by the engine on hypothesis retirement when the
-      motivating list becomes empty AND purpose is CAUSAL_VERIFICATION
-      AND state is not FULFILLED. Symptom needs (empty motivating
-      list by design) are exempt — they're motivated by the problem
-      statement, not by a hypothesis.
+    - Auto-superseded by the engine when a motivating hypothesis goes
+      TERMINAL (REFUTED or RETIRED) and the motivating list becomes
+      empty AND purpose is CAUSAL_VERIFICATION AND state is not
+      FULFILLED. Symptom needs (empty motivating list by design) are
+      exempt — they're motivated by the problem statement, not by a
+      hypothesis.
     """
 
     need_id: str = Field(
@@ -2340,8 +2341,8 @@ class EvidenceNeed(BaseModel):
         default=None,
         description=(
             "Human-readable explanation when state=SUPERSEDED. Set by "
-            "engine auto-supersession ('all motivating hypotheses "
-            "retired') or by LLM emission ('superseded by refined "
+            "engine auto-supersession ('all motivating hypotheses are "
+            "terminal') or by LLM emission ('superseded by refined "
             "problem statement'). Required when state=SUPERSEDED, "
             "must be None otherwise."
         ),
@@ -2371,6 +2372,33 @@ class EvidenceNeed(BaseModel):
         one the investigation is still waiting on.
         """
         return self.state in (NeedState.PENDING, NeedState.PARTIALLY_MET)
+
+    @staticmethod
+    def admissible_state(
+        state: Optional["NeedState"], fulfilling_evidence_ids: List[str]
+    ) -> Optional["NeedState"]:
+        """The state a need may legally hold given the evidence backing it:
+        FULFILLED with an empty ``fulfilling_evidence_ids`` is demoted to
+        PARTIALLY_MET. Any other state passes through unchanged (``None`` means
+        "no state change requested" on the apply-layer's update path).
+
+        Single owner of the FULFILLED admission rule. The invariant itself lives
+        in ``_validate_state_consistency``, but that is a ``model_validator`` and
+        ``EvidenceNeed`` runs with ``validate_assignment`` off — so an in-place
+        ``need.state = FULFILLED`` bypasses it and only trips on the next
+        reconstruction, i.e. at Case persistence: a late, hard-to-trace 500 far
+        from the code that caused it. Every apply-layer site that admits a
+        caller-supplied state routes through here so the demotion is decided in
+        one place, and a new site cannot reintroduce the save-time failure by
+        forgetting its own copy of the check.
+
+        Callers compare the returned state with the one they passed in to detect
+        the demotion and record their own ``validation_repairs`` note — the
+        wording is site-specific, the rule is not.
+        """
+        if state == NeedState.FULFILLED and not fulfilling_evidence_ids:
+            return NeedState.PARTIALLY_MET
+        return state
 
     def revoke_obtainability_if_terminal(self) -> None:
         """Reset ``obtainability`` to UNKNOWN once the need is terminal

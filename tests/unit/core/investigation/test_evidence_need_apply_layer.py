@@ -3,8 +3,8 @@
 - ``TestEvidenceNeedUpdateApplyLayer`` — create/update mechanics,
   same-turn ``new_index_N`` resolution, FK validation, immutable-purpose
   rule, SUPERSEDED-is-terminal.
-- ``TestNeedSupersessionOnHypothesisRetirement`` — deterministic engine
-  rule across the four retirement sites (post-hoc snapshot-diff in
+- ``TestNeedSupersessionOnTerminalHypothesis`` — deterministic engine
+  rule across every terminal-transition site (end-of-turn sweep in
   ``_process_turn_impl``).
 - ``TestNeedFulfillmentJunctionApply`` — fulfilling_evidence_ids
   resolution + dangling-reference handling.
@@ -13,7 +13,7 @@ NOTE (investigation-flow redesign): the old path-conditional causal-need
 rejection (rejected in "restricted states") was removed with the path
 fork. Orphan-causal-need rejection (a causal need with no valid
 motivating hypothesis) survives and is covered by
-``TestPriorTurnRetiredMotivatorFiltered``.
+``TestPriorTurnTerminalMotivatorFiltered``.
 
 Run:
     pytest tests/unit/core/investigation/test_evidence_need_apply_layer.py -v
@@ -28,8 +28,10 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
+    _TERMINAL_HYPOTHESIS_STATES,
     MilestoneEngine,
-    _supersede_needs_on_hypothesis_retirement,
+    _supersede_needs_on_terminal_hypothesis,
+    _sweep_needs_for_terminal_hypotheses,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -96,6 +98,11 @@ def _make_hypothesis(
         statement="Test hypothesis",
         category=HypothesisCategory.DATABASE,
         state=state,
+        # Pair invariant on the domain model: REFUTED requires a reason (and
+        # any other state forbids one).
+        refutation_reason=(
+            "disproved by evidence" if state == HypothesisState.REFUTED else None
+        ),
         likelihood=0.6,
         initial_likelihood=0.6,
         generated_at_turn=case.current_turn,
@@ -443,7 +450,7 @@ class TestCausalNeedCreationWithMotivator:
     """In the unified flow a causal-purpose need is accepted whenever it
     carries a valid motivating hypothesis (no path gate). The orphan-
     reject path (no motivator) is covered by
-    ``TestPriorTurnRetiredMotivatorFiltered``."""
+    ``TestPriorTurnTerminalMotivatorFiltered``."""
 
     def test_causal_allowed_with_active_motivator(self):
         case = _make_case()
@@ -471,7 +478,7 @@ class TestCausalNeedCreationWithMotivator:
 
 
 @pytest.mark.unit
-class TestNeedSupersessionOnHypothesisRetirement:
+class TestNeedSupersessionOnTerminalHypothesis:
     """Deterministic engine rule (design §7.4)."""
 
     def test_supersedes_causal_need_when_sole_motivator_retires(self):
@@ -487,15 +494,40 @@ class TestNeedSupersessionOnHypothesisRetirement:
         )
         case.evidence_needs.append(need)
 
-        count = _supersede_needs_on_hypothesis_retirement(
+        count = _supersede_needs_on_terminal_hypothesis(
             case, h.hypothesis_id, case.current_turn
         )
         assert count == 1
         assert case.evidence_needs[0].state == NeedState.SUPERSEDED
         assert (
             case.evidence_needs[0].superseded_reason
-            == "all motivating hypotheses retired"
+            == "all motivating hypotheses are terminal"
         )
+        assert case.evidence_needs[0].motivating_hypothesis_ids == []
+
+    def test_supersedes_causal_need_when_sole_motivator_is_refuted(self):
+        """#608: refutation is a terminal state too. A discriminator whose only
+        motivating cause was disproved discriminates nothing; leaving it PENDING
+        is the staleness leak (it renders in <evidence_needs>, is offered to the
+        user as an ask, and is listed as unmet data on the insufficient-evidence
+        report) with no other path that would ever clear it."""
+        case = _make_case()
+        h = _make_hypothesis(case, state=HypothesisState.REFUTED)
+        need = EvidenceNeed(
+            case_id=case.case_id,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            request_text="x",
+            rationale="y",
+            motivating_hypothesis_ids=[h.hypothesis_id],
+            created_at_turn=case.current_turn,
+        )
+        case.evidence_needs.append(need)
+
+        count = _supersede_needs_on_terminal_hypothesis(
+            case, h.hypothesis_id, case.current_turn
+        )
+        assert count == 1
+        assert case.evidence_needs[0].state == NeedState.SUPERSEDED
         assert case.evidence_needs[0].motivating_hypothesis_ids == []
 
     def test_survives_when_multiple_motivators_partial_retirement(self):
@@ -512,7 +544,7 @@ class TestNeedSupersessionOnHypothesisRetirement:
         )
         case.evidence_needs.append(need)
 
-        _supersede_needs_on_hypothesis_retirement(
+        _supersede_needs_on_terminal_hypothesis(
             case, h1.hypothesis_id, case.current_turn
         )
         # Status unchanged (h2 still motivates)
@@ -535,7 +567,7 @@ class TestNeedSupersessionOnHypothesisRetirement:
         )
         case.evidence_needs.append(need)
 
-        _supersede_needs_on_hypothesis_retirement(
+        _supersede_needs_on_terminal_hypothesis(
             case, h.hypothesis_id, case.current_turn
         )
         assert case.evidence_needs[0].state == NeedState.PENDING
@@ -558,7 +590,7 @@ class TestNeedSupersessionOnHypothesisRetirement:
         )
         case.evidence_needs.append(need)
 
-        _supersede_needs_on_hypothesis_retirement(
+        _supersede_needs_on_terminal_hypothesis(
             case, h.hypothesis_id, case.current_turn
         )
         # Status stays FULFILLED; motivators list cleared
@@ -679,15 +711,19 @@ class TestFulfilledDemotionOnEmptyFulfillments:
 
 
 @pytest.mark.unit
-class TestPriorTurnRetiredMotivatorFiltered:
-    """A causal need motivated by an already-RETIRED hypothesis would
-    survive the end-of-turn snapshot-diff (which only fires for
-    this-turn retirements). The apply-layer drops RETIRED IDs at
-    create/update time to keep the pool clean."""
+class TestPriorTurnTerminalMotivatorFiltered:
+    """A causal need motivated by an already-terminal hypothesis (REFUTED or
+    RETIRED) would be superseded by the end-of-turn sweep the moment it was
+    created. The apply-layer drops terminal IDs at create/update time so the
+    need is never born, rather than born and immediately retired."""
 
-    def test_retired_motivator_dropped_on_create(self):
+    @pytest.mark.parametrize(
+        "terminal_state",
+        [HypothesisState.RETIRED, HypothesisState.REFUTED],
+    )
+    def test_terminal_motivator_dropped_on_create(self, terminal_state):
         case = _make_case()
-        h_retired = _make_hypothesis(case, state=HypothesisState.RETIRED)
+        h_retired = _make_hypothesis(case, state=terminal_state)
         h_active = _make_hypothesis(case, state=HypothesisState.ACTIVE)
         engine = _make_engine()
         meta = _empty_metadata()
@@ -711,18 +747,22 @@ class TestPriorTurnRetiredMotivatorFiltered:
             h_active.hypothesis_id
         ]
         assert any(
-            "retired hypothesis ID" in r for r in meta.get("validation_repairs", [])
+            "terminal hypothesis ID" in r for r in meta.get("validation_repairs", [])
         )
 
-    def test_all_retired_motivators_rejects_create(self):
-        """When every motivator filters away (all-retired, or all-
+    @pytest.mark.parametrize(
+        "terminal_state",
+        [HypothesisState.RETIRED, HypothesisState.REFUTED],
+    )
+    def test_all_terminal_motivators_rejects_create(self, terminal_state):
+        """When every motivator filters away (all-terminal, or all-
         dangling, or originally empty), a causal-purpose create is
         rejected outright. Persisting an orphan causal need would
-        bypass §7.4 supersession entirely — the snapshot-diff only
-        cleans up needs whose motivator retired *this turn*, so a
-        need born empty would live forever."""
+        bypass §7.4 supersession entirely — the sweep keys off a
+        terminal hypothesis id, and a need born with no motivator has
+        none to key on, so it would live forever."""
         case = _make_case()
-        h_retired = _make_hypothesis(case, state=HypothesisState.RETIRED)
+        h_retired = _make_hypothesis(case, state=terminal_state)
         engine = _make_engine()
         meta = _empty_metadata()
 
@@ -794,9 +834,13 @@ class TestPriorTurnRetiredMotivatorFiltered:
 
         assert case.evidence_needs == []
 
-    def test_retired_motivator_dropped_on_update(self):
+    @pytest.mark.parametrize(
+        "terminal_state",
+        [HypothesisState.RETIRED, HypothesisState.REFUTED],
+    )
+    def test_terminal_motivator_dropped_on_update(self, terminal_state):
         case = _make_case()
-        h_retired = _make_hypothesis(case, state=HypothesisState.RETIRED)
+        h_retired = _make_hypothesis(case, state=terminal_state)
         existing = EvidenceNeed(
             case_id=case.case_id,
             purpose=NeedPurpose.CAUSAL_VERIFICATION,
@@ -825,90 +869,164 @@ class TestPriorTurnRetiredMotivatorFiltered:
 
 
 # ============================================================
-# Snapshot-diff bookend integration (post-review fix #6.3 lite)
+# End-of-turn terminal sweep (the §7.4 integration point)
 # ============================================================
 
 
 @pytest.mark.unit
-class TestSnapshotDiffBookendIntegration:
-    """Direct exercise of the snapshot/diff logic used in
-    ``_process_turn_impl``. Pins the integration contract without
-    requiring an LLM stub or the full turn pipeline: if the pre-turn
-    snapshot or post-turn diff is refactored away, this fails.
+class TestTerminalSweepIntegration:
+    """Drives ``_sweep_needs_for_terminal_hypotheses`` — the function
+    ``_process_turn_impl`` actually calls — rather than a replica of its logic.
 
-    The integration shape under test:
-        pre  = {h_id : h.state == RETIRED} captured before update apply
-        post = same set computed after update apply
-        newly_retired = post - pre
-        for each in newly_retired: _supersede_needs_on_hypothesis_retirement(...)
+    That distinction matters: an earlier version of these tests recomputed the
+    engine's set comprehension inside the test, so reverting the engine's own
+    predicate to ``== RETIRED`` would have left every test green. Pinning the
+    real callable removes that seam.
     """
 
-    def test_diff_identifies_newly_retired_and_supersedes(self):
+    @pytest.mark.parametrize(
+        "terminal_state",
+        [HypothesisState.RETIRED, HypothesisState.REFUTED],
+    )
+    def test_supersedes_when_sole_motivator_is_terminal(self, terminal_state):
+        """#608: BOTH terminal states are swept. A cause the investigation
+        refuted is as far out of the differential as one it retired, so its
+        sole-motivated discriminator must not linger PENDING for the life of
+        the case — nothing else GCs an LLM-authored causal need."""
         case = _make_case()
-        # A causal need motivated by h_will_retire; the snapshot taken
-        # before retirement does NOT include h_will_retire in the
-        # retired set, so the post-update diff will flag it.
-        h_will_retire = _make_hypothesis(case, state=HypothesisState.ACTIVE)
-        need = EvidenceNeed(
-            case_id=case.case_id,
-            purpose=NeedPurpose.CAUSAL_VERIFICATION,
-            request_text="x",
-            rationale="y",
-            motivating_hypothesis_ids=[h_will_retire.hypothesis_id],
-            created_at_turn=case.current_turn,
-        )
-        case.evidence_needs.append(need)
-
-        # Pre-turn snapshot — empty (h_will_retire is ACTIVE).
-        pre_retired = {
-            h_id
-            for h_id, h in case.hypotheses.items()
-            if h.state == HypothesisState.RETIRED
-        }
-
-        # Simulate the engine flipping the hypothesis during this turn.
-        case.hypotheses[h_will_retire.hypothesis_id].state = HypothesisState.RETIRED
-
-        # Post-turn diff — the integration logic exactly as wired in
-        # _process_turn_impl.
-        newly_retired = {
-            h_id
-            for h_id, h in case.hypotheses.items()
-            if h.state == HypothesisState.RETIRED
-        } - pre_retired
-
-        assert newly_retired == {h_will_retire.hypothesis_id}
-
-        for retired_id in newly_retired:
-            _supersede_needs_on_hypothesis_retirement(
-                case, retired_id, case.current_turn
+        h = _make_hypothesis(case, state=terminal_state)
+        if terminal_state == HypothesisState.REFUTED:
+            # Pair invariant on the domain model.
+            h.refutation_reason = "disproved"
+        case.evidence_needs.append(
+            EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text="x",
+                rationale="y",
+                motivating_hypothesis_ids=[h.hypothesis_id],
+                created_at_turn=case.current_turn,
             )
+        )
 
-        # Need was superseded because its sole motivator retired this turn.
+        assert _sweep_needs_for_terminal_hypotheses(case) == 1
         assert case.evidence_needs[0].state == NeedState.SUPERSEDED
 
-    def test_diff_skips_prior_turn_retirements(self):
-        """A hypothesis that was already RETIRED in the pre-turn
-        snapshot does not appear in newly_retired and is not handed to
-        the supersession helper a second time."""
+    @pytest.mark.parametrize(
+        "terminal_state",
+        [HypothesisState.RETIRED, HypothesisState.REFUTED],
+    )
+    def test_heals_need_anchored_to_a_prior_turn_terminal(self, terminal_state):
+        """The sweep covers the FULL terminal set, not a newly-terminal diff.
+
+        A diff can only ever supersede a need whose motivator turned terminal
+        in the same turn. A need already carrying a terminal id — one that went
+        terminal before this rule existed — was unreachable and stayed PENDING
+        for the life of the case. Sweeping everything heals it with no backfill.
+        """
         case = _make_case()
-        h_already_retired = _make_hypothesis(case, state=HypothesisState.RETIRED)
+        h = _make_hypothesis(case, state=terminal_state)
+        if terminal_state == HypothesisState.REFUTED:
+            h.refutation_reason = "disproved"
+        case.evidence_needs.append(
+            EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text="x",
+                rationale="y",
+                motivating_hypothesis_ids=[h.hypothesis_id],
+                created_at_turn=case.current_turn,
+            )
+        )
+        # Several turns pass with no state change at all — a diff would see an
+        # empty newly-terminal set and never touch this need.
+        case.current_turn += 3
 
-        pre_retired = {
-            h_id
-            for h_id, h in case.hypotheses.items()
-            if h.state == HypothesisState.RETIRED
-        }
-        # No mutation this turn.
-        post_retired = {
-            h_id
-            for h_id, h in case.hypotheses.items()
-            if h.state == HypothesisState.RETIRED
-        }
-        newly_retired = post_retired - pre_retired
+        assert _sweep_needs_for_terminal_hypotheses(case) == 1
+        assert case.evidence_needs[0].state == NeedState.SUPERSEDED
 
-        assert h_already_retired.hypothesis_id in pre_retired
-        assert newly_retired == set()
+    def test_heals_stale_terminal_id_left_beside_an_active_motivator(self):
+        """The subtler legacy shape: a need motivated by [terminal, active].
+
+        Nothing ever pruned the terminal id, so when the *active* motivator
+        later goes terminal the list does not empty and the need survives
+        PENDING — the leak reaching into post-fix turns. The full sweep prunes
+        both, so it empties and supersedes.
+        """
+        case = _make_case()
+        h_stale = _make_hypothesis(case, state=HypothesisState.REFUTED)
+        h_stale.refutation_reason = "disproved earlier"
+        h_active = _make_hypothesis(case, state=HypothesisState.ACTIVE)
+        case.evidence_needs.append(
+            EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text="x",
+                rationale="y",
+                motivating_hypothesis_ids=[
+                    h_stale.hypothesis_id,
+                    h_active.hypothesis_id,
+                ],
+                created_at_turn=case.current_turn,
+            )
+        )
+
+        # Turn N: only the stale id is terminal — the need legitimately
+        # survives, because an active motivator still wants the answer.
+        assert _sweep_needs_for_terminal_hypotheses(case) == 0
+        need = case.evidence_needs[0]
+        assert need.state == NeedState.PENDING
+        assert need.motivating_hypothesis_ids == [h_active.hypothesis_id]
+
+        # Turn N+1: the last motivator goes terminal — now it supersedes.
+        case.hypotheses[h_active.hypothesis_id].state = HypothesisState.RETIRED
+        case.current_turn += 1
+        assert _sweep_needs_for_terminal_hypotheses(case) == 1
+        assert need.state == NeedState.SUPERSEDED
+
+    def test_sweep_is_idempotent(self):
+        """Re-sweeping is a no-op, which is what makes sweeping the full set
+        every turn affordable — the id is pruned from the motivating lists on
+        the first pass, so later passes short-circuit."""
+        case = _make_case()
+        h = _make_hypothesis(case, state=HypothesisState.RETIRED)
+        case.evidence_needs.append(
+            EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text="x",
+                rationale="y",
+                motivating_hypothesis_ids=[h.hypothesis_id],
+                created_at_turn=case.current_turn,
+            )
+        )
+
+        assert _sweep_needs_for_terminal_hypotheses(case) == 1
+        first = case.evidence_needs[0].state
+        for _ in range(3):
+            assert _sweep_needs_for_terminal_hypotheses(case) == 0
+        assert case.evidence_needs[0].state == first
+
+    def test_symptom_needs_are_exempt(self):
+        """Symptom needs carry an empty motivating list by design (they are
+        motivated by the problem statement), so a full sweep must not touch
+        them however many hypotheses are terminal."""
+        case = _make_case()
+        h = _make_hypothesis(case, state=HypothesisState.RETIRED)
+        assert h.state == HypothesisState.RETIRED
+        case.evidence_needs.append(
+            EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+                request_text="x",
+                rationale="y",
+                motivating_hypothesis_ids=[],
+                created_at_turn=case.current_turn,
+            )
+        )
+
+        assert _sweep_needs_for_terminal_hypotheses(case) == 0
+        assert case.evidence_needs[0].state == NeedState.PENDING
 
 
 def _process_response_metadata() -> dict:

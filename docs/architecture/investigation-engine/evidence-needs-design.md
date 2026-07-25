@@ -346,7 +346,7 @@ Output: List of symptom-verification needs (motivating_hypothesis_ids=[])
 Each symptom need carries `purpose=symptom_verification` and an empty
 `motivating_hypothesis_ids` list — these are the "permanent" needs of
 the case, motivated by the problem statement rather than by any
-hypothesis. They are not subject to hypothesis-retirement supersession.
+hypothesis. They are not subject to terminal-hypothesis supersession.
 
 Symptom-need emission/refinement can span multiple turns (the agent may
 need several rounds of data inspection to set `symptom_verified=True`).
@@ -470,7 +470,7 @@ lifecycle, surfacing, and wall rules; nothing reads its origin):
   previously arrived with zero discriminators.
 - **Motivated solely by the seeded hypothesis**, so §7.4
   motivator-based supersession retires it for free when that hypothesis
-  is retired — the seeder adds no bespoke lifecycle.
+  goes terminal — the seeder adds no bespoke lifecycle.
 - **Never auto-fulfilled** — it grounds only when a real datum arrives.
 
 The engine is a bounded *creator* here rather than only a *lifecycle
@@ -629,33 +629,72 @@ rather than on a reject-and-resurface backstop. This is the intentional
 tier shift documented in [investigation-lifecycle-logic.md §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)
 and the INV-17/INV-21 retirement note in the lifecycle invariant matrix.
 
-### 7.4 Hypothesis Retirement → Motivator-Based Supersession
+### 7.4 Terminal Hypothesis → Motivator-Based Supersession
 
-This is a deterministic engine rule, not an LLM decision:
+This is a deterministic engine rule, not an LLM decision. It fires when a
+hypothesis reaches either terminal state — `REFUTED` or `RETIRED`:
 
 ```python
-def on_hypothesis_retired(case: Case, retired_hyp_id: str):
+TERMINAL_HYPOTHESIS_STATES = {HypothesisState.REFUTED, HypothesisState.RETIRED}
+
+def on_hypothesis_terminal(case: Case, terminal_hyp_id: str):
     for need in case.evidence_needs:
-        if retired_hyp_id in need.motivating_hypothesis_ids:
-            need.motivating_hypothesis_ids.remove(retired_hyp_id)
+        if terminal_hyp_id in need.motivating_hypothesis_ids:
+            need.motivating_hypothesis_ids.remove(terminal_hyp_id)
             if (not need.motivating_hypothesis_ids
                     and need.purpose == NeedPurpose.CAUSAL_VERIFICATION
                     and need.state != NeedState.FULFILLED):
                 need.state = NeedState.SUPERSEDED
-                need.superseded_reason = "all motivating hypotheses retired"
+                need.superseded_reason = "all motivating hypotheses are terminal"
+
+
+# End of every turn, before save: sweep the whole terminal set.
+def sweep_needs_for_terminal_hypotheses(case: Case):
+    for h_id, h in case.hypotheses.items():
+        if h.state in TERMINAL_HYPOTHESIS_STATES:
+            on_hypothesis_terminal(case, h_id)
 ```
 
 Notes:
 
-- A need motivated by multiple hypotheses survives the retirement of
-  any subset; supersession only fires when all motivators are gone.
+- Both terminal states are swept, not retirement alone. `REFUTED` and
+  `RETIRED` are equally immutable (the apply-layer refuses to revive
+  either) and equally out of the differential, so a discriminator
+  motivated solely by a refuted cause discriminates nothing. This rule is
+  the *only* GC for an LLM-authored causal need — nothing else retires
+  one — so a state left out of the sweep leaves those needs `PENDING` for
+  the life of the case, where they render in `<evidence_needs>`, surface
+  as asks, and appear as unmet data on the insufficient-evidence report.
+- A need motivated by multiple hypotheses survives a partial sweep;
+  supersession only fires when all motivators are gone.
 - `symptom_verification` needs have `motivating_hypothesis_ids=[]`
   (motivated by the problem statement). They are exempt from this
   rule; only LLM judgment or problem-statement refinement can
   supersede them.
 - FULFILLED needs are not auto-superseded — they remain as audit of
-  what *was* collected, even if the hypothesis is later retired.
+  what *was* collected, even if the hypothesis later goes terminal.
 - The LLM can supersede explicitly at any time via update emissions.
+
+The rule is wired as an end-of-turn sweep over **every** terminal hypothesis,
+not a diff of the ones that turned terminal this turn. The supersession helper
+is idempotent — it removes the hypothesis id from each motivating list on the
+first pass, so later passes short-circuit — which makes re-sweeping free in the
+steady state and buys two things a diff cannot give:
+
+- A need already carrying a terminal motivator heals itself. A diff can only
+  ever reach needs whose motivator turned terminal in the *same* turn, so a
+  need anchored to a hypothesis that went terminal before this rule existed
+  would stay `PENDING` for the life of the case. The same applies to the
+  subtler shape: a need motivated by `[terminal, active]` keeps the stale id
+  (nothing pruned it), so when the active motivator later goes terminal the
+  list still is not empty and the need survives. Sweeping everything resolves
+  both without a backfill migration.
+- There is no pre-turn snapshot to keep in sync with the post-turn diff.
+
+The apply-layer closes the matching entry point: a need emitted with an
+*already*-terminal motivator has that id dropped at create/update time (and a
+causal need left with no valid motivator is rejected outright), so a need that
+the sweep would immediately supersede is never created in the first place.
 
 ### 7.5 Re-Verification After Mitigation/Solution
 
@@ -1034,8 +1073,8 @@ Mitigation and solution become distinguishable claims:
 The LLM determines *what* needs exist (content, motivation,
 fulfillment, supersession judgments). The system manages *when* needs
 can be created (triggers), *how* they're persisted, and one
-deterministic lifecycle event (motivator-based supersession on
-hypothesis retirement). This division keeps the LLM focused on
+deterministic lifecycle event (motivator-based supersession when a
+hypothesis goes terminal). This division keeps the LLM focused on
 reasoning while the system enforces consistency.
 
 The one bounded exception is the KB cause seeder (§5.4): it mints seed
@@ -1229,7 +1268,7 @@ Copilot is already live.
 | `SuggestedFollowUp.evidence_need_id` + validators | `faultmaven/core/investigation/schemas.py:897`–`929` |
 | Engine apply-layer `_apply_evidence_need_updates` | `faultmaven/core/investigation/milestone_engine.py:6310`–`6637` (invoked ~`:6137`) |
 | ~~Engine backstop (path-conditional rejection)~~ | **Removed in the flow redesign** — `_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES` deleted; causal-need gating is now prompt-guided by `cause_state` (§7.3). |
-| Hypothesis-retirement supersession | `milestone_engine.py:_supersede_needs_on_hypothesis_retirement` ~`:901`–`989` |
+| Terminal-hypothesis supersession | `milestone_engine.py:_supersede_needs_on_terminal_hypothesis` (+ `_TERMINAL_HYPOTHESIS_STATES`) |
 | Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine.py:_flatten_follow_ups` ~`:7476`–`7530` |
 | Context block `<evidence_needs>` | `context_builder.py:_build_evidence_needs_block` ~`:1753`–`1892` (line render ~`:1737`) |
 | Prompt directives | `prompts/templates.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK` ~`:1170`, `_..._SYMPTOM_ONLY_ADDENDUM` ~`:1206`, `_..._RCA_POOL_EVAL_BLOCK` ~`:1222`, `_..._REVERIFICATION_ADDENDUM` ~`:1253` |

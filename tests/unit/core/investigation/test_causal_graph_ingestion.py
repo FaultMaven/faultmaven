@@ -260,6 +260,48 @@ def test_ingest_attaches_node_evidence_and_skips_unknown():
     assert root.evidence_links[0].stance == EvidenceStance.SUPPORTS
 
 
+def test_ingest_keys_node_evidence_by_node_and_evidence_only():
+    """#587: the link identity is ``(node, evidence)`` — NOT
+    ``(node, evidence, stance)``.
+
+    ``causal_node_evidence`` has ``PRIMARY KEY (node_id, evidence_id)``, so a
+    node physically cannot hold two stances on the same evidence row. Keying
+    the in-memory dedup by stance as well would build a second link that the
+    save-path's ``ON CONFLICT DO UPDATE`` silently collapses — in-memory state
+    that does not survive a round-trip, which is the silent-loss class the
+    schema audit closed. A contradictory same-turn emission therefore resolves
+    the way any re-emission does: last write wins, one link.
+    """
+    case = _case()
+    case.evidence.append(SimpleNamespace(evidence_id="ev_0123456789ab"))
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_node("the root", NodeType.ROOT, produces="D")],
+        edges_to_add=[],
+        node_evidence=[
+            SimpleNamespace(
+                node_ref="new_index_0",
+                evidence_id="ev_0123456789ab",
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="confirms",
+                stance_confidence=0.9,
+            ),
+            SimpleNamespace(  # same node + same evidence, opposite stance
+                node_ref="new_index_0",
+                evidence_id="ev_0123456789ab",
+                stance=EvidenceStance.REFUTES,
+                reasoning="on reflection, it disconfirms",
+                stance_confidence=0.8,
+            ),
+        ],
+        current_turn=case.current_turn,
+    )
+    root = case.causal_nodes[created[0]]
+    assert len(root.evidence_links) == 1
+    assert root.evidence_links[0].stance == EvidenceStance.REFUTES
+    assert root.evidence_links[0].stance_confidence == 0.8
+
+
 def test_ingest_resolves_new_index_evidence_ref():
     # Same-turn evidence: evidence_id_ref='new_index_N' resolves against the
     # evidence created earlier this turn (the common rung-evidence case).

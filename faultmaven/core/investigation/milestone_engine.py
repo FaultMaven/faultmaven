@@ -1771,46 +1771,69 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     )
 
 
-def _supersede_needs_on_hypothesis_retirement(
-    case: "Case", retired_hyp_id: str, current_turn: int
+# A hypothesis in one of these states is out of the differential for good:
+# ``_apply_hypothesis_updates`` refuses to revive either, and
+# ``verification_status._residual_candidates`` excludes both. Anything anchored
+# to such a hypothesis (today: causal evidence-needs) is moot from that point on.
+_TERMINAL_HYPOTHESIS_STATES = frozenset(
+    {HypothesisState.REFUTED, HypothesisState.RETIRED}
+)
+
+
+def _supersede_needs_on_terminal_hypothesis(
+    case: "Case", terminal_hyp_id: str, current_turn: int
 ) -> int:
-    """Deterministic engine rule: when a hypothesis retires, remove its
-    ID from every need's ``motivating_hypothesis_ids``. If the list
-    becomes empty AND the need is causal-purpose AND not FULFILLED,
-    mark the need SUPERSEDED.
+    """Deterministic engine rule: when a hypothesis reaches a TERMINAL state
+    (``REFUTED`` or ``RETIRED``), remove its ID from every need's
+    ``motivating_hypothesis_ids``. If the list becomes empty AND the need is
+    causal-purpose AND not FULFILLED, mark the need SUPERSEDED.
 
     Returns the count of needs whose state was flipped to SUPERSEDED.
 
     Per evidence-needs-design.md §7.4:
 
-    - Needs motivated by multiple hypotheses survive partial
-      retirement; supersession fires only when all motivators are
-      gone.
+    - Needs motivated by multiple hypotheses survive a partial sweep;
+      supersession fires only when all motivators are gone.
     - ``symptom_verification`` needs have empty motivating lists by
       design (motivated by the problem statement) — they are exempt
       from this rule.
     - FULFILLED needs are never auto-superseded — they remain as the
       audit trail of what was collected.
 
-    Wired via end-of-turn snapshot-diff in ``_process_turn_impl`` (pre-
-    turn retired set captured before update application, post-turn
-    diff invokes this helper for every newly-retired hypothesis). A
-    single integration point covers all four retirement write sites
-    (``hypothesis_manager.py`` low-confidence + anchoring-prevention,
-    ``progress_monitor.py`` INCONCLUSIVE → RETIRED, and LLM-emitted
-    retirement here) without threading ``case`` through those APIs.
+    **Both** terminal states are swept, not retirement alone: ``REFUTED`` and
+    ``RETIRED`` are equally immutable (``_apply_hypothesis_updates`` refuses to
+    revive either) and equally out of the differential
+    (``verification_status._residual_candidates``), so a discriminator motivated
+    solely by a refuted cause discriminates nothing. Sweeping only retirement
+    left those needs PENDING for the life of the case — the staleness leak this
+    rule exists to prevent, since nothing else GCs an LLM-authored causal need.
+
+    Wired as an end-of-turn sweep in ``_process_turn_impl`` over **every**
+    terminal hypothesis, not a newly-terminal diff. This function is idempotent
+    — the first pass removes ``terminal_hyp_id`` from every motivating list, so
+    later passes hit the ``continue`` below and change nothing — so re-sweeping
+    costs nothing in the steady state and needs no pre-turn snapshot. It also
+    self-heals a need that is already carrying a terminal id (one that went
+    terminal before this rule existed, or one sitting in the list beside a
+    still-active motivator), which a diff could never reach.
+
+    A single integration point covers every terminal write site
+    (``hypothesis_manager.py`` low-confidence + anchoring-prevention +
+    ``refute_hypothesis``, ``progress_monitor.py`` INCONCLUSIVE → RETIRED, and
+    LLM-emitted refutation/retirement here) without threading ``case`` through
+    those APIs.
 
     Persistence rides on the next ``repo.save(case)`` (no scoped repo
     method — needs live on the Case aggregate per Phase 1 §1.5).
     """
     superseded_count = 0
     for need in case.evidence_needs:
-        if retired_hyp_id not in need.motivating_hypothesis_ids:
+        if terminal_hyp_id not in need.motivating_hypothesis_ids:
             continue
         new_motivators = [
             hyp_id
             for hyp_id in need.motivating_hypothesis_ids
-            if hyp_id != retired_hyp_id
+            if hyp_id != terminal_hyp_id
         ]
         prior_status = need.state
         if (
@@ -1822,7 +1845,7 @@ def _supersede_needs_on_hypothesis_retirement(
             # in-place mutation is allowed and re-validated at save time.
             # The Case domain model's save path runs full validation.
             new_status = NeedState.SUPERSEDED
-            new_reason = "all motivating hypotheses retired"
+            new_reason = "all motivating hypotheses are terminal"
             superseded_count += 1
         else:
             new_status = need.state
@@ -1855,9 +1878,31 @@ def _supersede_needs_on_hypothesis_retirement(
     if superseded_count:
         logger.info(
             f"Superseded {superseded_count} causal-verification need(s) on "
-            f"case {case.case_id} after hypothesis {retired_hyp_id} retirement."
+            f"case {case.case_id} after hypothesis {terminal_hyp_id} became "
+            f"terminal."
         )
     return superseded_count
+
+
+def _sweep_needs_for_terminal_hypotheses(case: "Case") -> int:
+    """Run the §7.4 supersession rule against every terminal hypothesis.
+
+    The end-of-turn integration point, extracted so tests pin the sweep the
+    engine actually runs rather than a replica of it.
+
+    Sweeping the whole terminal set — rather than only the hypotheses that
+    turned terminal this turn — is what lets a need already carrying a terminal
+    motivator heal itself, and ``_supersede_needs_on_terminal_hypothesis`` is
+    idempotent, so repeating the sweep every turn costs nothing once the
+    motivating lists are clean.
+
+    Returns the number of needs flipped to SUPERSEDED — 0 in the steady state.
+    """
+    return sum(
+        _supersede_needs_on_terminal_hypothesis(case, h_id, case.current_turn)
+        for h_id, h in case.hypotheses.items()
+        if h.state in _TERMINAL_HYPOTHESIS_STATES
+    )
 
 
 def _gate1_is_pending(case: "Case") -> bool:
@@ -3506,28 +3551,6 @@ class MilestoneEngine:
                 "outcome": TurnOutcome.CONVERSATION,
             }
 
-            # Evidence-needs Phase 3: snapshot which hypothesis IDs are
-            # ALREADY retired before any turn processing. After all the
-            # turn's hypothesis-state mutations are done (LLM-emitted
-            # retirements, anchoring-prevention, low-confidence, progress-
-            # monitor INCONCLUSIVE→RETIRED), the diff is the set of
-            # newly-retired IDs that the supersession helper processes.
-            # Single integration point covers all four retirement sites
-            # without threading ``case`` through hypothesis_manager and
-            # progress_monitor APIs (see evidence-needs-design.md §7.4).
-            #
-            # CONTRACT PIN: the snapshot/diff shape (this block and the
-            # paired post-mutation diff at the end of _process_turn_impl)
-            # is exercised by ``TestSnapshotDiffBookendIntegration`` in
-            # tests/unit/core/investigation/test_evidence_need_apply_layer.py.
-            # If you refactor this bookend, update or replace that test —
-            # it pins the contract, not the call site.
-            _pre_turn_retired_hyp_ids: set[str] = {
-                h_id
-                for h_id, h in case.hypotheses.items()
-                if h.state == HypothesisState.RETIRED
-            }
-
             # 0a. Terminal case handling — Q&A and report regeneration only
             if case.is_terminal:
                 return await self._process_terminal_turn(case, user_message, metadata)
@@ -4555,25 +4578,31 @@ class MilestoneEngine:
             )
             case_updated.turn_history.append(turn_record)
 
-            # Evidence-needs Phase 3: detect hypotheses that newly
-            # retired this turn and run the supersession rule for
-            # causal-purpose needs anchored to them. Covers all four
-            # retirement code paths via post-hoc diff:
-            #   - hypothesis_manager.py:396 (low-confidence)
-            #   - hypothesis_manager.py:584 (anchoring-prevention)
-            #   - progress_monitor.py:691 (INCONCLUSIVE → RETIRED)
-            #   - milestone_engine.py (LLM-emitted retirement)
-            # Runs BEFORE save() so the supersession lands in the same
-            # turn's persisted state.
-            _newly_retired_hyp_ids = {
-                h_id
-                for h_id, h in case_updated.hypotheses.items()
-                if h.state == HypothesisState.RETIRED
-            } - _pre_turn_retired_hyp_ids
-            for _retired_id in _newly_retired_hyp_ids:
-                _supersede_needs_on_hypothesis_retirement(
-                    case_updated, _retired_id, case_updated.current_turn
-                )
+            # Evidence-needs Phase 3: run the supersession rule for
+            # causal-purpose needs anchored to any TERMINAL hypothesis. Covers
+            # every terminal write path without threading ``case`` through
+            # their APIs:
+            #   - hypothesis_manager.py (low-confidence retirement)
+            #   - hypothesis_manager.py (anchoring-prevention retirement)
+            #   - hypothesis_manager.py (``refute_hypothesis``)
+            #   - progress_monitor.py (INCONCLUSIVE → RETIRED)
+            #   - milestone_engine.py (LLM-emitted refutation / retirement)
+            #
+            # The FULL terminal set is swept, not a newly-terminal diff. The
+            # helper is idempotent — it removes the id from every motivating
+            # list on the first pass, so later sweeps hit its ``continue`` and
+            # change nothing — which makes the steady-state cost a no-op and
+            # removes the need for a pre-turn snapshot. The diff form could
+            # only ever supersede needs whose motivator turned terminal in the
+            # same turn, so a need already carrying a terminal id (a motivator
+            # that went terminal before this rule existed, or one left in the
+            # list beside a still-active motivator) stayed PENDING for the life
+            # of the case with nothing able to clear it. Sweeping everything
+            # self-heals those instead of requiring a backfill.
+            #
+            # Runs BEFORE save() so the supersession lands in the same turn's
+            # persisted state.
+            _sweep_needs_for_terminal_hypotheses(case_updated)
 
             # Step 7: Save case (only if changes made, but turn history always updates)
             case_updated.updated_at = datetime.now(UTC)
@@ -8588,26 +8617,28 @@ class MilestoneEngine:
                 )
 
             # Reference validation: dangling hypothesis IDs are dropped
-            # (the link couldn't form anyway), and already-RETIRED IDs
-            # are also dropped — anchoring a new need to a retired
-            # hypothesis would survive the snapshot-diff supersession
-            # (which only fires for this-turn retirements) and stay
-            # alive forever. Dangling evidence IDs are dropped likewise.
+            # (the link couldn't form anyway), and already-TERMINAL IDs
+            # (REFUTED / RETIRED) are also dropped — a hypothesis already out
+            # of the differential motivates nothing, so admitting it would
+            # create a need the end-of-turn sweep immediately supersedes.
+            # Rejecting it at the boundary keeps the churn (and the misleading
+            # ask, for the turn it would live) out of the case entirely.
+            # Dangling evidence IDs are dropped likewise.
             # These look like prompt-compliance issues, not lifecycle
             # errors, so they go to validation_repairs not system_feedback.
             dangling_hyp_ids = {
                 h_id for h_id in resolved_motivators if h_id not in case.hypotheses
             }
-            retired_hyp_ids = {
+            terminal_hyp_ids = {
                 h_id
                 for h_id in resolved_motivators
                 if h_id in case.hypotheses
-                and case.hypotheses[h_id].state == HypothesisState.RETIRED
+                and case.hypotheses[h_id].state in _TERMINAL_HYPOTHESIS_STATES
             }
             valid_motivators = [
                 h_id
                 for h_id in resolved_motivators
-                if h_id not in dangling_hyp_ids and h_id not in retired_hyp_ids
+                if h_id not in dangling_hyp_ids and h_id not in terminal_hyp_ids
             ]
             if dangling_hyp_ids:
                 logger.warning(
@@ -8619,14 +8650,14 @@ class MilestoneEngine:
                     f"Dropped {len(dangling_hyp_ids)} dangling hypothesis "
                     f"ID(s) on evidence_need_update"
                 )
-            if retired_hyp_ids:
+            if terminal_hyp_ids:
                 logger.warning(
-                    f"Dropped {len(retired_hyp_ids)} retired hypothesis "
+                    f"Dropped {len(terminal_hyp_ids)} terminal hypothesis "
                     f"ID(s) on evidence_need_update for case {case.case_id}: "
-                    f"{retired_hyp_ids}"
+                    f"{terminal_hyp_ids}"
                 )
                 metadata.setdefault("validation_repairs", []).append(
-                    f"Dropped {len(retired_hyp_ids)} retired hypothesis "
+                    f"Dropped {len(terminal_hyp_ids)} terminal hypothesis "
                     f"ID(s) on evidence_need_update"
                 )
 
@@ -8650,9 +8681,10 @@ class MilestoneEngine:
                 # Reject causal-purpose creates with no valid motivator.
                 # A causal need without any motivating hypothesis is the
                 # exact orphan state §7.4's supersession rule was
-                # designed to clean up — but the snapshot-diff only
-                # fires for *this-turn* retirements, so a need born
-                # empty would never be auto-cleaned. Per design §5.2,
+                # designed to clean up — but the sweep keys off a
+                # terminal hypothesis id, and a need born with no
+                # motivator at all has none to key on, so it would
+                # never be auto-cleaned. Per design §5.2,
                 # causal needs are *motivated by hypotheses*; absent
                 # motivators (whether the LLM omitted them or all
                 # references filtered away as dangling/retired) makes
@@ -8682,15 +8714,19 @@ class MilestoneEngine:
                 # list at emission, but the apply-layer drop happens
                 # after that check; constructing EvidenceNeed with
                 # FULFILLED + [] would raise via the model_validator.
-                effective_status = update.state or NeedState.PENDING
+                # The rule lives on the model (single owner); this site owns
+                # only the repair note.
+                requested_status = update.state or NeedState.PENDING
                 effective_superseded_reason = update.superseded_reason
-                if effective_status == NeedState.FULFILLED and not valid_fulfillments:
+                effective_status = EvidenceNeed.admissible_state(
+                    requested_status, valid_fulfillments
+                )
+                if effective_status != requested_status:
                     metadata.setdefault("validation_repairs", []).append(
                         "Demoted FULFILLED→PARTIALLY_MET on evidence_need "
                         "create (all fulfilling_evidence_ids dropped as "
                         "dangling)"
                     )
-                    effective_status = NeedState.PARTIALLY_MET
                     effective_superseded_reason = None
 
                 new_need = EvidenceNeed(
@@ -8809,17 +8845,16 @@ class MilestoneEngine:
             # is off on EvidenceNeed, so in-place mutation bypasses
             # ``_validate_state_consistency`` — without this guard a
             # bad LLM emission could leave the need in FULFILLED+[]
-            # state that raises on next reconstruction.
-            effective_status = update.state
-            if (
-                effective_status == NeedState.FULFILLED
-                and not target.fulfilling_evidence_ids
-            ):
+            # state that raises on next reconstruction. The rule lives on the
+            # model (single owner); this site owns only the repair note.
+            effective_status = EvidenceNeed.admissible_state(
+                update.state, target.fulfilling_evidence_ids
+            )
+            if effective_status != update.state:
                 metadata.setdefault("validation_repairs", []).append(
                     f"Demoted FULFILLED→PARTIALLY_MET on need {target.need_id} "
                     f"(all fulfilling_evidence_ids dropped as dangling)"
                 )
-                effective_status = NeedState.PARTIALLY_MET
             if effective_status is not None:
                 target.state = effective_status
             if effective_status == NeedState.SUPERSEDED:
