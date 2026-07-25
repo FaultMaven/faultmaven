@@ -434,6 +434,13 @@ class UserService(BaseService):
                 error_code="USER_NOT_FOUND",
             )
 
+        # Revoke all user's JWT tokens (force re-login) BEFORE mutating and
+        # persisting. Revocation raises if the store write fails (#769), and
+        # doing it first means such a failure aborts cleanly with nothing
+        # written, rather than leaving the password changed with old sessions
+        # alive and still reporting an error to the caller.
+        await self.auth_service.revoke_user_tokens(user_id)
+
         # Hash new password and update
         user.hashed_password = hash_password(new_password)
         user.last_password_change_at = datetime.now(timezone.utc)
@@ -441,9 +448,6 @@ class UserService(BaseService):
 
         # Save user
         updated_user = await self.user_repo.save(user)
-
-        # Revoke all user's JWT tokens (force re-login)
-        await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(f"Password reset successfully for user: {user_id}")
         return updated_user
@@ -502,6 +506,10 @@ class UserService(BaseService):
         # Validate new password strength
         validate_password_strength(new_password)
 
+        # Revoke before mutating/persisting, so a store-write failure aborts
+        # with nothing written (see reset_password).
+        await self.auth_service.revoke_user_tokens(user_id)
+
         # Hash new password and update
         user.hashed_password = hash_password(new_password)
         user.last_password_change_at = datetime.now(timezone.utc)
@@ -509,9 +517,6 @@ class UserService(BaseService):
 
         # Save user
         updated_user = await self.user_repo.save(user)
-
-        # Revoke all user's JWT tokens (force re-login)
-        await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(f"Password changed successfully for user: {user_id}")
         return updated_user
@@ -612,12 +617,16 @@ class UserService(BaseService):
         if not user:
             raise NotFoundError("User", user_id)
 
+        # Revoke before mutating/persisting: a store-write failure then leaves
+        # the account untouched instead of deactivated-but-still-
+        # authenticating (see reset_password).
+        await self.auth_service.revoke_user_tokens(user_id)
+
         user.is_active = False
         user.deleted_at = datetime.now(timezone.utc)
         user.updated_at = datetime.now(timezone.utc)
 
         deactivated_user = await self.user_repo.save(user)
-        await self.auth_service.revoke_user_tokens(user_id)
         return deactivated_user
 
     async def deactivate_user_admin(
@@ -859,13 +868,15 @@ class UserService(BaseService):
                 conflict_reason="role_already_assigned",
             )
 
+        # Revoke all user tokens (roles changed, tokens stale) BEFORE mutating
+        # and persisting, so a store-write failure cannot leave the new role
+        # committed while tokens carrying the OLD role stay valid.
+        revoked_before = await self.auth_service.revoke_user_tokens(user_id)
+
         # Assign new role (replaces existing)
         user.roles = [role]
         user.updated_at = datetime.now(timezone.utc)
         updated_user = await self.user_repo.save(user)
-
-        # Revoke all user tokens (roles changed, tokens stale)
-        revoked_before = await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(
             f"Role assigned: {user_id} -> {role}, "
@@ -924,13 +935,15 @@ class UserService(BaseService):
         if role not in current_roles:
             raise NotFoundError("Role", f"{user_id}/{role}")
 
+        # Revoke before mutating/persisting: otherwise a store-write failure
+        # could commit the downgrade while tokens carrying the elevated role
+        # live on.
+        revoked_before = await self.auth_service.revoke_user_tokens(user_id)
+
         # Downgrade to viewer (minimum privilege)
         user.roles = [Role.VIEWER.value]
         user.updated_at = datetime.now(timezone.utc)
         updated_user = await self.user_repo.save(user)
-
-        # Revoke all user tokens (roles changed, tokens stale)
-        revoked_before = await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(
             f"Role removed: {user_id}, role={role}, downgraded to viewer, "

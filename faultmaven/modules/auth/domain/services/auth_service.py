@@ -492,6 +492,32 @@ class AuthService:
             logger.error(f"Failed to revoke token: {e}")
             raise ServiceError(f"Token revocation failed: {e}")
 
+    def _longest_token_lifetime_seconds(self) -> int:
+        """Longest refresh-token lifetime any mint path could have used.
+
+        The refresh expiry is declared in BOTH settings halves under the same
+        name: ``settings.auth``'s carries the ``JWT_REFRESH_TOKEN_EXPIRY``
+        validation alias and is the half the token generators are built with,
+        while ``settings.security``'s has no alias and never moves off its
+        default. A per-user watermark that expired before the tokens it
+        revokes would resurrect them, so take whichever is larger instead of
+        betting on one half.
+        """
+        days = max(
+            getattr(self._settings.auth, "jwt_refresh_token_expire_days", 0) or 0,
+            getattr(self._settings.security, "jwt_refresh_token_expire_days", 0) or 0,
+        )
+        if days <= 0:
+            # A non-positive TTL is rejected by SETEX, which would turn every
+            # revocation into a store error. Fall back to the schema default
+            # rather than letting misconfiguration disable revocation.
+            logger.warning(
+                "No positive refresh-token expiry configured; "
+                "defaulting the revocation watermark TTL to 7 days"
+            )
+            days = 7
+        return int(days) * 86400
+
     async def revoke_user_tokens(
         self,
         user_id: str,
@@ -522,7 +548,14 @@ class AuthService:
         # The watermark must outlive the longest-lived token that could still
         # be presented, or a long refresh token would outlive the entry that
         # revokes it and spring back to life.
-        ttl = self._refresh_token_expire_days * 86400
+        #
+        # Take the MAX across both settings halves rather than trusting one.
+        # `settings.auth.jwt_refresh_token_expire_days` is the operator knob
+        # (`JWT_REFRESH_TOKEN_EXPIRY`) and is what the token generators are
+        # constructed with, while `settings.security`'s same-named field has no
+        # env alias and is always its default. Reading only the latter would
+        # cap the watermark at 7 days while tokens lived for 30.
+        ttl = self._longest_token_lifetime_seconds()
         try:
             await self._revocation_store.revoke_user_tokens_before(
                 user_id, int(revoked_at.timestamp()), ttl

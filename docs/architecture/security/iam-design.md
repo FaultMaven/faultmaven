@@ -227,6 +227,35 @@ that same store at `{token_revocation_prefix}user:{user_id}`
 with a TTL that outlives the longest-lived refresh token. Every validate path
 then rejects a token whose `iat` is at or before its user's watermark.
 
+Per-token entries are namespaced separately, at
+`{token_revocation_prefix}jti:{jti}`. The two namespaces must sit under
+distinct literal segments because **jti values are attacker-controlled**: RFC
+7009 revocation (`POST /auth/oauth/revoke`) is unauthenticated and reads `jti`
+from a token decoded *without* signature verification. Were the per-user keys a
+direct child of the shared prefix, a submitted jti of `user:<victim>` would
+overwrite that victim's watermark with a non-numeric body, and the subsequent
+watermark read would raise — disabling per-user revocation for the victim on
+the fail-open request path while locking them out of refresh on the fail-closed
+generator path.
+
+The watermark TTL is the **maximum** of `settings.auth` and
+`settings.security`'s `jwt_refresh_token_expire_days`. Both halves declare that
+field under the same name, but only `settings.auth`'s carries the
+`JWT_REFRESH_TOKEN_EXPIRY` validation alias — and that is the half the token
+generators are constructed with. Reading only `settings.security`'s would cap
+the watermark at its 7-day default while refresh tokens lived for the
+configured 30, resurrecting revoked tokens on day 8.
+
+`UserService` revokes **before** mutating and persisting the user. Revocation
+raises when the store write fails, so revoking first makes such a failure a
+clean no-op instead of committing a password change or deactivation while old
+sessions stay valid and an error is returned to the caller.
+
+The admin endpoint resolves `user_id` against the user store and returns 404 if
+it does not exist. A watermark write succeeds for any string, so an admin who
+pastes a username or mistypes an id would otherwise get a revocation
+confirmation while the real account kept authenticating.
+
 The watermark is used instead of an index of issued JTIs because it is
 complete by construction: FaultMaven mints tokens from three implementations
 (`AuthService.generate_access_token`, plus the RS256 and HS256 generators),
@@ -1132,8 +1161,7 @@ Authorization: Bearer {access_token}
   "display_name": "Alice Smith",
   "roles": ["user", "admin"],
   "auth_mode": "local",
-  "created_at": "2025-10-23T12:00:00Z",
-  "token_count": 1
+  "created_at": "2025-10-23T12:00:00Z"
 }
 ```
 

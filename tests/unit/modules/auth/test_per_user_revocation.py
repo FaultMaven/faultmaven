@@ -94,9 +94,14 @@ def _user(user_id: str = USER_ID):
 
 
 def _auth_service_settings():
-    """Settings stub matching the HS256 generator's fixed iss/aud."""
+    """Settings stub matching the HS256 generator's fixed iss/aud.
+
+    Both halves carry ``jwt_refresh_token_expire_days`` because production
+    does: ``settings.auth``'s is the ``JWT_REFRESH_TOKEN_EXPIRY`` knob the
+    generators are built with, ``settings.security``'s has no env alias.
+    """
     return SimpleNamespace(
-        auth=SimpleNamespace(auth_mode="local"),
+        auth=SimpleNamespace(auth_mode="local", jwt_refresh_token_expire_days=7),
         security=SimpleNamespace(
             jwt_algorithm="HS256",
             jwt_access_token_expire_minutes=60,
@@ -128,6 +133,16 @@ def _admin_request(auth_service):
     )
 
 
+class _FakeUserStore:
+    """Resolves only the ids it was given, like the real store."""
+
+    def __init__(self, *user_ids: str):
+        self._ids = set(user_ids)
+
+    async def get_user(self, user_id: str):
+        return _user(user_id) if user_id in self._ids else None
+
+
 class TestAdminEndpointActuallyRevokes:
     """The observable the original bug got wrong: the endpoint's own response.
 
@@ -149,7 +164,10 @@ class TestAdminEndpointActuallyRevokes:
         assert await generator.validate_access_token(access) is not None
 
         response = await auth_routes.revoke_user_tokens(
-            USER_ID, _admin_request(auth_service), _=user
+            USER_ID,
+            _admin_request(auth_service),
+            _=user,
+            user_store=_FakeUserStore(USER_ID),
         )
 
         # The token no longer authenticates on any path.
@@ -172,11 +190,44 @@ class TestAdminEndpointActuallyRevokes:
         auth_service = _auth_service(store)
 
         response = await auth_routes.revoke_user_tokens(
-            USER_ID, _admin_request(auth_service), _=_user()
+            USER_ID,
+            _admin_request(auth_service),
+            _=_user(),
+            user_store=_FakeUserStore(USER_ID),
         )
 
         assert not hasattr(response, "revoked_tokens")
         assert "0 tokens" not in response.message
+
+    async def test_unknown_user_is_404_not_a_vacuous_success(self):
+        """A watermark write succeeds for ANY string, so the id must be real.
+
+        An admin who pastes a username, or mistypes an id, while containing a
+        compromised account would otherwise get a "revoked" confirmation while
+        the real account kept authenticating — the same false confirmation this
+        endpoint was fixed for.
+        """
+        from faultmaven.modules.auth.api import auth as auth_routes
+
+        store = _store()
+        generator = _generator(store)
+        auth_service = _auth_service(store)
+
+        access = await generator.generate_access_token(_user())
+
+        with pytest.raises(HTTPException) as exc_info:
+            await auth_routes.revoke_user_tokens(
+                "revoked-user",  # the username, not the user_id
+                _admin_request(auth_service),
+                _=_user(),
+                user_store=_FakeUserStore(USER_ID),
+            )
+
+        assert exc_info.value.status_code == 404
+        # No watermark was written for the mistyped id, and the real user's
+        # token is untouched — nothing was silently half-done.
+        assert await store.is_user_revoked("revoked-user", 1_700_000_000) is False
+        assert await generator.validate_access_token(access) is not None
 
     async def test_endpoint_500s_when_the_write_fails(self):
         """A failed revocation must never read as a successful one."""
@@ -192,7 +243,10 @@ class TestAdminEndpointActuallyRevokes:
 
         with pytest.raises(HTTPException) as exc_info:
             await auth_routes.revoke_user_tokens(
-                USER_ID, _admin_request(auth_service), _=_user()
+                USER_ID,
+                _admin_request(auth_service),
+                _=_user(),
+                user_store=_FakeUserStore(USER_ID),
             )
         assert exc_info.value.status_code == 500
 
@@ -392,6 +446,55 @@ class TestStoreContract:
         assert await store.is_revoked(USER_ID) is False
         assert await redis.get(f"revoked:token:user:{USER_ID}") == "1700000000"
 
+    async def test_a_crafted_jti_cannot_forge_a_user_watermark(self):
+        """Security regression: jti values are attacker-controlled.
+
+        RFC 7009 revocation (``POST /auth/oauth/revoke``) is unauthenticated
+        and reads ``jti`` from a token decoded WITHOUT signature verification,
+        so anyone can drive ``add_revoked_token`` with an arbitrary jti. If the
+        two namespaces overlapped, a jti of ``user:<victim>`` would write the
+        victim's watermark key with the literal body ``"revoked"`` — and the
+        watermark read would then raise on ``int("revoked")``, disabling
+        per-user revocation for that victim on the fail-open request path while
+        locking them out of refresh on the fail-closed generator path.
+        """
+        redis = _fake_redis()
+        store = _store(redis)
+        victim = "victim-user"
+
+        await store.add_revoked_token(f"user:{victim}", 3600)
+
+        # The victim has no watermark, and reading it does not raise.
+        assert await store.is_user_revoked(victim, 1_700_000_000) is False
+        # The crafted entry landed in the jti namespace, where it is inert.
+        assert await store.is_revoked(f"user:{victim}") is True
+        assert await redis.get(f"revoked:token:user:{victim}") is None
+
+    async def test_watermark_ttl_follows_the_operator_configured_expiry(self):
+        """Regression: the TTL must track ``JWT_REFRESH_TOKEN_EXPIRY``.
+
+        That knob lands on ``settings.auth.jwt_refresh_token_expire_days``.
+        ``settings.security`` declares the same field name with no env alias,
+        so it never leaves its default — reading only that half capped the
+        watermark at 7 days while refresh tokens lived for 30, and the revoked
+        token would resurrect on day 8.
+        """
+        redis = _fake_redis()
+        store = _store(redis)
+
+        settings = _auth_service_settings()
+        settings.auth.jwt_refresh_token_expire_days = 30
+        settings.security.jwt_refresh_token_expire_days = 7
+        with patch(
+            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
+            return_value=settings,
+        ):
+            auth_service = AuthService(revocation_store=store)
+            await auth_service.revoke_user_tokens(USER_ID)
+
+        ttl = await redis.ttl(f"revoked:token:user:{USER_ID}")
+        assert ttl >= 30 * 86400 - 5
+
     async def test_later_revocation_overwrites_the_watermark(self):
         store = _store()
         await store.revoke_user_tokens_before(USER_ID, 1_700_000_000, ttl=3600)
@@ -432,6 +535,53 @@ class TestServiceFailurePosture:
 
         with pytest.raises(ServiceError):
             await auth_service.revoke_user_tokens(USER_ID)
+
+    async def test_userservice_flows_revoke_before_persisting(self):
+        """A revocation failure must abort with nothing committed.
+
+        These flows raise where they used to no-op, and they all run against
+        an already-loaded user, so revoking after the save would leave the
+        password changed / account deactivated with old sessions alive AND an
+        error returned to the caller. Revoking first makes that failure a
+        clean no-op.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        from faultmaven.infrastructure.persistence.user_repository import (
+            InMemoryUserRepository,
+        )
+        from faultmaven.modules.auth.domain.services.user_service import UserService
+
+        repo = InMemoryUserRepository()
+        auth_service = MagicMock()
+        auth_service.revoke_user_tokens = AsyncMock(
+            side_effect=ServiceError("store down")
+        )
+        service = UserService(user_repo=repo, auth_service=auth_service)
+
+        user = await service.register_user(
+            email="reorder@local.faultmaven",
+            password="Str0ng-P4ssw0rd!",
+            full_name="Reorder Check",
+        )
+
+        # Spy on the persistence boundary. Asserting on the entity itself
+        # cannot distinguish here: InMemoryUserRepository hands back the same
+        # object, so an in-memory field mutation looks identical to a commit.
+        # `save` never being reached is the invariant that actually matters.
+        repo.save = AsyncMock(side_effect=AssertionError("persisted before revoking"))
+
+        with pytest.raises(ServiceError):
+            await service.change_password(
+                user_id=user.user_id,
+                current_password="Str0ng-P4ssw0rd!",
+                new_password="An0ther-P4ssw0rd!",
+            )
+        repo.save.assert_not_called()
+
+        with pytest.raises(ServiceError):
+            await service.deactivate_user(user.user_id)
+        repo.save.assert_not_called()
 
     async def test_request_path_fails_open_on_store_read_failure(self):
         """Documented posture (#767): the request path prefers availability."""

@@ -335,9 +335,11 @@ async def lifespan(app: FastAPI):
 
         # Verify critical services are available IMMEDIATELY after initialization
         user_store = container.get_user_store()
-        # Without the revocation store, every revoke path silently fails open
-        # (#767/#769), so treat it as critical rather than discovering it on
-        # the first logout or admin revocation.
+        # Every revoke path depends on this store (#767/#769), so a missing
+        # registration is fatal rather than something to discover on the first
+        # logout. Presence only — this does NOT probe Redis connectivity, so a
+        # dead backing store still boots and surfaces per-request instead
+        # (request path fails open, generator validation fails closed).
         token_revocation_store = container.get_service("token_revocation_store")
 
         logger.info(

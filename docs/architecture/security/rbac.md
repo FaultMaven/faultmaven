@@ -313,8 +313,7 @@ curl http://localhost:8000/api/v1/auth/me \
   "display_name": "Alice Smith",
   "roles": ["user", "admin"],
   "created_at": "2025-10-23T12:00:00Z",
-  "last_login": null,
-  "token_count": 1
+  "last_login": null
 }
 ```
 

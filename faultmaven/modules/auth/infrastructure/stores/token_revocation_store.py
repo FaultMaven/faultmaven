@@ -10,7 +10,15 @@ and whole users by revocation watermark (#769). Both live in this one store
 with TTLs matching token expiration.
 
 The key prefix comes from ``settings.security.token_revocation_prefix`` so
-writers and the reader can never disagree on the namespace.
+writers and the reader can never disagree on the namespace. Per-token entries
+live under a ``jti:`` sub-namespace and per-user watermarks under ``user:``;
+see ``ITokenRevocationStore`` for why they must not overlap.
+
+Deploy note: moving per-token entries under ``jti:`` orphans any revocation
+keys written by a previous build (they sat directly under the prefix), so
+tokens revoked before the upgrade are no longer seen as revoked. Acceptable
+pre-production; flush the ``{prefix}*`` keyspace on upgrade if any revoked
+refresh token must stay dead across it.
 """
 
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -28,14 +36,19 @@ class RedisTokenRevocationStore(ITokenRevocationStore):
     def __init__(self, redis_client, key_prefix: str = "revoked:token:"):
         self.redis = redis_client
         self._key_prefix = key_prefix
-        # Derived from the same prefix rather than configured separately, so
-        # the per-token and per-user namespaces can never be pointed at
-        # different Redis instances or drift apart. JTIs are UUIDs, so no jti
-        # key can collide with the "user:" sub-namespace.
+        # Both namespaces derive from the same prefix, so they can never be
+        # pointed at different Redis instances or drift apart. They sit under
+        # DISTINCT literal segments ("jti:" vs "user:") so no jti value can
+        # ever produce a per-user key: jti values are attacker-controlled in
+        # practice, because RFC 7009 revocation (POST /auth/oauth/revoke) is
+        # unauthenticated and reads jti from a token decoded WITHOUT signature
+        # verification. A jti of "user:<victim>" must not be able to overwrite
+        # that victim's watermark.
+        self._jti_key_prefix = f"{key_prefix}jti:"
         self._user_key_prefix = f"{key_prefix}user:"
 
     def _make_key(self, jti: str) -> str:
-        return f"{self._key_prefix}{jti}"
+        return f"{self._jti_key_prefix}{jti}"
 
     def _make_user_key(self, user_id: str) -> str:
         return f"{self._user_key_prefix}{user_id}"

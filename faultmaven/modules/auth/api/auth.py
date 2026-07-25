@@ -925,6 +925,7 @@ async def revoke_user_tokens(
     user_id: str,
     request: Request,
     _: DevUser = Depends(require_admin),
+    user_store=Depends(get_user_store),
 ) -> RevokeUserTokensResponse:
     """Revoke all tokens for a user. Admin only.
 
@@ -933,6 +934,12 @@ async def revoke_user_tokens(
     user issued at or before that instant (#769). A store write failure is a
     500 — an admin must never get a revocation confirmation while the user's
     tokens keep authenticating.
+
+    Unknown ``user_id`` is a 404 rather than a vacuous success. The watermark
+    write would succeed for any string, so an admin who pastes a username (or
+    mistypes an id) while containing a compromised account would otherwise get
+    a "revoked" confirmation while the real account kept authenticating —
+    the same false-confirmation failure this endpoint was fixed for.
     """
     try:
         auth_service = getattr(request.app.state, "auth_service", None)
@@ -941,6 +948,9 @@ async def revoke_user_tokens(
                 status_code=503,
                 detail="Authentication service unavailable. Please check server startup logs.",
             )
+
+        if await user_store.get_user(user_id) is None:
+            raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
 
         # Raises ServiceError on store failure, which surfaces as a 500 below.
         revoked_before = await auth_service.revoke_user_tokens(user_id)
