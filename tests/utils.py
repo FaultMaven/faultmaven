@@ -4,12 +4,19 @@ Provides common utilities for test ID generation, test data creation,
 and other shared test infrastructure.
 """
 
-from typing import Iterable, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 from uuid import uuid4
 
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
 )
+
+if TYPE_CHECKING:  # static analysis only — see make_org_knowledge_item
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        KnowledgeItem,
+        KnowledgeItemType,
+    )
 
 # Default enterprise UUID — mirrors SingleTenantProvider.DEFAULT_ENTERPRISE_ID
 # and migration 006's seeded row. Tests that build orgs/users without a
@@ -246,6 +253,81 @@ def generate_agent_execution_id() -> str:
 def generate_investigation_session_id() -> str:
     """Generate a valid investigation session ID."""
     return f"is_{uuid4().hex[:12]}"
+
+
+def make_org_knowledge_item(
+    item_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
+    title: str = "Sample Knowledge Item",
+    content: str = "This is sample content for the knowledge item.",
+    item_type: "Optional[KnowledgeItemType]" = None,
+    category: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    embedding_vector: Optional[List[float]] = None,
+    is_published: bool = True,
+    view_count: int = 0,
+    helpful_count: int = 0,
+    not_helpful_count: int = 0,
+    created_at: Optional[datetime] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> "KnowledgeItem":
+    """Build a valid org-owned KnowledgeItem for repository-level tests.
+
+    This is the single definition of an org-owned sample item. The repository
+    unit tests, the integration suite and the benchmarks all construct through
+    here, so a change to the model's tenancy invariants is made in one place
+    rather than in three copies that can drift apart.
+
+    Scope is TEAM, an org-owned tier:
+
+    * GLOBAL is the org-free platform tier (#770) and must NOT carry an
+      ``organization_id`` (mirrors the ``knowledge_items_global_org_check``
+      constraint). It is also the dataclass default, so an item built without
+      an explicit scope but *with* an org id fails construction outright.
+    * PERSONAL would require an ``owner_id`` backed by a real ``users`` row
+      under the FK-on fixtures.
+
+    Suites whose subject *is* the scope rule construct ``KnowledgeItem``
+    directly and vary scope themselves — the model's own contract tests
+    (``tests/unit/models/test_knowledge_item.py``) and the inventory
+    visibility tests (``tests/unit/modules/knowledge/test_documents_inventory.py``).
+    They must not route through this helper, which pins one scope by design.
+
+    The knowledge model is imported here rather than at module scope. This
+    module is imported by 21 test modules, most of them only for the
+    ``generate_*_id`` helpers, and ``faultmaven.modules.knowledge``'s package
+    ``__init__`` eagerly pulls in the FastAPI routes and the service layer:
+    importing it at module scope took ``import tests.utils`` from 0.40s /
+    334 modules to 18.00s / 5472 modules, and dragged in torch. ``item_type``
+    defaults to None for the same reason — evaluating the enum member in the
+    signature would force the import at def time.
+    """
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        KnowledgeItem,
+        KnowledgeItemType,
+        KnowledgeScope,
+    )
+
+    if item_type is None:
+        item_type = KnowledgeItemType.TROUBLESHOOTING_GUIDE
+
+    return KnowledgeItem(
+        item_id=item_id or generate_item_id(),
+        organization_id=organization_id or generate_org_id(),
+        scope=KnowledgeScope.TEAM,
+        title=title,
+        content=content,
+        item_type=item_type,
+        category=category,
+        tags=tags or [],
+        embedding_vector=embedding_vector,
+        is_published=is_published,
+        view_count=view_count,
+        helpful_count=helpful_count,
+        not_helpful_count=not_helpful_count,
+        created_at=created_at or datetime.now(timezone.utc),
+        metadata=metadata,
+    )
 
 
 def bridge_flat_hypotheses_to_graph(case) -> None:

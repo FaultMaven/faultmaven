@@ -18,8 +18,6 @@ Run with:
 """
 
 import time
-from datetime import datetime, timedelta, timezone
-from uuid import uuid4
 
 import pytest
 
@@ -31,8 +29,9 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
 )
+from tests.utils import make_org_knowledge_item
 
-from .conftest import generate_item_id, generate_org_id
+from .conftest import generate_org_id
 
 
 def create_valid_embedding(value: float = 0.1) -> list:
@@ -40,39 +39,26 @@ def create_valid_embedding(value: float = 0.1) -> list:
     return [value] * EMBEDDING_DIMENSIONS
 
 
-def create_sample_item(
-    item_id: str = None,
-    organization_id: str = None,
-    title: str = "Benchmark Knowledge Item",
-    content: str = "This is content for the benchmark knowledge item with sufficient text.",
-    item_type: KnowledgeItemType = KnowledgeItemType.TROUBLESHOOTING_GUIDE,
-    category: str = None,
-    tags: list = None,
-    embedding_vector: list = None,
-    is_published: bool = True,
-    view_count: int = 0,
-    helpful_count: int = 0,
-    not_helpful_count: int = 0,
-    created_at: datetime = None,
-    metadata: dict = None,
-) -> KnowledgeItem:
-    """Create a sample knowledge item for benchmarking."""
-    return KnowledgeItem(
-        item_id=item_id or generate_item_id(),
-        organization_id=organization_id or generate_org_id(),
-        title=title,
-        content=content,
-        item_type=item_type,
-        category=category,
-        tags=tags or [],
-        embedding_vector=embedding_vector,
-        is_published=is_published,
-        view_count=view_count,
-        helpful_count=helpful_count,
-        not_helpful_count=not_helpful_count,
-        created_at=created_at or datetime.now(timezone.utc),
-        metadata=metadata,
+def create_sample_item(**kwargs) -> KnowledgeItem:
+    """Create a sample knowledge item for benchmarking.
+
+    Thin wrapper over the shared factory: only the sample text differs from
+    the shared defaults. The tenancy invariants (scope vs organization_id,
+    #770) live in ``tests.utils.make_org_knowledge_item`` so that a domain
+    change updates every suite at once — this file previously carried its own
+    copy and was silently left behind by #770.
+
+    The benchmark-specific title/content are kept deliberately: the browsing
+    workload times ``search_by_text(..., "sample")``, so borrowing the shared
+    defaults would change how many rows that search hydrates and move the
+    measured baseline.
+    """
+    kwargs.setdefault("title", "Benchmark Knowledge Item")
+    kwargs.setdefault(
+        "content",
+        "This is content for the benchmark knowledge item with sufficient text.",
     )
+    return make_org_knowledge_item(**kwargs)
 
 
 @pytest.mark.benchmark
