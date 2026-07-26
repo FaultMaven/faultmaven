@@ -30,7 +30,7 @@ processor posture forbids.
 
 A **grant** is one operator's time-boxed license to read one case's content.
 
-```
+```http
 POST /api/v1/admin/grants
 { "case_id": "...", "organization_id": "...", "reason": "...", "ttl_minutes": 60 }
 → 201 { grant_id, state: "active", expires_at, ... }
@@ -68,7 +68,7 @@ does not exist and is a workstream of its own.
 
 Liveness is one predicate, and only one place computes it:
 
-```
+```sql
 approval_state IN ('auto_approved', 'approved')
   AND revoked_at IS NULL
   AND expires_at > now()
@@ -76,7 +76,7 @@ approval_state IN ('auto_approved', 'approved')
 
 ## Reaching the content
 
-```
+```http
 GET /api/v1/admin/cases/{case_id}            → case detail (title, description, state)
 GET /api/v1/admin/cases/{case_id}/messages   → transcript
 ```
@@ -125,7 +125,7 @@ Neither is necessary. RLS scopes each transaction from
 that `bind_request_org_context` sets per request. So the elevated read does not
 need to escape the policy — it needs to be **bound somewhere else**:
 
-```
+```text
 grant validated → set_current_org_id(grant.target_organization_id) → read
 ```
 
@@ -153,6 +153,14 @@ named organization. This is deliberate, and it is the more secure choice:
   to the named org and reading the named case returns nothing, and the operator
   gets a 404. The mistake costs an audit row and a failed request, and discloses
   nothing.
+
+The corollary matters as much as the rule: because the grant's organization is
+an operator's unverified assertion, it is **not** what the audit trail records.
+The trail is stamped with the organization the read actually ran under. Under
+`multi` those coincide — the rebind has already made the claim load-bearing, so
+a false one returns no rows — but under `single` nothing exercises the claim, and
+recording it would let the audited party choose which tenant their own immutable
+row names. Attribution comes from the request, never from the assertion.
 
 ### What is still deferred
 

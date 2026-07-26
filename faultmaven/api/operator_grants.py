@@ -96,13 +96,24 @@ class OperatorContentAccess:
 
     @property
     def target_organization_id(self) -> str:
-        """The organization the access is attributed to, and rebinds to.
+        """The organization this access is **attributed to** in the audit trail.
 
-        Under break-glass this is the grant's target. Otherwise it is the org
-        the request is already bound to — which in every deployment that reaches
-        the standing arm is the single Standalone organization.
+        Deliberately not "whatever the grant claims". ``target_organization_id``
+        on a grant is written by the operator and is never validated against the
+        case (see ``build_grant`` for why that is right for *authorization*) — so
+        using it for *attribution* would let the audited party choose which
+        tenant their own immutable audit row names. That is the misattribution an
+        append-only trail exists to prevent, and migration 036's triggers make it
+        uncorrectable.
+
+        The claim is only trustworthy where something else has already forced it
+        to be true. Under ``multi``, ``bind_grant_org_scope`` has rebound RLS to
+        that organization before the read, so a false claim yields no rows and
+        404s — the grant's org is then a fact about the request, not an
+        assertion about it. Everywhere else the bound org is what the read
+        actually ran under, and that is what gets recorded.
         """
-        if self.grant is not None:
+        if self.grant is not None and requested_tenant_provider() == BUILTIN_MULTI:
             return self.grant.target_organization_id
         return get_current_org_id()
 

@@ -304,10 +304,52 @@ class TestTheAuditRowNamesTheGrant:
         assert kwargs["reason"] == grant.reason
         assert kwargs["expires_at"] == grant.expires_at
 
-    def test_the_row_names_the_granted_tenant_not_the_operators_own(
-        self, client, cloud, grant_repo, audit_repo
+    def test_attribution_comes_from_the_request_not_the_grants_claim(
+        self, client, cloud, grant_repo, audit_repo, monkeypatch
     ):
-        """The operator's own org is irrelevant — the access was into another."""
+        """An operator must not choose which tenant their audit row names.
+
+        ``target_organization_id`` on a grant is written by the operator and is
+        never validated against the case. Under ``single`` nothing exercises it —
+        no rebind happens — so recording it verbatim would let the audited party
+        misattribute their own access to a tenant they never touched, in a row
+        migration 036 makes uncorrectable. The org the read actually ran under is
+        recorded instead.
+        """
+        from faultmaven.api import operator_grants
+
+        monkeypatch.setattr(
+            operator_grants, "get_current_org_id", lambda: "org-actually-bound"
+        )
+        # The grant claims some other tenant entirely.
+        grant_repo.find_live_grant = AsyncMock(
+            return_value=_grant(target_organization_id="org-someone-elses")
+        )
+
+        client.get(CONTENT_PATHS[0])
+
+        assert (
+            audit_repo.record_access.await_args.kwargs["target_organization_id"]
+            == "org-actually-bound"
+        )
+
+    def test_under_multi_tenancy_the_grants_org_is_recorded(
+        self, client, cloud, grant_repo, audit_repo, monkeypatch
+    ):
+        """There the claim has already been made load-bearing.
+
+        ``bind_grant_org_scope`` rebinds RLS to the named organization before the
+        read, so a false claim returns no rows and 404s. Having survived that,
+        the grant's org is a fact about the request rather than an assertion
+        about it — and it is the only value that names the tenant reached.
+        """
+        from faultmaven.api import operator_grants
+
+        monkeypatch.setattr(
+            operator_grants, "requested_tenant_provider", lambda: "multi"
+        )
+        monkeypatch.setattr(operator_grants, "BUILTIN_MULTI", "multi")
+        monkeypatch.setattr(operator_grants, "set_current_org_id", lambda _org: None)
         grant_repo.find_live_grant = AsyncMock(return_value=_grant())
 
         client.get(CONTENT_PATHS[0])
