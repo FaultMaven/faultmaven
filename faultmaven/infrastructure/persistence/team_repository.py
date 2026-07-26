@@ -211,10 +211,22 @@ class PostgreSQLTeamRepository(ITeamRepository):
 
         JOINs ``team_members`` through ``teams`` so that (a) soft-deleted teams
         are excluded and (b) under the limited ``faultmaven_app`` role the
-        teams-table RLS policy fails a cross-organization membership row closed
-        — ``team_members`` itself is not RLS-tenanted, the join through the
-        RLS-tenanted ``teams`` table is the isolation boundary (see class
-        docstring + ADR-013).
+        teams-table RLS policy fails a cross-organization membership row closed.
+
+        ``team_members`` is itself RLS-tenanted as of migration 030 (a policy
+        keyed by subquery through ``teams``), so under the limited role the
+        membership boundary is covered twice over.
+
+        **Both arms are row-level security, so both vanish together.** This
+        query carries no organization predicate of its own: on a connection that
+        bypasses RLS (the table owner, a superuser, or any ``BYPASSRLS`` role)
+        neither policy applies and it degrades to "every non-deleted team this
+        user has a membership row for", across organizations. The soft-delete
+        filter is the only part that holds unconditionally. Callers MUST
+        therefore run under ``faultmaven_app``; do not reuse this from an
+        owner-role path (``/health``, the operator break-glass paths of
+        migrations 035/036) without adding an explicit organization predicate.
+        See the class docstring + ADR-013.
         """
         stmt = (
             select(TeamMemberModel.team_id)

@@ -468,7 +468,13 @@ class TestRunbookCompletionNotification:
         assert len(case.messages) == initial_message_count + 1
         notification = case.messages[-1]
         assert notification["role"] == "system"
-        assert notification["author_id"] == "system"
+        # No human wrote this, so it carries no author. It previously held the
+        # sentinel string "system", which was harmless only because author_id
+        # was dropped before it reached the database; now that the column
+        # persists, a sentinel would surface to clients as a non-resolvable
+        # principal id on a field documented as "User who created the message".
+        # `role` already carries the system signal (ADR-013 D4).
+        assert notification["author_id"] is None
         assert "Pool Timeout Runbook" in notification["content"]
         assert notification["metadata"]["source"] == "runbook_conversion_complete"
         repo.save.assert_called_once()

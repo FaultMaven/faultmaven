@@ -513,13 +513,17 @@ class AgentOrchestrationService:
                 if case:
                     current_turn = case.current_turn + 1
 
-                    # Save user message
+                    # Save user message. author_id is the authenticated principal
+                    # driving the session — on a team-shared case that is not
+                    # necessarily the case owner, and a NULL here is permanently
+                    # indistinguishable from a pre-migration row (ADR-013 D4).
                     await self.case_repo.add_message(
                         session.case_id,
                         {
                             "role": "user",
                             "content": user_message,
                             "turn_number": current_turn,
+                            "author_id": session.user_id,
                             "timestamp": datetime.now(UTC).isoformat(),
                         },
                     )

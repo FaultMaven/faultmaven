@@ -628,10 +628,12 @@ class SQLiteCaseRepository(CaseRepository):
         """Load messages for a case from case_messages table.
 
         Schema per design spec (case-schema.md §4.7):
-        - message_id, turn_number, role, content, created_at, token_count, metadata
+        - message_id, turn_number, role, content, created_at, token_count,
+          metadata, author_id
         """
         query = text("""
-            SELECT message_id, turn_number, role, content, created_at, token_count, metadata
+            SELECT message_id, turn_number, role, content, created_at, token_count, metadata,
+                   author_id
             FROM case_messages
             WHERE case_id = :case_id
             ORDER BY created_at ASC
@@ -669,6 +671,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "created_at": msg_timestamp,
                     "token_count": row_dict.get("token_count"),
                     "metadata": metadata,
+                    "author_id": row_dict.get("author_id"),
                 }
             )
         return messages
@@ -1076,7 +1079,7 @@ class SQLiteCaseRepository(CaseRepository):
         placeholders = self._bind_ids(params, case_ids)
         query = text(f"""
             SELECT case_id, message_id, turn_number, role, content,
-                   created_at, token_count, metadata
+                   created_at, token_count, metadata, author_id
             FROM case_messages
             WHERE case_id IN ({placeholders})
             ORDER BY case_id, created_at ASC
@@ -1109,6 +1112,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "created_at": msg_timestamp,
                     "token_count": row[6],
                     "metadata": parsed_metadata,
+                    "author_id": row[8],
                 }
             )
         return by_case
@@ -1741,8 +1745,8 @@ class SQLiteCaseRepository(CaseRepository):
             # organization_id derived from the parent case (already verified
             # to exist by the probe above).
             query = text(f"""
-                INSERT INTO case_messages (message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata)
-                VALUES (:message_id, :case_id, (SELECT COALESCE(organization_id, '{STANDALONE_ORG_ID}') FROM cases WHERE case_id = :case_id), :turn_number, :role, :content, :created_at, :token_count, :metadata)
+                INSERT INTO case_messages (message_id, case_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata)
+                VALUES (:message_id, :case_id, (SELECT COALESCE(organization_id, '{STANDALONE_ORG_ID}') FROM cases WHERE case_id = :case_id), :turn_number, :role, :content, :author_id, :created_at, :token_count, :metadata)
             """)
 
             await self.db.execute(
@@ -1753,6 +1757,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "turn_number": message_dict.get("turn_number", 0),
                     "role": message_dict.get("role", "user"),
                     "content": message_dict.get("content", ""),
+                    "author_id": message_dict.get("author_id"),
                     "created_at": created_at,
                     "token_count": message_dict.get("token_count"),
                     "metadata": json.dumps(message_dict.get("metadata", {})),
@@ -1913,11 +1918,16 @@ class SQLiteCaseRepository(CaseRepository):
         """Get messages for case with pagination.
 
         Schema per design spec (case-schema.md §4.7):
-        - message_id, turn_number, role, content, created_at, token_count, metadata
+        - message_id, turn_number, role, content, created_at, token_count,
+          metadata, author_id
+
+        ``author_id`` is selected last so the pre-existing positional indices
+        below keep their meaning.
         """
         try:
             query = text("""
-                SELECT message_id, turn_number, role, content, created_at, token_count, metadata
+                SELECT message_id, turn_number, role, content, created_at, token_count, metadata,
+                       author_id
                 FROM case_messages
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC
@@ -1957,6 +1967,7 @@ class SQLiteCaseRepository(CaseRepository):
                         "created_at": created_at,
                         "token_count": row[5],
                         "metadata": metadata,
+                        "author_id": row[7],
                     }
                 )
 
@@ -3156,7 +3167,11 @@ class SQLiteCaseRepository(CaseRepository):
         writers have persisted.
 
         Schema per design spec (case-schema.md §4.7):
-        - message_id, turn_number, role, content, created_at, token_count, metadata
+        - message_id, turn_number, role, content, created_at, token_count,
+          metadata, author_id
+
+        Authorship is never overwritten with a blank — see the COALESCE on
+        ``author_id`` in the conflict clause below.
         """
         # Upsert each message
         for idx, msg in enumerate(messages_list):
@@ -3166,9 +3181,9 @@ class SQLiteCaseRepository(CaseRepository):
 
             query = text("""
                 INSERT INTO case_messages (
-                    message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata
+                    message_id, case_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :created_at, :token_count, :metadata
+                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :author_id, :created_at, :token_count, :metadata
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
                     turn_number = EXCLUDED.turn_number,
@@ -3176,8 +3191,15 @@ class SQLiteCaseRepository(CaseRepository):
                     content = EXCLUDED.content,
                     created_at = EXCLUDED.created_at,
                     token_count = EXCLUDED.token_count,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    author_id = COALESCE(case_messages.author_id, EXCLUDED.author_id)
             """)
+            # Authorship is write-once but still fillable. COALESCE keeps an
+            # author already on the row (a re-save whose in-memory dict lacked
+            # the field cannot NULL it out — the unrecoverable loss this column
+            # exists to prevent) while still letting a later save supply one for
+            # a row that has none. A bare `EXCLUDED.author_id` would erase;
+            # omitting the column entirely would make a NULL permanent.
 
             await self.db.execute(
                 query,
@@ -3188,6 +3210,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
+                    "author_id": msg.get("author_id"),
                     "created_at": msg.get("created_at") or datetime.now(UTC),
                     "token_count": msg.get("token_count"),
                     "metadata": json.dumps(msg.get("metadata", {})),

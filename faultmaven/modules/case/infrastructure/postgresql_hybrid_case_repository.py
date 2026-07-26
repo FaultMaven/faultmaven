@@ -485,7 +485,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             'content', m.content,
                             'created_at', m.created_at,
                             'token_count', m.token_count,
-                            'metadata', m.metadata
+                            'metadata', m.metadata,
+                            'author_id', m.author_id
                         ) ORDER BY m.created_at ASC, m.turn_number ASC)
                         FROM case_messages m
                         WHERE m.case_id = c.case_id
@@ -1495,12 +1496,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(f"""
                 INSERT INTO case_messages (
                     message_id, case_id, organization_id, turn_number, role, content,
-                    created_at, token_count, metadata
+                    author_id, created_at, token_count, metadata
                 ) VALUES (
                     :message_id, :case_id,
                     (SELECT organization_id FROM cases WHERE case_id = {self._org_lookup_case_id()}),
                     :turn_number, :role, :content,
-                    :created_at, :token_count, {self._cast('metadata')}
+                    :author_id, :created_at, :token_count, {self._cast('metadata')}
                 )
             """)
 
@@ -1512,6 +1513,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "turn_number": message_dict.get("turn_number", 0),
                     "role": message_dict.get("role", "user"),
                     "content": message_dict.get("content", ""),
+                    "author_id": message_dict.get("author_id"),
                     "created_at": created_at,
                     "token_count": message_dict.get("token_count"),
                     "metadata": json.dumps(message_dict.get("metadata", {})),
@@ -1532,11 +1534,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Get messages for case with pagination.
 
         Schema per design spec (case-schema.md §4.7):
-        - message_id, turn_number, role, content, created_at, token_count, metadata
+        - message_id, turn_number, role, content, created_at, token_count,
+          metadata, author_id
+
+        ``author_id`` is selected last so the pre-existing positional indices
+        below keep their meaning.
         """
         try:
             query = text("""
-                SELECT message_id, turn_number, role, content, created_at, token_count, metadata
+                SELECT message_id, turn_number, role, content, created_at, token_count, metadata,
+                       author_id
                 FROM case_messages
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC
@@ -1567,6 +1574,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         "created_at": created_at,
                         "token_count": row[5],
                         "metadata": metadata,
+                        "author_id": row[7],
                     }
                 )
 
@@ -2726,7 +2734,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         writers have persisted.
 
         Schema per design spec (case-schema.md §4.7):
-        - message_id, turn_number, role, content, created_at, token_count, metadata
+        - message_id, turn_number, role, content, created_at, token_count,
+          metadata, author_id
+
+        Authorship is never overwritten with a blank — see the COALESCE on
+        ``author_id`` in the conflict clause below.
         """
         # Upsert each message
         for idx, msg in enumerate(messages_list):
@@ -2736,9 +2748,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             query = text(f"""
                 INSERT INTO case_messages (
-                    message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata
+                    message_id, case_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :created_at, :token_count, {self._cast('metadata')}
+                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :author_id, :created_at, :token_count, {self._cast('metadata')}
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
                     turn_number = EXCLUDED.turn_number,
@@ -2746,8 +2758,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     content = EXCLUDED.content,
                     created_at = EXCLUDED.created_at,
                     token_count = EXCLUDED.token_count,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    author_id = COALESCE(case_messages.author_id, EXCLUDED.author_id)
             """)
+            # Authorship is write-once but still fillable. COALESCE keeps an
+            # author already on the row (a re-save whose in-memory dict lacked
+            # the field cannot NULL it out — the unrecoverable loss this column
+            # exists to prevent) while still letting a later save supply one for
+            # a row that has none. A bare `EXCLUDED.author_id` would erase;
+            # omitting the column entirely would make a NULL permanent.
 
             await self.db.execute(
                 query,
@@ -2758,6 +2777,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
+                    "author_id": msg.get("author_id"),
                     "created_at": self._as_datetime(
                         msg.get("created_at"), datetime.now(timezone.utc)
                     ),
