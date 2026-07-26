@@ -211,10 +211,14 @@ class PostgreSQLTeamRepository(ITeamRepository):
 
         JOINs ``team_members`` through ``teams`` so that (a) soft-deleted teams
         are excluded and (b) under the limited ``faultmaven_app`` role the
-        teams-table RLS policy fails a cross-organization membership row closed
-        — ``team_members`` itself is not RLS-tenanted, the join through the
-        RLS-tenanted ``teams`` table is the isolation boundary (see class
-        docstring + ADR-013).
+        teams-table RLS policy fails a cross-organization membership row closed.
+
+        ``team_members`` is itself RLS-tenanted as of migration 030 (a policy
+        keyed by subquery through ``teams``), so the membership boundary is
+        covered twice over. The join is kept as the belt to that suspenders: it
+        is what holds if the row-level policy is ever bypassed by an owner or
+        superuser connection, and it is the only arm that also excludes
+        soft-deleted teams. See the class docstring + ADR-013.
         """
         stmt = (
             select(TeamMemberModel.team_id)

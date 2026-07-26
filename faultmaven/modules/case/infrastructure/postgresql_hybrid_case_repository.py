@@ -1495,12 +1495,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(f"""
                 INSERT INTO case_messages (
                     message_id, case_id, organization_id, turn_number, role, content,
-                    created_at, token_count, metadata
+                    author_id, created_at, token_count, metadata
                 ) VALUES (
                     :message_id, :case_id,
                     (SELECT organization_id FROM cases WHERE case_id = {self._org_lookup_case_id()}),
                     :turn_number, :role, :content,
-                    :created_at, :token_count, {self._cast('metadata')}
+                    :author_id, :created_at, :token_count, {self._cast('metadata')}
                 )
             """)
 
@@ -1512,6 +1512,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "turn_number": message_dict.get("turn_number", 0),
                     "role": message_dict.get("role", "user"),
                     "content": message_dict.get("content", ""),
+                    "author_id": message_dict.get("author_id"),
                     "created_at": created_at,
                     "token_count": message_dict.get("token_count"),
                     "metadata": json.dumps(message_dict.get("metadata", {})),
@@ -1532,11 +1533,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Get messages for case with pagination.
 
         Schema per design spec (case-schema.md §4.7):
-        - message_id, turn_number, role, content, created_at, token_count, metadata
+        - message_id, turn_number, role, content, created_at, token_count,
+          metadata, author_id
+
+        ``author_id`` is selected last so the pre-existing positional indices
+        below keep their meaning.
         """
         try:
             query = text("""
-                SELECT message_id, turn_number, role, content, created_at, token_count, metadata
+                SELECT message_id, turn_number, role, content, created_at, token_count, metadata,
+                       author_id
                 FROM case_messages
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC
@@ -1567,6 +1573,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         "created_at": created_at,
                         "token_count": row[5],
                         "metadata": metadata,
+                        "author_id": row[7],
                     }
                 )
 

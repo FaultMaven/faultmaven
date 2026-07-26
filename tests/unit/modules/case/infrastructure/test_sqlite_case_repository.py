@@ -2202,3 +2202,113 @@ class TestCausalGraphRoundTrip:
         assert len(reloaded.causal_nodes) == 3  # both endpoints survive
         assert len(reloaded.causal_edges) == 2
         assert all(e.edge_id != shortcut.edge_id for e in reloaded.causal_edges)
+
+
+# ============================================================
+# Per-turn authorship (ADR-013 D4 as amended; ADR-011 D5)
+# ============================================================
+
+
+class TestMessageAuthorship:
+    """Authorship must survive persistence on EVERY read path.
+
+    Team sharing made the case owner no longer the only possible author: every
+    case write endpoint admits the members of any team the case is shared to, so
+    a transcript can mix the owner, a teammate, and the assistant. `author_id`
+    was stamped on the domain message but dropped by the SQL writers, and unlike
+    most data it cannot be reconstructed after the fact — hence a test that
+    sweeps the author space rather than asserting one instance.
+    """
+
+    @pytest.mark.asyncio
+    async def test_distinct_authors_round_trip_distinctly(self, repository):
+        """Owner, shared teammate, and the assistant stay told apart."""
+        case = _make_case(user_id="user_owner")
+        await repository.save(case)
+
+        # The three author states a shared transcript actually produces: the
+        # owner, a teammate reaching the case through a team share, and an
+        # assistant turn that has no human author at all.
+        turns = [
+            ("user", "owner asks", "user_owner"),
+            ("user", "teammate adds context", "user_teammate"),
+            ("assistant", "here is the analysis", None),
+        ]
+        for idx, (role, content, author_id) in enumerate(turns):
+            assert await repository.add_message(
+                case.case_id,
+                {
+                    "message_id": f"msg_{uuid4().hex[:16]}",
+                    "role": role,
+                    "content": content,
+                    "turn_number": idx,
+                    "author_id": author_id,
+                },
+            )
+
+        by_content = {
+            m["content"]: m["author_id"]
+            for m in await repository.get_messages(case.case_id)
+        }
+        assert by_content == {
+            "owner asks": "user_owner",
+            "teammate adds context": "user_teammate",
+            "here is the analysis": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_authorship_survives_the_case_load_path(self, repository):
+        """`get()` hydrates authorship too — a second, independent reader.
+
+        `get_messages()` and the `get()` hydration path are separate SQL
+        statements; both dropped the column, so passing one proves nothing
+        about the other.
+        """
+        case = _make_case(user_id="user_owner")
+        await repository.save(case)
+        await repository.add_message(
+            case.case_id,
+            {
+                "message_id": f"msg_{uuid4().hex[:16]}",
+                "role": "user",
+                "content": "teammate adds context",
+                "turn_number": 1,
+                "author_id": "user_teammate",
+            },
+        )
+
+        reloaded = await repository.get(case.case_id)
+        authored = [
+            m for m in reloaded.messages if m.get("content") == "teammate adds context"
+        ]
+        assert len(authored) == 1
+        assert authored[0]["author_id"] == "user_teammate"
+
+    @pytest.mark.asyncio
+    async def test_resave_does_not_erase_a_captured_author(self, repository):
+        """Authorship is write-once — a later save must not NULL it.
+
+        The message upsert deliberately omits `author_id` from its DO UPDATE
+        SET. Were it included, any re-save carrying a dict without the field
+        would silently erase an author already recorded.
+        """
+        case = _make_case(user_id="user_owner")
+        await repository.save(case)
+        await repository.add_message(
+            case.case_id,
+            {
+                "message_id": f"msg_{uuid4().hex[:16]}",
+                "role": "user",
+                "content": "teammate adds context",
+                "turn_number": 1,
+                "author_id": "user_teammate",
+            },
+        )
+
+        reloaded = await repository.get(case.case_id)
+        for msg in reloaded.messages:
+            msg.pop("author_id", None)  # simulate a writer that never knew the field
+        await repository.save(reloaded)
+
+        again = await repository.get_messages(case.case_id)
+        assert [m["author_id"] for m in again] == ["user_teammate"]

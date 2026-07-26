@@ -1722,6 +1722,19 @@ class CaseMessageModel(Base):
     turn_number = Column(Integer, nullable=False, server_default="0")
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
+    # Who wrote this turn. Load-bearing once a case is shared to a team: every
+    # write endpoint admits the case's team members, so the owner is no longer
+    # the only possible author (ADR-013 D4, ADR-011 D5).
+    #
+    # Nullable — assistant and system turns have no human author, and rows
+    # predating migration 037 have one we do not know.
+    #
+    # Deliberately NOT a foreign key, for the same reason as
+    # operator_access_audit.operator_user_id: attribution must outlive the
+    # account it describes. ON DELETE SET NULL would erase exactly the record
+    # that cannot be reconstructed, and RESTRICT would make any user who ever
+    # wrote a turn undeletable. A dangling id is the right outcome.
+    author_id = Column(String(36), nullable=True)
     token_count = Column(Integer, nullable=True)
     message_metadata = Column("metadata", JsonBlob, nullable=False, server_default="{}")
     created_at = Column(
