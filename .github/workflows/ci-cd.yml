@@ -313,8 +313,12 @@ jobs:
 
       - name: Run PostgreSQL Integration Tests
         run: |
-          # GitHub Actions runs bash with `set -eo pipefail`, so a real test
-          # failure (or a failure of `pytest | tee`) aborts this step.
+          # `pipefail` must be set explicitly. GitHub only uses
+          # `bash --noprofile --norc -eo pipefail {0}` when a step declares
+          # `shell: bash`; with no `shell:` key (as here) the implicit default
+          # is `bash -e {0}`, which has NO pipefail — so `pytest | tee` would
+          # exit with tee's status and a real test failure would go green.
+          set -o pipefail
           pytest tests/ -m postgres -v --no-header -p no:cacheprovider | tee /tmp/pg.log
           # Guard against the silent-skip trap: this job exists to actually
           # exercise the PG-only write paths. If the tests SKIP (DATABASE_URL

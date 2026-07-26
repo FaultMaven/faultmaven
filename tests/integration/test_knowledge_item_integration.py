@@ -24,15 +24,18 @@ from faultmaven.infrastructure.persistence.repository_factory import (
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
-    KnowledgeItem,
     KnowledgeItemType,
-    KnowledgeScope,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
     InMemoryKnowledgeItemRepository,
 )
-from tests.utils import generate_item_id, generate_org_id, install_org_autoseed
+
+# The org-owned sample item is defined once in tests.utils so a change to the
+# model's tenancy invariants (#770) lands on every suite at once. Aliased to
+# the local name this module has always used.
+from tests.utils import generate_org_id, install_org_autoseed
+from tests.utils import make_org_knowledge_item as create_sample_item
 
 # ============================================================
 # Test Fixtures
@@ -98,48 +101,6 @@ def inmemory_repository() -> InMemoryKnowledgeItemRepository:
     """Create fresh InMemoryKnowledgeItemRepository."""
     reset_inmemory_knowledge_item_repository()
     return InMemoryKnowledgeItemRepository()
-
-
-def create_sample_item(
-    item_id: str = None,
-    organization_id: str = None,
-    title: str = "Sample Knowledge Item",
-    content: str = "This is sample content for the knowledge item.",
-    item_type: KnowledgeItemType = KnowledgeItemType.TROUBLESHOOTING_GUIDE,
-    category: str = None,
-    tags: list = None,
-    embedding_vector: list = None,
-    is_published: bool = True,
-    view_count: int = 0,
-    helpful_count: int = 0,
-    not_helpful_count: int = 0,
-    created_at: datetime = None,
-    metadata: dict = None,
-) -> KnowledgeItem:
-    """Create a sample knowledge item for testing.
-
-    Uses the team scope (an org-owned tier): the methods under test here are
-    org-scoped queries, and global scope is the org-free platform tier (#770)
-    which must not carry an organization_id. Team (not personal) so no
-    users-FK owner row is needed under the FK-on fixtures.
-    """
-    return KnowledgeItem(
-        item_id=item_id or generate_item_id(),
-        organization_id=organization_id or generate_org_id(),
-        scope=KnowledgeScope.TEAM,
-        title=title,
-        content=content,
-        item_type=item_type,
-        category=category,
-        tags=tags or [],
-        embedding_vector=embedding_vector,
-        is_published=is_published,
-        view_count=view_count,
-        helpful_count=helpful_count,
-        not_helpful_count=not_helpful_count,
-        created_at=created_at or datetime.now(timezone.utc),
-        metadata=metadata,
-    )
 
 
 # ============================================================
