@@ -9,13 +9,23 @@ carries the justification (``reason``), the window (``expires_at``) and the
 target (``target_case_id`` + ``target_organization_id``, the latter also naming
 the organization the request rebinds its RLS scope to).
 
-**Not append-only, but the justification is immutable.** Revocation and approval
-are real UPDATEs, so a blanket no-UPDATE trigger would be wrong. Instead the
-columns that constitute the justification — who, which case, which tenant, why,
-when created, when it expires — are pinned by a trigger, and DELETE is rejected
-outright. An operator can end their own access early; they cannot rewrite why
-they took it or extend how long they were allowed to. Needing longer means a new
-grant, with a fresh reason and a fresh audit row.
+**Not append-only, but every widening mutation is refused.** Revocation and
+approval are real UPDATEs, so a blanket no-UPDATE trigger would be wrong. Three
+narrower guards do the job instead:
+
+- The columns that constitute the justification — who, which case, which tenant,
+  why, when created, when it expires — are pinned outright. An operator can end
+  their own access early; they cannot rewrite why they took it or extend how
+  long they were allowed to. Needing longer means a new grant, with a fresh
+  reason and a fresh audit row.
+- Revocation is **monotonic**: once ``revoked_at`` is set it cannot be cleared
+  or moved. Leaving it freely mutable would make the one update the database
+  permits the one that brings a revoked grant back to life for the rest of its
+  TTL — the only mutation here that widens access.
+- DELETE and TRUNCATE are both rejected. TRUNCATE needs its own statement
+  trigger because row triggers do not fire on it, which would otherwise let the
+  whole table — the evidence of why every recorded access was authorised — be
+  erased trigger-free.
 
 **Also completes two carry-overs on ``operator_access_audit`` (migration 035):**
 
@@ -48,6 +58,11 @@ _GRANT_IMMUTABLE_MESSAGE = (
     "create a new grant instead"
 )
 _GRANT_NO_DELETE_MESSAGE = "operator_access_grants rows cannot be deleted"
+_GRANT_NO_TRUNCATE_MESSAGE = "operator_access_grants cannot be truncated"
+_GRANT_REVOCATION_MONOTONIC_MESSAGE = (
+    "operator_access_grants revocation is monotonic; a revoked grant "
+    "cannot be un-revoked"
+)
 
 # The columns a revoke/approve must never touch. Changing any of them would
 # rewrite the justification an audit row was taken under.
@@ -60,6 +75,14 @@ _IMMUTABLE_COLUMNS = (
     "created_at",
     "expires_at",
 )
+
+# Revocation columns are mutable exactly once, NULL → set. They cannot be in
+# ``_IMMUTABLE_COLUMNS`` (revoking would then be impossible), but leaving them
+# freely mutable makes the ONE update that *widens* access — clearing
+# ``revoked_at`` to bring a grant back to life for the rest of its TTL — the one
+# the database permits. The predicate below therefore pins them from the moment
+# they are set, so revocation only ever moves in the safe direction.
+_REVOCATION_COLUMNS = ("revoked_at", "revoked_by")
 
 
 def upgrade() -> None:
@@ -190,8 +213,51 @@ def upgrade() -> None:
             "BEFORE DELETE ON operator_access_grants "
             "FOR EACH ROW EXECUTE FUNCTION operator_access_grants_no_delete_fn()"
         )
+
+        # Revocation is monotonic. Once ``revoked_at`` is set it cannot be
+        # cleared or moved — otherwise the single update the database permits is
+        # the one that brings a revoked grant back to life for the remainder of
+        # its TTL, which is the only mutation here that *widens* access.
+        revocation_predicate = " OR ".join(
+            f"(OLD.{col} IS NOT NULL AND OLD.{col} IS DISTINCT FROM NEW.{col})"
+            for col in _REVOCATION_COLUMNS
+        )
+        op.execute(f"""
+            CREATE OR REPLACE FUNCTION operator_access_grants_revocation_final()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                RAISE EXCEPTION '{_GRANT_REVOCATION_MONOTONIC_MESSAGE}';
+            END;
+            $$ LANGUAGE plpgsql;
+            """)
+        op.execute(f"""
+            CREATE TRIGGER operator_access_grants_no_unrevoke
+            BEFORE UPDATE ON operator_access_grants
+            FOR EACH ROW WHEN ({revocation_predicate})
+            EXECUTE FUNCTION operator_access_grants_revocation_final()
+            """)
+
+        # Row triggers do not fire on TRUNCATE, so without this the whole grant
+        # table — the evidence of why every recorded access was authorised —
+        # could be erased trigger-free. Same hole this migration closes for
+        # ``operator_access_audit``.
+        op.execute(f"""
+            CREATE OR REPLACE FUNCTION operator_access_grants_no_truncate_fn()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                RAISE EXCEPTION '{_GRANT_NO_TRUNCATE_MESSAGE}';
+            END;
+            $$ LANGUAGE plpgsql;
+            """)
+        op.execute(
+            "CREATE TRIGGER operator_access_grants_no_truncate "
+            "BEFORE TRUNCATE ON operator_access_grants "
+            "FOR EACH STATEMENT EXECUTE FUNCTION "
+            "operator_access_grants_no_truncate_fn()"
+        )
     elif dialect == "sqlite":
         # SQLite has no IS DISTINCT FROM; `IS NOT` is its null-safe inequality.
+        # It also has no TRUNCATE statement, so no truncate guard is needed.
         immutable_predicate = " OR ".join(
             f"OLD.{col} IS NOT NEW.{col}" for col in _IMMUTABLE_COLUMNS
         )
@@ -205,6 +271,16 @@ def upgrade() -> None:
             CREATE TRIGGER operator_access_grants_no_delete
             BEFORE DELETE ON operator_access_grants
             BEGIN SELECT RAISE(ABORT, '{_GRANT_NO_DELETE_MESSAGE}'); END
+            """)
+        revocation_predicate = " OR ".join(
+            f"(OLD.{col} IS NOT NULL AND OLD.{col} IS NOT NEW.{col})"
+            for col in _REVOCATION_COLUMNS
+        )
+        op.execute(f"""
+            CREATE TRIGGER operator_access_grants_no_unrevoke
+            BEFORE UPDATE ON operator_access_grants
+            FOR EACH ROW WHEN ({revocation_predicate})
+            BEGIN SELECT RAISE(ABORT, '{_GRANT_REVOCATION_MONOTONIC_MESSAGE}'); END
             """)
 
 
@@ -223,3 +299,5 @@ def downgrade() -> None:
         op.execute("DROP FUNCTION IF EXISTS operator_access_audit_no_truncate_fn()")
         op.execute("DROP FUNCTION IF EXISTS operator_access_grants_immutable()")
         op.execute("DROP FUNCTION IF EXISTS operator_access_grants_no_delete_fn()")
+        op.execute("DROP FUNCTION IF EXISTS operator_access_grants_revocation_final()")
+        op.execute("DROP FUNCTION IF EXISTS operator_access_grants_no_truncate_fn()")

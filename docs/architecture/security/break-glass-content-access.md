@@ -33,8 +33,15 @@ A **grant** is one operator's time-boxed license to read one case's content.
 ```http
 POST /api/v1/admin/grants
 { "case_id": "...", "organization_id": "...", "reason": "...", "ttl_minutes": 60 }
-→ 201 { grant_id, state: "active", expires_at, ... }
+→ 201 { "grant_id": "...", "approval_state": "auto_approved", "is_live": true,
+        "expires_at": "...", "revoked_at": null, ... }
 ```
+
+There is no single `state` field, deliberately. Approval, revocation and expiry
+are three independent reasons a grant may not authorise anything, so collapsing
+them into one word would either lose information a reviewer needs or invite a
+client to reconstruct the predicate itself. `is_live` is the server's verdict —
+clients render that and never re-derive it from `expires_at`.
 
 Four properties, each of which the security review turns on:
 

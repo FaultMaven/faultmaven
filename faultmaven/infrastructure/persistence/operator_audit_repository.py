@@ -67,6 +67,19 @@ def _require_within(value: Optional[str], limit: int, field_name: str) -> Option
     return value
 
 
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Stamp UTC onto a naive timestamp read back from the database.
+
+    SQLite has no timezone type, so values come back naive despite being written
+    as UTC; without this the trail serialises offsets-free and a reader parses
+    ``created_at``/``expires_at`` as local time. On an audit trail that is a
+    misreading of *when* an access happened.
+    """
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _model_to_domain(model: OperatorAccessAuditModel) -> OperatorAccessAudit:
     """Convert ORM model to domain object."""
     details: Optional[Dict[str, Any]] = None
@@ -81,12 +94,12 @@ def _model_to_domain(model: OperatorAccessAuditModel) -> OperatorAccessAudit:
         operator_user_id=model.operator_user_id,
         operator_username=model.operator_username,
         action=OperatorAction(model.action),
-        created_at=model.created_at,
+        created_at=_as_utc(model.created_at),
         target_organization_id=model.target_organization_id,
         target_case_id=model.target_case_id,
         reason=model.reason,
         grant_id=model.grant_id,
-        expires_at=model.expires_at,
+        expires_at=_as_utc(model.expires_at),
         deployment_mode=model.deployment_mode,
         details=details,
     )
@@ -144,6 +157,7 @@ class OperatorAuditRepository(IOperatorAuditRepository):
         target_organization_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         action: Optional[OperatorAction] = None,
+        grant_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[List[OperatorAccessAudit], int]:
@@ -164,6 +178,8 @@ class OperatorAuditRepository(IOperatorAuditRepository):
             filters.append(
                 OperatorAccessAuditModel.action == OperatorAction(action).value
             )
+        if grant_id:
+            filters.append(OperatorAccessAuditModel.grant_id == grant_id)
 
         total = (
             await self.db.execute(

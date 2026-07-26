@@ -31,6 +31,24 @@ from faultmaven.models.interfaces_operator_grant import (
 logger = logging.getLogger(__name__)
 
 
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Stamp UTC onto a naive timestamp read back from the database.
+
+    SQLite has no timezone type, so every value returned from it is naive even
+    though it was written as UTC. Left alone it reaches the API serialiser with
+    no offset, and a client parses ``expires_at`` as *local* time — a break-glass
+    window that reads hours off in either direction depending on where the
+    operator sits.
+
+    ``is_live`` compensates for exactly this internally, which is the tell that
+    the normalisation belonged one layer down: fixing it here means every
+    consumer, including the wire, sees an aware timestamp.
+    """
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _model_to_domain(model: OperatorAccessGrantModel) -> OperatorAccessGrant:
     """Convert ORM model to domain object."""
     return OperatorAccessGrant(
@@ -40,13 +58,13 @@ def _model_to_domain(model: OperatorAccessGrantModel) -> OperatorAccessGrant:
         target_case_id=model.target_case_id,
         target_organization_id=model.target_organization_id,
         reason=model.reason,
-        created_at=model.created_at,
-        expires_at=model.expires_at,
-        revoked_at=model.revoked_at,
+        created_at=_as_utc(model.created_at),
+        expires_at=_as_utc(model.expires_at),
+        revoked_at=_as_utc(model.revoked_at),
         revoked_by=model.revoked_by,
         approval_state=GrantApprovalState(model.approval_state),
         approved_by=model.approved_by,
-        approved_at=model.approved_at,
+        approved_at=_as_utc(model.approved_at),
         deployment_mode=model.deployment_mode,
     )
 

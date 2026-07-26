@@ -62,6 +62,7 @@ class SessionlessOperatorAuditRepository(IOperatorAuditRepository):
         target_organization_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         action: Optional[OperatorAction] = None,
+        grant_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[List[OperatorAccessAudit], int]:
@@ -73,6 +74,7 @@ class SessionlessOperatorAuditRepository(IOperatorAuditRepository):
                 target_organization_id=target_organization_id,
                 target_case_id=target_case_id,
                 action=action,
+                grant_id=grant_id,
                 limit=limit,
                 offset=offset,
             )

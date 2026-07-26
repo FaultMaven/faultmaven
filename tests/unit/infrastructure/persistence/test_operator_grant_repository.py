@@ -160,6 +160,47 @@ class TestFindLiveGrant:
 
 @pytest.mark.unit
 @pytest.mark.security
+class TestTimestampsComeBackAware:
+    """SQLite has no timezone type, so every value it returns is naive.
+
+    Left that way, ``expires_at`` reaches the API serialiser with no offset and a
+    client parses a break-glass window as *local* time — hours wrong in either
+    direction depending on where the operator sits, on the one field that says
+    when their access ends. ``is_live`` compensates internally, which is exactly
+    why the normalisation has to happen a layer down: the domain object is what
+    the wire is built from.
+    """
+
+    @pytest.mark.parametrize(
+        "field", ["created_at", "expires_at", "revoked_at", "approved_at"]
+    )
+    async def test_every_timestamp_is_timezone_aware(self, session_factory, field):
+        now = datetime.now(timezone.utc)
+        await _store(
+            session_factory,
+            _grant("g-1", approved_at=now, approval_state=GrantApprovalState.APPROVED),
+        )
+        async with session_factory() as session:
+            await OperatorGrantRepository(session).revoke_grant("g-1", "op-2")
+        async with session_factory() as session:
+            grant = await OperatorGrantRepository(session).get_grant("g-1")
+
+        value = getattr(grant, field)
+        assert value is not None, f"{field} should be set by this fixture"
+        assert value.tzinfo is not None, f"{field} came back naive"
+
+    async def test_the_aware_value_still_means_the_same_instant(self, session_factory):
+        """Stamping UTC must not shift the timestamp, only label it."""
+        expires = datetime.now(timezone.utc) + timedelta(minutes=30)
+        await _store(session_factory, _grant("g-1", expires_at=expires))
+
+        found = await _find_live(session_factory)
+
+        assert abs((found.expires_at - expires).total_seconds()) < 1
+
+
+@pytest.mark.unit
+@pytest.mark.security
 class TestRevocationIsMonotonic:
     async def test_revoking_twice_keeps_the_first_timestamp(self, session_factory):
         """``revoked_at`` is the record of when access actually ended.

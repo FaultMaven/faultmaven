@@ -361,6 +361,9 @@ async def list_operator_access_audit(
     action: Optional[OperatorAction] = Query(
         None, description="Filter by access kind (list | content_open)"
     ),
+    grant_id: Optional[str] = Query(
+        None, description="Filter to accesses taken under one break-glass grant"
+    ),
     limit: int = Query(100, ge=1, le=500, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
 ) -> OperatorAccessAuditListResponse:
@@ -384,6 +387,7 @@ async def list_operator_access_audit(
         target_organization_id=target_organization_id,
         target_case_id=target_case_id,
         action=action,
+        grant_id=grant_id,
         limit=limit,
         offset=offset,
     )

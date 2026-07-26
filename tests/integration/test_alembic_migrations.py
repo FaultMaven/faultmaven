@@ -777,6 +777,88 @@ class TestOperatorAccessGrantsImmutability:
         finally:
             conn.close()
 
+    @pytest.mark.parametrize(
+        "sql,label",
+        [
+            pytest.param(
+                "UPDATE operator_access_grants SET revoked_at=NULL, revoked_by=NULL "
+                "WHERE grant_id='g-1'",
+                "cleared",
+                id="cleared",
+            ),
+            pytest.param(
+                "UPDATE operator_access_grants SET revoked_at=datetime('now', '+1 day') "
+                "WHERE grant_id='g-1'",
+                "moved",
+                id="moved-later",
+            ),
+        ],
+    )
+    def test_a_revoked_grant_cannot_be_un_revoked(
+        self, clean_database, database_url, sql, label
+    ):
+        """Revocation is monotonic, enforced by the database.
+
+        ``revoked_at`` cannot live in the immutable set — revoking would then be
+        impossible — but leaving it freely mutable makes the ONE permitted update
+        the one that *widens* access: clearing it brings a revoked grant back to
+        life for the remainder of its TTL. Nothing above the database would stop
+        that; the repository's read-modify-write guard only covers its own path.
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            conn.execute(
+                "UPDATE operator_access_grants SET revoked_at=datetime('now'), "
+                "revoked_by='op-2' WHERE grant_id='g-1'"
+            )
+            conn.commit()
+
+            with pytest.raises(sqlite3.IntegrityError, match="monotonic"):
+                conn.execute(sql)
+            conn.rollback()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT revoked_at IS NOT NULL FROM operator_access_grants "
+                "WHERE grant_id='g-1'"
+            )
+            assert cursor.fetchone() == (1,), f"the grant must stay revoked ({label})"
+        finally:
+            conn.close()
+
+    def test_the_first_revocation_is_still_permitted(
+        self, clean_database, database_url
+    ):
+        """The monotonicity guard must not make a grant unrevokable.
+
+        Pinning `revoked_at` unconditionally would remove the operator's ability
+        to end their own access early — a strictly worse posture than the one the
+        guard is meant to enforce.
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            conn.execute(
+                "UPDATE operator_access_grants SET revoked_at=datetime('now'), "
+                "revoked_by='op-2' WHERE grant_id='g-1'"
+            )
+            conn.commit()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT revoked_by FROM operator_access_grants WHERE grant_id='g-1'"
+            )
+            assert cursor.fetchone() == ("op-2",)
+        finally:
+            conn.close()
+
     def test_unknown_approval_state_is_rejected(self, clean_database, database_url):
         """A state outside the vocabulary would be silently non-live — or worse,
         silently live — depending on which predicate read it."""
