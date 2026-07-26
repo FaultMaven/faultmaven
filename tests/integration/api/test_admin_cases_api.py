@@ -298,6 +298,37 @@ async def test_admin_list_blocked_under_multi_tenant_cloud(
     mock_case_service.list_all_cases.assert_not_called()
 
 
+async def test_multi_tenant_refusal_is_keyed_on_tenancy_not_deployment_mode(
+    admin_user, mock_case_service, cleanup_overrides
+):
+    """The refusal follows ``multi``, not ``cloud``.
+
+    ``multi`` cannot boot outside cloud today (``create_tenant_provider``
+    refuses), so the two conditions coincide — but the hazard is RLS scoping,
+    which belongs to tenancy. Pinning it here means a future change that lets
+    ``multi`` run elsewhere inherits the refusal instead of silently serving a
+    one-tenant list under a "standalone" label.
+    """
+    app = _make_app(admin_user, mock_case_service)
+    standalone_settings = MagicMock(is_cloud=False, deployment_mode="standalone")
+
+    with (
+        patch(
+            "faultmaven.api.routes.admin_cases.get_settings",
+            return_value=standalone_settings,
+        ),
+        patch(
+            "faultmaven.api.routes.admin_cases.requested_tenant_provider",
+            return_value="multi",
+        ),
+    ):
+        async with await _client(app) as client:
+            resp = await client.get("/api/v1/admin/cases")
+
+    assert resp.status_code == status.HTTP_403_FORBIDDEN
+    mock_case_service.list_all_cases.assert_not_called()
+
+
 async def test_multi_tenant_refusal_records_no_access(
     admin_user, mock_case_service, mock_audit_repo, cleanup_overrides
 ):

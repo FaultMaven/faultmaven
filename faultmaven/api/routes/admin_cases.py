@@ -102,11 +102,16 @@ async def list_all_cases(
     settings = get_settings()
     metadata_only = settings.is_cloud
 
-    if metadata_only and requested_tenant_provider() == BUILTIN_MULTI:
+    if requested_tenant_provider() == BUILTIN_MULTI:
         # RLS scopes this query to the operator's own organization, so the
         # "all tenants" list would silently be one tenant's. Refuse rather than
         # mislead; the cross-tenant read under multi-tenancy needs a bounded
         # bypass, which is designed with the break-glass path (#815).
+        #
+        # Keyed on tenancy alone, not on `is_cloud`: `multi` cannot boot outside
+        # cloud today (``create_tenant_provider`` refuses), so the two are the
+        # same condition — and if that ever changed, refusing is the direction
+        # to be wrong in.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(

@@ -11,6 +11,8 @@ purpose: an example proves one case is clean, while "every field of
 to ``CaseSummary`` fails these tests until it is put on one side of the boundary.
 """
 
+from typing import get_args
+
 import pytest
 
 from faultmaven.models.api_models import (
@@ -88,4 +90,11 @@ def test_content_fields_are_the_free_text_ones():
             f"CASE_SUMMARY_CONTENT_FIELDS names '{name}', which CaseSummary no "
             "longer has — the content boundary is guarding nothing."
         )
-        assert CaseSummary.model_fields[name].annotation is str
+        annotation = CaseSummary.model_fields[name].annotation
+        # ``str`` or ``Optional[str]`` — either is text a user typed. Matching
+        # the bare type only would fail the day a content field goes nullable,
+        # which is not a reason to re-examine the boundary.
+        assert annotation is str or str in get_args(annotation), (
+            f"CASE_SUMMARY_CONTENT_FIELDS names '{name}', which is no longer a "
+            f"text field ({annotation}) — reclassify it."
+        )
