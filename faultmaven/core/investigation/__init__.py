@@ -36,7 +36,7 @@ if TYPE_CHECKING:  # static analysis only — never executed at runtime
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
 # Which submodule owns each re-exported name. Kept exhaustive against
-# ``__all__`` by tests/unit/core/test_investigation_lazy_imports.py.
+# ``__all__`` by tests/unit/test_import_isolation.py.
 _EXPORTS_BY_SUBMODULE = {
     "hypothesis_manager": ("HypothesisManager", "create_hypothesis_manager"),
     "milestone_engine": ("MilestoneEngine",),
@@ -56,28 +56,37 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Resolve a re-exported name by importing only its own submodule."""
+    """Resolve a re-exported name, or a submodule, on first access."""
     from importlib import import_module
 
-    # The two submodules that used to be imported eagerly. Importing a submodule
-    # binds it on its parent package, so `investigation.milestone_engine` worked
-    # as a side effect of those imports. Resolve them explicitly to keep that
-    # behaviour, and only them — the package's other submodules were never bound
-    # this way, and resolving them now would mask typos.
-    if name in _EXPORTS_BY_SUBMODULE:
-        module = import_module(f".{name}", __name__)
-        globals()[name] = module
-        return module
-
     submodule = _SUBMODULE_BY_EXPORT.get(name)
-    if submodule is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if submodule is not None:
+        value = getattr(import_module(f".{submodule}", __name__), name)
+        # Cache on the package so repeat access skips this path entirely.
+        globals()[name] = value
+        return value
 
-    value = getattr(import_module(f".{submodule}", __name__), name)
-    # Cache on the package so repeat access skips this path entirely.
-    globals()[name] = value
-    return value
+    # Submodules. Importing a submodule binds it on its parent package, so the
+    # old eager `__init__` made 15 of them reachable as plain attributes as a
+    # side effect of pulling in hypothesis_manager and milestone_engine —
+    # `investigation.terminal_transitions`, `.schemas`, `.causal_graph` and so
+    # on. Resolving any real submodule keeps every one of those working.
+    try:
+        module = import_module(f".{name}", __name__)
+    except ModuleNotFoundError as exc:
+        # Only translate "this package has no such submodule". An import error
+        # raised from *inside* a real submodule must propagate, not be reported
+        # as a missing attribute.
+        if exc.name == f"{__name__}.{name}":
+            raise AttributeError(
+                f"module {__name__!r} has no attribute {name!r}"
+            ) from None
+        raise
+    globals()[name] = module
+    return module
 
 
 def __dir__() -> list:
-    return sorted(__all__)
+    from pkgutil import iter_modules
+
+    return sorted(set(__all__) | {m.name for m in iter_modules(__path__)})

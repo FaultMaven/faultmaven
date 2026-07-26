@@ -15,13 +15,52 @@ on test order and prove nothing.
 """
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_probe(body: str) -> object:
+    """Run `body` in a fresh interpreter and return the JSON it writes.
+
+    `body` is given a module-level name `OUT`: the path to write its JSON
+    result to. Results come back through a file rather than stdout because the
+    app logs on import — scraping stdout would break the moment anything (a
+    logger, an atexit hook, a background thread) prints after the payload.
+
+    The child inherits the real environment with PYTHONPATH prepended, rather
+    than being handed a hand-built one: replacing os.environ wholesale drops
+    HOME and any CI-supplied DATABASE_URL / AUTH_MODE / JWT_SECRET_KEY, and
+    hardcoding PATH is not portable. It runs in a temporary cwd so that
+    pydantic-settings cannot pick up the developer's `.env`.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "probe.json"
+        program = f"OUT = {str(out)!r}\n" + body
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=tmp,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+            timeout=300,
+        )
+        assert result.returncode == 0, (
+            f"probe subprocess failed:\n--- stdout ---\n{result.stdout}\n"
+            f"--- stderr ---\n{result.stderr}"
+        )
+        assert out.exists(), (
+            f"probe wrote no result:\n--- stdout ---\n{result.stdout}\n"
+            f"--- stderr ---\n{result.stderr}"
+        )
+        return json.loads(out.read_text())
+
 
 # The optional dependencies whose import cost motivated #849. Swept as a set
 # rather than spot-checked: the guarantee is "none of the heavy optional deps
@@ -36,25 +75,28 @@ HEAVY_OPTIONAL_DEPS = (
 
 def _modules_after_importing(*module_names: str) -> set:
     """Import module_names in a fresh interpreter; return its sys.modules keys."""
-    program = (
+    body = (
         "import json, sys\n"
         + "".join(f"import {name}\n" for name in module_names)
-        + "print(json.dumps(sorted(sys.modules)))\n"
+        + "open(OUT, 'w').write(json.dumps(sorted(sys.modules)))\n"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", program],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO_ROOT),
-        env={"PYTHONPATH": str(REPO_ROOT), "PATH": "/usr/bin:/bin"},
-        timeout=300,
-    )
-    assert result.returncode == 0, (
-        f"subprocess failed importing {module_names}:\n"
-        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
-    )
-    # The app logs to stdout on import; the JSON payload is the final line.
-    return set(json.loads(result.stdout.strip().splitlines()[-1]))
+    return set(_run_probe(body))
+
+
+def _submodules_failing_attribute_access(package: str) -> list:
+    """Return every submodule of `package` not reachable as an attribute."""
+    body = f"""
+import json, pkgutil, importlib
+pkg = importlib.import_module({package!r})
+failed = []
+for info in pkgutil.iter_modules(pkg.__path__):
+    try:
+        getattr(pkg, info.name)
+    except Exception as exc:
+        failed.append(f"{{info.name}} ({{type(exc).__name__}})")
+open(OUT, 'w').write(json.dumps(sorted(failed)))
+"""
+    return _run_probe(body)
 
 
 # The two imports a case write performs: the repository module itself, then the
@@ -168,25 +210,28 @@ class TestLazyPackagesStayConsistent:
             "faultmaven.core.investigation",
         ],
     )
-    def test_previously_eager_submodules_stay_attribute_accessible(
-        self, module_path: str
-    ):
+    def test_every_submodule_stays_attribute_accessible(self, module_path: str):
         """`pkg.submodule` must keep working for callers holding only the package.
 
         Importing a submodule binds it on its parent, so the eager re-exports
-        these packages used to do made `shims.metrics` and
-        `investigation.milestone_engine` reachable as attributes as a side
-        effect. Going lazy silently dropped that until this test pinned it: the
-        `from pkg import submodule` form still worked (the import machinery falls
-        back to a submodule import), so nothing in-tree broke and the loss was
-        invisible.
+        these packages used to do made their submodules reachable as plain
+        attributes as a side effect — 15 of them on `core.investigation`, not
+        just the two whose names were re-exported. Going lazy silently dropped
+        that: the `from pkg import submodule` form still works (the import
+        machinery falls back to a submodule import) and mock.patch string
+        targets resolve through importlib, so nothing in-tree broke and the
+        loss was invisible.
+
+        This sweeps every submodule pkgutil can discover rather than the two in
+        the re-export map — checking only the mapped names would certify a
+        parity it never tested, which is exactly how the gap survived its first
+        version. Runs in a subprocess: resolving them imports them, and that
+        would pull the heavy stacks into this session's sys.modules and
+        undermine the isolation tests above.
         """
-        module = __import__(module_path, fromlist=["_EXPORTS_BY_SUBMODULE"])
-        for submodule_name in module._EXPORTS_BY_SUBMODULE:
-            resolved = getattr(module, submodule_name, None)
-            assert resolved is not None, (
-                f"{module_path}.{submodule_name} is no longer reachable as an "
-                "attribute. The lazy __getattr__ must resolve the submodules it "
-                "used to import eagerly, not just their re-exported names."
-            )
-            assert resolved.__name__ == f"{module_path}.{submodule_name}"
+        failed = _submodules_failing_attribute_access(module_path)
+        assert not failed, (
+            f"{module_path}: submodules not reachable as attributes: {failed}. "
+            "The lazy __getattr__ must fall back to importing a real submodule, "
+            "not only resolve re-exported names."
+        )
