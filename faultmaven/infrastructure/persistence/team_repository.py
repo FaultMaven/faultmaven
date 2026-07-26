@@ -214,11 +214,19 @@ class PostgreSQLTeamRepository(ITeamRepository):
         teams-table RLS policy fails a cross-organization membership row closed.
 
         ``team_members`` is itself RLS-tenanted as of migration 030 (a policy
-        keyed by subquery through ``teams``), so the membership boundary is
-        covered twice over. The join is kept as the belt to that suspenders: it
-        is what holds if the row-level policy is ever bypassed by an owner or
-        superuser connection, and it is the only arm that also excludes
-        soft-deleted teams. See the class docstring + ADR-013.
+        keyed by subquery through ``teams``), so under the limited role the
+        membership boundary is covered twice over.
+
+        **Both arms are row-level security, so both vanish together.** This
+        query carries no organization predicate of its own: on a connection that
+        bypasses RLS (the table owner, a superuser, or any ``BYPASSRLS`` role)
+        neither policy applies and it degrades to "every non-deleted team this
+        user has a membership row for", across organizations. The soft-delete
+        filter is the only part that holds unconditionally. Callers MUST
+        therefore run under ``faultmaven_app``; do not reuse this from an
+        owner-role path (``/health``, the operator break-glass paths of
+        migrations 035/036) without adding an explicit organization predicate.
+        See the class docstring + ADR-013.
         """
         stmt = (
             select(TeamMemberModel.team_id)

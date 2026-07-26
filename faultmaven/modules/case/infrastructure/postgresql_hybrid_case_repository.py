@@ -2734,7 +2734,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         writers have persisted.
 
         Schema per design spec (case-schema.md §4.7):
-        - message_id, turn_number, role, content, created_at, token_count, metadata
+        - message_id, turn_number, role, content, created_at, token_count,
+          metadata, author_id
+
+        Authorship is never overwritten with a blank — see the COALESCE on
+        ``author_id`` in the conflict clause below.
         """
         # Upsert each message
         for idx, msg in enumerate(messages_list):
@@ -2754,12 +2758,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     content = EXCLUDED.content,
                     created_at = EXCLUDED.created_at,
                     token_count = EXCLUDED.token_count,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    author_id = COALESCE(case_messages.author_id, EXCLUDED.author_id)
             """)
-            # author_id is deliberately absent from DO UPDATE SET: authorship is
-            # write-once. A re-save whose in-memory dict happened to lack the
-            # field would otherwise NULL out an author already captured, which is
-            # exactly the unrecoverable loss this column exists to prevent.
+            # Authorship is write-once but still fillable. COALESCE keeps an
+            # author already on the row (a re-save whose in-memory dict lacked
+            # the field cannot NULL it out — the unrecoverable loss this column
+            # exists to prevent) while still letting a later save supply one for
+            # a row that has none. A bare `EXCLUDED.author_id` would erase;
+            # omitting the column entirely would make a NULL permanent.
 
             await self.db.execute(
                 query,

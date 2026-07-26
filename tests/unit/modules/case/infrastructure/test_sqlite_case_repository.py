@@ -2288,9 +2288,9 @@ class TestMessageAuthorship:
     async def test_resave_does_not_erase_a_captured_author(self, repository):
         """Authorship is write-once — a later save must not NULL it.
 
-        The message upsert deliberately omits `author_id` from its DO UPDATE
-        SET. Were it included, any re-save carrying a dict without the field
-        would silently erase an author already recorded.
+        The upsert's conflict clause COALESCEs `author_id` over the existing
+        row. With a bare `EXCLUDED.author_id` any re-save carrying a dict
+        without the field would silently erase an author already recorded.
         """
         case = _make_case(user_id="user_owner")
         await repository.save(case)
@@ -2308,6 +2308,38 @@ class TestMessageAuthorship:
         reloaded = await repository.get(case.case_id)
         for msg in reloaded.messages:
             msg.pop("author_id", None)  # simulate a writer that never knew the field
+        await repository.save(reloaded)
+
+        again = await repository.get_messages(case.case_id)
+        assert [m["author_id"] for m in again] == ["user_teammate"]
+
+    @pytest.mark.asyncio
+    async def test_resave_can_fill_an_absent_author(self, repository):
+        """Write-once is not write-never: a NULL author can still be filled.
+
+        The mirror of the test above, and the reason the conflict clause
+        COALESCEs rather than omitting the column. Omitting it entirely would
+        protect an existing author but make an absent one permanent — a row
+        first persisted without attribution could never acquire it.
+        """
+        case = _make_case(user_id="user_owner")
+        await repository.save(case)
+        message_id = f"msg_{uuid4().hex[:16]}"
+        await repository.add_message(
+            case.case_id,
+            {
+                "message_id": message_id,
+                "role": "user",
+                "content": "authored later",
+                "turn_number": 1,
+                # deliberately no author_id — the row lands unattributed
+            },
+        )
+        assert (await repository.get_messages(case.case_id))[0]["author_id"] is None
+
+        reloaded = await repository.get(case.case_id)
+        for msg in reloaded.messages:
+            msg["author_id"] = "user_teammate"
         await repository.save(reloaded)
 
         again = await repository.get_messages(case.case_id)
