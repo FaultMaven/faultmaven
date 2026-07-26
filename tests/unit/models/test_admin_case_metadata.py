@@ -66,8 +66,8 @@ def test_metadata_carries_no_content_field():
     assert not leaked, f"AdminCaseMetadata declares content field(s): {sorted(leaked)}"
 
 
-def test_metadata_field_types_match_case_summary():
-    """Identical annotations, so the projection cannot fail on a valid summary.
+def test_metadata_validation_is_no_stricter_than_case_summary():
+    """Nothing accepted upstream may be rejected here, so the projection is total.
 
     ``AdminCaseMetadata`` re-declares its field types rather than deriving them,
     which leaves room for the two to drift — and the cloud arm builds the whole
@@ -77,24 +77,32 @@ def test_metadata_field_types_match_case_summary():
     standalone arm is unaffected: its conversion is best-effort per case inside
     ``CaseService``.)
 
-    Pinning annotation equality removes the failure mode instead of catching it:
-    a value that validated upstream validates here by construction, so
-    ``from_summary`` is total and needs no second best-effort swallow — which
-    would only trade a 500 for a page silently shorter than its own
-    ``total_count``.
+    Pinning validation parity removes the failure mode instead of catching it,
+    so ``from_summary`` needs no second best-effort swallow — which would only
+    trade a 500 for a page silently shorter than its own ``total_count``.
+
+    Both halves of "validates" are compared. The annotation is the obvious one;
+    ``FieldInfo.metadata`` carries the constraints (``max_length``, ``pattern``,
+    ``ge``…) that pydantic applies *on top* of it, and a constraint added here
+    alone would narrow the accepted set while leaving annotations equal — the
+    exact drift this test exists to catch, invisible to a type-only check.
     """
     # Only fields both models declare; a metadata-only field is the separate
     # concern of ``test_metadata_invents_no_field_of_its_own``, and looking one
     # up here would KeyError instead of failing with a readable message.
     shared = set(AdminCaseMetadata.model_fields) & set(CaseSummary.model_fields)
+
+    def _shape(field):
+        return (field.annotation, list(field.metadata))
+
     mismatched = {
-        name: (
-            AdminCaseMetadata.model_fields[name].annotation,
-            CaseSummary.model_fields[name].annotation,
-        )
+        name: {
+            "metadata_row": _shape(AdminCaseMetadata.model_fields[name]),
+            "case_summary": _shape(CaseSummary.model_fields[name]),
+        }
         for name in sorted(shared)
-        if AdminCaseMetadata.model_fields[name].annotation
-        != CaseSummary.model_fields[name].annotation
+        if _shape(AdminCaseMetadata.model_fields[name])
+        != _shape(CaseSummary.model_fields[name])
     }
 
     assert not mismatched, (
