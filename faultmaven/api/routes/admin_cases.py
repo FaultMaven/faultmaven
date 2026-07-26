@@ -112,6 +112,16 @@ async def list_all_cases(
         # cloud today (``create_tenant_provider`` refuses), so the two are the
         # same condition — and if that ever changed, refusing is the direction
         # to be wrong in.
+        #
+        # It is keyed on CONFIG rather than on the served rows' orgs, which
+        # leaves a residual gap: rows carrying a non-Standalone org under
+        # `single` (an out-of-band write, a rolled-back flip) would be dropped by
+        # RLS and this gate would stay quiet. Inspecting the result does not
+        # close it — the rows that came back are RLS-filtered, so every one of
+        # them carries the bound org by construction and the missing ones are
+        # precisely what the session cannot see. Detecting that needs a count
+        # from outside the policy, which is the bounded-bypass work deferred to
+        # #815; a check over the visible rows would only look like a defense.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(

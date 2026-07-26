@@ -66,6 +66,43 @@ def test_metadata_carries_no_content_field():
     assert not leaked, f"AdminCaseMetadata declares content field(s): {sorted(leaked)}"
 
 
+def test_metadata_field_types_match_case_summary():
+    """Identical annotations, so the projection cannot fail on a valid summary.
+
+    ``AdminCaseMetadata`` re-declares its field types rather than deriving them,
+    which leaves room for the two to drift — and the cloud arm builds the whole
+    page in one comprehension, so a single row that validated as a
+    ``CaseSummary`` but not as metadata would raise and 500 the entire list,
+    *after* the audit row already recorded a served metadata read. (The
+    standalone arm is unaffected: its conversion is best-effort per case inside
+    ``CaseService``.)
+
+    Pinning annotation equality removes the failure mode instead of catching it:
+    a value that validated upstream validates here by construction, so
+    ``from_summary`` is total and needs no second best-effort swallow — which
+    would only trade a 500 for a page silently shorter than its own
+    ``total_count``.
+    """
+    # Only fields both models declare; a metadata-only field is the separate
+    # concern of ``test_metadata_invents_no_field_of_its_own``, and looking one
+    # up here would KeyError instead of failing with a readable message.
+    shared = set(AdminCaseMetadata.model_fields) & set(CaseSummary.model_fields)
+    mismatched = {
+        name: (
+            AdminCaseMetadata.model_fields[name].annotation,
+            CaseSummary.model_fields[name].annotation,
+        )
+        for name in sorted(shared)
+        if AdminCaseMetadata.model_fields[name].annotation
+        != CaseSummary.model_fields[name].annotation
+    }
+
+    assert not mismatched, (
+        "AdminCaseMetadata has drifted from CaseSummary — a row that validates "
+        f"upstream may fail the cloud projection: {mismatched}"
+    )
+
+
 def test_metadata_invents_no_field_of_its_own():
     """Every metadata field is a real ``CaseSummary`` field.
 
