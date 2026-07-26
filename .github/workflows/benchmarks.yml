@@ -94,7 +94,12 @@ jobs:
           retention-days: 90
 
       - name: Comment on PR with results
-        if: github.event_name == 'pull_request'
+        # `always()` is required now that the run step can actually fail. A bare
+        # `github.event_name == ...` carries GitHub's implicit `success()`, so
+        # this step would be skipped exactly when benchmarks fail — making its
+        # own "Failed Benchmarks" branch unreachable and hiding the detail at
+        # the one moment it matters. Siblings above already use `always()`.
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v8
         with:
           script: |

@@ -5,17 +5,18 @@ and other shared test infrastructure.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 from uuid import uuid4
 
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
 )
-from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-    KnowledgeItem,
-    KnowledgeItemType,
-    KnowledgeScope,
-)
+
+if TYPE_CHECKING:  # static analysis only — see make_org_knowledge_item
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        KnowledgeItem,
+        KnowledgeItemType,
+    )
 
 # Default enterprise UUID — mirrors SingleTenantProvider.DEFAULT_ENTERPRISE_ID
 # and migration 006's seeded row. Tests that build orgs/users without a
@@ -259,7 +260,7 @@ def make_org_knowledge_item(
     organization_id: Optional[str] = None,
     title: str = "Sample Knowledge Item",
     content: str = "This is sample content for the knowledge item.",
-    item_type: KnowledgeItemType = KnowledgeItemType.TROUBLESHOOTING_GUIDE,
+    item_type: 'Optional["KnowledgeItemType"]' = None,
     category: Optional[str] = None,
     tags: Optional[List[str]] = None,
     embedding_vector: Optional[List[float]] = None,
@@ -269,7 +270,7 @@ def make_org_knowledge_item(
     not_helpful_count: int = 0,
     created_at: Optional[datetime] = None,
     metadata: Optional[Dict[str, Any]] = None,
-) -> KnowledgeItem:
+) -> "KnowledgeItem":
     """Build a valid org-owned KnowledgeItem for repository-level tests.
 
     This is the single definition of an org-owned sample item. The repository
@@ -291,7 +292,25 @@ def make_org_knowledge_item(
     (``tests/unit/models/test_knowledge_item.py``) and the inventory
     visibility tests (``tests/unit/modules/knowledge/test_documents_inventory.py``).
     They must not route through this helper, which pins one scope by design.
+
+    The knowledge model is imported here rather than at module scope. This
+    module is imported by 21 test modules, most of them only for the
+    ``generate_*_id`` helpers, and ``faultmaven.modules.knowledge``'s package
+    ``__init__`` eagerly pulls in the FastAPI routes and the service layer:
+    importing it at module scope took ``import tests.utils`` from 0.40s /
+    334 modules to 18.00s / 5472 modules, and dragged in torch. ``item_type``
+    defaults to None for the same reason — evaluating the enum member in the
+    signature would force the import at def time.
     """
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        KnowledgeItem,
+        KnowledgeItemType,
+        KnowledgeScope,
+    )
+
+    if item_type is None:
+        item_type = KnowledgeItemType.TROUBLESHOOTING_GUIDE
+
     return KnowledgeItem(
         item_id=item_id or generate_item_id(),
         organization_id=organization_id or generate_org_id(),

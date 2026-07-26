@@ -31,7 +31,13 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
 )
-from tests.utils import generate_case_id, generate_item_id, generate_org_id
+
+# generate_case_id is used by the warm-up fixture below; generate_org_id is
+# re-exported for test_knowledge_item_operations.py. generate_item_id was
+# dropped when that module stopped importing it — ruff cannot flag it here
+# (conftest.py has F401 in per-file-ignores, and CI's rule selection excludes
+# F401 anyway).
+from tests.utils import generate_case_id, generate_org_id
 
 
 @pytest.fixture(scope="session")
@@ -92,21 +98,29 @@ def warm_repository_paths():
     `faultmaven.core.investigation.terminal_transitions`, which transitively
     executes `core.investigation.__init__` -> `milestone_engine` ->
     `prompts.context_builder` -> `core.preprocessing.vector_storage` ->
-    `infrastructure.model_cache` -> `sentence_transformers`. Measured on the
-    first save in a process: 7117.6ms cold vs 4.6ms warm — a 1532x ratio.
+    `infrastructure.model_cache` -> `sentence_transformers`.
 
-    Whichever benchmark happened to run first therefore timed an import
-    chain rather than the operation it names, and asserted a latency
-    threshold against it. That is how
+    Measured on the first save in a process, under this suite (so with
+    `tests/conftest.py`'s torch mocks in force — the figures are much larger
+    against real torch, but that is not the environment benchmarks run in):
+
+        cold first save   632.6 ms
+        warm saves        3.24 ms (median)
+        ratio             195x
+
+    Whichever benchmark happened to run first therefore timed an import chain
+    rather than the operation it names, and asserted a latency threshold
+    against it. That is how
     `test_case_operations.py::test_single_case_creation_latency` failed at
-    1165.9ms against its 1000ms target while the real steady-state cost of
-    the write is ~4.6ms — the threshold sits *below* the import cost, so it
-    could only ever flap, never measure.
+    1165.9ms against its 1000ms target: the threshold sits *below* the import
+    cost, so it could only ever flap, never measure.
 
-    Requested by the repository fixtures rather than being autouse: it must
-    NOT run for `test_memory_usage.py::test_memory_usage_baseline`, which
-    takes no fixtures precisely so it can sample a clean process RSS. This
-    chain costs ~1.1GB resident against that test's 1500MB assertion.
+    Requested by the repository fixtures rather than being autouse so that it
+    does not run for `test_memory_usage.py::test_memory_usage_baseline`, which
+    takes no fixtures precisely so it can sample a clean process RSS. That is a
+    question of not changing what a test measures, not of magnitude — the chain
+    adds ~50MB here, comfortably inside that test's 1500MB assertion (~432MB is
+    already resident from `tests/conftest.py`'s own imports).
 
     This warms the import chain and SQLAlchemy/aiosqlite statement setup on a
     throwaway engine, so it perturbs no benchmark's own state. Deliberately a
