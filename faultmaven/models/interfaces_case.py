@@ -436,8 +436,9 @@ class ICaseService(ABC):
 
         Unlike ``list_user_cases``, this is NOT scoped by ``user_id``. It backs
         the platform-admin case view (ADR-012 D9). Authorization
-        (``require_platform_admin``) and deployment-mode gating are enforced at
-        the API layer — this method must only be reached for a platform admin.
+        (``require_platform_admin``), the D9 metadata/content projection and the
+        tenancy gate are enforced at the API layer — this method must only be
+        reached for a platform admin, and always returns full summaries.
 
         Args:
             filters: Optional filter criteria (state, limit, offset, include_empty)

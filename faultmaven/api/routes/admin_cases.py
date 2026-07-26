@@ -5,18 +5,32 @@ operator can see Copilot- and Slack-originated cases in one place instead of
 logging in as each user. It is gated by:
 
   - ``require_platform_admin`` (platform-admin role), and
-  - deployment mode: served in **standalone**; **403 in cloud** until an
-    audited break-glass override exists (ADR-012 D7/D8). In cloud/Postgres,
-    Row-Level Security would also scope the result to the operator's own org,
-    so a cloud response would be misleadingly partial — fail closed instead.
+  - deployment mode, which decides *what a row contains* rather than whether
+    the endpoint answers at all (the D9 metadata/content split):
+
+      * **standalone** — full summaries, titles included. The operator and the
+        data controller are the same party; content reads are audited, not gated.
+      * **cloud** — ambient metadata only (ids, org, state, timestamps, counts).
+        Titles and transcripts are content, reachable only through the audited
+        break-glass grant (#815).
+
+  - tenancy, which decides whether a cross-tenant answer is *truthful*. The web
+    process connects as the RLS-enforcing ``faultmaven_app`` role, so under
+    ``TENANT_PROVIDER=multi`` this query is silently scoped to the operator's
+    own organization — a list that claims to span every tenant but does not.
+    That is refused (403) rather than served: an operator triaging "which tenant
+    is stuck" would be misled by a partial answer in exactly the case where the
+    endpoint exists. Under ``single`` (what cloud runs today) every row carries
+    the Standalone org, so the RLS-scoped result IS the complete list.
 
 Every access is recorded in the durable, append-only ``operator_access_audit``
 table before any case data is returned; see ``api/operator_audit.py`` for that
-policy and why it fails closed.
+policy and why it fails closed. The recorded ``details`` name which view was
+served, so the trail distinguishes a metadata read from a full one.
 """
 
 import logging
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.requests import Request
@@ -28,8 +42,11 @@ from faultmaven.api.operator_audit import (
 )
 from faultmaven.config.settings import get_settings
 from faultmaven.models.api_models import (
+    AdminCaseListResponse,
+    AdminCaseListResult,
+    AdminCaseMetadata,
+    AdminCaseMetadataListResponse,
     CaseListFilter,
-    CaseListResponse,
     OperatorAccessAuditEntry,
     OperatorAccessAuditListResponse,
 )
@@ -40,6 +57,10 @@ from faultmaven.models.interfaces_operator_audit import (
 )
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.providers.tenancy.factory import (
+    BUILTIN_MULTI,
+    requested_tenant_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +82,7 @@ router = APIRouter(
 )
 
 
-@router.get("/cases", response_model=CaseListResponse)
+@router.get("/cases", response_model=AdminCaseListResult)
 async def list_all_cases(
     current_user: AuthenticatedUser = Depends(require_platform_admin),
     case_service: ICaseService = Depends(get_case_service),
@@ -72,20 +93,27 @@ async def list_all_cases(
     ),
     limit: int = Query(50, ge=1, le=200, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
-) -> CaseListResponse:
-    """List cases across all users/orgs for a platform-admin (ADR-012 D9)."""
-    settings = get_settings()
+) -> Union[AdminCaseListResponse, AdminCaseMetadataListResponse]:
+    """List cases across all users/orgs for a platform-admin (ADR-012 D9).
 
-    if settings.is_cloud:
-        # Cross-tenant admin reads in cloud require an audited break-glass
-        # override (ADR-012 D7/D8), not yet built. RLS would also scope the
-        # result to the operator's own org, so fail closed rather than return
-        # a misleading partial list.
+    Standalone serves full summaries; cloud serves metadata-only rows. See the
+    module docstring for why the split falls where it does.
+    """
+    settings = get_settings()
+    metadata_only = settings.is_cloud
+
+    if metadata_only and requested_tenant_provider() == BUILTIN_MULTI:
+        # RLS scopes this query to the operator's own organization, so the
+        # "all tenants" list would silently be one tenant's. Refuse rather than
+        # mislead; the cross-tenant read under multi-tenancy needs a bounded
+        # bypass, which is designed with the break-glass path (#815).
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "Admin cross-tenant case listing is not available in cloud "
-                "deployments yet (requires audited break-glass; ADR-012 D7/D9)."
+                "Cross-tenant case listing is not available under multi-tenant "
+                "cloud: row-level security would scope the result to a single "
+                "organization, so the list would be silently partial "
+                "(ADR-012 D9)."
             ),
         )
 
@@ -111,6 +139,10 @@ async def list_all_cases(
             "source_filter": source,
             "limit": limit,
             "offset": offset,
+            # Which of the two D9 shapes the operator actually received. An
+            # auditor reading this row needs to know whether case titles were
+            # disclosed, and that is not derivable from the action alone.
+            "view": "metadata" if metadata_only else "full",
         },
     )
 
@@ -128,14 +160,29 @@ async def list_all_cases(
         },
     )
 
-    return CaseListResponse(
+    # Robust to best-effort conversion drops: base "more pages?" on the
+    # requested window vs. the repository's true total, not the rendered count.
+    has_more = (offset + limit) < total
+
+    if metadata_only:
+        # One query, one service call, projected at the boundary. A separate
+        # metadata-only read path would be a second thing to keep in step with
+        # the case model for no gain — the rows never leave this function
+        # un-projected.
+        return AdminCaseMetadataListResponse(
+            cases=[AdminCaseMetadata.from_summary(s) for s in summaries],
+            total_count=total,
+            limit=limit,
+            offset=offset,
+            has_more=has_more,
+        )
+
+    return AdminCaseListResponse(
         cases=summaries,
         total_count=total,
         limit=limit,
         offset=offset,
-        # Robust to best-effort conversion drops: base "more pages?" on the
-        # requested window vs. the repository's true total, not the rendered count.
-        has_more=(offset + limit) < total,
+        has_more=has_more,
     )
 
 

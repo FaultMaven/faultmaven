@@ -737,7 +737,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Admin | `GET /admin/llm/config` | LLM provider status and fallback chain |
 | Admin | `POST /admin/llm/config/test` | Test provider connection |
 | Admin | `GET /admin/config/status` | Environment configuration status |
-| Admin | `GET /admin/cases` | Cross-tenant case list (all users/orgs) — platform-admin only; **standalone only** (403 in cloud until audited break-glass, ADR-012 D9); audited access |
+| Admin | `GET /admin/cases` | Cross-tenant case list (all users/orgs) — platform-admin only, audited. Deployment-split (ADR-012 D9): standalone returns full summaries (`view: "full"`), cloud returns ambient metadata with no title/description (`view: "metadata"`); titles need break-glass. 403 under `TENANT_PROVIDER=multi` (RLS would make the list silently partial) |
 
 **Health & Metrics Endpoints:**
 

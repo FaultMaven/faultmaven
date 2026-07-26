@@ -994,10 +994,12 @@ class CaseService(ICaseService):
         ``list_user_cases`` this passes ``user_id=None`` so the repository
         drops its per-user WHERE clause and returns every user's cases for the
         requested page, plus the total match count for pagination.
-        Authorization and deployment-mode gating are enforced at the API layer;
-        this method must only be reached for an admin. In cloud/Postgres,
-        Row-Level Security still scopes the result to the caller's org — the
-        API layer blocks cloud until an audited break-glass path exists.
+        Authorization, the metadata/content projection and the tenancy gate are
+        all enforced at the API layer; this method must only be reached for an
+        admin, and returns full summaries (titles included) in every deployment.
+        In cloud/Postgres, Row-Level Security still scopes the result to the
+        caller's org, which is why the API layer refuses this path under
+        ``TENANT_PROVIDER=multi`` rather than serving a partial list.
 
         Repository errors propagate so the API surfaces a 5xx rather than
         masking a failure as an empty list (this is a diagnostic admin view).
