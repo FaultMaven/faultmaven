@@ -18,9 +18,18 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
-from faultmaven.infrastructure.model_cache import model_cache
 
 logger = logging.getLogger(__name__)
+
+# NOTE: ``model_cache`` is imported lazily inside
+# ``store_in_vector_db_background`` rather than here. Importing it at module
+# level executes ``from sentence_transformers import SentenceTransformer``,
+# which costs ~8.7s and ~1.1GB resident — and this module is re-exported by
+# ``core/preprocessing/__init__.py``, so that cost landed on *every* importer
+# of the package, including the case persistence layer, maintenance scripts
+# and each test session touching case writes. Deferring it matches how the
+# other seven call sites in the codebase already import ``model_cache``.
+# See #849.
 
 
 # -- Token counting -----------------------------------------------------------
@@ -251,6 +260,9 @@ async def store_in_vector_db_background(
         # 3. Generate BGE-M3 embeddings for all chunks (off the event loop via
         # the model_cache async boundary). None → BGE unavailable, fall back to
         # ChromaDB's default embedding.
+        # Imported here, not at module scope: see the note by the imports (#849).
+        from faultmaven.infrastructure.model_cache import model_cache
+
         texts = [doc["content"] for doc in documents]
         embeddings = await model_cache.aembed_texts(texts)
         if embeddings is not None:

@@ -14,26 +14,54 @@ Usage:
 """
 
 import asyncio
+import importlib.util
 import logging
 import os
 from functools import wraps
-from typing import Any, Callable, TypeVar, Union
+from typing import Any, Callable, Optional, TypeVar, Union
 
 logger = logging.getLogger(__name__)
 
 # Type variable for preserving function signatures
 F = TypeVar("F", bound=Callable[..., Any])
 
-# Feature detection
+# Feature detection WITHOUT importing opik.
+#
+# `import opik` costs ~16.5s and ~400MB resident (it eagerly pulls its
+# evaluation/llm-judges subpackages). Paying that merely to discover whether
+# the package exists put the whole cost on every importer of this module,
+# including — via shims.metrics and core.investigation — the case persistence
+# layer. `find_spec` answers "is it installed?" without executing it. See #849.
+#
+# The real import is deferred to `track()`, and only when tracing is actually
+# switched on. A package that is installed but fails to import now degrades to
+# the no-op decorator at that point (with a warning) instead of silently at
+# import time — same graceful degradation, reported closer to the cause.
 try:
-    from opik import track as opik_track
-
-    OPIK_AVAILABLE = True
-    logger.info("Opik tracing library available")
-except ImportError:
+    OPIK_AVAILABLE = importlib.util.find_spec("opik") is not None
+except (ImportError, ValueError):  # pragma: no cover - malformed installation
     OPIK_AVAILABLE = False
-    opik_track = None
+
+if OPIK_AVAILABLE:
+    logger.info("Opik tracing library available")
+else:
     logger.debug("Opik not installed - tracing disabled")
+
+
+def _resolve_opik_track() -> Optional[Callable[..., Any]]:
+    """Import opik's `track` on first use; None if it cannot be loaded."""
+    global OPIK_AVAILABLE
+    try:
+        from opik import track as opik_track
+
+        return opik_track
+    except Exception:  # noqa: BLE001 - any import failure must degrade, not raise
+        OPIK_AVAILABLE = False
+        logger.warning(
+            "Opik is installed but failed to import - tracing disabled",
+            exc_info=True,
+        )
+        return None
 
 
 def _is_tracing_enabled() -> bool:
@@ -67,7 +95,8 @@ def track(name: str) -> Callable[[F], F]:
     """
     tracing_enabled = _is_tracing_enabled()
 
-    if OPIK_AVAILABLE and tracing_enabled:
+    opik_track = _resolve_opik_track() if OPIK_AVAILABLE and tracing_enabled else None
+    if opik_track is not None:
         # Use real Opik tracking
         logger.debug(f"Tracking enabled for: {name}")
         return opik_track(name=name)

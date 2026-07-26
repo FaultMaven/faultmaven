@@ -148,8 +148,20 @@ class TestChunkStructuralIndex:
 
 
 class TestStoreInVectorDbBackground:
+    """Tests for the background vector-store path.
+
+    These patch ``faultmaven.infrastructure.model_cache.model_cache`` — the
+    module that owns the singleton — rather than a re-exported name on
+    ``vector_storage``. ``store_in_vector_db_background`` imports it lazily at
+    call time (module-level import would drag sentence-transformers into every
+    importer of the preprocessing package, #849), so there is no
+    ``vector_storage.model_cache`` attribute to patch; the function-local
+    ``from ... import model_cache`` resolves the attribute on the source module
+    when it runs, which is what these patches replace.
+    """
+
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_successful_storage_with_bge_m3(self, mock_model_cache):
         # Mock the async embed boundary → two 1024-dim vectors, one per chunk.
         mock_model_cache.aembed_texts = AsyncMock(
@@ -192,7 +204,7 @@ class TestStoreInVectorDbBackground:
         mock_model_cache.aembed_texts.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_fallback_when_bge_m3_unavailable(self, mock_model_cache):
         mock_model_cache.aembed_texts = AsyncMock(return_value=None)
 
@@ -230,7 +242,7 @@ class TestStoreInVectorDbBackground:
         mock_store.add_documents.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_scalar_metadata_filtered(self, mock_model_cache):
         mock_model_cache.aembed_texts = AsyncMock(
             return_value=np.random.rand(1, 1024).tolist()
@@ -267,7 +279,7 @@ class TestStoreInVectorDbBackground:
         assert "list_val" not in chunk_meta
 
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_error_handled_silently(self, mock_model_cache):
         mock_model_cache.aembed_texts = AsyncMock(return_value=None)
 
@@ -285,7 +297,7 @@ class TestStoreInVectorDbBackground:
         )
 
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_chunk_index_and_total_in_metadata(self, mock_model_cache):
         mock_model_cache.aembed_texts = AsyncMock(
             return_value=np.random.rand(2, 1024).tolist()

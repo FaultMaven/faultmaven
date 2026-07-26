@@ -46,37 +46,136 @@ Usage:
 
     metrics = get_metrics_status()
     print(f"Metrics active: {metrics['active']}")
+
+Import cost:
+    These names are resolved lazily (PEP 562). Re-exporting all three shims
+    eagerly meant that importing ANY one of them paid for ALL of them: the
+    optional cloud dependencies behind them are heavy, and Presidio's nlp
+    engine imports torch at module scope purely to detect a device. Measured
+    before this was made lazy — each figure is the cost of importing that one
+    submodule, all of it the eager package ``__init__``:
+
+        shims.metrics        17.85s   (torch resident: True)
+        shims.observability  13.60s   (torch resident: True)
+        shims.security       13.40s   (torch resident: True)
+
+    Because `core.investigation` reaches `shims.metrics` via
+    `lifecycle_metrics`, that cost landed on the case persistence layer. See
+    #849. Nothing about the shims' own degradation behaviour changed: each
+    submodule still does its own feature detection at ITS import time, so
+    ``PRESIDIO_AVAILABLE`` and friends mean exactly what they did before.
 """
 
-from .metrics import (  # Pre-defined common metrics
-    PROMETHEUS_AVAILABLE,
-    Counter,
-    Gauge,
-    Histogram,
-    Info,
-    Summary,
-    active_sessions,
-    case_operations,
-    get_metrics_status,
-    is_metrics_active,
-    knowledge_queries,
-    llm_call_tokens,
-    llm_cost_usd,
-    llm_latency,
-    llm_provider_calls,
-    llm_requests,
-    llm_tokens,
-    llm_unpriced_calls,
-    request_counter,
-    request_duration,
-    sla_active_breaches,
-    sla_availability_ratio,
-    sla_error_rate_ratio,
-    sla_response_time_p95_seconds,
-    sla_status,
-)
-from .observability import OPIK_AVAILABLE, get_tracing_status, is_tracing_active, track
-from .security import PRESIDIO_AVAILABLE, PIIRedactor, get_pii_redaction_status
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # static analysis only — never executed at runtime
+    from .metrics import (
+        PROMETHEUS_AVAILABLE,
+        Counter,
+        Gauge,
+        Histogram,
+        Info,
+        Summary,
+        active_sessions,
+        case_operations,
+        get_metrics_status,
+        is_metrics_active,
+        knowledge_queries,
+        llm_call_tokens,
+        llm_cost_usd,
+        llm_latency,
+        llm_provider_calls,
+        llm_requests,
+        llm_tokens,
+        llm_unpriced_calls,
+        request_counter,
+        request_duration,
+        sla_active_breaches,
+        sla_availability_ratio,
+        sla_error_rate_ratio,
+        sla_response_time_p95_seconds,
+        sla_status,
+    )
+    from .observability import (
+        OPIK_AVAILABLE,
+        get_tracing_status,
+        is_tracing_active,
+        track,
+    )
+    from .security import (
+        PRESIDIO_AVAILABLE,
+        PIIRedactor,
+        get_pii_redaction_status,
+    )
+
+# Which submodule owns each re-exported name. Kept exhaustive against
+# ``__all__`` by tests/unit/infrastructure/test_shims_lazy_imports.py, which
+# fails if a name is added to one and not the other.
+_EXPORTS_BY_SUBMODULE = {
+    "metrics": (
+        "PROMETHEUS_AVAILABLE",
+        "Counter",
+        "Gauge",
+        "Histogram",
+        "Info",
+        "Summary",
+        "active_sessions",
+        "case_operations",
+        "get_metrics_status",
+        "is_metrics_active",
+        "knowledge_queries",
+        "llm_call_tokens",
+        "llm_cost_usd",
+        "llm_latency",
+        "llm_provider_calls",
+        "llm_requests",
+        "llm_tokens",
+        "llm_unpriced_calls",
+        "request_counter",
+        "request_duration",
+        "sla_active_breaches",
+        "sla_availability_ratio",
+        "sla_error_rate_ratio",
+        "sla_response_time_p95_seconds",
+        "sla_status",
+    ),
+    "observability": (
+        "OPIK_AVAILABLE",
+        "get_tracing_status",
+        "is_tracing_active",
+        "track",
+    ),
+    "security": (
+        "PRESIDIO_AVAILABLE",
+        "PIIRedactor",
+        "get_pii_redaction_status",
+    ),
+}
+
+_SUBMODULE_BY_EXPORT = {
+    name: submodule
+    for submodule, names in _EXPORTS_BY_SUBMODULE.items()
+    for name in names
+}
+
+
+def __getattr__(name: str):
+    """Resolve a re-exported shim name by importing only its own submodule."""
+    submodule = _SUBMODULE_BY_EXPORT.get(name)
+    if submodule is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    from importlib import import_module
+
+    value = getattr(import_module(f".{submodule}", __name__), name)
+    # Cache on the package so repeat access skips this path entirely.
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list:
+    return sorted(__all__)
+
 
 __all__ = [
     # Observability exports
