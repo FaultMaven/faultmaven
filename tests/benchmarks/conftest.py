@@ -17,6 +17,11 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseState,
+    InvestigationStrategy,
+)
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
@@ -79,8 +84,67 @@ async def benchmark_session(
         yield session
 
 
+@pytest.fixture(scope="session")
+def warm_repository_paths():
+    """Pay one-time initialisation cost OUTSIDE every timed window.
+
+    `SQLiteCaseRepository.save()` lazily imports
+    `faultmaven.core.investigation.terminal_transitions`, which transitively
+    executes `core.investigation.__init__` -> `milestone_engine` ->
+    `prompts.context_builder` -> `core.preprocessing.vector_storage` ->
+    `infrastructure.model_cache` -> `sentence_transformers`. Measured on the
+    first save in a process: 7117.6ms cold vs 4.6ms warm — a 1532x ratio.
+
+    Whichever benchmark happened to run first therefore timed an import
+    chain rather than the operation it names, and asserted a latency
+    threshold against it. That is how
+    `test_case_operations.py::test_single_case_creation_latency` failed at
+    1165.9ms against its 1000ms target while the real steady-state cost of
+    the write is ~4.6ms — the threshold sits *below* the import cost, so it
+    could only ever flap, never measure.
+
+    Requested by the repository fixtures rather than being autouse: it must
+    NOT run for `test_memory_usage.py::test_memory_usage_baseline`, which
+    takes no fixtures precisely so it can sample a clean process RSS. This
+    chain costs ~1.1GB resident against that test's 1500MB assertion.
+
+    This warms the import chain and SQLAlchemy/aiosqlite statement setup on a
+    throwaway engine, so it perturbs no benchmark's own state. Deliberately a
+    *synchronous* fixture driving its own loop via `asyncio.run`: a
+    session-scoped async fixture would need a session-scoped pytest-asyncio
+    runner and raises ScopeMismatch against the function-scoped default.
+    """
+
+    async def _warm() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            SessionLocal = async_sessionmaker(
+                engine, class_=AsyncSession, expire_on_commit=False
+            )
+            async with SessionLocal() as session:
+                await SQLiteCaseRepository(session).save(
+                    Case(
+                        case_id=generate_case_id(),
+                        user_id="warmup-user",
+                        organization_id="warmup-org",
+                        title="Warm-up",
+                        description="Discarded write that absorbs one-time init.",
+                        state=CaseState.INQUIRY,
+                        investigation_strategy=InvestigationStrategy.POST_MORTEM,
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_warm())
+
+
 @pytest.fixture
-async def case_repository(benchmark_session) -> SQLiteCaseRepository:
+async def case_repository(
+    benchmark_session, warm_repository_paths
+) -> SQLiteCaseRepository:
     """Create case repository for benchmarks."""
     return SQLiteCaseRepository(benchmark_session)
 
@@ -97,7 +161,7 @@ async def case_repository(benchmark_session) -> SQLiteCaseRepository:
 
 @pytest.fixture
 async def investigation_session_repository(
-    benchmark_session,
+    benchmark_session, warm_repository_paths
 ) -> DatabaseInvestigationSessionRepository:
     """Create investigation session repository for benchmarks."""
     return DatabaseInvestigationSessionRepository(benchmark_session)
@@ -105,7 +169,7 @@ async def investigation_session_repository(
 
 @pytest.fixture
 async def knowledge_item_repository(
-    benchmark_session,
+    benchmark_session, warm_repository_paths
 ) -> DatabaseKnowledgeItemRepository:
     """Create knowledge item repository for benchmarks."""
     return DatabaseKnowledgeItemRepository(benchmark_session)
