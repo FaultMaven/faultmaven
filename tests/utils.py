@@ -260,7 +260,7 @@ def make_org_knowledge_item(
     organization_id: Optional[str] = None,
     title: str = "Sample Knowledge Item",
     content: str = "This is sample content for the knowledge item.",
-    item_type: 'Optional["KnowledgeItemType"]' = None,
+    item_type: "Optional[KnowledgeItemType]" = None,
     category: Optional[str] = None,
     tags: Optional[List[str]] = None,
     embedding_vector: Optional[List[float]] = None,

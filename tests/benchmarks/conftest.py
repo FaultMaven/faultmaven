@@ -108,6 +108,12 @@ def warm_repository_paths():
         warm saves        3.24 ms (median)
         ratio             195x
 
+    (That specific chain is severed by #849/#852, which makes the import cheap
+    at the source. This fixture stays useful regardless: it also absorbs
+    SQLAlchemy/aiosqlite first-statement setup, and it keeps any future
+    one-time cost out of the timed windows rather than relying on the import
+    graph staying light.)
+
     Whichever benchmark happened to run first therefore timed an import chain
     rather than the operation it names, and asserted a latency threshold
     against it. That is how
@@ -121,6 +127,15 @@ def warm_repository_paths():
     question of not changing what a test measures, not of magnitude — the chain
     adds ~50MB here, comfortably inside that test's 1500MB assertion (~432MB is
     already resident from `tests/conftest.py`'s own imports).
+
+    Coverage caveat: `test_case_service_operations.py` and
+    `test_investigation_session_service_operations.py` define their own
+    repository fixtures that do NOT request this one. Under the full-suite
+    invocation CI uses, alphabetical collection runs the warmed
+    `test_case_operations.py` first, so they are warm by the time they execute.
+    Run standalone they are not, and the cold import lands in the first
+    iteration of their timed loops — absorbed by their p95 assertions rather
+    than failing. Point those fixtures here too if that ever stops holding.
 
     This warms the import chain and SQLAlchemy/aiosqlite statement setup on a
     throwaway engine, so it perturbs no benchmark's own state. Deliberately a
