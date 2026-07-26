@@ -13,6 +13,7 @@ either signing algorithm and for every way "no organization" can be spelled.
 Single-tenant keeps the sentinel, where it is the correct answer.
 """
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import jwt
@@ -31,12 +32,18 @@ from faultmaven.providers.tenancy import factory as tenancy_factory
 
 REAL_ORG = "22222222-2222-2222-2222-222222222222"
 
-# Every shape an "org-less" user arrives in: explicit None, empty string, and a
-# user object that never had the attribute at all.
+# Every shape an "org-less" user arrives in. The sentinel spellings matter most:
+# under multi the Standalone org is not a tenant, and `DevUser.__post_init__`
+# stamps it on every user `DatabaseUserStore` loads — which is exactly what the
+# `/auth/refresh` and OAuth token-exchange paths hand to the generators.
 ORGLESS_USERS = [
     pytest.param(lambda: _user(organization_id=None), id="org-none"),
     pytest.param(lambda: _user(organization_id=""), id="org-empty-string"),
     pytest.param(lambda: _user_without_org_attribute(), id="org-attribute-absent"),
+    pytest.param(
+        lambda: _user(organization_id=STANDALONE_ORG_ID), id="org-sentinel-valued"
+    ),
+    pytest.param(lambda: _devuser_from_user_store(), id="org-via-DatabaseUserStore"),
 ]
 
 
@@ -48,6 +55,31 @@ def _user(*, organization_id):
     user.roles = ["user"]
     user.organization_id = organization_id
     return user
+
+
+def _devuser_from_user_store():
+    """A DevUser built by the *real* ``DatabaseUserStore`` conversion.
+
+    This is the live `/auth/refresh` and OAuth token-exchange shape: the
+    repository model carries no organization at all, so `DevUser.__post_init__`
+    invents the Standalone sentinel. Constructing it through the real converter
+    (rather than asserting the sentinel by hand) means this case keeps tracking
+    that path if the conversion changes.
+    """
+    from faultmaven.infrastructure.auth.database_user_store import DatabaseUserStore
+
+    repo_user = MagicMock()
+    repo_user.user_id = "user-1"
+    repo_user.username = "sso-user"
+    repo_user.email = "sso-user@example.com"
+    repo_user.display_name = "SSO User"
+    repo_user.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    repo_user.is_active = True
+    repo_user.roles = ["user"]
+    repo_user.account_kind = "individual"
+
+    store = DatabaseUserStore.__new__(DatabaseUserStore)
+    return store._user_to_devuser(repo_user)
 
 
 def _user_without_org_attribute():
