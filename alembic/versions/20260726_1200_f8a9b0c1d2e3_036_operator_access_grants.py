@@ -10,18 +10,23 @@ target (``target_case_id`` + ``target_organization_id``, the latter also naming
 the organization the request rebinds its RLS scope to).
 
 **Not append-only, but every widening mutation is refused.** Revocation and
-approval are real UPDATEs, so a blanket no-UPDATE trigger would be wrong. Three
-narrower guards do the job instead:
+approval are real UPDATEs, so a blanket no-UPDATE trigger would be wrong. Four
+narrower guards do the job instead. The rule they collectively enforce is that
+**access can only ever be narrowed in place**; widening it requires a new row,
+with a fresh justification and a fresh audit trail.
 
-- The columns that constitute the justification — who, which case, which tenant,
-  why, when created, when it expires — are pinned outright. An operator can end
-  their own access early; they cannot rewrite why they took it or extend how
-  long they were allowed to. Needing longer means a new grant, with a fresh
-  reason and a fresh audit row.
+- Every column except the two approval/revocation state pairs is **pinned
+  outright** — who, which case, which tenant, why, when created, when it
+  expires, and the two denormalised descriptors. An operator can end their own
+  access early; they cannot rewrite why they took it or extend how long they
+  were allowed to.
 - Revocation is **monotonic**: once ``revoked_at`` is set it cannot be cleared
-  or moved. Leaving it freely mutable would make the one update the database
-  permits the one that brings a revoked grant back to life for the rest of its
-  TTL — the only mutation here that widens access.
+  or moved. Left freely mutable, the one update the database permits would be
+  the one that brings a revoked grant back to life for the rest of its TTL.
+- Denial is **final**: ``denied → approved`` is refused. ``approval_state``
+  cannot simply be pinned — ``pending → approved`` is the legitimate widening
+  the approval seam exists to perform — but a customer who declined an access
+  request must not have that decision reversed in place.
 - DELETE and TRUNCATE are both rejected. TRUNCATE needs its own statement
   trigger because row triggers do not fire on it, which would otherwise let the
   whole table — the evidence of why every recorded access was authorised — be
@@ -63,17 +68,26 @@ _GRANT_REVOCATION_MONOTONIC_MESSAGE = (
     "operator_access_grants revocation is monotonic; a revoked grant "
     "cannot be un-revoked"
 )
+_GRANT_DENIAL_FINAL_MESSAGE = (
+    "operator_access_grants denial is final; a denied grant cannot be approved"
+)
 
 # The columns a revoke/approve must never touch. Changing any of them would
-# rewrite the justification an audit row was taken under.
+# rewrite the justification an audit row was taken under. ``operator_username``
+# and ``deployment_mode`` are here because they are set once at creation and
+# never legitimately change — pinning them costs nothing and keeps "revocation
+# and approval are the only permitted mutations" literally true rather than
+# true-of-the-fields-that-matter.
 _IMMUTABLE_COLUMNS = (
     "grant_id",
     "operator_user_id",
+    "operator_username",
     "target_case_id",
     "target_organization_id",
     "reason",
     "created_at",
     "expires_at",
+    "deployment_mode",
 )
 
 # Revocation columns are mutable exactly once, NULL → set. They cannot be in
@@ -83,6 +97,19 @@ _IMMUTABLE_COLUMNS = (
 # the database permits. The predicate below therefore pins them from the moment
 # they are set, so revocation only ever moves in the safe direction.
 _REVOCATION_COLUMNS = ("revoked_at", "revoked_by")
+
+# A denial is terminal, for the same reason a revocation is. ``pending →
+# approved`` is the legitimate widening the approval seam exists to perform, so
+# ``approval_state`` cannot simply be pinned — but ``denied → approved`` is a
+# widening the database must refuse: a customer who declined an access request
+# must not have that decision reversed in place. Re-asking means a new grant
+# with a fresh reason, which is the same rule the TTL follows.
+#
+# Enforced now rather than left to the approval workstream: shipping the state
+# machine early is only worth it if adding customer approval stays a
+# *transition* rather than a schema change, and a guard bolted on later would be
+# exactly the schema change that claim promises to avoid.
+_DENIED_STATE = "denied"
 
 
 def upgrade() -> None:
@@ -237,6 +264,25 @@ def upgrade() -> None:
             EXECUTE FUNCTION operator_access_grants_revocation_final()
             """)
 
+        # A denial is terminal too — see _DENIED_STATE.
+        op.execute(f"""
+            CREATE OR REPLACE FUNCTION operator_access_grants_denial_final()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                RAISE EXCEPTION '{_GRANT_DENIAL_FINAL_MESSAGE}';
+            END;
+            $$ LANGUAGE plpgsql;
+            """)
+        op.execute(f"""
+            CREATE TRIGGER operator_access_grants_no_undeny
+            BEFORE UPDATE ON operator_access_grants
+            FOR EACH ROW WHEN (
+                OLD.approval_state = '{_DENIED_STATE}'
+                AND NEW.approval_state IS DISTINCT FROM OLD.approval_state
+            )
+            EXECUTE FUNCTION operator_access_grants_denial_final()
+            """)
+
         # Row triggers do not fire on TRUNCATE, so without this the whole grant
         # table — the evidence of why every recorded access was authorised —
         # could be erased trigger-free. Same hole this migration closes for
@@ -282,6 +328,15 @@ def upgrade() -> None:
             FOR EACH ROW WHEN ({revocation_predicate})
             BEGIN SELECT RAISE(ABORT, '{_GRANT_REVOCATION_MONOTONIC_MESSAGE}'); END
             """)
+        op.execute(f"""
+            CREATE TRIGGER operator_access_grants_no_undeny
+            BEFORE UPDATE ON operator_access_grants
+            FOR EACH ROW WHEN (
+                OLD.approval_state = '{_DENIED_STATE}'
+                AND NEW.approval_state IS NOT OLD.approval_state
+            )
+            BEGIN SELECT RAISE(ABORT, '{_GRANT_DENIAL_FINAL_MESSAGE}'); END
+            """)
 
 
 def downgrade() -> None:
@@ -300,4 +355,5 @@ def downgrade() -> None:
         op.execute("DROP FUNCTION IF EXISTS operator_access_grants_immutable()")
         op.execute("DROP FUNCTION IF EXISTS operator_access_grants_no_delete_fn()")
         op.execute("DROP FUNCTION IF EXISTS operator_access_grants_revocation_final()")
+        op.execute("DROP FUNCTION IF EXISTS operator_access_grants_denial_final()")
         op.execute("DROP FUNCTION IF EXISTS operator_access_grants_no_truncate_fn()")

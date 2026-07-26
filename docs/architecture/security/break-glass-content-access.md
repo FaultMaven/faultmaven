@@ -193,13 +193,22 @@ the database. The `TRUNCATE` guard is a statement trigger, because row triggers
 do not fire on `TRUNCATE`; without it the append-only claim would hold only
 "given the current GRANTs" rather than absolutely.
 
-The grant table is not append-only — revocation is a real UPDATE — but the
-columns that constitute the justification are:
-`operator_user_id`, `target_case_id`, `target_organization_id`, `reason`,
-`created_at` and `expires_at` are pinned by a trigger, and DELETE is rejected
-outright. Revocation and approval are the only permitted mutations. An operator
-can end their own access early; they cannot rewrite why they took it, or for how
-long they were allowed to.
+The grant table is not append-only — revocation and approval are real UPDATEs —
+but the rule its triggers enforce is that **access can only ever be narrowed in
+place**. Widening it takes a new row, with a fresh justification:
+
+| Mutation | Permitted? |
+|----------|------------|
+| Any column but the approval/revocation pairs | **No** — pinned outright |
+| First revocation (`revoked_at` NULL → set) | Yes — narrowing |
+| Clearing or moving `revoked_at` | **No** — revocation is monotonic |
+| `pending → approved` | Yes — what the approval seam exists to do |
+| `denied → approved` | **No** — a denial is final |
+| DELETE, TRUNCATE | **No** |
+
+An operator can end their own access early; they cannot rewrite why they took
+it, extend how long they were allowed to keep it, or reverse a customer's
+refusal.
 
 The audit row denormalises `reason` and `expires_at` rather than only referencing
 `grant_id`, so the evidence of an access is complete even if the grant row is

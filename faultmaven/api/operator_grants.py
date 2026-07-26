@@ -68,12 +68,12 @@ def validate_identifier(value: str, field_name: str) -> str:
     """
     if not value or not value.strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"{field_name} must not be empty",
         )
     if len(value) > MAX_IDENTIFIER_LENGTH:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"{field_name} exceeds {MAX_IDENTIFIER_LENGTH} characters; "
                 "rejected rather than truncated, which could record access to a "

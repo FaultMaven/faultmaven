@@ -691,11 +691,13 @@ class TestOperatorAccessGrantsImmutability:
     IMMUTABLE_COLUMNS = {
         "grant_id": "'g-other'",
         "operator_user_id": "'op-other'",
+        "operator_username": "'someone.else@example.com'",
         "target_case_id": "'case-other'",
         "target_organization_id": "'org-other'",
         "reason": "'a different justification entirely'",
         "created_at": "datetime('now', '-1 day')",
         "expires_at": "datetime('now', '+30 day')",
+        "deployment_mode": "'standalone'",
     }
 
     @staticmethod
@@ -827,6 +829,72 @@ class TestOperatorAccessGrantsImmutability:
                 "WHERE grant_id='g-1'"
             )
             assert cursor.fetchone() == (1,), f"the grant must stay revoked ({label})"
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize("target", ["auto_approved", "approved", "pending"])
+    def test_a_denied_grant_cannot_be_approved(
+        self, clean_database, database_url, target
+    ):
+        """A denial is final, for the same reason a revocation is.
+
+        ``approval_state`` cannot simply be pinned — ``pending → approved`` is
+        the legitimate widening the approval seam exists to perform — so the
+        guard has to name the direction it refuses. Swept across every state a
+        denial could be flipped into, because the rule is "denial is terminal",
+        not "denial cannot become approved".
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            conn.execute(
+                "UPDATE operator_access_grants SET approval_state='denied' "
+                "WHERE grant_id='g-1'"
+            )
+            conn.commit()
+
+            with pytest.raises(sqlite3.IntegrityError, match="denial is final"):
+                conn.execute(
+                    f"UPDATE operator_access_grants SET approval_state='{target}' "
+                    "WHERE grant_id='g-1'"
+                )
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def test_pending_can_still_be_approved(self, clean_database, database_url):
+        """The approval seam must keep working.
+
+        A guard that pinned ``approval_state`` outright would make the
+        customer-approval workstream a schema change rather than a transition —
+        which is the whole reason the state machine ships now.
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            conn.execute(
+                "UPDATE operator_access_grants SET approval_state='pending' "
+                "WHERE grant_id='g-1'"
+            )
+            conn.execute(
+                "UPDATE operator_access_grants SET approval_state='approved', "
+                "approved_by='customer-admin', approved_at=datetime('now') "
+                "WHERE grant_id='g-1'"
+            )
+            conn.commit()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT approval_state, approved_by FROM operator_access_grants "
+                "WHERE grant_id='g-1'"
+            )
+            assert cursor.fetchone() == ("approved", "customer-admin")
         finally:
             conn.close()
 
