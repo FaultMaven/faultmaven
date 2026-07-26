@@ -27,6 +27,7 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
     KnowledgeItem,
     KnowledgeItemType,
+    KnowledgeScope,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
@@ -56,10 +57,17 @@ def create_sample_item(
     created_at: datetime = None,
     metadata: dict = None,
 ) -> KnowledgeItem:
-    """Create a sample knowledge item for benchmarking."""
+    """Create a sample knowledge item for benchmarking.
+
+    Uses the team scope (an org-owned tier): the methods benchmarked here are
+    org-scoped queries, and global scope is the org-free platform tier (#770)
+    which must not carry an organization_id. Team (not personal) so no
+    users-FK owner row is needed.
+    """
     return KnowledgeItem(
         item_id=item_id or generate_item_id(),
         organization_id=organization_id or generate_org_id(),
+        scope=KnowledgeScope.TEAM,
         title=title,
         content=content,
         item_type=item_type,
