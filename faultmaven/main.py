@@ -206,6 +206,7 @@ from .api.middleware.logging import LoggingMiddleware
 from .api.routes.admin import router as admin_users_router
 from .api.routes.admin_cases import router as admin_cases_router
 from .api.routes.admin_config import router as admin_config_router
+from .api.routes.admin_grants import router as admin_grants_router
 from .api.routes.sessions import router as investigation_sessions_router
 from .infrastructure.observability.tracing import init_opik_tracing
 
@@ -479,6 +480,15 @@ async def lifespan(app: FastAPI):
         )
 
         app.state.operator_audit_repository = SessionlessOperatorAuditRepository()
+
+        # Break-glass grants over Cloud tenant case content (ADR-012 D9, #815).
+        # Same posture as the audit trail above: without it the content path
+        # fails closed rather than degrading to standing access.
+        from faultmaven.infrastructure.persistence.sessionless_operator_grant_repository import (  # noqa: E501
+            SessionlessOperatorGrantRepository,
+        )
+
+        app.state.operator_grant_repository = SessionlessOperatorGrantRepository()
 
         # Shared Redis client (real Redis in cloud, FakeRedis in standalone).
         # Single source of truth for Redis-dependent middleware (deduplication,
@@ -1325,6 +1335,10 @@ logger.info("✅ Admin configuration endpoints added")
 
 app.include_router(admin_cases_router)  # prefix already set on router: /api/v1/admin
 logger.info("✅ Admin cross-tenant case listing endpoint added")
+
+# prefix already set on router: /api/v1/admin/grants
+app.include_router(admin_grants_router)
+logger.info("✅ Break-glass grant endpoints added")
 
 # OAuth router (only if enabled)
 try:

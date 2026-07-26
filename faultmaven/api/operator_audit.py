@@ -13,6 +13,7 @@ is tracked separately.
 """
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException, status
@@ -45,6 +46,9 @@ async def record_operator_access(
     deployment_mode: str,
     target_organization_id: Optional[str] = None,
     target_case_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    grant_id: Optional[str] = None,
+    expires_at: Optional[datetime] = None,
     details: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Record one operator access, or refuse the request.
@@ -53,6 +57,11 @@ async def record_operator_access(
     logged warning: degrading to "served but unaudited" would silently remove
     the control, and an access with no row behind it is the exact failure a
     compliance reviewer is looking for.
+
+    ``reason``/``grant_id``/``expires_at`` carry break-glass provenance (#815)
+    and are None for ambient access. They are denormalised onto the row rather
+    than left as a reference to the grant, so the evidence of an access stays
+    complete and readable even if the grant row is later lost.
     """
     try:
         await audit_repo.record_access(
@@ -61,6 +70,9 @@ async def record_operator_access(
             operator_username=operator.email,
             target_organization_id=target_organization_id,
             target_case_id=target_case_id,
+            reason=reason,
+            grant_id=grant_id,
+            expires_at=expires_at,
             deployment_mode=deployment_mode,
             details=details,
         )

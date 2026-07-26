@@ -40,12 +40,24 @@ from faultmaven.api.operator_audit import (
     get_operator_audit_repository,
     record_operator_access,
 )
+from faultmaven.api.operator_grants import (
+    OperatorContentAccess,
+    authorize_content_read,
+    bind_grant_org_scope,
+    get_operator_grant_repository,
+    resolved_deployment_mode,
+    validate_identifier,
+)
 from faultmaven.config.settings import get_settings
 from faultmaven.models.api_models import (
+    AdminCaseContentResponse,
     AdminCaseListResponse,
     AdminCaseListResult,
+    AdminCaseMessagesResponse,
     AdminCaseMetadata,
     AdminCaseMetadataListResponse,
+    BreakGlassGrant,
+    CaseDetail,
     CaseListFilter,
     OperatorAccessAuditEntry,
     OperatorAccessAuditListResponse,
@@ -55,6 +67,7 @@ from faultmaven.models.interfaces_operator_audit import (
     IOperatorAuditRepository,
     OperatorAction,
 )
+from faultmaven.models.interfaces_operator_grant import IOperatorGrantRepository
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models import CaseState
 from faultmaven.providers.tenancy.factory import (
@@ -140,15 +153,7 @@ async def list_all_cases(
         audit_repo=audit_repo,
         operator=current_user,
         action=OperatorAction.LIST,
-        # `deployment_mode` is a plain str on some settings paths and a
-        # DeploymentMode member on others, so unwrap it the way `is_cloud`
-        # does. A bare `str()` on the enum member yields
-        # "DeploymentMode.STANDALONE"; these rows are append-only, so that
-        # would leave the system of record permanently holding a value no
-        # `deployment_mode = 'standalone'` query ever matches.
-        deployment_mode=str(
-            getattr(settings.deployment_mode, "value", settings.deployment_mode)
-        ),
+        deployment_mode=resolved_deployment_mode(),
         details={
             "state_filter": state.value if state else None,
             "source_filter": source,
@@ -199,6 +204,147 @@ async def list_all_cases(
         offset=offset,
         has_more=has_more,
     )
+
+
+@router.get("/cases/{case_id}", response_model=AdminCaseContentResponse)
+async def open_case_content(
+    case_id: str,
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
+    case_service: ICaseService = Depends(get_case_service),
+    audit_repo: IOperatorAuditRepository = Depends(get_operator_audit_repository),
+    grant_repo: IOperatorGrantRepository = Depends(get_operator_grant_repository),
+) -> AdminCaseContentResponse:
+    """Open one case's **content** as an operator (ADR-012 D9).
+
+    Standalone serves it under standing access, recorded but not gated. Cloud
+    requires a live break-glass grant naming this case.
+
+    This is a separate endpoint from ``GET /api/v1/cases/{case_id}`` rather than
+    an operator arm on that route's owner ∪ shared-to-my-teams check. That check
+    is the single-case gate transitively guarding reports, exports, analytics and
+    messages, and it runs for every ordinary user request — widening it would
+    widen all of those at once. Keeping the elevated path separate is also what
+    makes the Standalone All Cases view openable (#846) without touching the
+    user-facing route.
+    """
+    access = await _authorize_and_record_content_read(
+        case_id=case_id,
+        operator=current_user,
+        audit_repo=audit_repo,
+        grant_repo=grant_repo,
+        details={"surface": "case_detail"},
+    )
+
+    # ``user_id=None`` drops the owner ∪ shared check in the service: this is the
+    # operator read, authorized above and already recorded. It is the only place
+    # that is true.
+    case = await case_service.get_case(case_id)
+    if not case:
+        # Also the honest answer when a grant names a case that does not exist,
+        # or one that belongs to a different organization than the grant claimed:
+        # after the rebind the row is simply not visible. The failed attempt is
+        # already in the trail.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Case not found"
+        )
+
+    detail = CaseDetail.from_case(case)
+    detail.shared_team_ids = await case_service.get_case_team_ids(case_id)
+    return AdminCaseContentResponse(
+        access=access.access,
+        grant=BreakGlassGrant.from_domain(access.grant) if access.grant else None,
+        case=detail,
+    )
+
+
+@router.get("/cases/{case_id}/messages", response_model=AdminCaseMessagesResponse)
+async def open_case_transcript(
+    case_id: str,
+    current_user: AuthenticatedUser = Depends(require_platform_admin),
+    case_service: ICaseService = Depends(get_case_service),
+    audit_repo: IOperatorAuditRepository = Depends(get_operator_audit_repository),
+    grant_repo: IOperatorGrantRepository = Depends(get_operator_grant_repository),
+    limit: int = Query(50, ge=1, le=100, description="Messages per page"),
+    offset: int = Query(0, ge=0, description="Number of messages to skip"),
+) -> AdminCaseMessagesResponse:
+    """Open one case's **transcript** as an operator (ADR-012 D9).
+
+    Same gate, same audit action and same envelope as the case-detail read: a
+    transcript is content by any reading of D9, and splitting the two surfaces
+    across different rules would let one of them drift.
+    """
+    access = await _authorize_and_record_content_read(
+        case_id=case_id,
+        operator=current_user,
+        audit_repo=audit_repo,
+        grant_repo=grant_repo,
+        details={"surface": "transcript", "limit": limit, "offset": offset},
+    )
+
+    # Existence is re-established through the same operator read the detail
+    # endpoint uses, so a transcript cannot be fetched for a case the rebound
+    # scope cannot see.
+    case = await case_service.get_case(case_id)
+    if not case:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Case not found"
+        )
+
+    messages = await case_service.get_case_messages_enhanced(
+        case_id=case_id, limit=limit, offset=offset, include_debug=False
+    )
+    return AdminCaseMessagesResponse(
+        access=access.access,
+        grant=BreakGlassGrant.from_domain(access.grant) if access.grant else None,
+        messages=messages,
+    )
+
+
+async def _authorize_and_record_content_read(
+    case_id: str,
+    operator: AuthenticatedUser,
+    audit_repo: IOperatorAuditRepository,
+    grant_repo: IOperatorGrantRepository,
+    details: dict,
+) -> OperatorContentAccess:
+    """Gate, record, and re-scope — in that order — for one content read.
+
+    The order is the point:
+
+    1. **Validate** the path id, so an over-long value is rejected rather than
+       truncated into an immutable audit row naming a different, real case.
+    2. **Authorize**, so an ungranted read never reaches the trail as though it
+       had happened.
+    3. **Record**, before any content is served, failing the request closed if
+       the record cannot be written.
+    4. **Rebind** the RLS scope to the granted organization, so the read that
+       follows is bound to that tenant rather than escaping the policy.
+    """
+    validate_identifier(case_id, "case_id")
+
+    access = await authorize_content_read(
+        grant_repo=grant_repo, operator=operator, case_id=case_id
+    )
+
+    grant = access.grant
+    await record_operator_access(
+        audit_repo=audit_repo,
+        operator=operator,
+        action=OperatorAction.CONTENT_OPEN,
+        deployment_mode=resolved_deployment_mode(),
+        target_organization_id=access.target_organization_id,
+        target_case_id=case_id,
+        # Denormalised from the grant rather than left as a join: the audit row
+        # is the evidence, and it must stay complete and readable even if the
+        # grant row is ever lost.
+        reason=grant.reason if grant else None,
+        grant_id=grant.grant_id if grant else None,
+        expires_at=grant.expires_at if grant else None,
+        details={**details, "access": access.access},
+    )
+
+    bind_grant_org_scope(access)
+    return access
 
 
 @router.get("/audit/operator-access", response_model=OperatorAccessAuditListResponse)
