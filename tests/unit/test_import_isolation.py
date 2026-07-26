@@ -34,11 +34,13 @@ def _run_probe(body: str) -> object:
     app logs on import — scraping stdout would break the moment anything (a
     logger, an atexit hook, a background thread) prints after the payload.
 
-    The child inherits the real environment with PYTHONPATH prepended, rather
-    than being handed a hand-built one: replacing os.environ wholesale drops
-    HOME and any CI-supplied DATABASE_URL / AUTH_MODE / JWT_SECRET_KEY, and
-    hardcoding PATH is not portable. It runs in a temporary cwd so that
-    pydantic-settings cannot pick up the developer's `.env`.
+    The child inherits the real environment with PYTHONPATH *set* (not
+    prepended — any inherited PYTHONPATH is overwritten, which is fine because
+    every environment this runs in installs the package itself), rather than
+    being handed a hand-built one: replacing os.environ wholesale drops HOME and
+    any CI-supplied DATABASE_URL / AUTH_MODE / JWT_SECRET_KEY, and hardcoding
+    PATH is not portable. It runs in a temporary cwd so that pydantic-settings
+    cannot pick up the developer's `.env`.
     """
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "probe.json"
@@ -84,19 +86,39 @@ def _modules_after_importing(*module_names: str) -> set:
 
 
 def _submodules_failing_attribute_access(package: str) -> list:
-    """Return every submodule of `package` not reachable as an attribute."""
+    """Return every submodule of `package` not reachable as an attribute.
+
+    Discovery unions `pkgutil.iter_modules` with a directory scan of
+    ``__path__``. `iter_modules` does not report namespace packages — a
+    directory with no ``__init__.py`` — so on its own it silently skips
+    `core.investigation.prompts`, which is importable and *was* attribute-
+    reachable before these packages went lazy. Missing it would leave the one
+    submodule most likely to regress uncovered.
+    """
     body = f"""
-import json, pkgutil, importlib
+import json, pkgutil, importlib, os
 pkg = importlib.import_module({package!r})
+names = {{info.name for info in pkgutil.iter_modules(pkg.__path__)}}
+for entry in pkg.__path__:
+    for child in os.listdir(entry):
+        if child.startswith(('_', '.')):
+            continue
+        if os.path.isdir(os.path.join(entry, child)):
+            names.add(child)          # includes namespace subpackages
 failed = []
-for info in pkgutil.iter_modules(pkg.__path__):
+for name in sorted(names):
     try:
-        getattr(pkg, info.name)
+        getattr(pkg, name)
     except Exception as exc:
-        failed.append(f"{{info.name}} ({{type(exc).__name__}})")
-open(OUT, 'w').write(json.dumps(sorted(failed)))
+        failed.append(f"{{name}} ({{type(exc).__name__}})")
+open(OUT, 'w').write(json.dumps({{"checked": sorted(names), "failed": failed}}))
 """
-    return _run_probe(body)
+    result = _run_probe(body)
+    assert result["checked"], (
+        f"submodule discovery for {package} found nothing — the sweep would "
+        "pass vacuously. Check __path__ handling."
+    )
+    return result["failed"]
 
 
 # The two imports a case write performs: the repository module itself, then the

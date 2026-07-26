@@ -87,6 +87,11 @@ def __getattr__(name: str):
 
 
 def __dir__() -> list:
+    # `iter_modules` does not report namespace packages (a directory with no
+    # __init__.py), so `prompts` is absent here even though `getattr` resolves
+    # it via the fallback above. Introspection-only gap, deliberately not worth
+    # a directory scan on every dir() call; the guard test does scan, so the
+    # attribute itself stays covered.
     from pkgutil import iter_modules
 
     return sorted(set(__all__) | {m.name for m in iter_modules(__path__)})
