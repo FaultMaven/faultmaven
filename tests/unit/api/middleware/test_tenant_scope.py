@@ -112,6 +112,37 @@ async def test_multi_tenant_missing_org_fails_closed(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_multi_tenant_sentinel_org_claim_fails_closed(monkeypatch):
+    """A token *claiming* the Standalone org is refused under multi.
+
+    Under multi the sentinel is not a tenant — it identifies the single-tenant
+    deployment, and migration 033 keys the global-KB write policy on it. Any
+    user arriving with it carries an invented default (``DevUser.__post_init__``
+    stamps it on every ``DatabaseUserStore`` load), so accepting it would pool
+    tenants *and* grant global-KB write. Enforced here so the guarantee does not
+    depend on every token-minting path getting it right.
+    """
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
+    )
+    auth_service = AsyncMock()
+    auth_service.extract_user_from_token_with_revocation_check.return_value = _user(
+        STANDALONE_ORG_ID
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await bind_request_org_context(
+            authorization="Bearer sentinel-org-token", auth_service=auth_service
+        )
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_multi_tenant_no_token_binds_unscoped_org(monkeypatch):
     """Unauthenticated (public) requests are bound to the empty non-org: they

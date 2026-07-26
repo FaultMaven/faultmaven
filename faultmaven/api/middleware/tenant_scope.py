@@ -96,9 +96,14 @@ async def bind_request_org_context(
         set_current_org_id(_UNSCOPED_ORG)
         return
 
-    if not user.organization_id:
+    if not user.organization_id or user.organization_id == STANDALONE_ORG_ID:
         # Fail closed: a verified user without an org must never fall through to
-        # the contextvar's Standalone default under multi-tenant.
+        # the contextvar's Standalone default under multi-tenant. The sentinel is
+        # refused alongside the empty claim because under multi it is not a
+        # tenant — it identifies the single-tenant deployment, and migration 033
+        # keys the global-KB write policy on it. Enforcing it here (not only
+        # where the claim is minted) keeps the guarantee independent of every
+        # token-minting path, present and future.
         logger.warning(
             "Rejecting multi-tenant request: user %s carries no organization",
             user.user_id,

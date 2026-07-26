@@ -22,6 +22,58 @@ from faultmaven.modules.auth.domain.models.user import User
 
 logger = logging.getLogger(__name__)
 
+#: Emitted for an org-less user under multi-tenant. Falsy, so
+#: ``bind_request_org_context`` refuses the request instead of binding a tenant.
+_NO_ORG_CLAIM = ""
+
+
+def resolve_organization_claim(user: User) -> str:
+    """Resolve a user's ``organization_id`` claim without inventing a tenant.
+
+    Single-tenant: an org-less user *is* the Standalone deployment's sole tenant,
+    so the sentinel org is the correct claim.
+
+    Multi-tenant: the Standalone sentinel is **not a tenant** — it identifies the
+    single-tenant deployment, and migration 033 keys the global-KB write policy
+    on it. So under multi it is rejected wherever it appears, whether the user
+    arrived with no organization at all or carrying a sentinel some upstream
+    default invented (``DevUser.__post_init__`` stamps it on every user the
+    ``DatabaseUserStore`` loads, since the repository model has no org field).
+    Either way the claim is left empty, so the request fails closed at
+    ``bind_request_org_context`` rather than silently pooling tenants.
+
+    Args:
+        user: User the token is being minted for.
+
+    Returns:
+        The organization id to put in the claim, or ``""`` when the deployment is
+        multi-tenant and the user carries no organization of its own.
+    """
+    # Deferred: tenancy config pulls in settings, which must not be imported at
+    # auth-module import time.
+    from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
+        requested_tenant_provider,
+    )
+    from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+
+    organization_id = getattr(user, "organization_id", None)
+
+    if requested_tenant_provider() != BUILTIN_MULTI:
+        # Single-tenant: the sentinel is the right answer for an org-less user.
+        return organization_id or SingleTenantProvider.DEFAULT_ORG_ID
+
+    if not organization_id or organization_id == SingleTenantProvider.DEFAULT_ORG_ID:
+        logger.warning(
+            "Minting a token with no organization claim: user %s carries no "
+            "organization under multi-tenant (%s); the request will be refused.",
+            getattr(user, "user_id", "<unknown>"),
+            "sentinel org" if organization_id else "no org",
+        )
+        return _NO_ORG_CLAIM
+
+    return organization_id
+
 
 class IJWTTokenGenerator(ABC):
     """Interface for JWT token generation and validation.
@@ -167,22 +219,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         jti = str(uuid.uuid4())
 
-        # Determine organization_id — the claim is guaranteed non-empty in both
-        # modes (iam-design.md), so mirror the HS256 generator and fall back to
-        # the single-tenant default rather than emitting an empty string.
-        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
-
-        organization_id = (
-            getattr(user, "organization_id", None)
-            or SingleTenantProvider.DEFAULT_ORG_ID
-        )
-
-        # Log when using default organization_id (helps debugging)
-        if not getattr(user, "organization_id", None):
-            logger.debug(
-                "Using default organization_id for user without organization",
-                extra={"user_id": user.user_id, "organization_id": organization_id},
-            )
+        organization_id = resolve_organization_claim(user)
 
         payload = {
             "sub": user.user_id,
@@ -617,20 +654,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         jti = str(uuid.uuid4())
 
         # Build payload matching iam-design.md spec
-        # Determine organization_id (use user's org or default for local mode)
-        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
-
-        organization_id = (
-            getattr(user, "organization_id", None)
-            or SingleTenantProvider.DEFAULT_ORG_ID
-        )
-
-        # Log when using default organization_id (helps debugging)
-        if not getattr(user, "organization_id", None):
-            logger.debug(
-                "Using default organization_id for user without organization",
-                extra={"user_id": user.user_id, "organization_id": organization_id},
-            )
+        organization_id = resolve_organization_claim(user)
 
         payload = {
             "sub": user.user_id,  # Subject (user ID)
