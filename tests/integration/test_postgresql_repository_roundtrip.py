@@ -785,3 +785,55 @@ async def test_list_pagination_and_include_empty_soundness_pg(pg_repo):
         offset += 3
     assert len(seen) == 4
     assert all(c.current_turn > 0 for c in seen)
+
+
+@pytest.mark.asyncio
+async def test_message_authorship_round_trips_on_both_read_paths(pg_repo):
+    """Per-turn authorship survives PostgreSQL (ADR-013 D4; ADR-011 D5).
+
+    PostgreSQL reads messages two different ways — `get_messages()` runs a plain
+    SELECT, while `get()` aggregates them with `json_agg(jsonb_build_object(...))`
+    inside the big case query. Both dropped `author_id`, and neither is exercised
+    by the SQLite suite, so both are asserted here.
+    """
+    session = pg_repo.db
+    org_id = f"org_{uuid4().hex[:8]}"
+    owner_id = f"user_{uuid4().hex[:8]}"
+    teammate_id = f"user_{uuid4().hex[:8]}"
+    await seed_organizations(session, [org_id])
+    await seed_users(session, [owner_id, teammate_id])
+    case = _make_case(org_id, owner_id)
+    await pg_repo.save(case)
+
+    # The three author states a team-shared transcript produces: the owner, a
+    # teammate reaching the case through a share, and an unauthored assistant turn.
+    for idx, (role, content, author_id) in enumerate(
+        [
+            ("user", "owner asks", owner_id),
+            ("user", "teammate adds context", teammate_id),
+            ("assistant", "here is the analysis", None),
+        ]
+    ):
+        assert await pg_repo.add_message(
+            case.case_id,
+            {
+                "message_id": f"msg_{uuid4().hex[:12]}",
+                "turn_number": idx,
+                "role": role,
+                "content": content,
+                "created_at": datetime.now(timezone.utc),
+                "author_id": author_id,
+            },
+        )
+
+    expected = {
+        "owner asks": owner_id,
+        "teammate adds context": teammate_id,
+        "here is the analysis": None,
+    }
+
+    via_get_messages = await pg_repo.get_messages(case.case_id)
+    assert {m["content"]: m["author_id"] for m in via_get_messages} == expected
+
+    reloaded = await pg_repo.get(case.case_id)
+    assert {m.get("content"): m.get("author_id") for m in reloaded.messages} == expected

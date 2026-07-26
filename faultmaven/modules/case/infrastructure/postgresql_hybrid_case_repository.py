@@ -485,7 +485,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             'content', m.content,
                             'created_at', m.created_at,
                             'token_count', m.token_count,
-                            'metadata', m.metadata
+                            'metadata', m.metadata,
+                            'author_id', m.author_id
                         ) ORDER BY m.created_at ASC, m.turn_number ASC)
                         FROM case_messages m
                         WHERE m.case_id = c.case_id
@@ -2743,9 +2744,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             query = text(f"""
                 INSERT INTO case_messages (
-                    message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata
+                    message_id, case_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :created_at, :token_count, {self._cast('metadata')}
+                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :author_id, :created_at, :token_count, {self._cast('metadata')}
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
                     turn_number = EXCLUDED.turn_number,
@@ -2755,6 +2756,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     token_count = EXCLUDED.token_count,
                     metadata = EXCLUDED.metadata
             """)
+            # author_id is deliberately absent from DO UPDATE SET: authorship is
+            # write-once. A re-save whose in-memory dict happened to lack the
+            # field would otherwise NULL out an author already captured, which is
+            # exactly the unrecoverable loss this column exists to prevent.
 
             await self.db.execute(
                 query,
@@ -2765,6 +2770,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
+                    "author_id": msg.get("author_id"),
                     "created_at": self._as_datetime(
                         msg.get("created_at"), datetime.now(timezone.utc)
                     ),
