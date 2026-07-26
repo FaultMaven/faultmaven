@@ -2093,3 +2093,72 @@ class TestGetEvidenceSize:
         tool_context.in_memory_case.evidence = []
         size = await service._get_evidence_size("ev_test", tool_context)
         assert size == 0
+
+
+class TestTurnAuthorship:
+    """The agent-execution path must attribute the user turn it persists.
+
+    Repository-level tests cannot catch this: they prove the persistence layer
+    stores `author_id` when given one, not that every caller supplies it. This
+    writer did not, and a missing author is permanently indistinguishable from a
+    pre-migration row (ADR-013 D4 / ADR-011 D5).
+    """
+
+    @pytest.mark.asyncio
+    async def test_user_turn_is_attributed_to_the_acting_principal(
+        self,
+        orchestration_service,
+        mock_session_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+    ):
+        """Attribution follows the session's user, not the case owner.
+
+        The two diverge exactly when team sharing does its job — a teammate
+        drives a case someone else owns — so the fixtures are made to differ.
+        """
+        sample_session.user_id = "user_teammate"
+        assert sample_case.user_id != sample_session.user_id
+
+        mock_session_service.get_session.return_value = sample_session
+        mock_session_service.check_budget_exceeded.return_value = {
+            "is_over_budget": False
+        }
+        mock_session_service.add_execution_to_session.return_value = sample_session
+        mock_case_repo.get.return_value = sample_case
+        mock_case_repo.create_agent_execution.return_value = AgentExecution(
+            execution_id="exec_new",
+            case_id=sample_case.case_id,
+            agent_type=AgentType.INVESTIGATOR,
+            agent_model="test-model",
+        )
+        mock_case_repo.update_agent_execution.return_value = None
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
+
+        async def mock_stream(**kwargs):
+            yield LLMEvent(event_type=LLMEventType.TEXT_CHUNK, content="Test response")
+            yield LLMEvent(
+                event_type=LLMEventType.COMPLETION,
+                content="Test response",
+                metadata={"input_tokens": 100, "output_tokens": 50},
+            )
+
+        orchestration_service._llm_client.stream_completion = mock_stream
+
+        async for _ in orchestration_service.execute_agent(
+            session_id=sample_session.session_id,
+            organization_id=sample_session.organization_id,
+            user_message="What is causing the errors?",
+        ):
+            pass
+
+        persisted = [c.args[1] for c in mock_case_repo.add_message.call_args_list]
+        user_turns = [m for m in persisted if m.get("role") == "user"]
+        assert user_turns, "the user turn was never persisted"
+        assert all(m.get("author_id") == "user_teammate" for m in user_turns)
+
+        # The assistant turn has no human author and must stay unattributed.
+        assistant_turns = [m for m in persisted if m.get("role") == "assistant"]
+        assert assistant_turns, "the assistant turn was never persisted"
+        assert all(m.get("author_id") is None for m in assistant_turns)

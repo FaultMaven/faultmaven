@@ -3268,7 +3268,11 @@ class MilestoneEngine:
                     {
                         "message_id": f"msg_{uuid4().hex[:12]}",
                         "case_id": case.case_id,
-                        "author_id": "system",
+                        # No human wrote this; the role already says "system".
+                        # A sentinel string here would reach clients as a
+                        # non-resolvable principal id now that author_id
+                        # persists (ADR-013 D4: system turns have no author).
+                        "author_id": None,
                         "role": "system",
                         "content": notification_content,
                         "created_at": datetime.now(UTC).isoformat(),
