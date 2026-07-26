@@ -57,11 +57,21 @@ __all__ = [
 
 def __getattr__(name: str):
     """Resolve a re-exported name by importing only its own submodule."""
+    from importlib import import_module
+
+    # The two submodules that used to be imported eagerly. Importing a submodule
+    # binds it on its parent package, so `investigation.milestone_engine` worked
+    # as a side effect of those imports. Resolve them explicitly to keep that
+    # behaviour, and only them — the package's other submodules were never bound
+    # this way, and resolving them now would mask typos.
+    if name in _EXPORTS_BY_SUBMODULE:
+        module = import_module(f".{name}", __name__)
+        globals()[name] = module
+        return module
+
     submodule = _SUBMODULE_BY_EXPORT.get(name)
     if submodule is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-    from importlib import import_module
 
     value = getattr(import_module(f".{submodule}", __name__), name)
     # Cache on the package so repeat access skips this path entirely.

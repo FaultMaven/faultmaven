@@ -161,11 +161,21 @@ _SUBMODULE_BY_EXPORT = {
 
 def __getattr__(name: str):
     """Resolve a re-exported shim name by importing only its own submodule."""
+    from importlib import import_module
+
+    # The submodules themselves. Importing a submodule binds it on its parent
+    # package, so the previous eager re-exports made `shims.metrics` &c. work as
+    # a side effect. Resolve them explicitly to keep that behaviour: exactly
+    # these three names, so parity is preserved without newly resolving
+    # submodules that were never bound before (which would mask typos).
+    if name in _EXPORTS_BY_SUBMODULE:
+        module = import_module(f".{name}", __name__)
+        globals()[name] = module
+        return module
+
     submodule = _SUBMODULE_BY_EXPORT.get(name)
     if submodule is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-    from importlib import import_module
 
     value = getattr(import_module(f".{submodule}", __name__), name)
     # Cache on the package so repeat access skips this path entirely.

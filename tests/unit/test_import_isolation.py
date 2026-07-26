@@ -160,3 +160,33 @@ class TestLazyPackagesStayConsistent:
         module = __import__(module_path, fromlist=["__name__"])
         with pytest.raises(AttributeError):
             module.this_name_does_not_exist
+
+    @pytest.mark.parametrize(
+        "module_path",
+        [
+            "faultmaven.infrastructure.shims",
+            "faultmaven.core.investigation",
+        ],
+    )
+    def test_previously_eager_submodules_stay_attribute_accessible(
+        self, module_path: str
+    ):
+        """`pkg.submodule` must keep working for callers holding only the package.
+
+        Importing a submodule binds it on its parent, so the eager re-exports
+        these packages used to do made `shims.metrics` and
+        `investigation.milestone_engine` reachable as attributes as a side
+        effect. Going lazy silently dropped that until this test pinned it: the
+        `from pkg import submodule` form still worked (the import machinery falls
+        back to a submodule import), so nothing in-tree broke and the loss was
+        invisible.
+        """
+        module = __import__(module_path, fromlist=["_EXPORTS_BY_SUBMODULE"])
+        for submodule_name in module._EXPORTS_BY_SUBMODULE:
+            resolved = getattr(module, submodule_name, None)
+            assert resolved is not None, (
+                f"{module_path}.{submodule_name} is no longer reachable as an "
+                "attribute. The lazy __getattr__ must resolve the submodules it "
+                "used to import eagerly, not just their re-exported names."
+            )
+            assert resolved.__name__ == f"{module_path}.{submodule_name}"
