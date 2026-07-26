@@ -12,8 +12,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from faultmaven.models.api import CaseMessagesResponse
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
@@ -449,6 +450,163 @@ AdminCaseListResult = Annotated[
     Union[AdminCaseListResponse, AdminCaseMetadataListResponse],
     Field(discriminator="view"),
 ]
+
+
+# ============================================================
+# Operator break-glass grants — ADR-012 D9 (#815)
+# ============================================================
+
+# A justification shorter than this is not one. The floor cannot make a reason
+# *meaningful* — nothing at this layer can — but it stops the field degrading
+# into "." or "x", which is the failure mode that makes an audit trail worthless
+# to the reviewer who eventually reads it.
+MIN_GRANT_REASON_LENGTH = 20
+MAX_GRANT_REASON_LENGTH = 2000
+
+# Identifiers are rejected, never clipped, when they exceed their column bound:
+# a >36-character case id truncated to 36 could name a *different, real* case,
+# and the audit row recording it is immutable. See the module docstring of
+# ``api/operator_audit.py``.
+MAX_IDENTIFIER_LENGTH = 36
+
+# Grant windows. The default is one working sitting; the ceiling is short enough
+# that "I still need it" is a fresh decision with a fresh reason rather than an
+# ambient capability. There is no extension path — see the design doc.
+DEFAULT_GRANT_TTL_MINUTES = 60
+MAX_GRANT_TTL_MINUTES = 240
+
+
+class BreakGlassGrantRequest(BaseModel):
+    """Ask for time-boxed access to ONE case's content (ADR-012 D9).
+
+    The organization is supplied by the caller rather than looked up from the
+    case, because under ``TENANT_PROVIDER=multi`` the case row is unreadable
+    until the request has already rebound its RLS scope to that organization.
+    The operator has both identifiers from the metadata list. A wrong pair fails
+    closed on its own — the subsequent read finds nothing and 404s — so the
+    endpoint never has to become an existence oracle for other tenants' cases.
+    """
+
+    case_id: str = Field(
+        min_length=1,
+        max_length=MAX_IDENTIFIER_LENGTH,
+        description="The single case this grant covers",
+    )
+    organization_id: str = Field(
+        min_length=1,
+        max_length=MAX_IDENTIFIER_LENGTH,
+        description="Organization owning the case; the RLS scope the read rebinds to",
+    )
+    reason: str = Field(
+        min_length=MIN_GRANT_REASON_LENGTH,
+        max_length=MAX_GRANT_REASON_LENGTH,
+        description="Why this content must be read. Recorded on every access taken.",
+    )
+    ttl_minutes: int = Field(
+        default=DEFAULT_GRANT_TTL_MINUTES,
+        ge=1,
+        le=MAX_GRANT_TTL_MINUTES,
+        description="How long the grant stays live. Cannot be extended later.",
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_must_have_substance(cls, value: str) -> str:
+        """Reject a reason that only meets the length floor with whitespace."""
+        stripped = value.strip()
+        if len(stripped) < MIN_GRANT_REASON_LENGTH:
+            raise ValueError(
+                f"reason must be at least {MIN_GRANT_REASON_LENGTH} "
+                "non-whitespace characters"
+            )
+        return stripped
+
+
+class BreakGlassGrant(BaseModel):
+    """A grant as the operator surface sees it.
+
+    ``is_live`` is computed server-side and served alongside the raw fields
+    rather than left for the client to derive: approval state, revocation and
+    expiry are three independent ways to stop authorising, and a UI that
+    reimplements that predicate can disagree with the gate that enforces it.
+    """
+
+    grant_id: str
+    operator_user_id: str
+    operator_username: Optional[str] = None
+    target_case_id: str
+    target_organization_id: str
+    reason: str
+    created_at: datetime
+    expires_at: datetime
+    revoked_at: Optional[datetime] = None
+    revoked_by: Optional[str] = None
+    approval_state: str
+    is_live: bool
+    deployment_mode: Optional[str] = None
+
+    @classmethod
+    def from_domain(cls, grant: Any) -> "BreakGlassGrant":
+        """Project an ``OperatorAccessGrant`` onto the API shape."""
+        return cls(
+            grant_id=grant.grant_id,
+            operator_user_id=grant.operator_user_id,
+            operator_username=grant.operator_username,
+            target_case_id=grant.target_case_id,
+            target_organization_id=grant.target_organization_id,
+            reason=grant.reason,
+            created_at=grant.created_at,
+            expires_at=grant.expires_at,
+            revoked_at=grant.revoked_at,
+            revoked_by=grant.revoked_by,
+            approval_state=grant.approval_state.value,
+            is_live=grant.is_live(),
+            deployment_mode=grant.deployment_mode,
+        )
+
+
+class BreakGlassGrantListResponse(BaseModel):
+    """Paginated grants, newest first."""
+
+    grants: List[BreakGlassGrant]
+    total_count: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class _OperatorContentEnvelope(BaseModel):
+    """How an operator content read was authorised.
+
+    Served alongside every operator content response so the client renders what
+    the backend actually did rather than what it infers from its own notion of
+    the deployment — the same anti-drift property as the ``view`` discriminator
+    on the operator case list.
+
+    ``standing`` is the self-hosted posture: the operator and the data
+    controller are the same party, so the read is recorded but not gated.
+    ``break_glass`` means a live grant authorised it, and that grant is named.
+    """
+
+    access: Literal["standing", "break_glass"]
+    grant: Optional[BreakGlassGrant] = None
+
+
+class AdminCaseContentResponse(_OperatorContentEnvelope):
+    """One case's content, opened by an operator (ADR-012 D9)."""
+
+    case: CaseDetail
+
+
+class AdminCaseMessagesResponse(_OperatorContentEnvelope):
+    """One case's transcript, opened by an operator (ADR-012 D9).
+
+    The transcript keeps the exact shape ``GET /cases/{id}/messages`` serves, so
+    the dashboard renders an operator-opened transcript with the same component
+    as an owner-opened one and the two cannot present differently.
+    """
+
+    messages: CaseMessagesResponse
 
 
 # ============================================================

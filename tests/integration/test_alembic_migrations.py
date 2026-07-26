@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "e7f8a9b0c1d2"  # current head (035 — operator access audit)
+HEAD_REVISION = "f8a9b0c1d2e3"  # current head (036 — operator access grants)
 # Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
 # (029) regardless of no-op migrations stacked above it — more robust than a
 # relative "downgrade -1", which follows whatever the current head is.
@@ -143,6 +143,7 @@ EXPECTED_TABLES = [
     "config_overrides",
     "oauth_authorization_codes",
     "operator_access_audit",
+    "operator_access_grants",
     "organization_members",
     "organizations",
     "permissions",
@@ -668,6 +669,300 @@ class TestOperatorAccessAuditAppendOnly:
                 "SELECT COUNT(*) FROM operator_access_audit WHERE operator_user_id='u-1'"
             )
             assert cursor.fetchone()[0] == 1, "the evidence must outlive the account"
+        finally:
+            conn.close()
+
+
+class TestOperatorAccessGrantsImmutability:
+    """A break-glass grant's justification is immutable at the DATABASE (#815).
+
+    Revocation and approval are legitimate UPDATEs, so the table cannot simply
+    be append-only. What must not change is *why* access was taken and *how
+    long* it was allowed: an operator who can widen ``expires_at`` or rewrite
+    ``reason`` after the fact has converted a time-boxed, justified read into
+    whatever the review would find acceptable. These run the real migration and
+    assert the triggers reject those writes.
+    """
+
+    # The columns migration 036 pins, paired with a value that differs from the
+    # one the fixture inserts. Every one of them is swept, because the guarantee
+    # is "the justification cannot be rewritten" — not "these two columns I
+    # happened to test".
+    IMMUTABLE_COLUMNS = {
+        "grant_id": "'g-other'",
+        "operator_user_id": "'op-other'",
+        "operator_username": "'someone.else@example.com'",
+        "target_case_id": "'case-other'",
+        "target_organization_id": "'org-other'",
+        "reason": "'a different justification entirely'",
+        "created_at": "datetime('now', '-1 day')",
+        "expires_at": "datetime('now', '+30 day')",
+        "deployment_mode": "'standalone'",
+    }
+
+    @staticmethod
+    def _insert(conn, grant_id: str = "g-1") -> None:
+        conn.execute(
+            "INSERT INTO operator_access_grants "
+            "(grant_id, operator_user_id, target_case_id, target_organization_id, "
+            " reason, created_at, expires_at, approval_state) "
+            f"VALUES ('{grant_id}', 'op-1', 'case-1', 'org-1', "
+            "'investigating a stuck investigation for the customer', "
+            "datetime('now'), datetime('now', '+1 hour'), 'auto_approved')"
+        )
+        conn.commit()
+
+    @pytest.mark.parametrize("column", sorted(IMMUTABLE_COLUMNS))
+    def test_justification_columns_cannot_be_rewritten(
+        self, clean_database, database_url, column
+    ):
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            new_value = self.IMMUTABLE_COLUMNS[column]
+            with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+                conn.execute(
+                    f"UPDATE operator_access_grants SET {column}={new_value} "
+                    "WHERE grant_id='g-1'"
+                )
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def test_revocation_and_approval_are_permitted(self, clean_database, database_url):
+        """The mutable columns must stay mutable.
+
+        A trigger that rejected every UPDATE would make the grant unrevokable,
+        which removes the operator's ability to end their own access early — a
+        strictly worse posture than the one it was meant to enforce.
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            conn.execute(
+                "UPDATE operator_access_grants SET revoked_at=datetime('now'), "
+                "revoked_by='op-2' WHERE grant_id='g-1'"
+            )
+            conn.execute(
+                "UPDATE operator_access_grants SET approval_state='approved', "
+                "approved_by='op-2', approved_at=datetime('now') "
+                "WHERE grant_id='g-1'"
+            )
+            conn.commit()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT revoked_by, approval_state FROM operator_access_grants "
+                "WHERE grant_id='g-1'"
+            )
+            assert cursor.fetchone() == ("op-2", "approved")
+        finally:
+            conn.close()
+
+    def test_delete_is_rejected(self, clean_database, database_url):
+        """A grant is the evidence of why an access was authorised."""
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            with pytest.raises(sqlite3.IntegrityError, match="cannot be deleted"):
+                conn.execute("DELETE FROM operator_access_grants WHERE grant_id='g-1'")
+            conn.rollback()
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize(
+        "sql,label",
+        [
+            pytest.param(
+                "UPDATE operator_access_grants SET revoked_at=NULL, revoked_by=NULL "
+                "WHERE grant_id='g-1'",
+                "cleared",
+                id="cleared",
+            ),
+            pytest.param(
+                "UPDATE operator_access_grants SET revoked_at=datetime('now', '+1 day') "
+                "WHERE grant_id='g-1'",
+                "moved",
+                id="moved-later",
+            ),
+        ],
+    )
+    def test_a_revoked_grant_cannot_be_un_revoked(
+        self, clean_database, database_url, sql, label
+    ):
+        """Revocation is monotonic, enforced by the database.
+
+        ``revoked_at`` cannot live in the immutable set — revoking would then be
+        impossible — but leaving it freely mutable makes the ONE permitted update
+        the one that *widens* access: clearing it brings a revoked grant back to
+        life for the remainder of its TTL. Nothing above the database would stop
+        that; the repository's read-modify-write guard only covers its own path.
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            conn.execute(
+                "UPDATE operator_access_grants SET revoked_at=datetime('now'), "
+                "revoked_by='op-2' WHERE grant_id='g-1'"
+            )
+            conn.commit()
+
+            with pytest.raises(sqlite3.IntegrityError, match="monotonic"):
+                conn.execute(sql)
+            conn.rollback()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT revoked_at IS NOT NULL FROM operator_access_grants "
+                "WHERE grant_id='g-1'"
+            )
+            assert cursor.fetchone() == (1,), f"the grant must stay revoked ({label})"
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize("target", ["auto_approved", "approved", "pending"])
+    def test_a_denied_grant_cannot_be_approved(
+        self, clean_database, database_url, target
+    ):
+        """A denial is final, for the same reason a revocation is.
+
+        ``approval_state`` cannot simply be pinned — ``pending → approved`` is
+        the legitimate widening the approval seam exists to perform — so the
+        guard has to name the direction it refuses. Swept across every state a
+        denial could be flipped into, because the rule is "denial is terminal",
+        not "denial cannot become approved".
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            conn.execute(
+                "UPDATE operator_access_grants SET approval_state='denied' "
+                "WHERE grant_id='g-1'"
+            )
+            conn.commit()
+
+            with pytest.raises(sqlite3.IntegrityError, match="denial is final"):
+                conn.execute(
+                    f"UPDATE operator_access_grants SET approval_state='{target}' "
+                    "WHERE grant_id='g-1'"
+                )
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def test_pending_can_still_be_approved(self, clean_database, database_url):
+        """The approval seam must keep working.
+
+        A guard that pinned ``approval_state`` outright would make the
+        customer-approval workstream a schema change rather than a transition —
+        which is the whole reason the state machine ships now.
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            conn.execute(
+                "UPDATE operator_access_grants SET approval_state='pending' "
+                "WHERE grant_id='g-1'"
+            )
+            conn.execute(
+                "UPDATE operator_access_grants SET approval_state='approved', "
+                "approved_by='customer-admin', approved_at=datetime('now') "
+                "WHERE grant_id='g-1'"
+            )
+            conn.commit()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT approval_state, approved_by FROM operator_access_grants "
+                "WHERE grant_id='g-1'"
+            )
+            assert cursor.fetchone() == ("approved", "customer-admin")
+        finally:
+            conn.close()
+
+    def test_the_first_revocation_is_still_permitted(
+        self, clean_database, database_url
+    ):
+        """The monotonicity guard must not make a grant unrevokable.
+
+        Pinning `revoked_at` unconditionally would remove the operator's ability
+        to end their own access early — a strictly worse posture than the one the
+        guard is meant to enforce.
+        """
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert(conn)
+            conn.execute(
+                "UPDATE operator_access_grants SET revoked_at=datetime('now'), "
+                "revoked_by='op-2' WHERE grant_id='g-1'"
+            )
+            conn.commit()
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT revoked_by FROM operator_access_grants WHERE grant_id='g-1'"
+            )
+            assert cursor.fetchone() == ("op-2",)
+        finally:
+            conn.close()
+
+    def test_unknown_approval_state_is_rejected(self, clean_database, database_url):
+        """A state outside the vocabulary would be silently non-live — or worse,
+        silently live — depending on which predicate read it."""
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="approval_state_valid"):
+                conn.execute(
+                    "INSERT INTO operator_access_grants "
+                    "(grant_id, operator_user_id, target_case_id, "
+                    " target_organization_id, reason, created_at, expires_at, "
+                    " approval_state) "
+                    "VALUES ('g-2', 'op-1', 'case-1', 'org-1', 'because', "
+                    "datetime('now'), datetime('now', '+1 hour'), 'definitely_fine')"
+                )
+        finally:
+            conn.close()
+
+    def test_expiry_must_be_after_creation(self, clean_database, database_url):
+        """A grant whose window has already closed at creation is not a window."""
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="window_valid"):
+                conn.execute(
+                    "INSERT INTO operator_access_grants "
+                    "(grant_id, operator_user_id, target_case_id, "
+                    " target_organization_id, reason, created_at, expires_at, "
+                    " approval_state) "
+                    "VALUES ('g-3', 'op-1', 'case-1', 'org-1', 'because', "
+                    "datetime('now'), datetime('now', '-1 hour'), 'auto_approved')"
+                )
         finally:
             conn.close()
 

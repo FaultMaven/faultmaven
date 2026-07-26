@@ -629,6 +629,80 @@ class OperatorAccessAuditModel(Base):
             "created_at",
         ),
         Index("ix_operator_access_audit_case", "target_case_id", "created_at"),
+        # Every access taken under one grant (migration 036). 035 left this
+        # column unindexed because it was 100% NULL until break-glass existed.
+        Index("ix_operator_access_audit_grant", "grant_id"),
+    )
+
+
+class OperatorAccessGrantModel(Base):
+    """A platform operator's break-glass license over ONE case (ADR-012 D9).
+
+    Time-boxed and reason-required: the Cloud content boundary. See
+    ``docs/architecture/security/break-glass-content-access.md``.
+
+    Not append-only — revocation and approval are real UPDATEs — but the columns
+    that constitute the justification (operator, case, org, reason, created_at,
+    expires_at) are pinned by database triggers, and DELETE is rejected
+    (migration 036). Extending access means creating a *new* grant with a fresh
+    reason, never widening an existing window.
+
+    ``operator_user_id`` is deliberately not a foreign key, for the same reason
+    as ``OperatorAccessAuditModel``: the row is evidence and must outlive the
+    account, and every ondelete action would execute as a write the triggers
+    reject.
+    """
+
+    __tablename__ = "operator_access_grants"
+
+    grant_id = Column(String(36), primary_key=True)
+
+    operator_user_id = Column(String(36), nullable=False)
+    operator_username = Column(String(255), nullable=True)
+
+    # One case, never a whole tenant (D9). The organization is stored alongside
+    # because it is what the request rebinds its RLS scope to under
+    # TENANT_PROVIDER=multi — the case row itself is unreadable until after that
+    # rebind, so the org cannot be derived from it.
+    target_case_id = Column(String(36), nullable=False)
+    target_organization_id = Column(String(36), nullable=False)
+
+    reason = Column(Text, nullable=False)
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(36), nullable=True)
+
+    # Seam for customer-initiated approval; 'auto_approved' today.
+    approval_state = Column(String(32), nullable=False, server_default="auto_approved")
+    approved_by = Column(String(36), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+
+    deployment_mode = Column(String(32), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "approval_state IN ('auto_approved', 'pending', 'approved', 'denied')",
+            name="operator_access_grants_approval_state_valid",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="operator_access_grants_window_valid",
+        ),
+        Index(
+            "ix_operator_access_grants_operator_case",
+            "operator_user_id",
+            "target_case_id",
+            "expires_at",
+        ),
+        Index(
+            "ix_operator_access_grants_target_org",
+            "target_organization_id",
+            "created_at",
+        ),
     )
 
 

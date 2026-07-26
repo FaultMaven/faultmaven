@@ -33,17 +33,51 @@ from faultmaven.models.interfaces_operator_audit import (
 
 logger = logging.getLogger(__name__)
 
-# Column bounds, so an oversized value degrades to a truncated audit field
-# instead of failing the INSERT — which, being fail-closed, would fail the
-# audited request itself.
+# Column bounds. Descriptive values are clipped so an oversized one degrades to
+# a truncated audit field rather than failing the INSERT — which, being
+# fail-closed, would fail the audited request itself. Identifiers are NOT
+# clipped; see ``_require_within``.
 _MAX_USERNAME_LENGTH = 255
 _MAX_ID_LENGTH = 36
 _MAX_DEPLOYMENT_MODE_LENGTH = 32
 
 
 def _clip(value: Optional[str], limit: int) -> Optional[str]:
-    """Truncate to a column bound, preserving None."""
+    """Truncate a descriptive value to its column bound, preserving None."""
     return value[:limit] if value else None
+
+
+def _require_within(value: Optional[str], limit: int, field_name: str) -> Optional[str]:
+    """Reject an over-long identifier rather than truncating it.
+
+    Clipping is right for a username and wrong for an id. A >36-character case
+    id truncated to 36 could equal a *different, real* case id, and this table
+    is append-only — the result would be an immutable record of an operator
+    opening a case they never touched. Raising instead fails the audited request
+    closed, which is noisy but cannot corrupt the evidence.
+
+    The API layer rejects these before they get here (``validate_identifier``);
+    this is the backstop for any caller that does not.
+    """
+    if value is not None and len(value) > limit:
+        raise ValueError(
+            f"{field_name} exceeds {limit} characters; refusing to truncate an "
+            "identifier into an append-only audit row"
+        )
+    return value
+
+
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Stamp UTC onto a naive timestamp read back from the database.
+
+    SQLite has no timezone type, so values come back naive despite being written
+    as UTC; without this the trail serialises offsets-free and a reader parses
+    ``created_at``/``expires_at`` as local time. On an audit trail that is a
+    misreading of *when* an access happened.
+    """
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _model_to_domain(model: OperatorAccessAuditModel) -> OperatorAccessAudit:
@@ -60,12 +94,12 @@ def _model_to_domain(model: OperatorAccessAuditModel) -> OperatorAccessAudit:
         operator_user_id=model.operator_user_id,
         operator_username=model.operator_username,
         action=OperatorAction(model.action),
-        created_at=model.created_at,
+        created_at=_as_utc(model.created_at),
         target_organization_id=model.target_organization_id,
         target_case_id=model.target_case_id,
         reason=model.reason,
         grant_id=model.grant_id,
-        expires_at=model.expires_at,
+        expires_at=_as_utc(model.expires_at),
         deployment_mode=model.deployment_mode,
         details=details,
     )
@@ -92,13 +126,23 @@ class OperatorAuditRepository(IOperatorAuditRepository):
     ) -> None:
         """Append one access record. Raises if it cannot be persisted."""
         model = OperatorAccessAuditModel(
+            # The operator id comes from a verified JWT — it cannot be shaped
+            # into a collision, and failing the request over an odd-length one
+            # would take down a legitimate audited read. Clipped, like the
+            # username.
             operator_user_id=_clip(operator_user_id, _MAX_ID_LENGTH),
             operator_username=_clip(operator_username, _MAX_USERNAME_LENGTH),
             action=OperatorAction(action).value,
-            target_organization_id=_clip(target_organization_id, _MAX_ID_LENGTH),
-            target_case_id=_clip(target_case_id, _MAX_ID_LENGTH),
+            # These three name *what was accessed* and can originate in a
+            # request path, so they are rejected rather than truncated.
+            target_organization_id=_require_within(
+                target_organization_id, _MAX_ID_LENGTH, "target_organization_id"
+            ),
+            target_case_id=_require_within(
+                target_case_id, _MAX_ID_LENGTH, "target_case_id"
+            ),
             reason=reason,
-            grant_id=_clip(grant_id, _MAX_ID_LENGTH),
+            grant_id=_require_within(grant_id, _MAX_ID_LENGTH, "grant_id"),
             expires_at=expires_at,
             deployment_mode=_clip(deployment_mode, _MAX_DEPLOYMENT_MODE_LENGTH),
             details=json.dumps(details, default=str) if details else None,
@@ -113,6 +157,7 @@ class OperatorAuditRepository(IOperatorAuditRepository):
         target_organization_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         action: Optional[OperatorAction] = None,
+        grant_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[List[OperatorAccessAudit], int]:
@@ -133,6 +178,8 @@ class OperatorAuditRepository(IOperatorAuditRepository):
             filters.append(
                 OperatorAccessAuditModel.action == OperatorAction(action).value
             )
+        if grant_id:
+            filters.append(OperatorAccessAuditModel.grant_id == grant_id)
 
         total = (
             await self.db.execute(

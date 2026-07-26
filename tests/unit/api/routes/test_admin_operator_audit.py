@@ -220,3 +220,10 @@ class TestAuditQueryPath:
         """Otherwise the table grows under its own review without adding evidence."""
         client.get("/api/v1/admin/audit/operator-access")
         audit_repo.record_access.assert_not_awaited()
+
+    def test_the_trail_can_be_filtered_by_grant(self, client, audit_repo):
+        """ "Everything read under this grant" is the query that takes a reviewer
+        from one justification to every access it authorised — and it is the
+        reader that justifies indexing `grant_id` in migration 036."""
+        client.get("/api/v1/admin/audit/operator-access?grant_id=grant-1")
+        assert audit_repo.list_access.await_args.kwargs["grant_id"] == "grant-1"

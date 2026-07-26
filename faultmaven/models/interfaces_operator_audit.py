@@ -84,7 +84,14 @@ class IOperatorAuditRepository(ABC):
         target_organization_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         action: Optional[OperatorAction] = None,
+        grant_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[List[OperatorAccessAudit], int]:
-        """Query the trail, newest first. Returns (page, total_matching)."""
+        """Query the trail, newest first. Returns (page, total_matching).
+
+        ``grant_id`` answers "everything read under this break-glass grant" —
+        the query that takes a reviewer from one justification to the full set
+        of accesses it authorised, and the reason migration 036 indexes the
+        column.
+        """
