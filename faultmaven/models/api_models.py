@@ -10,7 +10,7 @@ They handle:
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -337,6 +337,118 @@ class CaseListResponse(BaseModel):
             offset=offset,
             has_more=(offset + len(cases)) < total_count,
         )
+
+
+# ============================================================
+# Operator (platform-admin) case list — ADR-012 D9
+# ============================================================
+
+# The free-text fields of ``CaseSummary``. D9 classifies user free text as
+# **content**: a title is written by the reporter and routinely carries the
+# incident detail itself ("payments DB down for ACME"). Content is reachable
+# only through an audited break-glass grant (#815), so it must not appear in the
+# ambient operator list a cloud operator can read at will.
+CASE_SUMMARY_CONTENT_FIELDS = frozenset({"title", "description"})
+
+
+class AdminCaseMetadata(BaseModel):
+    """One case as *ambient metadata* — everything except its content.
+
+    The cloud operator row (ADR-012 D9). It answers "which tenant has cases
+    stuck in INVESTIGATING, and since when" without disclosing what any case is
+    about. Every field here is either system-assigned (ids, timestamps, counts)
+    or drawn from a closed vocabulary (``state``, ``source``,
+    ``closure_reason``), so no field can carry text a user typed.
+
+    This is a separate model rather than ``CaseSummary`` with ``title=None`` on
+    purpose: the omission is then structural. There is no code path that can
+    populate a title here, and a client cannot confuse "withheld by policy"
+    with "this case has no title".
+    """
+
+    case_id: str
+    state: CaseState
+    created_at: datetime
+    updated_at: datetime
+    last_activity_at: datetime
+    resolved_at: Optional[datetime]
+    closed_at: Optional[datetime]
+    user_id: str
+    organization_id: str
+    source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
+    closure_reason: Optional[str]
+
+    # Progress indicators
+    current_turn: int
+    milestones_completed: int
+    total_milestones: int = 8
+
+    # Computed fields
+    is_terminal: bool
+
+    @classmethod
+    def from_summary(cls, summary: CaseSummary) -> "AdminCaseMetadata":
+        """Project a full summary down to its metadata.
+
+        Named field-by-field rather than ``model_validate(summary)``: a field
+        added to ``CaseSummary`` later must be classified as metadata or content
+        by a human editing this list, instead of flowing outward by default.
+        """
+        return cls(
+            case_id=summary.case_id,
+            state=summary.state,
+            created_at=summary.created_at,
+            updated_at=summary.updated_at,
+            last_activity_at=summary.last_activity_at,
+            resolved_at=summary.resolved_at,
+            closed_at=summary.closed_at,
+            user_id=summary.user_id,
+            organization_id=summary.organization_id,
+            source=summary.source,
+            closure_reason=summary.closure_reason,
+            current_turn=summary.current_turn,
+            milestones_completed=summary.milestones_completed,
+            total_milestones=summary.total_milestones,
+            is_terminal=summary.is_terminal,
+        )
+
+
+class _AdminCaseListEnvelope(BaseModel):
+    """Pagination fields shared by both operator list shapes."""
+
+    total_count: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class AdminCaseListResponse(_AdminCaseListEnvelope):
+    """The **standalone** operator case list: full summaries, titles included.
+
+    Self-hosted content reads are audited but not gated (ADR-012 D9) — the
+    operator and the data controller are the same party.
+    """
+
+    view: Literal["full"] = "full"
+    cases: List[CaseSummary]
+
+
+class AdminCaseMetadataListResponse(_AdminCaseListEnvelope):
+    """The **cloud** operator case list: ambient metadata, no content."""
+
+    view: Literal["metadata"] = "metadata"
+    cases: List[AdminCaseMetadata]
+
+
+# What ``GET /api/v1/admin/cases`` returns. Which arm is served is fixed by the
+# deployment, but it is a discriminated union rather than two endpoints so a
+# generated client gets one call site and narrows on ``view`` — the shape is
+# self-describing instead of something the caller has to infer from its own
+# notion of the deployment mode.
+AdminCaseListResult = Annotated[
+    Union[AdminCaseListResponse, AdminCaseMetadataListResponse],
+    Field(discriminator="view"),
+]
 
 
 # ============================================================

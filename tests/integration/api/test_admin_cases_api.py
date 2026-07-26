@@ -3,8 +3,12 @@
 Covers:
 - GET /api/v1/admin/cases (200) — admin sees cases across multiple users/orgs
 - GET /api/v1/admin/cases (403) — non-admin is rejected
-- GET /api/v1/admin/cases (403) — blocked in cloud deployment (break-glass deferred)
+- The D9 deployment split: standalone serves full summaries, cloud serves
+  ambient metadata with no user free text
+- GET /api/v1/admin/cases (403) — refused under multi-tenant cloud, where RLS
+  would make an "all tenants" list silently one tenant's
 - Query params (state/limit/offset) are forwarded to the service filter
+- The durable audit row records which of the two views was served
 """
 
 from datetime import datetime, timezone
@@ -15,7 +19,7 @@ from fastapi import status
 from httpx import ASGITransport, AsyncClient
 
 from faultmaven.main import app as main_app
-from faultmaven.models.api_models import CaseSummary
+from faultmaven.models.api_models import CASE_SUMMARY_CONTENT_FIELDS, CaseSummary
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models import CaseState
 
@@ -43,6 +47,19 @@ def _summary(
         resolved_at=None,
         closed_at=None,
         closure_reason=None,
+    )
+
+
+def _cloud_settings(tenant_provider: str = "single"):
+    """A settings double for the cloud arm, plus the tenancy it runs under.
+
+    Returns ``(settings, patch_context)``. The tenancy check is a module-level
+    function call rather than a settings attribute, so it has to be patched
+    separately from ``get_settings``.
+    """
+    return MagicMock(is_cloud=True, deployment_mode="cloud"), patch(
+        "faultmaven.api.routes.admin_cases.requested_tenant_provider",
+        return_value=tenant_provider,
     )
 
 
@@ -133,10 +150,13 @@ async def test_admin_list_all_cases_success(
 
     assert resp.status_code == status.HTTP_200_OK
     body = resp.json()
+    assert body["view"] == "full"
     assert body["total_count"] == 2
     owners = {c["user_id"] for c in body["cases"]}
     assert owners == {"copilot_user", "slack-agent"}
     assert body["has_more"] is False
+    # Standalone is unchanged by the D9 split: the operator still sees titles.
+    assert {c["title"] for c in body["cases"]} == {"Copilot case", "Slack case"}
 
 
 async def test_admin_list_all_cases_records_the_access(
@@ -177,22 +197,203 @@ async def test_admin_list_all_cases_forbidden_for_non_admin(
     mock_case_service.list_all_cases.assert_not_called()
 
 
-async def test_admin_list_all_cases_blocked_in_cloud(
+async def test_admin_list_in_cloud_returns_metadata_rows(
     admin_user, mock_case_service, cleanup_overrides
 ):
-    """Cloud deployment fails closed until audited break-glass exists."""
+    """Cloud serves the list, projected to ambient metadata (ADR-012 D9)."""
+    mock_case_service.list_all_cases.return_value = (
+        [_summary("case_a", "copilot_user", "org_1", "Payments DB down at ACME")],
+        1,
+    )
     app = _make_app(admin_user, mock_case_service)
-    fake_settings = MagicMock(is_cloud=True, deployment_mode="cloud")
+    fake_settings, tenancy = _cloud_settings()
 
-    with patch(
-        "faultmaven.api.routes.admin_cases.get_settings", return_value=fake_settings
+    with (
+        patch(
+            "faultmaven.api.routes.admin_cases.get_settings", return_value=fake_settings
+        ),
+        tenancy,
+    ):
+        async with await _client(app) as client:
+            resp = await client.get("/api/v1/admin/cases")
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    assert body["view"] == "metadata"
+    assert body["total_count"] == 1
+
+    (row,) = body["cases"]
+    # The triage facts an operator needs are all present...
+    assert row["case_id"] == "case_a"
+    assert row["organization_id"] == "org_1"
+    assert row["state"] == CaseState.INVESTIGATING.value
+    assert row["current_turn"] == 1
+    # ...and the content fields are absent as *keys*, not present-and-null: a
+    # client must not be able to read "withheld" as "this case has no title".
+    for field in CASE_SUMMARY_CONTENT_FIELDS:
+        assert field not in row
+
+
+async def test_cloud_response_body_contains_no_user_free_text(
+    admin_user, mock_case_service, cleanup_overrides
+):
+    """Sweep every content field, not one example of one.
+
+    Each declared content field is filled with its own sentinel and the whole
+    serialized body — not just the parsed row — is searched for it. Checking the
+    raw text is the point: it catches a leak through any route out of the
+    handler, including one nested somewhere a field-name assertion would miss.
+    A metadata sentinel is planted too, so a body that leaked nothing because it
+    served nothing cannot pass.
+    """
+    summary = _summary("case_a", "copilot_user", "SENTINEL-ORG-METADATA")
+    for i, field in enumerate(sorted(CASE_SUMMARY_CONTENT_FIELDS)):
+        setattr(summary, field, f"SENTINEL-CONTENT-{i}-{field}")
+
+    mock_case_service.list_all_cases.return_value = ([summary], 1)
+    app = _make_app(admin_user, mock_case_service)
+    fake_settings, tenancy = _cloud_settings()
+
+    with (
+        patch(
+            "faultmaven.api.routes.admin_cases.get_settings", return_value=fake_settings
+        ),
+        tenancy,
+    ):
+        async with await _client(app) as client:
+            resp = await client.get("/api/v1/admin/cases")
+
+    assert resp.status_code == status.HTTP_200_OK
+    assert "SENTINEL-CONTENT" not in resp.text, (
+        "A cloud operator list disclosed user free text: " f"{resp.text}"
+    )
+    # The endpoint really did serve a row — otherwise the assertion above is vacuous.
+    assert "SENTINEL-ORG-METADATA" in resp.text
+
+
+async def test_admin_list_blocked_under_multi_tenant_cloud(
+    admin_user, mock_case_service, cleanup_overrides
+):
+    """Refused where RLS would make the cross-tenant list silently partial.
+
+    Under ``TENANT_PROVIDER=multi`` the web process's RLS-enforcing DB role
+    scopes the query to the operator's own organization, so a 200 here would
+    claim to span every tenant while showing one. Fail closed until the bounded
+    cross-tenant read lands with break-glass (#815).
+    """
+    app = _make_app(admin_user, mock_case_service)
+    fake_settings, tenancy = _cloud_settings(tenant_provider="multi")
+
+    with (
+        patch(
+            "faultmaven.api.routes.admin_cases.get_settings", return_value=fake_settings
+        ),
+        tenancy,
     ):
         async with await _client(app) as client:
             resp = await client.get("/api/v1/admin/cases")
 
     assert resp.status_code == status.HTTP_403_FORBIDDEN
-    assert "cloud" in resp.json()["detail"].lower()
+    assert "partial" in resp.json()["detail"].lower()
     mock_case_service.list_all_cases.assert_not_called()
+
+
+async def test_multi_tenant_refusal_is_keyed_on_tenancy_not_deployment_mode(
+    admin_user, mock_case_service, cleanup_overrides
+):
+    """The refusal follows ``multi``, not ``cloud``.
+
+    ``multi`` cannot boot outside cloud today (``create_tenant_provider``
+    refuses), so the two conditions coincide — but the hazard is RLS scoping,
+    which belongs to tenancy. Pinning it here means a future change that lets
+    ``multi`` run elsewhere inherits the refusal instead of silently serving a
+    one-tenant list under a "standalone" label.
+    """
+    app = _make_app(admin_user, mock_case_service)
+    standalone_settings = MagicMock(is_cloud=False, deployment_mode="standalone")
+
+    with (
+        patch(
+            "faultmaven.api.routes.admin_cases.get_settings",
+            return_value=standalone_settings,
+        ),
+        patch(
+            "faultmaven.api.routes.admin_cases.requested_tenant_provider",
+            return_value="multi",
+        ),
+    ):
+        async with await _client(app) as client:
+            resp = await client.get("/api/v1/admin/cases")
+
+    assert resp.status_code == status.HTTP_403_FORBIDDEN
+    mock_case_service.list_all_cases.assert_not_called()
+
+
+async def test_multi_tenant_refusal_records_no_access(
+    admin_user, mock_case_service, mock_audit_repo, cleanup_overrides
+):
+    """A refused request read nothing, so it is not an access.
+
+    The audit table is the record of operator reads of tenant data; stamping a
+    row for a request that was denied before any query would dilute exactly the
+    evidence it exists to hold.
+    """
+    app = _make_app(admin_user, mock_case_service, mock_audit_repo)
+    fake_settings, tenancy = _cloud_settings(tenant_provider="multi")
+
+    with (
+        patch(
+            "faultmaven.api.routes.admin_cases.get_settings", return_value=fake_settings
+        ),
+        tenancy,
+    ):
+        async with await _client(app) as client:
+            resp = await client.get("/api/v1/admin/cases")
+
+    assert resp.status_code == status.HTTP_403_FORBIDDEN
+    mock_audit_repo.record_access.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "is_cloud,expected_view",
+    [(False, "full"), (True, "metadata")],
+)
+async def test_audit_row_records_which_view_was_served(
+    is_cloud,
+    expected_view,
+    admin_user,
+    mock_case_service,
+    mock_audit_repo,
+    cleanup_overrides,
+):
+    """The trail must say whether titles were disclosed.
+
+    ``action=LIST`` alone no longer answers that question now the endpoint has
+    two shapes, and an auditor reconstructing an incident cannot recover the
+    deployment mode of a past request from anywhere else.
+    """
+    mock_case_service.list_all_cases.return_value = ([], 0)
+    app = _make_app(admin_user, mock_case_service, mock_audit_repo)
+    fake_settings = MagicMock(
+        is_cloud=is_cloud, deployment_mode="cloud" if is_cloud else "standalone"
+    )
+
+    with (
+        patch(
+            "faultmaven.api.routes.admin_cases.get_settings", return_value=fake_settings
+        ),
+        patch(
+            "faultmaven.api.routes.admin_cases.requested_tenant_provider",
+            return_value="single",
+        ),
+    ):
+        async with await _client(app) as client:
+            resp = await client.get("/api/v1/admin/cases")
+
+    assert resp.status_code == status.HTTP_200_OK
+    assert resp.json()["view"] == expected_view
+    kwargs = mock_audit_repo.record_access.await_args.kwargs
+    assert kwargs["details"]["view"] == expected_view
 
 
 async def test_admin_list_all_cases_forwards_filters(
