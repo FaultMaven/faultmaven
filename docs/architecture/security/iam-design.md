@@ -438,7 +438,7 @@ FaultMaven JWT tokens include an `organization_id` claim that determines the use
 ```
 
 > [!IMPORTANT]
-> The `organization_id` claim is **always present** in both Local and Cloud mode tokens. Services can safely assume `AuthenticatedUser.organization_id` is never empty.
+> The `organization_id` claim is always **present**, but under `TENANT_PROVIDER=multi` it may be **empty**: a user carrying no organization gets `""` rather than the Standalone sentinel. Substituting the sentinel there would bind every org-less user to one shared tenant — and hand them the global-KB write licence that migration 033 keys on that id. Services must not assume a non-empty value; `bind_request_org_context` refuses such a request with a 403. Single-tenant is unchanged: the sentinel is the correct claim, because that user *is* the deployment's sole tenant. See `resolve_organization_claim` in `jwt_token_generator.py`.
 
 ### Environment-Based Endpoint Exposure
 
