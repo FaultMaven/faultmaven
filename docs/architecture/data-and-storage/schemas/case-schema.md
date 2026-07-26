@@ -73,6 +73,8 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | 028 | `d0e1f2a3b4c5` | **Polymorphic `resource_shares` table** (`resource_type, resource_id, scope_type, scope_id`; `organization_id` denormalized + RLS `resource_shares_tenant_isolation` policy, PG-only) replacing the nullable `team_id` columns on `cases`/`knowledge_items`/`conversion_jobs` (dropped). Team visibility is now a share row + SQL-resolved visible-id allowlist (ADR-013 §D4 / ADR-011 D3). No backfill — the columns never had a live writer. v1 `scope_type=team`; `organization` reserved (D4a). |
 | 029–032 | … | (rows omitted — see alembic/versions: RBAC role/permission seed (029), `team_members` RLS subquery policy (030), drop the never-written `oauth_revoked_tokens` table (031, #767), `user_audit_log` `success`/`session_id` for the SSO JIT audit trail (032, ADR-015)) |
 | 033 | `c5d6e7f8a9b0` | **Global-KB platform tier (#770)**: `knowledge_items.organization_id` becomes nullable with CHECK `knowledge_items_global_org_check` — `(scope='global') ⟺ (organization_id IS NULL)`, making a tenant-org-owned global row unrepresentable; existing global rows normalized to NULL. The single FOR ALL RLS policy is replaced by four per-command policies (PG-only): `FOR SELECT` grants every tenant the `scope='global'` read exemption; INSERT/UPDATE/DELETE keep the own-org arm and allow global writes only from single-tenant sentinel sessions (`app.current_org_id` = standalone org — the bootstrap/admin path in standalone and cloud+single), never from tenant-bound sessions. Under multi, global content is seeded exclusively by the audited `kb_seed` maintenance job (BYPASSRLS role). |
+| 034–036 | … | (rows omitted — see alembic/versions: conversion live-case uniqueness (034), durable append-only `operator_access_audit` (035), `operator_access_grants` break-glass over Cloud tenant case content (036)) |
+| 037 | `a9b0c1d2e3f4` | **Per-turn authorship**: `case_messages.author_id VARCHAR(36) NULL` (ADR-013 §D4 as amended / ADR-011 D5). The domain model and both API schemas already carried the field and the service already stamped it; only the table and the SQL writers were missing it, so every turn was persisted unattributed. Team sharing made that a real loss — the shared-case read gate admits team members to the write endpoints, so the case owner is no longer the only possible author. Deliberately **not** a foreign key (matching `operator_access_audit.operator_user_id`, not `cases.user_id`): attribution must outlive the account it describes, and `ON DELETE SET NULL` would erase precisely the record ADR-011 D5 calls un-backfillable. No backfill — a pre-existing row's author is genuinely unknown. Both upserts `COALESCE(case_messages.author_id, EXCLUDED.author_id)`, so authorship is write-once but still fillable. |
 
 **Active Implementations**:
 
@@ -928,6 +930,8 @@ CREATE TABLE case_messages (
     -- Tier 2 (PostgreSQL-only) — aspirational for cloud deployment.
     message_id VARCHAR(36) PRIMARY KEY,         -- Tier 1 reality (live ORM)
     -- message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Tier 2 (PostgreSQL-only)
+    organization_id VARCHAR(36) NOT NULL
+        REFERENCES organizations(organization_id) ON DELETE CASCADE,
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     turn_number INTEGER NOT NULL,
 
@@ -936,6 +940,15 @@ CREATE TABLE case_messages (
     -- ============================================================
     role VARCHAR(20) NOT NULL,                  -- user | assistant | system
     content TEXT NOT NULL,
+
+    -- Who wrote this turn (migration 037, ADR-013 §D4 / ADR-011 D5).
+    -- Deliberately NOT a foreign key, matching operator_access_audit rather
+    -- than cases.user_id: attribution must outlive the account it describes.
+    -- ON DELETE SET NULL would erase the record ADR-011 D5 calls
+    -- un-backfillable; RESTRICT would make any user who ever wrote a turn
+    -- undeletable. NULL means no human author — assistant and system turns,
+    -- or a row written before 037.
+    author_id VARCHAR(36),
 
     -- ============================================================
     -- Metadata
