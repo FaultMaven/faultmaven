@@ -1918,8 +1918,10 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     Replacement is one-way by design: a mirror that took over from an LLM
     conclusion and whose root later demotes is retracted like any other mirror
     (``retract_stale_engine_rcc``) and the case is then left with NO conclusion.
-    The replaced text asserted the same, now-unsupported cause world, so restoring
-    it would re-assert exactly what the chain stopped backing.
+    The replaced text is not kept anywhere to restore — retaining it would be a
+    second conclusion namespace, the thing single authority retires — and
+    re-surfacing it would assert a cause no validated root backs, whether or not
+    it named the same cause the demoted root did.
     """
     rcc = case.root_cause_conclusion
     llm_authored = (
@@ -2074,9 +2076,10 @@ def retract_stale_engine_rcc(case: Case, contested_ids: set | None = None) -> bo
 
     Note what this means for a mirror that REPLACED an LLM conclusion (§7.7): when
     its root demotes it is cleared like any other mirror and the case is left with
-    NO conclusion. The replaced text is not restored — it asserted the same, now-
-    unsupported cause world, so bringing it back would re-assert exactly what the
-    chain stopped backing.
+    NO conclusion. The replaced text is not restored — the engine keeps no copy of
+    it (a copy would be a second conclusion namespace), and re-surfacing it would
+    assert a cause no validated root backs, whether or not it named the same cause
+    the demoted root did.
 
     Returns True if it cleared one. ``contested_ids`` lets the per-turn recompute
     pass its already-computed §7.1.2 set (the once-per-derive snapshot pattern);

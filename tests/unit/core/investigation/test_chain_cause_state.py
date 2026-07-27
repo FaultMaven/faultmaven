@@ -1071,8 +1071,8 @@ def test_pre_bar_single_support_root_demotes_on_recompute():
 def test_replaced_llm_rcc_is_not_resurrected_when_the_root_demotes():
     """Replacement is one-way. A mirror that took the conclusion over from the
     LLM is retracted like any other mirror once its root demotes, and the case is
-    left asserting NOTHING — restoring the replaced text would re-assert the same
-    cause world the chain just stopped backing."""
+    left asserting NOTHING — the replaced text is kept nowhere to restore, and
+    re-surfacing it would assert a cause no validated root backs."""
     case, root, hyp = _chain_case()
     own = RootCauseConclusion(
         root_cause="the LLM's own worded conclusion",

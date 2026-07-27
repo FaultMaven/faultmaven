@@ -498,7 +498,10 @@ def test_overclaim_seam_still_fires_on_a_fallback_conclusion(caplog):
 
 def test_replaced_conclusion_is_not_restored_when_the_root_demotes():
     """Replacement is one-way. Once the mirror's root demotes the case asserts
-    NOTHING — the replaced text named the same, now-unsupported cause world."""
+    NOTHING — the engine keeps no copy of the replaced text to restore, and
+    re-surfacing it would assert a cause no validated root backs. (The conclusion
+    swept here is deliberately divergent from the root statement, so this holds
+    regardless of whether the replaced text named the demoted root's cause.)"""
     case, root, hyp, rival = _validated_root_case()
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause=_LLM_TEXT,

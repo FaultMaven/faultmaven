@@ -930,9 +930,11 @@ older refusal sits *ahead* of the precedence: while identification is
 MECE-contested (§7.1.2) the engine asserts nothing at all, and a disconfirmed
 conclusion is retracted at source (§7.6) whoever wrote it. A mirror that replaced
 a conclusion and whose root later demotes is retracted like any other mirror
-(`retract_stale_engine_rcc`) and the case then carries **no** conclusion — the
-replaced text asserted the same, now-unsupported cause world, so resurrecting it
-would re-assert exactly what the chain stopped backing.
+(`retract_stale_engine_rcc`) and the case then carries **no** conclusion. The
+replaced text is not restored, and the engine keeps no copy of it: retaining one
+would be a second conclusion namespace — the very thing single authority
+retires — and re-surfacing it would assert a cause no validated root backs,
+whether or not it named the cause the demoted root did.
 `rcc_precedence_inversion_total{provider}` counts each replacement — the second
 read INV-41 asks for, showing how often the fallback is the only thing standing.
 The precedence is a kill switch (`FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION`, default
