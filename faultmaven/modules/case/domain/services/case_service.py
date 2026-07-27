@@ -35,6 +35,7 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
+from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.datetime import parse_utc_timestamp
@@ -402,12 +403,17 @@ class CaseService(ICaseService):
 
             # Deduplication: Check if identical to last message
             # This fixes Issue 1: Duplicate Questions When Chat History is Reloaded
+            # A turn is a duplicate only if the SAME principal resubmits the same
+            # content — on team-shared cases two members can legitimately post
+            # identical adjacent turns ("still broken", "+1"), which must both
+            # persist (#855).
             if case.messages and len(case.messages) > 0:
                 last_msg = case.messages[-1]
-                # Check for identical content and role
+                # Check for identical content, role, and author
                 if (
                     last_msg.get("role") == message_role
                     and last_msg.get("content") == message.content
+                    and last_msg.get("author_id") == message.author_id
                 ):
                     logger.warning(
                         f"Skipping duplicate message for case {case_id} (content hash match)",
@@ -769,8 +775,11 @@ class CaseService(ICaseService):
     async def _resolve_user_team_ids(self, user_id: Optional[str]) -> List[str]:
         """The team ids a principal belongs to; ``[]`` when unwired or on error.
 
-        Sole gateway to ``team_service.list_all_user_team_ids`` so a request that
-        needs both the read allowlist and the team facet resolves membership once.
+        Gateway for the read paths (allowlist + team facet) so a request that
+        needs both resolves membership once. The share path checks membership
+        via the shared :func:`~faultmaven.modules.auth.contracts.is_team_member`
+        predicate instead, keeping it in lockstep with the KB team-publish
+        surface.
         The resolver JOINs ``team_members`` through the RLS-tenanted ``teams``
         table (see ``PostgreSQLTeamRepository``), so under the caller's org RLS
         context it returns only teams in that org — the case/team org boundary is
@@ -1888,9 +1897,9 @@ class CaseService(ICaseService):
 
         Only the case owner may share, and only with a Team they belong to. The
         membership check is what keeps the share within the case's org: it
-        resolves through the RLS-tenanted ``teams`` table
-        (``_resolve_user_team_ids``), so under the owner's org RLS context
-        ``team_ids`` contains only teams in that org — a foreign-org team is
+        resolves through the RLS-tenanted ``teams`` table (via the shared
+        ``is_team_member`` predicate), so under the owner's org RLS context
+        membership contains only teams in that org — a foreign-org team is
         never a member and is rejected here, not merely masked at read time. The
         share row then carries the case's own ``organization_id``. Idempotent
         (re-sharing is a no-op).
@@ -1908,8 +1917,7 @@ class CaseService(ICaseService):
             raise ValidationException(f"Case {case_id} not found")
         if case.user_id != actor_user_id:
             raise ValidationException("Only the case owner can share it with a team")
-        team_ids = await self._resolve_user_team_ids(actor_user_id)
-        if team_id not in team_ids:
+        if not await is_team_member(self.team_service, actor_user_id, team_id):
             raise ValidationException(
                 "You can only share a case with a team you belong to"
             )

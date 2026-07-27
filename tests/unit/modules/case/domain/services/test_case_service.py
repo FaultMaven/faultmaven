@@ -370,6 +370,57 @@ class TestAddMessageToCase:
         mock_repo.add_message.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_identical_content_from_different_author_persists(
+        self, service, mock_repo
+    ):
+        """Dedup is per-principal: on a team-shared case, a second member
+        posting the same adjacent content ("still broken", "+1") is a real
+        turn, not a resubmission (#855)."""
+        existing_msg = {
+            "role": "user",
+            "content": "still broken",
+            "author_id": "user_alice",
+        }
+        case = _make_case(current_turn=1, messages=[existing_msg])
+        mock_repo.get.return_value = case
+        msg = CaseMessage(
+            message_id="msg_test457",
+            case_id="case_abc123abc123",
+            turn_number=1,
+            role="user",
+            content="still broken",
+            author_id="user_bob",
+            created_at=datetime.now(timezone.utc),
+        )
+        result = await service.add_message_to_case("case_abc123abc123", msg)
+        assert result is True
+        mock_repo.add_message.assert_awaited_once()
+        assert case.current_turn == 2  # a real turn increments
+
+    @pytest.mark.asyncio
+    async def test_identical_content_from_same_author_dedupes(self, service, mock_repo):
+        existing_msg = {
+            "role": "user",
+            "content": "still broken",
+            "author_id": "user_alice",
+        }
+        case = _make_case(current_turn=1, messages=[existing_msg])
+        mock_repo.get.return_value = case
+        msg = CaseMessage(
+            message_id="msg_test458",
+            case_id="case_abc123abc123",
+            turn_number=1,
+            role="user",
+            content="still broken",
+            author_id="user_alice",
+            created_at=datetime.now(timezone.utc),
+        )
+        result = await service.add_message_to_case("case_abc123abc123", msg)
+        assert result is True
+        mock_repo.add_message.assert_not_awaited()
+        assert case.current_turn == 1  # deduped turn does not increment
+
+    @pytest.mark.asyncio
     async def test_increments_turn_for_user_message(self, service, mock_repo):
         case = _make_case(current_turn=2, messages=[])
         mock_repo.get.return_value = case

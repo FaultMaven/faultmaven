@@ -8,6 +8,7 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -507,6 +508,43 @@ class ISSOIdentityProvider(ABC):
 
 
 # ============================================================
+# Team Membership Policy
+# ============================================================
+
+
+async def is_team_member(team_service, user_id: Optional[str], team_id: str) -> bool:
+    """Whether ``user_id`` belongs to ``team_id``. Fail-closed.
+
+    The single membership predicate behind every surface that lets a caller
+    target a team they name (case share, KB team publish) — extracted so the
+    surfaces cannot drift on the rule "you may only share/publish into a team
+    you belong to". Each surface raises its own exception type on refusal;
+    what is shared is the resolution and its fail-closed semantics:
+    no team service wired (standalone), a missing id, or a resolution error
+    all answer ``False`` — never a silent allow.
+
+    ``team_service`` is the duck-typed injected service exposing
+    ``list_all_user_team_ids`` (RLS-scoped to the caller's org, so a
+    foreign-org team id can never resolve as a membership).
+    """
+    if not team_service or not user_id or not team_id:
+        return False
+    try:
+        return team_id in await team_service.list_all_user_team_ids(user_id)
+    except Exception as exc:  # noqa: BLE001 — fail closed on any resolution error
+        # Log before answering False: to the caller a resolver outage is
+        # indistinguishable from a genuine non-membership refusal, so this
+        # line is the only signal that the refusal was infrastructural.
+        logging.getLogger(__name__).warning(
+            "Team membership resolution failed for user %s / team %s: %s",
+            user_id,
+            team_id,
+            exc,
+        )
+        return False
+
+
+# ============================================================
 # Module Exports
 # ============================================================
 
@@ -526,6 +564,8 @@ __all__ = [
     "IUserRepository",
     "IUserQuery",
     "IOAuthCodeRepository",
+    # Policy helpers
+    "is_team_member",
     # Service Protocols
     "IAuthService",
     "IOAuthService",
