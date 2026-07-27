@@ -264,9 +264,11 @@ class TestReVerificationSuccessCaseDirective:
     def test_absence_rows_stand_alone_not_linked_to_hypothesis(self):
         """Both absence categories are stand-alone resolution audit rows.
         They must NOT be linked to a hypothesis: a successful fix confirms
-        the root-cause hypothesis, and the apply-layer coerces any
-        non-SUPPORTS stance to a likelihood penalty, so a confidence-
-        bearing link would erode the very hypothesis the fix proves."""
+        the root-cause hypothesis, so a confidence-bearing link would
+        erode the very hypothesis the fix proves. (The apply layer now
+        carries NEUTRAL through without a likelihood effect — #514 — but
+        the prompt keeps absence rows stand-alone until the follow-up
+        attach-without-erosion work lands.)"""
         addendum = _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
         assert "STAND-ALONE" in addendum
         assert "do NOT link" in addendum

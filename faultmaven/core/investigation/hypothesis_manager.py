@@ -229,29 +229,23 @@ class HypothesisManager:
         self,
         hypothesis: Hypothesis,
         evidence_id: str,
-        supports: bool,
+        stance: EvidenceStance,
         turn: int,
         reasoning: str = "Linked by agent",
         stance_confidence: float = 1.0,
-        stance_override: EvidenceStance | None = None,
     ) -> None:
         """Link evidence to hypothesis.
 
         Args:
             hypothesis: Hypothesis to link evidence to
             evidence_id: ID of evidence to link
-            supports: True for SUPPORTS, False for REFUTES (ignored if stance_override set)
+            stance: SUPPORTS, NEUTRAL, or REFUTES — carried through verbatim.
+                NEUTRAL links are stored for the audit trail without any
+                likelihood effect.
             turn: Current turn number
             reasoning: Explanation of why evidence is linked
             stance_confidence: Confidence in the stance (0.0-1.0)
-            stance_override: Optional explicit stance (SUPPORTS, REFUTES, or NEUTRAL).
-                           When set, the `supports` parameter is ignored.
         """
-        if stance_override is not None:
-            stance = stance_override
-        else:
-            stance = EvidenceStance.SUPPORTS if supports else EvidenceStance.REFUTES
-
         link = HypothesisEvidenceLink(
             hypothesis_id=hypothesis.hypothesis_id,
             evidence_id=evidence_id,
