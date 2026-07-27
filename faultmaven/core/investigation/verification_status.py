@@ -39,7 +39,6 @@ from faultmaven.core.investigation.exhaustion_thresholds import (
     WORK_GATE_MIN_HYPOTHESES,
 )
 from faultmaven.modules.case.contracts import (
-    HypothesisState,
     NeedObtainability,
     NeedPurpose,
     VerificationStatus,
@@ -154,11 +153,7 @@ def is_stalled(case: "Case") -> bool:
 def _residual_candidates(case: "Case") -> list:
     """Candidates still in play (design §2 *residual candidate*): hypotheses
     whose state is NOT ``REFUTED`` or ``RETIRED``."""
-    return [
-        h
-        for h in case.hypotheses.values()
-        if h.state not in (HypothesisState.REFUTED, HypothesisState.RETIRED)
-    ]
+    return [h for h in case.hypotheses.values() if not h.state.is_terminal]
 
 
 def _candidate_unresolvable(case: "Case", hypothesis_id: str) -> bool:

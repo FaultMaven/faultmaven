@@ -2342,16 +2342,6 @@ def hypothesis_statements_duplicate(a: str, b: str) -> bool:
     )
 
 
-# A revived REFUTED/RETIRED cause is deliberately NOT a dedup target: those
-# states are terminal-immutable (``_apply_hypothesis_updates`` refuses changes
-# and instructs "open a NEW hypothesis if that theory is back in play"), so
-# deduping against them would DEADLOCK the revival — the re-mint refused here and
-# the update refused there, with contradictory guidance. The gate-inflation
-# vector is duplicate ACTIVE/CAPTURED records; a revival minting a fresh
-# hypothesis is legitimate diagnostic work, not spurious inflation.
-_DEDUP_SKIP_STATES = (HypothesisState.REFUTED, HypothesisState.RETIRED)
-
-
 def find_duplicate_hypothesis(statement: str, case: "Case") -> str | None:
     """Return the id of a standing hypothesis whose statement duplicates
     ``statement`` (``hypothesis_statements_duplicate``), else ``None`` — the
@@ -2360,12 +2350,17 @@ def find_duplicate_hypothesis(statement: str, case: "Case") -> str | None:
     Same-batch duplicates are caught for free: the apply loop inserts each minted
     hypothesis into ``case.hypotheses`` before the next item is checked, so an
     earlier sibling this turn is already in the scanned set. Terminal
-    (``REFUTED``/``RETIRED``) hypotheses are skipped so a legitimate revival can
-    re-enter the differential (see ``_DEDUP_SKIP_STATES``). The caller surfaces
-    the matched id to the LLM so a genuine re-examination updates the standing
-    hypothesis rather than cloning it."""
+    (``REFUTED``/``RETIRED``) hypotheses are deliberately NOT dedup targets:
+    terminal states are immutable (``_apply_hypothesis_updates`` refuses changes
+    and instructs "open a NEW hypothesis if that theory is back in play"), so
+    deduping against them would DEADLOCK the revival — the re-mint refused here
+    and the update refused there, with contradictory guidance. The gate-inflation
+    vector is duplicate ACTIVE/CAPTURED records; a revival minting a fresh
+    hypothesis is legitimate diagnostic work, not spurious inflation. The caller
+    surfaces the matched id to the LLM so a genuine re-examination updates the
+    standing hypothesis rather than cloning it."""
     for hid, hyp in case.hypotheses.items():
-        if hyp.state in _DEDUP_SKIP_STATES:
+        if hyp.state.is_terminal:
             continue
         if hypothesis_statements_duplicate(statement, hyp.statement):
             return hid

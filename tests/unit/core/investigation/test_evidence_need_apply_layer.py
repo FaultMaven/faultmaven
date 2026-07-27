@@ -28,7 +28,6 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
-    _TERMINAL_HYPOTHESIS_STATES,
     MilestoneEngine,
     _supersede_needs_on_terminal_hypothesis,
     _sweep_needs_for_terminal_hypotheses,

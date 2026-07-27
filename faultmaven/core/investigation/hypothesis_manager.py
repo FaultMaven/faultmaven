@@ -652,11 +652,7 @@ class HypothesisManager:
         Returns:
             Tuple of (is_anchored, reason, affected_hypothesis_ids)
         """
-        active_hypotheses = [
-            h
-            for h in hypotheses
-            if h.state not in [HypothesisState.RETIRED, HypothesisState.REFUTED]
-        ]
+        active_hypotheses = [h for h in hypotheses if not h.state.is_terminal]
 
         if not active_hypotheses:
             return False, None, []

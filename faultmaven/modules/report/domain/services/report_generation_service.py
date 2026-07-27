@@ -30,11 +30,11 @@ from faultmaven.infrastructure.observability.tracing import trace
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts).
 # Report models are Case-owned and live in case.contracts.
 from faultmaven.modules.case.contracts import (
+    TERMINAL_HYPOTHESIS_STATES,
     Case,
     CaseReport,
     CaseState,
     CauseAssuranceGrade,
-    HypothesisState,
     ICaseRepository,
     NeedObtainability,
     NeedPurpose,
@@ -358,8 +358,7 @@ class ReportGenerationService:
         residual = [
             h
             for h in hypotheses
-            if getattr(h, "state", None)
-            not in (HypothesisState.REFUTED, HypothesisState.RETIRED)
+            if getattr(h, "state", None) not in TERMINAL_HYPOTHESIS_STATES
         ]
         if residual:
             residual.sort(key=lambda h: getattr(h, "likelihood", 0), reverse=True)
