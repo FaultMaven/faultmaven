@@ -240,7 +240,21 @@ Matrix row: INV-39 in `investigation-invariants.md`; insufficient-evidence-handl
 
 Read it beside INV-39: INV-39 says whether a provider builds a differential at all; INV-41 says, of the resolutions it does reach, how many still lean on the free-text backstop instead of a validated chain. Both must clear at the provider floor before #673 can proceed.
 
-Matrix row: INV-41 in `investigation-invariants.md`; methodology §7.7 (#673 gate).
+### Companion read: how often the chain outranks the conclusion
+
+- `faultmaven_rcc_precedence_inversion_total{provider}` — one increment each time the per-turn recompute **replaced** an LLM-authored `root_cause_conclusion` with the chain-derived mirror because a standing validated, uncontested root exists (methodology §7.7). It counts replacements only: a mirror refreshing another mirror, a first mint onto an empty conclusion, and a no-op turn all count nothing. Labeled by the CHAT provider, same resolution rule as `resolution_cause_leg_total`.
+
+This is the demand-side companion to the backstop-reliance rate. Where INV-41 measures resolutions that had *nothing but* the fallback, this measures investigations where the chain was strong enough to take the conclusion over. A provider whose inversion rate is high while its backstop-reliance rate is low is already effectively chain-authored — the shape #673's retirement is waiting for. A near-zero inversion rate with sustained case volume means models are not grounding roots, not that the precedence is off.
+
+```promql
+# Conclusion replacements per resolved case, per provider.
+  sum by (provider) (rate(faultmaven_rcc_precedence_inversion_total[7d]))
+/ sum by (provider) (rate(faultmaven_resolution_cause_leg_total[7d]))
+```
+
+Kill switch: `FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION=false` restores conclusion-wins precedence; the counter then stays flat by construction, so read a sudden flatline against the flag before reading it as a grounding regression.
+
+Matrix row: INV-41 in `investigation-invariants.md`; methodology §7.7 (#673 gate and the precedence it now carries).
 
 ## Conventions for adding new lifecycle metrics
 

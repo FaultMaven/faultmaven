@@ -820,10 +820,13 @@ override them.
 ### 7.6 The LLM-authored conclusion's lifecycle — retraction ≠ authorship (INV-34)
 
 A `RootCauseConclusion` the LLM writes (`determined_by` = the agent) is the
-LLM's own stance, a **trust boundary**: the engine never authors or overwrites
-it (`synthesize_rcc_from_validated_root` refuses to touch one, and the M2 grade
-labels its confidence at read-time rather than rewriting it, §9.5). But *never
-authoring* it does not mean *never retracting* it. The two guarantees still
+LLM's own stance, a **trust boundary**: the engine never re-words it — the M2
+grade labels its confidence at read-time rather than rewriting it (§9.5), and
+what the engine may do instead is *replace* it wholesale with the chain-derived
+mirror when a validated root stands (the §7.7 precedence), or leave it exactly as
+written when none does. This section governs that fallback lane: everything below
+binds the LLM conclusion whenever it is the conclusion the case carries. But
+*never re-wording* it does not mean *never retracting* it. The two guarantees still
 bind the conclusion the engine surfaces to every terminal consumer (the
 disposition/M5 gate, the report, the copilot UI, KB runbook harvesting); the
 user-visible narration is a further guarantee surface for *disposition claims*,
@@ -916,18 +919,48 @@ layer. The prompt teaches the engine's actual model — build and ground the cha
 the engine confirms — rather than a self-certified boolean the engine had already
 stopped reading.
 
-*Rejected-for-now alternative — derive the conclusion text from the chain.* The
-LLM still authors the conclusion as free text, which persists as a deliberate
-terminal-soundness backstop while models under-build chains (§9.2: `cause_state`
-is a SOFT signal; `_cause_identified` reads the RCC when the chain is
-under-grounded). `names_root_node_id` makes the causal graph the authoritative
-*reference* for the conclusion; making it the authoritative *source* — the engine
-renders the conclusion text from the validated root and dual-authoring (with the
-§7.6 link/retract and INV-25 over-claim reconciliation) is retired — is the
-eventual convergence. It is **gated** on reliable chain-grounding: retiring the
-backstop before models ground reliably would strand cases that today resolve via
-the free-text conclusion (a NO-COLLAPSE regression). Tracked as #673 so the
-retirement is deliberate, not forgotten.
+*The chain outranks the conclusion (precedence).* The `root_cause_conclusion` the
+engine surfaces **is** the chain-derived mirror whenever a standing validated,
+uncontested chain root exists: the per-turn recompute mints or refreshes the
+mirror even over an LLM-authored conclusion, so every terminal consumer reads text
+rendered from the root the chain actually proves. The LLM-authored conclusion is
+the explicit **fallback** — it stands byte-identical, and only, when no such root
+stands (the terminal-soundness backstop, now named rather than implied). Every
+older refusal sits *ahead* of the precedence: while identification is
+MECE-contested (§7.1.2) the engine asserts nothing at all, and a disconfirmed
+conclusion is retracted at source (§7.6) whoever wrote it. A mirror that replaced
+a conclusion and whose root later demotes is retracted like any other mirror
+(`retract_stale_engine_rcc`) and the case then carries **no** conclusion — the
+replaced text asserted the same, now-unsupported cause world, so resurrecting it
+would re-assert exactly what the chain stopped backing.
+`rcc_precedence_inversion_total{provider}` counts each replacement — the second
+read INV-41 asks for, showing how often the fallback is the only thing standing.
+The precedence is a kill switch (`FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION`, default
+on); off restores conclusion-wins precedence exactly.
+
+*Accepted costs of chain-rendered text.* The mirror renders mechanism by joining
+the chain's rung statements (" → "), so it reads flatter than the LLM's prose —
+the fix is better rung-statement elicitation, not a second conclusion namespace.
+`contributing_factors` is an LLM-only field, so the key-insights list the case UI
+derives from it empties when the mirror replaces a conclusion: single authority
+means the engine does not blend LLM prose into text it renders from the graph.
+Grade labeling needs nothing new and already covers the fallback — the assurance
+grade and the over-claim flag are recomputed from the graph at every surface (turn
+response, resolved payload, report note), so a fallback conclusion standing at
+`NO_ROOT` carries its "not validated in the causal analysis" label, and a fallback
+claiming VERIFIED there still trips the INV-25 over-claim seam. The resolution
+confirm-stamp keeps its own narrow mint rule (it fills an *absent* conclusion for a
+count-held root and never overwrites one): re-adjudicating precedence on a case the
+user has already confirmed resolved would change the conclusion text under the
+confirmation.
+
+*Still gated — retiring the authorship itself.* The LLM continues to author its
+conclusion (schema and prompt untouched); what remains rejected-for-now is
+removing that authorship and, with it, the reconciliation layer (§7.6's
+link/retract and the INV-25 over-claim seam). That step is **gated** on reliable
+chain-grounding: retiring the fallback before models ground reliably would strand
+cases that today resolve through it (a NO-COLLAPSE regression). Tracked as #673 so
+the retirement is deliberate, not forgotten.
 
 *The gate is a metric, not prose (INV-41).* "Reliable chain-grounding" is now
 measurable: at each RESOLVED transition the engine records which leg of
@@ -1300,8 +1333,9 @@ persisted `cause_overclaim` flag, so a standing over-claim warns once rather
 than once per turn; the per-turn state stays visible in the DEBUG grounding
 trace and the flag itself). This is the incident shape of issue #656; the
 engine's own mirror can no longer produce it, so a hit is an LLM-authored
-over-claim — LLM-conclusion retraction is a separate correction tracked on
-that issue.
+over-claim — and, under the §7.7 precedence, specifically a *fallback*
+conclusion over-claiming with no validated root behind it, which is exactly the
+population the seam exists to label.
 
 The grade also rules the **engine-synthesized conclusion's confidence** (§9.3
 mirror): a `MECHANISTIC` root mints `CONFIDENT` at a fixed 0.8 — a *cap*, so
