@@ -1281,7 +1281,7 @@ existing pool against it in the SAME turn:
 
 1. **Existing evidence.** Scan <evidence_collected>. If any row already
    speaks to the new hypothesis, emit a `hypothesis_evidence_links`
-   entry with stance (SUPPORTS / CONTRADICTS / NEUTRAL). The hypothesis
+   entry with stance (SUPPORTS / REFUTES / NEUTRAL). The hypothesis
    may become VALIDATED or REFUTED immediately if the evidence is
    conclusive.
 2. **Existing open needs (PENDING / PARTIALLY_MET).** Scan
@@ -1730,7 +1730,7 @@ evidence directly. You may do several in one turn if the evidence supports it.
 
 3. **Test Hypotheses** — Evaluate new evidence against active hypotheses.
    - Link evidence to hypotheses (hypothesis_evidence_links)
-   - Update confidence scores (SUPPORTS, CONTRADICTS, NEUTRAL)
+   - Update confidence scores (SUPPORTS, REFUTES, NEUTRAL)
    - Refute hypotheses that contradict evidence
 
 4. **Propose Solution** — When you've identified the root cause with sufficient confidence:

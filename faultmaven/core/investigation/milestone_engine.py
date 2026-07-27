@@ -135,7 +135,6 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceNeed,
     EvidenceSourceType,
-    EvidenceStance,
     HypothesisState,
     InterventionQuadrant,
     InvestigationActionType,
@@ -8277,60 +8276,9 @@ class MilestoneEngine:
             hasattr(updates, "hypothesis_evidence_links")
             and updates.hypothesis_evidence_links
         ):
-            for link in updates.hypothesis_evidence_links:
-                # Resolve partial IDs like 'new_index_0' to actual IDs if we just created them
-                h_id = self._resolve_id_ref(
-                    link.hypothesis_id_ref,
-                    metadata.get("hyp_emit_order")
-                    or metadata.get("hypotheses_generated", []),
-                    "hyp",
-                )
-                e_id = self._resolve_id_ref(
-                    link.evidence_id_ref, metadata.get("evidence_added", []), "ev"
-                )
-
-                # Check existence
-                if h_id not in case.hypotheses:
-                    # Hypothesis ID validation failed - log warning but don't add to system_feedback
-                    logger.warning(
-                        f"Hypothesis-evidence link skipped: Hypothesis ID '{h_id}' not found "
-                        f"(resolved from '{link.hypothesis_id_ref}'). "
-                        f"Available hypotheses: {list(case.hypotheses.keys())}, "
-                        f"Hypotheses added this turn: {metadata.get('hypotheses_generated', [])}"
-                    )
-                    continue
-
-                # Check evidence existence (scan list)
-                ev_exists = any(e.evidence_id == e_id for e in case.evidence)
-                if not ev_exists:
-                    # Evidence reference failed to resolve
-                    # This is only a problem if LLM tried to link evidence but used wrong format/ID
-                    # It's acceptable if no evidence exists (e.g., user_text message)
-
-                    # Build diagnostic info
-                    evidence_this_turn = metadata.get("evidence_added", [])
-                    all_evidence_ids = [e.evidence_id for e in case.evidence]
-
-                    logger.warning(
-                        f"Hypothesis-evidence link validation failed: "
-                        f"Cannot resolve reference '{link.evidence_id_ref}' to evidence ID '{e_id}'. "
-                        f"Evidence created this turn: {evidence_this_turn}. "
-                        f"Recent evidence IDs: {all_evidence_ids[-5:] if len(all_evidence_ids) > 5 else all_evidence_ids}. "
-                        f"Note: This is expected if no evidence was created (user_text messages)."
-                    )
-                    continue
-
-                self.hypothesis_manager.link_evidence(
-                    case.hypotheses[h_id],
-                    e_id,
-                    link.stance == EvidenceStance.SUPPORTS,
-                    case.current_turn,
-                    reasoning=link.reasoning,
-                    stance_confidence=link.stance_confidence,
-                )
-                metadata["hypothesis_evidence_links_applied"] = (
-                    metadata.get("hypothesis_evidence_links_applied", 0) + 1
-                )
+            self._apply_hypothesis_evidence_links(
+                case, updates.hypothesis_evidence_links, metadata
+            )
 
         # (Deferred likelihood updates are applied AFTER chain emission —
         # see the call beside _apply_chain_emission below: the B1 cap must
@@ -8596,6 +8544,75 @@ class MilestoneEngine:
         metadata["outcome"] = self._determine_turn_outcome(
             case, metadata, updates.outcome
         )
+
+    def _apply_hypothesis_evidence_links(
+        self,
+        case: Case,
+        links: list,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Apply LLM-emitted ``hypothesis_evidence_links`` to the case.
+
+        Linking is best-effort: the LLM may reference hypothesis or
+        evidence IDs that don't resolve (timing issue), so failed links
+        are logged and skipped. The emitted stance is carried through
+        verbatim — NEUTRAL links attach without any likelihood effect
+        (#514).
+        """
+        for link in links:
+            # Resolve partial IDs like 'new_index_0' to actual IDs if we just created them
+            h_id = self._resolve_id_ref(
+                link.hypothesis_id_ref,
+                metadata.get("hyp_emit_order")
+                or metadata.get("hypotheses_generated", []),
+                "hyp",
+            )
+            e_id = self._resolve_id_ref(
+                link.evidence_id_ref, metadata.get("evidence_added", []), "ev"
+            )
+
+            # Check existence
+            if h_id not in case.hypotheses:
+                # Hypothesis ID validation failed - log warning but don't add to system_feedback
+                logger.warning(
+                    f"Hypothesis-evidence link skipped: Hypothesis ID '{h_id}' not found "
+                    f"(resolved from '{link.hypothesis_id_ref}'). "
+                    f"Available hypotheses: {list(case.hypotheses.keys())}, "
+                    f"Hypotheses added this turn: {metadata.get('hypotheses_generated', [])}"
+                )
+                continue
+
+            # Check evidence existence (scan list)
+            ev_exists = any(e.evidence_id == e_id for e in case.evidence)
+            if not ev_exists:
+                # Evidence reference failed to resolve
+                # This is only a problem if LLM tried to link evidence but used wrong format/ID
+                # It's acceptable if no evidence exists (e.g., user_text message)
+
+                # Build diagnostic info
+                evidence_this_turn = metadata.get("evidence_added", [])
+                all_evidence_ids = [e.evidence_id for e in case.evidence]
+
+                logger.warning(
+                    f"Hypothesis-evidence link validation failed: "
+                    f"Cannot resolve reference '{link.evidence_id_ref}' to evidence ID '{e_id}'. "
+                    f"Evidence created this turn: {evidence_this_turn}. "
+                    f"Recent evidence IDs: {all_evidence_ids[-5:] if len(all_evidence_ids) > 5 else all_evidence_ids}. "
+                    f"Note: This is expected if no evidence was created (user_text messages)."
+                )
+                continue
+
+            self.hypothesis_manager.link_evidence(
+                case.hypotheses[h_id],
+                e_id,
+                link.stance,
+                case.current_turn,
+                reasoning=link.reasoning,
+                stance_confidence=link.stance_confidence,
+            )
+            metadata["hypothesis_evidence_links_applied"] = (
+                metadata.get("hypothesis_evidence_links_applied", 0) + 1
+            )
 
     # =========================================================================
     # Evidence Need apply-layer (Phase 3 of evidence-needs rollout)
