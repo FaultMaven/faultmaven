@@ -255,21 +255,21 @@ def test_unknown_provider_fails_closed():
 
 
 @pytest.mark.unit
-def test_cloud_with_filesystem_storage_warns_but_boots(caplog):
-    """Filesystem storage in cloud is fragile, not invalid — warn, don't die.
+@pytest.mark.security
+def test_cloud_with_filesystem_storage_fails_closed():
+    """Filesystem storage in cloud must refuse to boot.
 
     Cloud replicas sharing one RWX volume make that volume a single point of
-    failure for all evidence I/O (#689). It is a real deployment though, and
-    one that is currently running: promoting this to a fatal problem would
-    refuse to boot it, so that flip is gated on the object-storage migration.
+    failure for all evidence I/O (#689). This shipped as a warning while the
+    RWX deployment was still running; with the object-storage migration done
+    (infra#127) it is fatal, so the SPOF cannot be reintroduced silently.
     """
     s = _cloud_ok()
     s.providers.storage_backend = StorageBackend.FILESYSTEM
 
-    with caplog.at_level("WARNING"):
-        validate_deployment_coherence(s)  # must not raise
-
-    assert any("STORAGE_BACKEND=filesystem" in r.message for r in caplog.records)
+    with pytest.raises(DeploymentCoherenceError) as exc:
+        validate_deployment_coherence(s)
+    assert "STORAGE_BACKEND=filesystem" in str(exc.value)
 
 
 @pytest.mark.unit
