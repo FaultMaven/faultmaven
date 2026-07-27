@@ -2270,12 +2270,17 @@ class TestRootCauseConclusionPersistence:
 
 
 class TestTerminalTransitionPendingActionCleanup:
-    """Verify that _execute_resolved_transition cleans up orphaned pending actions.
+    """#787: _execute_resolved_transition performs NO pending-action cleanup.
 
-    Added when terminal_transitions.py gained pending-action cleanup to close
-    the audit gap on the TREATMENT failure path: when solution_accepted is already
-    True and a revised fix is proposed, no stage-gate fires for the new
-    ProposedAction, so it must be marked accepted at resolution time.
+    The blanket-accept this class originally pinned (stamp every pending
+    ProposedAction ``accepted`` with a fabricated full-confidence
+    ActionAttempt at resolution) was removed: consent to the case-level
+    RESOLVED transition carries no per-action execution signal, and the
+    stamp laundered never-run fixes into generated runbooks as "applied".
+    Pending offers now stay pending (classified PROPOSED at the conversion
+    boundary) — see ``test_terminal_confirmation_integrity.py`` for the
+    full #787 pins. What remains here: genuinely-accepted actions are
+    untouched, and the transition fabricates nothing.
     """
 
     def _make_case(self):
@@ -2298,35 +2303,6 @@ class TestTerminalTransitionPendingActionCleanup:
                 proposed_problem_statement="Test symptom",
             ),
         )
-
-    def test_pending_action_marked_accepted_on_resolution(self):
-        """A pending ProposedAction is accepted and audited when the case resolves."""
-        from faultmaven.core.investigation.terminal_transitions import (
-            _execute_resolved_transition,
-        )
-        from faultmaven.modules.case.contracts import (
-            InvestigationActionType,
-            ProposedAction,
-        )
-
-        case = self._make_case()
-        case.proposed_actions.append(
-            ProposedAction(
-                case_id=case.case_id,
-                action_type=InvestigationActionType.SOLUTION,
-                description="Revised fix after first attempt failed",
-                proposed_in_turn=3,
-                state="pending",
-            )
-        )
-
-        _execute_resolved_transition(case, "user_123")
-
-        assert case.proposed_actions[0].state == "accepted"
-        assert len(case.action_attempts) == 1
-        attempt = case.action_attempts[0]
-        assert attempt.compliance_detected is True
-        assert attempt.compliance_confidence == 1.0
 
     def test_already_accepted_actions_not_reprocessed(self):
         """Actions already in accepted state are untouched during resolution."""
@@ -2355,8 +2331,9 @@ class TestTerminalTransitionPendingActionCleanup:
         assert case.proposed_actions[0].state == "accepted"
         assert len(case.action_attempts) == 0
 
-    def test_mixed_actions_only_pending_cleaned_up(self):
-        """With one accepted and one pending action, only the pending one is processed."""
+    def test_mixed_actions_left_exactly_as_recorded(self):
+        """#787: an accepted action stays accepted, a pending one stays
+        pending, and no ActionAttempt is fabricated for either."""
         from faultmaven.core.investigation.terminal_transitions import (
             _execute_resolved_transition,
         )
@@ -2388,9 +2365,8 @@ class TestTerminalTransitionPendingActionCleanup:
         _execute_resolved_transition(case, "user_123")
 
         assert case.proposed_actions[0].state == "accepted"  # unchanged
-        assert case.proposed_actions[1].state == "accepted"  # cleaned up
-        assert len(case.action_attempts) == 1
-        assert case.action_attempts[0].action_id == case.proposed_actions[1].action_id
+        assert case.proposed_actions[1].state == "pending"  # NOT stamped (#787)
+        assert len(case.action_attempts) == 0
 
 
 # =============================================================================

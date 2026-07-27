@@ -698,7 +698,12 @@ def _apply_stage_gate_side_effects(
                 to_state="closed",
                 summary=closure_message,
             )
-            metadata["transition_proposed"] = True
+            # Unified same-turn proposal flag: keeps step 0 of
+            # _check_automatic_transitions from confirming this close with
+            # the very message that produced it (#722 same-turn-confirmation
+            # guard) — the mitigation-verified message that triggered this
+            # proposal often pattern-matches as a bare "yes".
+            metadata["transition_proposed_this_turn"] = True
             metadata["override_suggestions"] = _close_confirmation_suggestions()
             metadata["rca_infeasible_closure_message"] = closure_message
             logger.info(
@@ -1763,7 +1768,10 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     from faultmaven.core.investigation.terminal_transitions import propose_transition
 
     propose_transition(case=case, to_state="closed", summary=closure_message)
-    metadata["transition_proposed"] = True
+    # Unified same-turn proposal flag: keeps step 0 of
+    # _check_automatic_transitions from confirming this close with the very
+    # message that produced it (#722 same-turn-confirmation guard).
+    metadata["transition_proposed_this_turn"] = True
     metadata["override_suggestions"] = _close_confirmation_suggestions()
     metadata["deferred_solution_closure_message"] = closure_message
     logger.info(
@@ -4872,7 +4880,7 @@ class MilestoneEngine:
                     "turn": case_updated.current_turn,
                     "state": case_updated.state.value,
                     "proposed_transition_emitted": bool(
-                        metadata.get("transition_proposed")
+                        metadata.get("transition_proposed_this_turn")
                     ),
                     "llm_proposed_to_status": _llm_proposed_to_status,
                     "engine_effective_to_status": _engine_to_status,
@@ -7938,15 +7946,19 @@ class MilestoneEngine:
                 names_root_node_id=getattr(rcc, "names_root_node_id", None),
             )
 
-        # 1b. v3 KB-Resolution signal: same-turn milestone collapse.
-        # When the user confirms a runbook fix worked, the LLM emits
+        # 1b. v3 KB-Resolution signal: milestone collapse (state authoring
+        # only). When the user confirms a runbook fix worked, the LLM emits
         # `knowledge_resolution` alongside `root_cause_conclusion`,
-        # `solutions_to_add`, and the gate milestones (`solution_accepted`).
-        # The standard ProposedTransition handshake (handled later in the
-        # turn) recognizes the user's confirmation as the disposition
-        # acknowledgment. We store the resolution signal here for metrics
-        # and audit. See investigation-lifecycle-logic.md §1.2 →
-        # "KB-Resolution Path (Same-Turn Variant)".
+        # `solutions_to_add`, and the gate milestones (`solution_accepted`)
+        # — INVESTIGATING's structured state is authored in this one turn.
+        # The RESOLVED disposition is NOT collapsed (#722): the user's "it
+        # worked" is the solution-verification claim (FM trusts it), not
+        # consent to the irreversible terminal transition — that consent
+        # comes from the explicit confirm turn of the standard
+        # ProposedTransition handshake. `KnowledgeResolution` (including
+        # `user_confirmation`) is an attribution/audit record, not consent.
+        # See investigation-lifecycle-logic.md §1.2 →
+        # "KB-Resolution Path (Milestone-Collapse Variant)".
         if hasattr(updates, "knowledge_resolution") and updates.knowledge_resolution:
             kr = updates.knowledge_resolution
             case.inquiry.knowledge_resolution = KnowledgeResolution(
@@ -7955,12 +7967,11 @@ class MilestoneEngine:
                 solution_applied=kr.solution_applied,
                 user_confirmation=kr.user_confirmation,
             )
-            metadata["knowledge_resolution_signalled"] = True
             # A runbook matched against the reported symptom, and the user
             # confirmed its fix worked — the symptom is, by construction, verified.
-            # Establish the cause-identification anchor so the same-turn collapse's
-            # RootCauseConclusion is honored by the M5 / readiness gates (which
-            # require a verified symptom for the RCC signal).
+            # Establish the cause-identification anchor so the milestone
+            # collapse's RootCauseConclusion is honored by the M5 / readiness
+            # gates (which require a verified symptom for the RCC signal).
             case.progress.symptom_verified = True
             logger.info(
                 "Case %s: knowledge_resolution signalled during INVESTIGATING; "
@@ -9252,7 +9263,11 @@ class MilestoneEngine:
         - INQUIRY -> INVESTIGATING when decided_to_investigate=True
 
         v3: INQUIRY -> RESOLVED edge removed. KB-driven cases route through
-        INVESTIGATING via same-turn milestone collapse — see
+        INVESTIGATING via the KB-resolution milestone collapse — the
+        structured attribution (RootCauseConclusion + Solution + gate
+        milestones) is authored in one turn, but the RESOLVED disposition
+        still requires the explicit confirm turn like every other terminal
+        transition (#722) — see
         docs/architecture/investigation-engine/investigation-lifecycle-logic.md
         §1.2 INVESTIGATING -> RESOLVED -> KB-Resolution Path.
 
@@ -9268,49 +9283,18 @@ class MilestoneEngine:
         old_status = case.state
 
         # 0. Handle pending transition confirmation from previous turn
-        # Skip confirmation check if we just proposed a transition this turn (User-Agent Handshake)
+        # Skip confirmation check if we just proposed a transition this turn
+        # (User-Agent Handshake). ``transition_proposed_this_turn`` is the ONE
+        # flag every same-turn proposal site sets — the LLM-emit path (step 2
+        # below), the rca_infeasible stage-gate side effect, and the deferred-
+        # solution close — so a proposal can never be confirmed by the very
+        # message that produced it (#722): the user must see the confirmation
+        # prompt and answer on a LATER turn. The KB-resolution path is no
+        # exception — its same-turn confirm collapse was removed (#722): the
+        # user's "it worked" message is the solution-verification claim, not
+        # consent to the irreversible RESOLVED transition.
         if hasattr(case, "pending_transition") and case.pending_transition:
-            # KB-Resolution Path same-turn collapse (§1.2). When the LLM
-            # emits ``knowledge_resolution`` (user confirmed a runbook fix
-            # worked) alongside ``ProposedTransition``, the user's
-            # confirmation message IS the disposition acknowledgment —
-            # no separate confirmation turn required. This is the only
-            # path that fires confirm_pending_transition in the same turn
-            # the proposal was written; every other transition follows
-            # the standard 2-turn handshake.
-            #
-            # Gating on BOTH ``transition_proposed_this_turn`` (set by
-            # propose_transition) AND ``knowledge_resolution_signalled``
-            # (set in _apply_investigation_updates when ``updates.knowledge_-
-            # resolution`` is present) ensures this special path fires
-            # only on the well-scoped KB-resolution scenario. All other
-            # ProposedTransition emissions still flow through the
-            # 2-turn handshake via the elif branch below.
-            if metadata.get("transition_proposed_this_turn", False) and metadata.get(
-                "knowledge_resolution_signalled", False
-            ):
-                from faultmaven.core.investigation.terminal_transitions import (
-                    confirm_pending_transition,
-                )
-
-                # A KB-resolution collapse always confirms a RESOLVED pending
-                # (the runbook fix worked), and a resolvable close already
-                # pivots at proposal time — so INV-37's confirm-time pivot
-                # cannot fire here today. Still, mirror the transition's actual
-                # outcome (never assert status_transitioned on the False-on-
-                # pivot return) so this stays correct if a close pending ever
-                # reaches this path.
-                metadata["status_transitioned"] = confirm_pending_transition(
-                    case, case.user_id
-                )
-                logger.info(
-                    f"KB-Resolution same-turn collapse: confirmed "
-                    f"pending transition for case {case.case_id} "
-                    f"(user's runbook-confirmation message covers "
-                    f"both signals — §1.2 KB-Resolution Path)"
-                )
-            # Don't confirm a transition that was just proposed in this same turn
-            elif metadata.get("transition_proposed_this_turn", False):
+            if metadata.get("transition_proposed_this_turn", False):
                 logger.info(
                     "Skipping confirmation check - transition was just proposed this turn"
                 )
@@ -9437,7 +9421,7 @@ class MilestoneEngine:
 
         # 1. INQUIRY transitions
         # v3: INQUIRY → RESOLVED edge removed. KB-driven cases route through
-        # INVESTIGATING via the same-turn milestone collapse documented in
+        # INVESTIGATING via the KB-resolution milestone collapse documented in
         # docs/architecture/investigation-engine/investigation-lifecycle-logic.md
         # §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path. Confirming the
         # problem statement is mandatory even when a runbook applies cleanly.
@@ -9620,7 +9604,7 @@ class MilestoneEngine:
                     # UI dropdown path's first-pass behavior.
                     metadata["resolution_needs_info_first_pass"] = True
                     metadata["resolution_needs_info_message"] = needs_info_message
-                metadata["transition_proposed"] = True
+                metadata["transition_proposed_this_turn"] = True
                 # Override LLM-emitted suggestions with the canonical
                 # confirm/decline pair, so all three trigger paths
                 # (UI click, NL via this branch, agent-initiated) produce
@@ -9656,15 +9640,21 @@ class MilestoneEngine:
         "yes"), and a message carrying a question or a contrastive
         continuation ("ok but what is the root cause?") is substantive
         input, not consent — it falls to the pending-gate escape lane
-        instead (INV-26: the gate never consumes substantive input).
+        instead (INV-26: the gate never consumes substantive input). The
+        substance test is the shared ``is_substantive_reply`` predicate —
+        the same one that guards classifier-minted confirmation intents at
+        the IntentResolver adoption site (#721), so the two confirm lanes
+        cannot drift apart.
         """
+        from faultmaven.core.investigation.terminal_transitions import (
+            is_substantive_reply,
+        )
+
         if not user_message:
             return False
+        if is_substantive_reply(user_message):
+            return False
         msg = user_message.strip().lower()
-        if len(msg) > 100:
-            return False
-        if "?" in msg or " but " in msg or msg.endswith(" but"):
-            return False
         confirm_patterns = [
             "yes",
             "yeah",
@@ -9721,12 +9711,14 @@ class MilestoneEngine:
         return _matches_gate_token(msg, decline_patterns)
 
     # v3: `_check_fast_track_resolution` and `KB_FAST_TRACK_THRESHOLD` removed.
-    # KB-driven cases route through INVESTIGATING via same-turn milestone
-    # collapse. See indicator-resolution.md + investigation-lifecycle-logic.md
-    # §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path. The collapse is
-    # applied in `_apply_investigation_updates`'s `knowledge_resolution`
-    # branch (gate milestones set there); RootCauseConclusion + Solution
-    # are populated from the LLM's structured emissions in the same turn.
+    # KB-driven cases route through INVESTIGATING via the KB-resolution
+    # milestone collapse. See indicator-resolution.md +
+    # investigation-lifecycle-logic.md §1.2 INVESTIGATING → RESOLVED →
+    # KB-Resolution Path. The collapse is state authoring only, applied in
+    # `_apply_investigation_updates`'s `knowledge_resolution` branch (gate
+    # milestones set there); RootCauseConclusion + Solution are populated
+    # from the LLM's structured emissions in the same turn. The RESOLVED
+    # disposition still requires the explicit confirm turn (#722).
 
     def _determine_turn_outcome(
         self, case: Case, metadata: dict[str, Any], reported_outcome: TurnOutcome

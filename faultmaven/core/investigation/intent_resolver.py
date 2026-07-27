@@ -5,7 +5,13 @@ When the agent presents DECIDE suggestions with intent metadata (e.g.,
 response instead of clicking, this module determines whether the typed text
 is answering one of those choices or is unrelated conversational input.
 
-Design: see docs/architecture/investigation-engine/intent-resolution.md
+A resolver match is an INFERENCE from typed text, not a deterministic
+click. The adoption site (``InvestigationService``) therefore applies the
+INV-26 substance guard before adopting a minted intent that would confirm
+a pending TERMINAL transition (#721): substantive typed input is never
+consumed as consent to an irreversible RESOLVED/CLOSED.
+
+Design: see docs/architecture/investigation-engine/choice-response-resolution.md
 """
 
 import logging

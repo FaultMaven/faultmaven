@@ -378,7 +378,7 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
 
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "resolved"
-    assert metadata.get("transition_proposed") is True
+    assert metadata.get("transition_proposed_this_turn") is True
     _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved")
 
 
@@ -658,7 +658,7 @@ async def test_check_automatic_transitions_no_override_when_no_proposal():
 
     assert case.pending_transition is None
     assert "override_suggestions" not in metadata
-    assert metadata.get("transition_proposed") is not True
+    assert metadata.get("transition_proposed_this_turn") is not True
 
 
 # ============================================================

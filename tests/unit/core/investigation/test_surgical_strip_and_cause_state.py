@@ -190,7 +190,7 @@ class TestDeferredImplementationClose:
         case.solutions = [SimpleNamespace(solution_id="sol_x")]
         meta = {}
         _maybe_propose_deferred_close(case, meta)
-        assert "transition_proposed" not in meta
+        assert "transition_proposed_this_turn" not in meta
         assert case.pending_transition is None
 
     def test_no_proposal_when_feasible_now(self):
@@ -201,7 +201,7 @@ class TestDeferredImplementationClose:
         case = self._case(feasible=SolutionFeasible.NOW, solution_proposed=True)
         meta = {}
         _maybe_propose_deferred_close(case, meta)
-        assert "transition_proposed" not in meta
+        assert "transition_proposed_this_turn" not in meta
         assert case.pending_transition is None
 
     def test_no_proposal_when_deferred_but_no_solution(self):
@@ -212,7 +212,7 @@ class TestDeferredImplementationClose:
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=False)
         meta = {}
         _maybe_propose_deferred_close(case, meta)
-        assert "transition_proposed" not in meta
+        assert "transition_proposed_this_turn" not in meta
 
     def test_proposes_close_when_deferred_with_solution(self):
         from faultmaven.core.investigation.milestone_engine import (
@@ -222,7 +222,7 @@ class TestDeferredImplementationClose:
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
         meta = {}
         _maybe_propose_deferred_close(case, meta)
-        assert meta.get("transition_proposed") is True
+        assert meta.get("transition_proposed_this_turn") is True
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
         assert meta.get("override_suggestions")
@@ -241,7 +241,7 @@ class TestDeferredImplementationClose:
         _maybe_propose_deferred_close(case, meta)
         # existing pending transition must not be clobbered
         assert case.pending_transition == {"to_state": "resolved"}
-        assert "transition_proposed" not in meta
+        assert "transition_proposed_this_turn" not in meta
 
 
 class TestStructuredOutputDegradation:
