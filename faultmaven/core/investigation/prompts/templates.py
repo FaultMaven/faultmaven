@@ -2039,7 +2039,7 @@ verify the outcome.
      the fix (SUGGEST, don't execute — NEVER say "I will run" or "Let me execute")
    - ACCEPT SUBJECTIVE CONFIRMATION: "It's working now" or "looks good" is sufficient
 
-**KB-RESOLUTION VARIANT — Same-Turn Milestone Collapse:**
+**KB-RESOLUTION VARIANT — Milestone Collapse:**
 
 This variant applies when ALL of the following hold:
 1. A `kb_qa` call earlier in this case returned a runbook with at least one
@@ -2047,13 +2047,15 @@ This variant applies when ALL of the following hold:
 2. The user has now confirmed in this turn that the proposed fix worked
    ("That fixed it", "It worked", "Yes — resolved", or equivalent).
 
-When triggered, the user's "it worked" message is BOTH the
-`solution_verified` signal AND the disposition acknowledgment. You MUST
-emit the following structured fields in this single turn — the engine
-collapses INVESTIGATING into 1–2 turns when the runbook Cause supplies the
-root cause and the user supplies the verification (see
-`docs/architecture/investigation-engine/investigation-lifecycle-logic.md`
-§1.2 "KB-Resolution Path (Same-Turn Variant)").
+When triggered, the user's "it worked" message is the verification claim —
+it is trusted as the truth of the resolution, and INVESTIGATING's
+structured state collapses into this single turn (the runbook Cause
+supplies the root cause; the user supplies the verification). It is NOT
+consent to the irreversible RESOLVED transition: the disposition still
+requires the standard confirmation turn — the engine holds your
+`proposed_transition` pending and presents the confirm/decline pair
+(see `docs/architecture/investigation-engine/investigation-lifecycle-logic.md`
+§1.2 "KB-Resolution Path (Milestone-Collapse Variant)").
 
 REQUIRED EMISSIONS IN THE SAME TURN:
 
@@ -2117,9 +2119,10 @@ REQUIRED EMISSIONS IN THE SAME TURN:
    words, `summary` = "<the attributed Cause> is no longer present after the fix".
 
 6. **`state_updates.proposed_transition`** — `{{ "to_state": "resolved" }}`
-   as documented in COMPLETION below. The user's "it worked" message
-   serves as the disposition confirmation; no additional confirmation
-   turn is needed.
+   as documented in COMPLETION below. The engine holds it pending and asks
+   the user to confirm on the next turn — the "One click to confirm" in
+   your prose is literal. The user's "it worked" message is the
+   verification claim, never the disposition confirmation.
 
 CRITICAL DIRECT-COPY RULE: The Statement and Mechanism fields you saw in
 the runbook Cause are length-bounded (≤300 / ≤800 chars) so they can be

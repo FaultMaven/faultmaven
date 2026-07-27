@@ -431,9 +431,9 @@ option while a pending transition exists (e.g., "Close" is pending but user clic
 normally. This handles the case where the user changes their mind after requesting
 a transition.
 
-##### KB-Resolution Path (Same-Turn Variant)
+##### KB-Resolution Path (Milestone-Collapse Variant)
 
-When a runbook from the KB applies cleanly to the case, the INVESTIGATING → RESOLVED handshake collapses into a single confirmation turn. This is **not** a separate transition edge — it is the same INVESTIGATING → RESOLVED disposition with all required state (`RootCauseConclusion`, `Solution`, gate milestones) populated in one turn from the matched runbook Cause rather than across many investigation turns.
+When a runbook from the KB applies cleanly to the case, INVESTIGATING's **state authoring** collapses into a single turn: all required state (`RootCauseConclusion`, `Solution`, gate milestones) is populated in one turn from the matched runbook Cause rather than across many investigation turns. This is **not** a separate transition edge, and it does **not** collapse the disposition handshake — the RESOLVED transition still requires the explicit user confirmation turn, exactly like the multi-turn path (#722). The user's "it worked" message is the *verification claim* (trusted as the truth of the resolution — `solution_verified` territory); it is not *consent* to the irreversible terminal transition. `KnowledgeResolution.user_confirmation` quotes it as an attribution/audit record, not as consent. *(Rejected alternative: the v3 same-turn confirm collapse, which executed RESOLVED in the proposal turn — removed because an LLM misread of "it worked" could irreversibly resolve a case with no explicit confirm turn, breaching the User-Agent Handshake invariant.)*
 
 **Signal**: The LLM emits `knowledge_resolution` in `state_updates` when the user confirms that a runbook fix proposed in an earlier turn resolved their issue ("That fixed it", "It worked", "Yes, resolved").
 
@@ -442,10 +442,11 @@ class KnowledgeResolution(BaseModel):
     """User-confirmed resolution via knowledge base match.
 
     Emitted by the LLM when the user confirms that a runbook fix proposed
-    in an earlier turn resolved their issue. Triggers same-turn milestone
+    in an earlier turn resolved their issue. Triggers the milestone
     collapse: the engine populates RootCauseConclusion, creates Solution,
-    and sets gate milestones from the attributed Cause's content, then
-    fires the standard RESOLVED transition.
+    and sets gate milestones from the attributed Cause's content in this
+    one turn, then holds the RESOLVED proposal pending the standard
+    confirmation turn. user_confirmation is an audit record, not consent.
     """
     match_id: str                # ID of the matched runbook
     match_type: str              # "runbook" | "past_case" | "documentation"
@@ -463,14 +464,14 @@ class KnowledgeResolution(BaseModel):
 3. **Create `Solution`** from the attributed Cause's blocks:
    - `immediate_action` ← Cause `Mitigation` (with risk + duration metadata)
    - `longterm_fix` ← Cause `Resolution`
-4. **Set gate milestones** in the standard order: `solution_proposed=True`, `solution_accepted=True`, `solution_verified=True`. There is no LLM-settable cause signal (INV-35): the engine derives `cause_state=IDENTIFIED` from the validated, uncontested chain root grounded by the runbook attribution.
-5. **Fire the standard handshake.** With milestone state populated, the LLM's response on this same turn emits `ProposedTransition` to RESOLVED. The user's confirmation message that triggered `knowledge_resolution` is recognized as the disposition acknowledgment — no additional confirmation turn is required.
+4. **Set gate milestones** in the standard order: `solution_proposed=True` (engine-derived from the standing SolutionToAdd), `solution_accepted=True` (LLM stage-gate signal). `solution_verified` is NOT set here — it is set by `_execute_resolved_transition` when the user confirms the disposition. There is no LLM-settable cause signal (INV-35): the engine derives `cause_state=IDENTIFIED` from the validated, uncontested chain root grounded by the runbook attribution.
+5. **Fire the standard handshake.** With milestone state populated, the LLM's response on this same turn emits `ProposedTransition` to RESOLVED. The engine holds it pending and presents the canonical confirm/decline pair ("One click to confirm" is literal); the transition executes only after the user confirms on the next turn.
 
-**Why the handshake collapses cleanly.** The user already confirmed the fix worked (that's what produced `knowledge_resolution`). The standard disposition invariant — explicit user confirmation — is satisfied by the same "it worked" message that serves as the `solution_verified` signal. The engine does not auto-resolve; it recognizes the user's existing confirmation as covering both signals.
+**Why the disposition does not collapse.** Two distinct things must never be conflated: (a) the *truth* of the user's resolution claim — FaultMaven trusts "it worked" by design, which is why the milestone state can be authored in one turn; and (b) *consent to the irreversible lifecycle action* — RESOLVED has no reopen path, so consent must be an explicit, bare confirmation on a turn where the user can see what they are confirming (INV-26). An LLM misread of "it worked" costs one wasted confirmation prompt under the handshake; under a same-turn confirm collapse it would cost an irreversible wrong terminal state.
 
 **Why this is not a fast-track.** Earlier designs allowed an `INQUIRY → RESOLVED` edge that bypassed INVESTIGATING entirely, producing terminal cases with empty `RootCauseConclusion` / `Solution` / `evidence` records — the Resolution Summary report had nothing to render. The unified path eliminates that edge: every RESOLVED case flows through INVESTIGATING and produces complete bookkeeping. KB-driven cases are simply the variant where INVESTIGATING completes in 1–2 turns because the cause and fix come pre-packaged from a runbook Cause subsection.
 
-**Authoring requirements upstream.** The same-turn collapse depends on runbook Causes carrying structured `Statement`, `Mechanism`, `Mitigation`, `Resolution`, and `Verification` fields — see [runbook-content-architecture.md §3](../knowledge-and-ai/runbook-content-architecture.md#3-standardized-runbook-template). Runbooks not following the v3 template cannot drive same-turn collapse; cases retrieving them fall back to standard multi-turn investigation.
+**Authoring requirements upstream.** The milestone collapse depends on runbook Causes carrying structured `Statement`, `Mechanism`, `Mitigation`, `Resolution`, and `Verification` fields — see [runbook-content-architecture.md §3](../knowledge-and-ai/runbook-content-architecture.md#3-standardized-runbook-template). Runbooks not following the v3 template cannot drive the milestone collapse; cases retrieving them fall back to standard multi-turn investigation.
 
 #### INVESTIGATING → CLOSED (Disposition)
 
@@ -522,7 +523,7 @@ ALLOWED_ACTIONS = {
         CaseState.CLOSED           # Inquiry-only, no investigation
     ],
     CaseState.INVESTIGATING: [
-        CaseState.RESOLVED,        # Solution verified (terminal) — includes the same-turn KB-resolution variant
+        CaseState.RESOLVED,        # Solution verified (terminal) — includes the KB-resolution milestone-collapse variant
         CaseState.CLOSED           # Abandoned (terminal)
     ],
     CaseState.RESOLVED: [],        # DISPOSITION - no further case actions
@@ -530,7 +531,7 @@ ALLOWED_ACTIONS = {
 }
 ```
 
-There is no `INQUIRY → RESOLVED` edge. KB-driven cases route through INVESTIGATING via the same-turn milestone collapse documented under [INVESTIGATING → RESOLVED → KB-Resolution Path](#kb-resolution-path-same-turn-variant) — confirming problem understanding is mandatory before any solution is proposed, including for runbook-matched cases.
+There is no `INQUIRY → RESOLVED` edge. KB-driven cases route through INVESTIGATING via the KB-resolution milestone collapse documented under [INVESTIGATING → RESOLVED → KB-Resolution Path](#kb-resolution-path-milestone-collapse-variant) — confirming problem understanding is mandatory before any solution is proposed, including for runbook-matched cases.
 
 **Case Action Diagram**:
 
@@ -1709,7 +1710,7 @@ This section outlines all possible case lifecycles and their associated mileston
 **User Goal**: Resolve a known issue quickly using a runbook match.
 **Flow**: `INQUIRY` → `INVESTIGATING` → `RESOLVED` (with INVESTIGATING typically completing in 1–2 turns)
 
-This is not a separate lifecycle edge — it is the standard `INQUIRY → INVESTIGATING → RESOLVED` flow where INVESTIGATING completes rapidly because the matched runbook Cause supplies the root cause, mechanism, and fix without requiring multi-turn evidence gathering. See [§1.2 INVESTIGATING → RESOLVED → KB-Resolution Path](#kb-resolution-path-same-turn-variant) for the engine mechanism.
+This is not a separate lifecycle edge — it is the standard `INQUIRY → INVESTIGATING → RESOLVED` flow where INVESTIGATING completes rapidly because the matched runbook Cause supplies the root cause, mechanism, and fix without requiring multi-turn evidence gathering. See [§1.2 INVESTIGATING → RESOLVED → KB-Resolution Path](#kb-resolution-path-milestone-collapse-variant) for the engine mechanism.
 
 #### Workflow Steps
 

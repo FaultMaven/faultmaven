@@ -749,12 +749,34 @@ class InvestigationService:
                 if resolved_intent:
                     try:
                         resolved_qi = QueryIntent(**resolved_intent)
-                        intent = resolved_qi
-                        intent_type = resolved_qi.type
-                        logger.info(
-                            f"Intent resolved from suggestions: {intent_type.value} "
-                            f"for message: '{query[:50]}...'"
-                        )
+                        if self._minted_intent_swallows_terminal_consent(
+                            case, resolved_qi, query
+                        ):
+                            # INV-26 guard (#721): the resolver's classifier
+                            # tier matched substantive typed text ("yes but
+                            # what about the replication lag?") to a
+                            # suggestion whose intent would confirm the
+                            # pending TERMINAL transition. Substantive input
+                            # is never consent to an irreversible action —
+                            # drop the minted intent so the message flows
+                            # through the pending-gate escape lane as a
+                            # normal turn (the engine withdraws the proposal
+                            # and processes the message; it can re-propose
+                            # from fresher state).
+                            logger.info(
+                                "Discarded classifier-minted intent "
+                                f"{resolved_qi.type.value} for case "
+                                f"{case.case_id}: substantive reply must not "
+                                "confirm a pending terminal transition "
+                                "(INV-26, #721)"
+                            )
+                        else:
+                            intent = resolved_qi
+                            intent_type = resolved_qi.type
+                            logger.info(
+                                f"Intent resolved from suggestions: {intent_type.value} "
+                                f"for message: '{query[:50]}...'"
+                            )
                     except Exception:
                         logger.warning(
                             "Failed to parse resolved intent, "
@@ -1378,6 +1400,49 @@ class InvestigationService:
         )
 
         return result
+
+    @staticmethod
+    def _minted_intent_swallows_terminal_consent(
+        case: "Case", minted: QueryIntent, user_message: str
+    ) -> bool:
+        """INV-26 guard for resolver-minted intents (#721).
+
+        True when adopting ``minted`` would let a SUBSTANTIVE typed message
+        confirm the case's pending TERMINAL transition. The IntentResolver's
+        classifier tier semantically matches typed text against the previous
+        turn's DECIDE suggestions and can mint ``confirmation``/
+        ``status_transition`` intents — but the engine treats those intents
+        as deterministic consent (the DECIDE-click path) and consults them
+        BEFORE its INV-26 bare-token guards. A click IS deterministic
+        consent; an inference from typed text is not. So a minted intent
+        that would confirm a pending RESOLVED/CLOSED must pass the same
+        substance test the typed-confirmation matcher applies
+        (``is_substantive_reply`` — shared single source of truth): "yes but
+        what about the replication lag?" is substantive input, never consent
+        to an irreversible transition.
+
+        Only confirm-shaped mints over a pending terminal transition are
+        guarded. Declines, mints with no pending transition (e.g. Gate 1
+        problem-statement confirmation), and contradicting status
+        transitions (which merely cancel the pending) adopt as before —
+        none of them can execute a terminal transition.
+        """
+        from faultmaven.core.investigation.terminal_transitions import (
+            is_substantive_reply,
+        )
+
+        pending = getattr(case, "pending_transition", None)
+        if not pending:
+            return False
+
+        confirms_pending = (
+            minted.type == IntentType.CONFIRMATION and minted.confirmation_value is True
+        ) or (
+            minted.type == IntentType.STATUS_TRANSITION
+            and minted.to_state is not None
+            and minted.to_state.value == pending.get("to_state")
+        )
+        return confirms_pending and is_substantive_reply(user_message)
 
     async def _handle_confirmation(
         self, case: "Case", user_message: str, confirmation_value: Optional[bool]

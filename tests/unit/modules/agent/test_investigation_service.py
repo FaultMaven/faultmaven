@@ -1221,3 +1221,85 @@ class TestTurnResponseCauseAssurance:
 
         assert response.cause_assurance is None
         assert response.cause_overclaim is None
+
+
+class TestMintedIntentTerminalConsentAdoption:
+    """#721 adoption-site pins: a classifier-minted confirmation must not
+    dispatch as consent to a pending terminal transition when the typed
+    message is substantive (INV-26). See
+    tests/unit/core/investigation/test_terminal_confirmation_integrity.py
+    for the predicate-level matrix — these tests drive the REAL adoption
+    path in process_turn with the resolver mocked at its boundary."""
+
+    RESOLVE_SUGGESTIONS = [
+        {
+            "label": "Yes, mark as resolved",
+            "payload": "Yes, mark as resolved",
+            "intent": {"type": "confirmation", "confirmation_value": True},
+        }
+    ]
+
+    def _pending_case(self, user_id: str) -> Case:
+        case = create_sample_case(user_id=user_id)
+        case.inquiry.proposed_problem_statement = "Test problem"
+        case.inquiry.problem_statement_confirmed = True
+        case.inquiry.decided_to_investigate = True
+        case.state = CaseState.INVESTIGATING
+        case.pending_transition = {
+            "to_state": "resolved",
+            "summary": "Confirm resolution?",
+            "evidence_ids": [],
+            "proposed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        case.last_suggestions = list(self.RESOLVE_SUGGESTIONS)
+        return case
+
+    async def _run_turn(self, query: str, user_id: str, case, engine, repo):
+        service = InvestigationService(milestone_engine=engine, case_repository=repo)
+        await repo.save(case)
+        # Simulate the Tier-2 classifier semantically matching the typed
+        # text to the resolve suggestion — the exact #721 scenario.
+        service.intent_resolver.resolve = AsyncMock(
+            return_value={"type": "confirmation", "confirmation_value": True}
+        )
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=user_id,
+            payload=TurnPayload(query=query, attachments=[]),
+        )
+        return engine.process_turn.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_substantive_message_does_not_dispatch_confirmation(
+        self, mock_milestone_engine, mock_case_repository, sample_user_id
+    ):
+        case = self._pending_case(sample_user_id)
+        kwargs = await self._run_turn(
+            "yes but what about the replication lag?",
+            sample_user_id,
+            case,
+            mock_milestone_engine,
+            mock_case_repository,
+        )
+        assert kwargs.get("intent_type") != "confirmation", (
+            "#721: a substantive typed message reached the engine as a "
+            "confirmation intent — the classifier mint swallowed it as "
+            "consent to an irreversible transition."
+        )
+        assert kwargs.get("intent_type") == "conversation"
+
+    @pytest.mark.asyncio
+    async def test_bare_message_still_dispatches_minted_confirmation(
+        self, mock_milestone_engine, mock_case_repository, sample_user_id
+    ):
+        """The classifier tier's legitimate value: a bare phrasing outside
+        the engine's pattern list still confirms via the minted intent."""
+        case = self._pending_case(sample_user_id)
+        kwargs = await self._run_turn(
+            "affirmative",
+            sample_user_id,
+            case,
+            mock_milestone_engine,
+            mock_case_repository,
+        )
+        assert kwargs.get("intent_type") == "confirmation"

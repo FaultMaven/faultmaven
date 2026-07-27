@@ -156,6 +156,18 @@ Single token: `1`, `2`, ..., `N`, or `none`.
 - User message has file attachments (evidence submission, not a choice answer)
 - Intent metadata already present (user clicked — no classification needed)
 
+### Terminal-Consent Guard at the Adoption Site (#721, INV-26)
+
+A resolver match is an **inference** from typed text, not a deterministic click — but the engine treats adopted intents as click-equivalent consent and consults them *before* its INV-26 bare-token guards. Unguarded, the classifier could match `"yes but what about the replication lag?"` to "Yes, mark as resolved" and irreversibly resolve the case — consuming substantive input as consent, exactly what INV-26 forbids.
+
+So the adoption site (`InvestigationService._minted_intent_swallows_terminal_consent`) rejects a minted intent when **all three** hold:
+
+1. the case has a `pending_transition` (always terminal: `resolved`/`closed`),
+2. the minted intent would confirm it (`confirmation` with `confirmation_value=True`, or a `status_transition` matching the pending target), and
+3. the message is substantive per `terminal_transitions.is_substantive_reply` — the **same predicate** `_user_confirms_transition` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the two confirm lanes cannot drift.
+
+The rejected message falls back to conversation and flows through the pending-gate escape lane: the proposal is withdrawn, the message is processed as a normal turn, and the engine can re-propose from fresher state. Declines, non-pending confirmations (Gate 1), and contradicting status transitions adopt as before — none can execute a terminal transition. DECIDE clicks are untouched: a click is deterministic consent.
+
 ---
 
 ## 5. Hypothesis Action Routing

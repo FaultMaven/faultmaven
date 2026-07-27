@@ -480,37 +480,28 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
 # INV-06: KB-Resolution path still uses pending_transition (no auto-resolve)
 # =============================================================================
 #
-# Source: §1.2 *KB-Resolution Path (Same-Turn Variant)* (lines 345-385).
+# Source: §1.2 *KB-Resolution Path (Milestone-Collapse Variant)*.
 # Statement: When the LLM emits ``knowledge_resolution`` (runbook fix
 #   confirmed by user), the engine does NOT bypass the disposition
 #   handshake. It populates milestone state from the matched runbook Cause
-#   and lets the standard ProposedTransition flow handle the disposition.
+#   in one turn and lets the standard ProposedTransition flow handle the
+#   disposition on the NEXT turn. The "collapse" is in milestone-state
+#   authoring only, never in transition timing.
 # Enforcement: Structural — uses the same ``pending_transition`` mechanism
-#   as the multi-turn path. The "collapse" is in milestone-state authoring,
-#   not transition timing.
+#   as the multi-turn path; there is no collapse branch.
 #
-# Drift surfaced during verification (to fold into §1.3.1 drift notes):
-#
-#   a. Design §1.2 overstates the same-turn collapse. The text claims "no
-#      additional confirmation turn is required", but the engine's
-#      ``transition_proposed_this_turn`` guard at milestone_engine.py:5253
-#      prevents same-turn confirmation. In current code, the KB-resolution
-#      path STILL requires a separate confirmation turn — same as the
-#      multi-turn path. The "collapse" is only in milestone-state
-#      authoring (RootCauseConclusion + Solution populated in one turn),
-#      NOT in user-side disposition timing.
-#
-#   b. The matrix row for INV-06 is accurate ("still goes through
-#      propose_transition + user confirmation") but doesn't reflect the
-#      design-text overstatement in §1.2. The matrix understates while
-#      §1.2 oversells. Both should converge on the actual behavior.
-#
-#   c. ``metadata["knowledge_resolution_signalled"]`` is set in
-#      _apply_investigation_updates (line 4690) but never read elsewhere.
-#      Dead metadata. Minor; flag for cleanup.
-#
-# INV-06's structural invariant itself HOLDS — the engine does not
-# auto-resolve from ``knowledge_resolution``. The tests below pin that.
+# History (#722): PR #297 ("Option B") added a same-turn confirm collapse
+# gated on ``transition_proposed_this_turn AND knowledge_resolution_-
+# signalled``. The flow redesign later renamed the LLM-emit path's flag to
+# ``transition_proposed``, leaving the conjunction unsatisfiable in
+# production while the unit test injected both flags directly and stayed
+# green — a fixture-minted dead gate. #722 removed the collapse branch
+# deliberately: the user's "it worked" is the trusted verification claim,
+# never consent to the irreversible RESOLVED transition (INV-26). The
+# proposal flags are unified back into ``transition_proposed_this_turn``,
+# set by EVERY same-turn proposal site (LLM emit, rca_infeasible close,
+# deferred-solution close), so a proposal can never be confirmed by the
+# very message that produced it. The tests below pin all of that.
 
 
 class TestINV06_KBResolutionUsesPendingTransition:
@@ -601,27 +592,21 @@ class TestINV06_KBResolutionUsesPendingTransition:
             )
 
     @pytest.mark.asyncio
-    async def test_inv06_engine_collapses_to_one_turn_when_both_flags_set(self):
-        """KB-Resolution Path same-turn collapse (§1.2): when the engine
-        sees BOTH ``transition_proposed_this_turn`` AND
-        ``knowledge_resolution_signalled`` in the same turn's metadata,
-        it confirms the pending transition immediately.
+    async def test_inv06_no_same_turn_confirm_even_with_kb_resolution_signal(self):
+        """#722: the same-turn confirm collapse is REMOVED. Even on a turn
+        where the LLM emitted ``knowledge_resolution`` alongside the
+        proposal (the old collapse conjunction — reconstructed here with
+        the legacy metadata flag to prove it carries no power), the
+        pending transition is HELD for the explicit confirm turn.
 
-        This is the only path that fires confirm in the same turn as
-        propose. Every other ProposedTransition emission still follows
-        the standard 2-turn handshake.
+        The user's "it worked" is the trusted verification claim, never
+        consent to the irreversible RESOLVED transition (INV-26).
         """
         repo = MagicMock()
         repo.save = AsyncMock(side_effect=lambda c: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
-
-        # Simulate: same-turn LLM emission landed a ProposedTransition AND
-        # a knowledge_resolution. propose_transition was called (writes
-        # pending_transition); _apply_investigation_updates set both
-        # metadata flags. We exercise the engine's _check_automatic_-
-        # transitions which holds the collapse logic.
         propose_transition(
             case,
             to_state="resolved",
@@ -633,60 +618,65 @@ class TestINV06_KBResolutionUsesPendingTransition:
 
         metadata = {
             "transition_proposed_this_turn": True,
+            # Legacy collapse conjunction flag — must be inert (#722).
             "knowledge_resolution_signalled": True,
         }
 
         result = await engine._check_automatic_transitions(case, metadata)
 
-        # Same-turn collapse fired
-        assert result.state == CaseState.RESOLVED, (
-            "KB-Resolution same-turn collapse did not fire even though both "
-            "metadata flags were set. INV-06 design intent: the user's "
-            "knowledge_resolution-triggering message covers the disposition "
-            "acknowledgment; no separate confirmation turn required."
+        assert result.state == CaseState.INVESTIGATING, (
+            "Same-turn confirm fired on the KB-resolution turn. #722 "
+            "removed the collapse: an irreversible RESOLVED requires the "
+            "explicit confirm turn — the proposal turn can never also be "
+            "the consent turn."
         )
-        assert result.resolved_at is not None
-        assert metadata.get("status_transitioned") is True
-        # Pending cleared after successful confirm
-        assert result.pending_transition is None
+        assert result.resolved_at is None
+        # Pending stays — waiting for user confirmation next turn
+        assert result.pending_transition is not None
+        assert metadata.get("status_transitioned") is not True
 
     @pytest.mark.asyncio
-    async def test_inv06_engine_holds_handshake_when_only_proposal_flag_set(self):
-        """Negative pin: when ``transition_proposed_this_turn`` is set
-        but ``knowledge_resolution_signalled`` is NOT, the engine does
-        NOT collapse — the standard 2-turn handshake holds.
+    async def test_inv06_same_turn_proposal_not_confirmed_by_triggering_message(
+        self,
+    ):
+        """#722 flag unification: a close proposed mid-turn by a stage-gate
+        side effect (rca_infeasible / deferred-solution — sites that used
+        to set the ORPHANED ``transition_proposed`` flag) must not be
+        confirmed by the very message that produced it.
 
-        Confirms the gating is conjunction (BOTH flags), not disjunction.
-        Without this test, a future refactor that loosened the guard
-        could let any same-turn proposal auto-confirm.
+        Live hole this pins shut: user says "yes, the workaround is
+        stable" → mitigation_verified fires → engine proposes CLOSED →
+        step 0 of _check_automatic_transitions pattern-matched the same
+        message as a bare "yes" and CLOSED the case in the same turn —
+        the user never saw the proposal. With the unified
+        ``transition_proposed_this_turn`` flag the skip-guard covers
+        every same-turn proposal site.
         """
         repo = MagicMock()
         repo.save = AsyncMock(side_effect=lambda c: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
+        # Simulate the stage-gate side effect having proposed a close
+        # earlier in THIS turn (before _check_automatic_transitions runs).
         propose_transition(
             case,
-            to_state="resolved",
-            summary="Standard resolution proposal",
-            evidence_ids=[],
+            to_state="closed",
+            summary="Mitigation verified and stable — close as stabilized?",
+        )
+        metadata = {"transition_proposed_this_turn": True}
+
+        # The triggering message pattern-matches as a bare confirmation.
+        result = await engine._check_automatic_transitions(
+            case, metadata, user_message="yes, stable now"
         )
 
-        metadata = {
-            "transition_proposed_this_turn": True,
-            # knowledge_resolution_signalled is NOT set — standard path
-        }
-
-        result = await engine._check_automatic_transitions(case, metadata)
-
-        # Status UNCHANGED — standard 2-turn handshake holds
         assert result.state == CaseState.INVESTIGATING, (
-            "Same-turn collapse fired on a non-KB path. The collapse "
-            "must be gated on BOTH transition_proposed_this_turn AND "
-            "knowledge_resolution_signalled — never on the first alone."
+            "A same-turn stage-gate close proposal was confirmed by the "
+            "message that triggered it. The unified "
+            "transition_proposed_this_turn flag must make step 0 skip "
+            "confirmation on every same-turn proposal (#722)."
         )
-        assert result.resolved_at is None
-        # Pending stays — waiting for user confirmation next turn
         assert result.pending_transition is not None
         assert metadata.get("status_transitioned") is not True
 

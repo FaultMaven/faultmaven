@@ -749,7 +749,7 @@ RESOLVED case
 
 **Auto-summary generation**: Terminal cases with investigation substance (evidence / hypotheses / completed milestones) get an auto-generated summary (`RESOLUTION_SUMMARY` or `CLOSURE_SUMMARY`), synthesized synchronously on terminal transition and rendered inline in the closure-turn chat reply. See [Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary) for the canonical spec (content-focus table, substance gate, regen rules).
 
-**Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `kb_qa` tool surfaces these runbooks, potentially enabling fast-track resolution (the KB-resolution path: INQUIRY → INVESTIGATING → RESOLVED with a same-turn collapse — there is no direct INQUIRY → RESOLVED edge, INV-04) without a full investigation cycle.
+**Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `kb_qa` tool surfaces these runbooks, potentially enabling fast resolution (the KB-resolution path: INQUIRY → INVESTIGATING → RESOLVED with the milestone collapse — state authored in one turn, disposition confirmed on the next; there is no direct INQUIRY → RESOLVED edge, INV-04) without a full investigation cycle.
 
 ---
 

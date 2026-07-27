@@ -46,7 +46,6 @@ from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
 )
 from faultmaven.modules.case.contracts import (
-    ActionAttempt,
     Case,
     CaseAction,
     CaseState,
@@ -63,6 +62,37 @@ from faultmaven.modules.case.contracts import (
 # ALONE can trip the gate — only real case evidence can lift belief past it.
 # The ``cap < gate`` invariant is pinned by an import-time check.
 CAUSE_IDENTIFIED_LIKELIHOOD = 0.6
+
+# INV-26 substantive-input bound: a typed reply longer than this cannot be a
+# bare consent to a pending terminal transition. Shared by every consumer of
+# ``is_substantive_reply`` so the confirm-side substance test cannot drift
+# between the pattern matcher and the intent-resolver guard (#721).
+BARE_CONSENT_MAX_LENGTH = 100
+
+
+def is_substantive_reply(user_message: "str | None") -> bool:
+    """INV-26 substance test for replies to a pending TERMINAL transition.
+
+    A message is substantive — and therefore can never be consumed as consent
+    to an irreversible RESOLVED/CLOSED transition — when it is long (>
+    ``BARE_CONSENT_MAX_LENGTH`` chars), carries a question, or carries a
+    contrastive continuation ("yes but what about the replication lag?").
+    Substantive input falls to the pending-gate escape lane and is processed
+    as a normal turn; only a bare confirmation may execute a terminal
+    transition.
+
+    This is the single source of truth for the confirm-side substance test:
+    ``MilestoneEngine._user_confirms_transition`` (typed pattern matching) and
+    the IntentResolver adoption guard in ``investigation_service`` (#721,
+    classifier-minted confirmation intents) both apply it. An empty message is
+    not substantive — it is also not consent; callers reject it separately.
+    """
+    if not user_message:
+        return False
+    msg = user_message.strip().lower()
+    if len(msg) > BARE_CONSENT_MAX_LENGTH:
+        return True
+    return "?" in msg or " but " in msg or msg.endswith(" but")
 
 
 def cause_identification_leg(case: "Case") -> "str | None":
@@ -654,28 +684,20 @@ def _execute_resolved_transition(case: Case, user_id: str):
 
     now = datetime.now(UTC)
 
-    # Mark any remaining pending ProposedActions as accepted and create audit records.
-    # This covers revised fixes proposed during the TREATMENT failure path: when a fix
-    # fails and the LLM proposes a revised solution (SolutionToAdd → ProposedAction),
-    # the user executes it and the case resolves via ProposedTransition rather than a
-    # stage-gate milestone. Because solution_accepted is already True, no stage-gate
-    # fires and _apply_stage_gate_side_effects is never called for the revised action.
-    for action in case.proposed_actions:
-        if action.state == "pending":
-            action.state = "accepted"
-            case.action_attempts.append(
-                ActionAttempt(
-                    action_id=action.action_id,
-                    user_message="Resolution confirmed by user",
-                    submitted_at=now,
-                    compliance_detected=True,
-                    compliance_confidence=1.0,
-                )
-            )
-            logger.info(
-                f"Marked pending ProposedAction {action.action_id} as accepted "
-                f"on resolution of case {case.case_id}"
-            )
+    # Still-pending ProposedActions stay PENDING at resolution (#787). The
+    # user's confirmation is consent to the case-level RESOLVED transition —
+    # it carries no per-action execution signal, and the engine records none
+    # (Solution.applied_at / ProposedAction have no outcome field). Stamping
+    # every pending offer ``accepted`` with a fabricated full-confidence
+    # ActionAttempt claimed the user EXECUTED fixes they may never have run
+    # (out-of-band resolution), and R5's ``classify_solution_outcome`` then
+    # laundered them into generated runbooks as "applied". A pending offer
+    # classifies as PROPOSED at the conversion boundary — surfaced, flagged
+    # unconfirmed — which is the honest ceiling until a per-action outcome
+    # signal exists. Known recall cost, accepted: a revised fix the user DID
+    # run on the TREATMENT failure path (no stage gate fires there because
+    # ``solution_accepted`` is already latched) now also reads PROPOSED
+    # rather than falsely-certain APPLIED.
     case.atomic_update(
         state=CaseState.RESOLVED,
         resolved_at=now,
