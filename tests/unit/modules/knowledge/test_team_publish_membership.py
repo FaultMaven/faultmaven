@@ -191,6 +191,121 @@ class TestConversionTeamPublishGuard:
 
 
 # ===========================================================================
+# Verify-time re-check: the share row is minted at verify, so membership is
+# re-validated at the point of effect (verifier may differ from the minter,
+# or have left the team since the job was created)
+# ===========================================================================
+
+
+def _verify_ready_service(*, team_service, tmp_path, job_team="team_a"):
+    """A ConversionService whose verify_draft reaches the team-share transfer:
+    team-scoped user-owned job, valid DRAFT with a real file on disk, a share
+    repo answering ``job_team``, and a knowledge service whose ingest_runbook
+    records whether publication happened."""
+    from faultmaven.modules.knowledge.domain.models.conversion import DraftStatus
+
+    draft_file = tmp_path / "runbook.md"
+    draft_file.write_text("---\nstatus: draft\n---\n\n# Runbook\n")
+
+    job = MagicMock()
+    job.user_id = "u1"
+    job.scope = "team"
+    job.organization_id = "org_1"
+
+    dm = MagicMock()
+    dm.id = "d1"
+    dm.runbook_id = "rb-1"
+    dm.status = DraftStatus.DRAFT.value
+    dm.validation_passed = True
+    dm.file_path = str(draft_file)
+    dm.title = "T"
+
+    calls = {"n": 0}
+
+    async def _execute(_stmt):
+        calls["n"] += 1
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = job if calls["n"] == 1 else dm
+        return result
+
+    session = AsyncMock()
+    session.execute = _execute
+
+    class _Factory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, *a):
+            return False
+
+    share = MagicMock()
+    share.scope_type = "team"
+    share.scope_id = job_team
+    share_repo = AsyncMock()
+    share_repo.list_scopes_for_resource = AsyncMock(return_value=[share])
+
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=3)
+
+    service = ConversionService(
+        llm_router=MagicMock(),
+        settings=MagicMock(),
+        db_session_factory=_Factory(),
+        knowledge_service=knowledge_service,
+        share_repository=share_repo,
+        team_service=team_service,
+    )
+    return service, knowledge_service
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestVerifyTimeMembershipRecheck:
+    async def test_non_member_verifier_refused_before_publication(self, tmp_path):
+        service, ks = _verify_ready_service(
+            team_service=_team_service(["team_other"]), tmp_path=tmp_path
+        )
+        with pytest.raises(AuthorizationError, match="team you belong to"):
+            await service.verify_draft(
+                conversion_id="c",
+                draft_id="d1",
+                user_id="u1",
+                username="u1",
+            )
+        ks.ingest_runbook.assert_not_awaited()
+
+    async def test_member_verifier_publishes(self, tmp_path):
+        service, ks = _verify_ready_service(
+            team_service=_team_service(["team_a"]), tmp_path=tmp_path
+        )
+        result = await service.verify_draft(
+            conversion_id="c",
+            draft_id="d1",
+            user_id="u1",
+            username="u1",
+        )
+        assert result is not None and result.status == "verified"
+        ks.ingest_runbook.assert_awaited_once()
+        assert ks.ingest_runbook.await_args.kwargs["team_id"] == "team_a"
+
+    async def test_stale_share_with_no_team_service_refused(self, tmp_path):
+        # A share row exists (e.g. minted before teams were unwired) but no
+        # team service: fail-closed — the share must not transfer.
+        service, ks = _verify_ready_service(team_service=None, tmp_path=tmp_path)
+        with pytest.raises(AuthorizationError):
+            await service.verify_draft(
+                conversion_id="c",
+                draft_id="d1",
+                user_id="u1",
+                username="u1",
+            )
+        ks.ingest_runbook.assert_not_awaited()
+
+
+# ===========================================================================
 # Route passthrough: typed refusals reach the client as 403/422, not 500
 # ===========================================================================
 

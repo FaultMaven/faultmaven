@@ -1892,9 +1892,9 @@ class CaseService(ICaseService):
 
         Only the case owner may share, and only with a Team they belong to. The
         membership check is what keeps the share within the case's org: it
-        resolves through the RLS-tenanted ``teams`` table
-        (``_resolve_user_team_ids``), so under the owner's org RLS context
-        ``team_ids`` contains only teams in that org — a foreign-org team is
+        resolves through the RLS-tenanted ``teams`` table (via the shared
+        ``is_team_member`` predicate), so under the owner's org RLS context
+        membership contains only teams in that org — a foreign-org team is
         never a member and is rejected here, not merely masked at read time. The
         share row then carries the case's own ``organization_id``. Idempotent
         (re-sharing is a no-op).

@@ -411,11 +411,17 @@ async def delete_draft(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Delete a conversion draft."""
+    """Delete a conversion draft.
+
+    Deleting a global-scope draft is platform-corpus authoring — the service
+    applies the global-authoring gate once the job's scope is loaded, same as
+    edit (#785) and verify.
+    """
     success = await service.delete_draft(
         conversion_id=conversion_id,
         draft_id=draft_id,
         user_id=current_user.user_id,
+        is_platform_admin=current_user.is_platform_admin(),
     )
     if not success:
         raise HTTPException(status_code=404, detail="Draft not found")

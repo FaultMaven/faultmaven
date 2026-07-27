@@ -280,6 +280,82 @@ class TestUpdateDraftGlobalGate:
 
 
 # ===========================================================================
+# Service: delete_draft global-delete gate (adjacent verb of #785)
+# ===========================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestDeleteDraftGlobalGate:
+    """Destroying a global draft (file unlinked) is platform-corpus authoring —
+    same policy as update_draft/verify_draft on the adjacent verbs."""
+
+    def _system_job(self, scope: str):
+        j = MagicMock()
+        j.user_id = "system"
+        j.scope = scope
+        return j
+
+    async def test_global_system_job_non_admin_refused(self, monkeypatch):
+        _patch_provider(monkeypatch, BUILTIN_SINGLE)
+        service = _service(job=self._system_job("global"), draft=None)
+        with pytest.raises(AuthorizationError) as exc:
+            await service.delete_draft(
+                conversion_id="c",
+                draft_id="d",
+                user_id="user_x",
+                is_platform_admin=False,
+            )
+        assert str(exc.value) == GLOBAL_AUTHORING_ADMIN_MSG
+
+    async def test_global_under_multi_refused_even_for_admin(self, monkeypatch):
+        _patch_provider(monkeypatch, BUILTIN_MULTI)
+        service = _service(job=self._system_job("global"), draft=None)
+        with pytest.raises(AuthorizationError):
+            await service.delete_draft(
+                conversion_id="c",
+                draft_id="d",
+                user_id="user_x",
+                is_platform_admin=True,
+            )
+
+    async def test_global_admin_single_tenant_passes_gate(self, monkeypatch):
+        # Gate cleared → flow reaches the draft lookup (draft=None) → False.
+        _patch_provider(monkeypatch, BUILTIN_SINGLE)
+        service = _service(job=self._system_job("global"), draft=None)
+        assert (
+            await service.delete_draft(
+                conversion_id="c",
+                draft_id="d",
+                user_id="user_x",
+                is_platform_admin=True,
+            )
+            is False
+        )
+
+    async def test_personal_scope_never_gated(self, monkeypatch):
+        _patch_provider(monkeypatch, BUILTIN_MULTI)
+        service = _service(job=_job("personal"), draft=None)
+        assert (
+            await service.delete_draft(
+                conversion_id="c",
+                draft_id="d",
+                user_id="user_x",
+                is_platform_admin=False,
+            )
+            is False
+        )
+
+    async def test_default_is_fail_closed(self, monkeypatch):
+        _patch_provider(monkeypatch, BUILTIN_SINGLE)
+        service = _service(job=self._system_job("global"), draft=None)
+        with pytest.raises(AuthorizationError):
+            await service.delete_draft(
+                conversion_id="c", draft_id="d", user_id="user_x"
+            )
+
+
+# ===========================================================================
 # Route wiring: is_platform_admin derived from the caller's roles
 # ===========================================================================
 
@@ -369,6 +445,22 @@ class TestRouteThreadsIsAdmin:
         )
         assert resp.status_code == 200
         assert service.update_draft.await_args.kwargs["is_platform_admin"] is False
+
+    def test_delete_draft_route_passes_admin_flag(self):
+        service = MagicMock()
+        service.delete_draft = AsyncMock(return_value=True)
+        client = self._client(service, _user(roles=["admin", "platform_admin"]))
+        resp = client.delete("/knowledge/conversions/c1/drafts/d1")
+        assert resp.status_code == 204
+        assert service.delete_draft.await_args.kwargs["is_platform_admin"] is True
+
+    def test_delete_draft_route_passes_admin_false_for_member(self):
+        service = MagicMock()
+        service.delete_draft = AsyncMock(return_value=True)
+        client = self._client(service, _user(roles=["user"]))
+        resp = client.delete("/knowledge/conversions/c1/drafts/d1")
+        assert resp.status_code == 204
+        assert service.delete_draft.await_args.kwargs["is_platform_admin"] is False
 
     def test_verify_batch_route_passes_admin_flag(self):
         service = MagicMock()

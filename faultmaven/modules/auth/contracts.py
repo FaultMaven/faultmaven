@@ -8,6 +8,7 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -530,7 +531,16 @@ async def is_team_member(team_service, user_id: Optional[str], team_id: str) -> 
         return False
     try:
         return team_id in await team_service.list_all_user_team_ids(user_id)
-    except Exception:  # noqa: BLE001 — fail closed on any resolution error
+    except Exception as exc:  # noqa: BLE001 — fail closed on any resolution error
+        # Log before answering False: to the caller a resolver outage is
+        # indistinguishable from a genuine non-membership refusal, so this
+        # line is the only signal that the refusal was infrastructural.
+        logging.getLogger(__name__).warning(
+            "Team membership resolution failed for user %s / team %s: %s",
+            user_id,
+            team_id,
+            exc,
+        )
         return False
 
 

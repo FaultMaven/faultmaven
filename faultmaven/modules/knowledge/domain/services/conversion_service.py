@@ -1799,6 +1799,16 @@ class ConversionService:
             # creates the item's own share row. Replaces the retired
             # conversion_jobs.team_id column (ADR-013 §D4).
             team_id = await self._resolve_job_team_id(conversion_id)
+            # Membership was checked when the target was minted (#854), but
+            # THIS is where it takes effect as a knowledge_item share — and
+            # the verifier may differ from the minter ("system" jobs) or have
+            # left the team since. Re-check fail-closed at the point of effect.
+            if team_id and not await is_team_member(
+                self._team_service, user_id, team_id
+            ):
+                raise AuthorizationError(
+                    "You can only publish a runbook to a team you belong to"
+                )
             try:
                 chunks_created = await self._knowledge_service.ingest_runbook(
                     document_id=knowledge_item_id,
@@ -2462,8 +2472,15 @@ status: draft
         conversion_id: str,
         draft_id: str,
         user_id: str,
+        is_platform_admin: bool = False,
     ) -> bool:
-        """Soft-delete a draft and remove the file from disk."""
+        """Soft-delete a draft and remove the file from disk.
+
+        ``is_platform_admin`` gates deletion at ``global`` scope: destroying a
+        global draft (file unlinked from disk) is platform-corpus authoring,
+        the same policy as :meth:`update_draft` / :meth:`verify_draft` on the
+        adjacent verbs. Defaults ``False`` (fail-closed).
+        """
         if not self._db_session_factory:
             return False
 
@@ -2481,6 +2498,9 @@ status: draft
             job = job_result.scalar_one_or_none()
             if not job:
                 return False
+
+            if job.scope == "global":
+                ensure_global_authoring_allowed(is_platform_admin)
 
             draft_result = await session.execute(
                 select(ConversionDraftModel).where(

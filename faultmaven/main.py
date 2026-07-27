@@ -543,10 +543,16 @@ async def lifespan(app: FastAPI):
                     settings=_settings,
                     db_session_factory=get_db_session,
                     knowledge_service=app.state.knowledge_service,
-                    share_repository=getattr(app.state, "share_repository", None),
+                    # Source both collaborators from the CONTAINER, not
+                    # app.state — the app.state copies are assigned further
+                    # down this lifespan, so reading them here yields None
+                    # and silently disables team publishing (share rows never
+                    # minted, membership gate #854 unreachable). Pinned by
+                    # test_conversion_service_composition_root_wiring.
+                    share_repository=getattr(container, "share_repository", None),
                     # Membership resolver for the team publish target (#854);
                     # absent (standalone) → team-scoped publish is refused.
-                    team_service=getattr(app.state, "team_service", None),
+                    team_service=container.get_team_service(),
                 )
                 # Give KnowledgeService a reference to ConversionService so that
                 # draft lifecycle mutations (discard on delete) are owned by a

@@ -480,9 +480,9 @@ async def delete_document(
         raise
     except Exception as e:
         logger.error(f"Failed to delete document {document_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to delete document: {str(e)}"
-        )
+        # See update_document — no internal exception text to the widened
+        # audience (#834).
+        raise HTTPException(status_code=500, detail="Failed to delete document")
 
 
 @router.post("/search")
@@ -695,9 +695,10 @@ async def update_document(
         raise
     except Exception as e:
         logger.error(f"Failed to update document {document_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to update document: {str(e)}"
-        )
+        # No str(e) in the response: this route is now reachable by any
+        # authenticated user (#834), and raw exception text is an internal
+        # detail. The log line above keeps the diagnostic.
+        raise HTTPException(status_code=500, detail="Failed to update document")
 
 
 @router.post("/documents/bulk-update")
