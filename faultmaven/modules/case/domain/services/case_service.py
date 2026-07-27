@@ -403,12 +403,17 @@ class CaseService(ICaseService):
 
             # Deduplication: Check if identical to last message
             # This fixes Issue 1: Duplicate Questions When Chat History is Reloaded
+            # A turn is a duplicate only if the SAME principal resubmits the same
+            # content — on team-shared cases two members can legitimately post
+            # identical adjacent turns ("still broken", "+1"), which must both
+            # persist (#855).
             if case.messages and len(case.messages) > 0:
                 last_msg = case.messages[-1]
-                # Check for identical content and role
+                # Check for identical content, role, and author
                 if (
                     last_msg.get("role") == message_role
                     and last_msg.get("content") == message.content
+                    and last_msg.get("author_id") == message.author_id
                 ):
                     logger.warning(
                         f"Skipping duplicate message for case {case_id} (content hash match)",
