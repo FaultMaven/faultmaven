@@ -469,6 +469,33 @@ resolution_cause_leg_total = Counter(
 )
 
 
+# Companion read to INV-41, on the supply side of the same question (§7.7). The
+# conclusion the engine surfaces is the chain-derived mirror whenever a standing
+# validated, uncontested root exists, so the per-turn recompute REPLACES an
+# LLM-authored conclusion with it. This counts those replacements — and only
+# those: a mirror refreshing another mirror, a first mint onto an absent
+# conclusion, and a no-op turn all count nothing, so the number is exactly "how
+# often did the chain take the conclusion over from the model's prose".
+#
+# Where resolution_cause_leg_total measures resolutions that had NOTHING but the
+# free-text fallback, this measures investigations where the chain was strong
+# enough to outrank it. High replacement rate + low backstop-reliance rate is the
+# shape the free-text retirement is waiting for; a near-zero rate at sustained
+# case volume means models are not grounding roots. Read as a trend against
+# per-provider resolution volume, never to the single case. A flatline can also
+# mean the precedence kill switch is off — check the flag before reading it as a
+# grounding regression. Interpretation and PromQL:
+# docs/operations/monitoring/lifecycle-metrics.md § INV-41.
+rcc_precedence_inversion_total = Counter(
+    "faultmaven_rcc_precedence_inversion_total",
+    "The chain-derived conclusion mirror REPLACED an LLM-authored "
+    "RootCauseConclusion because a standing validated, uncontested chain root "
+    "outranks it (§7.7). One increment per replacement, labeled by the CHAT "
+    "``provider``; mirror refreshes and first mints are not counted.",
+    ["provider"],
+)
+
+
 # A turn that hit a RECOVERABLE token failure and answered from the minimal
 # fallback prompt instead of failing (#662, the NO-COLLAPSE guarantee). Labeled
 # by ``reason`` (input_overflow | output_truncation | unclassified) because the

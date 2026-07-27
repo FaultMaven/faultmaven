@@ -1469,10 +1469,13 @@ def _recompute_cause_state_from_chain(
             p.root_cause_likelihood = 0.8
         if not p.root_cause_method:
             p.root_cause_method = "hypothesis_validation"
-        # §9.3: mirror the validated chain into a RootCauseConclusion when none
-        # is recorded, so the disposition/report layer has consistent cause text
-        # (covers the LLM-validated-root-without-conclusion case and the M6
-        # retracted-one-chain-while-another-stands case).
+        # §9.3/§7.7: the validated root IS the cause, so mirror it into the
+        # RootCauseConclusion the disposition/report layer reads. The mirror
+        # outranks an LLM-authored conclusion and replaces it here — this runs
+        # after this turn's LLM conclusion has been applied, so the surfaced text
+        # is rendered from the chain whenever one stands. With no validated root
+        # this branch is not reached at all and the LLM's conclusion stands as the
+        # explicit fallback.
         synthesize_rcc_from_validated_root(case)
     elif (
         root_validated
@@ -1613,9 +1616,10 @@ def _recompute_assessment_state(
     # M2 over-claim seam (#656 turn-6 shape): a recorded conclusion claims
     # "verified" while the graph grade lacks counterfactual confirmation. The
     # engine mirror can no longer produce this (its confidence is grade-derived),
-    # so a hit here is an LLM-authored conclusion over-claiming — surfaced at
-    # WARNING (prod-visible, unlike the DEBUG grounding trace) until conclusion
-    # retraction/refresh lands (tracked on #656). Edge-triggered via the persisted
+    # so a hit here is an LLM-authored conclusion over-claiming — and, since a
+    # standing validated root takes the conclusion over (§7.7), specifically a
+    # FALLBACK conclusion over-claiming with no such root behind it. Surfaced at
+    # WARNING (prod-visible, unlike the DEBUG grounding trace). Edge-triggered via the persisted
     # flag so a standing over-claim warns once, not once per turn (alert
     # hygiene); the per-turn state stays visible in the DEBUG grounding trace
     # and the persisted flag itself. The under-claim polarity lives in
