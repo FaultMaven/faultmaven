@@ -726,7 +726,10 @@ def test_synthesize_rcc_when_validated_root_has_no_conclusion():
     assert rcc.likelihood == 0.8
 
 
-def test_synthesized_rcc_does_not_overwrite_llm_conclusion():
+def test_synthesized_rcc_replaces_llm_conclusion_when_a_root_stands():
+    """A standing validated, uncontested root outranks the LLM's own conclusion:
+    the recompute replaces it with the chain-derived mirror, so the surfaced text
+    is rendered from what the chain proves and cannot exceed it."""
     case, root, hyp = _chain_case()
     own = RootCauseConclusion(
         root_cause="the LLM's own worded conclusion",
@@ -737,7 +740,11 @@ def test_synthesized_rcc_does_not_overwrite_llm_conclusion():
     case.root_cause_conclusion = own
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_state == CauseState.IDENTIFIED
-    assert case.root_cause_conclusion is own  # LLM's conclusion preserved
+    rcc = case.root_cause_conclusion
+    assert rcc is not own
+    assert rcc.determined_by == "engine:chain_validation"
+    assert rcc.root_cause == root.statement
+    assert rcc.validated_hypothesis_id == hyp.hypothesis_id
 
 
 def test_stale_engine_rcc_refreshed_on_root_handoff_without_refutation():
@@ -883,11 +890,10 @@ def test_pre_cap_verified_engine_mirror_corrects_down():
     assert rcc.validated_hypothesis_id == hyp.hypothesis_id
 
 
-def test_llm_authored_verified_rcc_is_not_touched_by_the_cap():
-    """The M2 cap governs the ENGINE's mirror only: an LLM-authored conclusion
-    is never rewritten here (its retraction lifecycle is the LLM-conclusion
-    follow-up tracked on #656) — the
-    over-claim is surfaced via the persisted grade + the seam warning instead."""
+def test_llm_verified_rcc_gives_way_to_the_capped_mirror_on_a_mechanistic_root():
+    """An LLM conclusion claiming "verified" over a merely mechanistic root does
+    not survive beside it: the mirror replaces it at the capped CONFIDENT/0.8 the
+    M2 grade supports, so the surfaced confidence is grade-derived."""
     case, root, hyp = _chain_case()
     own = RootCauseConclusion(
         root_cause="the LLM's own worded conclusion",
@@ -897,6 +903,28 @@ def test_llm_authored_verified_rcc_is_not_touched_by_the_cap():
     )
     case.root_cause_conclusion = own
     _recompute_cause_state_from_chain(case)
+    rcc = case.root_cause_conclusion
+    assert rcc is not own
+    assert rcc.confidence_level == ConfidenceLevel.CONFIDENT
+    assert rcc.likelihood == 0.8
+
+
+def test_the_cap_never_rewrites_a_fallback_llm_conclusion():
+    """With no root standing, the LLM conclusion IS the conclusion — and the M2
+    cap governs the engine's mirror only, so its stated confidence is left exactly
+    as written. The over-claim is surfaced via the persisted grade + the seam
+    warning, never by rewriting the model's text."""
+    case, root, hyp = _chain_case()
+    case.evidence = []  # nothing grounds the root, so none validates
+    own = RootCauseConclusion(
+        root_cause="the LLM's own worded conclusion",
+        mechanism="as the LLM described it",
+        confidence_level=ConfidenceLevel.VERIFIED,
+        likelihood=0.95,
+    )
+    case.root_cause_conclusion = own
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state != NodeState.VALIDATED
     assert case.root_cause_conclusion is own
 
 
@@ -1040,9 +1068,11 @@ def test_pre_bar_single_support_root_demotes_on_recompute():
     assert case.progress.cause_state == CauseState.CANDIDATES  # soft floor
 
 
-def test_llm_rcc_survives_root_demotion():
-    """The engine-mirror reconcile never touches an LLM-authored conclusion —
-    its retraction lifecycle is a separate concern (#656)."""
+def test_replaced_llm_rcc_is_not_resurrected_when_the_root_demotes():
+    """Replacement is one-way. A mirror that took the conclusion over from the
+    LLM is retracted like any other mirror once its root demotes, and the case is
+    left asserting NOTHING — restoring the replaced text would re-assert the same
+    cause world the chain just stopped backing."""
     case, root, hyp = _chain_case()
     own = RootCauseConclusion(
         root_cause="the LLM's own worded conclusion",
@@ -1052,10 +1082,11 @@ def test_llm_rcc_survives_root_demotion():
     )
     case.root_cause_conclusion = own
     _recompute_cause_state_from_chain(case)
+    assert case.root_cause_conclusion.determined_by == "engine:chain_validation"
     case.evidence = []
     _recompute_cause_state_from_chain(case)
     assert root.node_state != NodeState.VALIDATED
-    assert case.root_cause_conclusion is own  # untouched
+    assert case.root_cause_conclusion is None
 
 
 # ---------------------------------------------------------------------------
@@ -1110,10 +1141,16 @@ def test_overclaim_warning_fires_for_llm_verified_rcc(caplog):
     """The prod-visible over-claim seam (#656 turn-6 shape): an LLM-authored
     conclusion claiming verified while the grade lacks counterfactual
     confirmation warns on the transition into the over-claim (the per-turn
-    state stays in the DEBUG trace and the persisted flag)."""
+    state stays in the DEBUG trace and the persisted flag).
+
+    Exercised on the conclusion the case actually carries: the symptom is not yet
+    verified, so identification is held and the LLM's conclusion stands rather
+    than giving way to the mirror, while its root still validates — grade
+    MECHANISTIC beside a "verified" claim."""
     import logging as _logging
 
     case, root, hyp = _chain_case()
+    case.progress.symptom_verified = False
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="the LLM's own worded conclusion",
         mechanism="as the LLM described it",
@@ -1356,6 +1393,9 @@ def test_overclaim_warning_is_edge_triggered(caplog):
     import logging as _logging
 
     case, root, hyp = _chain_case()
+    # Symptom unverified: identification is held, so the LLM's conclusion stands
+    # (the mirror never takes it over) and the seam has something to judge.
+    case.progress.symptom_verified = False
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="the LLM's own worded conclusion",
         mechanism="as the LLM described it",
@@ -1527,6 +1567,9 @@ def test_overclaim_warning_rearms_on_new_conclusion(caplog):
     import logging as _logging
 
     case, root, hyp = _chain_case()
+    # Symptom unverified: identification is held, so both conclusions stand as
+    # authored (the mirror never takes them over) and each over-claim is judged.
+    case.progress.symptom_verified = False
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="conclusion A",
         mechanism="m",

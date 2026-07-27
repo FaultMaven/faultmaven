@@ -1504,6 +1504,29 @@ class FeatureSettings(BaseSettings):
         ),
     )
 
+    # Precedence between the chain-derived conclusion mirror and an LLM-authored
+    # RootCauseConclusion. ON: a standing validated, uncontested chain root is the
+    # surfaced conclusion — the per-turn recompute mints/refreshes the engine
+    # mirror even over an LLM-authored conclusion, which is then surfaced only as
+    # the fallback when no such root stands. OFF restores the older precedence:
+    # an LLM-authored conclusion is never overwritten, and the mirror is minted
+    # only into an empty or engine-authored conclusion.
+    # On by default: the engine-rendered text cannot exceed what the chain proves,
+    # and the counter it drives (rcc_precedence_inversion_total) is the data this
+    # step exists to collect. Retained as the kill switch
+    # (FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION=false) and as the tested flag-OFF
+    # behaviorally-identical path. See the methodology doc §7.7.
+    chain_authored_conclusion: bool = Field(
+        default=True,
+        validation_alias="FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION",
+        description=(
+            "Feature flag: a standing validated, uncontested causal-chain root "
+            "outranks an LLM-authored RootCauseConclusion — the engine mirror "
+            "becomes the surfaced conclusion and the LLM's own conclusion is the "
+            "explicit no-root fallback."
+        ),
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

@@ -67,6 +67,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     llm_rcc_cause_linked_total,
     llm_rcc_cause_named_total,
     llm_rcc_retracted_disconfirmed_total,
+    rcc_precedence_inversion_total,
     root_validation_blocked_restatement_total,
     root_validation_blocked_support_count_total,
 )
@@ -1442,9 +1443,10 @@ def link_llm_rcc_to_cause(case: Case) -> bool:
         is the only one ``>= AMBIGUOUS``) with substantive overlap — "when unsure,
         don't link". Counts ``llm_rcc_cause_linked_total``.
 
-    Giving the conclusion a cause link is NOT authorship — the engine never writes
-    or overwrites the LLM's ``root_cause`` text (``determined_by`` stays the LLM's,
-    and ``synthesize_rcc_from_validated_root`` still refuses to touch it). It only
+    Giving the conclusion a cause link is NOT authorship — the engine never re-words
+    the LLM's ``root_cause`` text (``determined_by`` stays the LLM's; the mirror
+    synthesis may REPLACE the whole conclusion when a validated root outranks it,
+    §7.7, but it never edits the LLM's prose in place). It only
     records which standing hypothesis the LLM's stated cause corresponds to. An
     unattributable conclusion stays the documented residual it has always been (no
     regression). A conclusion already linked to a PRESENT hypothesis is left stable
@@ -1857,32 +1859,75 @@ def mece_contested_root_ids(case: Case) -> set:
     return set(root_ids)
 
 
-def synthesize_rcc_from_validated_root(case: Case) -> bool:
-    """§9.3 — when the cause is grounded via a VALIDATED chain root but no
-    ``RootCauseConclusion`` is recorded, mirror the validated chain into a minimal
-    RCC so the disposition / report layer has consistent cause text.
+def _chain_outranks_llm_conclusion() -> bool:
+    """Whether a standing validated, uncontested chain root outranks an
+    LLM-authored ``RootCauseConclusion`` (§7.7 precedence; kill switch
+    ``FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION``, default on).
 
-    Two ways cause_state can be IDENTIFIED-via-chain with no RCC: the LLM
-    validated a root with rung evidence but never authored a conclusion, or M6
-    retracted a *different* chain's RCC while this one still stands. Either way
-    the validated root IS the cause, so a derived RCC (root statement + the chain
+    The ONE precedence consult. Reading configuration is the single impurity in
+    this module's mirror path; it is deliberately kept to one call site so the
+    switch cannot be honored in one lane and missed in another.
+    """
+    from faultmaven.config.settings import get_settings
+
+    return bool(get_settings().features.chain_authored_conclusion)
+
+
+def _conclusion_provider_label() -> str:
+    """CHAT provider label for the conclusion-precedence counter.
+
+    Delegates to the resolution-metric helper rather than re-deriving the label:
+    the two counters are read as a ratio, so a second resolution rule that drifted
+    would silently divide one provider's numerator by another's denominator.
+    Imported lazily — this module is the graph leaf and must not take a module-
+    level dependency on the terminal layer.
+    """
+    from faultmaven.core.investigation.terminal_transitions import (
+        _resolve_resolution_provider,
+    )
+
+    return _resolve_resolution_provider()
+
+
+def synthesize_rcc_from_validated_root(case: Case) -> bool:
+    """§9.3 — mirror the validated chain into a ``RootCauseConclusion`` so the
+    disposition / report layer reads cause text rendered from what the chain
+    actually proves.
+
+    The validated root IS the cause, so a derived RCC (root statement + the chain
     as mechanism, at the confidence the M2 grade supports — CONFIDENT for a
     mechanistic root, VERIFIED only for a counterfactually confirmed one) is a
-    faithful mirror, not an assertion. Leaves an LLM-authored RCC untouched (the
-    LLM's own conclusion always wins). An engine-synthesized RCC IS refreshed when
+    faithful mirror, not an assertion. Because it can assert no more than the
+    chain proves, it **outranks** an LLM-authored conclusion (§7.7): when a
+    standing validated root exists, the mirror is minted over one, and the LLM's
+    own conclusion is surfaced only as the fallback for the no-root case (below).
+    With the precedence switched off, an LLM-authored conclusion is instead left
+    untouched and the mirror is minted only into an empty or engine-authored slot.
+
+    Every refusal sits AHEAD of the precedence. While identification is
+    MECE-contested the engine asserts nothing at all, and with no standing
+    validated root this is a no-op — whatever conclusion the case carries, LLM
+    text included, stands byte-identical. An engine mirror is also refreshed when
     it has gone stale — its named hypothesis is no longer a standing-validated
     root (the grounding chain handed off to another root via an INCONCLUSIVE
     drift, NOT a refutation, so M6 never cleared it) — or when its confidence no
     longer agrees with the root's M2 grade (confirmation arrived, so the mirror
     upgrades to VERIFIED; or a pre-cap persisted mirror over-claims VERIFIED on a
-    mechanistic root, so it corrects down). No-op when no standing root is
-    validated. Returns True if it wrote one.
+    mechanistic root, so it corrects down). Returns True if it wrote one.
+
+    Replacement is one-way by design: a mirror that took over from an LLM
+    conclusion and whose root later demotes is retracted like any other mirror
+    (``retract_stale_engine_rcc``) and the case is then left with NO conclusion.
+    The replaced text asserted the same, now-unsupported cause world, so restoring
+    it would re-assert exactly what the chain stopped backing.
     """
     rcc = case.root_cause_conclusion
-    if rcc is not None and getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR:
-        # LLM-authored — never overwrite. Checked before any graph work: this
-        # is the steady state of most identified cases, and the scans below
-        # would be pure waste on it.
+    llm_authored = (
+        rcc is not None and getattr(rcc, "determined_by", None) != _ENGINE_RCC_AUTHOR
+    )
+    if llm_authored and not _chain_outranks_llm_conclusion():
+        # Precedence off: an LLM-authored conclusion is never overwritten.
+        # Checked before any graph work — the scans below would be pure waste.
         return False
 
     # §7.1.2 defense-in-depth: while identification is MECE-contested the
@@ -1912,8 +1957,14 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     # an asymmetric edit split the named root from the minted confidence.
     confirmed_hyps = [h for h in validated_hyps if _hyp_confirmed(h)]
 
+    # The faithfulness short-circuit and the "keep the named root" selection tie
+    # below both read the STANDING MIRROR. An LLM-authored conclusion is not one:
+    # its cause link (§7.6) says which hypothesis its prose corresponds to, never
+    # that its text renders that root — so treating it as a prior would let a
+    # linked, correctly-graded LLM conclusion short-circuit the very replacement
+    # the precedence exists to perform.
     prior = None
-    if rcc is not None:
+    if rcc is not None and not llm_authored:
         prior = case.hypotheses.get(getattr(rcc, "validated_hypothesis_id", None) or "")
         if prior is not None and prior in validated_hyps:
             # The mirror still names a grounding root — but it must also (a)
@@ -1996,6 +2047,14 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
         ],
         determined_by=_ENGINE_RCC_AUTHOR,
     )
+    if llm_authored:
+        # The mirror REPLACED an LLM-authored conclusion — the one event this
+        # counter measures. Deliberately not incremented on a first mint into an
+        # empty conclusion, nor on a mirror refreshing a mirror: those say nothing
+        # about how often the chain outranks the model's prose.
+        rcc_precedence_inversion_total.labels(
+            provider=_conclusion_provider_label()
+        ).inc()
     return True
 
 
@@ -2011,9 +2070,16 @@ def retract_stale_engine_rcc(case: Case, contested_ids: set | None = None) -> bo
     pick, not a reflection — the engine withholds its conclusion pending
     discrimination, and the mirror re-mints automatically when the contest
     resolves. LLM-authored conclusions are NEVER touched here (their retraction
-    lifecycle is a separate concern — tracked on #656). Returns True if it
-    cleared one. ``contested_ids`` lets the per-turn recompute pass its
-    already-computed §7.1.2 set (the once-per-derive snapshot pattern);
+    lifecycle is a separate concern — tracked on #656).
+
+    Note what this means for a mirror that REPLACED an LLM conclusion (§7.7): when
+    its root demotes it is cleared like any other mirror and the case is left with
+    NO conclusion. The replaced text is not restored — it asserted the same, now-
+    unsupported cause world, so bringing it back would re-assert exactly what the
+    chain stopped backing.
+
+    Returns True if it cleared one. ``contested_ids`` lets the per-turn recompute
+    pass its already-computed §7.1.2 set (the once-per-derive snapshot pattern);
     ``None`` means compute here.
     """
     rcc = case.root_cause_conclusion

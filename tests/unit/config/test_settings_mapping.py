@@ -376,6 +376,36 @@ class TestFeatureSettingsMapping:
 
         assert features.kb_cause_seeder_enabled is False
 
+    def test_chain_authored_conclusion_default_on(self):
+        """A validated chain root outranks an LLM-authored conclusion by default.
+
+        `FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION` is retained only as the kill
+        switch; with it unset the precedence is active. Direct instantiation
+        bypasses the preset system.
+        """
+        from faultmaven.config.settings import FeatureSettings
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION", None)
+            features = FeatureSettings()
+
+        assert features.chain_authored_conclusion is True
+
+    def test_chain_authored_conclusion_kill_switch_from_env(self):
+        """`FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION=false` restores the older
+        precedence — an LLM-authored conclusion is never overwritten — without a
+        rollback."""
+        from faultmaven.config.settings import FeatureSettings
+
+        with patch.dict(
+            os.environ,
+            {"FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION": "false"},
+            clear=False,
+        ):
+            features = FeatureSettings()
+
+        assert features.chain_authored_conclusion is False
+
 
 class TestSettingsSingleton:
     """Tests for settings singleton behavior."""
