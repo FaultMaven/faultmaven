@@ -2055,8 +2055,7 @@ consent to the irreversible RESOLVED transition: the disposition still
 requires the standard confirmation turn — the engine holds your
 `proposed_transition` pending and presents the confirm/decline pair
 (see `docs/architecture/investigation-engine/investigation-lifecycle-logic.md`
-§1.2 "KB-Resolution Path (Milestone-Collapse Variant)"). You MUST emit the
-following structured fields in this single turn:
+§1.2 "KB-Resolution Path (Milestone-Collapse Variant)").
 
 REQUIRED EMISSIONS IN THE SAME TURN:
 
