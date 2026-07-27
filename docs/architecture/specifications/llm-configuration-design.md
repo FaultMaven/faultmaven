@@ -52,6 +52,8 @@ settings.is_standalone  # not is_cloud
 | RS256 key material present (`JWT_PRIVATE_KEY`/`_PATH` + public) | OAuth tokens are RS256 |
 | `DATABASE_URL` is PostgreSQL | SQLite is single-writer / standalone |
 | real Redis (session storage `redis` + host/url) | FakeRedis is ephemeral / standalone |
+| WorkOS AuthKit configured (`WORKOS_API_KEY` + `WORKOS_CLIENT_ID` + `WORKOS_REDIRECT_URI`) | Cloud sign-in is AuthKit-only (ADR-015); without an IdP the deployment sits dark while looking healthy |
+| `STORAGE_BACKEND=s3` **with** `S3_BUCKET_NAME` | Filesystem storage is single-node (RWX-volume SPOF, infra#127); a bucket-less s3 config would only fail at first upload |
 
 **Tenancy is an independent axis.** `cloud` validates cloud-native infra + real auth, *not* tenancy — a cloud deployment may be single-tenant (one organization, many users) or multi-tenant (SaaS). `TENANT_PROVIDER` is chosen separately, and (per the multi-tenancy boundary review) real multi-tenancy is provided by `faultmaven-cloud`, not CE.
 
