@@ -33,6 +33,7 @@ from faultmaven.infrastructure.persistence.models import (
     KnowledgeItemModel,
     UploadedFileModel,
 )
+from faultmaven.modules.auth.contracts import is_team_member
 from faultmaven.modules.knowledge.domain.global_authoring import (
     ensure_global_authoring_allowed,
     is_global_authoring_allowed,
@@ -311,6 +312,7 @@ class ConversionService:
         db_session_factory=None,
         knowledge_service=None,
         share_repository=None,
+        team_service=None,
     ):
         self._llm_router = llm_router
         self._settings = settings
@@ -321,6 +323,10 @@ class ConversionService:
         # verify, transferred to the promoted knowledge_item. None → team
         # publishing is inert (standalone).
         self._share_repo = share_repository
+        # Membership resolver for the team publish target (#854). None →
+        # teams don't exist in this deployment, so a team-scoped publish is
+        # refused rather than silently minting an unresolvable share target.
+        self._team_service = team_service
         self._preprocessor = DocumentPreprocessor(llm_router, settings)
         self._validator = RunbookValidator()
         self._scorer = QualityScorer()
@@ -345,6 +351,34 @@ class ConversionService:
             return self._data_dir / f"user_{user_id}"
         return self._data_dir / "global"
 
+    async def _ensure_team_publish_allowed(
+        self, scope: str, team_id: Optional[str], user_id: str
+    ) -> None:
+        """Refuse a team publish target the caller may not use (#854).
+
+        A ``team_id`` becomes a ``resource_shares`` row on verify — content
+        injected into that team's knowledge scope — so it must name a team the
+        caller belongs to, the same rule ``CaseService.share_case_with_team``
+        enforces (via the shared ``is_team_member`` predicate). Runs at mint
+        time, the single point the caller-supplied value enters the pipeline.
+
+        Raises:
+            ValidationException: teams are unavailable in this deployment
+                (no team service wired — standalone), so a team-scoped
+                publish cannot be honored.
+            AuthorizationError: the caller is not a member of ``team_id``.
+        """
+        if scope != "team":
+            return
+        if not self._team_service:
+            raise ValidationException(
+                "Team publishing is not available in this deployment"
+            )
+        if not await is_team_member(self._team_service, user_id, team_id):
+            raise AuthorizationError(
+                "You can only publish a runbook to a team you belong to"
+            )
+
     # =========================================================================
     # Main Conversion Pipeline
     # =========================================================================
@@ -360,6 +394,8 @@ class ConversionService:
         team_id: str = None,
     ) -> ConversionResponse:
         """Full conversion pipeline: preprocess → analyze → convert → validate → persist."""
+        await self._ensure_team_publish_allowed(scope, team_id, user_id)
+
         # Step 0: Verify LLM provider is available
         try:
             knowledge_model = self._settings.llm.get_knowledge_model()
@@ -539,6 +575,8 @@ class ConversionService:
     ) -> ConversionResponse:
         """Internal: the actual conversion pipeline. Always called via
         `convert_from_case`, which wraps this with the dedup registry."""
+        await self._ensure_team_publish_allowed(request.scope, team_id, user_id)
+
         # Verify LLM provider is available
         try:
             knowledge_model = self._settings.llm.get_knowledge_model()
@@ -1394,8 +1432,18 @@ class ConversionService:
         draft_id: str,
         user_id: str,
         content: str,
+        is_platform_admin: bool = False,
     ) -> Optional[ConversionDraft]:
-        """Update draft content, re-validate, and re-score."""
+        """Update draft content, re-validate, and re-score.
+
+        ``is_platform_admin`` gates editing at ``global`` scope (#785): a global
+        draft is pre-verification platform-corpus content, and letting any
+        authenticated user shape what an admin later verifies is the hardening
+        hole this closes. Same policy and placement as :meth:`verify_draft` —
+        the scope is only known once the job row is loaded, and the gate applies
+        regardless of job ownership (a "system"-owned global draft from a disk
+        scan included). Defaults ``False`` (fail-closed).
+        """
         if not self._db_session_factory:
             return None
 
@@ -1413,6 +1461,9 @@ class ConversionService:
             job = job_result.scalar_one_or_none()
             if not job:
                 return None
+
+            if job.scope == "global":
+                ensure_global_authoring_allowed(is_platform_admin)
 
             draft_result = await session.execute(
                 select(ConversionDraftModel).where(
@@ -1829,6 +1880,8 @@ class ConversionService:
         quadrant-tagged Interventions (remediation/defensive_fix/mitigation/
         loop_break), plus a ### Cause Z: Unidentified fallback with [Default] indicator.
         """
+        await self._ensure_team_publish_allowed(scope, team_id, user_id)
+
         import re as _re
 
         today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")

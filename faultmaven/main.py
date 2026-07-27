@@ -544,6 +544,9 @@ async def lifespan(app: FastAPI):
                     db_session_factory=get_db_session,
                     knowledge_service=app.state.knowledge_service,
                     share_repository=getattr(app.state, "share_repository", None),
+                    # Membership resolver for the team publish target (#854);
+                    # absent (standalone) → team-scoped publish is refused.
+                    team_service=getattr(app.state, "team_service", None),
                 )
                 # Give KnowledgeService a reference to ConversionService so that
                 # draft lifecycle mutations (discard on delete) are owned by a
