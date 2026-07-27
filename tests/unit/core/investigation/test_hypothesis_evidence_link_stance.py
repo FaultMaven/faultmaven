@@ -235,6 +235,33 @@ class TestApplyLayerStanceFidelity:
         assert h.evidence_links[0].evidence_id == ev.evidence_id
         assert h.evidence_links[0].stance == EvidenceStance.NEUTRAL
 
+    def test_relink_stance_revision_recomputes_likelihood(self):
+        """Re-linking the same evidence upserts the link, so a
+        SUPPORTS→NEUTRAL revision removes the earlier +0.15 rather than
+        retaining it — the likelihood recompute must stay unconditional
+        even though NEUTRAL itself is inert."""
+        case = _make_case()
+        h = _make_hypothesis(case)
+        ev = _make_evidence(case)
+        engine = _make_engine()
+
+        engine._apply_hypothesis_evidence_links(
+            case,
+            [_make_link(h.hypothesis_id, ev.evidence_id, EvidenceStance.SUPPORTS)],
+            {},
+        )
+        assert h.likelihood == pytest.approx(0.75)
+
+        engine._apply_hypothesis_evidence_links(
+            case,
+            [_make_link(h.hypothesis_id, ev.evidence_id, EvidenceStance.NEUTRAL)],
+            {},
+        )
+
+        assert len(h.evidence_links) == 1
+        assert h.evidence_links[0].stance == EvidenceStance.NEUTRAL
+        assert h.likelihood == pytest.approx(0.6)
+
 
 # ============================================================
 # #521 — no legacy CONTRADICTS stance label in prompt templates
