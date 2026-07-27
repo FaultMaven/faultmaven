@@ -191,6 +191,94 @@ class TestConversionTeamPublishGuard:
 
 
 # ===========================================================================
+# Route passthrough: typed refusals reach the client as 403/422, not 500
+# ===========================================================================
+
+
+def _route_client(service):
+    from datetime import datetime, timezone
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from faultmaven.api.exception_handlers import get_exception_handlers
+    from faultmaven.api.v1.auth_dependencies import require_authentication
+    from faultmaven.modules.auth.contracts import DevUser
+    from faultmaven.modules.knowledge.api.conversion_routes import (
+        _get_conversion_service,
+    )
+    from faultmaven.modules.knowledge.api.conversion_routes import (
+        router as conversion_router,
+    )
+
+    user = DevUser(
+        user_id="u1",
+        username="u1",
+        email="u1@example.com",
+        display_name="U1",
+        created_at=datetime.now(timezone.utc),
+        roles=["user"],
+    )
+    app = FastAPI()
+    app.include_router(conversion_router)
+    for exc_type, handler in get_exception_handlers().items():
+        app.add_exception_handler(exc_type, handler)
+    app.dependency_overrides[_get_conversion_service] = lambda: service
+    app.dependency_overrides[require_authentication] = lambda: user
+    return TestClient(app)
+
+
+@pytest.mark.unit
+class TestRouteRefusalPassthrough:
+    """The convert / runbooks-create routes wrap the service call in a broad
+    exception net; the typed refusals must pass through it to the global
+    handlers (403/422), never collapse into the 500 arm."""
+
+    def _convert(self, client):
+        return client.post(
+            "/knowledge/convert",
+            files={"file": ("doc.md", b"# content", "text/markdown")},
+            data={"scope": "team", "team_id": "team_other"},
+        )
+
+    def test_convert_membership_refusal_is_403(self):
+        service = MagicMock()
+        service.convert_document = AsyncMock(
+            side_effect=AuthorizationError("not your team")
+        )
+        assert self._convert(_route_client(service)).status_code == 403
+
+    def test_convert_unavailable_teams_is_422(self):
+        service = MagicMock()
+        service.convert_document = AsyncMock(
+            side_effect=ValidationException("Team publishing is not available")
+        )
+        assert self._convert(_route_client(service)).status_code == 422
+
+    def test_create_runbook_membership_refusal_is_403(self):
+        service = MagicMock()
+        service.create_runbook_from_template = AsyncMock(
+            side_effect=AuthorizationError("not your team")
+        )
+        body = {
+            "title": "A title long enough",
+            "domain": "databases",
+            "service": "postgres",
+            "symptom_class": ["connectivity"],
+            "severity": "high",
+            "scope": "team",
+            "team_id": "team_other",
+            "symptom_recognition": "x" * 20,
+            "applicability": "x" * 20,
+            "diagnostic_steps": "x" * 20,
+            "causes": "x" * 20,
+            "prevention": "x" * 20,
+        }
+        resp = _route_client(service).post("/knowledge/runbooks/create", json=body)
+        assert resp.status_code == 403
+
+
+# ===========================================================================
 # Parity: the two sharing surfaces agree on the membership rule
 # ===========================================================================
 
