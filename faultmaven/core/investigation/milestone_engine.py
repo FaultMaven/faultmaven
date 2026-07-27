@@ -124,6 +124,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 )
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
+    TERMINAL_HYPOTHESIS_STATES,
     ActionAttempt,
     Case,
     CaseAction,
@@ -1771,15 +1772,6 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     )
 
 
-# A hypothesis in one of these states is out of the differential for good:
-# ``_apply_hypothesis_updates`` refuses to revive either, and
-# ``verification_status._residual_candidates`` excludes both. Anything anchored
-# to such a hypothesis (today: causal evidence-needs) is moot from that point on.
-_TERMINAL_HYPOTHESIS_STATES = frozenset(
-    {HypothesisState.REFUTED, HypothesisState.RETIRED}
-)
-
-
 def _supersede_needs_on_terminal_hypothesis(
     case: "Case", terminal_hyp_id: str, current_turn: int
 ) -> int:
@@ -1901,7 +1893,7 @@ def _sweep_needs_for_terminal_hypotheses(case: "Case") -> int:
     return sum(
         _supersede_needs_on_terminal_hypothesis(case, h_id, case.current_turn)
         for h_id, h in case.hypotheses.items()
-        if h.state in _TERMINAL_HYPOTHESIS_STATES
+        if h.state in TERMINAL_HYPOTHESIS_STATES
     )
 
 
@@ -4191,60 +4183,9 @@ class MilestoneEngine:
             # Applies the state change BEFORE LLM processing so the agent
             # sees updated hypothesis state in its context and can acknowledge.
             elif intent_type == "hypothesis_action" and intent_data:
-                hypothesis_id = intent_data.get("hypothesis_id")
-                action = intent_data.get("action")  # validate | refute | retire
-
-                if hypothesis_id and action and case.hypotheses:
-                    hypothesis = case.hypotheses.get(hypothesis_id)
-
-                    if hypothesis:
-                        if action == "refute":
-                            self.hypothesis_manager.refute_hypothesis(
-                                hypothesis=hypothesis,
-                                current_turn=case.current_turn,
-                                refuting_evidence_ids=[],
-                                reason=user_message or "User refuted",
-                            )
-                        elif action == "validate":
-                            # #695 Defect A: a user "validate" intent records a
-                            # strong PRIOR, not a validation-by-assertion. The
-                            # single model derives VALIDATED from the chain root's
-                            # evidence (project_hypothesis_states_from_roots); a
-                            # bare assertion cannot mint it (the causal-node model
-                            # forbids validation by assertion). The user's
-                            # definitive confirmation is the RESOLVED handshake
-                            # (the confirm-stamp), not this mid-investigation
-                            # signal. Surface the new semantics so the affordance
-                            # does not read as a silent no-op.
-                            hypothesis.likelihood = 1.0
-                            hypothesis.last_updated_turn = case.current_turn
-                            current_fb = metadata.get("system_feedback", "") or ""
-                            metadata["system_feedback"] = "\n".join(
-                                [
-                                    current_fb,
-                                    f"Recorded your strong belief in hypothesis "
-                                    f"{hypothesis_id}. It is marked validated once "
-                                    f"its cause chain is confirmed by evidence — "
-                                    f"link supporting evidence to its root to get "
-                                    f"there.",
-                                ]
-                            ).strip()
-                        elif action == "retire":
-                            hypothesis.state = HypothesisState.RETIRED
-                            hypothesis.retirement_reason = (
-                                user_message or "User retired"
-                            )
-                            hypothesis.last_updated_turn = case.current_turn
-
-                        metadata["hypothesis_action_applied"] = True
-                        logger.info(
-                            f"Hypothesis {hypothesis_id} {action}d via explicit intent "
-                            f"for case {case.case_id}"
-                        )
-                    else:
-                        logger.warning(
-                            f"Hypothesis {hypothesis_id} not found in case {case.case_id}"
-                        )
+                self._apply_hypothesis_action_intent(
+                    case, intent_data, user_message, metadata
+                )
 
                 # Fall through to normal LLM processing for acknowledgment
 
@@ -7512,6 +7453,101 @@ class MilestoneEngine:
         # See docs/architecture/investigation-engine/
         # evidence-driven-investigation-framework.md §5.
 
+    def _apply_hypothesis_action_intent(
+        self,
+        case: "Case",
+        intent_data: dict,
+        user_message: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Apply an explicit user ``hypothesis_action`` intent
+        (frontend/IntentResolver) — ``refute`` | ``validate`` | ``retire`` —
+        BEFORE LLM processing, so the agent sees the updated state in its
+        context and can acknowledge.
+
+        Terminal immutability holds on EVERY write path, not just the LLM
+        apply layer (#843): a hypothesis already ``REFUTED``/``RETIRED`` is out
+        of the differential for good, and this path refuses all three actions
+        against it, surfacing why via ``system_feedback``. The concrete
+        corruption the guard prevents: retiring an already-REFUTED hypothesis
+        would strand ``refutation_reason`` on ``state=RETIRED`` — a pair the
+        domain model rejects — and because ``validate_assignment`` is off, the
+        in-place write would succeed silently and only surface as a 500 at the
+        next Case reconstruction, far from its cause.
+
+        On refusal the action is NOT marked applied
+        (``hypothesis_action_applied`` stays unset).
+        """
+        hypothesis_id = intent_data.get("hypothesis_id")
+        action = intent_data.get("action")  # validate | refute | retire
+
+        if not (hypothesis_id and action and case.hypotheses):
+            return
+        hypothesis = case.hypotheses.get(hypothesis_id)
+
+        if hypothesis and hypothesis.state.is_terminal:
+            current_fb = metadata.get("system_feedback", "") or ""
+            metadata["system_feedback"] = "\n".join(
+                [
+                    current_fb,
+                    f"Hypothesis {hypothesis_id} is already "
+                    f"{hypothesis.state.value} (terminal) — it "
+                    f"cannot be {action}d. Open a NEW hypothesis "
+                    f"if that theory is back in play.",
+                ]
+            ).strip()
+            logger.info(
+                f"Hypothesis {hypothesis_id} {action} intent refused "
+                f"for case {case.case_id}: state "
+                f"{hypothesis.state.value} is terminal"
+            )
+        elif hypothesis:
+            if action == "refute":
+                self.hypothesis_manager.refute_hypothesis(
+                    hypothesis=hypothesis,
+                    current_turn=case.current_turn,
+                    refuting_evidence_ids=[],
+                    reason=user_message or "User refuted",
+                )
+            elif action == "validate":
+                # #695 Defect A: a user "validate" intent records a
+                # strong PRIOR, not a validation-by-assertion. The
+                # single model derives VALIDATED from the chain root's
+                # evidence (project_hypothesis_states_from_roots); a
+                # bare assertion cannot mint it (the causal-node model
+                # forbids validation by assertion). The user's
+                # definitive confirmation is the RESOLVED handshake
+                # (the confirm-stamp), not this mid-investigation
+                # signal. Surface the new semantics so the affordance
+                # does not read as a silent no-op.
+                hypothesis.likelihood = 1.0
+                hypothesis.last_updated_turn = case.current_turn
+                current_fb = metadata.get("system_feedback", "") or ""
+                metadata["system_feedback"] = "\n".join(
+                    [
+                        current_fb,
+                        f"Recorded your strong belief in hypothesis "
+                        f"{hypothesis_id}. It is marked validated once "
+                        f"its cause chain is confirmed by evidence — "
+                        f"link supporting evidence to its root to get "
+                        f"there.",
+                    ]
+                ).strip()
+            elif action == "retire":
+                hypothesis.state = HypothesisState.RETIRED
+                hypothesis.retirement_reason = user_message or "User retired"
+                hypothesis.last_updated_turn = case.current_turn
+
+            metadata["hypothesis_action_applied"] = True
+            logger.info(
+                f"Hypothesis {hypothesis_id} {action}d via explicit intent "
+                f"for case {case.case_id}"
+            )
+        else:
+            logger.warning(
+                f"Hypothesis {hypothesis_id} not found in case {case.case_id}"
+            )
+
     def _apply_hypothesis_updates(
         self,
         case: "Case",
@@ -7574,10 +7610,7 @@ class MilestoneEngine:
                 continue
 
             # Terminal states are immutable (see docstring).
-            if hypothesis.state in (
-                HypothesisState.REFUTED,
-                HypothesisState.RETIRED,
-            ):
+            if hypothesis.state.is_terminal:
                 if (
                     upd.state and upd.state != hypothesis.state
                 ) or upd.likelihood is not None:
@@ -7662,10 +7695,7 @@ class MilestoneEngine:
             # _check_state_transition), and applying the stale pre-refutation
             # number would resurrect a terminal hypothesis's likelihood
             # against its own refutation_reason.
-            if hypothesis.state in (
-                HypothesisState.REFUTED,
-                HypothesisState.RETIRED,
-            ):
+            if hypothesis.state.is_terminal:
                 feedback.append(
                     f"Hypothesis {h_id}: likelihood update not applied — the "
                     f"hypothesis became {hypothesis.state.value} this turn "
@@ -8637,7 +8667,7 @@ class MilestoneEngine:
                 h_id
                 for h_id in resolved_motivators
                 if h_id in case.hypotheses
-                and case.hypotheses[h_id].state in _TERMINAL_HYPOTHESIS_STATES
+                and case.hypotheses[h_id].state in TERMINAL_HYPOTHESIS_STATES
             }
             valid_motivators = [
                 h_id

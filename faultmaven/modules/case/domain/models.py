@@ -2654,6 +2654,24 @@ class HypothesisState(str, Enum):
     Investigation moved in different direction.
     """
 
+    @property
+    def is_terminal(self) -> bool:
+        """True when this state takes the hypothesis out of the differential
+        for good (``REFUTED``/``RETIRED``): terminal states are immutable from
+        every write path — reviving that theory means opening a NEW hypothesis.
+        Single owner of the terminal predicate; consumers route through this
+        (or ``TERMINAL_HYPOTHESIS_STATES`` for set operations), never a
+        re-spelled state pair.
+        """
+        return self in TERMINAL_HYPOTHESIS_STATES
+
+
+TERMINAL_HYPOTHESIS_STATES: frozenset[HypothesisState] = frozenset(
+    {HypothesisState.REFUTED, HypothesisState.RETIRED}
+)
+"""The terminal states backing ``HypothesisState.is_terminal`` — the only
+place the pair is spelled."""
+
 
 class HypothesisGenerationMode(str, Enum):
     """How hypothesis was generated"""
