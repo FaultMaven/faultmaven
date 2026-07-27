@@ -149,6 +149,29 @@ def test_capabilities_endpoint_feature_flags():
         assert flag in features and isinstance(features[flag], bool)
 
 
+def test_conversion_service_composition_root_wiring():
+    """ConversionService gets the SAME collaborators the rest of the app uses.
+
+    The lifespan constructs ConversionService before it copies the container's
+    team_service/share_repository onto app.state, so sourcing them from
+    app.state at construction time yields None — team share rows are never
+    minted and the #854 membership gate is unreachable while the rest of the
+    app (capabilities endpoint, retrieval allowlist) sees the real services.
+    Pin identity with the CONTAINER-sourced values app.state ends up holding.
+    """
+    with TestClient(app):
+        cs = app.state.conversion_service
+        assert cs is not None, "conversion service failed to initialize"
+        # share_repository exists in both modes (ADR-013 §D4), so this
+        # assertion is load-bearing everywhere: a None here means the
+        # construction read app.state too early.
+        assert app.state.share_repository is not None
+        assert cs._share_repo is app.state.share_repository
+        # team_service is None in standalone; identity still pins that the
+        # construction and app.state resolve the same source.
+        assert cs._team_service is app.state.team_service
+
+
 def test_capabilities_team_flags_gate_on_team_service():
     """``teamSharing``/``managementConsole`` follow the live TeamService signal.
 

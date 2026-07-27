@@ -33,6 +33,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from faultmaven.exceptions import FaultMavenException
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
@@ -164,6 +165,13 @@ async def convert_document(
         )
 
         return result.model_dump()
+
+    except FaultMavenException:
+        # Typed service exceptions (AuthorizationError for a team the caller
+        # doesn't belong to, ValidationException for team publishing being
+        # unavailable) propagate to the global handlers for canonical 403/422
+        # translation instead of being swallowed into a 500 below.
+        raise
 
     except ConversionRejectedError as e:
         error_code = getattr(e, "error_code", "UNKNOWN")
@@ -303,12 +311,18 @@ async def update_draft(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Update draft content. Re-runs validation and quality scoring."""
+    """Update draft content. Re-runs validation and quality scoring.
+
+    Editing a global-scope draft is platform-corpus authoring, so the service
+    applies the global-authoring gate once the job's scope is loaded (#785);
+    the resulting AuthorizationError maps to 403 via the global handlers.
+    """
     result = await service.update_draft(
         conversion_id=conversion_id,
         draft_id=draft_id,
         user_id=current_user.user_id,
         content=body.content,
+        is_platform_admin=current_user.is_platform_admin(),
     )
     if not result:
         raise HTTPException(status_code=404, detail="Draft not found")
@@ -397,11 +411,17 @@ async def delete_draft(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Delete a conversion draft."""
+    """Delete a conversion draft.
+
+    Deleting a global-scope draft is platform-corpus authoring — the service
+    applies the global-authoring gate once the job's scope is loaded, same as
+    edit (#785) and verify.
+    """
     success = await service.delete_draft(
         conversion_id=conversion_id,
         draft_id=draft_id,
         user_id=current_user.user_id,
+        is_platform_admin=current_user.is_platform_admin(),
     )
     if not success:
         raise HTTPException(status_code=404, detail="Draft not found")
@@ -482,6 +502,10 @@ async def create_runbook_manually(
             "conversion_id": result["conversion_id"],
             "draft": result["draft"].model_dump(),
         }
+    except FaultMavenException:
+        # See convert_document — typed refusals (team membership,
+        # team-publishing unavailable) map to 403/422, not 500.
+        raise
     except Exception as e:
         logger.error(f"Manual runbook creation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Runbook creation failed")

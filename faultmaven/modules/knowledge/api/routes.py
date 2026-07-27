@@ -45,6 +45,7 @@ from fastapi import (
 
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
+    require_authentication,
     require_platform_admin,
 )
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
@@ -55,6 +56,9 @@ from faultmaven.models.api import DocumentSnippetResponse
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
+)
+from faultmaven.modules.knowledge.domain.document_write import (
+    ensure_document_write_allowed,
 )
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
@@ -434,10 +438,14 @@ async def get_document_snippet(
 async def delete_document(
     document_id: str,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_platform_admin),
+    current_user: DevUser = Depends(require_authentication),
 ):
     """
     Delete a knowledge base document
+
+    Ownership-aware (#834): the owner may delete their own personal/team
+    document; global-scope deletion is platform-corpus authoring (operator
+    only, per the global-tier policy).
 
     Args:
         document_id: Document identifier
@@ -446,6 +454,17 @@ async def delete_document(
         Deletion confirmation
     """
     logger = logging.getLogger(__name__)
+
+    document = await knowledge_service.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    # AuthorizationError propagates to the global handlers → 403.
+    ensure_document_write_allowed(
+        scope=document.get("scope", "global"),
+        owner_id=document.get("owner_id"),
+        actor_user_id=current_user.user_id,
+        is_platform_admin=current_user.is_platform_admin(),
+    )
 
     try:
         result = await knowledge_service.delete_document(document_id)
@@ -461,9 +480,9 @@ async def delete_document(
         raise
     except Exception as e:
         logger.error(f"Failed to delete document {document_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to delete document: {str(e)}"
-        )
+        # See update_document — no internal exception text to the widened
+        # audience (#834).
+        raise HTTPException(status_code=500, detail="Failed to delete document")
 
 
 @router.post("/search")
@@ -636,10 +655,26 @@ async def update_document(
     document_id: str,
     update_data: dict,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_platform_admin),
+    current_user: DevUser = Depends(require_authentication),
 ) -> dict:
-    """Update document metadata and content."""
+    """Update document metadata and content.
+
+    Ownership-aware (#834): the owner may edit their own personal/team
+    document; global-scope editing is platform-corpus authoring (operator
+    only, per the global-tier policy).
+    """
     logger = logging.getLogger(__name__)
+
+    document = await knowledge_service.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    # AuthorizationError propagates to the global handlers → 403.
+    ensure_document_write_allowed(
+        scope=document.get("scope", "global"),
+        owner_id=document.get("owner_id"),
+        actor_user_id=current_user.user_id,
+        is_platform_admin=current_user.is_platform_admin(),
+    )
 
     try:
         # Parse tags if provided using standardized utility
@@ -660,9 +695,10 @@ async def update_document(
         raise
     except Exception as e:
         logger.error(f"Failed to update document {document_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to update document: {str(e)}"
-        )
+        # No str(e) in the response: this route is now reachable by any
+        # authenticated user (#834), and raw exception text is an internal
+        # detail. The log line above keeps the diagnostic.
+        raise HTTPException(status_code=500, detail="Failed to update document")
 
 
 @router.post("/documents/bulk-update")
