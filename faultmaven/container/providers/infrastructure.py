@@ -374,17 +374,22 @@ def create_knowledge_vector_store(
 async def create_redis_client(settings: FaultMavenSettings) -> Any:
     """Create Redis client for session storage.
 
-    Cloud deployment: real Redis — the factory resolves URL/host/port/password/db
-    from these same settings, so nothing is passed through here (relaying the
-    values would only create a second path that can drop one, which is how the
-    async client lost its password). Local deployment: FakeRedis (in-process).
+    Connection parameters are resolved from settings in ONE place — the factory —
+    so nothing is relayed through here: a second path carrying the same values is
+    a second place one of them can be dropped. Cloud deployment: real Redis, or
+    a refusal to boot. Local deployment: FakeRedis (in-process).
     """
     if settings.server.skip_service_checks:
-        # Even with skip_service_checks, return FakeRedis so all subsystems work
-        from faultmaven.infrastructure.redis_client import get_fakeredis_client
+        # Skipping the service checks still needs a working client, so all
+        # subsystems keep functioning — but it goes through the same gate rather
+        # than around it. Under cloud, substituting an in-process FakeRedis is
+        # the exact per-replica degradation the gate exists to refuse, and one
+        # env var must not buy a cloud pod its way out of it.
+        from faultmaven.infrastructure.redis_client import fakeredis_or_fail
 
+        client = fakeredis_or_fail("SKIP_SERVICE_CHECKS=true skips Redis entirely")
         logger.info("✅ Redis client: FakeRedis (SKIP_SERVICE_CHECKS=True)")
-        return get_fakeredis_client()
+        return client
 
     from faultmaven.infrastructure.redis_client import get_async_redis_client
 

@@ -31,9 +31,12 @@ from faultmaven.infrastructure.redis_client import (
     RedisClientFactory,
     RedisUnavailableError,
     get_async_redis_client,
+    is_fakeredis,
 )
 
-pytestmark = pytest.mark.unit
+# The credential tests below are data-leakage tests (a password reaching a log or
+# a boot-refusal message), so this module carries the security marker too.
+pytestmark = [pytest.mark.unit, pytest.mark.security]
 
 
 # --------------------------------------------------------------------------- #
@@ -42,15 +45,19 @@ pytestmark = pytest.mark.unit
 
 
 class _FakeClient:
-    """Stand-in for redis.asyncio.Redis — records nothing, just answers ping."""
+    """Stand-in for redis.asyncio.Redis — answers ping, records being closed."""
 
     def __init__(self, ping_error=None):
         self._ping_error = ping_error
+        self.closed = False
 
     async def ping(self):
         if self._ping_error is not None:
             raise self._ping_error
         return True
+
+    async def aclose(self):
+        self.closed = True
 
 
 class _FakeRedisModule:
@@ -59,20 +66,26 @@ class _FakeRedisModule:
     def __init__(self, ping_error=None, construct_error=None):
         self.redis_kwargs = []
         self.from_url_calls = []
+        self.clients = []
         self._ping_error = ping_error
         self._construct_error = construct_error
+
+    def _client(self):
+        client = _FakeClient(self._ping_error)
+        self.clients.append(client)
+        return client
 
     def Redis(self, **kwargs):  # noqa: N802 - mirrors the redis API
         if self._construct_error is not None:
             raise self._construct_error
         self.redis_kwargs.append(kwargs)
-        return _FakeClient(self._ping_error)
+        return self._client()
 
     def from_url(self, url, **kwargs):
         if self._construct_error is not None:
             raise self._construct_error
         self.from_url_calls.append((url, kwargs))
-        return _FakeClient(self._ping_error)
+        return self._client()
 
 
 def _settings(
@@ -135,10 +148,6 @@ def _reset_fakeredis_singleton():
     rc.reset_fakeredis_client()
 
 
-def _is_fakeredis(client) -> bool:
-    return type(client).__module__.startswith("fakeredis")
-
-
 # --------------------------------------------------------------------------- #
 # Credentials reach the async client
 # --------------------------------------------------------------------------- #
@@ -158,7 +167,7 @@ async def test_async_client_gets_password_and_db_from_settings(
 
     client = await get_async_redis_client()
 
-    assert not _is_fakeredis(client)
+    assert not is_fakeredis(client)
     assert len(module.redis_kwargs) == 1
     kwargs = module.redis_kwargs[0]
     assert kwargs["host"] == "redis.internal"
@@ -294,7 +303,7 @@ async def test_async_connection_failure_under_standalone_keeps_fakeredis(
 
     client = await get_async_redis_client()
 
-    assert _is_fakeredis(client)
+    assert is_fakeredis(client)
 
 
 def test_sync_construction_failure_under_cloud_fails_the_boot(
@@ -313,7 +322,7 @@ def test_sync_construction_failure_under_standalone_keeps_fakeredis(
     use_settings(cloud=False)
     fake_redis_module(construct_error=RuntimeError("bad redis config"))
 
-    assert _is_fakeredis(RedisClientFactory.create_client())
+    assert is_fakeredis(RedisClientFactory.create_client())
 
 
 async def test_async_missing_redis_package_under_cloud_fails_the_boot(
@@ -345,7 +354,7 @@ async def test_async_missing_redis_package_under_standalone_keeps_fakeredis(
     monkeypatch.setattr(rc, "redis", None)
     monkeypatch.setattr(rc, "REDIS_AVAILABLE", False)
 
-    assert _is_fakeredis(await get_async_redis_client())
+    assert is_fakeredis(await get_async_redis_client())
 
 
 async def test_async_no_redis_config_under_cloud_fails_the_boot(
@@ -365,4 +374,112 @@ async def test_async_no_redis_config_under_standalone_keeps_fakeredis(
     use_settings(cloud=False, redis_url=None, redis_host="")
     fake_redis_module()
 
-    assert _is_fakeredis(await get_async_redis_client())
+    assert is_fakeredis(await get_async_redis_client())
+
+
+def test_sync_no_redis_config_under_cloud_fails_the_boot(
+    use_settings, fake_redis_module
+):
+    """The guard sits on the shared path, so the sync entry point refuses too."""
+    use_settings(cloud=True, redis_url=None, redis_host="")
+    fake_redis_module()
+
+    with pytest.raises(RedisUnavailableError, match="no Redis URL or host"):
+        RedisClientFactory.create_client()
+
+
+# --------------------------------------------------------------------------- #
+# One construction path — the async entry point delegates rather than repeats
+# --------------------------------------------------------------------------- #
+
+
+async def test_async_client_is_pooled_and_timeout_bounded_like_the_sync_one(
+    use_settings, fake_redis_module
+):
+    """A second construction block drifts: this one had dropped max_connections,
+    so every cloud client ran an unbounded pool while the sync one was capped."""
+    use_settings()
+    module = fake_redis_module()
+
+    await get_async_redis_client()
+
+    kwargs = module.redis_kwargs[0]
+    assert kwargs["max_connections"] == 20
+    assert kwargs["socket_connect_timeout"] == 5
+    assert kwargs["socket_timeout"] == 10
+
+
+async def test_async_client_that_fails_ping_releases_its_pool(
+    use_settings, fake_redis_module
+):
+    """The rejected client owns a connection pool; discarding it must not leak it."""
+    use_settings(cloud=False)
+    module = fake_redis_module(ping_error=ConnectionError("connection refused"))
+
+    await get_async_redis_client()
+
+    assert module.clients[0].closed is True
+
+
+# --------------------------------------------------------------------------- #
+# The password never reaches a log line or the refusal message
+# --------------------------------------------------------------------------- #
+
+_URL_WITH_PASSWORD = "redis://:s3cr3t@redis.internal:6379/0"
+_URL_ECHOING_ERROR = f"Error connecting to {_URL_WITH_PASSWORD}: auth failed"
+
+
+async def test_url_password_is_not_logged_when_the_error_echoes_the_url(
+    use_settings, fake_redis_module, caplog
+):
+    """Redis errors quote the URL back with the password inline; standalone logs it."""
+    use_settings(cloud=False, redis_url=_URL_WITH_PASSWORD)
+    fake_redis_module(ping_error=ConnectionError(_URL_ECHOING_ERROR))
+
+    with caplog.at_level(logging.DEBUG, logger=rc.logger.name):
+        client = await get_async_redis_client()
+
+    assert is_fakeredis(client)
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("s3cr3t" in m for m in messages), messages
+    assert any("***" in m for m in messages), messages
+
+
+async def test_url_password_is_not_in_the_cloud_refusal_message(
+    use_settings, fake_redis_module
+):
+    """Under cloud the same text is raised, and the refusal is surfaced to operators."""
+    use_settings(cloud=True, redis_url=_URL_WITH_PASSWORD)
+    fake_redis_module(ping_error=ConnectionError(_URL_ECHOING_ERROR))
+
+    with pytest.raises(RedisUnavailableError) as exc:
+        await get_async_redis_client()
+
+    assert "s3cr3t" not in str(exc.value)
+    # Still diagnosable: the target survives, only the secret is masked.
+    assert "redis.internal" in str(exc.value)
+
+
+def test_sync_construction_error_does_not_leak_the_url_password(
+    use_settings, fake_redis_module
+):
+    use_settings(cloud=True, redis_url=_URL_WITH_PASSWORD)
+    fake_redis_module(construct_error=ValueError(_URL_ECHOING_ERROR))
+
+    with pytest.raises(RedisUnavailableError) as exc:
+        RedisClientFactory.create_client()
+
+    assert "s3cr3t" not in str(exc.value)
+
+
+def test_sync_construction_error_does_not_leak_the_discrete_password(
+    use_settings, fake_redis_module
+):
+    """Same guarantee on the host/port branch, where the password is its own field."""
+    use_settings(cloud=True, redis_password="s3cr3t")
+    fake_redis_module(construct_error=ValueError("AUTH failed for password s3cr3t"))
+
+    with pytest.raises(RedisUnavailableError) as exc:
+        RedisClientFactory.create_client()
+
+    assert "s3cr3t" not in str(exc.value)

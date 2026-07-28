@@ -98,12 +98,13 @@ def _patch_underlying_redis(monkeypatch, client):
 
     Patches the REAL infrastructure factory rather than _get_redis itself, so the
     FakeRedis-rejection guard inside _get_redis is actually exercised. This mirrors
-    production: on a Redis outage get_async_redis_client swallows the error and
-    returns a FakeRedis — it never raises.
+    a standalone Redis outage, where get_async_redis_client swallows the error and
+    returns a FakeRedis rather than raising (under cloud it raises instead, which
+    the caller's error handling already covers).
     """
     import faultmaven.infrastructure.redis_client as rc
 
-    async def _fake_get(redis_url=None, host=None, port=None):
+    async def _fake_get(redis_url=None):
         return client
 
     monkeypatch.setattr(rc, "get_async_redis_client", _fake_get)
@@ -123,7 +124,7 @@ async def test_get_redis_rejects_fakeredis_fallback(fake_redis, monkeypatch):
 async def test_watcher_exits_when_redis_falls_back_to_fakeredis(
     fake_redis, monkeypatch
 ):
-    """The real outage path: get_async_redis_client returns FakeRedis (never raises).
+    """The standalone outage path: get_async_redis_client returns FakeRedis, no raise.
 
     _get_redis rejects it, so the watcher exits at startup instead of binding to
     fake state and polling it forever (the bug the guard prevents).
