@@ -153,6 +153,89 @@ class TestBulkRoutesAuthentication:
 
 @pytest.mark.unit
 @pytest.mark.knowledge_base
+class TestBulkBatchBounds:
+    """The per-target loop is bounded and de-duplicated.
+
+    Every target costs a document load, and a refused-but-visible one costs a
+    second query — so an unbounded, un-deduplicated batch is both a
+    work-amplifier and a timing oracle (repeat an id N times and the
+    existing-but-invisible case separates from the absent one even though the
+    response strings are identical).
+    """
+
+    @pytest.mark.parametrize("path", [BULK_UPDATE, BULK_DELETE])
+    def test_over_cap_batch_is_rejected_before_any_work(self, path, single_tenant):
+        from faultmaven.modules.knowledge.api.routes import MAX_BULK_DOCUMENT_IDS
+
+        service = _service()
+        resp = _client(service, _user()).post(
+            path, json={"document_ids": [OWN] * (MAX_BULK_DOCUMENT_IDS + 1)}
+        )
+
+        assert resp.status_code == 400
+        assert str(MAX_BULK_DOCUMENT_IDS) in resp.json()["detail"]
+        service.get_document.assert_not_awaited()
+        service.bulk_update_documents.assert_not_awaited()
+        service.bulk_delete_documents.assert_not_awaited()
+
+    @pytest.mark.parametrize("path", [BULK_UPDATE, BULK_DELETE])
+    def test_cap_applies_to_the_raw_list_not_the_deduped_one(self, path, single_tenant):
+        # Otherwise a caller submits an unbounded list and the server pays for
+        # the dedupe of it.
+        from faultmaven.modules.knowledge.api.routes import MAX_BULK_DOCUMENT_IDS
+
+        service = _service()
+        resp = _client(service, _user()).post(
+            path, json={"document_ids": [OWN, OTHERS] * MAX_BULK_DOCUMENT_IDS}
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("path", [BULK_UPDATE, BULK_DELETE])
+    def test_at_cap_batch_is_accepted(self, path, single_tenant):
+        from faultmaven.modules.knowledge.api.routes import MAX_BULK_DOCUMENT_IDS
+
+        service = _service()
+        resp = _client(service, _user()).post(
+            path, json={"document_ids": [OWN] * MAX_BULK_DOCUMENT_IDS}
+        )
+        assert resp.status_code == 200
+
+    @pytest.mark.parametrize("path", [BULK_UPDATE, BULK_DELETE])
+    def test_duplicate_ids_collapse_to_one_evaluation_and_one_error(
+        self, path, single_tenant
+    ):
+        service = _service()
+        resp = _client(service, _user(user_id="u1")).post(
+            path, json={"document_ids": [OTHERS, OWN, OTHERS, OWN, OTHERS]}
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        # One gate evaluation per unique id — not per occurrence.
+        assert service.get_document.await_count == 2
+        assert body["errors"] == [f"Document {OTHERS} not found"]
+        assert body["total_requested"] == 2
+        permitted = (
+            service.bulk_update_documents.await_args.kwargs["document_ids"]
+            if path == BULK_UPDATE
+            else service.bulk_delete_documents.await_args.args[0]
+        )
+        assert permitted == [OWN]
+
+    @pytest.mark.parametrize("path", [BULK_UPDATE, BULK_DELETE])
+    def test_non_string_ids_are_rejected(self, path, single_tenant):
+        service = _service()
+        resp = _client(service, _user()).post(
+            path, json={"document_ids": [{"not": "an id"}]}
+        )
+        # 400 from the route, or 422 from the declared List[str] body model —
+        # either way it never reaches the per-target loop as a 500.
+        assert resp.status_code in (400, 422)
+        service.get_document.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.knowledge_base
 class TestBulkUpdateGate:
     def test_mixed_batch_as_plain_user(self, single_tenant):
         service = _service()

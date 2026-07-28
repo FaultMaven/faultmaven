@@ -127,6 +127,41 @@ async def _authorize_document_write(
         raise
 
 
+# Upper bound on a bulk write batch. The bounded surface is per-target DB work
+# — a document load per id, plus a visibility query per refusal — reachable by
+# any authenticated caller since #866 moved these routes off platform_admin.
+# Nothing else bounds it: MAX_UPLOAD_SIZE_MB is multipart-only and the rate
+# limiter counts requests, not targets within one.
+MAX_BULK_DOCUMENT_IDS = 200
+
+
+def _normalize_bulk_document_ids(document_ids: Any) -> List[str]:
+    """Validate, cap and de-duplicate a bulk batch (#866).
+
+    The cap is applied to the RAW list, before dedupe: capping the deduped list
+    would still let a caller submit an unbounded one and make the server pay
+    for collapsing it.
+
+    Dedupe preserves first-seen order, so the per-target gate runs — and each
+    refusal is reported — once per unique id. It also removes a timing oracle:
+    an existing-but-invisible target costs two DB round trips against one for
+    an absent id, and repeating a single id would otherwise scale that
+    difference into a measurable signal despite the identical response strings.
+    """
+    if not isinstance(document_ids, list) or not all(
+        isinstance(doc_id, str) for doc_id in document_ids
+    ):
+        raise HTTPException(
+            status_code=400, detail="document_ids must be a list of strings"
+        )
+    if len(document_ids) > MAX_BULK_DOCUMENT_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Too many documents: at most {MAX_BULK_DOCUMENT_IDS} per request"),
+        )
+    return list(dict.fromkeys(document_ids))
+
+
 async def _partition_bulk_targets(
     document_ids: List[str],
     request: Request,
@@ -826,7 +861,8 @@ async def bulk_update_documents(
     ``PUT /documents/{id}``, so it carries the same gate — any authenticated
     caller may submit a batch, and the per-document write policy decides each
     target. Refused targets are reported in ``errors`` and never counted as
-    updated; ``total_requested`` stays the full batch size.
+    updated; ``total_requested`` is the de-duplicated batch size (see
+    ``_normalize_bulk_document_ids``), so the counts reconcile.
     """
     logger = logging.getLogger(__name__)
 
@@ -836,6 +872,8 @@ async def bulk_update_documents(
 
         if not document_ids:
             raise HTTPException(status_code=400, detail="Document IDs are required")
+
+        document_ids = _normalize_bulk_document_ids(document_ids)
 
         # Parse tags in updates if provided using standardized utility
         if "tags" in updates:
@@ -874,7 +912,8 @@ async def bulk_delete_documents(
     Ownership-aware per target (#866): the same gate as
     ``DELETE /documents/{id}``, applied to each target before anything reaches
     the service. Refused targets are reported in ``errors`` and never counted
-    as deleted; ``total_requested`` stays the full batch size.
+    as deleted; ``total_requested`` is the de-duplicated batch size (see
+    ``_normalize_bulk_document_ids``), so the counts reconcile.
     """
     logger = logging.getLogger(__name__)
 
@@ -883,6 +922,8 @@ async def bulk_delete_documents(
 
         if not document_ids:
             raise HTTPException(status_code=400, detail="Document IDs are required")
+
+        document_ids = _normalize_bulk_document_ids(document_ids)
 
         permitted_ids, gate_errors = await _partition_bulk_targets(
             document_ids, request, knowledge_service, current_user
