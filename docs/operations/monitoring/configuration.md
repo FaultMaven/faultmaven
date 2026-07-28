@@ -283,19 +283,26 @@ Tracing is all-or-nothing. The two variables act at different layers:
   decorator a no-op. `main.py` calls `load_dotenv()` before the SDK is imported,
   so a value in `.env` reaches it.
 
-Note that `OPIK_ENABLED=false` alone stops FaultMaven configuring a backend; it
-does not make the decorators inert, because they are applied at import time and
-the SDK's own default leaves tracing active. Set `OPIK_TRACK_DISABLE=true` to
-short-circuit the decorators themselves. Both are read at startup, so a change
-requires a restart.
+Note that `OPIK_ENABLED=false` alone stops FaultMaven configuring a backend, but
+it does **not** make the decorators inert. `OPIK_ENABLED` is FaultMaven's own
+variable and the SDK never reads it; each `@opik.track` wrapper calls
+`is_tracing_active()` on every invocation, and that derives solely from
+`OPIK_TRACK_DISABLE`, whose SDK default leaves tracing active. So disabling only
+`OPIK_ENABLED` leaves every span still being built, against an unconfigured
+default backend.
+
+To actually stop tracing, set **both** — `OPIK_TRACK_DISABLE` short-circuits the
+decorators, `OPIK_ENABLED` stops the backend being configured. Both are read at
+startup and the SDK memoises the result, so a change requires a restart.
 
 **Examples:**
 
 ```bash
-# Stop emitting spans but keep Opik configured
+# Stop emitting spans but keep the backend configured
 OPIK_TRACK_DISABLE=true
 
-# Turn Opik off entirely
+# Turn Opik off entirely — BOTH are required
+OPIK_TRACK_DISABLE=true
 OPIK_ENABLED=false
 ```
 
