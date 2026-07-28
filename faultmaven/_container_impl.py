@@ -530,6 +530,17 @@ class DIContainer(BaseDIContainer):
                     }
                 return None
 
+            async def get_document_visible(self, document_id, user=None, team_ids=None):
+                """Actor-facing scoped read (#867) — always fail CLOSED.
+
+                This stub has no scope, owner or share state to evaluate the
+                read-visibility rule against, and ``get_document`` above
+                fabricates a document for any plausible id. Answering from it
+                would hand content to an actor the rule never approved, so the
+                fallback returns None and the routes answer 404.
+                """
+                return None
+
             async def list_documents(
                 self, document_type=None, tags=None, limit=50, offset=0
             ):

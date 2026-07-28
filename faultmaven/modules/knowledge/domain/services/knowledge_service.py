@@ -1421,21 +1421,60 @@ class KnowledgeService:
 
         except Exception as e:
             logger.error(f"Failed to list documents: {e}")
+            # Degraded-but-successful return: callers key on `error` being
+            # present, so the shape is kept — but the value is a static
+            # message, never the exception text (#866). A driver raises with
+            # the connection URI in its message, and this body is reachable
+            # with no credentials (the route takes optional auth). The log
+            # line above is where the driver text belongs.
             return {
                 "documents": [],
                 "total_count": 0,
                 "limit": limit,
                 "offset": offset,
-                "error": str(e),
+                "error": "Failed to list documents",
             }
 
+    @staticmethod
+    def _document_dto(item: Any) -> Dict[str, Any]:
+        """Build the single-document DTO from a ``KnowledgeItem``.
+
+        Mirrors the ``list_documents`` DTO shape with a ``content`` field
+        added. One builder so the scoped and unscoped reads can never return
+        different shapes for the same row.
+        """
+        meta = item.metadata or {}
+        return {
+            "document_id": item.item_id,
+            "title": item.title,
+            "content": item.content,
+            "document_type": item.item_type.value,
+            "tags": list(item.tags) if item.tags else [],
+            "scope": item.scope.value,
+            "owner_id": item.owner_id,
+            "source_url": item.source_url,
+            "created_at": item.created_at.isoformat() if item.created_at else "",
+            "updated_at": item.updated_at.isoformat() if item.updated_at else "",
+            "metadata": {
+                "domain": meta.get("domain"),
+                "service": meta.get("service"),
+                "severity": meta.get("severity"),
+                "quality_score": meta.get("quality_score"),
+            },
+        }
+
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
-        """Get a published runbook by ID from knowledge_items.
+        """Get a published runbook by ID from knowledge_items — UNSCOPED.
 
         Content comes from the stored row (``knowledge_items.content``), not
         from disk — the row is the source of truth for the published
-        inventory. Mirrors the ``list_documents`` DTO shape with a ``content``
-        field added.
+        inventory.
+
+        This is the trusted load: it applies no requester scope, so the write
+        routes can evaluate the write policy against the real row (the
+        single-tenant operator override has to work on documents the operator
+        cannot list) and internal ingestion can read any row. Actor-facing
+        reads must use :meth:`get_document_visible` instead.
         """
         try:
             if not document_id:
@@ -1455,28 +1494,65 @@ class KnowledgeService:
             if item is None:
                 return None
 
-            meta = item.metadata or {}
-            return {
-                "document_id": item.item_id,
-                "title": item.title,
-                "content": item.content,
-                "document_type": item.item_type.value,
-                "tags": list(item.tags) if item.tags else [],
-                "scope": item.scope.value,
-                "owner_id": item.owner_id,
-                "source_url": item.source_url,
-                "created_at": item.created_at.isoformat() if item.created_at else "",
-                "updated_at": item.updated_at.isoformat() if item.updated_at else "",
-                "metadata": {
-                    "domain": meta.get("domain"),
-                    "service": meta.get("service"),
-                    "severity": meta.get("severity"),
-                    "quality_score": meta.get("quality_score"),
-                },
-            }
+            return self._document_dto(item)
 
         except Exception as e:
             logger.error(f"Failed to get document {document_id}: {e}")
+            return None
+
+    async def get_document_visible(
+        self,
+        document_id: str,
+        user: Optional[Any] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a runbook by ID, scoped to what the requester may see (#867).
+
+        The actor-facing counterpart of :meth:`get_document`: RBAC is enforced
+        in-query by ``get_visible_by_id`` (global ∪ own-org owned ∪ own-org
+        shared-to-my-teams), and ``organization_id`` is sourced exactly as
+        ``list_documents`` sources it. Returns None both for an absent id and
+        for one the requester cannot see, so callers cannot distinguish the
+        two.
+
+        Rejected alternative: scoping ``get_document`` itself — it is the
+        trusted load behind the write-policy check and internal ingestion, so
+        scoping it would break the operator override and push visibility
+        decisions into callers that have no actor.
+        """
+        try:
+            if not document_id or not self._db_session_factory:
+                return None
+
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
+            )
+            from faultmaven.providers.tenancy.single_tenant import (
+                SingleTenantProvider,
+            )
+
+            organization_id = (
+                getattr(user, "organization_id", None)
+                or SingleTenantProvider.DEFAULT_ORG_ID
+            )
+            user_id = getattr(user, "user_id", None) if user else None
+
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                item = await repo.get_visible_by_id(
+                    document_id,
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    team_ids=team_ids,
+                )
+
+            if item is None:
+                return None
+
+            return self._document_dto(item)
+
+        except Exception as e:
+            logger.error(f"Failed to get visible document {document_id}: {e}")
             return None
 
     async def get_runbook_causes(self, item_id: str) -> Optional[List[Dict[str, Any]]]:
@@ -1771,7 +1847,13 @@ class KnowledgeService:
 
         except Exception as e:
             logger.error(f"Semantic search failed: {e}")
-            return {"query": query, "total_results": 0, "results": [], "error": str(e)}
+            # Static `error` value — see list_documents (#866).
+            return {
+                "query": query,
+                "total_results": 0,
+                "results": [],
+                "error": "Search failed",
+            }
 
     async def fulltext_search_documents(
         self,
@@ -1865,7 +1947,13 @@ class KnowledgeService:
 
         except Exception as e:
             logger.error(f"Full-text search failed: {e}")
-            return {"query": query, "total_results": 0, "results": [], "error": str(e)}
+            # Static `error` value — see list_documents (#866).
+            return {
+                "query": query,
+                "total_results": 0,
+                "results": [],
+                "error": "Search failed",
+            }
 
     async def update_document_metadata(
         self, document_id: str, **kwargs
@@ -1955,7 +2043,13 @@ class KnowledgeService:
     async def bulk_update_documents(
         self, document_ids: List[str], updates: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Bulk update document metadata"""
+        """Bulk update document metadata.
+
+        ``errors`` is returned verbatim to the caller in a 200 body by
+        ``POST /knowledge/documents/bulk-update``, which any authenticated
+        caller may reach (#866), so per-target entries never carry exception
+        text — the diagnostic stays in the log line.
+        """
         updated_count = 0
         errors = []
 
@@ -1967,7 +2061,7 @@ class KnowledgeService:
                 else:
                     errors.append(f"Document {doc_id} not found")
             except Exception as e:
-                errors.append(f"Failed to update document {doc_id}: {e}")
+                errors.append(f"Document {doc_id}: update failed")
                 logger.error(f"Failed to update document {doc_id}: {e}")
 
         logger.info(
@@ -1982,7 +2076,13 @@ class KnowledgeService:
         }
 
     async def bulk_delete_documents(self, document_ids: List[str]) -> Dict[str, Any]:
-        """Bulk delete documents"""
+        """Bulk delete documents.
+
+        ``errors`` is returned verbatim to the caller in a 200 body (see
+        ``bulk_update_documents``), so neither the raised exception nor the
+        per-document ``error`` field — both of which carry driver text — is
+        echoed; the diagnostic stays in the log line.
+        """
         deleted_count = 0
         errors = []
 
@@ -1992,11 +2092,13 @@ class KnowledgeService:
                 if result.get("success"):
                     deleted_count += 1
                 else:
-                    errors.append(
-                        f"Failed to delete document {doc_id}: {result.get('error', 'Unknown error')}"
+                    errors.append(f"Document {doc_id}: delete failed")
+                    logger.error(
+                        f"Failed to delete document {doc_id}: "
+                        f"{result.get('error', 'Unknown error')}"
                     )
             except Exception as e:
-                errors.append(f"Failed to delete document {doc_id}: {e}")
+                errors.append(f"Document {doc_id}: delete failed")
                 logger.error(f"Failed to delete document {doc_id}: {e}")
 
         logger.info(

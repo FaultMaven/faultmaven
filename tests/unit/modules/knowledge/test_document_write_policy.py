@@ -153,9 +153,15 @@ def _client(knowledge_service, user):
     return TestClient(app)
 
 
-def _knowledge_service(doc):
+def _knowledge_service(doc, *, visible=True):
+    """Mock service. ``visible`` says whether the actor may *read* the target.
+
+    On refusal the routes re-check read visibility (#867) to decide 403 vs
+    404, so the scoped read has to be stubbed alongside the trusted load.
+    """
     service = MagicMock()
     service.get_document = AsyncMock(return_value=doc)
+    service.get_document_visible = AsyncMock(return_value=doc if visible else None)
     service.update_document_metadata = AsyncMock(return_value={"document_id": "doc1"})
     service.delete_document = AsyncMock(return_value={"success": True})
     return service
@@ -180,14 +186,20 @@ class TestDocumentWriteRoutes:
         service.delete_document.assert_awaited_once()
 
     def test_non_owner_cannot_write_personal_document(self, monkeypatch):
+        # Refused AND unreadable (someone else's personal runbook, unshared),
+        # so the refusal answers 404 rather than 403 — a 403 here would confirm
+        # the document exists (#867). The 403-vs-404 split is swept in
+        # test_document_read_visibility.py.
         _patch_provider(monkeypatch, BUILTIN_SINGLE)
-        service = _knowledge_service(_doc(scope="personal", owner_id="someone_else"))
+        service = _knowledge_service(
+            _doc(scope="personal", owner_id="someone_else"), visible=False
+        )
         client = _client(service, _user(user_id="u1", roles=["user"]))
         assert (
             client.put("/knowledge/documents/doc1", json={"title": "X"}).status_code
-            == 403
+            == 404
         )
-        assert client.delete("/knowledge/documents/doc1").status_code == 403
+        assert client.delete("/knowledge/documents/doc1").status_code == 404
         service.update_document_metadata.assert_not_awaited()
         service.delete_document.assert_not_awaited()
 
