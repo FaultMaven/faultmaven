@@ -51,6 +51,49 @@ refresh tokens are stateless JWTs; only *revocations* are stored (in Redis).
 Requires `AUTH_MODE=oauth`. In local mode the script refuses and tells you to
 keep using dev-login.
 
+## Multi-tenant: the credential names its tenant
+
+Under `TENANT_PROVIDER=multi` (Cloud), `--organization-id` / `-o` is **required**:
+
+```bash
+python scripts/auth/provision_service_account.py \
+    -u slack-agent -o 22222222-2222-2222-2222-222222222222
+```
+
+The `users` table has no organization column — affiliation is a row in
+`organization_members`, and RLS is the authority on it. A credential's tenancy
+therefore travels in its own token chain (see
+`docs/architecture/security/sso-org-mapping.md`), and the mint is where that
+chain starts: the script stamps the organization on the account before signing,
+so the refresh token carries an `organization_id` claim.
+
+The organization id is the FaultMaven organization UUID —
+`scripts/auth/provision_sso_org.py` reports it when it provisions the tenant, and
+it is what your operator records should hold. It is *not* the IdP's `org_01H…`
+identifier.
+
+The script refuses, before touching the account, in three cases:
+
+| Refusal | Why |
+|---------|-----|
+| Multi-tenant with no `--organization-id` | An org-less credential resolves to an **empty** organization claim, and every request it makes is then refused at `bind_request_org_context`. The credential would be dead on arrival, and the failure would only surface as the agent's first API call being rejected. |
+| `--organization-id` set to the Standalone sentinel (`00000000-0000-0000-0000-000000000001`) | The sentinel identifies the single-tenant *deployment*, not a tenant — migration 033 keys the global-KB write policy on it. It is refused at mint as well as at bind. |
+| Single-tenant with `--organization-id` | A single-tenant deployment has exactly one tenant, so the flag cannot be honoured. Omit it. |
+
+The claim then rides rotation. Both refresh paths — `POST /auth/refresh` and the
+oauth refresh grant the agent uses (`POST /auth/oauth/token`,
+`grant_type=refresh_token`) — re-attach the presented token's organization claim
+to the reloaded user before minting the next pair, so the tenant survives an
+unbounded number of rotations without the operator touching it again.
+
+If the agent starts getting 403s at bind time after an otherwise healthy
+provisioning run, decode its refresh token (`organization_id` claim) — an empty
+claim means the credential was minted org-less and must be re-provisioned with
+`-o`.
+
+Standalone / single-tenant deployments ignore all of this: the claim is the
+Standalone sentinel, which there is the correct answer.
+
 ## How the credential renews
 
 - The agent calls `POST /api/v1/auth/oauth/token` with

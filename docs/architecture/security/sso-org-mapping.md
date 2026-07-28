@@ -128,6 +128,21 @@ The organization therefore travels with the credentials:
 | access token | `organization_id` claim (already present) |
 | refresh token | `organization_id` claim (added for both RS256 and HS256) |
 | `/auth/refresh` | the validated refresh claim is re-attached to the reloaded user before the new pair is minted |
+| oauth refresh grant (`POST /auth/oauth/token`, `grant_type=refresh_token`) | same re-attachment, in `OAuthService.refresh_access_token` |
+| service-account mint | `provision_service_account_credential` stamps the operator-supplied organization on the account before signing, which is where a non-human actor's chain begins |
+
+Both refresh paths carry the same contract, deliberately: a credential that
+rotates through only one of them would otherwise lose its tenant on first
+rotation. `/auth/refresh` is the dashboard's path; the oauth refresh grant is
+Copilot's and the D10 service account's.
+
+A service account has no login to derive a tenant from, so the operator supplies
+it at provisioning time (`--organization-id`). Provisioning refuses at mint
+whatever `bind_request_org_context` would refuse at bind — the sentinel org in
+any mode, and a missing organization under multi-tenant — so the misconfiguration
+surfaces to the operator minting the credential rather than as a rejected API
+call later. Operator procedure:
+`docs/operations/security/service-account-credentials.md`.
 
 `resolve_organization_claim` remains the single place that decides what goes in
 the claim, and the #850 guards remain live backstops on both ends: under
