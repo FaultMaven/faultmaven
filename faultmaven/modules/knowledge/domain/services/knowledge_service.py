@@ -1421,12 +1421,18 @@ class KnowledgeService:
 
         except Exception as e:
             logger.error(f"Failed to list documents: {e}")
+            # Degraded-but-successful return: callers key on `error` being
+            # present, so the shape is kept — but the value is a static
+            # message, never the exception text (#866). A driver raises with
+            # the connection URI in its message, and this body is reachable
+            # with no credentials (the route takes optional auth). The log
+            # line above is where the driver text belongs.
             return {
                 "documents": [],
                 "total_count": 0,
                 "limit": limit,
                 "offset": offset,
-                "error": str(e),
+                "error": "Failed to list documents",
             }
 
     @staticmethod
@@ -1841,7 +1847,13 @@ class KnowledgeService:
 
         except Exception as e:
             logger.error(f"Semantic search failed: {e}")
-            return {"query": query, "total_results": 0, "results": [], "error": str(e)}
+            # Static `error` value — see list_documents (#866).
+            return {
+                "query": query,
+                "total_results": 0,
+                "results": [],
+                "error": "Search failed",
+            }
 
     async def fulltext_search_documents(
         self,
@@ -1935,7 +1947,13 @@ class KnowledgeService:
 
         except Exception as e:
             logger.error(f"Full-text search failed: {e}")
-            return {"query": query, "total_results": 0, "results": [], "error": str(e)}
+            # Static `error` value — see list_documents (#866).
+            return {
+                "query": query,
+                "total_results": 0,
+                "results": [],
+                "error": "Search failed",
+            }
 
     async def update_document_metadata(
         self, document_id: str, **kwargs

@@ -351,7 +351,12 @@ async def upload_document(
         raise
     except Exception as e:
         logger.error(f"Document upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Document upload failed: {str(e)}")
+        # No str(e) in the response — the rule for every 500 in this module
+        # (#866). A DB driver raises with the connection URI in its message, so
+        # echoing exception text hands a caller credentials. Each `except` logs
+        # the exception (that is where the diagnostic belongs) and answers with
+        # the static prefix only.
+        raise HTTPException(status_code=500, detail="Document upload failed")
 
 
 @router.get("/documents")
@@ -409,9 +414,7 @@ async def list_documents(
 
     except Exception as e:
         logger.error(f"Failed to list documents: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to list documents: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to list documents")
 
 
 @router.get("/documents/{document_id}")
@@ -689,7 +692,7 @@ async def search_documents(
         raise
     except Exception as e:
         logger.error(f"Search failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Search failed")
 
 
 @router.post("/documents/search")
@@ -794,9 +797,7 @@ async def fulltext_search_documents(
         raise
     except Exception as e:
         logger.error(f"Full-text search failed: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Full-text search failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Full-text search failed")
 
 
 @router.put("/documents/{document_id}")
@@ -964,9 +965,7 @@ async def get_knowledge_stats(
 
     except Exception as e:
         logger.error(f"Failed to get knowledge stats: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get statistics: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to get statistics")
 
 
 @router.get("/analytics/search")
@@ -987,9 +986,7 @@ async def get_search_analytics(
 
     except Exception as e:
         logger.error(f"Failed to get search analytics: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get analytics: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to get analytics")
 
 
 # ============================================================
@@ -1063,9 +1060,7 @@ async def list_suggestions(
 
     except Exception as e:
         logger.error(f"Failed to list suggestions: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to list suggestions: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to list suggestions")
 
 
 @router.get("/suggestions/{suggestion_id}")
@@ -1100,9 +1095,7 @@ async def get_suggestion(
         raise
     except Exception as e:
         logger.error(f"Failed to get suggestion {suggestion_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get suggestion: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to get suggestion")
 
 
 @router.put("/suggestions/{suggestion_id}")
@@ -1146,9 +1139,7 @@ async def update_suggestion(
         raise
     except Exception as e:
         logger.error(f"Failed to update suggestion {suggestion_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to update suggestion: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to update suggestion")
 
 
 @router.post("/suggestions/{suggestion_id}/approve", status_code=201)
@@ -1211,9 +1202,7 @@ async def approve_suggestion(
         raise
     except Exception as e:
         logger.error(f"Failed to approve suggestion {suggestion_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to approve suggestion: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to approve suggestion")
 
 
 @router.post("/suggestions/{suggestion_id}/reject")
@@ -1266,9 +1255,7 @@ async def reject_suggestion(
         raise
     except Exception as e:
         logger.error(f"Failed to reject suggestion {suggestion_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to reject suggestion: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to reject suggestion")
 
 
 @router.post("/suggestions/{suggestion_id}/remediate-pii")
@@ -1313,6 +1300,4 @@ async def remediate_pii(
         raise
     except Exception as e:
         logger.error(f"Failed to remediate PII for suggestion {suggestion_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to remediate PII: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to remediate PII")
