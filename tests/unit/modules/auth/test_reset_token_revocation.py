@@ -13,6 +13,8 @@ tokens rather than by a second, reset-specific cleanup path.
 
 from __future__ import annotations
 
+import logging
+import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -28,7 +30,11 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
 )
-from faultmaven.modules.auth.domain.services.user_service import UserService
+from faultmaven.modules.auth.domain.services.user_service import (
+    RESET_REFUSED_CODE,
+    RESET_REFUSED_MESSAGE,
+    UserService,
+)
 from faultmaven.utils.password import verify_password
 from tests.utils import InMemoryRevocationStore
 
@@ -197,7 +203,7 @@ class TestDeactivatedAccounts:
 
         with pytest.raises(AuthenticationError) as exc_info:
             await user_service.reset_password(reset_token, NEW_PASSWORD)
-        assert exc_info.value.error_code == "ACCOUNT_INACTIVE"
+        assert exc_info.value.error_code == RESET_REFUSED_CODE
 
         stored = await user_service.user_repo.get(user.user_id)
         assert verify_password(OLD_PASSWORD, stored.hashed_password)
@@ -258,10 +264,9 @@ class TestTheOneTimeLinkSurvivesARefusedAttempt:
         """Reuse is refused by two independent mechanisms, in this order.
 
         The successful reset revokes the user's tokens, so the watermark rejects
-        the reused token at the revocation check (`INVALID_RESET_TOKEN`) before
-        the one-time gate is reached — the key is gone either way. Asserting the
-        refusal rather than a specific code keeps this honest about which guard
-        fires first.
+        the reused token at the revocation check before the one-time gate is
+        reached — the key is gone either way. Every refusal is the same
+        observable now, so only the logs record which guard fired.
         """
         user_service, _auth_service, _store, user = await _build()
         reset_token = await user_service.request_password_reset(email=EMAIL)
@@ -285,4 +290,91 @@ class TestTheOneTimeLinkSurvivesARefusedAttempt:
 
         with pytest.raises(AuthenticationError) as exc_info:
             await user_service.reset_password(reset_token, "Y3t-An0ther-P4ss!")
-        assert exc_info.value.error_code == "TOKEN_ALREADY_USED"
+        assert exc_info.value.error_code == RESET_REFUSED_CODE
+
+
+class TestEveryRefusalLooksIdentical:
+    """One observable for every unusable link; the logs keep the distinction.
+
+    Distinguishable refusals turn `reset_password` into an account oracle: the
+    dummy token `request_password_reset` hands back for an unknown address would
+    be identifiable by the error it provokes, defeating the anti-enumeration
+    measure that produced it.
+    """
+
+    async def _refusal(self, caplog, make_token_and_state):
+        """Run one refusal, returning its observable and its logged reason."""
+        user_service, auth_service, store, user = await _build()
+        token = await make_token_and_state(user_service, auth_service, store, user)
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            with pytest.raises(AuthenticationError) as exc_info:
+                await user_service.reset_password(token, NEW_PASSWORD)
+
+        # structlog renders the event dict into the message, so the reason is
+        # read back out of the emitted line rather than off a record attribute.
+        reasons = [
+            match.group(1)
+            for record in caplog.records
+            for match in [
+                re.search(r"'refusal_reason': '([^']+)'", record.getMessage())
+            ]
+            if match
+        ]
+        return (exc_info.value.error_code, str(exc_info.value)), reasons
+
+    async def _dummy(self, user_service, auth_service, store, user):
+        """A token for an address with no account."""
+        return user_service._generate_dummy_reset_token()
+
+    async def _spent(self, user_service, auth_service, store, user):
+        token = await user_service.request_password_reset(email=EMAIL)
+        await user_service.reset_password(token, NEW_PASSWORD)
+        store.user_watermarks.clear()  # isolate the one-time gate
+        return token
+
+    async def _revoked(self, user_service, auth_service, store, user):
+        token = await user_service.request_password_reset(email=EMAIL)
+        await auth_service.revoke_user_tokens(user.user_id)
+        return token
+
+    async def _inactive(self, user_service, auth_service, store, user):
+        token = await user_service.request_password_reset(email=EMAIL)
+        stored = await user_service.user_repo.get(user.user_id)
+        stored.is_active = False
+        await user_service.user_repo.save(stored)
+        return token
+
+    async def _unverifiable(self, user_service, auth_service, store, user):
+        return "not-a-token"
+
+    async def test_all_refusals_share_one_observable(self, caplog):
+        observables = {}
+        logged = {}
+        for name in ("_dummy", "_spent", "_revoked", "_inactive", "_unverifiable"):
+            observable, reasons = await self._refusal(caplog, getattr(self, name))
+            observables[name] = observable
+            logged[name] = reasons
+
+        # Same code AND same message for every one of them.
+        assert set(observables.values()) == {
+            (RESET_REFUSED_CODE, RESET_REFUSED_MESSAGE)
+        }, observables
+
+        # ...while the logs still say which is which.
+        distinct = {name: r for name, r in logged.items() if r}
+        assert len(distinct) == len(logged), logged
+        assert len({tuple(r) for r in distinct.values()}) == len(distinct), distinct
+
+    async def test_the_message_names_no_account_state(self):
+        """Belt and braces: the text itself must not leak what the code hides."""
+        lowered = RESET_REFUSED_MESSAGE.lower()
+        for leak in (
+            "deactivat",
+            "inactive",
+            "not found",
+            "no such",
+            "already been used",
+        ):
+            assert leak not in lowered

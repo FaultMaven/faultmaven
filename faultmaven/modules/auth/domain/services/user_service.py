@@ -78,6 +78,23 @@ PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
 # Redis key prefix for password reset tokens
 RESET_TOKEN_PREFIX = "password_reset:"
 
+# The single observable every unusable reset link produces: unknown user,
+# deactivated account, revoked token, already-used token, bad signature. They
+# differ only in the log line.
+#
+# Distinguishing them tells whoever submitted the link whether an account exists
+# and what state it is in — the enumeration `_generate_dummy_reset_token` exists
+# to prevent, since a dummy token is otherwise identifiable by the error it
+# provokes. Account state stays visible where the caller PROVED ownership by
+# presenting a password (`authenticate_user` still answers ACCOUNT_INACTIVE); a
+# reset link proves nothing, because it can be captured in transit. `/auth/refresh`
+# draws the same line, collapsing "no longer exists or is inactive" into one
+# response.
+RESET_REFUSED_CODE = "INVALID_RESET_TOKEN"
+RESET_REFUSED_MESSAGE = (
+    "Password reset link is invalid or has expired. Please request a new one."
+)
+
 
 class UserService(BaseService):
     """User management service.
@@ -357,6 +374,22 @@ class UserService(BaseService):
         self.logger.info(f"Password reset token generated for user: {user.user_id}")
         return reset_token
 
+    def _refuse_reset(self, reason: str, **log_context) -> Exception:
+        """Return the one refusal every unusable reset link produces.
+
+        The specific reason reaches the logs only — see RESET_REFUSED_CODE for
+        why the caller is told nothing that distinguishes them.
+        """
+        self.logger.info(
+            "Password reset refused",
+            extra={"refusal_reason": reason, **log_context},
+        )
+        AuthenticationError = _get_authentication_error()
+        return AuthenticationError(
+            RESET_REFUSED_MESSAGE,
+            error_code=RESET_REFUSED_CODE,
+        )
+
     async def reset_password(
         self,
         reset_token: str,
@@ -398,11 +431,7 @@ class UserService(BaseService):
         try:
             claims = self._verify_reset_token(reset_token)
         except Exception as e:
-            self.logger.debug(f"Invalid reset token: {e}")
-            raise AuthenticationError(
-                "Invalid or expired password reset token",
-                error_code="INVALID_RESET_TOKEN",
-            )
+            raise self._refuse_reset("token_unverifiable", error=str(e))
 
         user_id = claims.get("sub")
         jti = claims.get("jti")
@@ -428,14 +457,7 @@ class UserService(BaseService):
         # must refuse rather than proceed.
         reason = await self.auth_service.get_revocation_reason(claims)
         if reason:
-            self.logger.info(
-                "Password reset refused: token revoked",
-                extra={"user_id": user_id, "jti": jti, "reason": reason},
-            )
-            raise AuthenticationError(
-                "Invalid or expired password reset token",
-                error_code="INVALID_RESET_TOKEN",
-            )
+            raise self._refuse_reset(reason, user_id=user_id, jti=jti)
 
         # Validate new password strength
         validate_password_strength(new_password)
@@ -443,20 +465,13 @@ class UserService(BaseService):
         # Get user
         user = await self.user_repo.get(user_id)
         if not user:
-            raise AuthenticationError(
-                "User not found",
-                error_code="USER_NOT_FOUND",
-            )
+            raise self._refuse_reset("user_not_found", user_id=user_id)
 
         # A deactivated account must not be recoverable through a reset link
         # issued before it was deactivated — the same posture /auth/refresh and
         # authenticate() already take (#829).
         if not user.is_active:
-            self.logger.debug(f"Password reset refused for inactive user: {user_id}")
-            raise AuthenticationError(
-                "Account is deactivated. Please contact support.",
-                error_code="ACCOUNT_INACTIVE",
-            )
+            raise self._refuse_reset("account_inactive", user_id=user_id)
 
         # Consume the one-time token LAST, once every other check has passed:
         # burning it earlier destroys a legitimate reset link on an attempt that
@@ -468,10 +483,7 @@ class UserService(BaseService):
         # requests both observe the key and both reset the password.
         key = f"{RESET_TOKEN_PREFIX}{jti}"
         if not await self.redis_client.delete(key):
-            raise AuthenticationError(
-                "Password reset token has already been used or expired",
-                error_code="TOKEN_ALREADY_USED",
-            )
+            raise self._refuse_reset("token_already_used", user_id=user_id, jti=jti)
 
         # Hash new password and update
         user.hashed_password = hash_password(new_password)
