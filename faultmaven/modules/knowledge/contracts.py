@@ -40,7 +40,28 @@ class IKnowledgeService(Protocol):
         ...
 
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific document by ID."""
+        """Get a specific document by ID — the TRUSTED, unscoped load.
+
+        Has no actor and applies no visibility rule. It backs the write-policy
+        check and internal ingestion, so it must keep reaching rows the caller
+        could not list. Never answer an actor-facing read from it.
+        """
+        ...
+
+    async def get_document_visible(
+        self,
+        document_id: str,
+        user: Optional[Any] = None,
+        team_ids: Optional[list] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a document by ID scoped to what the requester may see (#867).
+
+        The ACTOR-FACING counterpart of :meth:`get_document`: global ∪ own ∪
+        shared-to-my-teams, published-or-mine. Returns None both for an absent
+        id and for one the requester cannot see, so the two are
+        indistinguishable. Implementations that cannot evaluate the rule must
+        return None (fail closed), never fall back to the unscoped load.
+        """
         ...
 
     async def get_semantic_snippet(
