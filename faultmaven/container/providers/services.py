@@ -247,10 +247,18 @@ def create_knowledge_service(
     llm_provider: Any | None,
     redis_client: Any | None,
     settings: FaultMavenSettings,
-    db_session_factory: Any | None = None,
     share_repository: Any | None = None,
 ) -> Any:
-    """Create knowledge service for knowledge base operations."""
+    """Create knowledge service for knowledge base operations.
+
+    The session factory is wired here rather than left to the caller: every KB
+    persistence path is gated on it (``ingest_runbook`` refuses outright, the
+    read paths degrade to empty), so a service built without it is broken in
+    whichever process holds it. The web lifespan used to patch it on after the
+    fact, which left the jobs process — the only KB seeding path under the
+    multi-tenant provider — with a service that could not write (#894).
+    """
+    from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         KnowledgeService,
     )
@@ -263,7 +271,7 @@ def create_knowledge_service(
         redis_client=redis_client,
         settings=settings,
         llm_provider=llm_provider,
-        db_session_factory=db_session_factory,
+        db_session_factory=get_db_session,
         share_repository=share_repository,
     )
 

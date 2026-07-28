@@ -172,6 +172,26 @@ def test_conversion_service_composition_root_wiring():
         assert cs._team_service is app.state.team_service
 
 
+def test_knowledge_service_is_db_capable_without_a_lifespan_patch():
+    """The web process gets a DB-capable KnowledgeService from the container.
+
+    The lifespan used to assign ``_db_session_factory`` onto the instance right
+    here, which made the capability web-only: the jobs process initializes the
+    same container without a lifespan, so ``kb_seed`` refused on every runbook
+    (#894). The wiring now happens at construction, and this pins that the web
+    path still ends up with it — i.e. removing the patch cost nothing.
+    """
+    from faultmaven.infrastructure.persistence.database import get_db_session
+
+    with TestClient(app):
+        ks = app.state.knowledge_service
+        assert ks is not None, "knowledge service failed to initialize"
+        assert ks._db_session_factory is get_db_session
+        # The conversion service built alongside it shares the same factory —
+        # one session source for the whole knowledge vertical.
+        assert app.state.conversion_service._db_session_factory is get_db_session
+
+
 def test_capabilities_team_flags_gate_on_team_service():
     """``teamSharing``/``managementConsole`` follow the live TeamService signal.
 

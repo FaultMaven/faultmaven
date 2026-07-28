@@ -533,10 +533,6 @@ async def lifespan(app: FastAPI):
 
                 _settings = _get_settings()
                 _llm_provider = container.get_llm_provider()
-                # Inject db_session_factory into knowledge_service (created
-                # earlier in DI container without DB access)
-                if app.state.knowledge_service:
-                    app.state.knowledge_service._db_session_factory = get_db_session
 
                 app.state.conversion_service = ConversionService(
                     llm_router=_llm_provider,
