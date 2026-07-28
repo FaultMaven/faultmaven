@@ -17,7 +17,7 @@ authority to create one.
 Symptom of the missing mapping: the user is bounced back to the dashboard login
 page with `?error=sso_org_unmapped`, and the API logs
 
-```
+```text
 event=sso_org_resolution_failed reason=org_unmapped provider=workos provider_org_id=org_01H…
 ```
 
@@ -78,6 +78,39 @@ Options:
 Expected output ends with `✅ Tenant ready` and the three ids plus the mapping,
 each marked `created` or `already present`.
 
+### If it warns about reusing a tenant
+
+The organization is resolved by `(enterprise, slug)` and the enterprise by slug,
+so a `--slug` that collides with an existing customer's resolves onto **their**
+tenant. When the script binds a new IdP organization to a tenant it did not
+create in this run, it says so before writing:
+
+```text
+⚠️  REUSING AN EXISTING TENANT — confirm this is the right one.
+    organization 2222…  (Acme Corp / acme) already existed
+    workos:org_01J… is being bound to it, so its users will land in
+    that tenant and see its cases. …
+```
+
+That is correct and expected when you are adding a **second** IdP organization
+for a customer you already provisioned. If the name on the existing tenant is
+not the customer you are onboarding, **stop** — re-run with a distinct `--slug`
+(or an explicit `--enterprise-id`). Binding two customers to one organization
+pools their cases.
+
+### If it refuses: organization already claimed
+
+```text
+❌ FaultMaven organization 2222… is already claimed by a different workos organization.
+   claimed by: org_01H…
+   requested:  org_01J…
+```
+
+The tenant your `--slug` resolved to is already bound to another IdP
+organization, and the mapping is 1:1 per provider. Nothing was written. This is
+almost always the slug collision above, caught one step later. Re-provision the
+new customer under a distinct slug.
+
 ## Step 3 — verify
 
 1. Have the first user click **Sign in with SSO** on the dashboard.
@@ -87,7 +120,7 @@ each marked `created` or `already present`.
    the dashboard holds (browser devtools → the `Authorization` header on any
    API call) and check the claim:
 
-   ```
+   ```json
    "organization_id": "<the organization_id the script printed>"
    ```
 

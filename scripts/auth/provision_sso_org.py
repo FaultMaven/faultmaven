@@ -119,7 +119,18 @@ async def _get_or_create_enterprise(
 async def _get_or_create_organization(
     session, *, enterprise_id: str, name: str, slug: str
 ) -> tuple[OrganizationModel, bool]:
-    """Return (organization, created). Identity is (enterprise_id, slug)."""
+    """Return (organization, created). Identity is (enterprise_id, slug).
+
+    **Binds the resolved organization as the current tenant** before returning,
+    and — when creating — before the INSERT. ``organizations`` is RLS-tenanted
+    (migration 018) and its policy has no ``FOR`` clause, so USING doubles as
+    WITH CHECK: under FORCE ROW LEVEL SECURITY the insert only passes inside its
+    own tenant scope. Binding here rather than in the caller is what lets every
+    RLS-tenanted write in this script (this row, the team, nothing else) happen
+    under the right ``app.current_org_id``. ``enterprises`` is not tenanted (no
+    ``organization_id`` column — see migration 018), so the enterprise write
+    above needs no bind.
+    """
     existing = (
         await session.execute(
             select(OrganizationModel).where(
@@ -129,10 +140,15 @@ async def _get_or_create_organization(
         )
     ).scalar_one_or_none()
     if existing is not None:
+        set_current_org_id(existing.organization_id)
         return existing, False
 
+    # Generate the id first so the tenant is bound before the row is written.
+    organization_id = str(uuid.uuid4())
+    set_current_org_id(organization_id)
+
     organization = OrganizationModel(
-        organization_id=str(uuid.uuid4()),
+        organization_id=organization_id,
         enterprise_id=enterprise_id,
         name=name,
         slug=slug,
@@ -183,20 +199,63 @@ class RemapRefused(Exception):
         self.requested = requested
 
 
+class OrgAlreadyClaimed(Exception):
+    """The FaultMaven organization is already claimed by another IdP org."""
+
+    def __init__(
+        self, organization_id: str, claimed_by: str, requested_by: str
+    ) -> None:
+        super().__init__(organization_id)
+        self.organization_id = organization_id
+        self.claimed_by = claimed_by
+        self.requested_by = requested_by
+
+
+async def _find_mapping(session, *, provider_org_id: str):
+    """Return the mapping row for this IdP org, or None."""
+    return await session.get(SSOOrgMappingModel, (PROVIDER, provider_org_id))
+
+
 async def _ensure_mapping(
     session, *, provider_org_id: str, organization_id: str
 ) -> bool:
     """Create the mapping row if absent. Returns True when created.
 
-    Raises ``RemapRefused`` when the IdP org already points elsewhere.
+    Both directions of the 1:1 relation are checked before writing, because
+    both are ways to bind the wrong customers together and neither should
+    surface as a raw ``IntegrityError``:
+
+    * ``RemapRefused`` — this IdP org already points at a *different*
+      organization. Repointing changes which tenant existing users land in.
+    * ``OrgAlreadyClaimed`` — this organization is already claimed by a
+      *different* IdP org. This is what the ``UNIQUE (provider,
+      organization_id)`` constraint would otherwise raise, and it is the alarm
+      that fires when a slug collision has silently resolved a new customer
+      onto someone else's tenant.
+
+    Both are deliberate operator acts, so the script refuses and exits non-zero
+    rather than guessing.
     """
-    existing = await session.get(SSOOrgMappingModel, (PROVIDER, provider_org_id))
+    existing = await _find_mapping(session, provider_org_id=provider_org_id)
     if existing is not None:
         if existing.organization_id != organization_id:
             raise RemapRefused(
                 provider_org_id, existing.organization_id, organization_id
             )
         return False
+
+    claimed = (
+        await session.execute(
+            select(SSOOrgMappingModel).where(
+                SSOOrgMappingModel.provider == PROVIDER,
+                SSOOrgMappingModel.organization_id == organization_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if claimed is not None:
+        raise OrgAlreadyClaimed(
+            organization_id, claimed.provider_org_id, provider_org_id
+        )
 
     session.add(
         SSOOrgMappingModel(
@@ -219,49 +278,99 @@ async def provision(
     print("Provision SSO Organization Mapping")
     print("=" * 80)
 
-    async with get_db_session() as session:
-        try:
+    # Every refusal raises out of the session block on purpose: get_db_session
+    # commits on normal exit, so returning from inside it would COMMIT the
+    # enterprise/organization/team this run just created and leave a tenant with
+    # no mapping behind — the very state that makes the next run's slug lookup
+    # dangerous. Raising rolls the whole thing back.
+    try:
+        async with get_db_session() as session:
             enterprise, enterprise_created = await _get_or_create_enterprise(
                 session, enterprise_id=enterprise_id, name=name, slug=slug
             )
-        except LookupError as exc:
-            print(f"❌ {exc}")
-            return False
 
-        organization, org_created = await _get_or_create_organization(
-            session,
-            enterprise_id=enterprise.enterprise_id,
-            name=name,
-            slug=slug,
-        )
+            # _get_or_create_organization binds the resolved organization as the
+            # current tenant before its INSERT — every RLS-tenanted write below
+            # is already in scope.
+            organization, org_created = await _get_or_create_organization(
+                session,
+                enterprise_id=enterprise.enterprise_id,
+                name=name,
+                slug=slug,
+            )
 
-        # Bind the tenant for the remaining writes, so they stay inside the
-        # migration-018 policy even under FORCE ROW LEVEL SECURITY.
-        set_current_org_id(organization.organization_id)
+            team, team_created = await _get_or_create_default_team(
+                session, organization_id=organization.organization_id
+            )
 
-        team, team_created = await _get_or_create_default_team(
-            session, organization_id=organization.organization_id
-        )
+            # Is this run about to bind the IdP org to a tenant it is not
+            # already bound to? Read before the write, so the reuse warning
+            # fires before anything is written — and so a plain idempotent
+            # re-run (mapping already points here) stays quiet.
+            prior = await _find_mapping(session, provider_org_id=workos_org_id)
+            binding_is_new = (
+                prior is None or prior.organization_id != organization.organization_id
+            )
 
-        try:
+            if binding_is_new and not (enterprise_created and org_created):
+                # A brand-new IdP binding onto a tenant this run did not create.
+                # Legitimate (a second IdP org for an existing customer), but it
+                # is also exactly what a slug collision looks like — say so
+                # loudly, and say it before the mapping is written.
+                print("")
+                print("⚠️  REUSING AN EXISTING TENANT — confirm this is the right one.")
+                if not enterprise_created:
+                    print(
+                        f"    enterprise   {enterprise.enterprise_id} "
+                        f"({enterprise.name} / {enterprise.slug}) already existed"
+                    )
+                if not org_created:
+                    print(
+                        f"    organization {organization.organization_id} "
+                        f"({organization.name} / {organization.slug}) already existed"
+                    )
+                print(
+                    f"    {PROVIDER}:{workos_org_id} is being bound to it, so its "
+                    "users will land in\n    that tenant and see its cases. If this "
+                    "is a different customer, stop and\n    re-provision under a "
+                    "distinct --slug."
+                )
+
             mapping_created = await _ensure_mapping(
                 session,
                 provider_org_id=workos_org_id,
                 organization_id=organization.organization_id,
             )
-        except RemapRefused as exc:
-            print(
-                f"\n❌ {PROVIDER} organization '{exc.provider_org_id}' is already "
-                "mapped to a different FaultMaven organization."
-            )
-            print(f"   currently mapped to: {exc.mapped_to}")
-            print(f"   requested:           {exc.requested}")
-            print(
-                "\n   Remapping is a deliberate operator action — it changes which "
-                "tenant\n   existing users land in on their next login. See "
-                "docs/operations/sso-org-provisioning.md."
-            )
-            return False
+    except LookupError as exc:
+        print(f"❌ {exc}")
+        return False
+    except RemapRefused as exc:
+        print(
+            f"\n❌ {PROVIDER} organization '{exc.provider_org_id}' is already "
+            "mapped to a different FaultMaven organization."
+        )
+        print(f"   currently mapped to: {exc.mapped_to}")
+        print(f"   requested:           {exc.requested}")
+        print(
+            "\n   Remapping is a deliberate operator action — it changes which "
+            "tenant\n   existing users land in on their next login. Nothing was "
+            "written. See\n   docs/operations/sso-org-provisioning.md."
+        )
+        return False
+    except OrgAlreadyClaimed as exc:
+        print(
+            f"\n❌ FaultMaven organization {exc.organization_id} is already "
+            f"claimed by a different {PROVIDER} organization."
+        )
+        print(f"   claimed by: {exc.claimed_by}")
+        print(f"   requested:  {exc.requested_by}")
+        print(
+            "\n   This usually means --slug resolved onto an EXISTING tenant that "
+            "belongs\n   to another customer. Nothing was written. Re-provision the "
+            "new customer\n   under a distinct slug (or --enterprise-id). See\n   "
+            "docs/operations/sso-org-provisioning.md."
+        )
+        return False
 
     def mark(created: bool) -> str:
         return "created" if created else "already present"
