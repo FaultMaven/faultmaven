@@ -4,6 +4,7 @@ The gate makes "a cloud deployment silently running as standalone" impossible:
 cloud incoherence is fatal, standalone incoherence only warns.
 """
 
+from enum import Enum
 from types import SimpleNamespace
 
 import pytest
@@ -372,7 +373,13 @@ def test_pydantic_really_hands_the_gate_an_authmode_member():
     from faultmaven.config.settings import AuthSettings
 
     parsed = AuthSettings(auth_mode="oauth", oauth_enabled=True, _env_file=None)
-    assert parsed.auth_mode is AuthMode.OAUTH
+    # NOT `is AuthMode.OAUTH`: other tests in the full suite reload
+    # faultmaven.config.settings, so this member and the imported class can be
+    # duplicate enum objects — identity is a module-lifecycle detail, not the
+    # property under test. What matters: pydantic yields a MEMBER (not a raw
+    # string), whose str() is the trap and whose value-equality is the fix.
+    assert isinstance(parsed.auth_mode, Enum)
+    assert type(parsed.auth_mode) is not str
     assert str(parsed.auth_mode) != "oauth"  # the trap, pinned
     assert parsed.auth_mode == "oauth"  # str-mixin equality is the fix
 
