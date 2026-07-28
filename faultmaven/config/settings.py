@@ -943,6 +943,12 @@ MAX_REFRESH_TOKEN_EXPIRY_DAYS = 90
 #: entries are held against this rather than against the *current* configured
 #: lifetime for the token's type: a token minted under a longer setting (or of a
 #: type with its own shorter one) must never outlive the entry that revokes it.
+#:
+#: This holds only because BOTH settings halves bound their expiry fields by
+#: these same constants — the security half binds by field name and would
+#: otherwise accept any value — and because every other token type this system
+#: issues (access, password reset, local session) is bounded below it. A test
+#: pins both properties; raising a bound past this one must fail loudly.
 MAX_TOKEN_LIFETIME_DAYS = MAX_REFRESH_TOKEN_EXPIRY_DAYS
 
 
@@ -965,8 +971,23 @@ class SecuritySettings(BaseSettings):
         validation_alias="JWT_SECRET_KEY",
         description="HS256 secret for local auth; auto-generated+persisted in local mode by get_settings() if unset (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
     )
-    jwt_access_token_expire_minutes: int = Field(default=15)
-    jwt_refresh_token_expire_days: int = Field(default=7)
+    # The half the cloud RS256 generator and AuthService mint from. These carry
+    # no validation_alias, so they bind by FIELD NAME
+    # (JWT_ACCESS_TOKEN_EXPIRE_MINUTES / JWT_REFRESH_TOKEN_EXPIRE_DAYS — EXPIRE,
+    # not the EXPIRY spelling AuthSettings documents; see #888). Same bounds as
+    # the auth half regardless: revocation entries are held against
+    # MAX_TOKEN_LIFETIME_DAYS, which is only an upper bound on token lifetime if
+    # NEITHER half can be configured past it.
+    jwt_access_token_expire_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=MAX_ACCESS_TOKEN_EXPIRY_MINUTES,
+    )
+    jwt_refresh_token_expire_days: int = Field(
+        default=7,
+        ge=1,
+        le=MAX_REFRESH_TOKEN_EXPIRY_DAYS,
+    )
 
     jwt_issuer: str = Field(default="faultmaven-api")
     jwt_audience: str = Field(default="faultmaven-app")

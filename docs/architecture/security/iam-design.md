@@ -1941,12 +1941,14 @@ describe('OAuth Flow Integration', () => {
 | `DASHBOARD_URL` | Both | Dashboard URL for OAuth redirects | `http://localhost:3333` |
 
 The two JWT expiry variables name their unit because they do not share one, and
-both are bounded so an implausible value fails at boot rather than silently
-removing the short-credential assumption the revocation design rests on. Those
-bounds are also what lets a revocation entry be held against a lifetime no
-configuration can exceed. *(Rejected: accepting the old unsuffixed names as
-aliases — this is pre-production, and keeping a name whose unit an operator read
-as minutes is the trap itself.)*
+every expiry field on **both** settings halves is bounded (1–1440 minutes,
+1–90 days) so an implausible value fails at boot rather than silently removing
+the short-credential assumption the revocation design rests on. Bounding both
+halves is also what lets a revocation entry be held against a lifetime no
+configuration can exceed — a bound on one half alone would leave the other free
+to mint tokens that outlive their own revocation entries. *(Rejected: accepting
+the old unsuffixed names as aliases — this is pre-production, and keeping a name
+whose unit an operator read as minutes is the trap itself.)*
 
 **The aliases and bounds reach local-mode tokens only.** Both settings halves
 declare `jwt_access_token_expire_minutes` and `jwt_refresh_token_expire_days`,
@@ -1959,10 +1961,17 @@ generator is built from a different half:
 | `RS256JWTTokenGenerator` (cloud/OAuth) | `settings.security` | No |
 | `AuthService.generate_*` | `settings.security` | No |
 
-So in cloud/OAuth mode both variables are inert and token lifetimes sit at the
-schema defaults (15 minutes / 7 days) whatever the environment says. That is why
+So the **documented** `JWT_*_EXPIRY_*` names move local-mode lifetimes only. The
+`settings.security` fields are not immovable, though: carrying no alias, they
+bind by field name — `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` and
+`JWT_REFRESH_TOKEN_EXPIRE_DAYS` (**EXPIRE**, not the EXPIRY spelling above). That
+undocumented form is the only way to change cloud token lifetimes today, which
+is the open defect in #888; the two spellings differing by one word is the trap
+in it. Both halves carry the same bounds regardless, so neither can be
+configured past `MAX_TOKEN_LIFETIME_DAYS`.
+
 `AuthService._longest_token_lifetime_seconds` takes the **maximum** across both
-halves: neither half alone describes every minter.
+halves for the same reason: neither half alone describes every minter.
 
 ### Configuration File
 

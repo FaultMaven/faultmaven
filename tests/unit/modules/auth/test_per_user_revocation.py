@@ -551,11 +551,13 @@ class TestStoreContract:
     async def test_watermark_ttl_follows_the_operator_configured_expiry(self):
         """Regression: the TTL must track ``JWT_REFRESH_TOKEN_EXPIRY_DAYS``.
 
-        That knob lands on ``settings.auth.jwt_refresh_token_expire_days``.
-        ``settings.security`` declares the same field name with no env alias,
-        so it never leaves its default — reading only that half capped the
-        watermark at 7 days while refresh tokens lived for 30, and the revoked
-        token would resurrect on day 8.
+        That knob lands on ``settings.auth.jwt_refresh_token_expire_days``,
+        which is what the local HS256 generator mints from. ``settings.security``
+        declares the same field name with no alias — it moves only through the
+        field-name form (``JWT_REFRESH_TOKEN_EXPIRE_DAYS``) — so reading only
+        that half capped the watermark at 7 days while local refresh tokens
+        lived for 30, and the revoked token would resurrect on day 8. Taking the
+        maximum covers whichever half a given minter reads.
         """
         redis = _fake_redis()
         store = _store(redis)
