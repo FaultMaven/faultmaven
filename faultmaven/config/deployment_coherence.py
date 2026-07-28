@@ -53,6 +53,22 @@ def _storage_backend_name(settings: Any) -> str:
     return str(getattr(backend, "value", backend)).strip().lower()
 
 
+def _auth_mode_name(auth: Any) -> str:
+    """Return the configured auth mode as a plain lowercase name.
+
+    ``AuthMode`` is a ``(str, Enum)``, so ``str(member)`` yields
+    ``'AuthMode.OAUTH'`` — matching on that is how the cloud auth gate refused
+    every correctly-configured cloud boot while the standalone warning stayed
+    dead (#881). Read ``.value`` when present, and normalize so a plain-string
+    override matches too. Both call sites share this one predicate so they
+    cannot drift apart again.
+    """
+    mode = getattr(auth, "auth_mode", None)
+    if mode is None:
+        return "local"
+    return str(getattr(mode, "value", mode)).strip().lower()
+
+
 def _check_cloud(settings: Any) -> List[str]:
     """Return the list of reasons the config is NOT a valid cloud deployment."""
     problems: List[str] = []
@@ -61,7 +77,7 @@ def _check_cloud(settings: Any) -> List[str]:
     security = settings.security
 
     # 1. Auth must be OAuth (RS256), not the local bypass.
-    auth_mode = str(getattr(auth, "auth_mode", "local"))
+    auth_mode = _auth_mode_name(auth)
     if auth_mode != "oauth":
         problems.append(
             f"AUTH_MODE must be 'oauth' for cloud (got '{auth_mode}'). Local auth "
@@ -155,7 +171,7 @@ def _check_cloud(settings: Any) -> List[str]:
 def _check_standalone(settings: Any) -> List[str]:
     """Return non-fatal coherence warnings for a standalone deployment."""
     warnings: List[str] = []
-    if str(getattr(settings.auth, "auth_mode", "local")) == "oauth":
+    if _auth_mode_name(settings.auth) == "oauth":
         warnings.append(
             "AUTH_MODE=oauth with DEPLOYMENT_MODE=standalone is unusual. OAuth / "
             "multi-user is a cloud capability — set DEPLOYMENT_MODE=cloud, or AUTH_MODE=local."
