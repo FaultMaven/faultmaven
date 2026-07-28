@@ -22,6 +22,22 @@ from faultmaven.modules.auth.domain.models.user import User
 
 logger = logging.getLogger(__name__)
 
+
+def _max_revocation_entry_ttl() -> int:
+    """Ceiling, in seconds, on how long a revocation entry is held.
+
+    Read from the schema bound on token lifetime rather than restated here, so
+    the two cannot drift: if the permitted lifetime grows, the ceiling grows
+    with it and an entry still outlives the token it revokes.
+
+    Imported inside the call, not at module scope: this module is deliberately
+    free of settings imports at import time (see ``resolve_organization_claim``).
+    """
+    from faultmaven.config.settings import MAX_TOKEN_LIFETIME_DAYS
+
+    return MAX_TOKEN_LIFETIME_DAYS * 86400
+
+
 #: Emitted for an org-less user under multi-tenant. Falsy, so
 #: ``bind_request_org_context`` refuses the request instead of binding a tenant.
 _NO_ORG_CLAIM = ""
@@ -510,8 +526,6 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="access",
-            access_ttl=self.settings.jwt_access_token_expire_minutes * 60,
-            refresh_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
             decode_verified=self._decode_for_revocation,
         )
 
@@ -529,8 +543,6 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="refresh",
-            access_ttl=self.settings.jwt_access_token_expire_minutes * 60,
-            refresh_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
             decode_verified=self._decode_for_revocation,
         )
 
@@ -540,8 +552,6 @@ async def _revoke_token_by_jti(
     token: str,
     *,
     token_kind: str,
-    access_ttl: int,
-    refresh_ttl: int,
     decode_verified: Callable[[str], Dict],
 ) -> None:
     """Record a token's jti in the revocation store (shared by both generators).
@@ -552,14 +562,17 @@ async def _revoke_token_by_jti(
     a TTL of their choosing, from a crafted ``exp`` — into the revocation store
     (#830). Nothing is recorded for a token this deployment did not sign.
 
-    The entry's ceiling comes from the token's OWN verified ``type``, not from
-    which revoke method the caller reached: ``token_type_hint`` is optional in
-    RFC 7009 and may be absent or wrong, so a genuine refresh token routinely
-    arrives on the access path. Capping it at the access lifetime would expire
-    the revocation entry days before the token it revokes — the endpoint would
-    have answered 200 for a revocation that quietly lapsed.
+    The entry's ceiling is ``MAX_TOKEN_LIFETIME_DAYS`` — the longest lifetime
+    ANY permitted configuration can mint — not the currently configured lifetime
+    for some token type. An entry that expires before the token it revokes
+    resurrects that token, and three things can produce one: a token type with
+    its own lifetime (``password_reset`` is signed with the same key and
+    verifies here), a token minted before an operator lowered the setting, and
+    a hint that routes a refresh token onto the access path (``token_type_hint``
+    is optional in RFC 7009). An absolute bound is immune to all three while
+    still keeping store memory bounded, which is the only thing the cap is for.
 
-    ``token_kind`` therefore only labels the log line with the path taken.
+    ``token_kind`` only labels the log line with the path taken.
 
     Invalid input — unsigned/forged tokens, undecodable tokens, missing jti,
     malformed/overflowing exp claims — is tolerated (logged, no-op): RFC 7009
@@ -581,25 +594,20 @@ async def _revoke_token_by_jti(
             )
             return
 
-        # Configured maximum lifetime for the type this token says it is. A
-        # claim-less or unknown type falls to the access ceiling: every token
-        # this deployment mints stamps `type`, so anything else is not one of
-        # ours in the shape we recognise.
-        max_ttl = refresh_ttl if payload.get("type") == "refresh" else access_ttl
-
         # Revocation entry lives exactly as long as the token could be used
+        max_ttl = _max_revocation_entry_ttl()
         exp = payload.get("exp")
         if exp:
             expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
             ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
             if ttl <= 0:
                 return  # Already expired; nothing left to revoke
-            # Never hold an entry longer than that ceiling. A signed token
-            # cannot carry an arbitrary exp, but the cap keeps the store's
-            # memory bounded by configuration rather than by any claim a caller
-            # supplies (#830).
+            # Bound the entry so a crafted exp cannot buy multi-year storage
+            # (#830), without ever cutting it below the token's own life.
             ttl = min(ttl, max_ttl)
         else:
+            # A signed token with no exp never expires on its own; the ceiling
+            # is the longest this store will hold anything.
             ttl = max_ttl
     except jwt.ExpiredSignatureError:
         # Nothing left to revoke; the token is already unusable.
@@ -995,8 +1003,6 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="access",
-            access_ttl=self.settings.jwt_access_token_expire_minutes * 60,
-            refresh_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
             decode_verified=self._decode_for_revocation,
         )
 
@@ -1014,8 +1020,6 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="refresh",
-            access_ttl=self.settings.jwt_access_token_expire_minutes * 60,
-            refresh_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
             decode_verified=self._decode_for_revocation,
         )
 

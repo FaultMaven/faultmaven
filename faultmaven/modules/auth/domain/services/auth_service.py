@@ -500,10 +500,13 @@ class AuthService:
         obvious one:
 
         - Both settings halves are consulted because each declares the expiry
-          fields under the same names, but only ``settings.auth``'s carry the
-          ``JWT_*_EXPIRY_*`` validation aliases — and that is the half the token
-          generators are constructed with. ``settings.security``'s never move
-          off their defaults.
+          fields under the same names and the minters are split across them:
+          the local HS256 generator is built from ``settings.auth``, the cloud
+          RS256 generator and this service from ``settings.security``. Only
+          ``settings.auth``'s carry the ``JWT_*_EXPIRY_*`` validation aliases,
+          so ``settings.security``'s never move off their defaults — but they
+          are what the cloud minters use, and neither half alone describes
+          every token this deployment can issue.
         - Access-token expiry is included even though it is normally minutes:
           nothing ties ``JWT_ACCESS_TOKEN_EXPIRY_MINUTES`` to the refresh
           expiry, so at its schema maximum it can equal the shortest permitted
@@ -594,12 +597,10 @@ class AuthService:
         revocation state is worse than refusing, such as password reset, which
         is account-takeover-grade.
 
-        A deployment with **no store configured** is the one case that returns
-        None rather than raising: revocation is then absent system-wide (the
-        request path treats every token as live), and making reset the single
-        flow that refuses would break password recovery on a deployment whose
-        tokens are all unrevokable anyway. The startup wiring always supplies a
-        store, so this is a defensive branch, not a supported mode.
+        A missing store raises for the same reason, and matches
+        ``revoke_token``/``revoke_user_tokens``: without one, no answer about
+        revocation is available at all. Returning "not revoked" there would be
+        the fail-open this method exists to avoid.
 
         Args:
             claims: Verified token claims (``jti``, ``sub`` and ``iat`` are read)
@@ -608,10 +609,11 @@ class AuthService:
             ``"token_revoked"``, ``"user_revoked"``, or None.
 
         Raises:
+            ServiceError: No revocation store is configured.
             Exception: Store read failures propagate.
         """
         if self._revocation_store is None:
-            return None
+            raise ServiceError("Revocation state unavailable: no revocation store")
         return await revocation_reason(self._revocation_store, claims)
 
     async def _is_revoked(self, claims: Dict[str, Any]) -> bool:

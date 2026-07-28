@@ -268,11 +268,13 @@ its per-IP ceiling scales with replica count.
 
 The watermark TTL is the **maximum** of `settings.auth` and
 `settings.security`'s `jwt_refresh_token_expire_days`. Both halves declare that
-field under the same name, but only `settings.auth`'s carries the
-`JWT_REFRESH_TOKEN_EXPIRY_DAYS` validation alias — and that is the half the token
-generators are constructed with. Reading only `settings.security`'s would cap
-the watermark at its 7-day default while refresh tokens lived for the
-configured 30, resurrecting revoked tokens on day 8.
+field under the same name, and the minters are split across them — the local
+HS256 generator is built from `settings.auth`, the cloud RS256 generator and
+`AuthService` from `settings.security` (see the configuration reference). Only
+`settings.auth`'s carries the `JWT_REFRESH_TOKEN_EXPIRY_DAYS` alias, so reading
+only `settings.security`'s would cap the watermark at its 7-day default while
+local refresh tokens lived for the configured 30, resurrecting revoked tokens on
+day 8. Taking the maximum covers whichever half a given minter reads.
 
 `UserService` persists **before** revoking, deliberately. Revoking first opens
 a TOCTOU: during the gap the database still holds the old password, roles and
@@ -1931,8 +1933,8 @@ describe('OAuth Flow Integration', () => {
 | `JWT_SECRET_KEY` | Local | Symmetric key for HS256 | Required |
 | `JWT_PRIVATE_KEY_PATH` | Cloud | Path to RS256 private key | Required |
 | `JWT_PUBLIC_KEY_PATH` | Cloud | Path to RS256 public key | Required |
-| `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` | Both | Access token lifetime in **minutes** (1–1440) | `15` |
-| `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Both | Refresh token lifetime in **days**, not minutes (1–90) | `7` |
+| `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` | Local | Access token lifetime in **minutes** (1–1440). Inert in cloud mode — see below | `15` |
+| `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Local | Refresh token lifetime in **days**, not minutes (1–90). Inert in cloud mode — see below | `7` |
 | `OAUTH_CODE_EXPIRY` | Cloud | Authorization code lifetime (minutes) | `10` |
 | `OAUTH_REQUIRE_CONSENT` | Cloud | Require user consent screen | `false` |
 | `OAUTH_REQUIRE_HTTPS_REDIRECT` | Cloud | Require HTTPS redirect URIs | `false` |
@@ -1940,12 +1942,27 @@ describe('OAuth Flow Integration', () => {
 
 The two JWT expiry variables name their unit because they do not share one, and
 both are bounded so an implausible value fails at boot rather than silently
-removing the short-credential assumption the revocation design rests on. The
-bounds land on `settings.auth`, the half the token generators are built from;
-`settings.security`'s same-named fields carry no env alias and stay at their
-defaults. *(Rejected: accepting the old unsuffixed names as aliases — this is
-pre-production, and keeping a name whose unit an operator read as minutes is
-the trap itself.)*
+removing the short-credential assumption the revocation design rests on. Those
+bounds are also what lets a revocation entry be held against a lifetime no
+configuration can exceed. *(Rejected: accepting the old unsuffixed names as
+aliases — this is pre-production, and keeping a name whose unit an operator read
+as minutes is the trap itself.)*
+
+**The aliases and bounds reach local-mode tokens only.** Both settings halves
+declare `jwt_access_token_expire_minutes` and `jwt_refresh_token_expire_days`,
+but only `settings.auth`'s carry the env aliases and the bounds — and each
+generator is built from a different half:
+
+| Minter | Built from | Env knobs apply |
+|--------|-----------|-----------------|
+| `HS256JWTTokenGenerator` (local) | `settings.auth` | Yes |
+| `RS256JWTTokenGenerator` (cloud/OAuth) | `settings.security` | No |
+| `AuthService.generate_*` | `settings.security` | No |
+
+So in cloud/OAuth mode both variables are inert and token lifetimes sit at the
+schema defaults (15 minutes / 7 days) whatever the environment says. That is why
+`AuthService._longest_token_lifetime_seconds` takes the **maximum** across both
+halves: neither half alone describes every minter.
 
 ### Configuration File
 

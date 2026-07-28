@@ -380,9 +380,10 @@ class UserService(BaseService):
             1. Verify reset token (signature, expiration)
             2. Extract user_id from token
             3. Check the token is not revoked (same rule as every other token)
-            4. Check token not already used (jti in Redis)
-            5. Validate new password strength
-            6. Load the user and require an active account
+            4. Validate new password strength
+            5. Load the user and require an active account
+            6. Consume the one-time token (atomic; last, so a refused attempt
+               does not destroy a usable link)
             7. Hash new password
             8. Update user record
             9. Revoke all user's JWT tokens (force re-login)
@@ -436,17 +437,6 @@ class UserService(BaseService):
                 error_code="INVALID_RESET_TOKEN",
             )
 
-        # Check token not already used (via Redis)
-        key = f"{RESET_TOKEN_PREFIX}{jti}"
-        stored_user_id = await self.redis_client.get(key)
-        if not stored_user_id:
-            raise AuthenticationError(
-                "Password reset token has already been used or expired",
-                error_code="TOKEN_ALREADY_USED",
-            )
-        # Mark token as used by deleting it
-        await self.redis_client.delete(key)
-
         # Validate new password strength
         validate_password_strength(new_password)
 
@@ -466,6 +456,21 @@ class UserService(BaseService):
             raise AuthenticationError(
                 "Account is deactivated. Please contact support.",
                 error_code="ACCOUNT_INACTIVE",
+            )
+
+        # Consume the one-time token LAST, once every other check has passed:
+        # burning it earlier destroys a legitimate reset link on an attempt that
+        # was going to be refused anyway (a weak password, a deactivated
+        # account), leaving the user with nothing to retry.
+        #
+        # DELETE reports how many keys it removed, so the check and the burn are
+        # one atomic operation. A read-then-delete would let two concurrent
+        # requests both observe the key and both reset the password.
+        key = f"{RESET_TOKEN_PREFIX}{jti}"
+        if not await self.redis_client.delete(key):
+            raise AuthenticationError(
+                "Password reset token has already been used or expired",
+                error_code="TOKEN_ALREADY_USED",
             )
 
         # Hash new password and update

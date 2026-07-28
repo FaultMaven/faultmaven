@@ -22,6 +22,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from faultmaven.config.settings import MAX_TOKEN_LIFETIME_DAYS
 from faultmaven.modules.auth.api.oauth import RevokeRequest, revoke
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
@@ -35,9 +36,16 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
 pytestmark = pytest.mark.asyncio
 
 HS256_SECRET = "unit-test-secret-key-please-ignore"
-ACCESS_MINUTES = 60
+# The production defaults on purpose: an access lifetime that coincides with
+# another token type's would let a per-type ceiling pass these tests by accident.
+ACCESS_MINUTES = 15
 REFRESH_DAYS = 7
 DEFAULT_HINT = "access_token"
+
+#: The absolute ceiling the code applies — the schema bound on token lifetime,
+#: read from the same constant rather than restated, so this suite fails if the
+#: bound and the ceiling ever drift apart.
+MAX_ENTRY_TTL = MAX_TOKEN_LIFETIME_DAYS * 86400
 
 
 def _keypair():
@@ -284,18 +292,12 @@ class TestExpiredTokens:
 ALL_HINTS = ["access_token", "refresh_token", None]
 
 
-class TestEntryLifetimeIsBoundedByConfiguration:
-    """TTL comes from configuration, never from a caller-supplied claim."""
+class TestEntryLifetimeIsBounded:
+    """Storage is bounded by an absolute ceiling, never by a supplied claim."""
 
     @pytest.mark.parametrize("hint", ALL_HINTS)
-    @pytest.mark.parametrize(
-        "token_type,ttl_cap",
-        [
-            ("access", ACCESS_MINUTES * 60),
-            ("refresh", REFRESH_DAYS * 86400),
-        ],
-    )
-    async def test_far_future_exp_is_capped(self, hint, token_type, ttl_cap):
+    @pytest.mark.parametrize("token_type", ["access", "refresh", "password_reset"])
+    async def test_far_future_exp_is_capped(self, hint, token_type):
         """Even a legitimately signed token cannot buy a multi-year entry."""
         redis = _fake_redis()
         generator = _rs256_generator(_store(redis))
@@ -315,7 +317,7 @@ class TestEntryLifetimeIsBoundedByConfiguration:
         await _call_revoke(_oauth_service(generator), long_lived, hint)
 
         ttl = await redis.ttl("revoked:token:jti:long-lived-jti")
-        assert 0 < ttl <= ttl_cap
+        assert 0 < ttl <= MAX_ENTRY_TTL
 
     async def test_normal_token_ttl_still_tracks_its_own_expiry(self):
         """The cap is a ceiling, not a replacement: a short token stays short."""
@@ -340,14 +342,16 @@ class TestEntryLifetimeIsBoundedByConfiguration:
         assert 290 <= ttl <= 300
 
 
-class TestCeilingFollowsTheTokenNotTheHint:
-    """`token_type_hint` is optional and may be wrong (RFC 7009 §2.1).
+class TestEntryNeverExpiresBeforeTheTokenItRevokes:
+    """The safety property: a lapsed entry resurrects a revoked token.
 
-    The handler routes an absent hint to the access path, so a genuine refresh
-    token reaches `revoke_access_token` as a matter of course. Taking the
-    ceiling from the routed method would truncate its entry to the access
-    lifetime — the entry would expire in minutes while the token stayed valid
-    for days, after the endpoint answered 200.
+    Three ways to produce one, all of which a ceiling taken from the *currently
+    configured* lifetime of *some type* would allow:
+
+    - a token type with its own lifetime (`password_reset`),
+    - a token minted before an operator lowered the setting,
+    - a hint that routes a refresh token onto the access path — `token_type_hint`
+      is optional in RFC 7009 and the handler routes an absent hint to access.
     """
 
     @pytest.mark.parametrize("hint", ALL_HINTS)
@@ -390,3 +394,63 @@ class TestCeilingFollowsTheTokenNotTheHint:
 
         ttl = await redis.ttl(f"revoked:token:jti:{jti}")
         assert ttl > ACCESS_MINUTES * 60
+
+    @pytest.mark.parametrize("hint", ALL_HINTS)
+    async def test_password_reset_token_entry_covers_its_full_hour(self, hint):
+        """A type with neither the access nor the refresh lifetime.
+
+        Reset tokens are signed with the auth service's key — the same key this
+        generator verifies with — so they pass the signature gate and land on
+        whichever path the hint chose. An access-lifetime ceiling would expire
+        their entry 45 minutes before the token, and reset_password consults
+        that same entry (#829): the link would work again.
+        """
+        redis = _fake_redis()
+        generator = _rs256_generator(_store(redis))
+        now = datetime.now(timezone.utc)
+        reset_token = pyjwt.encode(
+            {
+                "sub": "user-830",
+                "jti": "reset-jti",
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(hours=1)).timestamp()),
+                "type": "password_reset",
+            },
+            DEPLOYMENT_PRIVATE_KEY,
+            algorithm="RS256",
+        )
+
+        await _call_revoke(_oauth_service(generator), reset_token, hint)
+
+        ttl = await redis.ttl("revoked:token:jti:reset-jti")
+        assert 3540 <= ttl <= 3600
+
+    async def test_token_minted_before_the_expiry_was_lowered_stays_revoked(self):
+        """An operator lowering the setting must not resurrect live tokens.
+
+        30-day token, then the deployment is reconfigured to 7 days. A ceiling
+        read from the *current* setting would drop the entry on day 7 and the
+        outstanding token would work again for its remaining 23.
+        """
+        redis = _fake_redis()
+        store = _store(redis)
+        long_settings = SimpleNamespace(
+            jwt_access_token_expire_minutes=ACCESS_MINUTES,
+            jwt_refresh_token_expire_days=30,
+        )
+        minting_generator = RS256JWTTokenGenerator(
+            private_key=DEPLOYMENT_PRIVATE_KEY,
+            public_key=DEPLOYMENT_PUBLIC_KEY,
+            revocation_store=store,
+            settings=long_settings,
+            issuer="faultmaven",
+            audience="faultmaven-api",
+        )
+        refresh = await minting_generator.generate_refresh_token(_user())
+        jti = pyjwt.decode(refresh, options={"verify_signature": False})["jti"]
+
+        # Same deployment, expiry now lowered to the 7-day default.
+        await _call_revoke(_oauth_service(_rs256_generator(store)), refresh)
+
+        ttl = await redis.ttl(f"revoked:token:jti:{jti}")
+        assert ttl >= 30 * 86400 - 60

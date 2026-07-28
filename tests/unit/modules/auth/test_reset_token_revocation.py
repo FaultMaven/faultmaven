@@ -20,6 +20,7 @@ from unittest.mock import patch
 import jwt as pyjwt
 import pytest
 
+from faultmaven.exceptions import ServiceError, ValidationException
 from faultmaven.infrastructure.persistence.user_repository import (
     InMemoryUserRepository,
 )
@@ -69,9 +70,9 @@ def _fake_redis():
     return fakeredis_aio.FakeRedis(decode_responses=True)
 
 
-async def _build():
+async def _build(store=None):
     """Real AuthService + UserService sharing one revocation store."""
-    store = InMemoryRevocationStore()
+    store = InMemoryRevocationStore() if store is None else store
     settings = _settings()
 
     with patch(
@@ -200,3 +201,88 @@ class TestDeactivatedAccounts:
 
         stored = await user_service.user_repo.get(user.user_id)
         assert verify_password(OLD_PASSWORD, stored.hashed_password)
+
+
+class TestRevocationStateMustBeKnowable:
+    """No store means no answer about revocation — refuse, do not assume."""
+
+    async def test_missing_store_refuses_before_committing_the_password(self):
+        """Fail-open here would be worse than useless.
+
+        `reset_password` ends by revoking the user's tokens, which already
+        raises without a store — but only AFTER the new password is committed.
+        Refusing at the revocation check keeps the write from happening at all.
+        """
+        user_service, auth_service, _store, user = await _build()
+        reset_token = await user_service.request_password_reset(email=EMAIL)
+
+        auth_service._revocation_store = None
+
+        with pytest.raises(ServiceError):
+            await user_service.reset_password(reset_token, NEW_PASSWORD)
+
+        stored = await user_service.user_repo.get(user.user_id)
+        assert verify_password(OLD_PASSWORD, stored.hashed_password)
+
+
+class TestTheOneTimeLinkSurvivesARefusedAttempt:
+    """The link is consumed only by an attempt that actually resets."""
+
+    async def test_weak_password_does_not_burn_the_link(self):
+        user_service, _auth_service, _store, user = await _build()
+        reset_token = await user_service.request_password_reset(email=EMAIL)
+
+        with pytest.raises(ValidationException):
+            await user_service.reset_password(reset_token, "weak")
+
+        # The same link still works, which is the whole point of one attempt
+        # not costing the user their only way back in.
+        updated = await user_service.reset_password(reset_token, NEW_PASSWORD)
+        assert verify_password(NEW_PASSWORD, updated.hashed_password)
+
+    async def test_deactivated_account_does_not_burn_the_link(self):
+        user_service, _auth_service, _store, user = await _build()
+        reset_token = await user_service.request_password_reset(email=EMAIL)
+        jti = pyjwt.decode(reset_token, options={"verify_signature": False})["jti"]
+
+        stored = await user_service.user_repo.get(user.user_id)
+        stored.is_active = False
+        await user_service.user_repo.save(stored)
+
+        with pytest.raises(AuthenticationError):
+            await user_service.reset_password(reset_token, NEW_PASSWORD)
+
+        assert await user_service.redis_client.get(f"password_reset:{jti}") is not None
+
+    async def test_a_successful_reset_consumes_the_link_exactly_once(self):
+        """Reuse is refused by two independent mechanisms, in this order.
+
+        The successful reset revokes the user's tokens, so the watermark rejects
+        the reused token at the revocation check (`INVALID_RESET_TOKEN`) before
+        the one-time gate is reached — the key is gone either way. Asserting the
+        refusal rather than a specific code keeps this honest about which guard
+        fires first.
+        """
+        user_service, _auth_service, _store, user = await _build()
+        reset_token = await user_service.request_password_reset(email=EMAIL)
+        jti = pyjwt.decode(reset_token, options={"verify_signature": False})["jti"]
+
+        await user_service.reset_password(reset_token, NEW_PASSWORD)
+
+        assert await user_service.redis_client.get(f"password_reset:{jti}") is None
+        with pytest.raises(AuthenticationError):
+            await user_service.reset_password(reset_token, "Y3t-An0ther-P4ss!")
+
+    async def test_reuse_without_a_watermark_hits_the_one_time_gate(self):
+        """The gate itself, isolated from the watermark that usually precedes it."""
+        user_service, _auth_service, store, user = await _build()
+        reset_token = await user_service.request_password_reset(email=EMAIL)
+
+        await user_service.reset_password(reset_token, NEW_PASSWORD)
+        # Drop the watermark the successful reset wrote, so the one-time key is
+        # the only thing standing between the token and a second use.
+        store.user_watermarks.clear()
+
+        with pytest.raises(AuthenticationError) as exc_info:
+            await user_service.reset_password(reset_token, "Y3t-An0ther-P4ss!")
+        assert exc_info.value.error_code == "TOKEN_ALREADY_USED"
