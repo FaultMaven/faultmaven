@@ -12,15 +12,21 @@ from faultmaven.config.deployment_coherence import (
     DeploymentCoherenceError,
     validate_deployment_coherence,
 )
-from faultmaven.config.settings import StorageBackend
+from faultmaven.config.settings import AuthMode, StorageBackend
 
 
 def _cloud_ok() -> SimpleNamespace:
-    """A fully-coherent cloud settings stand-in."""
+    """A fully-coherent cloud settings stand-in.
+
+    ``auth_mode`` is the REAL ``AuthMode`` enum, because that is what pydantic
+    hands the gate at boot. Feeding a bare ``"oauth"`` string here is what let
+    #881 hide: the gate compared ``str(member)`` (``'AuthMode.OAUTH'``) and so
+    refused every real cloud boot while this suite stayed green.
+    """
     return SimpleNamespace(
         is_cloud=True,
         auth=SimpleNamespace(
-            auth_mode="oauth",
+            auth_mode=AuthMode.OAUTH,
             workos_api_key="sk_test_x",
             workos_client_id="client_x",
             workos_redirect_uri="https://api.example.com/api/v1/auth/sso/callback",
@@ -46,7 +52,7 @@ def _cloud_ok() -> SimpleNamespace:
 def _standalone_ok() -> SimpleNamespace:
     return SimpleNamespace(
         is_cloud=False,
-        auth=SimpleNamespace(auth_mode="local"),
+        auth=SimpleNamespace(auth_mode=AuthMode.LOCAL),
         security=SimpleNamespace(),
         database=SimpleNamespace(),
         providers=SimpleNamespace(),
@@ -66,7 +72,7 @@ def test_cloud_fully_coherent_passes():
 @pytest.mark.unit
 def test_cloud_with_local_auth_fails():
     s = _cloud_ok()
-    s.auth.auth_mode = "local"  # the production incident
+    s.auth.auth_mode = AuthMode.LOCAL  # the production incident
     with pytest.raises(DeploymentCoherenceError) as exc:
         validate_deployment_coherence(s)
     assert "AUTH_MODE must be 'oauth'" in str(exc.value)
@@ -113,7 +119,7 @@ def test_cloud_missing_rs256_keys_fails():
 @pytest.mark.unit
 def test_cloud_reports_all_problems_at_once():
     s = _cloud_ok()
-    s.auth.auth_mode = "local"
+    s.auth.auth_mode = AuthMode.LOCAL
     s.database.database_url = "sqlite:///x"
     s.database.session_storage_type = "inmemory"
     s.database.redis_host = None
@@ -186,11 +192,16 @@ def test_standalone_without_workos_does_not_warn_or_raise():
 
 
 @pytest.mark.unit
-def test_standalone_with_oauth_warns_but_does_not_raise():
+def test_standalone_with_oauth_warns_but_does_not_raise(caplog):
     s = _standalone_ok()
-    s.auth.auth_mode = "oauth"
+    s.auth.auth_mode = AuthMode.OAUTH
     # Standalone incoherence is a warning, not fatal — must not raise.
-    validate_deployment_coherence(s)
+    with caplog.at_level("WARNING"):
+        validate_deployment_coherence(s)
+
+    # ...but it MUST actually warn. Under `str(member)` this branch was dead
+    # code (#881): the test passed by never asserting the warning existed.
+    assert any("AUTH_MODE=oauth" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -330,3 +341,86 @@ def test_storage_backend_name_reads_the_real_enum():
     # A plain-string override (env/test config) must resolve identically.
     plain = SimpleNamespace(providers=SimpleNamespace(storage_backend="S3"))
     assert _storage_backend_name(plain) == "s3"
+
+
+# --- AUTH_MODE must be read as the enum's value, not str(member) (#881) ------
+
+
+@pytest.mark.unit
+def test_auth_mode_name_reads_the_real_enum():
+    """`AuthMode` is a `(str, Enum)`: `str(member)` is 'AuthMode.OAUTH', not
+    'oauth'. The gate compared on that, so the cloud auth check refused every
+    correct cloud boot and the standalone warning was dead code (#881)."""
+    from faultmaven.config.deployment_coherence import _auth_mode_name
+
+    for member, expected in (
+        (AuthMode.OAUTH, "oauth"),
+        (AuthMode.LOCAL, "local"),
+    ):
+        assert _auth_mode_name(SimpleNamespace(auth_mode=member)) == expected
+
+    # Plain-string and absent-attribute configs must resolve identically.
+    assert _auth_mode_name(SimpleNamespace(auth_mode="OAuth")) == "oauth"
+    assert _auth_mode_name(SimpleNamespace()) == "local"
+
+
+@pytest.mark.unit
+def test_pydantic_really_hands_the_gate_an_authmode_member():
+    """Anchor the stand-in to reality: the settings field is typed `AuthMode`,
+    so a coherent cloud boot passes the gate an ENUM MEMBER — which is exactly
+    the input the old `str()` comparison could never satisfy."""
+    from faultmaven.config.settings import AuthSettings
+
+    parsed = AuthSettings(auth_mode="oauth", oauth_enabled=True, _env_file=None)
+    assert parsed.auth_mode is AuthMode.OAUTH
+    assert str(parsed.auth_mode) != "oauth"  # the trap, pinned
+    assert parsed.auth_mode == "oauth"  # str-mixin equality is the fix
+
+
+@pytest.mark.unit
+def test_cloud_with_authmode_enum_raises_no_auth_mode_problem():
+    """A coherent cloud config carrying the real enum must produce NO AUTH_MODE
+    complaint. This is the #881 regression: the staging flip rehearsal booted
+    with AUTH_MODE=oauth parsed into `AuthMode.OAUTH` and was refused."""
+    from faultmaven.config.deployment_coherence import _check_cloud
+
+    s = _cloud_ok()
+    s.auth.auth_mode = AuthMode.OAUTH
+    assert not [p for p in _check_cloud(s) if "AUTH_MODE" in p]
+
+    # And the whole gate must accept it.
+    validate_deployment_coherence(s)  # must not raise
+
+
+@pytest.mark.unit
+def test_cloud_auth_mode_gate_accepts_enum_and_string_alike():
+    """Both the parsed enum and a raw 'oauth' string are valid cloud auth; only
+    local is refused. Sweep the input space rather than one instance."""
+    from faultmaven.config.deployment_coherence import _check_cloud
+
+    for accepted in (AuthMode.OAUTH, "oauth"):
+        s = _cloud_ok()
+        s.auth.auth_mode = accepted
+        assert not [
+            p for p in _check_cloud(s) if "AUTH_MODE" in p
+        ], f"{accepted!r} must be accepted as cloud auth"
+
+    for refused in (AuthMode.LOCAL, "local"):
+        s = _cloud_ok()
+        s.auth.auth_mode = refused
+        problems = [p for p in _check_cloud(s) if "AUTH_MODE" in p]
+        assert problems, f"{refused!r} must be refused as cloud auth"
+        # The operator-facing message must name the mode readably — never
+        # 'AuthMode.LOCAL' leaking the Python repr into a boot error.
+        assert "got 'local'" in problems[0]
+
+
+@pytest.mark.unit
+def test_cloud_with_authmode_local_enum_fails_closed():
+    """The dangerous direction: local auth on cloud must still refuse to boot
+    when it arrives as the real enum."""
+    s = _cloud_ok()
+    s.auth.auth_mode = AuthMode.LOCAL
+    with pytest.raises(DeploymentCoherenceError) as exc:
+        validate_deployment_coherence(s)
+    assert "AUTH_MODE must be 'oauth'" in str(exc.value)
