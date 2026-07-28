@@ -7,20 +7,28 @@ the step is a safe recovery path.
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import jwt
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.settings import TenantProvider
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    HS256JWTTokenGenerator,
+)
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (
     ServiceAccountProvisioningError,
     provision_service_account_credential,
 )
+from faultmaven.providers.tenancy import factory as tenancy_factory
+from tests.utils import InMemoryRevocationStore
 
 pytestmark = pytest.mark.asyncio
 
 SECRET = "test-secret-key-that-is-long-enough-for-hs256"
+REAL_ORG = "22222222-2222-2222-2222-222222222222"
 
 
 def _user(username: str = "slack-agent", **overrides) -> DevUser:
@@ -77,6 +85,43 @@ def _token_generator(expires_in_days: int = 7):
         )
 
     return SimpleNamespace(generate_refresh_token=generate_refresh_token)
+
+
+def _real_token_generator() -> HS256JWTTokenGenerator:
+    """The real generator, so the ``organization_id`` claim comes from the real
+    ``resolve_organization_claim`` rather than from a stub that could agree with
+    a broken implementation."""
+    settings = MagicMock()
+    settings.jwt_access_token_expire_minutes = 15
+    settings.jwt_refresh_token_expire_days = 7
+    return HS256JWTTokenGenerator(
+        secret_key=SECRET,
+        revocation_store=InMemoryRevocationStore(),
+        settings=settings,
+        issuer="faultmaven",
+        audience="faultmaven-api",
+    )
+
+
+def _claims(token: str) -> dict:
+    return jwt.decode(token, options={"verify_signature": False})
+
+
+@pytest.fixture
+def as_tenant_provider(monkeypatch):
+    """Drive the real ``TenantProvider`` enum through the real coercion path.
+
+    Patching ``get_settings`` (rather than ``requested_tenant_provider``) keeps
+    ``coerce_provider_name`` in the loop, so a rename of the enum member breaks
+    this test instead of silently passing a dead gate.
+    """
+
+    def _apply(provider: TenantProvider):
+        settings = MagicMock()
+        settings.providers.tenant_provider = provider
+        monkeypatch.setattr(tenancy_factory, "get_settings", lambda: settings)
+
+    return _apply
 
 
 class TestProvisioning:
@@ -208,3 +253,125 @@ class TestAccountKindValidation:
         )
 
         assert credential.user.account_kind == "individual"
+
+
+class TestOrganizationClaim:
+    """The credential must carry its tenant (#873).
+
+    ``DevUser.__post_init__`` stamps the Standalone sentinel on every user the
+    store returns, and under multi-tenant the sentinel resolves to the *empty*
+    claim — so a credential minted from a store-loaded user is refused at
+    ``bind_request_org_context`` on its very first request. The organization has
+    to be stamped on the user before minting, exactly as `/auth/refresh` does.
+    """
+
+    async def test_multi_tenant_credential_carries_the_organization(
+        self, as_tenant_provider
+    ):
+        as_tenant_provider(TenantProvider.MULTI)
+        store = _FakeUserStore(_user())
+        assert store.users["slack-agent"].organization_id == STANDALONE_ORG_ID
+
+        credential = await provision_service_account_credential(
+            username="slack-agent",
+            user_store=store,
+            token_generator=_real_token_generator(),
+            organization_id=REAL_ORG,
+        )
+
+        assert _claims(credential.refresh_token)["organization_id"] == REAL_ORG
+
+    async def test_a_surrounding_whitespace_only_organization_is_not_an_organization(
+        self, as_tenant_provider
+    ):
+        """`-o ''` (or a shell-mangled value) must not read as "an org was given"
+        and slip past the multi-tenant requirement."""
+        as_tenant_provider(TenantProvider.MULTI)
+
+        with pytest.raises(ServiceAccountProvisioningError, match="multi-tenant"):
+            await provision_service_account_credential(
+                username="slack-agent",
+                user_store=_FakeUserStore(_user()),
+                token_generator=_real_token_generator(),
+                organization_id="   ",
+            )
+
+    async def test_organization_is_trimmed_before_it_reaches_the_claim(
+        self, as_tenant_provider
+    ):
+        as_tenant_provider(TenantProvider.MULTI)
+
+        credential = await provision_service_account_credential(
+            username="slack-agent",
+            user_store=_FakeUserStore(_user()),
+            token_generator=_real_token_generator(),
+            organization_id=f"  {REAL_ORG}\n",
+        )
+
+        assert _claims(credential.refresh_token)["organization_id"] == REAL_ORG
+
+    async def test_multi_tenant_refuses_without_an_organization(
+        self, as_tenant_provider
+    ):
+        """An org-less credential is dead on arrival — say so at mint time, not
+        by silent rejection of the agent's first API call."""
+        as_tenant_provider(TenantProvider.MULTI)
+        store = _FakeUserStore(_user())
+
+        with pytest.raises(ServiceAccountProvisioningError, match="--organization-id"):
+            await provision_service_account_credential(
+                username="slack-agent",
+                user_store=store,
+                token_generator=_real_token_generator(),
+            )
+
+        # Refused before the store was touched.
+        assert store.created == []
+        assert store.updated == []
+
+    @pytest.mark.parametrize("provider", [TenantProvider.SINGLE, TenantProvider.MULTI])
+    async def test_the_standalone_sentinel_is_refused_in_every_mode(
+        self, provider, as_tenant_provider
+    ):
+        """#850: the sentinel identifies the single-tenant *deployment* and is
+        never a tenant. Refuse it at mint as well as at bind."""
+        as_tenant_provider(provider)
+        store = _FakeUserStore(_user())
+
+        with pytest.raises(ServiceAccountProvisioningError, match="sentinel"):
+            await provision_service_account_credential(
+                username="slack-agent",
+                user_store=store,
+                token_generator=_real_token_generator(),
+                organization_id=STANDALONE_ORG_ID,
+            )
+
+        assert store.created == []
+        assert store.updated == []
+
+    async def test_single_tenant_refuses_an_organization(self, as_tenant_provider):
+        """One tenant means there is nothing to choose; an id here is a
+        misunderstanding worth surfacing rather than ignoring."""
+        as_tenant_provider(TenantProvider.SINGLE)
+
+        with pytest.raises(ServiceAccountProvisioningError, match="single-tenant"):
+            await provision_service_account_credential(
+                username="slack-agent",
+                user_store=_FakeUserStore(_user()),
+                token_generator=_real_token_generator(),
+                organization_id=REAL_ORG,
+            )
+
+    async def test_single_tenant_without_an_organization_is_unchanged(
+        self, as_tenant_provider
+    ):
+        """Standalone regression guard: the sentinel claim still rides."""
+        as_tenant_provider(TenantProvider.SINGLE)
+
+        credential = await provision_service_account_credential(
+            username="slack-agent",
+            user_store=_FakeUserStore(_user()),
+            token_generator=_real_token_generator(),
+        )
+
+        assert _claims(credential.refresh_token)["organization_id"] == STANDALONE_ORG_ID

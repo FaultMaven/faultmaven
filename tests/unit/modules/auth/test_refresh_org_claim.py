@@ -1,16 +1,20 @@
-"""Tenancy survives token rotation (#869).
+"""Tenancy survives token rotation (#869, #873).
 
 An access token lives minutes; a session lives days. The only thing that
 carries the organization across that gap is the refresh token, because the user
-store's model has **no** organization column — ``/auth/refresh`` reloads the
-user, and a reloaded user is org-less. Before this, the first refresh after a
-mapped SSO login minted an org-less pair and every subsequent request failed
-closed at ``bind_request_org_context`` (the #850 trap).
+store's model has **no** organization column — a refresh reloads the user, and a
+reloaded user is org-less. Before this, the first refresh after a mapped SSO
+login minted an org-less pair and every subsequent request failed closed at
+``bind_request_org_context`` (the #850 trap).
 
 The guarantee under test: **a refresh token carries the organization claim, and
-``/auth/refresh`` puts it back on the user before minting the next pair** — for
-both signing algorithms. The #850 backstop is unchanged: a token that genuinely
-carries no organization still mints an empty claim under multi-tenant.
+every refresh path puts it back on the user before minting the next pair** — for
+both signing algorithms. FaultMaven has two such paths and both are covered
+here: ``POST /auth/refresh`` (dashboard) and the oauth refresh grant
+``POST /auth/oauth/token`` with ``grant_type=refresh_token`` (Copilot, and the
+D10 service-account credential). The #850 backstop is unchanged on both: a token
+that genuinely carries no organization still mints an empty claim under
+multi-tenant.
 """
 
 from datetime import datetime, timezone
@@ -21,7 +25,7 @@ import jwt
 import pytest
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.settings import AuthMode, TenantProvider
+from faultmaven.config.settings import AuthMode, AuthSettings, TenantProvider
 from faultmaven.modules.auth.api import auth as auth_routes
 from faultmaven.modules.auth.domain.models.api_auth import TokenRefreshRequest
 from faultmaven.modules.auth.domain.models.auth import DevUser
@@ -30,6 +34,7 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     RS256JWTTokenGenerator,
     resolve_organization_claim,
 )
+from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 from faultmaven.providers.tenancy import factory as tenancy_factory
 from tests.utils import InMemoryRevocationStore
 
@@ -345,5 +350,138 @@ async def test_single_tenant_refresh_is_unaffected(as_tenant_provider):
     )
     assert (
         _decode(result.refresh_token, verify_args)["organization_id"]
+        == STANDALONE_ORG_ID
+    )
+
+
+# =============================================================================
+# The oauth refresh grant re-attaches it too (#873)
+# =============================================================================
+#
+# `POST /auth/oauth/token` with grant_type=refresh_token is the *other* refresh
+# path — Copilot's, and the one the D10 service-account credential rotates
+# through. It reloads the user from the repository exactly as `/auth/refresh`
+# does, so it needs the same re-attachment or a claim-stamped credential loses
+# its tenant on the first rotation.
+
+
+class _FakeUserRepository:
+    """The OAuth service's ``user_repository``, keyed the way it calls it.
+
+    In production the composition root passes the *user store*, so ``get`` here
+    returns the same org-less DevUser shape (sentinel-stamped) the real store
+    returns.
+    """
+
+    def __init__(self, user):
+        self._user = user
+
+    async def get(self, user_id: str):
+        if self._user and self._user.user_id == user_id:
+            return self._user
+        return None
+
+
+def _oauth_service(user, generator) -> OAuthServiceImpl:
+    return OAuthServiceImpl(
+        code_repository=None,
+        user_repository=_FakeUserRepository(user),
+        token_generator=generator,
+        # Real AuthSettings, not a Mock: a Mock settings object previously hid a
+        # live AttributeError on this exact call path.
+        settings=AuthSettings(auth_mode="oauth", oauth_enabled=True),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.parametrize("build_generator", GENERATORS)
+async def test_oauth_refresh_grant_preserves_the_organization_on_both_tokens(
+    build_generator, as_tenant_provider
+):
+    """Without this, the service credential minted with a tenant would come back
+    org-less from its first rotation and then be refused on every request."""
+    as_tenant_provider(TenantProvider.MULTI)
+    revocation_store = InMemoryRevocationStore()
+    generator, verify_args = build_generator(revocation_store)
+
+    presented = await generator.generate_refresh_token(_user(organization_id=REAL_ORG))
+
+    dev_user = _dev_user()
+    assert dev_user.organization_id == STANDALONE_ORG_ID  # what the store hands back
+    service = _oauth_service(dev_user, generator)
+
+    tokens = await service.refresh_access_token(
+        refresh_token=presented, client_id="faultmaven-copilot"
+    )
+
+    assert _decode(tokens.access_token, verify_args)["organization_id"] == REAL_ORG
+    assert _decode(tokens.refresh_token, verify_args)["organization_id"] == REAL_ORG
+
+
+@pytest.mark.unit
+@pytest.mark.security
+async def test_oauth_refresh_grant_survives_repeated_rotation(as_tenant_provider):
+    """The agent rotates continuously; the tenant must not decay after one hop."""
+    as_tenant_provider(TenantProvider.MULTI)
+    revocation_store = InMemoryRevocationStore()
+    generator, verify_args = _hs256_generator(revocation_store)
+
+    token = await generator.generate_refresh_token(_user(organization_id=REAL_ORG))
+    service = _oauth_service(_dev_user(), generator)
+
+    for _ in range(3):
+        tokens = await service.refresh_access_token(
+            refresh_token=token, client_id="faultmaven-copilot"
+        )
+        assert _decode(tokens.access_token, verify_args)["organization_id"] == REAL_ORG
+        assert _decode(tokens.refresh_token, verify_args)["organization_id"] == REAL_ORG
+        token = tokens.refresh_token
+
+
+@pytest.mark.unit
+@pytest.mark.security
+async def test_oauth_refresh_grant_of_an_orgless_token_still_fails_closed(
+    as_tenant_provider,
+):
+    """The #850 backstop on this path too: an org-less presented token mints an
+    empty claim — it still mints (rotation is not the place to break), and the
+    request it is used for is refused at bind time."""
+    as_tenant_provider(TenantProvider.MULTI)
+    revocation_store = InMemoryRevocationStore()
+    generator, verify_args = _hs256_generator(revocation_store)
+
+    presented = await generator.generate_refresh_token(_user(organization_id=None))
+    assert _decode(presented, verify_args)["organization_id"] == ""
+
+    service = _oauth_service(_dev_user(), generator)
+    tokens = await service.refresh_access_token(
+        refresh_token=presented, client_id="faultmaven-copilot"
+    )
+
+    assert _decode(tokens.access_token, verify_args)["organization_id"] == ""
+    assert _decode(tokens.refresh_token, verify_args)["organization_id"] == ""
+
+
+@pytest.mark.unit
+async def test_single_tenant_oauth_refresh_grant_is_unaffected(as_tenant_provider):
+    """Standalone regression guard: the sentinel keeps flowing through this path."""
+    as_tenant_provider(TenantProvider.SINGLE)
+    revocation_store = InMemoryRevocationStore()
+    generator, verify_args = _hs256_generator(revocation_store)
+
+    presented = await generator.generate_refresh_token(_dev_user())
+    service = _oauth_service(_dev_user(), generator)
+
+    tokens = await service.refresh_access_token(
+        refresh_token=presented, client_id="faultmaven-copilot"
+    )
+
+    assert (
+        _decode(tokens.access_token, verify_args)["organization_id"]
+        == STANDALONE_ORG_ID
+    )
+    assert (
+        _decode(tokens.refresh_token, verify_args)["organization_id"]
         == STANDALONE_ORG_ID
     )

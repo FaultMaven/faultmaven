@@ -15,12 +15,14 @@ What the Slack agent depends on, pinned here:
 """
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
+import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from faultmaven.config.settings import AuthSettings, SecuritySettings
+from faultmaven.config.settings import AuthSettings, SecuritySettings, TenantProvider
 from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -30,11 +32,13 @@ from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceIm
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (
     provision_service_account_credential,
 )
+from faultmaven.providers.tenancy import factory as tenancy_factory
 from tests.utils import InMemoryRevocationStore
 
 pytestmark = pytest.mark.asyncio
 
 CLIENT_ID = "faultmaven-copilot"
+REAL_ORG = "22222222-2222-2222-2222-222222222222"
 
 
 def _rsa_keypair() -> tuple[str, str]:
@@ -131,6 +135,18 @@ def oauth_service(user_store, token_generator, auth_settings) -> OAuthServiceImp
         token_generator=token_generator,
         settings=auth_settings,
     )
+
+
+@pytest.fixture
+def as_tenant_provider(monkeypatch):
+    """Drive the real ``TenantProvider`` enum through the real coercion path."""
+
+    def _apply(provider: TenantProvider):
+        settings = MagicMock()
+        settings.providers.tenant_provider = provider
+        monkeypatch.setattr(tenancy_factory, "get_settings", lambda: settings)
+
+    return _apply
 
 
 @pytest.fixture
@@ -254,3 +270,40 @@ class TestServiceAccountRefreshLifecycle:
         )
 
         assert order == ["mint", "revoke"]
+
+
+class TestMultiTenantCredentialChain:
+    """The tenant survives the whole chain under multi-tenant (#873).
+
+    Mint and rotation are separate code paths — provisioning stamps the org on
+    the user before minting, the oauth refresh grant re-attaches the presented
+    token's claim before re-minting. Either one missing leaves the credential
+    org-less, which under multi-tenant is refused at
+    ``bind_request_org_context``. This walks the whole chain the Slack agent
+    walks, end to end.
+    """
+
+    async def test_the_organization_rides_mint_and_rotation(
+        self, as_tenant_provider, user_store, token_generator, oauth_service
+    ):
+        as_tenant_provider(TenantProvider.MULTI)
+
+        credential = await provision_service_account_credential(
+            username="slack-agent",
+            user_store=user_store,
+            token_generator=token_generator,
+            organization_id=REAL_ORG,
+        )
+        minted = jwt.decode(
+            credential.refresh_token, options={"verify_signature": False}
+        )
+        assert minted["organization_id"] == REAL_ORG
+
+        tokens = await oauth_service.refresh_access_token(
+            refresh_token=credential.refresh_token,
+            client_id=CLIENT_ID,
+        )
+
+        for token in (tokens.access_token, tokens.refresh_token):
+            claims = jwt.decode(token, options={"verify_signature": False})
+            assert claims["organization_id"] == REAL_ORG
