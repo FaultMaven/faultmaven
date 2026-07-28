@@ -1308,10 +1308,11 @@ class ObservabilitySettings(BaseSettings):
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
     opik_api_key: Optional[SecretStr] = Field(default=None)
     opik_enabled: bool = Field(default=False)
-    opik_track_disable: bool = Field(default=True)
-    opik_track_users: str = Field(default="")
-    opik_track_sessions: str = Field(default="")
-    opik_track_operations: str = Field(default="")
+    # OPIK_TRACK_DISABLE is deliberately NOT a field here. The Opik SDK owns it:
+    # OpikConfig reads it straight from os.environ (env_prefix="opik_") and
+    # derives is_tracing_active() from it, and main.py's load_dotenv() puts .env
+    # into the environment before the SDK is imported. Declaring it here too
+    # would shadow the SDK's default with a second one nothing reads.
     opik_log_raw_prompts: bool = Field(
         default=False,
         description="DANGER: Log raw LLM prompts bypassing sanitization. Only use for local debugging.",
@@ -1410,7 +1411,6 @@ class UploadSettings(BaseSettings):
             "application/yaml",
         ],
     )
-    upload_timeout_seconds: int = Field(default=300)  # 5 minutes
     temp_storage_path: str = Field(default="/tmp/faultmaven")
 
     model_config = {"env_prefix": "", "extra": "ignore"}

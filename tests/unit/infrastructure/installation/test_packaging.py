@@ -303,8 +303,11 @@ class TestConfigurationDefaults:
         from faultmaven.config.settings import ObservabilitySettings
 
         # Check class defaults directly (before environment override)
+        # opik_track_disable is intentionally absent: the Opik SDK owns that env
+        # var, so mirroring it here would shadow the SDK default with a second
+        # one nothing reads.
+        assert "opik_track_disable" not in ObservabilitySettings.model_fields
         assert ObservabilitySettings.model_fields["opik_enabled"].default is False
-        assert ObservabilitySettings.model_fields["opik_track_disable"].default is True
         assert ObservabilitySettings.model_fields["prometheus_enabled"].default is False
         assert ObservabilitySettings.model_fields["tracing_enabled"].default is False
         assert ObservabilitySettings.model_fields["metrics_enabled"].default is False

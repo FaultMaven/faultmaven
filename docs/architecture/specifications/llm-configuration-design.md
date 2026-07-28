@@ -120,7 +120,7 @@ Settings that are safe and meaningful to change at runtime without infrastructur
 | **Capability Overrides** | `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER`, `DA_PROVIDER` | 5 |
 | **Feature Toggles** | `ENABLE_WEB_SEARCH`, `TAVILY_API_KEY` | 2 |
 | **Operational Tuning** | `LOG_LEVEL`, `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `MAX_UPLOAD_SIZE_MB` | 4 |
-| **Observability** | `OPIK_ENABLED`, `OPIK_TRACK_DISABLE`, `OPIK_PROJECT_NAME`, `OPIK_USE_LOCAL`, `OPIK_LOCAL_URL`, `OPIK_API_KEY`, `OPIK_LOG_RAW_PROMPTS`, targeted tracing filters | ~10 |
+| **Observability** | `OPIK_ENABLED`, `OPIK_TRACK_DISABLE` (SDK-owned), `OPIK_PROJECT_NAME`, `OPIK_USE_LOCAL`, `OPIK_LOCAL_URL`, `OPIK_API_KEY`, `OPIK_LOG_RAW_PROMPTS` | 7 |
 | **LLM Behavior** | `LLM_REQUEST_TIMEOUT`, `LLM_MAX_RETRIES`, `LLM_MAX_TOKENS` | 3 |
 
 **Total: ~44 settings**

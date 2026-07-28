@@ -417,7 +417,6 @@ def clean_test_environment():
         "RATE_LIMIT_ENABLED",
         "RATE_LIMIT_REQUESTS_PER_MINUTE",
         "MAX_UPLOAD_SIZE_MB",
-        "UPLOAD_TIMEOUT_SECONDS",
         "CORS_ALLOW_CREDENTIALS",
         "CORS_ALLOW_ORIGINS",
         "TENANT_PROVIDER",  # Add any other vars that affect test isolation
