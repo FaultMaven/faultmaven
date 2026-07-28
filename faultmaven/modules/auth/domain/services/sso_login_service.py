@@ -21,6 +21,14 @@ is provisioned just-in-time (ADR-015 D4): username derived from the email
 local-part, NULL password, never admin. There is deliberately NO email-based
 linking of an SSO login to a pre-existing unlinked account — an account that
 already owns the identity's email is a hard conflict, not a link target.
+
+Under multi-tenant (Cloud) the login also has to decide *which tenant* it lands
+in (#869). The IdP's organization is resolved through the operator-provisioned
+``sso_org_mappings`` table before any user lookup, bound as the request's
+organization for the rest of the callback, and carried on the completion code so
+the minted tokens claim it. No mapping means no login: tenants are provisioned
+out of band, never just-in-time. Single-tenant runs none of this — there is one
+organization and the behaviour is unchanged.
 """
 
 from __future__ import annotations
@@ -37,11 +45,14 @@ from urllib.parse import urlencode
 import structlog
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
+from faultmaven.config.tenant_context import set_current_org_id
 from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.user_repository import (
     User as RepositoryUser,
 )
 from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
+from faultmaven.models.rbac import Role
+from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
 from faultmaven.modules.auth.exceptions import SSOAuthenticationError
 
@@ -61,6 +72,11 @@ ERROR_STATE_INVALID = "sso_state_invalid"
 ERROR_EXCHANGE_FAILED = "sso_exchange_failed"
 ERROR_USER_INACTIVE = "sso_user_inactive"
 ERROR_ACCESS_DENIED = "sso_access_denied"
+# Multi-tenant only: the IdP reported no organization, or one this deployment
+# has no mapping for. Distinct from the generic slug because it is the one
+# failure an operator can actually fix (provision the mapping), and it leaks
+# nothing — it says only that this deployment does not know that IdP org.
+ERROR_ORG_UNMAPPED = "sso_org_unmapped"
 ERROR_FAILED = "sso_failed"
 
 _MAX_RETURN_TO_LENGTH = 512
@@ -83,6 +99,21 @@ _MAX_DISPLAY_NAME_LENGTH = 200
 # path assigns onto an existing model (no validate_assignment), so it runs the
 # same EmailStr validation explicitly before applying an IdP email change.
 _EMAIL_VALIDATOR: TypeAdapter[str] = TypeAdapter(EmailStr)
+
+
+def _is_multi_tenant() -> bool:
+    """True when this deployment is multi-tenant (Cloud).
+
+    Deferred import: the tenancy factory pulls in settings, which must not be
+    imported at auth-module import time (same reason as
+    ``jwt_token_generator.resolve_organization_claim``).
+    """
+    from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
+        requested_tenant_provider,
+    )
+
+    return requested_tenant_provider() == BUILTIN_MULTI
 
 
 def _is_usable_email(email: str) -> bool:
@@ -173,6 +204,8 @@ class SSOLoginService:
         dashboard_url: str,
         access_token_expires_in: int,
         audit_log: Any | None = None,
+        org_mapping_repository: Any | None = None,
+        organization_repository: Any | None = None,
     ) -> None:
         self._provider = identity_provider
         self._store = ephemeral_store
@@ -184,6 +217,11 @@ class SSOLoginService:
         # IAuditRepository (or None): records the JIT account-creation trail
         # (ADR-015 PR 7). Optional so unit setups without a DB still work.
         self._audit = audit_log
+        # Multi-tenant org resolution (#869). Optional because single-tenant
+        # never consults them; under multi their absence fails the login closed
+        # rather than silently skipping the tenant decision.
+        self._org_mappings = org_mapping_repository
+        self._orgs = organization_repository
 
     # -- leg 1: browser -> IdP ---------------------------------------------- #
 
@@ -295,6 +333,15 @@ class SSOLoginService:
                 error=ERROR_EXCHANGE_FAILED, return_to=return_to
             )
 
+        # Multi-tenant: decide the tenant BEFORE touching the user store, so
+        # every read and write below already runs inside that organization's
+        # RLS scope. Single-tenant skips this entirely (#869).
+        organization = None
+        if _is_multi_tenant():
+            organization, org_error = await self._resolve_login_organization(identity)
+            if org_error is not None:
+                return self._dashboard_redirect(error=org_error, return_to=return_to)
+
         user = await self._users.get_by_sso(
             identity.provider, identity.provider_user_id
         )
@@ -304,7 +351,10 @@ class SSOLoginService:
             # Never link by email — a conflicting unlinked account fails the
             # login instead (ADR-015 D4).
             user = await self._jit_provision(
-                identity, client_ip=client_ip, user_agent=user_agent
+                identity,
+                organization=organization,
+                client_ip=client_ip,
+                user_agent=user_agent,
             )
             if user is None:
                 return self._dashboard_redirect(error=ERROR_FAILED, return_to=return_to)
@@ -315,17 +365,149 @@ class SSOLoginService:
             return self._dashboard_redirect(
                 error=ERROR_USER_INACTIVE, return_to=return_to
             )
+        if organization is not None and not await self._ensure_org_affiliation(
+            user, organization
+        ):
+            # Membership could not be established (or the account belongs to a
+            # different enterprise): fail closed rather than let an org-less
+            # login through. The next attempt heals — the ensure is idempotent.
+            return self._dashboard_redirect(error=ERROR_FAILED, return_to=return_to)
         if not provisioned:
             # Returning subject: mirror the IdP's mutable profile and stamp
             # the login (ADR-015 D4). A just-created user is already current.
             await self._sync_profile(user, identity)
 
         completion_code = secrets.token_urlsafe(32)
+        login_payload: dict[str, Any] = {"user_id": user.user_id}
+        if organization is not None:
+            # Mint-time tenancy rides the completion code: the user row has no
+            # organization column, so this is how ``exchange`` knows which org
+            # to claim in the tokens it mints.
+            login_payload["organization_id"] = organization.organization_id
         await self._store.put_login(
-            completion_code, {"user_id": user.user_id}, LOGIN_CODE_TTL_SECONDS
+            completion_code, login_payload, LOGIN_CODE_TTL_SECONDS
         )
         logger.info("sso_login_completed", user_id=user.user_id)
         return self._dashboard_redirect(code=completion_code, return_to=return_to)
+
+    # -- multi-tenant organization resolution (#869) ------------------------- #
+
+    async def _resolve_login_organization(
+        self, identity: SSOIdentity
+    ) -> tuple[Any | None, str | None]:
+        """Resolve, verify and bind the organization this login belongs to.
+
+        Returns ``(organization, None)`` on success, or ``(None, error_slug)``.
+        On success the organization is bound as the current tenant for the rest
+        of the callback, which is what makes the RLS-scoped reads and writes
+        that follow (user lookup, membership, audit) address the right tenant.
+
+        Logging carries reason slugs and the IdP's org id only — never the
+        subject or email. The IdP org id is not a secret and is exactly what an
+        operator needs to provision the missing mapping.
+        """
+        provider_org_id = identity.organization_id
+        if not provider_org_id:
+            logger.warning(
+                "sso_org_resolution_failed",
+                reason="no_idp_org",
+                provider=identity.provider,
+            )
+            return None, ERROR_ORG_UNMAPPED
+
+        if self._org_mappings is None or self._orgs is None:
+            # Misconfiguration, not a user error: refuse rather than fall
+            # through to an org-less login the mint/bind guards would reject
+            # later with no explanation.
+            logger.error(
+                "sso_org_resolution_failed",
+                reason="org_repositories_unwired",
+                provider=identity.provider,
+            )
+            return None, ERROR_FAILED
+
+        organization_id = await self._org_mappings.get_organization_id(
+            identity.provider, provider_org_id
+        )
+        if not organization_id:
+            logger.warning(
+                "sso_org_resolution_failed",
+                reason="org_unmapped",
+                provider=identity.provider,
+                provider_org_id=provider_org_id,
+            )
+            return None, ERROR_ORG_UNMAPPED
+
+        # Bind before reading the organization row: `organizations` is
+        # RLS-tenanted (migration 018), so the read only succeeds inside its
+        # own tenant scope.
+        set_current_org_id(organization_id)
+
+        organization = await self._orgs.get_organization(organization_id)
+        if (
+            organization is None
+            or getattr(organization, "deleted_at", None) is not None
+            or not getattr(organization, "is_active", True)
+        ):
+            # A mapping pointing at a missing/disabled tenant is an operator
+            # problem, not something to tell the browser about.
+            logger.warning(
+                "sso_org_resolution_failed",
+                reason="org_unavailable",
+                provider=identity.provider,
+                organization_id=organization_id,
+            )
+            return None, ERROR_FAILED
+
+        return organization, None
+
+    async def _ensure_org_affiliation(self, user: Any, organization: Any) -> bool:
+        """Make ``user`` a member of ``organization``; False means fail closed.
+
+        The IdP is authoritative for organization affiliation *at login time*,
+        so this is additive and idempotent: an existing membership is left
+        exactly as it is (role included), and memberships in other
+        organizations are never enumerated or removed — under RLS they are
+        invisible from here by design.
+
+        Runs for JIT-provisioned and returning users alike, so the two cannot
+        drift, and so a login that lost the JIT create race still ends up a
+        member.
+        """
+        organization_id = organization.organization_id
+        user_enterprise = getattr(user, "enterprise_id", None)
+        if user_enterprise and user_enterprise != organization.enterprise_id:
+            # The account belongs to a different enterprise. Moving an account
+            # between enterprises is a deliberate operator action, never an
+            # implicit consequence of an IdP claim.
+            logger.warning(
+                "sso_login_rejected",
+                reason="enterprise_mismatch",
+                user_id=user.user_id,
+            )
+            return False
+
+        try:
+            if await self._orgs.get_member_role(organization_id, user.user_id):
+                return True
+            try:
+                await self._orgs.add_member(
+                    organization_id, user.user_id, SYSTEM_ROLE_IDS[Role.MEMBER]
+                )
+            except ConflictError:
+                # A concurrent login won the membership insert — that is the
+                # same outcome we wanted, so confirm and continue.
+                return bool(
+                    await self._orgs.get_member_role(organization_id, user.user_id)
+                )
+            return True
+        except Exception:
+            logger.exception(
+                "sso_membership_write_failed",
+                user_id=user.user_id,
+                organization_id=organization_id,
+            )
+            return False
 
     # -- leg 3: dashboard -> session ---------------------------------------- #
 
@@ -348,6 +530,16 @@ class SSOLoginService:
         ):
             logger.warning("sso_exchange_user_unavailable", user_id=payload["user_id"])
             return None
+
+        # Mint-time tenancy (#869): attach the organization the callback
+        # resolved. The user row carries no organization, so without this the
+        # tokens would claim none and every request would fail closed at
+        # ``bind_request_org_context``. Single-tenant payloads carry no org and
+        # this is a no-op — ``resolve_organization_claim`` supplies the
+        # Standalone sentinel there.
+        organization_id = payload.get("organization_id")
+        if organization_id:
+            user.organization_id = organization_id
 
         access_token = await self._tokens.generate_access_token(user)
         refresh_token = await self._tokens.generate_refresh_token(user)
@@ -376,6 +568,7 @@ class SSOLoginService:
         self,
         identity: SSOIdentity,
         *,
+        organization: Any | None = None,
         client_ip: str | None = None,
         user_agent: str | None = None,
     ) -> Any | None:
@@ -385,6 +578,13 @@ class SSOLoginService:
         invalid email, or an existing unlinked account already owning the
         email — linking is deliberately out of scope). Failures are logged
         with the provider only, never the subject or email.
+
+        ``organization`` is the tenant this login resolved to under
+        multi-tenant (None in single-tenant). The new account is anchored to
+        that organization's enterprise instead of the standalone default the
+        repository would otherwise fall back to. Organization *membership* is
+        written afterwards by ``_ensure_org_affiliation``, which covers the
+        returning-user path with the same code.
         """
         if not _is_usable_email(identity.email):
             logger.warning(
@@ -406,6 +606,9 @@ class SSOLoginService:
             user = RepositoryUser(
                 user_id=str(uuid.uuid4()),
                 username=username,
+                enterprise_id=(
+                    organization.enterprise_id if organization is not None else None
+                ),
                 email=identity.email,
                 display_name=display_name,
                 hashed_password=None,  # SSO-only account, no password ever

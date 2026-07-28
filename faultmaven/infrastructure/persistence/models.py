@@ -419,6 +419,49 @@ class OrganizationMemberModel(Base):
     )
 
 
+class SSOOrgMappingModel(Base):
+    """IdP organization → FaultMaven organization (#869, migration 038).
+
+    Deliberately **NOT** RLS-tenanted, unlike ``organizations`` and
+    ``organization_members`` (migration 018). The SSO callback that reads this
+    row is unauthenticated: no tenant is bound yet, so anything under the
+    tenant-isolation policy is unreadable at mapping-resolution time — binding
+    the tenant is the very thing this lookup decides. A row holds only an
+    identifier equivalence (the IdP's org id ↔ a FaultMaven org id) and no
+    tenant data, so leaving it outside RLS discloses nothing.
+
+    ``(provider, provider_org_id)`` is the primary key: one IdP organization
+    resolves to at most one FaultMaven organization. The reverse uniqueness
+    (``provider``, ``organization_id``) keeps it 1:1 per provider, so "which IdP
+    org owns this tenant" has a single answer.
+    """
+
+    __tablename__ = "sso_org_mappings"
+
+    provider = Column(String(50), primary_key=True)
+    provider_org_id = Column(String(255), primary_key=True)
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider", "organization_id", name="uq_sso_org_mappings_organization"
+        ),
+    )
+
+
 class TeamModel(Base):
     """Sub-group within an organization for case routing & collaboration."""
 

@@ -19,6 +19,12 @@ Usage:
     # Interim single global Slack service account
     python scripts/auth/provision_service_account.py --username slack-agent
 
+    # Multi-tenant (TENANT_PROVIDER=multi): the organization is REQUIRED — the
+    # credential's tenancy travels in its own claim chain, so an org-less one is
+    # refused on every request it makes.
+    python scripts/auth/provision_service_account.py -u slack-agent \
+        -o 22222222-2222-2222-2222-222222222222
+
     # Capture straight into a file without it reaching the terminal/scrollback
     python scripts/auth/provision_service_account.py -u slack-agent --token-only > token.txt
 
@@ -46,7 +52,12 @@ from faultmaven.modules.auth.domain.services.service_account_provisioning import
 )
 
 
-async def provision(username: str, account_kind: str, token_only: bool) -> bool:
+async def provision(
+    username: str,
+    account_kind: str,
+    token_only: bool,
+    organization_id: str | None = None,
+) -> bool:
     """Provision the account and print its credential."""
 
     def status(*args) -> None:
@@ -93,6 +104,7 @@ async def provision(username: str, account_kind: str, token_only: bool) -> bool:
             user_store=user_store,
             token_generator=token_generator,
             account_kind=account_kind,
+            organization_id=organization_id,
         )
     except ServiceAccountProvisioningError as e:
         status(f"❌ {e}")
@@ -121,6 +133,10 @@ async def provision(username: str, account_kind: str, token_only: bool) -> bool:
     status(f"  Username:     {user.username}")
     status(f"  Account kind: {user.account_kind}")
     status(f"  Roles:        {user.roles}")
+    if organization_id:
+        # Only under multi-tenant is an organization stamped; showing it makes
+        # the credential's tenant visible to the operator minting it.
+        status(f"  Organization: {getattr(user, 'organization_id', organization_id)}")
     status("")
     status("=" * 80)
     status("REFRESH TOKEN — shown once, not recoverable. Store it as a secret.")
@@ -159,13 +175,29 @@ def main():
         help=f"ADR-012 account kind to enforce (default: {SERVICE_ACCOUNT_KIND})",
     )
     parser.add_argument(
+        "--organization-id",
+        "-o",
+        default=None,
+        help=(
+            "FaultMaven organization the credential acts within. Required under "
+            "TENANT_PROVIDER=multi; omit on a single-tenant deployment"
+        ),
+    )
+    parser.add_argument(
         "--token-only",
         action="store_true",
         help="Print only the token on stdout (progress goes to stderr)",
     )
     args = parser.parse_args()
 
-    success = asyncio.run(provision(args.username, args.account_kind, args.token_only))
+    success = asyncio.run(
+        provision(
+            args.username,
+            args.account_kind,
+            args.token_only,
+            args.organization_id,
+        )
+    )
     sys.exit(0 if success else 1)
 
 

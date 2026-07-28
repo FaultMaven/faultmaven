@@ -484,6 +484,20 @@ class OAuthServiceImpl(IOAuthService):
                 error_code="USER_INACTIVE",
             )
 
+        # Re-attach the validated refresh token's organization claim before
+        # minting, exactly as POST /auth/refresh step 2b does (#869 M5, extended
+        # to this path by #873). Under multi-tenant it is the token chain that
+        # carries tenancy — the user repository's model has no organization
+        # column — so without this the D10 service credential (and any client
+        # that rotates through the oauth refresh grant) would mint an org-less
+        # pair on its first rotation and then be refused at
+        # bind_request_org_context on every request. setattr because the
+        # repository may return either its own model or a DevUser dataclass
+        # (whose __post_init__ stamps the Standalone sentinel); under
+        # single-tenant resolve_organization_claim restores the sentinel anyway,
+        # so this is a no-op there.
+        setattr(user, "organization_id", payload.get("organization_id") or None)
+
         # Generate new access token
         new_access_token = await self.token_generator.generate_access_token(user)
 
