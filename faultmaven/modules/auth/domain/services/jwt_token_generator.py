@@ -270,6 +270,13 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         - iat: issued at timestamp
         - jti: JWT ID (for revocation tracking)
         - type: "refresh" (token type discriminator)
+        - organization_id: organization the refreshed session belongs to
+
+        The organization claim rides the refresh token because rotation is the
+        only thing that carries tenancy across an access token's lifetime: the
+        user store's model has no organization column, so `/auth/refresh` would
+        otherwise re-mint an org-less pair and the session would fail closed on
+        its first refresh (#869).
 
         Args:
             user: User to generate token for
@@ -290,6 +297,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             "aud": self.audience,
             "jti": jti,
             "type": "refresh",
+            "organization_id": resolve_organization_claim(user),
         }
 
         token = jwt.encode(
@@ -708,6 +716,11 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         - aud: "faultmaven-api" (audience)
         - jti: JWT ID (for revocation tracking)
         - type: "refresh" (token type discriminator)
+        - organization_id: organization the refreshed session belongs to
+
+        Carried here for payload-shape parity with RS256 (#869): both
+        algorithms mint the same refresh claims, so `/auth/refresh` has one
+        re-attachment rule regardless of auth mode.
 
         Args:
             user: User to generate token for
@@ -728,6 +741,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "aud": "faultmaven-api",  # Audience
             "jti": jti,  # JWT ID (unique identifier)
             "type": "refresh",  # Token type
+            "organization_id": resolve_organization_claim(user),
         }
 
         token = jwt.encode(

@@ -463,8 +463,11 @@ class SSOIdentity:
 
     ``provider`` + ``provider_user_id`` is the stable subject FaultMaven uses to
     look up or provision a user (never the email — emails change). ``email`` and
-    ``email_verified`` come straight from the IdP. ``organization_id`` is carried
-    for a future org-mapping phase (ADR-010 P2) and is ignored today.
+    ``email_verified`` come straight from the IdP. ``organization_id`` is the
+    IdP's own organization identifier (e.g. a WorkOS ``org_...``); under
+    multi-tenant it is resolved through ``ISSOOrgMappingRepository`` to the
+    FaultMaven organization the login lands in (ADR-010 P2). Single-tenant
+    ignores it — there is one organization.
     """
 
     provider: str
@@ -504,6 +507,32 @@ class ISSOIdentityProvider(ABC):
         Raises:
             SSOAuthenticationError: if the IdP rejects the code, or the exchange
                 fails for any reason.
+        """
+
+
+class ISSOOrgMappingRepository(ABC):
+    """IdP organization → FaultMaven organization lookup port.
+
+    Read on the **unauthenticated** SSO callback, before any tenant is bound,
+    which is why the backing table is deliberately not RLS-tenanted: the
+    tenanted tables (``organizations``, ``organization_members`` — migration
+    018) are unreadable at that point. A mapping row carries only an identifier
+    equivalence, never tenant data.
+
+    Operators create the mapping out of band
+    (``scripts/auth/provision_sso_org.py``); there is no self-service path, so
+    an unmapped IdP organization is a fail-closed login, not a JIT tenant.
+    """
+
+    @abstractmethod
+    async def get_organization_id(
+        self, provider: str, provider_org_id: str
+    ) -> Optional[str]:
+        """Return the mapped FaultMaven organization id, or None if unmapped.
+
+        Args:
+            provider: SSO provider key (e.g. ``"workos"``).
+            provider_org_id: The IdP's organization identifier.
         """
 
 

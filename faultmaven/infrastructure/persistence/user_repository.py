@@ -39,6 +39,20 @@ class User(BaseModel):
             "the caller's enterprise when adding them to an organization."
         ),
     )
+    organization_id: Optional[str] = Field(
+        None,
+        description=(
+            "Organization this login is scoped to. RUNTIME-ATTACHED ONLY, never "
+            "persisted: the `users` table has no organization column (membership "
+            "lives in `organization_members`) and `_domain_to_dict` deliberately "
+            "omits it, so a user read back from the database always carries None. "
+            "It exists so mint-time tenancy can ride the token chain — the SSO "
+            "exchange attaches the organization resolved at callback time and "
+            "`/auth/refresh` re-attaches the validated refresh claim, which is "
+            "what `resolve_organization_claim` reads when building the token's "
+            "`organization_id` claim."
+        ),
+    )
 
     # ============================================================
     # Authentication
@@ -360,6 +374,11 @@ class PostgreSQLUserRepository(UserRepository):
         DEFAULT_ENTERPRISE_ID when unset (standalone / single-tenant, where
         every user belongs to the one default enterprise) since the column is
         NOT NULL.
+
+        ``User.organization_id`` is deliberately absent from the returned dict:
+        it is a runtime-only mint-time field (#869) and the ``users`` table has
+        no such column — organization affiliation is a row in
+        ``organization_members``, written by the SSO login path.
         """
         from faultmaven.providers.tenancy.single_tenant import DEFAULT_ENTERPRISE_ID
 

@@ -26,6 +26,11 @@ python scripts/auth/demote_from_platform_admin.py bob
 # Mint the Slack service account an OAuth refresh-token credential
 # (AUTH_MODE=oauth only — see docs/operations/security/service-account-credentials.md)
 python scripts/auth/provision_service_account.py --username slack-agent
+
+# Provision a Cloud tenant and map a WorkOS organization onto it
+# (TENANT_PROVIDER=multi only — see docs/operations/sso-org-provisioning.md)
+python scripts/auth/provision_sso_org.py \
+    --name "Acme Corp" --slug acme --workos-org-id org_01H...
 ```
 
 ---

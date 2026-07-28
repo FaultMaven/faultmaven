@@ -149,6 +149,11 @@ class Organization(BaseModel):
     max_members: int = 5
     max_cases: Optional[int] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
+    #: Mirrors the ``organizations.is_active`` column. Distinct from
+    #: ``deleted_at``: a deactivated organization still exists (and its data
+    #: with it) but must not accept logins — the SSO org-mapping path refuses
+    #: to land a user in one (#869).
+    is_active: bool = True
     created_at: datetime
     updated_at: datetime
     deleted_at: Optional[datetime] = None

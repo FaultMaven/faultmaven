@@ -627,6 +627,18 @@ async def refresh_tokens(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        # 2b. Re-attach the validated refresh token's organization claim before
+        #     minting (#869). The user store's model has no organization column
+        #     — under multi-tenant it is the token chain that carries tenancy,
+        #     so without this the first refresh after an SSO login would mint an
+        #     org-less pair and every subsequent request would fail closed at
+        #     bind_request_org_context. Written with setattr because the store
+        #     may return either the repository model or a DevUser dataclass
+        #     (whose __post_init__ stamps the Standalone sentinel); under
+        #     single-tenant resolve_organization_claim restores the sentinel
+        #     anyway, so this is a no-op there.
+        setattr(user, "organization_id", claims.get("organization_id") or None)
+
         # 3. Mint a fresh pair.
         new_access_token = await jwt_generator.generate_access_token(user)
         new_refresh_token = await jwt_generator.generate_refresh_token(user)

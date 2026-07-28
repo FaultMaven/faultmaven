@@ -752,11 +752,17 @@ def create_sso_login_service(
     from faultmaven.infrastructure.persistence.sessionless_audit_repository import (
         SessionlessAuditRepository,
     )
+    from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
+        SessionlessOrganizationRepository,
+    )
     from faultmaven.infrastructure.persistence.user_repository import (
         SessionlessUserRepository,
     )
     from faultmaven.modules.auth.domain.services.sso_login_service import (
         SSOLoginService,
+    )
+    from faultmaven.modules.auth.infrastructure.repositories.sso_org_mapping_repository import (
+        SessionlessSSOOrgMappingRepository,
     )
     from faultmaven.modules.auth.infrastructure.stores.sso_ephemeral_store import (
         SSOEphemeralStore,
@@ -771,6 +777,12 @@ def create_sso_login_service(
         dashboard_url=settings.auth.dashboard_url,
         access_token_expires_in=settings.auth.jwt_access_token_expire_minutes * 60,
         audit_log=SessionlessAuditRepository(),
+        # Multi-tenant org resolution (#869): the mapping lookup decides the
+        # tenant, the organization repository verifies it and carries the
+        # membership write. Both are wired unconditionally — single-tenant
+        # never consults them.
+        org_mapping_repository=SessionlessSSOOrgMappingRepository(),
+        organization_repository=SessionlessOrganizationRepository(),
     )
     logger.info("✅ SSO login service initialized")
     return service
