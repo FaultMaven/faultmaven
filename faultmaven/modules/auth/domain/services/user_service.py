@@ -372,19 +372,21 @@ class UserService(BaseService):
             Updated User object
 
         Raises:
-            AuthenticationError: Invalid or expired token
+            AuthenticationError: Invalid, expired or revoked token; inactive
+                account
             ValidationException: Weak password
 
         Workflow:
             1. Verify reset token (signature, expiration)
             2. Extract user_id from token
-            3. Check token not already used (jti in Redis)
-            4. Validate new password strength
-            5. Hash new password
-            6. Update user record
-            7. Revoke all user's JWT tokens (force re-login)
-            8. Mark reset token as used (remove from Redis)
-            9. Return updated user
+            3. Check the token is not revoked (same rule as every other token)
+            4. Check token not already used (jti in Redis)
+            5. Validate new password strength
+            6. Load the user and require an active account
+            7. Hash new password
+            8. Update user record
+            9. Revoke all user's JWT tokens (force re-login)
+            10. Return updated user
         """
         self.logger.debug("Processing password reset")
 
@@ -412,6 +414,28 @@ class UserService(BaseService):
                 error_code="INVALID_TOKEN_TYPE",
             )
 
+        # Apply the SAME revocation rule as access and refresh tokens: reset
+        # tokens carry `sub`, `iat` and `jti`, so both arms work unchanged, and
+        # "revoke all tokens for this user" must not leave an outstanding reset
+        # link alive (#829). One rule for every token type is the point — a
+        # per-flow cleanup would be the fragmentation #767 removed.
+        #
+        # Checked BEFORE the one-time key is burned, so a store outage cannot
+        # destroy a legitimate token, and deliberately not fail-open: unlike the
+        # request path (short-lived access tokens, availability first), a reset
+        # is an account-takeover-grade operation and an unknown revocation state
+        # must refuse rather than proceed.
+        reason = await self.auth_service.get_revocation_reason(claims)
+        if reason:
+            self.logger.info(
+                "Password reset refused: token revoked",
+                extra={"user_id": user_id, "jti": jti, "reason": reason},
+            )
+            raise AuthenticationError(
+                "Invalid or expired password reset token",
+                error_code="INVALID_RESET_TOKEN",
+            )
+
         # Check token not already used (via Redis)
         key = f"{RESET_TOKEN_PREFIX}{jti}"
         stored_user_id = await self.redis_client.get(key)
@@ -432,6 +456,16 @@ class UserService(BaseService):
             raise AuthenticationError(
                 "User not found",
                 error_code="USER_NOT_FOUND",
+            )
+
+        # A deactivated account must not be recoverable through a reset link
+        # issued before it was deactivated — the same posture /auth/refresh and
+        # authenticate() already take (#829).
+        if not user.is_active:
+            self.logger.debug(f"Password reset refused for inactive user: {user_id}")
+            raise AuthenticationError(
+                "Account is deactivated. Please contact support.",
+                error_code="ACCOUNT_INACTIVE",
             )
 
         # Hash new password and update

@@ -228,20 +228,38 @@ with a TTL that outlives the longest-lived refresh token. Every validate path
 then rejects a token whose `iat` is at or before its user's watermark.
 
 Per-token entries are namespaced separately, at
-`{token_revocation_prefix}jti:{jti}`. The two namespaces must sit under
-distinct literal segments because **jti values are attacker-controlled**: RFC
-7009 revocation (`POST /auth/oauth/revoke`) is unauthenticated and reads `jti`
-from a token decoded *without* signature verification. Were the per-user keys a
-direct child of the shared prefix, a submitted jti of `user:<victim>` would
-overwrite that victim's watermark with a non-numeric body, and the subsequent
-watermark read would raise — disabling per-user revocation for the victim on
-the fail-open request path while locking them out of refresh on the fail-closed
-generator path.
+`{token_revocation_prefix}jti:{jti}`. The two namespaces sit under distinct
+literal segments because `jti` reaches the store from a submitted token: RFC
+7009 revocation (`POST /auth/oauth/revoke`) is unauthenticated. Were the
+per-user keys a direct child of the shared prefix, a submitted jti of
+`user:<victim>` would overwrite that victim's watermark with a non-numeric
+body, and the subsequent watermark read would raise — disabling per-user
+revocation for the victim on the fail-open request path while locking them out
+of refresh on the fail-closed generator path.
+
+**Only a token this deployment signed is ever recorded (#830).** Both
+generators verify the submitted token's signature *before* reading `jti`, so
+the unauthenticated revoke endpoint cannot write a key of the caller's
+choosing. A token that fails verification is logged and dropped, and the
+endpoint still answers 200 — RFC 7009 treats revoking an invalid token as
+success, but it does not require storing an entry for one. An **expired** token
+is likewise not recorded: there is nothing left to revoke. Audience, issuer and
+`type` are deliberately not checked on this path — `token_type_hint` is a hint,
+and any token this deployment signed is revocable whatever it was minted for.
+
+The entry's TTL is `min(exp - now, configured maximum lifetime for that token
+type)`. A signed token cannot carry an arbitrary `exp`, so the cap is
+defence in depth: it keeps store memory bounded by configuration rather than by
+a claim any caller supplies, on every path into
+`add_revoked_token`.
+
+The OAuth rate limiter guarding `/revoke` remains in-memory and per-process, so
+its per-IP ceiling scales with replica count.
 
 The watermark TTL is the **maximum** of `settings.auth` and
 `settings.security`'s `jwt_refresh_token_expire_days`. Both halves declare that
 field under the same name, but only `settings.auth`'s carries the
-`JWT_REFRESH_TOKEN_EXPIRY` validation alias — and that is the half the token
+`JWT_REFRESH_TOKEN_EXPIRY_DAYS` validation alias — and that is the half the token
 generators are constructed with. Reading only `settings.security`'s would cap
 the watermark at its 7-day default while refresh tokens lived for the
 configured 30, resurrecting revoked tokens on day 8.
@@ -277,9 +295,6 @@ shapes the response.
   watermark and revoked jti, restoring revoked-but-unexpired tokens for the
   rest of their lifetime. Account deactivation is in the database and does
   survive; revocation alone does not.
-- Password-reset tokens (`type: password_reset`) are validated on their own
-  path and carry no revocation check, so per-user revocation does not
-  invalidate an outstanding reset link.
 
 The admin endpoint resolves `user_id` against the user store and returns 404 if
 it does not exist. A watermark write succeeds for any string, so an admin who
@@ -308,6 +323,20 @@ both inherit the failure posture above: the per-request check fails open,
 generator refresh validation fails closed, and the watermark *write*
 propagates store errors — an admin never gets a revocation confirmation while
 the user's tokens keep authenticating.
+
+**That one rule governs every token type this system issues, including
+password-reset tokens (#829).** Reset tokens carry `sub`, `iat` and `jti`, so
+`UserService.reset_password` runs `revocation_reason` against their claims
+exactly as the access and refresh paths do: revoking a user's tokens — or
+deactivating them, which revokes — kills any outstanding reset link with them.
+The check runs before the one-time `password_reset:{jti}` key is consumed, so a
+store outage cannot burn a legitimate token, and it does **not** fail open: a
+reset is an account-takeover-grade operation, so an unknown revocation state
+refuses rather than proceeds. Completing a reset additionally requires an
+active account, matching `POST /auth/refresh` and `authenticate()`. *(Rejected:
+deleting the user's `password_reset:*` keys inside `revoke_user_tokens` — a
+second cleanup path a future reset flow could forget, which is the
+fragmentation #767 removed.)*
 
 ## Local Mode Authentication
 
@@ -1892,12 +1921,21 @@ describe('OAuth Flow Integration', () => {
 | `JWT_SECRET_KEY` | Local | Symmetric key for HS256 | Required |
 | `JWT_PRIVATE_KEY_PATH` | Cloud | Path to RS256 private key | Required |
 | `JWT_PUBLIC_KEY_PATH` | Cloud | Path to RS256 public key | Required |
-| `JWT_ACCESS_TOKEN_EXPIRY` | Both | Access token lifetime (minutes) | `60` |
-| `JWT_REFRESH_TOKEN_EXPIRY` | Both | Refresh token lifetime (minutes) | `10080` (7 days) |
+| `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` | Both | Access token lifetime in **minutes** (1–1440) | `15` |
+| `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Both | Refresh token lifetime in **days**, not minutes (1–90) | `7` |
 | `OAUTH_CODE_EXPIRY` | Cloud | Authorization code lifetime (minutes) | `10` |
 | `OAUTH_REQUIRE_CONSENT` | Cloud | Require user consent screen | `false` |
 | `OAUTH_REQUIRE_HTTPS_REDIRECT` | Cloud | Require HTTPS redirect URIs | `false` |
 | `DASHBOARD_URL` | Both | Dashboard URL for OAuth redirects | `http://localhost:3333` |
+
+The two JWT expiry variables name their unit because they do not share one, and
+both are bounded so an implausible value fails at boot rather than silently
+removing the short-credential assumption the revocation design rests on. The
+bounds land on `settings.auth`, the half the token generators are built from;
+`settings.security`'s same-named fields carry no env alias and stay at their
+defaults. *(Rejected: accepting the old unsuffixed names as aliases — this is
+pre-production, and keeping a name whose unit an operator read as minutes is
+the trap itself.)*
 
 ### Configuration File
 

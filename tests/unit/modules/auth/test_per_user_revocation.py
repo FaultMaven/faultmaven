@@ -97,7 +97,7 @@ def _auth_service_settings():
     """Settings stub matching the HS256 generator's fixed iss/aud.
 
     Both halves carry ``jwt_refresh_token_expire_days`` because production
-    does: ``settings.auth``'s is the ``JWT_REFRESH_TOKEN_EXPIRY`` knob the
+    does: ``settings.auth``'s is the ``JWT_REFRESH_TOKEN_EXPIRY_DAYS`` knob the
     generators are built with, ``settings.security``'s has no env alias.
     """
     return SimpleNamespace(
@@ -549,7 +549,7 @@ class TestStoreContract:
         assert await redis.get(f"revoked:token:user:{victim}") is None
 
     async def test_watermark_ttl_follows_the_operator_configured_expiry(self):
-        """Regression: the TTL must track ``JWT_REFRESH_TOKEN_EXPIRY``.
+        """Regression: the TTL must track ``JWT_REFRESH_TOKEN_EXPIRY_DAYS``.
 
         That knob lands on ``settings.auth.jwt_refresh_token_expire_days``.
         ``settings.security`` declares the same field name with no env alias,
@@ -682,7 +682,7 @@ class TestServiceFailurePosture:
         authenticated by the OLD password is the worst case. Same code shape as
         the others today — the pin is here to catch a regression.
         """
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
 
         from faultmaven.infrastructure.persistence.user_repository import (
             InMemoryUserRepository,
@@ -704,6 +704,7 @@ class TestServiceFailurePosture:
             return datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
 
         auth_service.revoke_user_tokens = tracking_revoke
+        auth_service.get_revocation_reason = AsyncMock(return_value=None)
 
         # Reset tokens are signed with the auth service's keys under the
         # deployment's configured algorithm (RS256), so the double needs a real

@@ -712,8 +712,8 @@ VALUES ('john@acme.com', 'google', 'google_user_12345');
 
 **TTL concepts (distinct values — see `faultmaven/config/settings.py` and `auth_session_service.py`)**:
 
-- **JWT access token**: 60 min default (`JWT_ACCESS_TOKEN_EXPIRY`)
-- **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY`)
+- **JWT access token**: 15 min default (`JWT_ACCESS_TOKEN_EXPIRY_MINUTES`)
+- **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY_DAYS`)
 - **Session record TTL (Redis)**: 24 h default (`SessionSettings.session_ttl_hours`)
 - **Session inactivity timeout**: 30 min default (`SessionSettings.timeout_minutes`)
 

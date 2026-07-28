@@ -9,7 +9,7 @@ tokens, receiving a rotated refresh token each time.
 
 The refresh window slides: every refresh issues a fresh token, so a running
 agent never needs a human again. Re-run this script to recover if the agent
-loses its rotated token or stays down past the window (JWT_REFRESH_TOKEN_EXPIRY,
+loses its rotated token or stays down past the window (JWT_REFRESH_TOKEN_EXPIRY_DAYS,
 default 7 days).
 
 The token is printed ONCE and is not recoverable afterwards — nothing stores it

@@ -42,6 +42,9 @@ def mock_auth_service():
     auth_service.revoke_user_tokens = AsyncMock(
         return_value=datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
     )
+    # Nothing revoked by default. Stubbed explicitly because an unstubbed async
+    # mock returns a truthy Mock, which every revocation check reads as REVOKED.
+    auth_service.get_revocation_reason = AsyncMock(return_value=None)
     return auth_service
 
 

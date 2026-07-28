@@ -1107,16 +1107,25 @@ class AuthSettings(BaseSettings):
         description="Local mode token expiry (hours)",
     )
 
-    # JWT token expiry settings (common for both modes per iam-design.md)
+    # JWT token expiry settings (common for both modes per iam-design.md).
+    # The env names carry their unit because the two fields do NOT share one:
+    # unsuffixed parallel names invited "10080" (7 days in minutes) into the
+    # DAYS field and produced ~27 years of refresh validity. The bounds make an
+    # implausible value fail at boot instead of silently removing the
+    # short-credential assumption the revocation design rests on.
     jwt_access_token_expire_minutes: int = Field(
         default=15,
-        validation_alias="JWT_ACCESS_TOKEN_EXPIRY",
+        ge=1,
+        le=1440,
+        validation_alias="JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
         description="Access token expiry (minutes); short-lived per security posture (<30 min)",
     )
     jwt_refresh_token_expire_days: int = Field(
         default=7,
-        validation_alias="JWT_REFRESH_TOKEN_EXPIRY",
-        description="Refresh token expiry (days). Default 7 days = 10080 minutes",
+        ge=1,
+        le=90,
+        validation_alias="JWT_REFRESH_TOKEN_EXPIRY_DAYS",
+        description="Refresh token expiry (DAYS, not minutes)",
     )
 
     @field_validator("oauth_enabled")

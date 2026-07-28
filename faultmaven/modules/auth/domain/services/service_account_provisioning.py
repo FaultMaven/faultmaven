@@ -8,7 +8,7 @@ token out of band, the agent presents it to refresh, and each refresh rotates
 the credential forward. No human interaction after the bootstrap.
 
 The window is *sliding*, not absolute: every refresh mints a fresh
-``JWT_REFRESH_TOKEN_EXPIRY``-day token, so a continuously running agent never
+``JWT_REFRESH_TOKEN_EXPIRY_DAYS``-day token, so a continuously running agent never
 expires. An agent that stays down longer than that window — or that loses its
 rotated token — is locked out, and re-running this provisioning step is the
 recovery path.
