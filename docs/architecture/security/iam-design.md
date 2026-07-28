@@ -1961,14 +1961,15 @@ generator is built from a different half:
 | `RS256JWTTokenGenerator` (cloud/OAuth) | `settings.security` | No |
 | `AuthService.generate_*` | `settings.security` | No |
 
-So the **documented** `JWT_*_EXPIRY_*` names move local-mode lifetimes only. The
+So the `JWT_*_EXPIRY_*` names move local-mode lifetimes only. The
 `settings.security` fields are not immovable, though: carrying no alias, they
 bind by field name — `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` and
-`JWT_REFRESH_TOKEN_EXPIRE_DAYS` (**EXPIRE**, not the EXPIRY spelling above). That
-undocumented form is the only way to change cloud token lifetimes today, which
-is the open defect in #888; the two spellings differing by one word is the trap
-in it. Both halves carry the same bounds regardless, so neither can be
-configured past `MAX_TOKEN_LIFETIME_DAYS`.
+`JWT_REFRESH_TOKEN_EXPIRE_DAYS` (**EXPIRE**, not the EXPIRY spelling above),
+which is the form the installation guide documents. That form is the only one
+that reaches cloud token lifetimes. Two spellings that differ by one word, each
+reaching a different half, is the open defect in #888; an operator who sets the
+wrong pair gets the defaults and no error. Both halves carry the same bounds
+regardless, so neither can be configured past `MAX_TOKEN_LIFETIME_DAYS`.
 
 `AuthService._longest_token_lifetime_seconds` takes the **maximum** across both
 halves for the same reason: neither half alone describes every minter.

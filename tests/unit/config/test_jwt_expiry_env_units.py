@@ -5,13 +5,15 @@ operator who read the old parallel names as both-minutes set `10080` on the days
 field and got ~27 years of refresh validity, silently removing the
 short-credential assumption the whole revocation design rests on.
 
-Only `settings.auth` carries the documented `JWT_*_EXPIRY_*` aliases. The
+Only `settings.auth` carries the `JWT_*_EXPIRY_*` aliases. The
 `settings.security` half — the one the cloud RS256 generator and `AuthService`
 mint from — declares the same field names with no alias, so it binds by FIELD
 NAME (`JWT_ACCESS_TOKEN_EXPIRE_MINUTES` / `JWT_REFRESH_TOKEN_EXPIRE_DAYS`, EXPIRE
-rather than EXPIRY; #888 tracks that operator-facing gap). Both halves carry the
-same bounds, which is what makes the revocation entry ceiling sound: it is only
-an upper bound on token lifetime if NEITHER half can be configured past it.
+rather than EXPIRY, the spelling the installation guide documents). Both
+spellings are operator-facing, each reaching a different half; #888 tracks the
+split. Both halves carry the same bounds, which is what makes the revocation
+entry ceiling sound: it is only an upper bound on token lifetime if NEITHER half
+can be configured past it.
 """
 
 from __future__ import annotations

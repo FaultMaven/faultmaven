@@ -974,10 +974,11 @@ class SecuritySettings(BaseSettings):
     # The half the cloud RS256 generator and AuthService mint from. These carry
     # no validation_alias, so they bind by FIELD NAME
     # (JWT_ACCESS_TOKEN_EXPIRE_MINUTES / JWT_REFRESH_TOKEN_EXPIRE_DAYS — EXPIRE,
-    # not the EXPIRY spelling AuthSettings documents; see #888). Same bounds as
-    # the auth half regardless: revocation entries are held against
-    # MAX_TOKEN_LIFETIME_DAYS, which is only an upper bound on token lifetime if
-    # NEITHER half can be configured past it.
+    # the spelling the installation guide documents, not the EXPIRY spelling
+    # AuthSettings aliases; #888 tracks the split). Same bounds as the auth half
+    # regardless: revocation entries are held against MAX_TOKEN_LIFETIME_DAYS,
+    # which is only an upper bound on token lifetime if NEITHER half can be
+    # configured past it.
     jwt_access_token_expire_minutes: int = Field(
         default=15,
         ge=1,
