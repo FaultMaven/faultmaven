@@ -374,11 +374,11 @@ def create_knowledge_vector_store(
 async def create_redis_client(settings: FaultMavenSettings) -> Any:
     """Create Redis client for session storage.
 
-    Always returns a working async Redis-compatible client.
-    Cloud deployment: real Redis. Local deployment: FakeRedis (in-process).
+    Cloud deployment: real Redis — the factory resolves URL/host/port/password/db
+    from these same settings, so nothing is passed through here (relaying the
+    values would only create a second path that can drop one, which is how the
+    async client lost its password). Local deployment: FakeRedis (in-process).
     """
-    from faultmaven.infrastructure.redis_client import get_async_redis_client
-
     if settings.server.skip_service_checks:
         # Even with skip_service_checks, return FakeRedis so all subsystems work
         from faultmaven.infrastructure.redis_client import get_fakeredis_client
@@ -386,11 +386,9 @@ async def create_redis_client(settings: FaultMavenSettings) -> Any:
         logger.info("✅ Redis client: FakeRedis (SKIP_SERVICE_CHECKS=True)")
         return get_fakeredis_client()
 
-    return await get_async_redis_client(
-        redis_url=settings.database.redis_url,
-        host=settings.database.redis_host,
-        port=settings.database.redis_port,
-    )
+    from faultmaven.infrastructure.redis_client import get_async_redis_client
+
+    return await get_async_redis_client()
 
 
 def create_session_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
