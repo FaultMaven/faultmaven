@@ -102,8 +102,12 @@ def _service():
     return service
 
 
-def _client(knowledge_service, user):
-    """Test client. ``user=None`` exercises the real 401 path."""
+def _client(knowledge_service, user, team_service=None):
+    """Test client. ``user=None`` exercises the real 401 path.
+
+    ``team_service`` is placed on ``app.state`` exactly as the composition root
+    does, so ``_resolve_team_ids`` runs for real when one is supplied.
+    """
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -119,6 +123,8 @@ def _client(knowledge_service, user):
     for exc_type, handler in get_exception_handlers().items():
         app.add_exception_handler(exc_type, handler)
     app.dependency_overrides[get_knowledge_service] = lambda: knowledge_service
+    if team_service is not None:
+        app.state.team_service = team_service
     if user is None:
         app.dependency_overrides[get_current_user_optional] = lambda: None
     else:
@@ -375,6 +381,28 @@ class TestBulkUpdateGate:
         }
         service.bulk_update_documents.assert_awaited_once_with(
             document_ids=[], updates={}
+        )
+
+    def test_the_caller_and_their_team_memberships_reach_the_visibility_check(
+        self, single_tenant
+    ):
+        # The refusal path is where read visibility decides "not authorized"
+        # vs "not found" — pin the exact principal and team ids, so dropping
+        # or swapping either fails here.
+        service = _service()
+        team_service = MagicMock()
+        team_service.list_all_user_team_ids = AsyncMock(return_value=["team-A"])
+        user = _user(user_id="u1")
+
+        resp = _client(service, user, team_service).post(
+            BULK_UPDATE, json={"document_ids": [GLOBAL]}
+        )
+
+        assert resp.status_code == 200
+        # Resolved once for the whole batch, not once per target.
+        team_service.list_all_user_team_ids.assert_awaited_once_with("u1")
+        service.get_document_visible.assert_awaited_once_with(
+            GLOBAL, user=user, team_ids=["team-A"]
         )
 
     def test_500_does_not_echo_exception_text(self, single_tenant):

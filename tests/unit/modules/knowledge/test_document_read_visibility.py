@@ -533,6 +533,29 @@ class TestDocumentReadRoutes:
         service.get_document_visible.assert_awaited_once()
         service.get_document.assert_not_awaited()
 
+    @pytest.mark.parametrize(
+        "path",
+        ["/knowledge/documents/doc1", "/knowledge/documents/doc1/snippet"],
+    )
+    def test_the_caller_and_their_team_memberships_reach_the_scoped_read(self, path):
+        # The team arm is only as good as its wiring: pin the exact principal
+        # and the exact team ids, so dropping or swapping either fails here
+        # rather than silently widening (or emptying) the visibility rule.
+        service = _read_service(_doc())
+        team_service = MagicMock()
+        team_service.list_all_user_team_ids = AsyncMock(
+            return_value=["team-A", "team-B"]
+        )
+        user = _user(user_id="u7")
+
+        resp = _client(service, user, team_service).get(path)
+
+        assert resp.status_code == 200
+        team_service.list_all_user_team_ids.assert_awaited_once_with("u7")
+        service.get_document_visible.assert_awaited_once_with(
+            "doc1", user=user, team_ids=["team-A", "team-B"]
+        )
+
     def test_snippet_returns_lines_for_a_visible_document(self):
         service = _read_service(_doc())
         resp = _client(service, _user()).get(
