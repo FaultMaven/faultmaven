@@ -159,6 +159,11 @@ def test_conversion_service_composition_root_wiring():
     app (capabilities endpoint, retrieval allowlist) sees the real services.
     Pin identity with the CONTAINER-sourced values app.state ends up holding.
     """
+    from faultmaven.infrastructure.persistence.database import get_db_session
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
+
     with TestClient(app):
         cs = app.state.conversion_service
         assert cs is not None, "conversion service failed to initialize"
@@ -170,26 +175,18 @@ def test_conversion_service_composition_root_wiring():
         # team_service is None in standalone; identity still pins that the
         # construction and app.state resolve the same source.
         assert cs._team_service is app.state.team_service
+        assert cs._db_session_factory is get_db_session
 
-
-def test_knowledge_service_is_db_capable_without_a_lifespan_patch():
-    """The web process gets a DB-capable KnowledgeService from the container.
-
-    The lifespan used to assign ``_db_session_factory`` onto the instance right
-    here, which made the capability web-only: the jobs process initializes the
-    same container without a lifespan, so ``kb_seed`` refused on every runbook
-    (#894). The wiring now happens at construction, and this pins that the web
-    path still ends up with it — i.e. removing the patch cost nothing.
-    """
-    from faultmaven.infrastructure.persistence.database import get_db_session
-
-    with TestClient(app):
+        # The KnowledgeService the same lifespan publishes must be DB-capable
+        # from the container, not from a patch applied here. That patch made
+        # the capability web-only: the jobs process initializes the same
+        # container without a lifespan, so ``kb_seed`` refused on every runbook
+        # (#894). One session source for the whole knowledge vertical.
         ks = app.state.knowledge_service
-        assert ks is not None, "knowledge service failed to initialize"
+        assert isinstance(
+            ks, KnowledgeService
+        ), f"lifespan published a {type(ks).__name__}, not a real KnowledgeService"
         assert ks._db_session_factory is get_db_session
-        # The conversion service built alongside it shares the same factory —
-        # one session source for the whole knowledge vertical.
-        assert app.state.conversion_service._db_session_factory is get_db_session
 
 
 def test_capabilities_team_flags_gate_on_team_service():

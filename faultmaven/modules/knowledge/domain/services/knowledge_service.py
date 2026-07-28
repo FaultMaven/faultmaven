@@ -167,9 +167,6 @@ class KnowledgeService:
         # rows on team publish and to resolve the shared-id read allowlist. May be
         # None (e.g. minimal/test wiring) — team sharing then no-ops.
         self._share_repo = share_repository
-        # Set by main.py after ConversionService is created (avoids circular DI).
-        # When present, all ConversionDraftModel mutations are delegated to it.
-        self._conversion_service: Optional[Any] = None
 
         # Enhanced capabilities
         self._llm = llm_provider

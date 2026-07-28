@@ -12,9 +12,13 @@ path, leaving a fresh deployment with an empty global KB (#894).
 
 The fix is at the composition root: the container hands KnowledgeService the
 session factory at construction, so every process gets the same capability.
-These tests exercise the container registration path rather than a hand-built
-KnowledgeService, because the defect lived in the wiring, not the service.
+These tests are deliberately source-level / provider-level — the boot-time
+counterpart (a real ``container.initialize()``) lives in
+``tests/integration/container/test_knowledge_service_db_wiring.py``.
 """
+
+import re
+from pathlib import Path
 
 import pytest
 
@@ -22,55 +26,24 @@ from faultmaven.config.settings import FaultMavenSettings
 from faultmaven.container.providers.services import create_knowledge_service
 from faultmaven.infrastructure.persistence.database import get_db_session
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_container_built_knowledge_service_can_reach_the_database(
-    reset_container,
-):
-    """A container initialized the way the JOBS process initializes it yields a
-    knowledge_service that can persist.
+# Composition roots and process entrypoints. Every one of these builds or boots
+# a container; a post-construction patch in any of them re-creates the #894
+# split where one process is DB-capable and the others silently are not.
+_PATCH_SCAN_TARGETS = (
+    _REPO_ROOT / "faultmaven" / "main.py",
+    _REPO_ROOT / "faultmaven" / "bootstrap",
+    _REPO_ROOT / "faultmaven" / "jobs",
+    _REPO_ROOT / "faultmaven" / "api",
+    _REPO_ROOT / "scripts",
+    _REPO_ROOT / "demo",
+)
 
-    ``faultmaven/jobs/run.py`` does exactly this and nothing else — imports the
-    container singleton and awaits ``initialize()`` — so this *is* the jobs
-    process's knowledge_service, not an approximation of it.
-    """
-    await reset_container.initialize()
-
-    knowledge_service = reset_container.get_knowledge_service()
-
-    assert knowledge_service is not None
-    # The gate ``ingest_runbook`` evaluates is literally
-    # ``self._db_session_factory is None``, so a non-None factory means the
-    # refusal branch is unreachable for this instance.
-    assert getattr(knowledge_service, "_db_session_factory", None) is not None, (
-        "The container built KnowledgeService without a db_session_factory. "
-        "ingest_runbook refuses in that state, so `kb_seed` fails for every "
-        "pack runbook (#894)."
-    )
-    # Identity, not just truthiness: the production session factory is what
-    # binds the RLS tenant scope per transaction.
-    assert knowledge_service._db_session_factory is get_db_session
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_container_knowledge_service_persistence_paths_are_all_enabled(
-    reset_container,
-):
-    """The factory gates more than ingest.
-
-    ``list_documents``, ``get_document``, delete and the suggestion paths each
-    guard on the same attribute and silently degrade (warning + empty result)
-    when it is missing. Asserting the single attribute the whole family reads
-    keeps this about the property rather than one method.
-    """
-    await reset_container.initialize()
-    service = reset_container.get_knowledge_service()
-
-    factory = getattr(service, "_db_session_factory", None)
-    assert factory is not None
-    assert callable(factory)
+# Attribute assignment on anything other than ``self`` — ``self._db_session_
+# factory = ...`` is the constructor storing its own injected dependency.
+# No ``\s*`` before ``=`` so ``ks._db_session_factory=f`` matches too.
+_ATTR_PATCH = re.compile(r"(?<!self)\._db_session_factory\s*=")
 
 
 @pytest.mark.unit
@@ -98,21 +71,33 @@ def test_knowledge_service_provider_always_wires_the_session_factory():
 
 
 @pytest.mark.unit
-def test_no_post_construction_session_factory_patch_in_the_composition_root():
+def test_no_post_construction_session_factory_patch_in_any_entrypoint():
     """No process may re-acquire the capability by monkey-patching it on.
 
-    Re-introducing ``knowledge_service._db_session_factory = ...`` in the
-    lifespan would once again make the capability web-only and hide a
-    regression in the container wiring from every non-web process.
+    The capability belongs at the composition root, where every process — web,
+    jobs, scripts — picks it up identically. A patch anywhere below hands it to
+    exactly one process and hides a regression in the container wiring from all
+    the others; that is precisely how ``kb_seed`` shipped broken (#894).
+
+    Scanned as source rather than by import so a patch in a script that is
+    never imported under test still gets caught.
     """
-    from pathlib import Path
+    offenders = []
+    for target in _PATCH_SCAN_TARGETS:
+        paths = [target] if target.is_file() else sorted(target.rglob("*.py"))
+        for path in paths:
+            source = path.read_text()
+            for lineno, line in enumerate(source.splitlines(), start=1):
+                if _ATTR_PATCH.search(line) or (
+                    "setattr(" in line and "_db_session_factory" in line
+                ):
+                    offenders.append(
+                        f"{path.relative_to(_REPO_ROOT)}:{lineno}: {line.strip()}"
+                    )
 
-    main_source = (
-        Path(__file__).resolve().parents[3] / "faultmaven" / "main.py"
-    ).read_text()
-
-    assert "_db_session_factory =" not in main_source, (
-        "main.py assigns _db_session_factory onto a service after "
-        "construction. Wire it at the composition root instead, so every "
-        "process (web AND jobs) gets a DB-capable service."
+    assert not offenders, (
+        "These sites assign _db_session_factory onto a service after "
+        f"construction: {offenders}. Wire it at the composition root "
+        "(container/providers/services.py) instead, so every process — web, "
+        "jobs, scripts — gets a DB-capable service (#894)."
     )
