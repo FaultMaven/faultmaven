@@ -2025,7 +2025,13 @@ class KnowledgeService:
     async def bulk_update_documents(
         self, document_ids: List[str], updates: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Bulk update document metadata"""
+        """Bulk update document metadata.
+
+        ``errors`` is returned verbatim to the caller in a 200 body by
+        ``POST /knowledge/documents/bulk-update``, which any authenticated
+        caller may reach (#866), so per-target entries never carry exception
+        text — the diagnostic stays in the log line.
+        """
         updated_count = 0
         errors = []
 
@@ -2037,7 +2043,7 @@ class KnowledgeService:
                 else:
                     errors.append(f"Document {doc_id} not found")
             except Exception as e:
-                errors.append(f"Failed to update document {doc_id}: {e}")
+                errors.append(f"Document {doc_id}: update failed")
                 logger.error(f"Failed to update document {doc_id}: {e}")
 
         logger.info(
@@ -2052,7 +2058,13 @@ class KnowledgeService:
         }
 
     async def bulk_delete_documents(self, document_ids: List[str]) -> Dict[str, Any]:
-        """Bulk delete documents"""
+        """Bulk delete documents.
+
+        ``errors`` is returned verbatim to the caller in a 200 body (see
+        ``bulk_update_documents``), so neither the raised exception nor the
+        per-document ``error`` field — both of which carry driver text — is
+        echoed; the diagnostic stays in the log line.
+        """
         deleted_count = 0
         errors = []
 
@@ -2062,11 +2074,13 @@ class KnowledgeService:
                 if result.get("success"):
                     deleted_count += 1
                 else:
-                    errors.append(
-                        f"Failed to delete document {doc_id}: {result.get('error', 'Unknown error')}"
+                    errors.append(f"Document {doc_id}: delete failed")
+                    logger.error(
+                        f"Failed to delete document {doc_id}: "
+                        f"{result.get('error', 'Unknown error')}"
                     )
             except Exception as e:
-                errors.append(f"Failed to delete document {doc_id}: {e}")
+                errors.append(f"Document {doc_id}: delete failed")
                 logger.error(f"Failed to delete document {doc_id}: {e}")
 
         logger.info(

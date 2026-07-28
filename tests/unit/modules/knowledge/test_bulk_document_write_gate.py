@@ -234,6 +234,88 @@ class TestBulkBatchBounds:
         service.get_document.assert_not_awaited()
 
 
+DSN = "postgres://kbuser:s3cr3t@db.internal:5432/faultmaven"
+
+
+def _service_with_real_bulk_loop(*, update_error=None, delete_result=None):
+    """Route-level service whose bulk methods are the REAL service loops.
+
+    Only the per-document primitives underneath are doubled, so the per-target
+    ``errors`` strings the route returns in its 200 body are the ones the
+    service actually builds.
+    """
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
+
+    service = MagicMock()
+    service.get_document = AsyncMock(side_effect=lambda doc_id: DOCS.get(doc_id))
+    service.get_document_visible = AsyncMock(
+        side_effect=lambda doc_id, user=None, team_ids=None: VISIBLE.get(doc_id)
+    )
+    service.update_document_metadata = AsyncMock(side_effect=update_error)
+    service.delete_document = AsyncMock(
+        side_effect=delete_result if callable(delete_result) else None,
+        return_value=None if callable(delete_result) else delete_result,
+    )
+    service.bulk_update_documents = AsyncMock(
+        side_effect=KnowledgeService.bulk_update_documents.__get__(service)
+    )
+    service.bulk_delete_documents = AsyncMock(
+        side_effect=KnowledgeService.bulk_delete_documents.__get__(service)
+    )
+    return service
+
+
+@pytest.mark.unit
+@pytest.mark.knowledge_base
+@pytest.mark.security
+class TestBulkErrorsDoNotEchoExceptions:
+    """Per-target ``errors`` are returned verbatim in a 200 body (#866).
+
+    Removing ``str(e)`` from the 500 detail while leaving it in the array would
+    only move the leak: these routes are reachable by any authenticated caller.
+    """
+
+    def test_update_failure_does_not_echo_the_exception(self, single_tenant):
+        service = _service_with_real_bulk_loop(update_error=RuntimeError(DSN))
+        resp = _client(service, _user(user_id="u1")).post(
+            BULK_UPDATE, json={"document_ids": [OWN], "updates": {"title": "X"}}
+        )
+
+        assert resp.status_code == 200
+        assert "s3cr3t" not in resp.text
+        assert "db.internal" not in resp.text
+        assert resp.json()["errors"] == [f"Document {OWN}: update failed"]
+
+    def test_delete_failure_does_not_echo_the_exception(self, single_tenant):
+        def _raise(_doc_id):
+            raise RuntimeError(DSN)
+
+        service = _service_with_real_bulk_loop(delete_result=_raise)
+        resp = _client(service, _user(user_id="u1")).post(
+            BULK_DELETE, json={"document_ids": [OWN]}
+        )
+
+        assert resp.status_code == 200
+        assert "s3cr3t" not in resp.text
+        assert resp.json()["errors"] == [f"Document {OWN}: delete failed"]
+
+    def test_delete_result_error_field_does_not_echo(self, single_tenant):
+        # The unsuccessful-result branch interpolated result["error"], which
+        # carries the same driver text.
+        service = _service_with_real_bulk_loop(
+            delete_result={"success": False, "error": DSN}
+        )
+        resp = _client(service, _user(user_id="u1")).post(
+            BULK_DELETE, json={"document_ids": [OWN]}
+        )
+
+        assert resp.status_code == 200
+        assert "s3cr3t" not in resp.text
+        assert resp.json()["errors"] == [f"Document {OWN}: delete failed"]
+
+
 @pytest.mark.unit
 @pytest.mark.knowledge_base
 class TestBulkUpdateGate:
