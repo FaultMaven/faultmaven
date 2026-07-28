@@ -589,10 +589,17 @@ class AuthService:
         """Why these claims are revoked, or None if they are not.
 
         The same rule as the request path — one rule governs every token type
-        (``revocation_reason``) — with the opposite failure posture: store
-        errors propagate instead of reading as "not revoked". For callers where
-        proceeding on an unknown revocation state is worse than refusing, such
-        as password reset, which is account-takeover-grade.
+        (``revocation_reason``) — but a store *error* propagates here instead of
+        reading as "not revoked". For callers where proceeding on an unknown
+        revocation state is worse than refusing, such as password reset, which
+        is account-takeover-grade.
+
+        A deployment with **no store configured** is the one case that returns
+        None rather than raising: revocation is then absent system-wide (the
+        request path treats every token as live), and making reset the single
+        flow that refuses would break password recovery on a deployment whose
+        tokens are all unrevokable anyway. The startup wiring always supplies a
+        store, so this is a defensive branch, not a supported mode.
 
         Args:
             claims: Verified token claims (``jti``, ``sub`` and ``iat`` are read)

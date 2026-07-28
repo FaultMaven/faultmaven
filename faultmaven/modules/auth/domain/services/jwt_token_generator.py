@@ -510,7 +510,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="access",
-            default_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+            access_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+            refresh_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
             decode_verified=self._decode_for_revocation,
         )
 
@@ -528,7 +529,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="refresh",
-            default_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
+            access_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+            refresh_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
             decode_verified=self._decode_for_revocation,
         )
 
@@ -538,7 +540,8 @@ async def _revoke_token_by_jti(
     token: str,
     *,
     token_kind: str,
-    default_ttl: int,
+    access_ttl: int,
+    refresh_ttl: int,
     decode_verified: Callable[[str], Dict],
 ) -> None:
     """Record a token's jti in the revocation store (shared by both generators).
@@ -548,6 +551,15 @@ async def _revoke_token_by_jti(
     so without that check any caller could write a key of their choosing — with
     a TTL of their choosing, from a crafted ``exp`` — into the revocation store
     (#830). Nothing is recorded for a token this deployment did not sign.
+
+    The entry's ceiling comes from the token's OWN verified ``type``, not from
+    which revoke method the caller reached: ``token_type_hint`` is optional in
+    RFC 7009 and may be absent or wrong, so a genuine refresh token routinely
+    arrives on the access path. Capping it at the access lifetime would expire
+    the revocation entry days before the token it revokes — the endpoint would
+    have answered 200 for a revocation that quietly lapsed.
+
+    ``token_kind`` therefore only labels the log line with the path taken.
 
     Invalid input — unsigned/forged tokens, undecodable tokens, missing jti,
     malformed/overflowing exp claims — is tolerated (logged, no-op): RFC 7009
@@ -569,6 +581,12 @@ async def _revoke_token_by_jti(
             )
             return
 
+        # Configured maximum lifetime for the type this token says it is. A
+        # claim-less or unknown type falls to the access ceiling: every token
+        # this deployment mints stamps `type`, so anything else is not one of
+        # ours in the shape we recognise.
+        max_ttl = refresh_ttl if payload.get("type") == "refresh" else access_ttl
+
         # Revocation entry lives exactly as long as the token could be used
         exp = payload.get("exp")
         if exp:
@@ -576,13 +594,13 @@ async def _revoke_token_by_jti(
             ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
             if ttl <= 0:
                 return  # Already expired; nothing left to revoke
-            # Never hold an entry longer than the configured maximum lifetime
-            # for this token type. A signed token cannot carry an arbitrary
-            # exp, but the cap keeps the store's memory bounded by
-            # configuration rather than by any claim a caller supplies (#830).
-            ttl = min(ttl, default_ttl)
+            # Never hold an entry longer than that ceiling. A signed token
+            # cannot carry an arbitrary exp, but the cap keeps the store's
+            # memory bounded by configuration rather than by any claim a caller
+            # supplies (#830).
+            ttl = min(ttl, max_ttl)
         else:
-            ttl = default_ttl
+            ttl = max_ttl
     except jwt.ExpiredSignatureError:
         # Nothing left to revoke; the token is already unusable.
         logger.info(
@@ -977,7 +995,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="access",
-            default_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+            access_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+            refresh_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
             decode_verified=self._decode_for_revocation,
         )
 
@@ -995,7 +1014,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="refresh",
-            default_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
+            access_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+            refresh_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
             decode_verified=self._decode_for_revocation,
         )
 

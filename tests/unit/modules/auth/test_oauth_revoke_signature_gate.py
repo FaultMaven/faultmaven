@@ -37,6 +37,7 @@ pytestmark = pytest.mark.asyncio
 HS256_SECRET = "unit-test-secret-key-please-ignore"
 ACCESS_MINUTES = 60
 REFRESH_DAYS = 7
+DEFAULT_HINT = "access_token"
 
 
 def _keypair():
@@ -121,8 +122,12 @@ def _user():
     )
 
 
-async def _call_revoke(oauth_service, token: str, hint: str = "access_token"):
-    """Invoke the endpoint exactly as FastAPI would."""
+async def _call_revoke(oauth_service, token: str, hint=DEFAULT_HINT):
+    """Invoke the endpoint exactly as FastAPI would.
+
+    ``hint=None`` is the RFC 7009 case of a client that sends no
+    ``token_type_hint`` at all — which the handler routes as an access token.
+    """
     return await revoke(
         revoke_request=RevokeRequest(
             token=token, token_type_hint=hint, client_id="faultmaven-copilot"
@@ -276,17 +281,21 @@ class TestExpiredTokens:
         assert await _keys(redis) == []
 
 
+ALL_HINTS = ["access_token", "refresh_token", None]
+
+
 class TestEntryLifetimeIsBoundedByConfiguration:
     """TTL comes from configuration, never from a caller-supplied claim."""
 
+    @pytest.mark.parametrize("hint", ALL_HINTS)
     @pytest.mark.parametrize(
-        "hint,exp_delta,ttl_cap",
+        "token_type,ttl_cap",
         [
-            ("access_token", timedelta(days=3650), ACCESS_MINUTES * 60),
-            ("refresh_token", timedelta(days=3650), REFRESH_DAYS * 86400),
+            ("access", ACCESS_MINUTES * 60),
+            ("refresh", REFRESH_DAYS * 86400),
         ],
     )
-    async def test_far_future_exp_is_capped(self, hint, exp_delta, ttl_cap):
+    async def test_far_future_exp_is_capped(self, hint, token_type, ttl_cap):
         """Even a legitimately signed token cannot buy a multi-year entry."""
         redis = _fake_redis()
         generator = _rs256_generator(_store(redis))
@@ -296,8 +305,8 @@ class TestEntryLifetimeIsBoundedByConfiguration:
                 "sub": "user-830",
                 "jti": "long-lived-jti",
                 "iat": int(now.timestamp()),
-                "exp": int((now + exp_delta).timestamp()),
-                "type": "access",
+                "exp": int((now + timedelta(days=3650)).timestamp()),
+                "type": token_type,
             },
             DEPLOYMENT_PRIVATE_KEY,
             algorithm="RS256",
@@ -329,3 +338,55 @@ class TestEntryLifetimeIsBoundedByConfiguration:
 
         ttl = await redis.ttl("revoked:token:jti:short-jti")
         assert 290 <= ttl <= 300
+
+
+class TestCeilingFollowsTheTokenNotTheHint:
+    """`token_type_hint` is optional and may be wrong (RFC 7009 §2.1).
+
+    The handler routes an absent hint to the access path, so a genuine refresh
+    token reaches `revoke_access_token` as a matter of course. Taking the
+    ceiling from the routed method would truncate its entry to the access
+    lifetime — the entry would expire in minutes while the token stayed valid
+    for days, after the endpoint answered 200.
+    """
+
+    @pytest.mark.parametrize("hint", ALL_HINTS)
+    async def test_refresh_token_keeps_its_full_entry_under_any_hint(self, hint):
+        redis = _fake_redis()
+        generator = _rs256_generator(_store(redis))
+        refresh = await generator.generate_refresh_token(_user())
+        jti = pyjwt.decode(refresh, options={"verify_signature": False})["jti"]
+
+        await _call_revoke(_oauth_service(generator), refresh, hint)
+
+        ttl = await redis.ttl(f"revoked:token:jti:{jti}")
+        # Covers the token's remaining life, not the 1h access lifetime.
+        assert ttl > ACCESS_MINUTES * 60
+        assert REFRESH_DAYS * 86400 - 60 <= ttl <= REFRESH_DAYS * 86400
+
+    @pytest.mark.parametrize("hint", ALL_HINTS)
+    async def test_access_token_is_not_extended_by_a_refresh_hint(self, hint):
+        """The same rule in the other direction: no free extension either."""
+        redis = _fake_redis()
+        generator = _rs256_generator(_store(redis))
+        access = await generator.generate_access_token(_user())
+        jti = pyjwt.decode(access, options={"verify_signature": False})["jti"]
+
+        await _call_revoke(_oauth_service(generator), access, hint)
+
+        ttl = await redis.ttl(f"revoked:token:jti:{jti}")
+        assert 0 < ttl <= ACCESS_MINUTES * 60
+
+    async def test_local_logout_refresh_entry_covers_the_token(self):
+        """The HS256 path routes by method name only — same ceiling rule."""
+        redis = _fake_redis()
+        generator = _hs256_generator(_store(redis))
+        refresh = await generator.generate_refresh_token(_user())
+        jti = pyjwt.decode(refresh, options={"verify_signature": False})["jti"]
+
+        # Deliberately the ACCESS method: nothing but the token's own claims
+        # may decide the ceiling.
+        await generator.revoke_access_token(refresh)
+
+        ttl = await redis.ttl(f"revoked:token:jti:{jti}")
+        assert ttl > ACCESS_MINUTES * 60

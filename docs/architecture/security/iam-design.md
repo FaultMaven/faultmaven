@@ -248,10 +248,20 @@ is likewise not recorded: there is nothing left to revoke. Audience, issuer and
 and any token this deployment signed is revocable whatever it was minted for.
 
 The entry's TTL is `min(exp - now, configured maximum lifetime for that token
-type)`. A signed token cannot carry an arbitrary `exp`, so the cap is
-defence in depth: it keeps store memory bounded by configuration rather than by
-a claim any caller supplies, on every path into
-`add_revoked_token`.
+type)`. A signed token cannot carry an arbitrary `exp`, so the cap is defence in
+depth on the generator revoke path — the one an unauthenticated caller can
+reach: it keeps store memory bounded by configuration rather than by a claim any
+caller supplies. `AuthService.revoke_token`, which logout uses, takes its `exp`
+from claims the authenticated request path has already verified and is left
+uncapped.
+
+Which ceiling applies is decided by the token's **own verified `type`**, never by
+which revoke method the request routed to. `token_type_hint` is optional in RFC
+7009 and may be wrong, and the endpoint routes an absent hint to the access
+path — so a genuine refresh token arrives there as a matter of course. Reading
+the ceiling from the route would truncate its entry to the access lifetime,
+expiring the revocation days before the token it revokes while the endpoint had
+already answered 200.
 
 The OAuth rate limiter guarding `/revoke` remains in-memory and per-process, so
 its per-IP ceiling scales with replica count.
