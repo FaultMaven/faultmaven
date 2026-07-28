@@ -246,3 +246,6 @@ keys/
 certs/
 private/
 coverage.json
+
+# local worktrees (shared-tree isolation)
+.worktrees/

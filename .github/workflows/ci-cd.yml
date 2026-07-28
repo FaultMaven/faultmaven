@@ -101,6 +101,21 @@ jobs:
           black --check faultmaven/ tests/
           ruff check faultmaven/ tests/ --select E9,F63,F7,F82,I
 
+      - name: Lockfiles match pyproject extras (#884)
+        # The Docker image installs requirements/cloud.txt, not pyproject — a
+        # dependency added to an extra without regenerating the lockfiles ships
+        # an image missing a runtime dependency (workos was absent from the
+        # cloud image this way; the DI container died at first request). uv
+        # reuses existing pins when the output file exists, so this only fails
+        # on genuine drift, not upstream releases.
+        run: |
+          pip install uv
+          ./scripts/lock-deps.sh
+          git diff --exit-code requirements/ || {
+            echo "::error::requirements/ lockfiles are stale — run ./scripts/lock-deps.sh and commit the result alongside your pyproject.toml change."
+            exit 1
+          }
+
       - name: KB pack is structurally valid
         # The KB pack is built + freshness-checked by faultmaven-kb-toolkit and
         # vendored here; this verifies the committed pack isn't corrupt (loads,

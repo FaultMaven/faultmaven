@@ -141,6 +141,7 @@ cryptography==49.0.0
     #   faultmaven (pyproject.toml)
     #   azure-storage-blob
     #   presidio-anonymizer
+    #   workos
 cuda-bindings==13.2.0
     # via torch
 cuda-pathfinder==1.5.3
@@ -265,6 +266,7 @@ httpx==0.28.1
     #   opik
     #   tavily-python
     #   weasel
+    #   workos
 httpx-sse==0.4.3
     # via fireworks-ai
 httpx-ws==0.9.0
@@ -570,7 +572,9 @@ pygments==2.20.0
     #   pytest
     #   rich
 pyjwt==2.13.0
-    # via faultmaven (pyproject.toml)
+    # via
+    #   faultmaven (pyproject.toml)
+    #   workos
 pylogrus==0.4.0
     # via faultmaven (pyproject.toml)
 pyod==3.2.1
@@ -915,6 +919,8 @@ werkzeug==3.1.8
     #   flask-cors
     #   flask-login
     #   locust
+workos==9.1.0
+    # via faultmaven (pyproject.toml)
 wrapt==2.1.2
     # via smart-open
 wsproto==1.3.2
