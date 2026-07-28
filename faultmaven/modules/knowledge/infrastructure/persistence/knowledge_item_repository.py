@@ -212,10 +212,12 @@ class KnowledgeItemRepository(ABC):
         indistinguishable by design, so the endpoint cannot be used as an
         existence oracle for other users' documents.
 
-        Deliberately carries NO ``is_published`` condition: this is an
-        id-addressed read and the owner must reach their own row whatever its
-        publication state. Publication is a listing-surface concern
-        (``list_for_inventory``), not an access-control one.
+        Additionally the row must be **published or the requester's own**: for
+        a built-in global runbook, unpublish IS the delete semantics
+        (``KnowledgeService.delete_document`` keeps the row and drops the
+        vectors), so serving an unpublished row by id would hand deleted
+        content to any authenticated caller. The owner exemption keeps an
+        author's own unpublished draft reachable by id.
         """
         pass
 
@@ -640,14 +642,27 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         RBAC lives in the WHERE clause, never in a post-fetch Python filter
         (same rationale as ``list_for_inventory``), so an invisible row is
         never materialised in the first place.
+
+        The published-or-mine condition is applied on top of the scope
+        predicate rather than inside ``_inventory_visibility_clause``, which
+        ``list_for_inventory`` shares and which applies ``is_published``
+        separately.
         """
         try:
+            # Unpublish IS the delete semantics for built-in global runbooks
+            # (``KnowledgeService.delete_document``), so an unpublished row
+            # must not stay id-readable to anyone but its author.
+            published_or_mine = [KnowledgeItemModel.is_published == True]  # noqa: E712
+            if user_id:
+                published_or_mine.append(KnowledgeItemModel.owner_id == user_id)
+
             stmt = select(KnowledgeItemModel).where(
                 and_(
                     KnowledgeItemModel.item_id == item_id,
                     self._inventory_visibility_clause(
                         organization_id, user_id, team_ids
                     ),
+                    or_(*published_or_mine),
                 )
             )
             result = await self.db.execute(stmt)
@@ -1093,9 +1108,14 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         but unused, for the same reason as ``list_for_inventory``: this
         fallback does not model the share table, so it resolves global +
         owner-authored items only.
+
+        Mirrors the SQL rule: the row must be published or the requester's
+        own — unpublish is the delete semantics for built-in global runbooks.
         """
         item = self._items.get(item_id)
         if item is None or not self._inventory_visible(item, organization_id, user_id):
+            return None
+        if not item.is_published and not (user_id and item.owner_id == user_id):
             return None
         return deepcopy(item)
 

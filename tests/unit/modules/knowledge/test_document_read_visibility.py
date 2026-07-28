@@ -162,6 +162,53 @@ class TestGetVisibleByIdSQL:
         got = await _visible(db_factory, "p-1", "org-1", user_id="user-1")
         assert got is not None and got.item_id == "p-1"
 
+    async def test_unpublished_global_is_unreachable_by_a_non_owner(self, db_factory):
+        # DELETE of a built-in global runbook is implemented as *unpublish*
+        # (KnowledgeService.delete_document), so an unpublished global row is a
+        # deleted one. Global ids are handed to anonymous callers by the list
+        # route, so leaving it id-readable would serve deleted content to any
+        # authenticated caller.
+        await _seed(db_factory, _mk_item(GLOBAL_ID, is_published=False))
+        for org, user_id in (("org-1", "user-1"), ("org-2", "user-2"), ("org-1", None)):
+            assert await _visible(db_factory, GLOBAL_ID, org, user_id=user_id) is None
+
+    async def test_unpublished_team_share_is_unreachable_by_a_member(self, db_factory):
+        # Same rule on the share arm: only the owner is exempt.
+        from faultmaven.infrastructure.persistence.share_repository import (
+            PostgreSQLShareRepository,
+        )
+
+        await _seed(
+            db_factory,
+            _mk_item(
+                "t-3",
+                scope=KnowledgeScope.TEAM,
+                owner_id="user-1",
+                is_published=False,
+            ),
+        )
+        async with db_factory() as session:
+            await PostgreSQLShareRepository(session).share(
+                resource_type="knowledge_item",
+                resource_id="t-3",
+                scope_type="team",
+                scope_id="team-A",
+                organization_id="org-1",
+                created_by="user-1",
+            )
+
+        assert (
+            await _visible(
+                db_factory, "t-3", "org-1", user_id="user-2", team_ids=["team-A"]
+            )
+            is None
+        )
+        # The author still reaches their own unpublished row.
+        owner = await _visible(
+            db_factory, "t-3", "org-1", user_id="user-1", team_ids=["team-A"]
+        )
+        assert owner is not None and owner.item_id == "t-3"
+
     async def test_non_owner_cannot_reach_personal(self, db_factory):
         await _seed(
             db_factory,
@@ -272,6 +319,18 @@ class TestGetVisibleByIdInMemory:
             "p-1", organization_id="org-1", user_id="user-1"
         )
         assert got is not None
+
+    async def test_unpublished_global_is_unreachable_by_a_non_owner(self):
+        # Mirrors the SQL rule: unpublish is the delete semantics for built-in
+        # global rows, so a non-owner must not reach an unpublished row.
+        repo = await self._repo_with([_mk_item(GLOBAL_ID, is_published=False)])
+        for org, user_id in (("org-1", "user-1"), ("org-2", "user-2"), ("org-1", None)):
+            assert (
+                await repo.get_visible_by_id(
+                    GLOBAL_ID, organization_id=org, user_id=user_id
+                )
+                is None
+            )
 
     async def test_non_owner_and_cross_org_and_absent_return_none(self):
         repo = await self._repo_with(
@@ -390,14 +449,15 @@ def _doc(*, scope="personal", owner_id="u1"):
     }
 
 
-def _client(knowledge_service, user):
-    """Test client for the knowledge router.
+def _app(knowledge_service, user, team_service=None):
+    """Knowledge router mounted on a bare app.
 
     ``user=None`` leaves ``require_authentication`` unmocked and stubs the
     optional-auth dependency it wraps, so the real 401 path runs.
+    ``team_service`` is placed on ``app.state`` exactly as the composition root
+    does, so ``_resolve_team_ids`` runs for real when one is supplied.
     """
     from fastapi import FastAPI
-    from fastapi.testclient import TestClient
 
     from faultmaven.api.exception_handlers import get_exception_handlers
     from faultmaven.api.v1.auth_dependencies import (
@@ -411,11 +471,22 @@ def _client(knowledge_service, user):
     for exc_type, handler in get_exception_handlers().items():
         app.add_exception_handler(exc_type, handler)
     app.dependency_overrides[get_knowledge_service] = lambda: knowledge_service
+    if team_service is not None:
+        app.state.team_service = team_service
     if user is None:
         app.dependency_overrides[get_current_user_optional] = lambda: None
     else:
         app.dependency_overrides[require_authentication] = lambda: user
-    return TestClient(app, raise_server_exceptions=False)
+    return app
+
+
+def _client(knowledge_service, user, team_service=None):
+    """Sync test client for the knowledge router."""
+    from fastapi.testclient import TestClient
+
+    return TestClient(
+        _app(knowledge_service, user, team_service), raise_server_exceptions=False
+    )
 
 
 def _read_service(visible_doc):
@@ -486,6 +557,53 @@ class TestDocumentReadRoutes:
         assert resp.status_code == 500
         assert "secret" not in resp.text
         assert "exploded" not in resp.text
+
+
+@pytest.mark.unit
+@pytest.mark.knowledge_base
+@pytest.mark.asyncio
+class TestUnpublishedGlobalIsNotReadableEndToEnd:
+    """Route → service → repository over real aiosqlite, no service double.
+
+    ``DELETE /knowledge/documents/{id}`` on a built-in global runbook is an
+    *unpublish*; the id-addressed reads must stop serving it.
+    """
+
+    async def _get(self, db_factory, path):
+        from httpx import ASGITransport, AsyncClient
+
+        app = _app(_service_over(db_factory), _user())
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://t"
+        ) as client:
+            return await client.get(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            f"/knowledge/documents/{GLOBAL_ID}",
+            f"/knowledge/documents/{GLOBAL_ID}/snippet",
+        ],
+    )
+    async def test_unpublished_global_answers_404(self, db_factory, path):
+        await _seed(db_factory, _mk_item(GLOBAL_ID, is_published=False))
+        resp = await self._get(db_factory, path)
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Document not found"
+        assert "line two" not in resp.text
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            f"/knowledge/documents/{GLOBAL_ID}",
+            f"/knowledge/documents/{GLOBAL_ID}/snippet",
+        ],
+    )
+    async def test_published_global_is_still_served(self, db_factory, path):
+        # The gate is on publication, not on the global arm itself.
+        await _seed(db_factory, _mk_item(GLOBAL_ID))
+        resp = await self._get(db_factory, path)
+        assert resp.status_code == 200
 
 
 # ===========================================================================
