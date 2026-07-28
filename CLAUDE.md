@@ -609,7 +609,7 @@ Key configuration in `.env`:
 | Vectors | `VECTOR_STORAGE_TYPE`, `CHROMADB_URL` | `chromadb` (local PersistentClient by default; external server via `CHROMADB_URL`) |
 | Auth | `AUTH_MODE`, `JWT_SECRET_KEY` | `local` or `oauth` |
 | OAuth | `OAUTH_ENABLED`, `JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH` | OAuth 2.0 settings |
-| JWT | `JWT_ACCESS_TOKEN_EXPIRY`, `JWT_REFRESH_TOKEN_EXPIRY` | Token lifetimes (minutes) |
+| JWT | `JWT_ACCESS_TOKEN_EXPIRY_MINUTES`, `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Access token lifetime in minutes (default 15, max 1440); refresh token lifetime in DAYS (default 7, max 90). **Local/HS256 only** — cloud/RS256 reads the `JWT_*_EXPIRE_*` spelling (#888). Out-of-range values fail at startup |
 | Security | `CORS_ALLOW_ORIGINS`, `CORS_ALLOW_CREDENTIALS` | CORS settings |
 | Limits | `MAX_UPLOAD_SIZE_MB`, `RATE_LIMIT_REQUESTS_PER_MINUTE` | Rate limiting |
 

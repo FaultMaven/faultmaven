@@ -14,13 +14,29 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 import jwt
 
 from faultmaven.modules.auth.domain.models.user import User
 
 logger = logging.getLogger(__name__)
+
+
+def _max_revocation_entry_ttl() -> int:
+    """Ceiling, in seconds, on how long a revocation entry is held.
+
+    Read from the schema bound on token lifetime rather than restated here, so
+    the two cannot drift: if the permitted lifetime grows, the ceiling grows
+    with it and an entry still outlives the token it revokes.
+
+    Imported inside the call, not at module scope: this module is deliberately
+    free of settings imports at import time (see ``resolve_organization_claim``).
+    """
+    from faultmaven.config.settings import MAX_TOKEN_LIFETIME_DAYS
+
+    return MAX_TOKEN_LIFETIME_DAYS * 86400
+
 
 #: Emitted for an org-less user under multi-tenant. Falsy, so
 #: ``bind_request_org_context`` refuses the request instead of binding a tenant.
@@ -134,6 +150,10 @@ class IJWTTokenGenerator(ABC):
     async def revoke_access_token(self, token: str) -> None:
         """Revoke access token (add to revocation list).
 
+        Implementations record nothing for a token this deployment did not
+        sign: the OAuth revoke endpoint is unauthenticated (RFC 7009), so the
+        signature is what stands between a caller and the store (#830).
+
         Args:
             token: JWT access token to revoke
         """
@@ -142,6 +162,9 @@ class IJWTTokenGenerator(ABC):
     @abstractmethod
     async def revoke_refresh_token(self, token: str) -> None:
         """Revoke refresh token (prevent future use).
+
+        Implementations record nothing for a token this deployment did not
+        sign — see ``revoke_access_token``.
 
         Args:
             token: JWT refresh token to revoke
@@ -470,6 +493,25 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
             return None
 
+    def _decode_for_revocation(self, token: str) -> Dict:
+        """Decode a token for revocation, verifying it was issued here (#830).
+
+        Audience, issuer and ``type`` are deliberately NOT checked: RFC 7009's
+        ``token_type_hint`` is a hint, and any token this deployment signed is
+        revocable whatever it was minted for. Expiry IS checked — an expired
+        token has nothing left to revoke.
+
+        Raises:
+            jwt.InvalidTokenError: The token was not signed by this deployment,
+                is malformed, or has already expired.
+        """
+        return jwt.decode(
+            token,
+            self.public_key,
+            algorithms=["RS256"],
+            options={"verify_exp": True, "verify_aud": False},
+        )
+
     async def revoke_access_token(self, token: str) -> None:
         """Revoke access token by adding jti to the revocation store.
 
@@ -484,7 +526,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="access",
-            default_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+            decode_verified=self._decode_for_revocation,
         )
 
     async def revoke_refresh_token(self, token: str) -> None:
@@ -501,7 +543,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="refresh",
-            default_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
+            decode_verified=self._decode_for_revocation,
         )
 
 
@@ -510,25 +552,39 @@ async def _revoke_token_by_jti(
     token: str,
     *,
     token_kind: str,
-    default_ttl: int,
+    decode_verified: Callable[[str], Dict],
 ) -> None:
     """Record a token's jti in the revocation store (shared by both generators).
 
-    Invalid input — undecodable tokens, missing jti, malformed/overflowing
-    exp claims — is tolerated (logged, no-op): RFC 7009 treats revocation of
-    an invalid token as success, and a junk token has nothing to revoke. Only
-    STORE WRITE failures propagate, so revoke endpoints cannot report success
-    while a real token remains usable (#767).
+    ``decode_verified`` must VERIFY the token's signature before returning its
+    claims. ``POST /auth/oauth/revoke`` is unauthenticated by design (RFC 7009),
+    so without that check any caller could write a key of their choosing — with
+    a TTL of their choosing, from a crafted ``exp`` — into the revocation store
+    (#830). Nothing is recorded for a token this deployment did not sign.
+
+    The entry's ceiling is ``MAX_TOKEN_LIFETIME_DAYS`` — the longest lifetime
+    ANY permitted configuration can mint — not the currently configured lifetime
+    for some token type. An entry that expires before the token it revokes
+    resurrects that token, and three things can produce one: a token type with
+    its own lifetime (``password_reset`` is signed with the same key and
+    verifies here), a token minted before an operator lowered the setting, and
+    a hint that routes a refresh token onto the access path (``token_type_hint``
+    is optional in RFC 7009). An absolute bound is immune to all three while
+    still keeping store memory bounded, which is the only thing the cap is for.
+
+    ``token_kind`` only labels the log line with the path taken.
+
+    Invalid input — unsigned/forged tokens, undecodable tokens, missing jti,
+    malformed/overflowing exp claims — is tolerated (logged, no-op): RFC 7009
+    treats revocation of an invalid token as success, and such a token has
+    nothing to revoke. Only STORE WRITE failures propagate, so revoke endpoints
+    cannot report success while a real token remains usable (#767).
     """
     try:
-        # Decode without verification just to read jti/exp; the caller is
-        # responsible for any authenticity requirements. The exp/TTL math is
-        # inside this block too: a crafted or ms-precision exp (e.g.
-        # 9999999999999) overflows fromtimestamp and is an invalid-token
-        # case, not a store failure.
-        payload = jwt.decode(
-            token, options={"verify_signature": False, "verify_exp": False}
-        )
+        # The exp/TTL math shares this block with the decode: a crafted or
+        # ms-precision exp (e.g. 9999999999999) overflows fromtimestamp and is
+        # an invalid-token case, not a store failure.
+        payload = decode_verified(token)
 
         jti = payload.get("jti")
         if not jti:
@@ -539,17 +595,30 @@ async def _revoke_token_by_jti(
             return
 
         # Revocation entry lives exactly as long as the token could be used
+        max_ttl = _max_revocation_entry_ttl()
         exp = payload.get("exp")
         if exp:
             expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
             ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
             if ttl <= 0:
                 return  # Already expired; nothing left to revoke
+            # Bound the entry so a crafted exp cannot buy multi-year storage
+            # (#830), without ever cutting it below the token's own life.
+            ttl = min(ttl, max_ttl)
         else:
-            ttl = default_ttl
+            # A signed token with no exp never expires on its own; the ceiling
+            # is the longest this store will hold anything.
+            ttl = max_ttl
+    except jwt.ExpiredSignatureError:
+        # Nothing left to revoke; the token is already unusable.
+        logger.info(
+            "JWT revocation skipped: token already expired",
+            extra={"token_kind": token_kind},
+        )
+        return
     except Exception as e:
         logger.warning(
-            "JWT revocation skipped: token could not be decoded",
+            "JWT revocation skipped: token could not be verified",
             extra={"token_kind": token_kind, "error": str(e)},
         )
         return
@@ -901,6 +970,25 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
             return None
 
+    def _decode_for_revocation(self, token: str) -> Dict:
+        """Decode a token for revocation, verifying it was issued here (#830).
+
+        Audience, issuer and ``type`` are deliberately NOT checked: RFC 7009's
+        ``token_type_hint`` is a hint, and any token this deployment signed is
+        revocable whatever it was minted for. Expiry IS checked — an expired
+        token has nothing left to revoke.
+
+        Raises:
+            jwt.InvalidTokenError: The token was not signed by this deployment,
+                is malformed, or has already expired.
+        """
+        return jwt.decode(
+            token,
+            self.secret_key,
+            algorithms=["HS256"],
+            options={"verify_exp": True, "verify_aud": False},
+        )
+
     async def revoke_access_token(self, token: str) -> None:
         """Revoke access token by adding jti to the revocation store.
 
@@ -915,7 +1003,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="access",
-            default_ttl=self.settings.jwt_access_token_expire_minutes * 60,
+            decode_verified=self._decode_for_revocation,
         )
 
     async def revoke_refresh_token(self, token: str) -> None:
@@ -932,7 +1020,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             self.revocation_store,
             token,
             token_kind="refresh",
-            default_ttl=self.settings.jwt_refresh_token_expire_days * 86400,
+            decode_verified=self._decode_for_revocation,
         )
 
 

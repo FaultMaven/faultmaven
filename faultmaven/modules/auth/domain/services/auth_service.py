@@ -500,14 +500,17 @@ class AuthService:
         obvious one:
 
         - Both settings halves are consulted because each declares the expiry
-          fields under the same names, but only ``settings.auth``'s carry the
-          ``JWT_*_EXPIRY`` validation aliases — and that is the half the token
-          generators are constructed with. ``settings.security``'s never move
-          off their defaults.
+          fields under the same names and the minters are split across them:
+          the local HS256 generator is built from ``settings.auth``, the cloud
+          RS256 generator and this service from ``settings.security``. Only
+          ``settings.auth``'s carry the ``JWT_*_EXPIRY_*`` validation aliases,
+          so ``settings.security``'s never move off their defaults — but they
+          are what the cloud minters use, and neither half alone describes
+          every token this deployment can issue.
         - Access-token expiry is included even though it is normally minutes:
-          ``JWT_ACCESS_TOKEN_EXPIRY`` has no upper bound in the schema and
-          nothing ties it to the refresh expiry, so a large value would
-          otherwise outlive the watermark exactly like the refresh case.
+          nothing ties ``JWT_ACCESS_TOKEN_EXPIRY_MINUTES`` to the refresh
+          expiry, so at its schema maximum it can equal the shortest permitted
+          refresh lifetime and must be covered exactly like the refresh case.
 
         Attributes are read directly rather than via ``getattr`` defaults: a
         missing or mis-wired settings half must fail loudly here, not quietly
@@ -566,7 +569,7 @@ class AuthService:
         #
         # Take the MAX across both settings halves rather than trusting one.
         # `settings.auth.jwt_refresh_token_expire_days` is the operator knob
-        # (`JWT_REFRESH_TOKEN_EXPIRY`) and is what the token generators are
+        # (`JWT_REFRESH_TOKEN_EXPIRY_DAYS`) and is what the token generators are
         # constructed with, while `settings.security`'s same-named field has no
         # env alias and is always its default. Reading only the latter would
         # cap the watermark at 7 days while tokens lived for 30.
@@ -584,6 +587,34 @@ class AuthService:
             extra={"user_id": user_id, "revoked_before": revoked_at.isoformat()},
         )
         return revoked_at
+
+    async def get_revocation_reason(self, claims: Dict[str, Any]) -> Optional[str]:
+        """Why these claims are revoked, or None if they are not.
+
+        The same rule as the request path — one rule governs every token type
+        (``revocation_reason``) — but a store *error* propagates here instead of
+        reading as "not revoked". For callers where proceeding on an unknown
+        revocation state is worse than refusing, such as password reset, which
+        is account-takeover-grade.
+
+        A missing store raises for the same reason, and matches
+        ``revoke_token``/``revoke_user_tokens``: without one, no answer about
+        revocation is available at all. Returning "not revoked" there would be
+        the fail-open this method exists to avoid.
+
+        Args:
+            claims: Verified token claims (``jti``, ``sub`` and ``iat`` are read)
+
+        Returns:
+            ``"token_revoked"``, ``"user_revoked"``, or None.
+
+        Raises:
+            ServiceError: No revocation store is configured.
+            Exception: Store read failures propagate.
+        """
+        if self._revocation_store is None:
+            raise ServiceError("Revocation state unavailable: no revocation store")
+        return await revocation_reason(self._revocation_store, claims)
 
     async def _is_revoked(self, claims: Dict[str, Any]) -> bool:
         """Check whether a token's claims are revoked.

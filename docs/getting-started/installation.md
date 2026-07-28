@@ -207,8 +207,19 @@ These settings exist in the codebase but are **not** part of the Standalone `.en
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `JWT_ALGORITHM` | `RS256` | JWT signing algorithm |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access token expiration |
-| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token expiration |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access token lifetime in **minutes** (1–1440) for cloud/OAuth (RS256) tokens |
+| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime in **days**, not minutes (1–90), for cloud/OAuth (RS256) tokens |
+
+> **These two names apply to cloud/OAuth mode only.** Standalone (local, HS256)
+> reads a differently spelled pair — `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` and
+> `JWT_REFRESH_TOKEN_EXPIRY_DAYS` (**EXPIRY**, not **EXPIRE**) — which *are* part
+> of the Standalone `.env` surface; see `.env.example`. Setting the pair that
+> does not match your `AUTH_MODE` leaves token lifetimes at their defaults with
+> no error, so a standalone install hardening its access-token lifetime must use
+> the `EXPIRY_*` names. That the two are split at all is a known defect
+> ([#888](https://github.com/FaultMaven/faultmaven/issues/888)); until it is fixed, set the pair matching your mode.
+> Either pair rejects out-of-range values at startup rather than accepting them
+> silently.
 
 ---
 

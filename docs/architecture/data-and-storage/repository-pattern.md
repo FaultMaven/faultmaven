@@ -304,8 +304,8 @@ REDIS_PORT=6379
 
 **TTL Strategy** (distinct concepts — do not conflate; see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy) for the canonical auth/session domain reference):
 
-- **JWT access token**: 60 min default (`JWT_ACCESS_TOKEN_EXPIRY`)
-- **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY`)
+- **JWT access token**: 15 min default (`JWT_ACCESS_TOKEN_EXPIRY_MINUTES`)
+- **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY_DAYS`)
 - **Session record TTL (Redis)**: 24 h default (`SessionSettings.session_ttl_hours`)
 - **Session inactivity timeout**: 30 min default (`SessionSettings.timeout_minutes`)
 - Investigation state: 7 days
@@ -908,8 +908,8 @@ REDIS_PASSWORD=secure_password
 REDIS_DB=0
 
 # JWT lifetimes (minutes)
-JWT_ACCESS_TOKEN_EXPIRY=60            # Access token: 60 min (default)
-JWT_REFRESH_TOKEN_EXPIRY=10080        # Refresh token: 7 days
+JWT_ACCESS_TOKEN_EXPIRY_MINUTES=15    # Access token: minutes (default 15)
+JWT_REFRESH_TOKEN_EXPIRY_DAYS=7       # Refresh token: DAYS (default 7)
 # Session record TTL: 24h (SessionSettings.session_ttl_hours)
 # Session inactivity timeout: 30 min (SessionSettings.timeout_minutes)
 
@@ -1320,7 +1320,7 @@ redis_client = aioredis.from_url(
 # TTL strategy (see §3.2 for the full breakdown)
 session_record: 24 h      # SessionSettings.session_ttl_hours
 idle_timeout:   30 min    # SessionSettings.timeout_minutes
-jwt_refresh:    7 days    # JWT_REFRESH_TOKEN_EXPIRY
+jwt_refresh:    7 days    # JWT_REFRESH_TOKEN_EXPIRY_DAYS
 temp_state:     1 hour
 ```
 

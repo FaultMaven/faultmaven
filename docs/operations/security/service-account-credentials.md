@@ -103,7 +103,7 @@ Standalone sentinel, which there is the correct answer.
   is revoked as part of the exchange. The agent must persist the returned token
   *before* relying on it (write-before-use).
 - The window **slides**. Each refresh mints a fresh token with a full
-  `JWT_REFRESH_TOKEN_EXPIRY` (default 7 days) lifetime. There is no absolute
+  `JWT_REFRESH_TOKEN_EXPIRY_DAYS` (default 7 days) lifetime. There is no absolute
   cap, so a continuously running agent never needs re-provisioning.
 
 ## Lockout modes and recovery
@@ -126,7 +126,7 @@ rather than retrying, so this shows up in its logs as a clear operator action.
 
 Deactivate the account. Both refresh paths reload the user and reject an
 inactive one, so the credential stops renewing and the last access token expires
-within `JWT_ACCESS_TOKEN_EXPIRY` (default 15 minutes).
+within `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` (default 15 minutes).
 
 To cut off outstanding access tokens immediately rather than waiting out that
 window, also call `POST /api/v1/auth/users/{user_id}/revoke-tokens` (admin).
@@ -146,7 +146,7 @@ Two operational limits to know before relying on it:
 - **Upgrading across the #769 key-namespace change orphans older entries.**
   Per-token keys moved from `{prefix}{jti}` to `{prefix}jti:{jti}`, so
   revocations recorded by an earlier build are no longer read. Access tokens
-  age out within `JWT_ACCESS_TOKEN_EXPIRY`, but a refresh token revoked by
+  age out within `JWT_ACCESS_TOKEN_EXPIRY_MINUTES`, but a refresh token revoked by
   rotation or logout would come back for its full lifetime. Flush the
   `{prefix}*` keyspace (default prefix `revoked:token:`) as part of that
   upgrade if any previously revoked credential must stay dead.

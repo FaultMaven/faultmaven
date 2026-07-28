@@ -930,6 +930,28 @@ def ensure_local_jwt_secret_env() -> None:
         )
 
 
+#: Schema maximum for ``JWT_ACCESS_TOKEN_EXPIRY_MINUTES`` (1 day).
+MAX_ACCESS_TOKEN_EXPIRY_MINUTES = 1440
+
+#: Schema maximum for ``JWT_REFRESH_TOKEN_EXPIRY_DAYS``. Refresh tokens are the
+#: longest-lived credential this system issues, so this doubles as the longest
+#: lifetime ANY permitted configuration can mint — see MAX_TOKEN_LIFETIME_DAYS.
+MAX_REFRESH_TOKEN_EXPIRY_DAYS = 90
+
+#: Upper bound on the lifetime of any token this deployment can be configured to
+#: issue, whatever the operator sets and whenever they change it. Revocation
+#: entries are held against this rather than against the *current* configured
+#: lifetime for the token's type: a token minted under a longer setting (or of a
+#: type with its own shorter one) must never outlive the entry that revokes it.
+#:
+#: This holds only because BOTH settings halves bound their expiry fields by
+#: these same constants — the security half binds by field name and would
+#: otherwise accept any value — and because every other token type this system
+#: issues (access, password reset, local session) is bounded below it. A test
+#: pins both properties; raising a bound past this one must fail loudly.
+MAX_TOKEN_LIFETIME_DAYS = MAX_REFRESH_TOKEN_EXPIRY_DAYS
+
+
 class SecuritySettings(BaseSettings):
     """Security and authentication configuration"""
 
@@ -949,8 +971,24 @@ class SecuritySettings(BaseSettings):
         validation_alias="JWT_SECRET_KEY",
         description="HS256 secret for local auth; auto-generated+persisted in local mode by get_settings() if unset (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
     )
-    jwt_access_token_expire_minutes: int = Field(default=15)
-    jwt_refresh_token_expire_days: int = Field(default=7)
+    # The half the cloud RS256 generator and AuthService mint from. These carry
+    # no validation_alias, so they bind by FIELD NAME
+    # (JWT_ACCESS_TOKEN_EXPIRE_MINUTES / JWT_REFRESH_TOKEN_EXPIRE_DAYS — EXPIRE,
+    # the spelling the installation guide documents, not the EXPIRY spelling
+    # AuthSettings aliases; #888 tracks the split). Same bounds as the auth half
+    # regardless: revocation entries are held against MAX_TOKEN_LIFETIME_DAYS,
+    # which is only an upper bound on token lifetime if NEITHER half can be
+    # configured past it.
+    jwt_access_token_expire_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=MAX_ACCESS_TOKEN_EXPIRY_MINUTES,
+    )
+    jwt_refresh_token_expire_days: int = Field(
+        default=7,
+        ge=1,
+        le=MAX_REFRESH_TOKEN_EXPIRY_DAYS,
+    )
 
     jwt_issuer: str = Field(default="faultmaven-api")
     jwt_audience: str = Field(default="faultmaven-app")
@@ -1107,16 +1145,27 @@ class AuthSettings(BaseSettings):
         description="Local mode token expiry (hours)",
     )
 
-    # JWT token expiry settings (common for both modes per iam-design.md)
+    # JWT token expiry settings (common for both modes per iam-design.md).
+    # The env names carry their unit because the two fields do NOT share one:
+    # unsuffixed parallel names invited "10080" (7 days in minutes) into the
+    # DAYS field and produced ~27 years of refresh validity. The bounds make an
+    # implausible value fail at boot instead of silently removing the
+    # short-credential assumption the revocation design rests on — and they are
+    # what lets revocation entries be capped against a lifetime no configuration
+    # can exceed (MAX_TOKEN_LIFETIME_DAYS).
     jwt_access_token_expire_minutes: int = Field(
         default=15,
-        validation_alias="JWT_ACCESS_TOKEN_EXPIRY",
+        ge=1,
+        le=MAX_ACCESS_TOKEN_EXPIRY_MINUTES,
+        validation_alias="JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
         description="Access token expiry (minutes); short-lived per security posture (<30 min)",
     )
     jwt_refresh_token_expire_days: int = Field(
         default=7,
-        validation_alias="JWT_REFRESH_TOKEN_EXPIRY",
-        description="Refresh token expiry (days). Default 7 days = 10080 minutes",
+        ge=1,
+        le=MAX_REFRESH_TOKEN_EXPIRY_DAYS,
+        validation_alias="JWT_REFRESH_TOKEN_EXPIRY_DAYS",
+        description="Refresh token expiry (DAYS, not minutes)",
     )
 
     @field_validator("oauth_enabled")

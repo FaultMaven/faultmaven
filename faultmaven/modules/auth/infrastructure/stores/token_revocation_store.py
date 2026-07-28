@@ -39,11 +39,11 @@ class RedisTokenRevocationStore(ITokenRevocationStore):
         # Both namespaces derive from the same prefix, so they can never be
         # pointed at different Redis instances or drift apart. They sit under
         # DISTINCT literal segments ("jti:" vs "user:") so no jti value can
-        # ever produce a per-user key: jti values are attacker-controlled in
-        # practice, because RFC 7009 revocation (POST /auth/oauth/revoke) is
-        # unauthenticated and reads jti from a token decoded WITHOUT signature
-        # verification. A jti of "user:<victim>" must not be able to overwrite
-        # that victim's watermark.
+        # ever produce a per-user key. That separation does not depend on how
+        # trustworthy the jti is: it arrives inside a submitted token, on an
+        # endpoint (POST /auth/oauth/revoke) that is unauthenticated by RFC
+        # 7009 design. A jti of "user:<victim>" must not be able to overwrite
+        # that victim's watermark, whatever else changes upstream.
         self._jti_key_prefix = f"{key_prefix}jti:"
         self._user_key_prefix = f"{key_prefix}user:"
 

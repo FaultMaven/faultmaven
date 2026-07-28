@@ -17,7 +17,7 @@ Key Endpoints:
 
 Security Notes:
 - JWT tokens in both modes for middleware uniformity
-- Automatic token expiration (configurable via JWT_ACCESS_TOKEN_EXPIRY)
+- Automatic token expiration (configurable via JWT_ACCESS_TOKEN_EXPIRY_MINUTES)
 - Input validation and sanitization
 - Structured error responses per RFC 6749
 """
