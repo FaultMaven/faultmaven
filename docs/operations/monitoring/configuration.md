@@ -267,36 +267,50 @@ export LOG_INCLUDE_CALLER_INFO=true
 | `LOG_OTEL_TRACE_CORRELATION` | `true` | Enable trace-log correlation |
 | `LOG_OTEL_SPAN_EVENTS` | `true` | Add log events to spans |
 
-### Opik Targeted Tracing Configuration
+### Opik Tracing Kill Switch
 
 | Environment Variable | Default Value | Description |
 |---------------------|---------------|-------------|
-| `OPIK_TRACK_DISABLE` | `false` | Global tracing disable flag |
-| `OPIK_TRACK_USERS` | `""` | Comma-separated list of users to trace |
-| `OPIK_TRACK_SESSIONS` | `""` | Comma-separated list of sessions to trace |
-| `OPIK_TRACK_OPERATIONS` | `""` | Comma-separated list of operations to trace |
+| `OPIK_TRACK_DISABLE` | `false` | Suppress all `@opik.track` decorator spans |
 
-**Targeting Logic:**
-- If `OPIK_TRACK_DISABLE=true`, no tracing occurs regardless of other settings
-- If multiple targeting variables are set, ALL criteria must match for tracing
-- Empty targeting variables mean "trace everything" (default behavior)
-- Changes take effect immediately without restart
+Tracing is all-or-nothing. The two variables act at different layers:
+
+- `OPIK_ENABLED` is FaultMaven's own switch. With it false, `init_opik_tracing()`
+  returns early and no backend (URL, project, workspace, API key) is configured.
+- `OPIK_TRACK_DISABLE` is read by the **Opik SDK itself**, straight from the
+  environment — it is not a `settings.py` field. The SDK derives
+  `is_tracing_active()` from it, and that is what makes each `@opik.track`
+  decorator a no-op. `main.py` calls `load_dotenv()` before the SDK is imported,
+  so a value in `.env` reaches it.
+
+Note that `OPIK_ENABLED=false` alone stops FaultMaven configuring a backend, but
+it does **not** make the decorators inert. `OPIK_ENABLED` is FaultMaven's own
+variable and the SDK never reads it; each `@opik.track` wrapper calls
+`is_tracing_active()` on every invocation, and that derives solely from
+`OPIK_TRACK_DISABLE`, whose SDK default leaves tracing active. So disabling only
+`OPIK_ENABLED` leaves every span still being built, against an unconfigured
+default backend.
+
+To actually stop tracing, set **both** — `OPIK_TRACK_DISABLE` short-circuits the
+decorators, `OPIK_ENABLED` stops the backend being configured. Both are read at
+startup and the SDK memoises the result, so a change requires a restart.
 
 **Examples:**
+
 ```bash
-# Debug specific user issues
-OPIK_TRACK_USERS=problematic_user_123
-
-# Monitor only expensive operations
-OPIK_TRACK_OPERATIONS=llm_query,vector_search,agent_reasoning
-
-# Combined targeting (user AND operation must match)
-OPIK_TRACK_USERS=debug_user,qa_user
-OPIK_TRACK_OPERATIONS=troubleshoot,generate_solution
-
-# Temporarily disable all tracing
+# Stop emitting spans but keep the backend configured
 OPIK_TRACK_DISABLE=true
+
+# Turn Opik off entirely — BOTH are required
+OPIK_TRACK_DISABLE=true
+OPIK_ENABLED=false
 ```
+
+> Per-user, per-session and per-operation trace targeting is **not**
+> implemented. Earlier revisions of this page documented `OPIK_TRACK_USERS`,
+> `OPIK_TRACK_SESSIONS` and `OPIK_TRACK_OPERATIONS`; no code ever read them and
+> the settings fields have been removed. Scope traces by project instead
+> (`OPIK_PROJECT_NAME`).
 
 ### Metrics Export Configuration
 
@@ -663,11 +677,8 @@ data:
   OTEL_SERVICE_NAME: "faultmaven"
   OTEL_ENVIRONMENT: "production"
   LOG_ELASTICSEARCH_ENABLED: "true"
-  # Opik targeted tracing
+  # Opik tracing kill switch
   OPIK_TRACK_DISABLE: "false"
-  OPIK_TRACK_USERS: ""
-  OPIK_TRACK_SESSIONS: ""
-  OPIK_TRACK_OPERATIONS: ""
   LOG_ELASTICSEARCH_URL: "http://elasticsearch:9200"
   LOG_METRICS_ENABLED: "true"
   LOG_ENABLE_DATA_SANITIZATION: "true"
