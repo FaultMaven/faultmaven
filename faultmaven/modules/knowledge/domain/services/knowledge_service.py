@@ -1429,13 +1429,46 @@ class KnowledgeService:
                 "error": str(e),
             }
 
+    @staticmethod
+    def _document_dto(item: Any) -> Dict[str, Any]:
+        """Build the single-document DTO from a ``KnowledgeItem``.
+
+        Mirrors the ``list_documents`` DTO shape with a ``content`` field
+        added. One builder so the scoped and unscoped reads can never return
+        different shapes for the same row.
+        """
+        meta = item.metadata or {}
+        return {
+            "document_id": item.item_id,
+            "title": item.title,
+            "content": item.content,
+            "document_type": item.item_type.value,
+            "tags": list(item.tags) if item.tags else [],
+            "scope": item.scope.value,
+            "owner_id": item.owner_id,
+            "source_url": item.source_url,
+            "created_at": item.created_at.isoformat() if item.created_at else "",
+            "updated_at": item.updated_at.isoformat() if item.updated_at else "",
+            "metadata": {
+                "domain": meta.get("domain"),
+                "service": meta.get("service"),
+                "severity": meta.get("severity"),
+                "quality_score": meta.get("quality_score"),
+            },
+        }
+
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
-        """Get a published runbook by ID from knowledge_items.
+        """Get a published runbook by ID from knowledge_items — UNSCOPED.
 
         Content comes from the stored row (``knowledge_items.content``), not
         from disk — the row is the source of truth for the published
-        inventory. Mirrors the ``list_documents`` DTO shape with a ``content``
-        field added.
+        inventory.
+
+        This is the trusted load: it applies no requester scope, so the write
+        routes can evaluate the write policy against the real row (the
+        single-tenant operator override has to work on documents the operator
+        cannot list) and internal ingestion can read any row. Actor-facing
+        reads must use :meth:`get_document_visible` instead.
         """
         try:
             if not document_id:
@@ -1455,28 +1488,65 @@ class KnowledgeService:
             if item is None:
                 return None
 
-            meta = item.metadata or {}
-            return {
-                "document_id": item.item_id,
-                "title": item.title,
-                "content": item.content,
-                "document_type": item.item_type.value,
-                "tags": list(item.tags) if item.tags else [],
-                "scope": item.scope.value,
-                "owner_id": item.owner_id,
-                "source_url": item.source_url,
-                "created_at": item.created_at.isoformat() if item.created_at else "",
-                "updated_at": item.updated_at.isoformat() if item.updated_at else "",
-                "metadata": {
-                    "domain": meta.get("domain"),
-                    "service": meta.get("service"),
-                    "severity": meta.get("severity"),
-                    "quality_score": meta.get("quality_score"),
-                },
-            }
+            return self._document_dto(item)
 
         except Exception as e:
             logger.error(f"Failed to get document {document_id}: {e}")
+            return None
+
+    async def get_document_visible(
+        self,
+        document_id: str,
+        user: Optional[Any] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a runbook by ID, scoped to what the requester may see (#867).
+
+        The actor-facing counterpart of :meth:`get_document`: RBAC is enforced
+        in-query by ``get_visible_by_id`` (global ∪ own-org owned ∪ own-org
+        shared-to-my-teams), and ``organization_id`` is sourced exactly as
+        ``list_documents`` sources it. Returns None both for an absent id and
+        for one the requester cannot see, so callers cannot distinguish the
+        two.
+
+        Rejected alternative: scoping ``get_document`` itself — it is the
+        trusted load behind the write-policy check and internal ingestion, so
+        scoping it would break the operator override and push visibility
+        decisions into callers that have no actor.
+        """
+        try:
+            if not document_id or not self._db_session_factory:
+                return None
+
+            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                DatabaseKnowledgeItemRepository,
+            )
+            from faultmaven.providers.tenancy.single_tenant import (
+                SingleTenantProvider,
+            )
+
+            organization_id = (
+                getattr(user, "organization_id", None)
+                or SingleTenantProvider.DEFAULT_ORG_ID
+            )
+            user_id = getattr(user, "user_id", None) if user else None
+
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                item = await repo.get_visible_by_id(
+                    document_id,
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    team_ids=team_ids,
+                )
+
+            if item is None:
+                return None
+
+            return self._document_dto(item)
+
+        except Exception as e:
+            logger.error(f"Failed to get visible document {document_id}: {e}")
             return None
 
     async def get_runbook_causes(self, item_id: str) -> Optional[List[Dict[str, Any]]]:

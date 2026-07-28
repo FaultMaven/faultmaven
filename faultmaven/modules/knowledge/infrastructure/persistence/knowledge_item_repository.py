@@ -197,6 +197,29 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
+    async def get_visible_by_id(
+        self,
+        item_id: str,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> Optional[KnowledgeItem]:
+        """Get an item by ID, scoped to what the requester may see (#867).
+
+        Applies the same read-visibility rule as ``list_for_inventory``:
+        global ∪ own-org owned ∪ own-org shared-to-my-teams. Returns None both
+        for an absent id and for an id the requester cannot see — the two are
+        indistinguishable by design, so the endpoint cannot be used as an
+        existence oracle for other users' documents.
+
+        Deliberately carries NO ``is_published`` condition: this is an
+        id-addressed read and the owner must reach their own row whatever its
+        publication state. Publication is a listing-surface concern
+        (``list_for_inventory``), not an access-control one.
+        """
+        pass
+
+    @abstractmethod
     async def search_by_text(
         self,
         organization_id: str,
@@ -603,6 +626,42 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             )
             raise KnowledgeItemRepositoryException(
                 f"Failed to list inventory for organization {organization_id}: {e}"
+            ) from e
+
+    async def get_visible_by_id(
+        self,
+        item_id: str,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> Optional[KnowledgeItem]:
+        """Get an item by ID, read-visibility enforced in-query (#867).
+
+        RBAC lives in the WHERE clause, never in a post-fetch Python filter
+        (same rationale as ``list_for_inventory``), so an invisible row is
+        never materialised in the first place.
+        """
+        try:
+            stmt = select(KnowledgeItemModel).where(
+                and_(
+                    KnowledgeItemModel.item_id == item_id,
+                    self._inventory_visibility_clause(
+                        organization_id, user_id, team_ids
+                    ),
+                )
+            )
+            result = await self.db.execute(stmt)
+            item_model = result.scalar_one_or_none()
+
+            if item_model is None:
+                return None
+
+            return self._to_domain(item_model)
+
+        except Exception as e:
+            logger.error(f"Failed to get visible knowledge item {item_id}: {e}")
+            raise KnowledgeItemRepositoryException(
+                f"Failed to get visible knowledge item {item_id}: {e}"
             ) from e
 
     async def search_by_text(
@@ -1020,6 +1079,25 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         ]
         items.sort(key=lambda x: x.created_at, reverse=True)
         return [deepcopy(i) for i in items]
+
+    async def get_visible_by_id(
+        self,
+        item_id: str,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
+    ) -> Optional[KnowledgeItem]:
+        """Get an item by ID if the requester may see it (#867).
+
+        ``team_ids`` is accepted for interface parity with the DB repository
+        but unused, for the same reason as ``list_for_inventory``: this
+        fallback does not model the share table, so it resolves global +
+        owner-authored items only.
+        """
+        item = self._items.get(item_id)
+        if item is None or not self._inventory_visible(item, organization_id, user_id):
+            return None
+        return deepcopy(item)
 
     async def search_by_text(
         self,
