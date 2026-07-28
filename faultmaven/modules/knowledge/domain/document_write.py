@@ -1,8 +1,9 @@
 """Scope-aware write policy for published KB documents (#834).
 
-The document write routes (``PUT``/``DELETE /knowledge/documents/{id}``) were
-unconditionally operator-only, so the owner of a personal-scope runbook could
-not edit or delete it. This policy makes them ownership-aware:
+The document write routes (``PUT``/``DELETE /knowledge/documents/{id}`` and
+their bulk twins ``POST /knowledge/documents/bulk-update``/``bulk-delete``)
+were unconditionally operator-only, so the owner of a personal-scope runbook
+could not edit or delete it. This policy makes them ownership-aware:
 
 * **global** — platform-corpus authoring: delegate to the global-tier policy
   (:mod:`faultmaven.modules.knowledge.domain.global_authoring` — refused from
@@ -14,9 +15,14 @@ not edit or delete it. This policy makes them ownership-aware:
   is the break-glass path, ADR-012, never a standing bypass). Team-scope
   shares grant read visibility (ADR-013 §D4), not write.
 
+Every actor-facing write route applies it, single and bulk alike (#866): the
+bulk routes run it once per target and pass only the permitted ids on, so the
+two surfaces cannot drift.
+
 Rejected alternative: enforcing inside ``KnowledgeService`` write methods —
-those are also the trusted path for bulk admin ops and internal ingestion, so
-the actor-facing gate lives at the route boundary where the actor is known.
+those remain the trusted path for internal ingestion and maintenance jobs,
+which have no actor, so the actor-facing gate lives at the route boundary
+where the actor is known.
 """
 
 from typing import Optional
