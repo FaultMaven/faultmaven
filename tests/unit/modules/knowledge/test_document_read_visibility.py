@@ -669,6 +669,44 @@ class TestUnpublishedGlobalIsNotReadableEndToEnd:
 
 @pytest.mark.unit
 @pytest.mark.knowledge_base
+class TestAggregateReadRoutesRequireAuth:
+    """``/knowledge/stats`` and ``/knowledge/analytics/search`` (#867).
+
+    Same defect class as the id-addressed reads: no ``current_user``, while
+    ``rbac.md`` documented them as "Any authenticated user". Aggregate counts
+    only, and a cross-repo sweep found no consumer calling them at all — so
+    they are closed rather than documented as public.
+    """
+
+    @pytest.mark.parametrize(
+        "path", ["/knowledge/stats", "/knowledge/analytics/search"]
+    )
+    def test_unauthenticated_is_rejected(self, path):
+        service = MagicMock()
+        service.get_knowledge_stats = AsyncMock(return_value={"total_documents": 3})
+        service.get_search_analytics = AsyncMock(return_value={"search_volume": 1})
+
+        resp = _client(service, None).get(path)
+
+        assert resp.status_code == 401
+        service.get_knowledge_stats.assert_not_awaited()
+        service.get_search_analytics.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "path", ["/knowledge/stats", "/knowledge/analytics/search"]
+    )
+    def test_authenticated_caller_is_served(self, path):
+        service = MagicMock()
+        service.get_knowledge_stats = AsyncMock(return_value={"total_documents": 3})
+        service.get_search_analytics = AsyncMock(return_value={"search_volume": 1})
+
+        resp = _client(service, _user()).get(path)
+
+        assert resp.status_code == 200
+
+
+@pytest.mark.unit
+@pytest.mark.knowledge_base
 class TestFallbackContainerService:
     """The fallback service must satisfy the scoped read, fail-CLOSED.
 

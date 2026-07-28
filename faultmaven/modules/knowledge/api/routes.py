@@ -947,8 +947,14 @@ async def bulk_delete_documents(
 @router.get("/stats")
 async def get_knowledge_stats(
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_authentication),
 ) -> dict:
-    """Get knowledge base statistics."""
+    """Get knowledge base statistics.
+
+    Requires authentication (#867): aggregate counts over the corpus are not
+    public, and ``docs/architecture/security/rbac.md`` already documented this
+    route as "Any authenticated user".
+    """
     logger = logging.getLogger(__name__)
 
     try:
@@ -966,8 +972,12 @@ async def get_knowledge_stats(
 @router.get("/analytics/search")
 async def get_search_analytics(
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_authentication),
 ) -> dict:
-    """Get search analytics and insights."""
+    """Get search analytics and insights.
+
+    Requires authentication, for the same reason as ``/stats``.
+    """
     logger = logging.getLogger(__name__)
 
     try:

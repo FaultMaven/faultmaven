@@ -148,6 +148,12 @@ in `errors`, never counted as updated/deleted. A refusal over a document the
 caller cannot even *see* answers 404, identically to an absent id, so the
 response is never an existence oracle.
 
+Bulk batches are de-duplicated (first-seen order) and capped at
+`MAX_BULK_DOCUMENT_IDS` = 200; a larger batch is refused with 400. The gate does
+per-target database work, and repeating an id would otherwise both amplify that
+work and time the difference between an invisible target and an absent one
+despite their identical messages. Per-target `errors` carry no exception text.
+
 | Method | Endpoint | Description | Required Role |
 |--------|----------|-------------|---------------|
 | PUT | `/api/v1/knowledge/documents/{id}` | Update a document | Owner, or platform operator |
@@ -159,6 +165,12 @@ response is never an existence oracle.
 
 These endpoints are accessible to every authenticated user, whatever their roles:
 
+The id-addressed reads resolve their target through the read-visibility rule
+(global ∪ own ∪ shared-to-my-teams) **and** require the row to be published or
+owned by the caller: deleting a built-in global runbook is implemented as an
+unpublish, so an unpublished row is a deleted one and must not stay readable by
+id. An author still reaches their own unpublished draft.
+
 | Method | Endpoint | Description | Required Role |
 |--------|----------|-------------|---------------|
 | POST | `/api/v1/knowledge/search` | Search Global KB | Any authenticated user |
@@ -166,6 +178,7 @@ These endpoints are accessible to every authenticated user, whatever their roles
 | GET | `/api/v1/knowledge/documents/{id}` | Get specific document | Any authenticated user; 404 if not visible |
 | GET | `/api/v1/knowledge/documents/{id}/snippet` | Document snippet (hover card) | Any authenticated user; 404 if not visible |
 | GET | `/api/v1/knowledge/stats` | Get KB statistics | Any authenticated user |
+| GET | `/api/v1/knowledge/analytics/search` | Search analytics | Any authenticated user |
 | POST | `/api/v1/users/{user_id}/kb/documents` | Upload to User KB | Owner or platform admin |
 | GET | `/api/v1/users/{user_id}/kb/documents` | List User KB documents | Owner or platform admin |
 | DELETE | `/api/v1/users/{user_id}/kb/documents/{id}` | Delete from User KB | Owner or platform admin |
