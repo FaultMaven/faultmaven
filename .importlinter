@@ -137,6 +137,9 @@ ignore_imports =
     # SSO adapter implements the ISSOIdentityProvider port defined in contracts
     # (same DIP pattern as oauth_code_repository above). ADR-015.
     faultmaven.modules.auth.infrastructure.sso.workos_provider -> faultmaven.modules.auth.contracts
+    # SSO org-mapping adapter implements the ISSOOrgMappingRepository port
+    # defined in contracts (same DIP pattern as above). #869.
+    faultmaven.modules.auth.infrastructure.repositories.sso_org_mapping_repository -> faultmaven.modules.auth.contracts
 
 # ============================================================================
 # CONTRACT 7: Agent Module Layer Boundaries

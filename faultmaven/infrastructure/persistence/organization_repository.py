@@ -44,6 +44,10 @@ def _model_to_domain(model: OrganizationModel) -> Organization:
     falls back to Pydantic defaults for those fields here; callers
     that need plan-tier semantics should resolve them via the
     enterprise repository.
+
+    ``is_active`` IS carried: the SSO org-mapping login path refuses to land a
+    user in a deactivated organization (#869), and a gate over a field the
+    mapper dropped would be a gate that can never fire.
     """
     return Organization(
         organization_id=model.organization_id,
@@ -51,6 +55,7 @@ def _model_to_domain(model: OrganizationModel) -> Organization:
         name=model.name,
         slug=model.slug,
         description=model.description,
+        is_active=bool(model.is_active),
         created_at=model.created_at,
         updated_at=model.updated_at,
         deleted_at=model.deleted_at,
