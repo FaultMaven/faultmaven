@@ -150,12 +150,47 @@ class DIContainer(BaseDIContainer):
             # decision, not an infrastructure hiccup: it must terminate every
             # path — jobs/CLI included — never degrade to a half-initialized
             # container that would run against tenanted data unchecked.
-            from faultmaven.providers.tenancy.factory import (
-                TenancyConfigurationError,
-            )
+            try:
+                from faultmaven.providers.tenancy.factory import (
+                    TenancyConfigurationError,
+                )
+            except ImportError:
+                # The tenancy module itself is unimportable — the same shape as
+                # the failure that motivated #885 (a package missing from the
+                # image), and `register_services` imports that factory inside
+                # the function, so this handler is where it lands. Then `e`
+                # cannot be a tenancy refusal, and the handler must not raise a
+                # *second* error that escapes the cloud guard below.
+                is_tenancy_refusal = False
+            else:
+                is_tenancy_refusal = isinstance(e, TenancyConfigurationError)
 
-            if isinstance(e, TenancyConfigurationError):
+            if is_tenancy_refusal:
                 raise
+
+            # A cloud deployment must never serve a half-composed container
+            # (#885). Composition is ordered — infrastructure, then tools, then
+            # services — so an exception part-way through leaves every service
+            # registered after the failing line absent, while the pod keeps
+            # serving: the #629 flip rehearsal had readiness green and /health
+            # "healthy" with the whole service layer missing. Refuse the boot
+            # instead, so uvicorn exits, the pod CrashLoops and the rollout
+            # rolls back. RuntimeError is the container's established fail-fast
+            # channel: both the web lifespan and the jobs runner treat it as
+            # terminal. Deliberately NOT gated on ENVIRONMENT /
+            # SKIP_SERVICE_CHECKS / pytest — those escapes would defeat the
+            # guarantee exactly where it has to hold. Standalone keeps the
+            # lenient posture below, which dev and test ergonomics rely on.
+            if self.settings.is_cloud:
+                logger.critical(
+                    "FAIL-FAST: DI container could not be composed under "
+                    "DEPLOYMENT_MODE=cloud. Refusing to serve a partial API."
+                )
+                raise RuntimeError(
+                    "DI Container initialization failed under "
+                    f"DEPLOYMENT_MODE=cloud: {e}. A partially composed container "
+                    "would serve an API missing whole service layers."
+                ) from e
 
             # Check if interfaces are available - if not, use minimal container
             if not INTERFACES_AVAILABLE:
