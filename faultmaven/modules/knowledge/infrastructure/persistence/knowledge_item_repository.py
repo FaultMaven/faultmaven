@@ -584,6 +584,11 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 ResourceShareModel.resource_type == "knowledge_item",
                 ResourceShareModel.scope_type == "team",
                 ResourceShareModel.scope_id.in_(list(team_ids)),
+                # The share row must belong to the same org as the item it
+                # grants. Without it a row stamped with a foreign org id would
+                # grant visibility — the one arm of this clause that could
+                # reach across tenants on its own.
+                ResourceShareModel.organization_id == organization_id,
             )
             org_owned.append(KnowledgeItemModel.item_id.in_(shared_ids))
 

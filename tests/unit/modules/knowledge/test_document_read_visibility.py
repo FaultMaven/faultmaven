@@ -274,6 +274,44 @@ class TestGetVisibleByIdSQL:
             is None
         )
 
+    async def test_share_row_stamped_with_a_foreign_org_does_not_grant(
+        self, db_factory
+    ):
+        # The share sub-select is the one arm that reached across orgs: it
+        # matched on (resource_type, scope_type, scope_id) only, so a row
+        # stamped with another org's id granted visibility. Defense in depth
+        # on top of RLS — the docstring claims it, so it must hold.
+        from faultmaven.infrastructure.persistence.share_repository import (
+            PostgreSQLShareRepository,
+        )
+
+        await _seed(
+            db_factory,
+            _mk_item("t-4", scope=KnowledgeScope.TEAM, owner_id="user-1", org="org-1"),
+        )
+        async with db_factory() as session:
+            await PostgreSQLShareRepository(session).share(
+                resource_type="knowledge_item",
+                resource_id="t-4",
+                scope_type="team",
+                scope_id="team-A",
+                organization_id="org-2",  # not the resource's org
+                created_by="user-1",
+            )
+
+        assert (
+            await _visible(
+                db_factory, "t-4", "org-1", user_id="user-2", team_ids=["team-A"]
+            )
+            is None
+        )
+        # Same clause, same rule on the listing surface.
+        async with db_factory() as session:
+            listed = await DatabaseKnowledgeItemRepository(session).list_for_inventory(
+                organization_id="org-1", user_id="user-2", team_ids=["team-A"]
+            )
+        assert [i.item_id for i in listed] == []
+
     async def test_absent_id_returns_none(self, db_factory):
         assert await _visible(db_factory, "nope", "org-1", user_id="user-1") is None
 
