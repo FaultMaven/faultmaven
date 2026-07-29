@@ -547,11 +547,15 @@ The agent does not decide which KB tier to search — the federated search layer
 
 ## Implementation Notes
 
-### Runbook Similarity Collection (`faultmaven_runbooks`)
+### Runbook Similarity — No Second Collection
 
-A second ChromaDB collection — `faultmaven_runbooks` — exists alongside `faultmaven_kb` for **runbook similarity and deduplication** at report-generation time, not for investigative Q&A. It is managed by `RunbookKnowledgeBase` in `infrastructure/knowledge/runbook_kb.py` and exposes `index_runbook()`, `index_document_derived_runbook()`, and `search_runbooks()` (pure vector, no hybrid search).
+Runbook similarity and deduplication at report-generation time (not investigative Q&A) is served by `RunbookKnowledgeBase` in `infrastructure/knowledge/runbook_kb.py`, which exposes `index_runbook()`, `index_document_derived_runbook()`, and `search_runbooks()` (pure vector, no hybrid search).
 
-This is a deliberate exception to the single-collection design: `faultmaven_runbooks` serves a different consumer (the report generator's deduplication logic), uses a different query pattern (pure vector similarity, no metadata scope filter needed), and would otherwise compete with knowledge-retrieval chunks in `faultmaven_kb`.
+It is **not** an exception to the single-collection design. `RunbookKnowledgeBase` is constructed over an injected `ChromaDBVectorStore` and never selects a collection, so it reads and writes whatever collection that store is bound to — `faultmaven_kb`, the same one every KB tier shares. Its `COLLECTION_NAME = "faultmaven_runbooks"` constant is **decorative**: it is logged once at init and referenced nowhere in any read or write path.
+
+The separation is therefore metadata, exactly like the tiers above it: `{"report_type": "runbook"}` distinguishes runbook rows from document chunks, and `{"organization_id": <org>}` supplies the tenant isolation that a similarity query — which names no id and no owner — cannot get from the scope-`where`. Both predicates are mandatory on `search_runbooks`, and both keys are declared on `VectorMetadata` so `add_documents` normalization does not drop them. See [vector-retrieval-architecture.md §4](./vector-retrieval-architecture.md) for the clause shape.
+
+Operational inventories that still list `faultmaven_runbooks` as a physical collection (`docs/operations/data-storage-management.md`, `docs/architecture/data-and-storage/`) predate this correction and are tracked in #912.
 
 ### `VerificationLevel` (trust/authority system)
 

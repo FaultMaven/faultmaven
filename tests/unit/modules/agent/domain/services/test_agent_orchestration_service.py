@@ -2162,3 +2162,165 @@ class TestTurnAuthorship:
         assistant_turns = [m for m in persisted if m.get("role") == "assistant"]
         assert assistant_turns, "the assistant turn was never persisted"
         assert all(m.get("author_id") is None for m in assistant_turns)
+
+
+# =============================================================================
+# Test: Shared-KB Allowlist Is Tenant-Scoped (#879)
+# =============================================================================
+
+
+class TestSharedKbAllowlistIsTenantScoped:
+    """The agent's shared-KB arm resolves with a mandatory tenant predicate.
+
+    ``ToolContext.shared_kb_ids`` widens what the investigation tools may read,
+    so the share rows behind it must belong to the executing request's tenant.
+    """
+
+    def _wire(self, service, mock_session_service, mock_case_repo, session, case):
+        mock_session_service.get_session.return_value = session
+        mock_session_service.check_budget_exceeded.return_value = {
+            "is_over_budget": False
+        }
+        mock_session_service.add_execution_to_session.return_value = session
+        mock_case_repo.get.return_value = case
+        mock_case_repo.create_agent_execution.return_value = AgentExecution(
+            execution_id="exec_new",
+            case_id=case.case_id,
+            agent_type=AgentType.INVESTIGATOR,
+            agent_model="test-model",
+        )
+        mock_case_repo.update_agent_execution.return_value = None
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
+
+        async def mock_stream(**kwargs):
+            yield LLMEvent(
+                event_type=LLMEventType.COMPLETION,
+                content="done",
+                metadata={"input_tokens": 1, "output_tokens": 1},
+            )
+
+        service._llm_client.stream_completion = mock_stream
+        service.team_service = AsyncMock()
+        service.team_service.list_all_user_team_ids = AsyncMock(return_value=["team-1"])
+        service.share_repository = MagicMock()
+        service.share_repository.list_resource_ids = AsyncMock(return_value=["kb-1"])
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", ["org-alpha-1111", "org-beta-2222"])
+    async def test_shared_kb_lookup_carries_the_executing_org(
+        self,
+        orchestration_service,
+        mock_session_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+        org,
+    ):
+        """Swept across tenants so a constant cannot satisfy the assertion."""
+        sample_session.organization_id = org
+        self._wire(
+            orchestration_service,
+            mock_session_service,
+            mock_case_repo,
+            sample_session,
+            sample_case,
+        )
+
+        async for _ in orchestration_service.execute_agent(
+            session_id=sample_session.session_id,
+            organization_id=org,
+            user_message="hi",
+        ):
+            pass
+
+        orchestration_service.share_repository.list_resource_ids.assert_awaited_once_with(
+            resource_type="knowledge_item",
+            scope_type="team",
+            scope_ids=["team-1"],
+            organization_id=org,
+        )
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_the_sentinel_collapses_the_shared_kb_arm_under_multi(
+        self,
+        orchestration_service,
+        mock_session_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+    ):
+        """Under multi the Standalone sentinel is not a tenant, so no lookup runs.
+
+        An actor claim carrying the sentinel would otherwise become the SQL
+        predicate and widen ``ToolContext.shared_kb_ids`` with rows belonging to
+        the single-tenant deployment. Personal ∪ global still answer, so the
+        collapse is the fail-closed direction rather than a broken execution.
+        """
+        from faultmaven.config.constants import STANDALONE_ORG_ID
+        from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
+
+        sample_session.organization_id = STANDALONE_ORG_ID
+        self._wire(
+            orchestration_service,
+            mock_session_service,
+            mock_case_repo,
+            sample_session,
+            sample_case,
+        )
+
+        with patch(
+            "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+            return_value=BUILTIN_MULTI,
+        ):
+            async for _ in orchestration_service.execute_agent(
+                session_id=sample_session.session_id,
+                organization_id=STANDALONE_ORG_ID,
+                user_message="hi",
+            ):
+                pass
+
+        orchestration_service.share_repository.list_resource_ids.assert_not_awaited()
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_the_sentinel_is_the_tenant_under_single(
+        self,
+        orchestration_service,
+        mock_session_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+    ):
+        """The positive half of the split — otherwise "refuse the sentinel" and
+        "refuse everything" would be the same assertion."""
+        from faultmaven.config.constants import STANDALONE_ORG_ID
+        from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
+
+        sample_session.organization_id = STANDALONE_ORG_ID
+        self._wire(
+            orchestration_service,
+            mock_session_service,
+            mock_case_repo,
+            sample_session,
+            sample_case,
+        )
+
+        with patch(
+            "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+            return_value=BUILTIN_SINGLE,
+        ):
+            async for _ in orchestration_service.execute_agent(
+                session_id=sample_session.session_id,
+                organization_id=STANDALONE_ORG_ID,
+                user_message="hi",
+            ):
+                pass
+
+        orchestration_service.share_repository.list_resource_ids.assert_awaited_once_with(
+            resource_type="knowledge_item",
+            scope_type="team",
+            scope_ids=["team-1"],
+            organization_id=STANDALONE_ORG_ID,
+        )

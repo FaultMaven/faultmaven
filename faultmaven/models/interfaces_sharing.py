@@ -95,12 +95,22 @@ class IShareRepository(ABC):
         resource_type: str,
         scope_type: str,
         scope_ids: List[str],
+        organization_id: str,
     ) -> List[str]:
         """Resource ids of ``resource_type`` shared to ANY of ``scope_ids``.
 
         The allowlist direction (scope(s) -> resources) used to build the
         "shared-to-my-teams" arm of a principal's visible-id set. Deduplicated;
         empty ``scope_ids`` returns ``[]`` without a query.
+
+        ``organization_id`` is REQUIRED and matched against the share row's own
+        org: a row is only an allowlist entry for the tenant it was stamped for,
+        so a share carrying a foreign org id grants nothing. This mirrors the
+        share sub-select in
+        ``DatabaseKnowledgeItemRepository._inventory_visibility_clause`` — the
+        two are the same predicate on the same table, and the resolution path is
+        the arm that can otherwise reach across tenants on its own. Fail-closed:
+        a falsy ``organization_id`` returns ``[]`` without a query.
         """
 
     @abstractmethod
