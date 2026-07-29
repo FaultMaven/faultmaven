@@ -21,18 +21,20 @@ from ..models.protection import (
 def _fail_open_default() -> bool:
     """Whether the request-path protections fail open when Redis is unreachable.
 
-    One reader for ``PROTECTION_FAIL_OPEN``, used by both load paths, so the
-    settings path and the environment path cannot disagree about what the
-    deployment asked for — the settings path used to hardcode ``True``.
+    ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` (default ``true``) governs the
+    rate-limiting and deduplication degrade policy, and nothing else.
 
-    Note the key is shared with ``settings.protection.fail_open``, which governs
-    the PII-redaction fail-open (#654) and defaults to ``False``. The two
-    consumers therefore read the same key with different defaults. That split
-    predates this function; it is preserved rather than silently changed here,
-    because flipping this default would turn a Redis blip into a 503 on every
-    request.
+    It is deliberately *not* ``PROTECTION_FAIL_OPEN``: that key binds to
+    ``settings.protection.fail_open`` and governs PII-redaction fail-open
+    (#654, default ``false``). The two policies are independent and must stay
+    that way — an operator hardening redaction to fail closed must not thereby
+    turn a Redis blip into a 503 on every request.
+
+    One reader, used by both load paths, so the settings path and the
+    environment path cannot disagree about what the deployment asked for; the
+    settings path used to hardcode ``True`` and ignore the operator entirely.
     """
-    return os.getenv("PROTECTION_FAIL_OPEN", "true").lower() == "true"
+    return os.getenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", "true").lower() == "true"
 
 
 def load_protection_settings(settings=None) -> ProtectionSettings:
@@ -74,11 +76,20 @@ def _load_from_settings(settings) -> ProtectionSettings:
     # Basic protection settings are available in the settings
     return ProtectionSettings(
         # General - use protection and database settings.
-        # ``protection_enabled`` lives on the protection section, not security;
-        # reading it off ``settings.security`` raised AttributeError on every
-        # call, which made this whole "canonical" path dead and silently
-        # demoted callers to their error branches.
-        enabled=settings.protection.protection_enabled,
+        #
+        # This used to read ``settings.security.protection_enabled``, a field
+        # that exists on no settings section at all, so the call raised
+        # AttributeError every time and this "canonical" path was dead.
+        #
+        # The replacement is ``basic_protection_enabled``, not
+        # ``protection_enabled``: the latter is the PII/Presidio gate
+        # (``redaction.py`` branches on it, and the admin API reports it as
+        # ``pii_redaction_enabled``), whereas ``basic_protection_enabled`` is
+        # the field ``ProtectionSystem`` already uses to decide whether to
+        # install rate limiting and deduplication. Gating middleware on the
+        # redaction toggle would be the same one-key-two-meanings defect this
+        # branch removed from the fail-open policy.
+        enabled=settings.protection.basic_protection_enabled,
         fail_open_on_redis_error=_fail_open_default(),
         protection_bypass_headers=[],  # No bypasses from settings
         # Redis: ``None`` unless an operator set REDIS_URL explicitly, in which
@@ -151,8 +162,16 @@ def _load_from_environment() -> ProtectionSettings:
                 enabled=True, requests=default_requests, window=default_window
             )
 
-    # General settings
-    protection_enabled = os.getenv("PROTECTION_ENABLED", "true").lower() == "true"
+    # General settings.
+    #
+    # ``BASIC_PROTECTION_ENABLED``, not ``PROTECTION_ENABLED``: the latter is
+    # the PII/Presidio gate, and using it here would let an operator who
+    # disabled PII redaction silently lose rate limiting too. The default stays
+    # permissive (``true``) rather than matching the settings field's ``false``
+    # — this path only runs when settings construction itself failed, and an
+    # already-degraded process should keep its request-path protections rather
+    # than shed them.
+    protection_enabled = os.getenv("BASIC_PROTECTION_ENABLED", "true").lower() == "true"
     fail_open = _fail_open_default()
     bypass_headers = [
         header.strip()

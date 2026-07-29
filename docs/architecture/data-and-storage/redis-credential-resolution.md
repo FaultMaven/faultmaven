@@ -63,8 +63,17 @@ to least preferred:
    enforced, just per replica rather than globally, and the degrade is logged
    at ERROR. Reached when the shared client is unavailable at first request.
 3. **Fail open** — requests pass unlimited. Governed by
-   `fail_open_on_redis_error`, sourced from `PROTECTION_FAIL_OPEN` (default
-   `true`) on both the settings and environment load paths.
+   `fail_open_on_redis_error`, sourced from `PROTECTION_RATE_LIMIT_FAIL_OPEN`
+   (default `true`) on both the settings and environment load paths.
+
+`PROTECTION_RATE_LIMIT_FAIL_OPEN` governs rate-limiting degrade policy and
+nothing else. It is deliberately distinct from `PROTECTION_FAIL_OPEN`, which
+binds `settings.protection.fail_open` (default `false`) and governs whether
+PII redaction may pass un-analyzed text to a provider when Presidio is
+unavailable. The two policies have opposite safe defaults — redaction is safer
+closed, rate limiting is safer open — so sharing one key would mean an
+operator hardening redaction silently converts a Redis blip into a
+service-wide 503.
 
 Rung 3 defaults to open rather than closed deliberately: failing closed turns
 a Redis blip into a total API outage (503 on every request), which is a worse

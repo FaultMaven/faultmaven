@@ -66,7 +66,9 @@ def _apply_env(env: dict) -> None:
 def cloud_discrete_credentials():
     """Cloud-shaped config: discrete host/port/db/password, no REDIS_URL."""
     with patch.dict(os.environ, {}, clear=False):
-        os.environ["PROTECTION_ENABLED"] = "true"
+        # The middleware gate, not the PII gate — see the gate tests below.
+        os.environ["BASIC_PROTECTION_ENABLED"] = "true"
+        os.environ.pop("PROTECTION_ENABLED", None)
         _apply_env(
             {
                 "REDIS_HOST": _HOST,
@@ -177,12 +179,14 @@ def test_environment_fallback_treats_an_empty_redis_url_as_unset(monkeypatch):
 def test_fail_open_policy_comes_from_one_key_on_both_paths(
     cloud_discrete_credentials, monkeypatch, env_value, expected
 ):
-    """``PROTECTION_FAIL_OPEN`` governs both loaders; the settings path used to
-    hardcode ``True`` and ignore the operator entirely."""
+    """``PROTECTION_RATE_LIMIT_FAIL_OPEN`` governs both loaders.
+
+    The settings path used to hardcode ``True`` and ignore the operator.
+    """
     if env_value is None:
-        monkeypatch.delenv("PROTECTION_FAIL_OPEN", raising=False)
+        monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
     else:
-        monkeypatch.setenv("PROTECTION_FAIL_OPEN", env_value)
+        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", env_value)
     reset_settings()
 
     # Settings path.
@@ -194,6 +198,113 @@ def test_fail_open_policy_comes_from_one_key_on_both_paths(
         lambda: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     assert load_protection_settings().fail_open_on_redis_error is expected
+
+
+def test_hardening_pii_redaction_does_not_make_rate_limiting_fail_closed(
+    cloud_discrete_credentials, monkeypatch
+):
+    """The operator footgun: two policies, two keys, no coupling.
+
+    ``PROTECTION_FAIL_OPEN`` binds to ``settings.protection.fail_open`` and
+    governs PII-redaction fail-open (#654). Someone hardening redaction to fail
+    closed must not thereby turn a Redis blip into a 503 on every request.
+    """
+    monkeypatch.setenv("PROTECTION_FAIL_OPEN", "false")
+    monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
+    reset_settings()
+
+    # The key really is live on the redaction side — otherwise this test would
+    # pass just as well against a key nothing reads.
+    from faultmaven.config.settings import get_settings
+
+    assert get_settings().protection.fail_open is False
+
+    # ... and the rate-limiting policy is untouched, on both load paths.
+    assert load_protection_settings().fail_open_on_redis_error is True
+
+    monkeypatch.setattr(
+        "faultmaven.config.settings.get_settings",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    assert load_protection_settings().fail_open_on_redis_error is True
+
+
+# --------------------------------------------------------------------------- #
+# Which field gates the protection MIDDLEWARE
+#
+# `_load_from_settings` read `settings.security.protection_enabled`, a field on
+# no settings section at all, so it raised AttributeError on every call and this
+# path was dead. The replacement must be the basic-protection gate, not the
+# PII/Presidio gate: `redaction.py` branches on `protection_enabled`, and the
+# admin API reports it as `pii_redaction_enabled`.
+# --------------------------------------------------------------------------- #
+
+
+def _install_middleware(loader_settings):
+    from fastapi import FastAPI
+
+    from faultmaven.api.protection import setup_protection_middleware
+
+    return setup_protection_middleware(FastAPI(), settings=loader_settings)
+
+
+def test_middleware_gate_is_basic_protection_not_pii_redaction(monkeypatch):
+    """Turning PII redaction off must not remove rate limiting and dedup."""
+    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "true")
+    monkeypatch.setenv("PROTECTION_ENABLED", "false")  # PII/Presidio off
+    reset_settings()
+
+    settings = load_protection_settings()
+    assert settings.enabled is True
+
+    setup_info = _install_middleware(settings)
+    assert setup_info["protection_enabled"] is True
+    assert "rate_limiting" in setup_info["middleware_added"]
+    assert "deduplication" in setup_info["middleware_added"]
+
+
+def test_middleware_gate_honours_basic_protection_disabled(monkeypatch):
+    """And the converse: PII on does not force the middleware on."""
+    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "false")
+    monkeypatch.setenv("PROTECTION_ENABLED", "true")  # PII/Presidio on
+    reset_settings()
+
+    settings = load_protection_settings()
+    assert settings.enabled is False
+
+    setup_info = _install_middleware(settings)
+    assert setup_info["protection_enabled"] is False
+    assert setup_info["middleware_added"] == []
+
+
+def test_environment_fallback_uses_the_same_middleware_gate(monkeypatch):
+    """The emergency path must not gate middleware on the PII key either."""
+    monkeypatch.setattr(
+        "faultmaven.config.settings.get_settings",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    monkeypatch.setenv("PROTECTION_ENABLED", "false")
+    monkeypatch.delenv("BASIC_PROTECTION_ENABLED", raising=False)
+    assert load_protection_settings().enabled is True
+
+    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "false")
+    assert load_protection_settings().enabled is False
+
+
+def test_the_dead_settings_path_is_alive(monkeypatch):
+    """Regression: `_load_from_settings` raised AttributeError on every call.
+
+    Anything that reintroduces a nonexistent settings attribute here silently
+    demotes every caller to its error branch, which is how this went unnoticed.
+    """
+    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "true")
+    reset_settings()
+
+    settings = load_protection_settings()  # must not raise
+
+    assert settings.enabled is True
+    assert settings.redis_key_prefix == "faultmaven"  # the settings-path value
 
 
 def test_an_explicitly_configured_redis_url_is_still_honoured():
