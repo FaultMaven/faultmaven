@@ -16,8 +16,15 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.config.settings import FaultMavenSettings, get_settings, reset_settings
+from faultmaven.config.settings import FaultMavenSettings
 from faultmaven.models.exceptions import ConfigurationError
+
+# Late-bound: the production code under test re-imports the settings module by
+# name on every call, so these must read and reset whichever module object *it*
+# sees, not whichever one existed when this file was imported. See
+# `tests/utils.reset_settings_singleton`.
+from tests.utils import get_live_settings as get_settings
+from tests.utils import reset_settings_singleton as reset_settings
 
 
 class ConfigurationViolationScanner:

@@ -26,8 +26,13 @@ from faultmaven.config.protection import (
     load_protection_settings,
     validate_protection_settings,
 )
-from faultmaven.config.settings import reset_settings
 from faultmaven.infrastructure.redis_client import RedisClientFactory
+
+# Late-bound: the production code under test re-imports the settings module by
+# name on every call, so this must reset whichever module object *it* reads,
+# not whichever one existed when this file was imported. See
+# `tests/utils.reset_settings_singleton`.
+from tests.utils import reset_settings_singleton as reset_settings
 
 # Credential leakage is what this guards, so it carries the security marker.
 pytestmark = [pytest.mark.unit, pytest.mark.security]
