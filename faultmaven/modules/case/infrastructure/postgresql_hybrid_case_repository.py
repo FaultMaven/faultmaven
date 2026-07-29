@@ -1945,9 +1945,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         columns (the PG hybrid had been writing them as phantom columns
         before the schema baseline; now they're real). The ``metadata``
         JSON blob still holds the transient runtime state (proposed_actions /
-        action_attempts / turn_history / pending_transition) — those
-        have no first-class column yet.
+        action_attempts / turn_history / pending_transition /
+        message_count / last_suggestions) — those have no first-class
+        column yet.
         """
+        from faultmaven.utils.serialization import to_json_compatible
+
         return {
             "case_id": case.case_id,
             "user_id": case.user_id,
@@ -2001,6 +2004,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     k: v
                     for k, v in {
+                        # _row_to_case reads message_count from this bag
+                        # (same as SQLite) but PG never wrote it, so every
+                        # reload reset the counter to 0 — the same
+                        # write/read asymmetry class as #914. A count of 0
+                        # is dropped by the falsy filter below; the read
+                        # side's default already covers that.
+                        "message_count": case.message_count,
                         "pending_transition": case.pending_transition,
                         "proposed_actions": (
                             [a.model_dump(mode="json") for a in case.proposed_actions]
@@ -2016,6 +2026,19 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             [t.model_dump(mode="json") for t in case.turn_history]
                             if case.turn_history
                             else []
+                        ),
+                        # Intent-bearing DECIDE suggestions from the last
+                        # agent turn — the resolver matches typed replies
+                        # against them on the NEXT request, so they must
+                        # survive the reload (#914). Normalized like every
+                        # sibling so a non-primitive value can never turn
+                        # into the json.dumps TypeError that loses the
+                        # atomically-committed turn; the falsy filter
+                        # below drops None/empty.
+                        "last_suggestions": (
+                            to_json_compatible(case.last_suggestions)
+                            if case.last_suggestions
+                            else None
                         ),
                     }.items()
                     if v
@@ -2991,6 +3014,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 else None
             ),
             "pending_transition": metadata.get("pending_transition"),
+            "last_suggestions": metadata.get("last_suggestions"),
             "progress": progress,
             "current_turn": int(row.current_turn or 0),
             "turns_without_progress": int(row.turns_without_progress or 0),
