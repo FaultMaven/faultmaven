@@ -13,6 +13,7 @@ under discrete config, so resolution falls to the central factory — which does
 read ``REDIS_PASSWORD``.
 """
 
+import logging
 import os
 from unittest.mock import patch
 
@@ -200,6 +201,29 @@ def test_fail_open_policy_comes_from_one_key_on_both_paths(
     assert load_protection_settings().fail_open_on_redis_error is expected
 
 
+@pytest.mark.parametrize("loader", _LOADERS, ids=lambda f: f.__name__)
+@pytest.mark.parametrize(
+    "env_value,expected", [("false", False), ("true", True), (None, True)]
+)
+def test_every_loader_honours_the_fail_open_key_in_both_directions(
+    cloud_discrete_credentials, monkeypatch, loader, env_value, expected
+):
+    """No loader may hardcode the degrade policy over the operator's key.
+
+    ``get_production_protection_settings`` hardcoded ``False``, making
+    ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` a no-op in the one environment where the
+    503-on-every-request cliff actually bites. Swept over every producer and
+    both directions, so a loader that pinned the *new* default would fail too.
+    """
+    if env_value is None:
+        monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
+    else:
+        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", env_value)
+    reset_settings()
+
+    assert loader().fail_open_on_redis_error is expected
+
+
 def test_hardening_pii_redaction_does_not_make_rate_limiting_fail_closed(
     cloud_discrete_credentials, monkeypatch
 ):
@@ -275,6 +299,44 @@ def test_middleware_gate_honours_basic_protection_disabled(monkeypatch):
     setup_info = _install_middleware(settings)
     assert setup_info["protection_enabled"] is False
     assert setup_info["middleware_added"] == []
+
+
+def test_disabled_protection_is_announced_not_silent(monkeypatch, caplog):
+    """ "No protection middleware anywhere" must not be a silent state.
+
+    ``basic_protection_enabled`` defaults to False and nothing sets it, so the
+    settings path installs no rate limiting, no deduplication and no timeouts —
+    and said nothing about it. Whether the default should flip is the owner's
+    call; being legible in the logs is not.
+    """
+    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "false")
+    reset_settings()
+
+    with caplog.at_level(logging.WARNING, logger="faultmaven.config.protection"):
+        settings = load_protection_settings()
+
+    assert settings.enabled is False
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "basic_protection_enabled" in message and "BASIC_PROTECTION_ENABLED" in message
+        for message in warnings
+    ), f"no warning naming the field and the env var; got {warnings}"
+
+
+def test_enabled_protection_does_not_warn(monkeypatch, caplog):
+    """The converse, so the warning stays a signal rather than constant noise."""
+    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "true")
+    reset_settings()
+
+    with caplog.at_level(logging.WARNING, logger="faultmaven.config.protection"):
+        assert load_protection_settings().enabled is True
+
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "basic_protection_enabled" in r.getMessage()
+    ] == []
 
 
 def test_environment_fallback_uses_the_same_middleware_gate(monkeypatch):

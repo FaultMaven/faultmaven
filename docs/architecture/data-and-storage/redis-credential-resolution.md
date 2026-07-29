@@ -62,9 +62,18 @@ to least preferred:
 2. **Per-replica FakeRedis** — an in-process stand-in. Limits are still
    enforced, just per replica rather than globally, and the degrade is logged
    at ERROR. Reached when the shared client is unavailable at first request.
+   Accepting this rung is itself governed by `fail_open_on_redis_error`: an
+   operator who has demanded fail-closed gets a refusal rather than a
+   per-replica approximation.
 3. **Fail open** — requests pass unlimited. Governed by
    `fail_open_on_redis_error`, sourced from `PROTECTION_RATE_LIMIT_FAIL_OPEN`
-   (default `true`) on both the settings and environment load paths.
+   (default `true`) on every load path, including the production loader.
+
+`fail_open_on_redis_error` governs *policy*, never *reporting*.
+`RedisRateLimiter.initialize` returning normally always means a usable client
+is attached; it raises otherwise, whatever the flag says. The flag decides what
+the request path does with a limiter that has no client — it never makes a
+missing client look like a working one.
 
 `PROTECTION_RATE_LIMIT_FAIL_OPEN` governs rate-limiting degrade policy and
 nothing else. It is deliberately distinct from `PROTECTION_FAIL_OPEN`, which
@@ -81,12 +90,31 @@ failure than rung 2's per-replica limiting. Rung 2 exists precisely so rung 3
 is nearly unreachable — the honest reading of "fail open" here is "after two
 strictly-better degrades have already been tried".
 
-**Initialization does not latch on failure.** A failed
+**Initialization latches in neither direction.** A failed
 `RateLimitMiddleware._initialize` leaves `_initialized` false so a later
 request retries, bounded by a cooldown so a persistent outage does not
 generate a connection attempt per request. Latching on failure — the previous
 behaviour — meant one blip on the first request after a pod started disabled
 rate limiting for the pod's entire lifetime, with no path back.
+
+Landing on rung 2 does not latch either. It counts as initialized, so limits
+keep being enforced against the stand-in with no window of unlimited traffic,
+but the cooldown keeps re-attempting rung 1 so the pod is promoted back rather
+than running per-replica forever.
+
+**The probes are resolved before any of this.** `dispatch` decides whether a
+request is rate limited at all — `rate_limiting_enabled`, then `_should_bypass`
+— *before* touching initialization. `/health`, the `/health/` sub-tree and
+`/readiness` bypass unconditionally. Otherwise a one-second Redis blip put a
+fail-closed pod inside a 30-second cooldown that answered its own liveness
+probe with 503, and the kubelet killed it.
+
+Being inside the cooldown is not itself a verdict. When a limited request finds
+no client, the check is skipped outright (rather than run against `None`, which
+logged one to four ERROR lines *per request* for the whole window), the
+condition is logged once per window, and only then does
+`fail_open_on_redis_error` decide between passing the request and answering
+503.
 
 ## Privileged database credentials are not app credentials
 

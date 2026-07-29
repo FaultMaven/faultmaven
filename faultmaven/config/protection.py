@@ -5,6 +5,7 @@ Loads rate limiting, deduplication, and timeout settings from environment
 variables with sensible defaults.
 """
 
+import logging
 import os
 from datetime import timedelta
 from typing import Any, Dict, Optional
@@ -16,6 +17,8 @@ from ..models.protection import (
     RateLimitConfig,
     TimeoutConfig,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _fail_open_default() -> bool:
@@ -52,8 +55,9 @@ def load_protection_settings(settings=None) -> ProtectionSettings:
           canonical, deployment-agnostic source.
         - Degrade to ``_load_from_environment`` only when settings
           construction itself raises (very early init, or env-var
-          validator rejection). It is also the only path that exposes
-          the rate-limit / dedup / timeout knobs as env vars — the
+          validator rejection). That is the *only* way to reach it, so
+          the ``RATE_LIMIT_*`` / ``DEDUP_*`` / ``TIMEOUT_*`` env vars it
+          reads are dead config on a healthy deployment — the
           settings-side migration for those keys is incomplete (see TODO
           in ``_load_from_environment``).
     """
@@ -73,6 +77,21 @@ def load_protection_settings(settings=None) -> ProtectionSettings:
 
 def _load_from_settings(settings) -> ProtectionSettings:
     """Load protection settings from unified settings"""
+    enabled = settings.protection.basic_protection_enabled
+
+    if not enabled:
+        # Loud rather than silent. ``setup_protection_middleware`` returns early
+        # when this is False, so the whole deployment runs with no rate
+        # limiting, no deduplication and no timeout middleware installed
+        # anywhere — a state that otherwise produces not one line of output.
+        logger.warning(
+            "Protection middleware will NOT be installed: "
+            "settings.protection.basic_protection_enabled is False (its "
+            "default). Rate limiting, deduplication and request timeouts are "
+            "all disabled deployment-wide. Set BASIC_PROTECTION_ENABLED=true "
+            "to enable them."
+        )
+
     # Basic protection settings are available in the settings
     return ProtectionSettings(
         # General - use protection and database settings.
@@ -89,7 +108,7 @@ def _load_from_settings(settings) -> ProtectionSettings:
         # install rate limiting and deduplication. Gating middleware on the
         # redaction toggle would be the same one-key-two-meanings defect this
         # branch removed from the fail-open policy.
-        enabled=settings.protection.basic_protection_enabled,
+        enabled=enabled,
         fail_open_on_redis_error=_fail_open_default(),
         protection_bypass_headers=[],  # No bypasses from settings
         # Redis: ``None`` unless an operator set REDIS_URL explicitly, in which
@@ -127,20 +146,22 @@ def _load_from_settings(settings) -> ProtectionSettings:
 def _load_from_environment() -> ProtectionSettings:
     """Load protection settings directly from environment variables.
 
-    This is the only path that exposes rate-limit, deduplication, and
-    timeout knobs as env vars; the settings-side migration for those
-    keys is incomplete. ``_load_from_settings`` therefore uses hardcoded
-    defaults for the same knobs.
+    **This is the settings-construction-failure path, and nothing else.**
+    ``load_protection_settings`` reaches it only when ``get_settings()`` itself
+    raises — a broken env-var validator, or very early init before settings can
+    be built. Every other call goes to ``_load_from_settings``.
 
-    Invoked in two situations:
-    1. ``get_settings()`` raised during construction (broken env-var
-       validator, very early init) — degrades gracefully.
-    2. Operators explicitly need to tune the rate-limit / dedup / timeout
-       env vars below.
+    That has a consequence worth stating plainly: the ``RATE_LIMIT_*``,
+    ``DEDUP_*`` and ``TIMEOUT_*`` env vars read below are **not** operator
+    knobs. An operator who sets them on a healthy deployment changes nothing,
+    because the settings path never reads them and uses hardcoded defaults for
+    the same values. They are only honoured in the degraded case this function
+    exists for. They are kept, rather than deleted, so that a process which has
+    already lost its settings still starts from the deployment's intended
+    numbers instead of from constants.
 
     TODO: Promote ``RATE_LIMIT_*``, ``DEDUP_*``, ``TIMEOUT_*`` into
-    ``ProtectionSettings`` so this function becomes the
-    settings-construction-failure path only.
+    ``ProtectionSettings`` so the keys become live on the normal path too.
     """
 
     # Helper function to parse rate limit string
@@ -254,12 +275,13 @@ def get_development_protection_settings() -> ProtectionSettings:
     - More lenient rate limits
     - Shorter timeouts for faster feedback
     - Bypass headers enabled
-    - Fail open on errors
+    - Redis degrade policy from ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` (default
+      open), like every other loader
     """
     return ProtectionSettings(
         # General
         enabled=True,
-        fail_open_on_redis_error=True,
+        fail_open_on_redis_error=_fail_open_default(),
         protection_bypass_headers=["X-Dev-Bypass", "X-Test-Bypass"],
         # Redis: resolve centrally via RedisClientFactory.
         redis_url=None,
@@ -298,12 +320,23 @@ def get_production_protection_settings() -> ProtectionSettings:
     - Strict rate limits
     - Long timeouts for reliability
     - No bypass headers
-    - Fail closed on critical errors
+    - Redis degrade policy from ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, like every
+      other loader
+
+    This used to hardcode ``fail_open_on_redis_error=False``, which made
+    ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` a no-op in exactly the environment it
+    matters in. It now honours the key, and the key's default (``true``) is a
+    deliberate posture: the degrade ladder is shared Redis → per-replica
+    FakeRedis (limits still enforced, logged at ERROR) → fail open, so the
+    fail-open rung is nearly unreachable. Failing closed instead converts a
+    Redis blip into a 503 on every request — a total API outage, strictly worse
+    than per-replica limiting. An operator who genuinely wants the outage can
+    still set the key to ``false``.
     """
     return ProtectionSettings(
         # General
         enabled=True,
-        fail_open_on_redis_error=False,  # Fail closed in production
+        fail_open_on_redis_error=_fail_open_default(),
         protection_bypass_headers=[],  # No bypasses in production
         # Redis: resolve centrally via RedisClientFactory.
         redis_url=None,

@@ -13,10 +13,14 @@ composition root and has both middlewares resolve it lazily on the first request
 These tests assert that lazy resolution works and that dedup actually activates.
 """
 
+import itertools
+import logging
 from types import SimpleNamespace
 
 import fakeredis.aioredis as fakeredis_aio
 import pytest
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
 
 import faultmaven.api.middleware.rate_limiting as rate_limiting
 from faultmaven.api.middleware.deduplication import DeduplicationMiddleware
@@ -24,7 +28,11 @@ from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
 from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
 from faultmaven.config.protection import get_development_protection_settings
 from faultmaven.infrastructure.protection.rate_limiter import RedisRateLimiter
-from faultmaven.infrastructure.redis_client import resolve_redis_client
+from faultmaven.infrastructure.redis_client import (
+    RedisUnavailableError,
+    resolve_redis_client,
+)
+from faultmaven.models.protection import RateLimitConfig
 
 _GET_ASYNC_CLIENT = "faultmaven.infrastructure.redis_client.get_async_redis_client"
 
@@ -282,6 +290,8 @@ async def test_initialization_does_not_latch_and_retries_after_the_cooldown():
     attempts = []
 
     class _FlakyLimiter:
+        is_degraded = False
+
         async def initialize(self, client=None):
             attempts.append(client)
             if len(attempts) == 1:
@@ -295,9 +305,9 @@ async def test_initialization_does_not_latch_and_retries_after_the_cooldown():
     request = _request_without_state_client()
 
     # First attempt fails — and must NOT mark the middleware initialized.
-    await mw._initialize(request)
+    assert await mw._initialize(request) is False
     assert mw._initialized is False, "failure latched: rate limiting is off for good"
-    assert mw._init_failed_at is not None
+    assert mw._last_attempt_at is not None
     assert len(attempts) == 1
 
     # An immediate retry is suppressed by the cooldown (no per-request storm).
@@ -306,35 +316,272 @@ async def test_initialization_does_not_latch_and_retries_after_the_cooldown():
     assert len(attempts) == 1, "retried inside the cooldown window"
 
     # Once the cooldown elapses the next request retries, and succeeds.
-    mw._init_failed_at -= rate_limiting.INIT_RETRY_COOLDOWN_SECONDS + 1
-    await mw._initialize(request)
+    mw._last_attempt_at -= rate_limiting.INIT_RETRY_COOLDOWN_SECONDS + 1
+    assert await mw._initialize(request) is True
 
     assert len(attempts) == 2
     assert mw._initialized is True
-    assert mw._init_failed_at is None
+    assert mw._last_attempt_at is None
+
+
+# --------------------------------------------------------------------------- #
+# The initialization lifecycle, observed through ``dispatch`` (fm#897 review)
+#
+# The unifying defect these guard: the middleware claimed "initialization does
+# not latch on failure" while, in the default configuration, it still did.
+# ``RedisRateLimiter.initialize`` returned normally with ``_redis is None``
+# whenever ``fallback_enabled`` was true, the middleware marked itself
+# initialized, and every later check hit ``None.eval(...)`` → fail-open, for the
+# pod's whole lifetime. Each test below asserts the *observable* property
+# (what a later request gets), not an internal flag.
+# --------------------------------------------------------------------------- #
+
+_IP_COUNTER = itertools.count(1)
+
+
+def _unique_client():
+    """A fresh client IP per test.
+
+    The rate-limit key is derived from the client IP, and the degraded rung
+    shares one process-wide FakeRedis, so reused IPs would let one test's
+    counters decide another's verdict.
+    """
+    return (f"10.0.0.{next(_IP_COUNTER)}", 1234)
+
+
+def _limited_settings(global_requests=1, fail_open=True):
+    """Development settings with a deliberately tiny global limit.
+
+    The limit has to be small enough that "is this pod still enforcing?" is
+    answerable in two requests.
+    """
+    settings = get_development_protection_settings()
+    settings.fail_open_on_redis_error = fail_open
+    settings.rate_limits = {
+        "global": RateLimitConfig(enabled=True, requests=global_requests, window=60)
+    }
+    return settings
+
+
+def _http_request(path="/api/v1/cases", app=None, headers=None, client=None):
+    """A real Starlette request — ``dispatch`` reads path, headers and client."""
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "root_path": "",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": [
+            (k.lower().encode(), v.encode()) for k, v in (headers or {}).items()
+        ],
+        "client": client or ("10.0.0.254", 1234),
+        "app": app if app is not None else SimpleNamespace(state=SimpleNamespace()),
+    }
+    return Request(scope)
+
+
+def _app(redis_client=None):
+    state = SimpleNamespace()
+    if redis_client is not None:
+        state.redis_client = redis_client
+    return SimpleNamespace(state=state)
+
+
+async def _call_next(request):
+    return PlainTextResponse("ok")
 
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_fail_closed_deployments_still_refuse_while_uninitialized():
-    """Not latching must not quietly turn a fail-closed deployment fail-open."""
+async def test_a_failed_init_never_reports_success_nor_latches_unlimited(monkeypatch):
+    """F2: ``fallback_enabled=True`` must not make a ``None`` client look fine.
 
-    class _BrokenLimiter:
-        async def initialize(self, client=None):
+    ``fallback_enabled`` governs whether a *degraded* client is acceptable. It
+    is not a licence to report success with no client at all — that is what
+    latched the pod into "no rate limiting, ever".
+    """
+    down = True
+    shared = fakeredis_aio.FakeRedis(decode_responses=True)
+
+    async def _factory(redis_url=None):
+        if down:
             raise ConnectionError("redis down")
+        return shared
 
-    settings = get_development_protection_settings()
-    settings.fail_open_on_redis_error = False
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    settings = _limited_settings(global_requests=1)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    assert mw.rate_limiter.fallback_enabled is True
+
+    # The limiter contract itself: no usable client ⇒ it raises, whatever the
+    # fallback flag says, and leaves nothing behind that looks usable.
+    with pytest.raises(ConnectionError):
+        await mw.rate_limiter.initialize()
+    assert mw.rate_limiter._redis is None
+
+    ip = _unique_client()
+
+    # Through the middleware: fail-open passes the request, but must not latch.
+    first = await mw.dispatch(_http_request(app=_app(), client=ip), _call_next)
+    assert first.status_code == 200
+    assert mw._initialized is False, "latched with no client — unlimited for good"
+
+    # Redis comes back. Past the cooldown the pod enforces again — the very
+    # thing the latch made impossible for the rest of the pod's life.
+    down = False
+    mw._last_attempt_at -= rate_limiting.INIT_RETRY_COOLDOWN_SECONDS + 1
+
+    allowed = await mw.dispatch(_http_request(app=_app(), client=ip), _call_next)
+    limited = await mw.dispatch(_http_request(app=_app(), client=ip), _call_next)
+
+    assert allowed.status_code == 200
+    assert limited.status_code == 429, "the pod is not enforcing limits again"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_the_degraded_rung_keeps_enforcing_and_is_promoted_back(monkeypatch):
+    """F3: the per-replica stand-in serves now, but must not be the end state.
+
+    Landing on FakeRedis used to set ``_initialized`` and latch, so the log line
+    "per-replica until Redis is reachable" was a promise the code never kept.
+    """
+    unavailable = True
+    shared = fakeredis_aio.FakeRedis(decode_responses=True)
+
+    async def _factory(redis_url=None):
+        if unavailable:
+            raise RedisUnavailableError("cloud refuses the in-process stand-in")
+        return shared
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    settings = _limited_settings(global_requests=1)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+
+    # Degraded, but serving — and still enforcing: no window of free traffic.
+    allowed = await mw.dispatch(_http_request(app=_app(), client=ip), _call_next)
+    limited = await mw.dispatch(_http_request(app=_app(), client=ip), _call_next)
+
+    assert allowed.status_code == 200
+    assert limited.status_code == 429, "the stand-in is not enforcing limits"
+    assert mw._initialized is True
+    assert mw._degraded is True
+    assert mw.rate_limiter.is_degraded is True
+    assert mw._last_attempt_at is not None, "degraded rung latched: no way back"
+
+    # Redis returns. The next request past the cooldown promotes the limiter.
+    unavailable = False
+    mw._last_attempt_at -= rate_limiting.INIT_RETRY_COOLDOWN_SECONDS + 1
+    await mw.dispatch(_http_request(app=_app(), client=_unique_client()), _call_next)
+
+    assert mw.rate_limiter._redis is shared
+    assert mw._degraded is False
+    assert mw._last_attempt_at is None, "promoted, but still re-attempting"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("path", ["/health", "/health/dependencies", "/readiness"])
+async def test_a_probe_is_never_503d_while_redis_is_down(monkeypatch, path):
+    """F1: a Redis blip must not get the pod killed by its own kubelet.
+
+    ``_initialize`` used to run before the bypass check and raise inside the
+    cooldown, which ``dispatch`` turned into a 503 on *every* route for 30s —
+    liveness and readiness included.
+    """
+    attempts = []
+
+    async def _factory(redis_url=None):
+        attempts.append(redis_url)
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    # Fail closed: the configuration in which the 503 cliff actually bit.
+    settings = _limited_settings(fail_open=False)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+
+    response = await mw.dispatch(
+        _http_request(path=path, app=_app(), client=_unique_client()), _call_next
+    )
+
+    assert response.status_code == 200
+    assert attempts == [], "a probe triggered a Redis connection attempt"
+    assert mw._last_attempt_at is None
+
+    # Not vacuous: the same middleware, same outage, does refuse a real route.
+    refused = await mw.dispatch(
+        _http_request(app=_app(), client=_unique_client()), _call_next
+    )
+    assert refused.status_code == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["disabled", "bypass_header"])
+async def test_unlimited_requests_never_trigger_initialization(monkeypatch, mode):
+    """F1: "is this limited at all" is resolved before anything Redis-dependent."""
+    attempts = []
+
+    async def _factory(redis_url=None):
+        attempts.append(redis_url)
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    settings = _limited_settings(fail_open=False)
+    headers = None
+    if mode == "disabled":
+        settings.rate_limiting_enabled = False
+    else:
+        headers = {settings.protection_bypass_headers[0]: "1"}
 
     mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
-    mw.rate_limiter = _BrokenLimiter()
-    request = _request_without_state_client()
+    response = await mw.dispatch(
+        _http_request(app=_app(), headers=headers, client=_unique_client()),
+        _call_next,
+    )
 
-    with pytest.raises(ConnectionError):
-        await mw._initialize(request)
+    assert response.status_code == 200
+    assert attempts == [], "initialization ran for a request that is never limited"
+    assert mw._last_attempt_at is None
 
-    # Inside the cooldown it still refuses rather than serving unlimited.
-    with pytest.raises(RuntimeError):
-        await mw._initialize(request)
 
-    assert mw._initialized is False
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_no_per_request_error_spam_while_uninitialized(monkeypatch, caplog):
+    """F5: the degrade is logged once per cooldown window, not per request.
+
+    The check used to run against a ``None`` client, emitting one to four ERROR
+    lines per request for the whole 30s window.
+    """
+
+    async def _factory(redis_url=None):
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    settings = _limited_settings(fail_open=True)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+
+    request_count = 25
+    with caplog.at_level(logging.ERROR):
+        for _ in range(request_count):
+            response = await mw.dispatch(
+                _http_request(app=_app(), client=_unique_client()), _call_next
+            )
+            assert response.status_code == 200
+
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) <= 2, (
+        f"{len(errors)} ERROR lines for {request_count} requests — the degrade "
+        "is being logged per request, not per cooldown window"
+    )
+    assert any("no Redis client" in r.getMessage() for r in errors)

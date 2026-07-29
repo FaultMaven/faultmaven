@@ -50,6 +50,11 @@ class RedisRateLimiter:
         # Whether this limiter opened ``_redis`` itself and may therefore close
         # it. An adopted client belongs to the composition root.
         self._owns_client = False
+        # Whether ``_redis`` is the per-replica stand-in rather than the
+        # deployment's Redis. Limits are still enforced, just per replica, so
+        # this is a *usable* client — but a re-attemptable one: the caller is
+        # expected to keep retrying so the limiter can be promoted back.
+        self._degraded = False
 
         # Rate limit configurations
         self._configs: Dict[str, RateLimitConfig] = {}
@@ -62,6 +67,18 @@ class RedisRateLimiter:
             "persistent_violation": 16.0,
         }
 
+    @property
+    def is_degraded(self) -> bool:
+        """Whether the limiter is running on the per-replica stand-in.
+
+        ``True`` means limits *are* being enforced, but only within this
+        process, so the caller should keep re-attempting initialization to be
+        promoted back to the deployment's Redis. ``False`` after a successful
+        ``initialize`` means the resolved client is the configured one and
+        there is nothing left to retry.
+        """
+        return self._degraded
+
     async def initialize(self, client=None) -> None:
         """Adopt the application's Redis client, or build one as a fallback.
 
@@ -71,6 +88,29 @@ class RedisRateLimiter:
         second connection pool, no second credential resolution and no
         redundant ping. Only when no shared client exists does this fall back to
         the central factory.
+
+        **Returning normally means ``self._redis`` is usable.** The rungs are:
+
+        1. the shared, boot-validated client (terminal — ``is_degraded`` False);
+        2. a client built by the central factory (terminal);
+        3. the in-process per-replica stand-in (``is_degraded`` True — limits
+           are still enforced, and the caller keeps retrying for promotion).
+
+        Anything else **raises**, and raises regardless of ``fallback_enabled``.
+        ``fallback_enabled`` governs whether the *degraded* rung 3 client is an
+        acceptable substitute; it is not a licence to report success with no
+        client at all. It used to be exactly that: with the default
+        ``fallback_enabled=True`` a connection failure returned normally with
+        ``self._redis`` still ``None``, the middleware marked itself
+        initialized, and every later check hit ``None.eval(...)`` → caught →
+        fail-open. Rate limiting was off for the pod's whole lifetime.
+
+        A failed attempt leaves any client from a previous attempt in place, so
+        a failed *promotion* from rung 3 keeps enforcing against the stand-in
+        rather than dropping to no limiting at all.
+
+        Raises:
+            Exception: when no usable client could be established.
         """
         from faultmaven.infrastructure.redis_client import (
             RedisUnavailableError,
@@ -82,29 +122,29 @@ class RedisRateLimiter:
         if client is not None:
             self._redis = client
             self._owns_client = False
+            self._degraded = False
             self.logger.info(
                 "Redis rate limiter using the shared application Redis client"
             )
             return
 
         try:
-            self._redis = await get_async_redis_client(redis_url=self.redis_url)
-            # The FakeRedis stand-in is a process-wide singleton shared with
-            # every other subsystem, so it is never this limiter's to close.
-            self._owns_client = not is_fakeredis(self._redis)
-            self.logger.info("Redis rate limiter initialized successfully")
+            resolved = await get_async_redis_client(redis_url=self.redis_url)
         except RedisUnavailableError as e:
             # Cloud refuses to substitute an in-process FakeRedis for the
             # deployment-wide Redis, and fails the boot. This subsystem is
             # initialized lazily on the first request, long after the boot gate
             # could have acted, so the refusal cannot fail the boot from here —
-            # and letting it propagate leaves self._redis None, which makes
-            # check_rate_limit fail open: no rate limiting at all, strictly
-            # worse than the per-replica limiting FakeRedis gives. So degrade
-            # loudly instead. This is the third rung of the ladder: the shared
-            # boot-validated client, then a client built by the central factory,
-            # then the in-process stand-in — and only if that too is refused
-            # does anything fail open.
+            # and letting it propagate leaves self._redis None, which means no
+            # rate limiting at all, strictly worse than the per-replica limiting
+            # FakeRedis gives. So degrade loudly instead, and stay re-attemptable.
+            if not self.fallback_enabled:
+                # The deployment asked to fail closed rather than approximate.
+                self.logger.error(
+                    f"Rate limiter Redis unavailable ({e}); the per-replica "
+                    "stand-in is disabled by policy, so no client is available"
+                )
+                raise
             self.logger.error(
                 f"Rate limiter Redis unavailable ({e}); falling back to in-process "
                 "FakeRedis — rate limits are per-replica until Redis is reachable"
@@ -112,10 +152,21 @@ class RedisRateLimiter:
             self._redis = get_fakeredis_client()
             # Process-wide singleton, shared with every other subsystem.
             self._owns_client = False
+            self._degraded = True
+            return
         except Exception as e:
             self.logger.error(f"Failed to initialize Redis rate limiter: {e}")
-            if not self.fallback_enabled:
-                raise
+            raise
+
+        self._redis = resolved
+        # The FakeRedis stand-in is a process-wide singleton shared with
+        # every other subsystem, so it is never this limiter's to close.
+        self._owns_client = not is_fakeredis(resolved)
+        # Whatever the factory returns here is the *configured* backend
+        # (FakeRedis is standalone's real answer, not a degrade), so this rung
+        # is terminal.
+        self._degraded = False
+        self.logger.info("Redis rate limiter initialized successfully")
 
     async def close(self) -> None:
         """Close the Redis connection — only one this limiter opened itself.
@@ -329,6 +380,7 @@ class RedisRateLimiter:
         """Perform health check and return status."""
         status = {
             "redis_healthy": self._redis is not None,
+            "degraded": self._degraded,
             "fallback_enabled": self.fallback_enabled,
             "configured_limits": len(self._configs),
         }
