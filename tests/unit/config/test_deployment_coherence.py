@@ -43,6 +43,9 @@ def _cloud_ok() -> SimpleNamespace:
             session_storage_type="redis",
             redis_url=None,
             redis_host="faultmaven-redis-master",
+            # Check 7 (#901): cloud requires the external ChromaDB server.
+            vector_storage_type="chromadb",
+            chromadb_url="http://faultmaven-chromadb:8000",
         ),
         providers=SimpleNamespace(
             tenant_provider="single"
@@ -128,6 +131,31 @@ def test_cloud_reports_all_problems_at_once():
         validate_deployment_coherence(s)
     msg = str(exc.value)
     assert "AUTH_MODE" in msg and "DATABASE_URL" in msg and "Redis" in msg
+
+
+# --- External ChromaDB requirement (#901: no local vectors under cloud) -----
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_cloud_without_chromadb_url_fails():
+    """No CHROMADB_URL means every process builds a local PersistentClient —
+    per-replica search on web pods, silent vector loss in seeding jobs."""
+    s = _cloud_ok()
+    s.database.chromadb_url = ""
+    with pytest.raises(DeploymentCoherenceError, match="CHROMADB_URL"):
+        validate_deployment_coherence(s)
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_cloud_with_non_chromadb_storage_type_fails():
+    """A legacy VECTOR_STORAGE_TYPE deselects the external server even when a
+    URL is set — the same local-client outcome, so the same refusal."""
+    s = _cloud_ok()
+    s.database.vector_storage_type = "inmemory"
+    with pytest.raises(DeploymentCoherenceError, match="VECTOR_STORAGE_TYPE"):
+        validate_deployment_coherence(s)
 
 
 # --- WorkOS AuthKit requirement (ADR-015 D7: hard-fail since cutover) -------

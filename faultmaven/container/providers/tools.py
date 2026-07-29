@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, List
 
+from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
@@ -30,6 +32,11 @@ def create_knowledge_ingester(settings: FaultMavenSettings) -> Any | None:
         )
 
         return KnowledgeIngester(settings=settings)
+    except DeploymentCoherenceError:
+        # A boot-refusal (e.g. ChromaUnavailableError under cloud, #901) must
+        # propagate — swallowing it here would re-open the fail-open path this
+        # gate exists to close.
+        raise
     except Exception as e:
         logger.warning(f"KnowledgeIngester creation failed: {e}")
         return None

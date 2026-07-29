@@ -40,6 +40,7 @@ import pypdf
 from chromadb.config import Settings
 from docx import Document
 
+from faultmaven.infrastructure.chroma_client import local_chroma_or_fail
 from faultmaven.infrastructure.model_cache import model_cache
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.chromadb_store import (
@@ -182,7 +183,17 @@ class KnowledgeIngester:
                 ),
             )
         else:
-            # Local development with persistent client (no network — cannot hang)
+            # Local development with persistent client (no network — cannot
+            # hang). Standalone only: under cloud a PersistentClient forks the
+            # vector store into this container's filesystem, so the shared
+            # gate refuses instead (#901) — same gate as the container
+            # provider's client factory, so this third acquisition path cannot
+            # bypass it.
+            local_chroma_or_fail(
+                "no external ChromaDB is configured (CHROMADB_URL unset and "
+                "CHROMADB_HOST is localhost)",
+                settings,
+            )
             kb_dir = getattr(
                 settings.database, "chromadb_kb_persist_dir", chroma_persist_directory
             )
