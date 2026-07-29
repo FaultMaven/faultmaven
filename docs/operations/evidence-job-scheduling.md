@@ -150,15 +150,66 @@ A `cross_tenant` job runs under multi only when **both** of these hold:
    including the regular app role, whose RLS-scoped *partial* view is exactly
    the delete-other-tenants hazard.
 
+#### Sourcing the maintenance DSN
+
+The maintenance DSN lives in the **`faultmaven-db-privileged`** Secret, under the
+key `MAINTENANCE_DATABASE_URL`. That Secret is deliberately mounted by *nothing*
+via `envFrom` (infra#123): it also carries the owner/migrator DSN, and `envFrom`
+is blanket — it would put both RLS-defeating credentials into the environment of
+every container that mounted it. **It is therefore NOT present as an environment
+variable in the API pod**, so a bare `DATABASE_URL="$MAINTENANCE_DATABASE_URL"`
+expands to the empty string and the job dies with
+`ArgumentError: Could not parse SQLAlchemy URL from given URL string`.
+
+Consume it with a key-scoped `secretKeyRef`, the same way the schema-migration
+Job consumes `MIGRATION_DATABASE_URL`. In a Job or CronJob spec:
+
+```yaml
+      containers:
+        - name: kb-seed
+          image: ghcr.io/faultmaven/faultmaven:<pinned-sha>
+          command: ["python", "-m", "faultmaven.jobs.run", "kb_seed", "--cross-tenant-maintenance"]
+          env:
+            # The BYPASSRLS maintenance role, read key-by-key. Deliberately NOT
+            # `optional: true`: a missing Secret or key must fail the pod with
+            # CreateContainerConfigError rather than silently leaving the job on
+            # whatever DATABASE_URL the envFrom Secret supplies (the LIMITED app
+            # role, whose partial RLS-scoped view is the delete-other-tenants
+            # hazard the runner's role probe exists to refuse).
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: faultmaven-db-privileged
+                  key: MAINTENANCE_DATABASE_URL
+          envFrom:
+            - configMapRef:
+                name: faultmaven-config
+            - secretRef:
+                name: faultmaven-secrets
+```
+
+For a one-off operator run, read the key explicitly rather than relying on an
+ambient variable:
+
 ```bash
-DATABASE_URL="$MAINTENANCE_DATABASE_URL" \
+NS=faultmaven
+MAINT_DSN=$(kubectl -n $NS get secret faultmaven-db-privileged \
+  -o jsonpath='{.data.MAINTENANCE_DATABASE_URL}' | base64 -d)
+[ -n "$MAINT_DSN" ] || { echo "MAINTENANCE_DATABASE_URL not set — run provision-maintenance-role.sh"; exit 1; }
+
+DATABASE_URL="$MAINT_DSN" \
   python -m faultmaven.jobs.run case_cleanup --cross-tenant-maintenance
 
 # Seed / refresh the platform KB pack (the multi-tenant replacement for the
 # single-tenant web-startup KB bootstrap, which is skipped under multi):
-DATABASE_URL="$MAINTENANCE_DATABASE_URL" \
+DATABASE_URL="$MAINT_DSN" \
   python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance
 ```
+
+Keep the `[ -n "$MAINT_DSN" ]` guard. An absent key (the maintenance role has not
+been provisioned yet) does fail rather than run against the wrong database — but
+it fails as an opaque SQLAlchemy URL-parse error several frames deep. The guard
+turns that into the actual diagnosis.
 
 Every maintenance run emits a WARNING-level `AUDIT` log line (job, arguments,
 posture), so cross-tenant sweeps are always attributable in the job logs; the

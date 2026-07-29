@@ -24,6 +24,36 @@ if TYPE_CHECKING:  # static analysis only — see make_org_knowledge_item
 DEFAULT_TEST_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 
 
+def reset_settings_singleton() -> None:
+    """Clear the settings singleton on the *live* settings module.
+
+    Deliberately late-bound. A module-level
+    ``from faultmaven.config.settings import reset_settings`` captures the
+    function belonging to whichever module object existed when the test module
+    was imported. Anything that drops ``faultmaven.config.settings`` from
+    ``sys.modules`` puts a *second* module object in the process, each with its
+    own ``_settings_instance``: the captured function then clears a singleton
+    nothing reads, while production code — which re-imports by name on every
+    call — keeps handing out the other module's stale cached settings. Looking
+    the module up through ``sys.modules`` at call time cannot drift that way.
+    """
+    import faultmaven.config.settings as settings_module
+
+    settings_module.reset_settings()
+
+
+def get_live_settings():
+    """Return the settings from the *live* settings module.
+
+    The read-side counterpart to :func:`reset_settings_singleton`, and
+    late-bound for the same reason: a captured ``get_settings`` can answer from
+    a different module object than the one production code reads.
+    """
+    import faultmaven.config.settings as settings_module
+
+    return settings_module.get_settings()
+
+
 async def seed_default_enterprise(session) -> None:
     """Insert the default enterprise row used as parent for test orgs/users.
 
