@@ -162,6 +162,26 @@ def _check_cloud(settings: Any) -> List[str]:
             "I/O. Set STORAGE_BACKEND=s3 with S3_BUCKET_NAME."
         )
 
+    # 7. Vectors must be the external ChromaDB server. A local PersistentClient
+    # lives in one container filesystem: on a web replica that is per-replica
+    # search state, and in a seeding Job it is durable-state corruption — the
+    # Postgres rows land in the shared database while the vectors die with the
+    # pod (#901). The client factories enforce the same refusal at build time
+    # (ChromaUnavailableError) for the reachability case; this check catches
+    # the pure-config case at the gate, with a config-level message.
+    # Lazy import: shared predicate with the client factories, so the gate and
+    # the factories cannot drift on what "external ChromaDB" means (the #881
+    # lesson).
+    from faultmaven.infrastructure.chroma_client import is_external_chroma_configured
+
+    if not is_external_chroma_configured(settings):
+        problems.append(
+            "Cloud requires the external ChromaDB server: set CHROMADB_URL and "
+            "VECTOR_STORAGE_TYPE=chromadb. A local PersistentClient writes "
+            "vectors into a single container's filesystem — per-replica search "
+            "results on web pods, silent vector loss in seeding jobs."
+        )
+
     # Tenancy (TENANT_PROVIDER single/multi) is an INDEPENDENT axis — a cloud
     # deployment may serve a single organization (many users) or many isolated
     # tenants (SaaS). The gate validates cloud-native infra + real auth, not tenancy.

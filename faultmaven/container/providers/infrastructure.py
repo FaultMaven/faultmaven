@@ -201,24 +201,26 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
     import chromadb
     from chromadb.config import Settings as ChromaSettings
 
+    from faultmaven.infrastructure.chroma_client import (
+        is_external_chroma_configured,
+        local_chroma_or_fail,
+    )
+
     # Dispatch: canonical value is "chromadb" (default). If the caller
-    # configures CHROMADB_URL, we probe it via HttpClient and fall back to
-    # local PersistentClient on failure. If CHROMADB_URL is unset (default
-    # empty), we skip the probe entirely and go straight to PersistentClient
-    # — no warning log, no network round-trip. Any legacy value (including
-    # "inmemory") is silently accepted as a synonym for "local PersistentClient".
+    # configures CHROMADB_URL, we probe it via HttpClient; on failure,
+    # standalone falls back to a local PersistentClient and cloud refuses
+    # (ChromaUnavailableError — see local_chroma_or_fail for why the fallback
+    # is corruption, not degradation, under cloud). If CHROMADB_URL is unset
+    # (default empty) we skip the probe entirely: straight to PersistentClient
+    # on standalone, refusal on cloud. Any legacy value (including "inmemory")
+    # is accepted as a synonym for "local PersistentClient" on standalone.
     # `InMemoryVectorStore` no longer exists — chromadb is a base dependency
     # and PersistentClient is always available, same principle as FakeRedis.
-    vector_storage_type = (settings.database.vector_storage_type or "").lower()
-    chromadb_url = (settings.database.chromadb_url or "").strip()
-    is_external_chroma = bool(chromadb_url) and vector_storage_type in {
-        "chromadb",
-        "chroma",
-        "chroma_db",
-        "chroma-db",
-    }
-
-    if is_external_chroma:
+    fallback_reason = (
+        "no external ChromaDB is configured (CHROMADB_URL unset or "
+        "VECTOR_STORAGE_TYPE is not chromadb)"
+    )
+    if is_external_chroma_configured(settings):
         # Cloud: external ChromaDB server via HTTP
         from urllib.parse import urlparse
 
@@ -228,7 +230,7 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
             else None
         )
 
-        parsed = urlparse(chromadb_url)
+        parsed = urlparse(settings.database.chromadb_url.strip())
         host = parsed.hostname or "localhost"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
 
@@ -260,12 +262,16 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
             logger.info(f"✅ ChromaDB {label} client: HttpClient @ {host}:{port}")
             return client
         except Exception as e:
-            logger.warning(
-                f"ChromaDB server unavailable ({type(e).__name__}: {e}), "
-                f"falling back to persistent local ChromaDB"
-            )
+            # Don't log "falling back" here — under cloud the gate below
+            # refuses instead, and a fallback announcement followed by a
+            # refusal reads as a contradiction in the Job logs.
+            fallback_reason = f"{type(e).__name__}: {e}"
+            logger.warning(f"ChromaDB server unavailable ({fallback_reason})")
 
-    # Local: in-process persistent ChromaDB (always available)
+    # Local: in-process persistent ChromaDB. Standalone only — under cloud
+    # this raises ChromaUnavailableError instead of silently forking the
+    # vector store into this container's filesystem (#901).
+    local_chroma_or_fail(fallback_reason, settings)
     from faultmaven.infrastructure.persistence.chromadb_store import (
         create_persistent_client,
     )
