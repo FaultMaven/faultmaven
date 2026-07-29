@@ -1289,12 +1289,28 @@ class DIContainer(BaseDIContainer):
 
                 return len(session_cases)
 
-            async def update_case_status(self, case_id, status):
-                if case_id in self.cases:
-                    self.cases[case_id].state = status
-                    self.cases[case_id].updated_at = datetime.now(timezone.utc)
-                    return True
-                return False
+            async def close_case(self, case_id, user_id):
+                # Mirrors CaseService.close_case: one closure rule — the
+                # engine executor derives closure_reason and stamps closed_at
+                # atomically (a bare `state = CLOSED` assignment trips the
+                # terminal-state validator, #915).
+                from faultmaven.core.investigation.terminal_transitions import (
+                    execute_user_closure,
+                )
+                from faultmaven.exceptions import ConflictError, NotFoundError
+
+                case = self.cases.get(case_id)
+                if not case or case.user_id != user_id:
+                    raise NotFoundError("Case", case_id)
+                if case.state.is_terminal:
+                    raise ConflictError(
+                        f"Case {case_id} is already {case.state.value}",
+                        resource_type="Case",
+                        resource_id=case_id,
+                        conflict_reason="already_closed",
+                    )
+                execute_user_closure(case, user_id)
+                return case
 
             async def add_case_query(self, case_id, query, priority=None):
                 # Phase 2 & 3: Update message_count, updated_at, and handle auto-title generation

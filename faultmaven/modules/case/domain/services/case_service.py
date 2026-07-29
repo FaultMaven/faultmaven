@@ -772,6 +772,84 @@ class CaseService(ICaseService):
             # The case might not exist or might already be deleted
             return True
 
+    @trace("case_service_close_case")
+    async def close_case(self, case_id: str, user_id: str) -> Case:
+        """Close a case from the API surface (user-initiated, no chat gate).
+
+        Routes through the engine's terminal executor
+        (``execute_user_closure`` → ``_execute_closed_transition``) so the
+        REST close and the chat-confirmed close share ONE closure rule:
+        engine-derived closure_reason, ``closed_at`` stamped, action-history
+        entry — all set atomically. The previous route mutated
+        ``case.state`` directly, which the terminal-state validator rejects
+        (#915).
+
+        Owner-only write: shared-to-team readers can view a case but not
+        close it, mirroring the delete posture. Denial surfaces as
+        NotFoundError (404-not-403 — existence is not disclosed to
+        non-owners).
+
+        Wrapped in ``update_case_with_retry`` so a concurrent save reloads
+        and re-applies the closure; the mutator re-checks terminal state on
+        each fresh load, so a close that lost the race to another terminal
+        transition surfaces as a conflict instead of silently re-closing.
+
+        Raises:
+            NotFoundError: Unknown case, or the caller is not the owner.
+            ConflictError: Case is already resolved/closed.
+        """
+        from faultmaven.core.investigation.terminal_transitions import (
+            execute_user_closure,
+        )
+        from faultmaven.exceptions import ConflictError, NotFoundError
+        from faultmaven.modules.case.exceptions import (
+            CaseNotFoundError,
+            StaleCaseException,
+        )
+        from faultmaven.modules.case.utils import update_case_with_retry
+
+        case = await self.get_case(case_id, user_id)
+        if not case or case.user_id != user_id:
+            raise NotFoundError("Case", case_id)
+
+        def _already_terminal(state: CaseState) -> ConflictError:
+            return ConflictError(
+                f"Case {case_id} is already {state.value}",
+                resource_type="Case",
+                resource_id=case_id,
+                conflict_reason="already_closed",
+            )
+
+        if case.state.is_terminal:
+            raise _already_terminal(case.state)
+
+        async def apply(fresh: Case) -> None:
+            if fresh.state.is_terminal:
+                raise _already_terminal(fresh.state)
+            execute_user_closure(fresh, user_id)
+
+        # The retry helper's own exceptions subclass CaseException, which no
+        # global handler maps — translate the two rare races to handled
+        # types so they surface as 404/409, not 500.
+        try:
+            updated_case = await update_case_with_retry(self.repository, case_id, apply)
+        except CaseNotFoundError:
+            # Deleted between the pre-check and the retry's fresh load.
+            raise NotFoundError("Case", case_id)
+        except StaleCaseException:
+            # Lost the version race max_attempts times; caller should
+            # reload and re-decide (mirrors the turn route's OCC posture).
+            raise ConflictError(
+                f"Case {case_id} changed while closing; reload and retry",
+                resource_type="Case",
+                resource_id=case_id,
+                conflict_reason="concurrent_update",
+            )
+        logger.info(
+            f"Closed case {case_id} via API, " f"reason: {updated_case.closure_reason}"
+        )
+        return updated_case
+
     async def _resolve_user_team_ids(self, user_id: Optional[str]) -> List[str]:
         """The team ids a principal belongs to; ``[]`` when unwired or on error.
 
