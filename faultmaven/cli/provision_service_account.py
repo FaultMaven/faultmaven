@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Provision a service account an OAuth refresh-token credential (ADR-012 D10).
 
 Under AUTH_MODE=oauth the passwordless dev-login endpoints are not mounted, so
@@ -15,36 +14,31 @@ default 7 days).
 The token is printed ONCE and is not recoverable afterwards — nothing stores it
 server-side. Treat the output as a secret.
 
-Usage:
+Usage (``fm-provision-service-account``, installed with the package):
     # Interim single global Slack service account
-    python scripts/auth/provision_service_account.py --username slack-agent
+    fm-provision-service-account --username slack-agent
 
     # Multi-tenant (TENANT_PROVIDER=multi): the organization is REQUIRED — the
     # credential's tenancy travels in its own claim chain, so an org-less one is
     # refused on every request it makes.
-    python scripts/auth/provision_service_account.py -u slack-agent \
+    fm-provision-service-account -u slack-agent \
         -o 22222222-2222-2222-2222-222222222222
 
     # Capture straight into a file without it reaching the terminal/scrollback
-    python scripts/auth/provision_service_account.py -u slack-agent --token-only > token.txt
+    fm-provision-service-account -u slack-agent --token-only > token.txt
 
 In a Kubernetes deployment, run it in the API pod:
     kubectl exec -it deploy/faultmaven-api -- \
-        python scripts/auth/provision_service_account.py -u slack-agent --token-only
+        fm-provision-service-account -u slack-agent --token-only
 """
 
 import argparse
 import asyncio
 import sys
-from pathlib import Path
 
-# Add project root to Python path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from faultmaven.config.settings import AuthMode, get_settings  # noqa: E402
-from faultmaven.container import container  # noqa: E402
-from faultmaven.modules.auth.domain.services.service_account_provisioning import (  # noqa: E402
+from faultmaven.config.settings import AuthMode, get_settings
+from faultmaven.container import container
+from faultmaven.modules.auth.domain.services.service_account_provisioning import (
     SERVICE_ACCOUNT_KIND,
     VALID_ACCOUNT_KINDS,
     ServiceAccountProvisioningError,

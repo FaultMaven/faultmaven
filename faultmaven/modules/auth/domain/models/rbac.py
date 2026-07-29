@@ -36,7 +36,7 @@ PLATFORM_ADMIN_ROLE = "platform_admin"
 # own organization too — `platform_admin` grants none, by construction — so
 # every path that provisions one grants the org role alongside it. Defined here
 # rather than at a provisioning site so the bootstrap seed, `create_user.py`,
-# and `promote_to_platform_admin.py` cannot answer "does platform_admin imply
+# and `fm-promote-platform-admin` cannot answer "does platform_admin imply
 # admin?" differently and produce operators with unequal in-org authority.
 PLATFORM_ADMIN_ROLE_SET = ["user", "admin", PLATFORM_ADMIN_ROLE]
 

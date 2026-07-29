@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Promote User to Platform Admin
 
 This script adds the 'platform_admin' role to an existing user account.
@@ -9,18 +8,16 @@ and Global KB management. It is distinct from the organization-scoped 'admin'
 role, which is tenant-bounded, but an operator needs authority in its own org
 too, so this grants the full operator set (see PLATFORM_ADMIN_ROLE_SET).
 
-Usage:
-    python scripts/auth/promote_to_platform_admin.py username
-    python scripts/auth/promote_to_platform_admin.py alice
+Usage (``fm-promote-platform-admin``, installed with the package):
+    fm-promote-platform-admin username
+    fm-promote-platform-admin alice
+
+In a Kubernetes deployment, run it in the API pod:
+    kubectl exec -it deploy/faultmaven-api -- fm-promote-platform-admin alice
 """
 
 import asyncio
 import sys
-from pathlib import Path
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from faultmaven.container import container
 from faultmaven.modules.auth.contracts import (
@@ -50,7 +47,7 @@ async def promote_to_platform_admin(username: str):
     user = await user_store.get_user_by_username(username)
     if not user:
         print(f"❌ User '{username}' not found")
-        print("\nTo see all users, run:")
+        print("\nTo see all users, run (from a source checkout):")
         print("  python scripts/auth/list_users.py")
         return False
 
@@ -92,12 +89,12 @@ async def promote_to_platform_admin(username: str):
 def main():
     """Main entry point"""
     if len(sys.argv) < 2:
-        print("Usage: python scripts/auth/promote_to_platform_admin.py <username>")
+        print("Usage: fm-promote-platform-admin <username>")
         print()
         print("Example:")
-        print("  python scripts/auth/promote_to_platform_admin.py alice")
+        print("  fm-promote-platform-admin alice")
         print()
-        print("To see all users:")
+        print("To see all users (from a source checkout):")
         print("  python scripts/auth/list_users.py")
         sys.exit(1)
 

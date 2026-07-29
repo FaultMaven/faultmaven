@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Reset the Knowledge Base: wipe SQL + ChromaDB state, then trigger re-bootstrap.
 
 When to use
@@ -24,12 +23,30 @@ Safety
 Refuses to run without ``--yes`` since the operation is destructive.
 Prints a dry-run summary first so you can sanity-check counts.
 
-Usage
------
+Usage (``fm-reset-kb``, installed with the package)
+--------------------------------------------------
     source .venv/bin/activate
-    python scripts/reset_kb.py --dry-run            # See what would change
-    python scripts/reset_kb.py --yes                # Wipe; bootstrap reruns on API restart
-    python scripts/reset_kb.py --yes --rebuild      # Wipe + immediate in-process rebuild
+    fm-reset-kb --dry-run            # See what would change
+    fm-reset-kb --yes                # Wipe; bootstrap reruns on API restart
+    fm-reset-kb --yes --rebuild      # Wipe + immediate in-process rebuild
+
+In a Kubernetes deployment (standalone/on-prem only — this refuses to run
+under ``TENANT_PROVIDER=multi``), run it in the API pod:
+    kubectl exec -it deploy/faultmaven-api -- fm-reset-kb --dry-run
+
+Working directory
+-----------------
+The ChromaDB path is resolved under
+``faultmaven.bootstrap.data_init.get_project_root()``, which prefers
+``PROJECT_ROOT``, then a working directory containing ``alembic.ini`` /
+``pyproject.toml``, then the location of ``data_init.py`` itself. Run it from
+the project root in development; the image's ``WORKDIR`` (``/app``) holds both
+marker files, so the pod resolves the same tree the API writes to.
+
+Exit codes
+----------
+0 success (or dry-run), 1 refused (no ``--yes``, or ``TENANT_PROVIDER=multi``,
+or no knowledge service to rebuild with), 2 the rebuild ingested with failures.
 """
 
 from __future__ import annotations
@@ -38,14 +55,10 @@ import argparse
 import asyncio
 import shutil
 import sys
-from pathlib import Path
 
-# Make `faultmaven` importable when run as a script.
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from sqlalchemy import delete, select
 
-from sqlalchemy import delete, select  # noqa: E402
-
-from faultmaven.bootstrap.data_init import get_project_root  # noqa: E402
+from faultmaven.bootstrap.data_init import get_project_root
 
 
 async def _count_rows(session, model):
@@ -151,7 +164,8 @@ async def reset_kb(
     return 0
 
 
-def main() -> int:
+def main() -> None:
+    """Console entrypoint (``fm-reset-kb``). Exits with ``reset_kb``'s status."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--yes",
@@ -182,17 +196,22 @@ def main() -> int:
 
     if not args.dry_run and not args.yes:
         print("Refusing to run without --yes (or use --dry-run to preview).")
-        return 1
+        sys.exit(1)
 
-    return asyncio.run(
-        reset_kb(
-            dry_run=args.dry_run,
-            all_drafts=args.all_drafts,
-            rebuild=args.rebuild,
-            keep_chroma=args.keep_chroma,
+    # Exit explicitly rather than returning the code: the console-script wrapper
+    # is what would otherwise carry it, and `python -m faultmaven.cli.reset_kb`
+    # would silently drop a non-zero status.
+    sys.exit(
+        asyncio.run(
+            reset_kb(
+                dry_run=args.dry_run,
+                all_drafts=args.all_drafts,
+                rebuild=args.rebuild,
+                keep_chroma=args.keep_chroma,
+            )
         )
     )
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

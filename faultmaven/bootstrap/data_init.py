@@ -223,7 +223,7 @@ async def _assign_operator_roles(user_store: Any, user: Any) -> Any:
     operator role without manual intervention. The consequence is that the
     bootstrap account cannot be demoted durably — the next restart restores it.
     That is intended for *this* account (a standalone deployment with no
-    operator is unusable), and ``demote_from_platform_admin.py`` says so when
+    operator is unusable), and ``fm-demote-platform-admin`` says so when
     aimed at it. Every other account demotes permanently.
 
     Args:

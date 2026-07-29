@@ -84,7 +84,7 @@ Bootstrap is safe to re-run on every restart:
 - Changed runbooks trigger explicit delete-then-ingest.
 - New runbooks are added.
 - **Built-ins are pack-reconciled (add / skip / prune).** A built-in row (`kb_<12 hex>` id) not present in the current pack — because the runbook was removed or its `id` changed, orphaning the old deterministic id — is pruned at the end of bootstrap (step 5). **The pack is the source of truth for built-in content.**
-- **Authored/user content is never auto-removed.** Items created by `verify_draft` or the API carry random-UUID ids, which the `kb_<12 hex>` prune pattern cannot match — so the prune is structurally incapable of touching them. Removing those is the Dashboard's explicit delete path. Operators who need a full reset use `scripts/reset_kb.py`.
+- **Authored/user content is never auto-removed.** Items created by `verify_draft` or the API carry random-UUID ids, which the `kb_<12 hex>` prune pattern cannot match — so the prune is structurally incapable of touching them. Removing those is the Dashboard's explicit delete path. Operators who need a full reset use `fm-reset-kb`.
 - **Safety guard:** if the pack yields zero runbook ids (a load/parse anomaly, not a legitimate "remove everything"), the prune is skipped entirely.
 - **Self-healing across stores.** A row left without vectors by a mid-ingest crash is re-embedded on the next boot (step 6), so a rare crash between the SQL commit and the ChromaDB write does not permanently strand a runbook as silently unretrievable — subject to the `KB_REPAIR_MAX_ROWS` bulk-loss cap.
 
@@ -125,16 +125,16 @@ The fix is twofold:
 
 ---
 
-## Operational reset (`scripts/reset_kb.py`)
+## Operational reset (`fm-reset-kb`)
 
 When schema drift, embedding model changes, or accumulated bugs require a clean slate:
 
 ```bash
 source .venv/bin/activate
-python scripts/reset_kb.py --dry-run             # See counts; no changes
-python scripts/reset_kb.py --yes                 # Wipe; bootstrap reruns on API restart
-python scripts/reset_kb.py --yes --rebuild       # Wipe + immediate in-process rebuild
-python scripts/reset_kb.py --yes --all-drafts    # Also delete case-generated drafts
+fm-reset-kb --dry-run             # See counts; no changes
+fm-reset-kb --yes                 # Wipe; bootstrap reruns on API restart
+fm-reset-kb --yes --rebuild       # Wipe + immediate in-process rebuild
+fm-reset-kb --yes --all-drafts    # Also delete case-generated drafts
 ```
 
 Default behaviour is conservative: SQL `knowledge_items` are deleted, ChromaDB is removed, but `conversion_drafts` (which may contain case-generated work in progress) are preserved unless `--all-drafts` is passed.

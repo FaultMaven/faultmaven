@@ -1,4 +1,4 @@
-"""``scripts/auth/provision_sso_org.py`` refuses to bind the wrong tenants (#869).
+"""``faultmaven.cli.provision_sso_org`` refuses to bind the wrong tenants (#869).
 
 The script resolves an organization by ``(enterprise, slug)`` and the enterprise
 itself by slug, so a new customer whose slug collides with an existing one
@@ -19,13 +19,12 @@ Exercised against a real in-memory SQLite engine built from the ORM metadata,
 so the refusals are checked against the schema that actually ships.
 """
 
-import importlib.util
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from faultmaven.cli import provision_sso_org
 from faultmaven.infrastructure.persistence.models import (
     Base,
     EnterpriseModel,
@@ -35,9 +34,6 @@ from faultmaven.infrastructure.persistence.models import (
 
 pytestmark = pytest.mark.unit
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = REPO_ROOT / "scripts" / "auth" / "provision_sso_org.py"
-
 ENTERPRISE_ID = "33333333-3333-3333-3333-333333333333"
 ORG_A = "22222222-2222-2222-2222-222222222222"
 ORG_B = "55555555-5555-5555-5555-555555555555"
@@ -45,10 +41,8 @@ ORG_B = "55555555-5555-5555-5555-555555555555"
 
 @pytest.fixture(scope="module")
 def mod():
-    spec = importlib.util.spec_from_file_location("provision_sso_org", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """The module under test — imported, not loaded from a path (#887)."""
+    return provision_sso_org
 
 
 def _now():

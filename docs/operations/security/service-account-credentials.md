@@ -20,18 +20,23 @@ in the service account's path. FaultMaven mints and owns these tokens.
 
 ## Minting a credential
 
-Run in the API environment (it reads the same settings and signing keys the API
-verifies tokens with):
+`fm-provision-service-account` is a console entrypoint shipped with the
+installed package (`faultmaven/cli/provision_service_account.py`), so it is on
+`PATH` in the API pod and in any environment where `pip install -e .` has been
+run.
+
+Run it in the API environment (it reads the same settings and signing keys the
+API verifies tokens with):
 
 ```bash
-python scripts/auth/provision_service_account.py --username slack-agent
+fm-provision-service-account --username slack-agent
 ```
 
 In Kubernetes:
 
 ```bash
 kubectl exec -it deploy/faultmaven-api -- \
-    python scripts/auth/provision_service_account.py -u slack-agent --token-only
+    fm-provision-service-account -u slack-agent --token-only
 ```
 
 The script:
@@ -56,7 +61,7 @@ keep using dev-login.
 Under `TENANT_PROVIDER=multi` (Cloud), `--organization-id` / `-o` is **required**:
 
 ```bash
-python scripts/auth/provision_service_account.py \
+fm-provision-service-account \
     -u slack-agent -o 22222222-2222-2222-2222-222222222222
 ```
 
@@ -68,7 +73,7 @@ chain starts: the script stamps the organization on the account before signing,
 so the refresh token carries an `organization_id` claim.
 
 The organization id is the FaultMaven organization UUID —
-`scripts/auth/provision_sso_org.py` reports it when it provisions the tenant, and
+`fm-provision-sso-org` reports it when it provisions the tenant, and
 it is what your operator records should hold. It is *not* the IdP's `org_01H…`
 identifier.
 

@@ -42,7 +42,7 @@ python scripts/auth/create_user.py --username myadmin --role admin
 
 **Promote an existing user to platform admin:**
 ```bash
-python scripts/auth/promote_to_platform_admin.py username
+fm-promote-platform-admin username
 ```
 
 > **Upgrading an existing deployment.** The `admin` role no longer grants
@@ -282,7 +282,12 @@ id. An author still reaches their own unpublished draft.
 
 ### Using Management Scripts
 
-FaultMaven provides comprehensive CLI tools for user management located in `scripts/auth/`.
+FaultMaven provides CLI tools for user management in two places. Operator
+procedures — promotion, demotion, service-account and tenant provisioning —
+are `fm-*` console entrypoints that ship with the installed package
+(`faultmaven/cli/`), so they run in the API pod as well as in a checkout.
+Account-creation and listing conveniences (`create_user.py`, `list_users.py`)
+stay in `scripts/auth/` and are run from a checkout.
 
 #### 1. List Users
 
@@ -357,7 +362,7 @@ User Details:
 
 **Grant the operator role to an existing user:**
 ```bash
-python scripts/auth/promote_to_platform_admin.py alice
+fm-promote-platform-admin alice
 ```
 
 **Output:**
@@ -377,7 +382,7 @@ User 'alice' can now:
 
 **Revoke the operator role from a user:**
 ```bash
-python scripts/auth/demote_from_platform_admin.py bob
+fm-demote-platform-admin bob
 ```
 
 **Output:**
@@ -808,7 +813,7 @@ python scripts/auth/list_users.py | grep username
 **Solution:**
 ```bash
 # Promote user to admin
-python scripts/auth/promote_to_platform_admin.py username
+fm-promote-platform-admin username
 
 # User must re-login to get updated roles in token
 ```

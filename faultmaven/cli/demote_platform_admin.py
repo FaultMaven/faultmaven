@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Demote Platform Admin to Regular User
 
 This script removes the 'platform_admin' role from a user account.
@@ -8,18 +7,16 @@ revokes cross-tenant reach. It is NOT the organization-scoped 'admin' role,
 which is tenant-bounded; this script leaves that one untouched, so a user who
 also holds 'admin' keeps full authority inside their own organization.
 
-Usage:
-    python scripts/auth/demote_from_platform_admin.py username
-    python scripts/auth/demote_from_platform_admin.py bob
+Usage (``fm-demote-platform-admin``, installed with the package):
+    fm-demote-platform-admin username
+    fm-demote-platform-admin bob
+
+In a Kubernetes deployment, run it in the API pod:
+    kubectl exec -it deploy/faultmaven-api -- fm-demote-platform-admin bob
 """
 
 import asyncio
 import sys
-from pathlib import Path
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from faultmaven.bootstrap.data_init import DEFAULT_ADMIN_USERNAME
 from faultmaven.container import container
@@ -47,7 +44,7 @@ async def demote_from_platform_admin(username: str):
     user = await user_store.get_user_by_username(username)
     if not user:
         print(f"❌ User '{username}' not found")
-        print("\nTo see all users, run:")
+        print("\nTo see all users, run (from a source checkout):")
         print("  python scripts/auth/list_users.py")
         return False
 
@@ -110,12 +107,12 @@ async def demote_from_platform_admin(username: str):
 def main():
     """Main entry point"""
     if len(sys.argv) < 2:
-        print("Usage: python scripts/auth/demote_from_platform_admin.py <username>")
+        print("Usage: fm-demote-platform-admin <username>")
         print()
         print("Example:")
-        print("  python scripts/auth/demote_from_platform_admin.py bob")
+        print("  fm-demote-platform-admin bob")
         print()
-        print("To see all users:")
+        print("To see all users (from a source checkout):")
         print("  python scripts/auth/list_users.py")
         sys.exit(1)
 

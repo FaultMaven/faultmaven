@@ -26,7 +26,7 @@ query into the unauthenticated auth path.
 
 No backfill: multi-tenant SSO has never completed a login, so there is no
 existing affiliation to migrate. Operators create mappings with
-``scripts/auth/provision_sso_org.py``.
+the ``fm-provision-sso-org`` command.
 
 Revision ID: b0c1d2e3f4a5
 Revises: a9b0c1d2e3f4

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Provision a Cloud tenant and map an IdP organization onto it (#869).
 
 Under ``TENANT_PROVIDER=multi`` an SSO login lands in the FaultMaven
@@ -32,19 +31,19 @@ Admin binding is manual and post-hoc (ADR-015 D5): no login path grants
 elevated roles, so the first user signs in via SSO and an operator promotes
 them with the existing role scripts.
 
-Usage:
+Usage (``fm-provision-sso-org``, installed with the package):
     DATABASE_URL=postgresql+asyncpg://faultmaven:...@host/faultmaven \\
-    python scripts/auth/provision_sso_org.py \\
+    fm-provision-sso-org \\
         --name "Acme Corp" --slug acme --workos-org-id org_01H...
 
     # Reuse an existing enterprise instead of creating one
-    python scripts/auth/provision_sso_org.py \\
+    fm-provision-sso-org \\
         --name "Acme EU" --slug acme-eu --workos-org-id org_01J... \\
         --enterprise-id 8f1c...
 
 In a Kubernetes deployment, run it in the API pod:
     kubectl exec -it deploy/faultmaven-api -- \\
-        python scripts/auth/provision_sso_org.py --name ... --slug ... \\
+        fm-provision-sso-org --name ... --slug ... \\
         --workos-org-id org_...
 """
 
@@ -55,18 +54,12 @@ import asyncio
 import sys
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
-# Make `faultmaven` importable when run as a script.
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from sqlalchemy import select
 
-from sqlalchemy import select  # noqa: E402
-
-from faultmaven.config.tenant_context import set_current_org_id  # noqa: E402
-from faultmaven.infrastructure.persistence.database import (  # noqa: E402
-    get_db_session,
-)
-from faultmaven.infrastructure.persistence.models import (  # noqa: E402
+from faultmaven.config.tenant_context import set_current_org_id
+from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     OrganizationModel,
     SSOOrgMappingModel,
@@ -389,7 +382,7 @@ async def provision(
     print("  2. Have the first user sign in through the dashboard's SSO button.")
     print("     They are provisioned just-in-time as an organization member.")
     print("  3. Promote them if they need admin rights:")
-    print("       python scripts/auth/promote_to_platform_admin.py <username>")
+    print("       fm-promote-platform-admin <username>")
     print("")
     return True
 

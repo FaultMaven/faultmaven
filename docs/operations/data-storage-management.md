@@ -80,7 +80,7 @@ evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vecto
 - `evidence/` holds **raw uploaded files**. After the upload API returns a response, a background task vectorizes the content into a `case_{case_id}` collection in `chroma-evidence/`.
 - Each ChromaDB instance is independent — they share no files.
 
-Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. The bootstrap intentionally does not garbage-collect deleted files (that's a separate operator concern); use the Dashboard or `python scripts/reset_kb.py` to remove KB entries.
+Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. The bootstrap intentionally does not garbage-collect deleted files (that's a separate operator concern); use the Dashboard or `fm-reset-kb` to remove KB entries.
 
 ---
 
@@ -139,17 +139,25 @@ build + delivery detail: [`kb-pack-architecture.md`](../architecture/knowledge-a
 
 ### Reset / hot-rebuild
 
-`scripts/reset_kb.py` wipes the KB state and (optionally) re-runs the bootstrap in-process:
+`fm-reset-kb` wipes the KB state and (optionally) re-runs the bootstrap in-process:
 
 ```bash
-python scripts/reset_kb.py --dry-run             # See counts; no changes
-python scripts/reset_kb.py --yes                 # Wipe; bootstrap reruns on API restart
-python scripts/reset_kb.py --yes --rebuild       # Wipe + immediate in-process rebuild
-python scripts/reset_kb.py --yes --all-drafts    # Also delete case-generated drafts
-python scripts/reset_kb.py --yes --keep-chroma   # Wipe SQL only; keep ChromaDB collections
+fm-reset-kb --dry-run             # See counts; no changes
+fm-reset-kb --yes                 # Wipe; bootstrap reruns on API restart
+fm-reset-kb --yes --rebuild       # Wipe + immediate in-process rebuild
+fm-reset-kb --yes --all-drafts    # Also delete case-generated drafts
+fm-reset-kb --yes --keep-chroma   # Wipe SQL only; keep ChromaDB collections
 ```
 
 Defaults are conservative — `conversion_drafts` (case-generated work in progress) is preserved unless `--all-drafts` is passed.
+
+`fm-reset-kb` is a console entrypoint shipped with the installed package (`faultmaven/cli/reset_kb.py`), so it is available both in a local checkout (after `pip install -e .`) and inside the API pod:
+
+```bash
+kubectl exec -it deploy/faultmaven-api -- fm-reset-kb --dry-run
+```
+
+It refuses to run under `TENANT_PROVIDER=multi` — a multi-tenant database holds every tenant's KB, and a blanket wipe would bypass the audited maintenance path. Reseed the platform tier with the `kb_seed` job instead (#770).
 
 ### Updating built-in global runbooks
 
@@ -195,7 +203,7 @@ rm data/knowledge/global/my-runbook.md
 #    disk — explicit deletion is a separate operator concern.
 ```
 
-For bulk removal, `scripts/reset_kb.py --yes` (without `--rebuild`) wipes the full KB state; the next API restart will re-ingest from whatever remains in `data/knowledge/`.
+For bulk removal, `fm-reset-kb --yes` (without `--rebuild`) wipes the full KB state; the next API restart will re-ingest from whatever remains in `data/knowledge/`.
 
 ---
 

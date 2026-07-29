@@ -221,7 +221,7 @@ def _validate_organization(organization_id: Optional[str]) -> None:
             "within: the users table has no organization column, so an org-less "
             "credential resolves to an empty organization claim and every request "
             "it makes is refused at bind_request_org_context. Re-run with "
-            "--organization-id <org-id> (the id provision_sso_org.py reported for "
+            "--organization-id <org-id> (the id fm-provision-sso-org reported for "
             "that tenant, or the one in your operator records)."
         )
 

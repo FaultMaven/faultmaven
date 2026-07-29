@@ -62,7 +62,7 @@ def test_operator_role_set_carries_both_axes():
     """The provisioned operator holds the operator role AND the org admin role.
 
     Every provisioning path (bootstrap seed, `create_user.py`,
-    `promote_to_platform_admin.py`) consumes this one list, so they cannot
+    `fm-promote-platform-admin`) consumes this one list, so they cannot
     produce operators with unequal in-org authority.
     """
     assert PLATFORM_ADMIN_ROLE in PLATFORM_ADMIN_ROLE_SET

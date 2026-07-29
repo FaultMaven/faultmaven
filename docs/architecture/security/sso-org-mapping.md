@@ -165,7 +165,7 @@ claim — fail-closed, not silently healed.
 
 ## Provisioning
 
-`scripts/auth/provision_sso_org.py` idempotently creates the enterprise, the
+`fm-provision-sso-org` idempotently creates the enterprise, the
 organization, its default team, and the mapping row. It runs with the RLS-owning
 database role because it writes rows for a tenant that does not exist yet, and it
 refuses to remap an IdP organization that already points at a different
