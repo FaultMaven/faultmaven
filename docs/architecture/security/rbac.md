@@ -171,6 +171,25 @@ organization — the same rule the request front door applies in
 `api/middleware/tenant_scope.py`. Enforcing it in both places keeps the guarantee
 independent of which dependencies a given router mounts.
 
+**One predicate, two enforcement styles.** "Is this a usable tenant?" is decided
+in exactly one place — `config.tenant_context.usable_tenant_id`, which answers
+`None` for an absent org and for the Standalone sentinel under
+`TENANT_PROVIDER=multi`. `require_actor_organization` turns that `None` into a
+403. The case read allowlist (`CaseService._resolve_shared_case_ids`,
+`_resolve_team_filter_case_ids`) instead collapses its shared arm to the empty
+set: **degrading is deliberate there**, because those arms already collapse on
+every other resolution failure and narrowing an allowlist is the fail-closed
+direction — the owner arm still answers, so the listing narrows rather than
+breaks. What neither may do is *query with the sentinel as the predicate*.
+
+That distinction is why the contextvar has two readers. `get_current_org_id` is
+total — its default *is* the sentinel — so it can never be the subject of a
+fail-closed guard; `if not get_current_org_id()` is unreachable code. Anywhere
+the value becomes a query predicate, read `get_current_tenant_id`, which applies
+`usable_tenant_id` first. An execution context that never bound a tenant (a
+background task that did not inherit the request context) reads as the sentinel,
+and under multi the sentinel is not a tenant.
+
 *Rejected alternative: scoping the trusted load itself — it backs the write-policy
 check and internal ingestion, neither of which has an actor to scope by.*
 

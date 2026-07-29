@@ -11,20 +11,36 @@ Companion rule: ``docs/architecture/security/rbac.md`` — "Tenant-Scoped
 Resolution".
 """
 
-from unittest.mock import AsyncMock, MagicMock
+import contextvars
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.config.tenant_context import (
+    get_current_org_id,
+    get_current_tenant_id,
+    set_current_org_id,
+    usable_tenant_id,
+)
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
     resolve_shared_kb_ids,
 )
+from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 
 ORG_A = "org-alpha-11111111"
 ORG_B = "org-beta-22222222"
+
+_SINGLE = patch(
+    "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+    return_value=BUILTIN_SINGLE,
+)
+_MULTI = patch(
+    "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+    return_value=BUILTIN_MULTI,
+)
 
 
 def _share_repo(returns=("kb-shared",)):
@@ -223,3 +239,134 @@ async def test_team_filter_facet_without_a_tenant_resolves_empty(restore_org_con
 
     assert await service._resolve_team_filter_case_ids("u1", "team-1") == []
     repo.list_resource_ids.assert_not_awaited()
+
+
+# =============================================================================
+# The sentinel is not a tenant under multi — the guard that makes the guard real
+# =============================================================================
+#
+# ``get_current_org_id`` is TOTAL: the contextvar's default is the Standalone
+# sentinel, so it never returns a falsy value and ``if not org`` behind it is
+# unreachable code. The tests above set the contextvar to "" to exercise the
+# guard — a state the running system cannot actually reach. These pin the state
+# it CAN reach: an execution context that never bound a tenant, under
+# ``TENANT_PROVIDER=multi``, where the sentinel identifies the deployment and is
+# not an organization. Reading through ``get_current_tenant_id`` is what turns
+# the dead guard into a live one.
+
+
+@pytest.mark.security
+def test_an_unbound_execution_context_reads_as_the_standalone_sentinel():
+    """The premise of every test below: 'never bound' and 'bound to the sentinel'
+    are the same read, because the sentinel is the contextvar's default. A fresh
+    ``Context`` is a genuinely unbound one — nothing has set the var in it."""
+    assert contextvars.Context().run(get_current_org_id) == STANDALONE_ORG_ID
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("org", [ORG_A, ORG_B, "org-3"])
+def test_a_real_org_is_a_usable_tenant_under_either_provider(org):
+    with _SINGLE:
+        assert usable_tenant_id(org) == org
+    with _MULTI:
+        assert usable_tenant_id(org) == org
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("falsy_org", ["", None])
+def test_no_org_is_never_a_usable_tenant(falsy_org):
+    with _SINGLE:
+        assert usable_tenant_id(falsy_org) is None
+    with _MULTI:
+        assert usable_tenant_id(falsy_org) is None
+
+
+@pytest.mark.security
+def test_the_sentinel_is_a_tenant_under_single_and_not_under_multi():
+    """The whole rule, in one assertion pair — the same predicate the API layer's
+    ``require_actor_organization`` refuses on, shared so the two cannot drift."""
+    with _SINGLE:
+        assert usable_tenant_id(STANDALONE_ORG_ID) == STANDALONE_ORG_ID
+    with _MULTI:
+        assert usable_tenant_id(STANDALONE_ORG_ID) is None
+
+
+@pytest.mark.security
+def test_the_context_read_applies_the_same_rule(restore_org_context):
+    set_current_org_id(STANDALONE_ORG_ID)
+    with _SINGLE:
+        assert get_current_tenant_id() == STANDALONE_ORG_ID
+    with _MULTI:
+        assert get_current_tenant_id() is None
+
+
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_an_unbound_context_under_multi_collapses_the_case_allowlist(
+    restore_org_context,
+):
+    """A background task that did not inherit the request context reads as the
+    sentinel. Under multi that is not a tenant, so the shared-cases arm collapses
+    to empty — it must NOT query with the sentinel as the org predicate, which
+    would be the sentinel used as a tenant."""
+    set_current_org_id(STANDALONE_ORG_ID)  # == the unbound default, pinned above
+    repo = _share_repo(["case-shared"])
+    service = _case_service(repo)
+
+    with _MULTI:
+        assert await service._resolve_shared_case_ids("u1") == []
+    repo.list_resource_ids.assert_not_awaited()
+
+
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_the_sentinel_is_the_tenant_for_the_case_allowlist_under_single(
+    restore_org_context,
+):
+    """Positive half: in a Standalone deployment the sentinel IS the one tenant,
+    so refusing it everywhere would break single-tenant listing outright."""
+    set_current_org_id(STANDALONE_ORG_ID)
+    repo = _share_repo(["case-shared"])
+    service = _case_service(repo)
+
+    with _SINGLE:
+        assert await service._resolve_shared_case_ids("u1") == ["case-shared"]
+    repo.list_resource_ids.assert_awaited_once_with(
+        resource_type="case",
+        scope_type="team",
+        scope_ids=["team-1"],
+        organization_id=STANDALONE_ORG_ID,
+    )
+
+
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_an_unbound_context_under_multi_collapses_the_team_filter_facet(
+    restore_org_context,
+):
+    set_current_org_id(STANDALONE_ORG_ID)
+    repo = _share_repo(["case-1"])
+    service = _case_service(repo, teams=("team-1",))
+
+    with _MULTI:
+        assert await service._resolve_team_filter_case_ids("u1", "team-1") == []
+    repo.list_resource_ids.assert_not_awaited()
+
+
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_the_sentinel_is_the_tenant_for_the_team_filter_facet_under_single(
+    restore_org_context,
+):
+    set_current_org_id(STANDALONE_ORG_ID)
+    repo = _share_repo(["case-1"])
+    service = _case_service(repo, teams=("team-1",))
+
+    with _SINGLE:
+        assert await service._resolve_team_filter_case_ids("u1", "team-1") == ["case-1"]
+    repo.list_resource_ids.assert_awaited_once_with(
+        resource_type="case",
+        scope_type="team",
+        scope_ids=["team-1"],
+        organization_id=STANDALONE_ORG_ID,
+    )

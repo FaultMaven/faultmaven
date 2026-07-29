@@ -42,6 +42,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
     Both types indexed and searched uniformly for maximum knowledge reuse.
     """
 
+    #: Decorative — logged at init and nowhere else. The injected
+    #: ``ChromaDBVectorStore`` is bound to its own collection (the general KB's
+    #: ``faultmaven_kb`` by default) and this class never selects a collection,
+    #: so runbooks live alongside KB documents and the ``report_type ==
+    #: "runbook"`` metadata predicate in ``search_runbooks`` is the ONLY thing
+    #: separating them. Do not "simplify" that predicate away, and do not read
+    #: this constant as evidence of a dedicated collection (#912).
     COLLECTION_NAME = "faultmaven_runbooks"
     MIN_SIMILARITY_THRESHOLD = 0.65  # Minimum 65% similarity
 

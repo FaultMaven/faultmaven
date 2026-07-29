@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from faultmaven.config.tenant_context import get_current_org_id
+from faultmaven.config.tenant_context import get_current_org_id, get_current_tenant_id
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api_models import (
@@ -813,6 +813,18 @@ class CaseService(ICaseService):
         The org comes from the request-bound tenant context — the same value the
         case write path stamps and RLS scopes to — so a share row stamped with a
         foreign tenant is not an allowlist entry here.
+
+        Read via ``get_current_tenant_id``, not ``get_current_org_id``: the
+        latter is total (the contextvar defaults to the Standalone sentinel), so
+        a guard behind it can never fire, and under ``TENANT_PROVIDER=multi`` an
+        execution context that never bound a tenant would silently pass the
+        sentinel as the SQL predicate. **Deliberate choice of degrade over
+        raise**: this arm already collapses to owner-only on every other
+        failure, and narrowing an allowlist is fail-closed, so a tenantless
+        context loses the shared-cases arm rather than failing the whole
+        listing. The refusing counterpart, for paths that must not degrade, is
+        ``api/v1/auth_dependencies.require_actor_organization``; both decide
+        through the same ``usable_tenant_id`` predicate.
         """
         if not self.share_repository:
             return []
@@ -820,8 +832,13 @@ class CaseService(ICaseService):
             team_ids = await self._resolve_user_team_ids(user_id)
         if not team_ids:
             return []
-        organization_id = get_current_org_id()
+        organization_id = get_current_tenant_id()
         if not organization_id:
+            logger.warning(
+                "Case share allowlist collapsed to owner-only: execution context "
+                "carries no usable tenant (user=%s)",
+                user_id,
+            )
             return []
         try:
             return await self.share_repository.list_resource_ids(
@@ -1885,8 +1902,11 @@ class CaseService(ICaseService):
         ``team_id``: you can only filter by a Team you belong to, so probing an
         arbitrary team id surfaces nothing. Empty in standalone (no team_service).
         ``team_ids`` may be passed pre-resolved to avoid re-fetching membership.
-        Carries the same mandatory org predicate as ``_resolve_shared_case_ids``
-        and fails closed the same way.
+        Carries the same mandatory org predicate as ``_resolve_shared_case_ids``,
+        resolved through the same ``get_current_tenant_id`` (so an unbound
+        context under ``TENANT_PROVIDER=multi`` cannot pass the Standalone
+        sentinel as a predicate), and degrades to the empty facet the same
+        deliberate way.
         """
         if not user_id or not self.share_repository:
             return []
@@ -1894,8 +1914,14 @@ class CaseService(ICaseService):
             team_ids = await self._resolve_user_team_ids(user_id)
         if team_id not in team_ids:
             return []
-        organization_id = get_current_org_id()
+        organization_id = get_current_tenant_id()
         if not organization_id:
+            logger.warning(
+                "Team-filter facet resolved empty: execution context carries no "
+                "usable tenant (user=%s, team=%s)",
+                user_id,
+                team_id,
+            )
             return []
         return await self.share_repository.list_resource_ids(
             resource_type="case",

@@ -32,7 +32,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer
 
 from faultmaven.api.middleware.auth import get_auth_service
-from faultmaven.config.tenant_context import get_current_org_id
+from faultmaven.config.tenant_context import get_current_org_id, usable_tenant_id
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
@@ -484,21 +484,15 @@ def require_actor_organization(user: DevUser) -> str:
     it here as well keeps the guarantee independent of which dependencies a
     given router happens to mount.
 
+    The sentinel rule itself lives in ``config.tenant_context.usable_tenant_id``,
+    shared with the service-layer read paths that collapse to an empty allowlist
+    instead of raising. This function is only the *refusal* half; a second copy
+    of the rule would drift from it.
+
     Raises:
         HTTPException: 403 when the actor carries no usable organization.
     """
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.providers.tenancy.factory import (
-        BUILTIN_MULTI,
-        requested_tenant_provider,
-    )
-
-    organization_id = getattr(user, "organization_id", None)
-    if (
-        organization_id == STANDALONE_ORG_ID
-        and requested_tenant_provider() == BUILTIN_MULTI
-    ):
-        organization_id = None
+    organization_id = usable_tenant_id(getattr(user, "organization_id", None))
     if not organization_id:
         logger.warning(
             "Refusing unscoped request: user %s carries no organization",

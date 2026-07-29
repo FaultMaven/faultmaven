@@ -3,9 +3,17 @@
 ``search_runbooks`` resolves by similarity, not by id: nothing about the query
 names a tenant, so the ``organization_id`` predicate is the ONLY thing keeping
 one organization's runbooks out of another's results. These tests pin that it is
-mandatory, that it fails closed, and that it actually filters — the where clause
-is evaluated by real ChromaDB here, not by a hand-rolled stand-in that could
-agree with a wrong clause.
+mandatory, that it fails closed, and that it actually filters.
+
+**Both halves of the round trip are the real code.** Rows are written through
+the production ``ChromaDBVectorStore.add_documents`` — normalization included —
+and the ``where`` clause is evaluated by a real ephemeral ChromaDB. Neither half
+is negotiable: a stand-in that wrote raw metadata would prove isolation only on
+rows production cannot write (``report_type`` was being dropped on every real
+write, so "org B sees nothing" held because *nobody* saw anything), and a
+permissive fake would agree with a clause the engine rejects. Every isolation
+assertion is therefore paired with a positive one — the owning tenant *does* get
+its row — so total failure cannot masquerade as isolation.
 
 Companion rule: ``docs/architecture/security/rbac.md`` — "Tenant-Scoped
 Resolution".
@@ -17,6 +25,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.models.report import (
     CaseReport,
     ReportStatus,
@@ -40,45 +49,55 @@ def _vec(seed: float) -> List[float]:
     return [seed] * _DIM
 
 
-class _ChromaBackedStore:
-    """Vector-store double whose ``where`` semantics are real ChromaDB's.
+class _ChromaBackedStore(ChromaDBVectorStore):
+    """The **real** vector store, over an in-process ephemeral ChromaDB.
 
-    The point of using the real engine is that a clause ChromaDB rejects (the
-    multi-key implicit-AND form, refused since 1.0) or evaluates differently
-    fails here instead of quietly passing against a permissive fake.
+    Not a hand-written double. ``add_documents`` and ``query_by_embedding`` are
+    the production methods, so both halves of the round trip are real: writes
+    pass through the ``VectorMetadata`` normalization (an allowlist that silently
+    drops every key it does not declare) and the ``where`` clause is evaluated by
+    real ChromaDB, which rejects the multi-key implicit-AND form outright rather
+    than quietly ANDing it.
+
+    That matters more than it looks. A double that wrote raw metadata straight
+    into the collection would prove the isolation property only on rows
+    production cannot write — ``report_type`` was in fact being dropped on every
+    real write, so the guard was passing against fictional data. Only the query
+    half is overridden here, and only to record the clause.
     """
 
     def __init__(self, name: str):
         import chromadb
 
-        self._client = chromadb.EphemeralClient()
-        self._collection = self._client.get_or_create_collection(name)
+        super().__init__(chromadb.EphemeralClient(), collection_name=name)
         self.queries: List[Optional[Dict[str, Any]]] = []
 
-    def seed(self, doc_id: str, metadata: Dict[str, Any], embedding: List[float]):
-        self._collection.add(
-            ids=[doc_id],
+    async def seed(
+        self, doc_id: str, metadata: Dict[str, Any], embedding: List[float]
+    ) -> None:
+        """Write a row **the way production writes one** — normalization included."""
+        await self.add_documents(
+            [{"id": doc_id, "content": f"# Runbook {doc_id}", "metadata": metadata}],
             embeddings=[embedding],
-            documents=[f"# Runbook {doc_id}"],
-            metadatas=[metadata],
         )
-
-    async def add_documents(self, documents, embeddings=None):
-        for i, doc in enumerate(documents):
-            self.seed(
-                doc["id"],
-                doc.get("metadata", {}),
-                embeddings[i] if embeddings else _vec(0.1),
-            )
 
     async def query_by_embedding(self, query_embedding, where=None, top_k=5):
         self.queries.append(where)
-        return self._collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            where=where,
-            include=["documents", "metadatas", "distances"],
+        return await super().query_by_embedding(
+            query_embedding, where=where, top_k=top_k
         )
+
+
+def _normalized(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Run a metadata dict through the exact normalization ``add_documents`` applies."""
+    vm = VectorMetadata(
+        **{
+            k: raw.get(k)
+            for k in VectorMetadata.model_fields
+            if k in raw or raw.get(k) is not None
+        }
+    )
+    return vm.to_chroma_metadata()
 
 
 def _runbook_metadata(organization_id: str, doc_id: str) -> Dict[str, Any]:
@@ -128,6 +147,54 @@ def _report(report_id: str) -> CaseReport:
 
 
 # =============================================================================
+# The round trip — the test that keeps the isolation property from being vacuous
+# =============================================================================
+
+
+@pytest.mark.security
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_org,other_org", [(ORG_A, ORG_B), (ORG_B, ORG_A)])
+async def test_an_indexed_runbook_round_trips_to_its_own_tenant_and_no_other(
+    kb, store, owner_org, other_org
+):
+    """Index through ``index_runbook``, retrieve through ``search_runbooks``.
+
+    Both directions are pinned deliberately:
+
+    * **positive** — the owner gets the row back. This is what proves the search
+      predicate matches what the *write path* actually stores. Without it, the
+      negative assertion below is satisfied by a search that returns nothing to
+      anyone, which is a dead gate, not isolation. It is also the assertion that
+      fails if ``report_type`` is dropped by ``VectorMetadata`` normalization
+      again: the ``{"report_type": "runbook"}`` condition then matches no row
+      this path can write.
+    * **negative** — the other tenant gets nothing.
+
+    No hand-seeded metadata anywhere in this test: the row exists only because
+    the production writer put it there.
+    """
+    with patch(
+        "faultmaven.infrastructure.model_cache.model_cache.aembed_query",
+        AsyncMock(return_value=_vec(0.5)),
+    ):
+        await kb.index_runbook(_report("rb-round-trip"), organization_id=owner_org)
+
+    mine = await kb.search_runbooks(
+        query_embedding=_vec(0.5), organization_id=owner_org, min_similarity=0.0
+    )
+    theirs = await kb.search_runbooks(
+        query_embedding=_vec(0.5), organization_id=other_org, min_similarity=0.0
+    )
+
+    assert [r.runbook.report_id for r in mine] == ["rb-round-trip"], (
+        "the runbook the production write path just indexed must come back to "
+        "its own tenant — a search that returns nothing to everyone proves no "
+        "isolation at all"
+    )
+    assert theirs == []
+
+
+# =============================================================================
 # The isolation property
 # =============================================================================
 
@@ -153,7 +220,7 @@ async def test_a_runbook_is_never_returned_to_another_tenant(
     (report_type, domain) and sits at distance 0 from the query vector, so it
     WOULD be returned but for the org predicate.
     """
-    store.seed("rb-owned", _runbook_metadata(owner_org, "rb-owned"), _vec(0.5))
+    await store.seed("rb-owned", _runbook_metadata(owner_org, "rb-owned"), _vec(0.5))
 
     mine = await kb.search_runbooks(
         query_embedding=_vec(0.5), organization_id=owner_org, min_similarity=0.0
@@ -173,8 +240,8 @@ async def test_a_runbook_is_never_returned_to_another_tenant(
 @pytest.mark.asyncio
 async def test_search_returns_only_the_searching_tenants_rows(kb, store):
     """Two otherwise-identical runbooks, one per tenant: each search sees one."""
-    store.seed("rb-a", _runbook_metadata(ORG_A, "rb-a"), _vec(0.5))
-    store.seed("rb-b", _runbook_metadata(ORG_B, "rb-b"), _vec(0.5))
+    await store.seed("rb-a", _runbook_metadata(ORG_A, "rb-a"), _vec(0.5))
+    await store.seed("rb-b", _runbook_metadata(ORG_B, "rb-b"), _vec(0.5))
 
     a = await kb.search_runbooks(
         query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0, top_k=10
@@ -195,9 +262,9 @@ async def test_domain_filter_narrows_within_a_tenant_and_never_widens_across(kb,
     b_db = _runbook_metadata(ORG_B, "b-db")
     a_net = _runbook_metadata(ORG_A, "a-net")
     a_net["domain"] = "network"
-    store.seed("a-db", a_db, _vec(0.5))
-    store.seed("b-db", b_db, _vec(0.5))
-    store.seed("a-net", a_net, _vec(0.5))
+    await store.seed("a-db", a_db, _vec(0.5))
+    await store.seed("b-db", b_db, _vec(0.5))
+    await store.seed("a-net", a_net, _vec(0.5))
 
     got = await kb.search_runbooks(
         query_embedding=_vec(0.5),
@@ -221,7 +288,7 @@ async def test_search_without_a_tenant_returns_nothing_and_issues_no_query(
     kb, store, falsy_org
 ):
     """Sweep every falsy org: no results AND no query — never an unscoped one."""
-    store.seed("rb-a", _runbook_metadata(ORG_A, "rb-a"), _vec(0.5))
+    await store.seed("rb-a", _runbook_metadata(ORG_A, "rb-a"), _vec(0.5))
 
     got = await kb.search_runbooks(
         query_embedding=_vec(0.5), organization_id=falsy_org, min_similarity=0.0
@@ -243,13 +310,22 @@ async def test_search_is_impossible_without_naming_a_tenant(kb):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("falsy_org", ["", None])
 async def test_indexing_without_a_tenant_writes_nothing(kb, store, falsy_org):
-    """An untenanted row is unreachable by every scoped search, so refuse to write it."""
+    """An untenanted row is unreachable by every scoped search, so refuse to write it.
+
+    The load-bearing assertion is ``count() == 0`` — *nothing was written*.
+    "No search returns it" is true either way and proves nothing on its own: the
+    normalization drops an empty tenant stamp, so a row written without the
+    refusal is simply an orphan no scoped query can ever reach. Orphaned storage
+    growth that no reader can see is the failure this refusal exists to prevent,
+    so the count is what has to be pinned.
+    """
     with patch(
         "faultmaven.infrastructure.model_cache.model_cache.aembed_query",
         AsyncMock(return_value=_vec(0.5)),
     ):
         await kb.index_runbook(_report("rb-x"), organization_id=falsy_org)
 
+    assert store.collection.count() == 0, "an org-less index must write no row at all"
     got = await kb.search_runbooks(
         query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
     )
@@ -271,7 +347,7 @@ async def test_index_runbook_stamps_the_tenant(kb, store, org):
     ):
         await kb.index_runbook(_report("rb-1"), organization_id=org)
 
-    stored = store._collection.get(ids=["rb-1"], include=["metadatas"])
+    stored = store.collection.get(ids=["rb-1"], include=["metadatas"])
     assert stored["metadatas"][0]["organization_id"] == org
 
 
@@ -291,7 +367,7 @@ async def test_index_document_derived_runbook_stamps_the_tenant(kb, store, org):
             organization_id=org,
         )
 
-    stored = store._collection.get(ids=[runbook_id], include=["metadatas"])
+    stored = store.collection.get(ids=[runbook_id], include=["metadatas"])
     assert stored["metadatas"][0]["organization_id"] == org
 
 
@@ -304,12 +380,17 @@ def test_the_tenant_key_survives_vector_metadata_normalization(org):
     scoped search — an isolation guarantee that held only because nothing was
     ever returned. Pin that it round-trips.
     """
-    raw = _runbook_metadata(org, "rb-1")
-    vm = VectorMetadata(
-        **{
-            k: raw.get(k)
-            for k in VectorMetadata.model_fields
-            if k in raw or raw.get(k) is not None
-        }
-    )
-    assert vm.to_chroma_metadata()["organization_id"] == org
+    assert _normalized(_runbook_metadata(org, "rb-1"))["organization_id"] == org
+
+
+@pytest.mark.security
+def test_the_report_type_discriminator_survives_vector_metadata_normalization():
+    """``report_type`` is the only thing separating runbooks from KB documents.
+
+    ``RunbookKnowledgeBase.COLLECTION_NAME`` is decorative — the injected store is
+    bound to the general KB collection — so runbooks and documents share one
+    collection and ``search_runbooks`` relies on ``report_type == "runbook"`` to
+    tell them apart. A schema that drops it makes that predicate match nothing
+    the write path produced (#912).
+    """
+    assert _normalized(_runbook_metadata(ORG_A, "rb-1"))["report_type"] == "runbook"

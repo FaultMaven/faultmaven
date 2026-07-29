@@ -15,6 +15,7 @@ per request can import it without violating the api→infrastructure boundary
 """
 
 from contextvars import ContextVar
+from typing import Optional
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
 
@@ -31,5 +32,59 @@ def set_current_org_id(organization_id: str) -> None:
 
 
 def get_current_org_id() -> str:
-    """Return the current context's organization id (defaults to the Standalone org)."""
+    """Return the current context's organization id (defaults to the Standalone org).
+
+    **Total by construction** — the contextvar carries the Standalone sentinel as
+    its default, so this never returns a falsy value and ``if not
+    get_current_org_id()`` is unreachable code, not a guard. Use it where an org
+    is simply *needed* (the RLS ``begin`` binding, the case write stamp). Where
+    the value becomes a **query predicate**, use :func:`get_current_tenant_id`,
+    which answers ``None`` when the context holds no usable tenant.
+    """
     return _current_org_id.get()
+
+
+def usable_tenant_id(organization_id: Optional[str]) -> Optional[str]:
+    """Return ``organization_id`` iff it can serve as a tenant predicate, else ``None``.
+
+    The single place the "is this a real tenant?" question is decided. Both
+    enforcement styles read it, so they cannot drift: the API layer's
+    ``api/v1/auth_dependencies.require_actor_organization`` turns a ``None`` here
+    into a 403, and the service-layer read paths that already degrade turn it
+    into an empty allowlist.
+
+    Under ``TENANT_PROVIDER=multi`` the Standalone sentinel is **not** a tenant —
+    it identifies the single-tenant deployment. Refusing it here is what makes
+    the guard real: the contextvar's default *is* the sentinel, so an execution
+    context that never bound one (a background task that did not inherit the
+    request context) otherwise resolves to the sentinel and hands it to a query
+    as an ``organization_id`` predicate — the sentinel used as a tenant, the
+    exact inverse of failing closed. Under ``single`` the sentinel is the
+    deployment's one legitimate tenant and passes unchanged.
+    """
+    # Imported inside the function: ``providers`` reaches settings and the model
+    # layer, and ``config`` is the neutral leaf everything else imports.
+    from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
+        requested_tenant_provider,
+    )
+
+    if not organization_id:
+        return None
+    if (
+        organization_id == STANDALONE_ORG_ID
+        and requested_tenant_provider() == BUILTIN_MULTI
+    ):
+        return None
+    return organization_id
+
+
+def get_current_tenant_id() -> Optional[str]:
+    """Return the current context's org iff it is usable as a tenant predicate.
+
+    ``None`` means "this context carries no tenant" — the caller must refuse or
+    collapse, never query. This is the read to use anywhere the result becomes a
+    SQL or vector predicate; see :func:`usable_tenant_id` for why
+    :func:`get_current_org_id` cannot serve that role.
+    """
+    return usable_tenant_id(_current_org_id.get())
