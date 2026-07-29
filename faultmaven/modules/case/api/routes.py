@@ -3207,8 +3207,17 @@ async def close_case(
     """
     Close case and archive with reports.
 
-    Marks all latest reports as linked to case closure and transitions
-    case to CLOSED state.
+    Transitions the case to CLOSED through the engine's terminal executor
+    (CaseService.close_case → execute_user_closure): closure_reason is
+    engine-derived, closed_at is stamped, and an action-history entry is
+    recorded — the same closure rule as the chat-confirmed flow (#915; the
+    previous body set ``case.state`` directly, which the terminal-state
+    validator rejects, and then called a service method that didn't exist).
+
+    Then marks all latest reports as linked to the closure. Close-first
+    ordering: a refused close (404 unknown/not-owner, 409 already
+    terminal — mapped by the global exception handlers) must never mark
+    reports as closure-linked.
 
     Returns:
         CaseClosureResponse with list of archived reports
@@ -3217,89 +3226,64 @@ async def close_case(
 
     case_service = check_case_service_available(case_service)
 
-    try:
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+    closed_case = await case_service.close_case(case_id, current_user.user_id)
 
-        # Validate state — a case may be closed from any state except an
-        # already-closed one (CLOSED is terminal and unconditional; the only
-        # invalid close is re-closing). RESOLVED, INVESTIGATING and INQUIRY all
-        # close legitimately. (The prior list referenced CaseState.SOLVED /
-        # DOCUMENTING, which do not exist on the enum — every call raised
-        # AttributeError 500 before reaching this check.)
-        if case.state == CaseState.CLOSED:
-            raise HTTPException(
-                status_code=400,
-                detail="Case is already closed",
+    # Get current reports for closure (TD-001: via CaseRepository)
+    archived_reports = []
+    if case_repository:
+        try:
+            # Get only current reports (latest version of each type)
+            latest_reports = await case_repository.get_reports(
+                case_id=case_id,
+                only_current=True,  # Only current reports (latest version per type)
             )
 
-        # Get current reports for closure (TD-001: via CaseRepository)
-        archived_reports = []
-        if case_repository:
-            try:
-                # Get only current reports (latest version of each type)
-                latest_reports = await case_repository.get_reports(
-                    case_id=case_id,
-                    only_current=True,  # Only current reports (latest version per type)
+            if latest_reports:
+                # Mark each report as linked to closure
+                for report in latest_reports:
+                    # Update report to mark as linked to closure
+                    updated_report = report.model_copy(
+                        update={"linked_to_closure": True}
+                    )
+                    await case_repository.update_report(updated_report)
+
+                    # The linked CaseReport is the closure response payload
+                    # (CaseClosureResponse.archived_reports is List[CaseReport]).
+                    archived_reports.append(updated_report)
+
+                logger.info(
+                    f"Linked {len(latest_reports)} reports to case closure",
+                    extra={"case_id": case_id, "report_count": len(latest_reports)},
                 )
-
-                if latest_reports:
-                    # Mark each report as linked to closure
-                    for report in latest_reports:
-                        # Update report to mark as linked to closure
-                        updated_report = report.model_copy(
-                            update={"linked_to_closure": True}
-                        )
-                        await case_repository.update_report(updated_report)
-
-                        # The linked CaseReport is the closure response payload
-                        # (CaseClosureResponse.archived_reports is List[CaseReport]).
-                        archived_reports.append(updated_report)
-
-                    logger.info(
-                        f"Linked {len(latest_reports)} reports to case closure",
-                        extra={"case_id": case_id, "report_count": len(latest_reports)},
-                    )
-                else:
-                    logger.info(
-                        f"No reports to link for case closure",
-                        extra={"case_id": case_id},
-                    )
-
-            except Exception as e:
-                logger.warning(
-                    f"Failed to link reports to closure, continuing with case close: {e}",
+            else:
+                logger.info(
+                    f"No reports to link for case closure",
                     extra={"case_id": case_id},
                 )
-                # Continue closing case even if report linking fails
 
-        # Close case
-        closed_at = datetime.now(timezone.utc)
-        case.state = CaseState.CLOSED
-        await case_service.update_case_status(
-            case_id, CaseState.CLOSED, current_user.user_id
-        )
+        except Exception as e:
+            logger.warning(
+                f"Failed to link reports to closure, case is already closed: {e}",
+                extra={"case_id": case_id},
+            )
+            # The close itself committed; report linking is best-effort.
 
-        logger.info(
-            f"Case closed successfully",
-            extra={"case_id": case_id, "archived_report_count": len(archived_reports)},
-        )
+    logger.info(
+        f"Case closed successfully",
+        extra={"case_id": case_id, "archived_report_count": len(archived_reports)},
+    )
 
-        response = CaseClosureResponse(
-            case_id=case_id,
-            closed_at=to_json_compatible(closed_at),
-            archived_reports=archived_reports,
-            download_available_until=(closed_at + timedelta(days=90)).isoformat() + "Z",
-        )
+    response = CaseClosureResponse(
+        case_id=case_id,
+        closed_at=to_json_compatible(closed_case.closed_at),
+        archived_reports=archived_reports,
+        download_available_until=(
+            closed_case.closed_at + timedelta(days=90)
+        ).isoformat()
+        + "Z",
+    )
 
-        return response.model_dump()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Case closure failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    return response.model_dump()
 
 
 # Case archive endpoints removed in storage redesign 2026-05.

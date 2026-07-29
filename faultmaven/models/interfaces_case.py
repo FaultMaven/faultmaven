@@ -306,6 +306,27 @@ class ICaseService(ABC):
         pass
 
     @abstractmethod
+    async def close_case(self, case_id: str, user_id: str) -> Case:
+        """Close a case (user-initiated terminal transition, owner-only).
+
+        Implementations must route through the engine's closure executor
+        (derived closure_reason, closed_at, action history) — never mutate
+        ``case.state`` directly (#915).
+
+        Args:
+            case_id: Case identifier
+            user_id: Caller — must own the case
+
+        Returns:
+            The closed Case
+
+        Raises:
+            NotFoundError: Unknown case, or caller is not the owner
+            ConflictError: Case is already resolved/closed
+        """
+        pass
+
+    @abstractmethod
     async def add_message_to_case(
         self, case_id: str, message: CaseMessage, session_id: Optional[str] = None
     ) -> bool:

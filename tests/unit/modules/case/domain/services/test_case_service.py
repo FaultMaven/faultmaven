@@ -1283,3 +1283,107 @@ class TestCaseTeamFilter:
             CaseSearchRequest(query="db", team_id="team_a"), user_id="u"
         )
         assert mock_repo.search.await_args.kwargs["restrict_case_ids"] == ["c1"]
+
+
+# ============================================================
+# close_case (#915)
+# ============================================================
+
+
+class TestCloseCase:
+    """User-initiated close routes through the engine's terminal executor.
+
+    One closure rule for the REST and chat surfaces: engine-derived
+    closure_reason, closed_at stamped, action-history entry — set
+    atomically (the pre-#915 route mutated ``case.state`` directly and
+    was rejected by the terminal-state validator).
+    """
+
+    @pytest.mark.asyncio
+    async def test_closes_inquiry_case_with_derived_reason(self, service, mock_repo):
+        case = _make_case(user_id="user_123", state=CaseState.INQUIRY)
+        mock_repo.get.return_value = case
+
+        closed = await service.close_case(case.case_id, "user_123")
+
+        assert closed.state == CaseState.CLOSED
+        assert closed.closed_at is not None
+        assert closed.closure_reason == "inquiry_only"
+        assert closed.action_history[-1].to_state == CaseState.CLOSED
+        assert closed.action_history[-1].triggered_by == "user_123"
+        mock_repo.save.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_closes_investigating_case_with_derived_reason(
+        self, service, mock_repo
+    ):
+        case = _make_case(user_id="user_123", state=CaseState.INVESTIGATING)
+        mock_repo.get.return_value = case
+
+        closed = await service.close_case(case.case_id, "user_123")
+
+        assert closed.state == CaseState.CLOSED
+        assert closed.closure_reason == "closed_after_investigation"
+
+    @pytest.mark.asyncio
+    async def test_insufficient_evidence_close_keeps_honest_reason(
+        self, service, mock_repo
+    ):
+        from faultmaven.modules.case.domain.models import VerificationStatus
+
+        case = _make_case(user_id="user_123", state=CaseState.INVESTIGATING)
+        case.progress.verification_status = VerificationStatus.INSUFFICIENT_EVIDENCE
+        mock_repo.get.return_value = case
+
+        closed = await service.close_case(case.case_id, "user_123")
+
+        assert closed.closure_reason == "closed_insufficient_evidence"
+
+    @pytest.mark.asyncio
+    async def test_already_terminal_case_conflicts(self, service, mock_repo):
+        from faultmaven.exceptions import ConflictError
+
+        for terminal in (CaseState.CLOSED, CaseState.RESOLVED):
+            case = _make_case(user_id="user_123", state=terminal)
+            mock_repo.get.return_value = case
+
+            with pytest.raises(ConflictError):
+                await service.close_case(case.case_id, "user_123")
+
+    @pytest.mark.asyncio
+    async def test_concurrent_terminal_transition_conflicts(self, service, mock_repo):
+        """The retry mutator re-checks terminal state on each fresh load: a
+        close that lost the race to another terminal transition conflicts
+        instead of silently re-closing."""
+        from faultmaven.exceptions import ConflictError
+
+        open_case = _make_case(user_id="user_123", state=CaseState.INQUIRY)
+        closed_meanwhile = _make_case(user_id="user_123", state=CaseState.CLOSED)
+        # First get() serves the service's pre-check; the second serves
+        # update_case_with_retry's fresh load.
+        mock_repo.get.side_effect = [open_case, closed_meanwhile]
+
+        with pytest.raises(ConflictError):
+            await service.close_case(open_case.case_id, "user_123")
+        mock_repo.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_owner_gets_not_found(self, service, mock_repo):
+        """404-not-403 posture: existence is not disclosed to non-owners."""
+        from faultmaven.exceptions import NotFoundError
+
+        case = _make_case(user_id="someone_else")
+        mock_repo.get.return_value = case
+
+        with pytest.raises(NotFoundError):
+            await service.close_case(case.case_id, "user_123")
+        mock_repo.save.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_case_not_found(self, service, mock_repo):
+        from faultmaven.exceptions import NotFoundError
+
+        mock_repo.get.return_value = None
+
+        with pytest.raises(NotFoundError):
+            await service.close_case("case_missing000", "user_123")

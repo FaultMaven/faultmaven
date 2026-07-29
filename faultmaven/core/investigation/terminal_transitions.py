@@ -769,6 +769,30 @@ def _execute_closed_transition(case: Case, user_id: str, closure_reason: str):
     logger.info(f"Case {case.case_id} transitioned to CLOSED (terminal state)")
 
 
+def execute_user_closure(case: Case, user_id: str) -> str:
+    """Close a case outside the chat confirmation flow (REST close, #915).
+
+    The API call itself is the user's confirmation — there is no pending
+    proposal to confirm — so the closure_reason is derived at execution
+    time by the same rule the chat flow applies at propose time
+    (``derive_closure_reason``), and the transition runs through the same
+    executor as the chat close. One closure rule for both surfaces; the
+    previous REST route mutated ``case.state`` directly and died on the
+    terminal-state validator (no ``closed_at``).
+
+    Mutates ``case`` in place; the caller owns persistence. Returns the
+    derived closure_reason.
+
+    Raises:
+        ValueError: If the case is not in a closable (INQUIRY or
+            INVESTIGATING) state — callers should pre-check terminal
+            states and surface those as a conflict.
+    """
+    reason = derive_closure_reason(case)
+    _execute_closed_transition(case, user_id, reason)
+    return reason
+
+
 # ============================================================
 # RESOLUTION READINESS ASSESSMENT
 # ============================================================
