@@ -14,6 +14,50 @@ from faultmaven.models.interfaces import IVectorStore
 logger = logging.getLogger(__name__)
 
 
+def create_persistent_client(path: str) -> Any:
+    """Open the process-wide ChromaDB client for a local persist path.
+
+    chromadb caches one System per path and refuses a second client for that
+    path whose ``Settings`` differ *in any field* ("An instance of Chroma
+    already exists for <path> with different settings"). The container's KB
+    client and ``KnowledgeIngester`` both open ``data/chroma-kb``, so every
+    persistent client in the process is built here, with one set of settings —
+    two spellings of the same path is a startup crash, and was a cross-test
+    failure that surfaced hundreds of lines away from its cause (#823).
+
+    That constraint pulls towards granting whatever any call site asked for.
+    Do the opposite: reconciling call sites takes the NARROWER capability, and
+    every field is pinned rather than inherited, so the client is identified by
+    its path and nothing else. Widening here is silent — it grants a capability
+    to every caller of every path at once.
+    """
+    import os
+
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+
+    os.makedirs(path, exist_ok=True)
+    return chromadb.PersistentClient(
+        path=path,
+        settings=ChromaSettings(
+            anonymized_telemetry=False,
+            # No caller resets a collection — wiping the KB is a deliberate
+            # operator act, not an API the app should hold open. The ingester
+            # asked for allow_reset=True and the container's KB client did not;
+            # taking the ingester's value would have handed the KB client a
+            # destructive capability it never had, for nobody's benefit.
+            allow_reset=False,
+            # chromadb's Settings picks ``environment`` up from the ambient
+            # ENVIRONMENT variable — the same one that names OUR deployment
+            # environment — and it counts towards client identity. Left to the
+            # env, a process that reads ENVIRONMENT differently between two
+            # clients for one path gets the refusal above. Pinned, the client
+            # is identified by its path and nothing else.
+            environment="",
+        ),
+    )
+
+
 class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     """ChromaDB implementation of the IVectorStore interface.
 

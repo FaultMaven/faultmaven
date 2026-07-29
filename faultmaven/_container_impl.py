@@ -19,7 +19,6 @@ Key Components:
 """
 
 import logging
-import os
 import sys
 from datetime import datetime, timezone
 from typing import Any, List, Optional
@@ -101,8 +100,15 @@ class DIContainer(BaseDIContainer):
             instance.settings = None
         return instance
 
-    async def initialize(self):
-        """Initialize all dependencies with proper error handling (async for proper event loop handling)"""
+    async def initialize(self, allow_degraded: bool = False):
+        """Initialize all dependencies with proper error handling (async for proper event loop handling).
+
+        Args:
+            allow_degraded: opt in to the lenient path under pytest, where a
+                composition failure otherwise raises so it names itself (#823).
+                Never an escape from ``settings.must_not_degrade`` — a
+                deployment that must not degrade refuses either way.
+        """
         logger = logging.getLogger(__name__)
 
         if self._initialized:
@@ -168,28 +174,49 @@ class DIContainer(BaseDIContainer):
             if is_tenancy_refusal:
                 raise
 
-            # A cloud deployment must never serve a half-composed container
-            # (#885). Composition is ordered — infrastructure, then tools, then
-            # services — so an exception part-way through leaves every service
-            # registered after the failing line absent, while the pod keeps
-            # serving: the #629 flip rehearsal had readiness green and /health
-            # "healthy" with the whole service layer missing. Refuse the boot
-            # instead, so uvicorn exits, the pod CrashLoops and the rollout
+            # A deployment that must not degrade never serves a half-composed
+            # container (#885). Composition is ordered — infrastructure, then
+            # tools, then services — so an exception part-way through leaves
+            # every service registered after the failing line absent, while the
+            # pod keeps serving: the #629 flip rehearsal had readiness green and
+            # /health "healthy" with the whole service layer missing. Refuse the
+            # boot instead, so uvicorn exits, the pod CrashLoops and the rollout
             # rolls back. RuntimeError is the container's established fail-fast
             # channel: both the web lifespan and the jobs runner treat it as
-            # terminal. Deliberately NOT gated on ENVIRONMENT /
-            # SKIP_SERVICE_CHECKS / pytest — those escapes would defeat the
-            # guarantee exactly where it has to hold. Standalone keeps the
-            # lenient posture below, which dev and test ergonomics rely on.
-            if self.settings.is_cloud:
+            # terminal. Deliberately NOT gated on SKIP_SERVICE_CHECKS or pytest
+            # — those escapes would defeat the guarantee exactly where it has to
+            # hold. Anywhere else the lenient posture below applies, which dev
+            # ergonomics rely on.
+            if self.settings.must_not_degrade:
+                # The two fields do NOT behave alike. ``use_enum_values`` is set
+                # on FaultMavenSettings, so ``deployment_mode`` holds the plain
+                # str "cloud" and unwrapping it is defensive only. It is not set
+                # on ServerSettings, so ``server.environment`` holds the
+                # Environment MEMBER: formatting it unwrapped logs
+                # "Environment.PRODUCTION" at an operator (#827). Comparisons
+                # work either way — Environment subclasses str — which is
+                # exactly why the difference goes unnoticed until it is in a
+                # message.
+                mode = getattr(
+                    self.settings.deployment_mode,
+                    "value",
+                    self.settings.deployment_mode,
+                )
+                env = getattr(
+                    self.settings.server.environment,
+                    "value",
+                    self.settings.server.environment,
+                )
                 logger.critical(
                     "FAIL-FAST: DI container could not be composed under "
-                    "DEPLOYMENT_MODE=cloud. Refusing to serve a partial API."
+                    f"DEPLOYMENT_MODE={mode}/ENVIRONMENT={env}. "
+                    "Refusing to serve a partial API."
                 )
                 raise RuntimeError(
                     "DI Container initialization failed under "
-                    f"DEPLOYMENT_MODE=cloud: {e}. A partially composed container "
-                    "would serve an API missing whole service layers."
+                    f"DEPLOYMENT_MODE={mode}/ENVIRONMENT={env}: {e}. A partially "
+                    "composed container would serve an API missing whole "
+                    "service layers."
                 ) from e
 
             # Check if interfaces are available - if not, use minimal container
@@ -204,26 +231,16 @@ class DIContainer(BaseDIContainer):
 
                 logger.error(f"Critical initialization error: {traceback.format_exc()}")
 
-                # Fail-fast in production for critical infrastructure
-                # Allow graceful degradation only in development/test environments
-                is_production = os.getenv("ENVIRONMENT", "").lower() in (
-                    "production",
-                    "prod",
-                )
-                skip_service_checks = (
-                    os.getenv("SKIP_SERVICE_CHECKS", "").lower() == "true"
-                )
-                is_test = "pytest" in sys.modules
-
-                if is_production and not skip_service_checks and not is_test:
-                    # Fail-fast: raise exception to prevent half-initialized state
-                    logger.critical(
-                        "FAIL-FAST: Critical infrastructure initialization failed in production. Aborting startup."
-                    )
+                # Under pytest the lenient path costs more than it buys: the
+                # container returns normally with `_initialized` still False,
+                # and the real error is only in captured logs, so the failure
+                # re-surfaces as an unrelated `assert False is True` in
+                # whichever test reads container state next (#823). A test that
+                # wants the degraded container asks for it by name.
+                if "pytest" in sys.modules and not allow_degraded:
                     raise RuntimeError(
-                        f"DI Container initialization failed in production: {e}. "
-                        "Critical infrastructure (database, LLM registry) must be available. "
-                        "Check logs for details."
+                        f"DI Container initialization failed: {e}. Pass "
+                        "allow_degraded=True to exercise the degraded container."
                     ) from e
 
                 self._initialized = False

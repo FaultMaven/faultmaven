@@ -42,6 +42,9 @@ from docx import Document
 
 from faultmaven.infrastructure.model_cache import model_cache
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.persistence.chromadb_store import (
+    create_persistent_client,
+)
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
 
@@ -184,10 +187,10 @@ class KnowledgeIngester:
                 settings.database, "chromadb_kb_persist_dir", chroma_persist_directory
             )
             self.logger.info(f"Using ChromaDB PersistentClient at {kb_dir}")
-            self.chroma_client = chromadb.PersistentClient(
-                path=kb_dir,
-                settings=Settings(anonymized_telemetry=False, allow_reset=True),
-            )
+            # Through the shared factory: the container's KB client opens this
+            # same path, and chromadb refuses a second client for a path whose
+            # settings differ at all (#823).
+            self.chroma_client = create_persistent_client(kb_dir)
             self._collection = self.chroma_client.get_or_create_collection(
                 name="faultmaven_kb",
                 metadata={"description": "FaultMaven Knowledge Base"},

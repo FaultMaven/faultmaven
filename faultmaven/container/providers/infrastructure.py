@@ -266,10 +266,11 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
             )
 
     # Local: in-process persistent ChromaDB (always available)
-    import os
+    from faultmaven.infrastructure.persistence.chromadb_store import (
+        create_persistent_client,
+    )
 
-    os.makedirs(persist_dir, exist_ok=True)
-    client = chromadb.PersistentClient(path=persist_dir)
+    client = create_persistent_client(persist_dir)
     logger.info(f"✅ ChromaDB {label} client: PersistentClient @ {persist_dir}")
     return client
 

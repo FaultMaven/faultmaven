@@ -2570,6 +2570,30 @@ class FaultMavenSettings(BaseSettings):
         """True iff DEPLOYMENT_MODE=standalone (not cloud)."""
         return not self.is_cloud
 
+    @property
+    def must_not_degrade(self) -> bool:
+        """True iff this deployment must refuse to start rather than serve partially.
+
+        The single predicate the startup composition gates key on — the DI
+        container's composition refusal and the composition root. Spelling it
+        once is deliberate: "must not degrade" expressed two ways drifts, and
+        the drift is invisible until a pod serves half an API.
+
+        Cloud, because a partial API behind a green probe is exactly the
+        failure the CrashLoop/rollout-rollback path exists to prevent, and
+        because a cloud pod is never someone's laptop. ``ENVIRONMENT=production``
+        additionally, because an operator setting it has declared this is not a
+        development instance — that declaration is honoured whatever the
+        deployment mode. Everywhere else a partial application is a development
+        affordance: a self-hosted instance missing an optional service is still
+        useful to its single user, who can read the log.
+
+        Note ``ENVIRONMENT`` alone is NOT sufficient: the flip-rehearsal cloud
+        overlay runs ``ENVIRONMENT=staging``, which is how a composition failure
+        reached a serving pod (#885/#890).
+        """
+        return self.is_cloud or self.server.environment == Environment.PRODUCTION
+
     # ⚠️ ``use_enum_values`` means an Enum-ANNOTATED field holds the enum's
     # `.value` (a plain ``str``) at runtime, not the member. So
     # ``settings.deployment_mode`` is ``"standalone"``, and
