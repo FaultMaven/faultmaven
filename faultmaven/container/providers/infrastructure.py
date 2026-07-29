@@ -206,6 +206,18 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
         local_chroma_or_fail,
     )
 
+    # The skip branch goes THROUGH the gate rather than around it, mirroring
+    # create_redis_client: under cloud, one env var must not buy a pod its way
+    # out of the vector-store guarantee — a cloud process with no vector store
+    # is the degradation the gate exists to refuse. Standalone keeps the skip
+    # (returns None; downstream stores register as disabled).
+    if settings.server.skip_service_checks:
+        local_chroma_or_fail(
+            "SKIP_SERVICE_CHECKS=true skips ChromaDB entirely", settings
+        )
+        logger.info(f"Skipping ChromaDB {label} client (SKIP_SERVICE_CHECKS=True)")
+        return None
+
     # Dispatch: canonical value is "chromadb" (default). If the caller
     # configures CHROMADB_URL, we probe it via HttpClient; on failure,
     # standalone falls back to a local PersistentClient and cloud refuses
@@ -638,20 +650,19 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     # ChromaDB clients — split by lifecycle:
     #   KB client: permanent collections (faultmaven_kb, faultmaven_runbooks, knowledge_items)
     #   Evidence client: ephemeral per-case collections (case_{case_id})
-    if not settings.server.skip_service_checks:
-        kb_chromadb_client = create_kb_chromadb_client(settings)
-        evidence_chromadb_client = create_evidence_chromadb_client(settings)
+    # The factories own the SKIP_SERVICE_CHECKS branch (returning None on
+    # standalone, refusing under cloud) so the skip path cannot bypass the
+    # deployment gate — see _create_chromadb_client.
+    kb_chromadb_client = create_kb_chromadb_client(settings)
+    evidence_chromadb_client = create_evidence_chromadb_client(settings)
+    container.kb_chromadb_client = kb_chromadb_client
+    container.evidence_chromadb_client = evidence_chromadb_client
+    if kb_chromadb_client is not None:
         container._register_service("kb_chromadb_client", kb_chromadb_client)
+    if evidence_chromadb_client is not None:
         container._register_service(
             "evidence_chromadb_client", evidence_chromadb_client
         )
-        container.kb_chromadb_client = kb_chromadb_client
-        container.evidence_chromadb_client = evidence_chromadb_client
-    else:
-        kb_chromadb_client = None
-        evidence_chromadb_client = None
-        container.kb_chromadb_client = None
-        container.evidence_chromadb_client = None
 
     # Vector store (global KB) — uses KB client
     try:

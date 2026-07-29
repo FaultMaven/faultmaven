@@ -96,6 +96,31 @@ def test_cloud_legacy_storage_type_refuses():
         _create_chromadb_client(settings, "./data/ignored", "KB")
 
 
+def test_skip_service_checks_cannot_skip_the_gate_under_cloud(monkeypatch):
+    """SKIP_SERVICE_CHECKS must not buy a cloud pod its way past the vector
+    store — same principle as the Redis skip gate (#895): the skip branch goes
+    THROUGH the gate, not around it."""
+
+    def _must_not_be_called(*args, **kwargs):  # pragma: no cover - the assertion
+        raise AssertionError("no client may be built when skipping")
+
+    monkeypatch.setattr(chromadb, "HttpClient", _must_not_be_called)
+    settings = _settings(cloud=True, chromadb_url="http://chromadb:8000")
+    settings.server.skip_service_checks = True
+
+    with pytest.raises(ChromaUnavailableError, match="SKIP_SERVICE_CHECKS"):
+        _create_chromadb_client(settings, "./data/ignored", "KB")
+
+
+def test_skip_service_checks_still_skips_under_standalone():
+    """Standalone keeps the skip: no client, downstream stores register
+    disabled — dev and CI ergonomics depend on it."""
+    settings = _settings(cloud=False)
+    settings.server.skip_service_checks = True
+
+    assert _create_chromadb_client(settings, "./data/ignored", "KB") is None
+
+
 def test_cloud_reachable_server_returns_the_http_client(monkeypatch):
     """The gate must be able to PASS: with a reachable server, cloud gets the
     HttpClient and no refusal — proves the refusal branch is reachable-only."""
