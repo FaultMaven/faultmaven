@@ -383,16 +383,18 @@ class ICaseRepository(Protocol):
 
 
 class CaseStateDTO(str, Enum):
-    """Public case status enum for cross-module use."""
+    """Public case state enum for cross-module use.
+
+    MUST mirror ``domain.models.CaseState``, which is the single authority on
+    the lifecycle; the persistence enum mirrors it too. Adding a state means
+    changing all three plus a migration. Parity is enforced by
+    ``tests/unit/modules/case/test_case_state_dto_parity.py``.
+    """
 
     INQUIRY = "inquiry"
     INVESTIGATING = "investigating"
-    DOCUMENTING = "documenting"
     RESOLVED = "resolved"
-    RESOLVED_WITH_WORKAROUND = "resolved_with_workaround"
-    RESOLVED_BY_USER = "resolved_by_user"
     CLOSED = "closed"
-    ABANDONED = "abandoned"
 
 
 @dataclass
