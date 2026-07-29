@@ -147,6 +147,19 @@ The KB pipeline queries a single ChromaDB collection (`faultmaven_kb`) with a me
 
 `KnowledgeVectorStore.search()` and `hybrid_search()` accept the scope-`where` from the caller and reject any KB query that doesn't carry one (`ValueError`). Case evidence collections (`case_*`) are exempt from this check.
 
+### The Runbook Collection: Mandatory `organization_id`
+
+`faultmaven_runbooks` is a second, separate collection — the runbook-similarity corpus behind terminal-transition dedup and the report recommendation. It is not scoped the way `faultmaven_kb` is. A similarity query names no id and no owner, so a metadata predicate is the *only* isolation on this path, and it is the tenant:
+
+- `RunbookKnowledgeBase.search_runbooks` takes a **required** `organization_id` and ANDs `{"organization_id": <org>}` into the `where` clause alongside `{"report_type": "runbook"}` and the optional `{"domain": …}`. Callers source it from `Case.organization_id` — `CaseReport` carries no organization of its own.
+- With no organization it returns `[]` **without issuing a query**. It never falls back to a corpus-wide search.
+- `index_runbook` / `index_document_derived_runbook` stamp the same key and **refuse to write** without it: a row with no tenant is unreachable by every scoped search, so writing one would create silent, unattributed content rather than shared content.
+- `VectorMetadata` carries `organization_id` so the stamp survives the `ChromaDBVectorStore.add_documents` normalization step. A tenant key the schema dropped would leave the row invisible — an isolation guarantee that held only because nothing was ever returned.
+
+The clause is built as an explicit `$and` of single-key conditions. ChromaDB (>= 1.0) validates that a `where` mapping carries exactly one operator, so the multi-key implicit-AND form is rejected outright.
+
+This is the similarity half of the rule in [rbac.md "Tenant-Scoped Resolution"](../security/rbac.md#tenant-scoped-resolution); the id half is `get_document_visible` / `get_suggestion_visible`, and the allowlist half is the `organization_id` predicate on `resource_shares` in both directions of the share resolution.
+
 ### Chunking Strategy
 
 KB documents use structure-aware chunking. The ingestion pipeline splits on markdown structural boundaries:

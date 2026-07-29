@@ -462,6 +462,52 @@ async def require_platform_admin(
     return user
 
 
+# Refusal text for a request that carries no usable tenant. Identical to the
+# tenant-binding middleware's, so "you are not scoped to an organization" reads
+# the same wherever it is decided.
+UNSCOPED_REQUEST_MSG = "Request is not scoped to an organization."
+
+
+def require_actor_organization(user: DevUser) -> str:
+    """Return the tenant an actor's request resolves within — fail-closed.
+
+    Every id-addressed and every similarity-addressed lookup carries a mandatory
+    tenant predicate (``docs/architecture/security/rbac.md``, "Tenant-Scoped
+    Resolution"). This is where a route obtains that predicate, and it refuses
+    (403) rather than handing back ``None`` for a caller to degrade into an
+    unscoped query. Holding a cross-tenant role does not exempt a caller: an
+    operator still acts inside the organization they are bound to.
+
+    Under ``TENANT_PROVIDER=multi`` the Standalone sentinel is not a tenant — it
+    identifies the single-tenant deployment — so it is refused there too, the
+    same rule ``bind_request_org_context`` applies at the front door. Enforcing
+    it here as well keeps the guarantee independent of which dependencies a
+    given router happens to mount.
+
+    Raises:
+        HTTPException: 403 when the actor carries no usable organization.
+    """
+    from faultmaven.config.constants import STANDALONE_ORG_ID
+    from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
+        requested_tenant_provider,
+    )
+
+    organization_id = getattr(user, "organization_id", None)
+    if (
+        organization_id == STANDALONE_ORG_ID
+        and requested_tenant_provider() == BUILTIN_MULTI
+    ):
+        organization_id = None
+    if not organization_id:
+        logger.warning(
+            "Refusing unscoped request: user %s carries no organization",
+            getattr(user, "user_id", None),
+        )
+        raise HTTPException(status_code=403, detail=UNSCOPED_REQUEST_MSG)
+    return organization_id
+
+
 async def require_dev_user(user: DevUser = Depends(require_authentication)) -> DevUser:
     """Require authenticated development user
 

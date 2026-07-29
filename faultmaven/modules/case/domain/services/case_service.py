@@ -803,11 +803,16 @@ class CaseService(ICaseService):
         The "shared-to-my-teams" arm of the case read allowlist (ADR-013 §D4 /
         ADR-011 D3), the case analogue of ``resolve_shared_kb_ids``. Returns
         ``[]`` — collapsing the allowlist to owner-only — when there is no share
-        repository or the principal belongs to no teams. ``team_ids`` may be
-        passed pre-resolved by a caller that already fetched membership (the
-        team-filter path) to avoid a second lookup. Degrades gracefully on any
-        resolution error: the owner arm still works, so a share-lookup failure
-        narrows visibility (fail-closed) rather than leaking.
+        repository, the principal belongs to no teams, or the request carries no
+        organization. ``team_ids`` may be passed pre-resolved by a caller that
+        already fetched membership (the team-filter path) to avoid a second
+        lookup. Degrades gracefully on any resolution error: the owner arm still
+        works, so a share-lookup failure narrows visibility (fail-closed) rather
+        than leaking.
+
+        The org comes from the request-bound tenant context — the same value the
+        case write path stamps and RLS scopes to — so a share row stamped with a
+        foreign tenant is not an allowlist entry here.
         """
         if not self.share_repository:
             return []
@@ -815,11 +820,15 @@ class CaseService(ICaseService):
             team_ids = await self._resolve_user_team_ids(user_id)
         if not team_ids:
             return []
+        organization_id = get_current_org_id()
+        if not organization_id:
+            return []
         try:
             return await self.share_repository.list_resource_ids(
                 resource_type="case",
                 scope_type="team",
                 scope_ids=team_ids,
+                organization_id=organization_id,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to resolve shared case ids for {user_id}: {e}")
@@ -1876,6 +1885,8 @@ class CaseService(ICaseService):
         ``team_id``: you can only filter by a Team you belong to, so probing an
         arbitrary team id surfaces nothing. Empty in standalone (no team_service).
         ``team_ids`` may be passed pre-resolved to avoid re-fetching membership.
+        Carries the same mandatory org predicate as ``_resolve_shared_case_ids``
+        and fails closed the same way.
         """
         if not user_id or not self.share_repository:
             return []
@@ -1883,10 +1894,14 @@ class CaseService(ICaseService):
             team_ids = await self._resolve_user_team_ids(user_id)
         if team_id not in team_ids:
             return []
+        organization_id = get_current_org_id()
+        if not organization_id:
+            return []
         return await self.share_repository.list_resource_ids(
             resource_type="case",
             scope_type="team",
             scope_ids=[team_id],
+            organization_id=organization_id,
         )
 
     @trace("case_service_share_case_with_team")

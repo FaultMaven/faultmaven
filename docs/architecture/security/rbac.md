@@ -128,6 +128,52 @@ All regular user permissions, PLUS:
 
 ## Protected Endpoints
 
+### Tenant-Scoped Resolution
+
+Roles decide *what* a principal may do. They never decide *whose* data it
+applies to. That is a separate, mandatory predicate:
+
+> **Every path that resolves data by id or by similarity carries a tenant
+> predicate and fails closed.** No tenant context means no results and no
+> query — never an unscoped one. An id outside the caller's tenant answers
+> **404**, exactly as an absent id does.
+
+The three parts each close a different way of losing the predicate:
+
+- **By id.** The lookup is split in two: a *trusted* unscoped load with no actor
+  (`KnowledgeService.get_document`, `SuggestionService.get_suggestion`) used by
+  ingestion, extraction and the write-policy check, and an *actor-facing* scoped
+  load (`get_document_visible`, `get_suggestion_visible`) that every route uses.
+  The scoped form takes a required `organization_id` and returns nothing for an
+  absent id and for an out-of-tenant id alike, so no caller can tell them apart.
+- **By similarity.** A vector query names no id, so the metadata predicate is the
+  only isolation there is. `RunbookKnowledgeBase.search_runbooks` requires an
+  `organization_id`, ANDs it into the ChromaDB `where` clause, and returns `[]`
+  without querying when it has none. Indexing refuses to write a row without the
+  same key — an untenanted row is unreachable by every scoped search.
+- **By allowlist.** Team visibility resolves to a set of ids in SQL
+  (`resource_shares`). Both directions of that resolution — the inventory
+  clause's share sub-select and `IShareRepository.list_resource_ids` — match the
+  share row's own `organization_id`, so a row stamped with a foreign tenant
+  grants nothing.
+
+**404, not 403.** A refusal that distinguishes "you may not see this" from "this
+does not exist" is an existence oracle: it confirms an id, and with it the shape
+of another tenant's data. Out-of-tenant and absent therefore share one status and
+one message on every id-addressed route.
+
+**403 only for a caller with no tenant at all.** `require_actor_organization`
+resolves the actor's organization and refuses (403) rather than returning `None`
+for a caller to degrade into an unscoped query. That refusal does not depend on
+the requested id, so it is not an oracle. Under `TENANT_PROVIDER=multi` the
+Standalone sentinel is refused too: there it identifies the deployment, not an
+organization — the same rule the request front door applies in
+`api/middleware/tenant_scope.py`. Enforcing it in both places keeps the guarantee
+independent of which dependencies a given router mounts.
+
+*Rejected alternative: scoping the trusted load itself — it backs the write-policy
+check and internal ingestion, neither of which has an actor to scope by.*
+
 ### Admin-Only Endpoints
 
 Publishing into the Global KB requires the `platform_admin` role:
@@ -160,6 +206,23 @@ despite their identical messages. Per-target `errors` carry no exception text.
 | DELETE | `/api/v1/knowledge/documents/{id}` | Delete a document | Owner, or platform operator |
 | POST | `/api/v1/knowledge/documents/bulk-update` | Bulk update documents | Per target, as above |
 | POST | `/api/v1/knowledge/documents/bulk-delete` | Bulk delete documents | Per target, as above |
+
+### Suggestion Review
+
+Knowledge suggestions extracted from cases. Every route requires
+`platform_admin` **and** resolves inside the caller's organization per
+[Tenant-Scoped Resolution](#tenant-scoped-resolution): an id belonging to
+another tenant answers 404 and nothing is written. Approval additionally
+publishes at global scope, so it carries the global-tier authoring gate.
+
+| Method | Endpoint | Description | Required Role |
+|--------|----------|-------------|---------------|
+| GET | `/api/v1/knowledge/suggestions` | List the caller's org's suggestions | `platform_admin`, own org only |
+| GET | `/api/v1/knowledge/suggestions/{id}` | Suggestion detail | `platform_admin`; 404 if out of tenant |
+| PUT | `/api/v1/knowledge/suggestions/{id}` | Edit before approval | `platform_admin`; 404 if out of tenant |
+| POST | `/api/v1/knowledge/suggestions/{id}/approve` | Approve → knowledge item | `platform_admin` + global-authoring gate; 404 if out of tenant |
+| POST | `/api/v1/knowledge/suggestions/{id}/reject` | Reject with reason | `platform_admin`; 404 if out of tenant |
+| POST | `/api/v1/knowledge/suggestions/{id}/remediate-pii` | Mark PII remediated | `platform_admin`; 404 if out of tenant |
 
 ### Public Endpoints (All Authenticated Users)
 

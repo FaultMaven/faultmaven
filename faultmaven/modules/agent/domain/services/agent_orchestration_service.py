@@ -455,12 +455,15 @@ class AgentOrchestrationService:
                     pass  # Graceful degradation — global + personal still work
 
             shared_kb_ids: list[str] = []
-            if team_ids and self.share_repository:
+            if team_ids and self.share_repository and organization_id:
                 try:
                     shared_kb_ids = await self.share_repository.list_resource_ids(
                         resource_type="knowledge_item",
                         scope_type="team",
                         scope_ids=team_ids,
+                        # The share row must be stamped with this tenant; a row
+                        # carrying a foreign org grants no allowlist entry.
+                        organization_id=organization_id,
                     )
                 except Exception:
                     pass  # Graceful degradation

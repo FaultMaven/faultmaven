@@ -117,13 +117,17 @@ class ReportRecommendationService:
         case: Case,
     ) -> List[SimilarRunbook]:
         """
-        Find existing runbooks similar to current case.
+        Find existing runbooks similar to current case, within the case's tenant.
 
         Uses semantic similarity search on:
         - Problem description
         - Root cause (if available)
         - Resolution steps (if available)
         - Domain/technology tags
+
+        The tenant key comes from ``case.organization_id`` — a similarity search
+        is an id-free resolution path, so the org predicate is the only thing
+        keeping another tenant's runbooks out of the result set.
 
         Args:
             case: Case object
@@ -143,6 +147,7 @@ class ReportRecommendationService:
             # Search knowledge base for similar runbooks
             similar_runbooks = await self.runbook_kb.search_runbooks(
                 query_embedding=query_embedding,
+                organization_id=case.organization_id,
                 filters=filters,
                 top_k=5,  # Get top 5 matches
                 min_similarity=0.65,  # Minimum 65% similarity threshold

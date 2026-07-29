@@ -116,17 +116,23 @@ class ISuggestionService(Protocol):
     async def get_suggestion(
         self, suggestion_id: str
     ) -> Optional["KnowledgeSuggestion"]:
-        """Get a suggestion by ID."""
+        """Get a suggestion by ID — UNSCOPED trusted load (no actor)."""
+        ...
+
+    async def get_suggestion_visible(
+        self, suggestion_id: str, *, organization_id: str
+    ) -> Optional["KnowledgeSuggestion"]:
+        """Get a suggestion by ID, scoped to the actor's tenant (None if out of scope)."""
         ...
 
     async def list_suggestions(
         self,
-        organization_id: Optional[str] = None,
+        organization_id: str,
         status: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> Dict[str, Any]:
-        """List suggestions with filtering."""
+        """List one organization's suggestions (org REQUIRED, fail-closed)."""
         ...
 
     async def approve_suggestion(
@@ -134,6 +140,8 @@ class ISuggestionService(Protocol):
         suggestion_id: str,
         reviewed_by: str,
         review_notes: Optional[str] = None,
+        *,
+        organization_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Approve a suggestion and create a knowledge item."""
         ...
@@ -144,6 +152,8 @@ class ISuggestionService(Protocol):
         reviewed_by: str,
         rejection_reason: str,
         review_notes: Optional[str] = None,
+        *,
+        organization_id: str,
     ) -> bool:
         """Reject a suggestion."""
         ...

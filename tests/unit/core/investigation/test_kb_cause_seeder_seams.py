@@ -491,7 +491,11 @@ async def test_prefetch_team_arm_uses_owner_shared_runbooks():
     # Teams resolved for the CASE OWNER, not any session user.
     engine.team_service.list_all_user_team_ids.assert_awaited_once_with("owner_b")
     engine.share_repository.list_resource_ids.assert_awaited_once_with(
-        resource_type="knowledge_item", scope_type="team", scope_ids=["team_1"]
+        resource_type="knowledge_item",
+        scope_type="team",
+        scope_ids=["team_1"],
+        # The share row must belong to the CASE's tenant (#879).
+        organization_id="o",
     )
 
 

@@ -26,6 +26,12 @@ class VectorMetadata(BaseModel):
     # unshare (it would match no filter branch). ADR-013 §D4 / ADR-011 D3.
     scope: Optional[str] = None
     owner_id: Optional[str] = None
+    # Owning tenant. Collections whose retrieval carries a mandatory tenant
+    # predicate (the runbook collection — see ``RunbookKnowledgeBase``) filter on
+    # this key, so it has to survive normalization: a stamp this schema dropped
+    # would leave the row unreachable by every scoped search. Unset on
+    # collections that scope by ``scope``/``owner_id`` instead.
+    organization_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # RAG-enrichment fields: extracted from runbook frontmatter at ingestion
@@ -57,6 +63,7 @@ class VectorMetadata(BaseModel):
         "source_url",
         "scope",
         "owner_id",
+        "organization_id",
         "domain",
         "service",
         "last_updated",
@@ -86,6 +93,8 @@ class VectorMetadata(BaseModel):
             data["scope"] = self.scope
         if self.owner_id:
             data["owner_id"] = self.owner_id
+        if self.organization_id:
+            data["organization_id"] = self.organization_id
         if self.created_at:
             data["created_at"] = to_json_compatible(self.created_at)
         if self.updated_at:
