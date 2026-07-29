@@ -78,13 +78,24 @@ spec:
 ```
 
 **Metrics:**
-- `evidence.orphaned_files_found` (gauge)
-- `evidence.orphaned_files_cleaned` (gauge)
-- `evidence.orphaned_files_failed` (counter)
+
+Declared in `faultmaven/infrastructure/observability/evidence_metrics.py` and emitted by the job
+(canonical reference: [`docs/operations/monitoring/evidence-metrics.md`](monitoring/evidence-metrics.md)):
+
+- `faultmaven_evidence_orphan_files_found_total` (counter)
+- `faultmaven_evidence_orphan_files_deleted_total` (counter)
+
+There is no per-file deletion-failure counter; failures are logged
+(`Failed to delete orphan …`) but not currently emitted as a metric.
 
 **Alerts:**
-- Orphaned files >50: Warning (systematic processing failures)
-- Deletion failures >5/day: Warning (storage backend issues)
+
+- Orphaned files >50: Warning (systematic processing failures) — alert on
+  `increase(faultmaven_evidence_orphan_files_found_total[24h])`
+- A large found/deleted gap: Warning (storage backend rejecting deletes) — compare
+  `faultmaven_evidence_orphan_files_found_total` against
+  `faultmaven_evidence_orphan_files_deleted_total`; there is no direct
+  failure counter to alert on
 
 **Expected Behavior:**
 - Typical run: 0-5 orphaned files (transient failures)
@@ -381,7 +392,10 @@ sudo systemctl list-timers faultmaven-storage-cleanup.timer
 
 ## Kubernetes CronJob Configuration
 
-**File:** `k8s/cronjobs/storage-cleanup.yaml`
+**Deployed manifest:** `kubernetes/apps/faultmaven/base/cronjobs/storage-cleanup.yaml`
+in the **`faultmaven-enterprise-infra`** repository — that file is authoritative.
+The block below is an annotated illustration of it; label selectors and mount
+names match, but check the real manifest before editing anything in-cluster.
 
 ```yaml
 apiVersion: batch/v1
@@ -390,8 +404,10 @@ metadata:
   name: faultmaven-storage-cleanup
   namespace: faultmaven
   labels:
-    app: faultmaven
-    component: jobs
+    app: faultmaven-storage-cleanup
+    app.kubernetes.io/name: faultmaven-storage-cleanup
+    app.kubernetes.io/component: cronjob
+    app.kubernetes.io/part-of: faultmaven
 spec:
   schedule: "0 2 * * *"
   concurrencyPolicy: Forbid  # Don't run if previous job still running
@@ -403,13 +419,19 @@ spec:
       template:
         metadata:
           labels:
-            app: faultmaven
-            component: storage-cleanup
+            app: faultmaven-storage-cleanup
+            app.kubernetes.io/name: faultmaven-storage-cleanup
+            app.kubernetes.io/component: cronjob
+            # part-of=faultmaven is load-bearing, not decorative: it is what the
+            # NetworkPolicies admit to MinIO and to the PostgreSQL primary.
+            app.kubernetes.io/part-of: faultmaven
         spec:
           restartPolicy: OnFailure
 
-          # Service account with storage permissions
-          serviceAccountName: faultmaven-jobs
+          # No serviceAccountName: the job runs as the namespace `default`
+          # ServiceAccount. It needs no Kubernetes API access — storage
+          # credentials arrive as environment variables from the Secret below,
+          # not from RBAC.
 
           containers:
           - name: storage-cleanup
@@ -451,9 +473,12 @@ spec:
                 cpu: "500m"
 ```
 
-**Deploy:**
+**Deploy:** the CronJobs are part of the `faultmaven` kustomize base and are
+applied by the CD pipeline, not by hand. To apply from a workstation, run this
+from a `faultmaven-enterprise-infra` checkout:
+
 ```bash
-kubectl apply -f k8s/cronjobs/storage-cleanup.yaml
+kubectl apply -k kubernetes/apps/faultmaven/overlays/staging   # or onprem / flip-rehearsal
 
 # Check status
 kubectl get cronjobs -n faultmaven
@@ -469,7 +494,10 @@ kubectl logs -n faultmaven job/faultmaven-storage-cleanup-<timestamp>
 
 For local development with Docker Compose:
 
-**File:** `docker-compose.jobs.yml`
+**File to create:** `docker-compose.jobs.yml` — not shipped in this repository;
+the committed compose files are `docker-compose.yml` plus the `*-build.yml`
+layers. Create it yourself from the template below if you want a compose-driven
+job runner.
 
 ```yaml
 version: '3.8'
@@ -503,7 +531,9 @@ services:
 
 ### Prometheus Scrape Configuration
 
-**File:** `prometheus/prometheus.yml`
+Example `prometheus.yml` — this repository ships no Prometheus configuration; the
+deployed scrape config is owned by the monitoring stack in
+`faultmaven-enterprise-infra`.
 
 ```yaml
 global:
@@ -523,24 +553,21 @@ scrape_configs:
 
 Alert rules are defined in the infrastructure monitoring layer.
 
-> **Note**: `faultmaven/infrastructure/observability/evidence_metrics.py` was removed during codebase cleanup. Evidence metrics are now tracked via the general observability stack (`infrastructure/observability/`).
-
-**Copy to Prometheus:**
-```bash
-cp evidence_alerts.yml /etc/prometheus/rules/
-sudo systemctl reload prometheus
-```
+> **Canonical alert definitions:** [`docs/operations/monitoring/evidence-metrics.md`](monitoring/evidence-metrics.md).
+> Metric *definitions* live in `faultmaven/infrastructure/observability/evidence_metrics.py`
+> (Prometheus `Counter`/`Histogram` objects, all `faultmaven_`-prefixed); write
+> alert expressions against the names it declares. Alert *rules* are not in this
+> repository (there is no `evidence_alerts.yml` here) — they live in the
+> Grafana/Prometheus config maintained by the infrastructure team.
 
 ### Grafana Dashboard
 
-**Import Dashboard:**
-1. Login to Grafana
-2. Navigate to Dashboards → Import
-3. Upload `evidence_dashboard.json`
-4. Select Prometheus data source
-5. Click Import
+No dashboard JSON is shipped in this repository — there is no
+`evidence_dashboard.json` to import. Build the dashboard in Grafana against the
+metric names declared in `evidence_metrics.py`, or import one exported from an
+existing environment.
 
-**Dashboard Panels:**
+**Panels worth having:**
 - Evidence creation success rate
 - LLM timeout/error rates
 - DB insert failures
@@ -660,10 +687,14 @@ filebeat:
 ```
 
 **Loki (Kubernetes):**
-```yaml
-# Loki automatically scrapes pod logs
-# Query in Grafana Explore:
-{namespace="faultmaven", app="faultmaven", component="storage-cleanup"}
+```text
+# Loki automatically scrapes pod logs.
+# Query in Grafana Explore — `app` is the pod label set by the CronJob's
+# jobTemplate (faultmaven-storage-cleanup), NOT a bare "faultmaven":
+{namespace="faultmaven", app="faultmaven-storage-cleanup"}
+
+# The case-cleanup sweep, same pattern:
+{namespace="faultmaven", app="faultmaven-case-cleanup"}
 ```
 
 ---
@@ -673,14 +704,17 @@ filebeat:
 ### High Orphaned File Rate
 
 **Symptoms:**
-- `evidence.orphaned_files_found` >50
+- `increase(faultmaven_evidence_orphan_files_found_total[24h])` >50
 - Alert: "High number of orphaned files in storage"
 
 **Investigation:**
-1. Check LLM timeout rate: `rate(evidence_llm_timeouts[1h])`
-2. Check DB insert failure rate: `rate(evidence_db_insert_failures[1h])`
-3. Review retry job logs for failures
-4. Check storage backend health (S3/filesystem)
+1. Review the job's own logs for `Failed to delete orphan` lines (see Loki queries above)
+2. Check storage backend health (MinIO/S3 reachability, credentials, bucket policy)
+3. Check database connectivity from the job pod
+
+> LLM-timeout and DB-insert-failure rates are the usual upstream causes, but no
+> Prometheus counters for them exist yet — `evidence_metrics.py` declares no such
+> metrics. Investigate those via application logs until they are instrumented.
 
 **Resolution:**
 - If LLM timeouts high: Increase timeout threshold or switch provider
@@ -768,4 +802,4 @@ filebeat:
 ---
 
 **Implementation Status:** Complete
-**Next Steps:** Wait for Phase 4 (evidence classification) to integrate error handling in milestone_engine.py
+**Next Steps:** Wait for Phase 4 (evidence classification) to integrate error handling in `faultmaven/core/investigation/milestone_engine.py`
