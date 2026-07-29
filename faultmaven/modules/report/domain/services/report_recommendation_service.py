@@ -11,6 +11,7 @@ Section 5.4: Intelligent Report Recommendation
 import logging
 from typing import List
 
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
 
@@ -127,7 +128,12 @@ class ReportRecommendationService:
 
         The tenant key comes from ``case.organization_id`` — a similarity search
         is an id-free resolution path, so the org predicate is the only thing
-        keeping another tenant's runbooks out of the result set.
+        keeping another tenant's runbooks out of the result set. It is resolved
+        through ``usable_tenant_id`` for the same reason
+        ``terminal_transitions._find_similar_runbooks_for_case`` does: the case
+        stamp comes from the *total* ``get_current_org_id``, so under
+        ``TENANT_PROVIDER=multi`` it can be the Standalone sentinel, which is not
+        a tenant there. ``search_runbooks`` then fails closed on the ``None``.
 
         Args:
             case: Case object
@@ -147,7 +153,7 @@ class ReportRecommendationService:
             # Search knowledge base for similar runbooks
             similar_runbooks = await self.runbook_kb.search_runbooks(
                 query_embedding=query_embedding,
-                organization_id=case.organization_id,
+                organization_id=usable_tenant_id(case.organization_id),
                 filters=filters,
                 top_k=5,  # Get top 5 matches
                 min_similarity=0.65,  # Minimum 65% similarity threshold

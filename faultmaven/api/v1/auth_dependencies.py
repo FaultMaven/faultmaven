@@ -32,7 +32,11 @@ from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer
 
 from faultmaven.api.middleware.auth import get_auth_service
-from faultmaven.config.tenant_context import get_current_org_id, usable_tenant_id
+from faultmaven.config.tenant_context import (
+    UNSCOPED_REQUEST_MSG,
+    get_current_org_id,
+    usable_tenant_id,
+)
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
@@ -460,12 +464,6 @@ async def require_platform_admin(
             status_code=403, detail="Platform administrator access required"
         )
     return user
-
-
-# Refusal text for a request that carries no usable tenant. Identical to the
-# tenant-binding middleware's, so "you are not scoped to an organization" reads
-# the same wherever it is decided.
-UNSCOPED_REQUEST_MSG = "Request is not scoped to an organization."
 
 
 def require_actor_organization(user: DevUser) -> str:

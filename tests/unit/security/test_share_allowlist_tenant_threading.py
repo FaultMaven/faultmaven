@@ -58,9 +58,47 @@ def _share_repo(returns=("kb-shared",)):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("org", [ORG_A, ORG_B, STANDALONE_ORG_ID, "org-3"])
 async def test_resolver_passes_the_callers_org_through_unchanged(org):
-    """Sweep several tenants: whatever org comes in is the org the query carries."""
+    """Sweep several tenants: whatever org comes in is the org the query carries.
+
+    Pinned under ``single`` explicitly — the sentinel is a legitimate tenant
+    there, and leaving the provider to ambient configuration would make this
+    case's outcome depend on the environment rather than on the rule.
+    """
     repo = _share_repo()
-    assert await resolve_shared_kb_ids(repo, ["team-1"], org) == ["kb-shared"]
+    with _SINGLE:
+        assert await resolve_shared_kb_ids(repo, ["team-1"], org) == ["kb-shared"]
+    repo.list_resource_ids.assert_awaited_once_with(
+        resource_type="knowledge_item",
+        scope_type="team",
+        scope_ids=["team-1"],
+        organization_id=org,
+    )
+
+
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_resolver_refuses_the_sentinel_under_multi():
+    """The sentinel is not a tenant under multi, so the KB team arm collapses.
+
+    Both callers can hand this resolver a sentinel: ``MilestoneEngine`` passes
+    ``case.organization_id``, which ``create_case`` stamps from the *total*
+    ``get_current_org_id``, and ``KnowledgeService.search_documents`` passes the
+    requester's claim. Neither may become the SQL predicate under multi.
+    """
+    repo = _share_repo()
+    with _MULTI:
+        assert await resolve_shared_kb_ids(repo, ["team-1"], STANDALONE_ORG_ID) == []
+    repo.list_resource_ids.assert_not_awaited()
+
+
+@pytest.mark.security
+@pytest.mark.asyncio
+@pytest.mark.parametrize("org", [ORG_A, ORG_B])
+async def test_resolver_still_queries_for_a_real_tenant_under_multi(org):
+    """The positive half: refusing the sentinel is not refusing everything."""
+    repo = _share_repo()
+    with _MULTI:
+        assert await resolve_shared_kb_ids(repo, ["team-1"], org) == ["kb-shared"]
     repo.list_resource_ids.assert_awaited_once_with(
         resource_type="knowledge_item",
         scope_type="team",

@@ -37,6 +37,13 @@ from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 ORG_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 ORG_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
+#: The single override point for "which tenant provider is in force".
+#: ``bind_request_org_context`` selects its arm through this module attribute and
+#: ``config.tenant_context.usable_tenant_id`` resolves the same one, so patching
+#: it here governs both — patching the middleware's own name would move only the
+#: arm selection and leave the sentinel rule reading the real configuration.
+_PROVIDER_TARGET = "faultmaven.providers.tenancy.factory.requested_tenant_provider"
+
 
 @pytest.fixture(autouse=True)
 def _reset_org_context():
@@ -86,9 +93,7 @@ def _client(app: FastAPI) -> AsyncClient:
 async def test_binder_runs_before_endpoint_in_request_task(monkeypatch):
     """The bound org is visible in the endpoint body (same task, dependency
     resolved first) — so any transaction the endpoint opens is scoped to it."""
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     async with _client(_probe_app()) as client:
         # Each request issued from the test runs as its own task in the
         # transport, mirroring the server's task-per-request model.
@@ -106,9 +111,7 @@ async def test_org_bound_in_one_request_does_not_leak_into_the_next(monkeypatch)
     """Sequential requests: an authenticated request binds its org; a following
     unauthenticated request must see the pristine default, not the previous
     request's org."""
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     async with _client(_probe_app()) as client:
         first = await asyncio.create_task(
             client.get("/org", headers={"Authorization": "Bearer token-a"})
@@ -129,9 +132,7 @@ async def test_concurrent_requests_each_see_their_own_org(monkeypatch):
     """Two in-flight requests for different orgs: each endpoint body reads the
     org its own binder set, even while the other request holds a different org
     in its task's context."""
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     async with _client(_probe_app()) as client:
         resp_a, resp_b = await asyncio.gather(
             client.get("/org-slow", headers={"Authorization": "Bearer token-a"}),
@@ -149,9 +150,7 @@ async def test_multi_tenant_verified_user_without_org_is_403_through_the_stack(
 ):
     """The fail-closed path holds end-to-end: a verified user with no org claim
     is rejected before the endpoint runs."""
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     async with _client(_probe_app()) as client:
         response = await client.get(
             "/org", headers={"Authorization": "Bearer token-unknown"}
@@ -164,9 +163,7 @@ async def test_multi_tenant_verified_user_without_org_is_403_through_the_stack(
 @pytest.mark.asyncio
 async def test_single_tenant_forces_standalone_through_the_stack(monkeypatch):
     """Single-tenant ignores any presented token and pins the Standalone org."""
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_SINGLE
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_SINGLE)
     async with _client(_probe_app()) as client:
         response = await client.get("/org", headers={"Authorization": "Bearer token-a"})
 

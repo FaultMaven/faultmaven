@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         VerificationLevel,
     )
 
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
@@ -122,15 +123,26 @@ async def resolve_shared_kb_ids(
     two remaining arms are keyed on the caller's own ids.
 
     ``organization_id`` is the tenant the share row must itself be stamped
-    with, matching the inventory clause's share sub-select.
+    with, matching the inventory clause's share sub-select. It is resolved
+    through ``usable_tenant_id`` rather than used raw, because both callers hand
+    over a value that can be the Standalone sentinel under
+    ``TENANT_PROVIDER=multi`` — ``MilestoneEngine`` passes ``case.organization_id``,
+    which ``CaseService.create_case`` stamps from the *total*
+    ``get_current_org_id``, and ``KnowledgeService.search_documents`` passes the
+    requester's claim. Under multi the sentinel is not a tenant, so it must
+    collapse the arm here rather than become the SQL predicate; under ``single``
+    it is the deployment's one legitimate tenant and passes unchanged. This is
+    the same decision ``require_actor_organization`` refuses on and the case
+    read-allowlist arms degrade on — one predicate, three call sites.
     """
-    if not share_repository or not team_ids or not organization_id:
+    tenant_id = usable_tenant_id(organization_id)
+    if not share_repository or not team_ids or not tenant_id:
         return []
     return await share_repository.list_resource_ids(
         resource_type="knowledge_item",
         scope_type="team",
         scope_ids=list(team_ids),
-        organization_id=organization_id,
+        organization_id=tenant_id,
     )
 
 

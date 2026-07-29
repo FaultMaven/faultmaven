@@ -25,6 +25,14 @@ _current_org_id: ContextVar[str] = ContextVar(
     "current_org_id", default=STANDALONE_ORG_ID
 )
 
+#: What a caller is told when :func:`usable_tenant_id` answers ``None`` on a path
+#: that refuses rather than degrades. It lives beside the predicate so the rule
+#: and its announcement stay together: both the request front door
+#: (``api/middleware/tenant_scope``) and the route-level
+#: ``api/v1/auth_dependencies.require_actor_organization`` raise 403 with this
+#: exact text, and neither owns a private copy of it.
+UNSCOPED_REQUEST_MSG = "Request is not scoped to an organization."
+
 
 def set_current_org_id(organization_id: str) -> None:
     """Set the organization id for the current execution context (request/task)."""

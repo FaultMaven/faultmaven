@@ -29,6 +29,13 @@ from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 
 OTHER_ORG = "11111111-1111-1111-1111-111111111111"
 
+#: The single override point for "which tenant provider is in force".
+#: ``bind_request_org_context`` selects its arm through this module attribute and
+#: ``config.tenant_context.usable_tenant_id`` resolves the same one, so patching
+#: it here governs both — patching the middleware's own name would move only the
+#: arm selection and leave the sentinel rule reading the real configuration.
+_PROVIDER_TARGET = "faultmaven.providers.tenancy.factory.requested_tenant_provider"
+
 
 @pytest.fixture(autouse=True)
 def _reset_org_context():
@@ -52,9 +59,7 @@ def _user(organization_id):
 async def test_single_tenant_forces_standalone_ignoring_injected_org(monkeypatch):
     """Single-tenant scopes to the Standalone org and never consults the token,
     so a forged org claim cannot re-scope a Standalone deployment."""
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_SINGLE
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_SINGLE)
     # Pre-set a foreign org to prove the dependency overrides it.
     set_current_org_id(OTHER_ORG)
     auth_service = AsyncMock()
@@ -72,9 +77,7 @@ async def test_single_tenant_forces_standalone_ignoring_injected_org(monkeypatch
 @pytest.mark.asyncio
 async def test_multi_tenant_binds_verified_user_org(monkeypatch):
     """Multi-tenant binds the org from the user's verified claim."""
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     auth_service = AsyncMock()
     auth_service.extract_user_from_token_with_revocation_check.return_value = _user(
         OTHER_ORG
@@ -94,9 +97,7 @@ async def test_multi_tenant_missing_org_fails_closed(monkeypatch):
     default (the fail-to-default hole P2b closes)."""
     from fastapi import HTTPException
 
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     auth_service = AsyncMock()
     # from_jwt_claims defaults a missing organization_id claim to "".
     auth_service.extract_user_from_token_with_revocation_check.return_value = _user("")
@@ -126,9 +127,7 @@ async def test_multi_tenant_sentinel_org_claim_fails_closed(monkeypatch):
     """
     from fastapi import HTTPException
 
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     auth_service = AsyncMock()
     auth_service.extract_user_from_token_with_revocation_check.return_value = _user(
         STANDALONE_ORG_ID
@@ -150,9 +149,7 @@ async def test_multi_tenant_no_token_binds_unscoped_org(monkeypatch):
     single-tenant sentinel arm (migration 033, #770) — structurally stronger
     than leaving the contextvar's Standalone default. The endpoint's own auth
     dependency still 401s where auth is required."""
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     auth_service = AsyncMock()
 
     await bind_request_org_context(authorization=None, auth_service=auth_service)
@@ -168,9 +165,7 @@ async def test_multi_tenant_invalid_token_binds_unscoped_org(monkeypatch, error)
     """An invalid or revoked token is not the org binder's job to reject — bind
     the empty non-org (no rows, no sentinel write license) and defer the
     401/403 to the endpoint's auth dependency."""
-    monkeypatch.setattr(
-        tenant_scope, "requested_tenant_provider", lambda: BUILTIN_MULTI
-    )
+    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     auth_service = AsyncMock()
     auth_service.extract_user_from_token_with_revocation_check.side_effect = error
 

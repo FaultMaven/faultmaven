@@ -2240,3 +2240,87 @@ class TestSharedKbAllowlistIsTenantScoped:
             scope_ids=["team-1"],
             organization_id=org,
         )
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_the_sentinel_collapses_the_shared_kb_arm_under_multi(
+        self,
+        orchestration_service,
+        mock_session_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+    ):
+        """Under multi the Standalone sentinel is not a tenant, so no lookup runs.
+
+        An actor claim carrying the sentinel would otherwise become the SQL
+        predicate and widen ``ToolContext.shared_kb_ids`` with rows belonging to
+        the single-tenant deployment. Personal ∪ global still answer, so the
+        collapse is the fail-closed direction rather than a broken execution.
+        """
+        from faultmaven.config.constants import STANDALONE_ORG_ID
+        from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
+
+        sample_session.organization_id = STANDALONE_ORG_ID
+        self._wire(
+            orchestration_service,
+            mock_session_service,
+            mock_case_repo,
+            sample_session,
+            sample_case,
+        )
+
+        with patch(
+            "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+            return_value=BUILTIN_MULTI,
+        ):
+            async for _ in orchestration_service.execute_agent(
+                session_id=sample_session.session_id,
+                organization_id=STANDALONE_ORG_ID,
+                user_message="hi",
+            ):
+                pass
+
+        orchestration_service.share_repository.list_resource_ids.assert_not_awaited()
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_the_sentinel_is_the_tenant_under_single(
+        self,
+        orchestration_service,
+        mock_session_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+    ):
+        """The positive half of the split — otherwise "refuse the sentinel" and
+        "refuse everything" would be the same assertion."""
+        from faultmaven.config.constants import STANDALONE_ORG_ID
+        from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
+
+        sample_session.organization_id = STANDALONE_ORG_ID
+        self._wire(
+            orchestration_service,
+            mock_session_service,
+            mock_case_repo,
+            sample_session,
+            sample_case,
+        )
+
+        with patch(
+            "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+            return_value=BUILTIN_SINGLE,
+        ):
+            async for _ in orchestration_service.execute_agent(
+                session_id=sample_session.session_id,
+                organization_id=STANDALONE_ORG_ID,
+                user_message="hi",
+            ):
+                pass
+
+        orchestration_service.share_repository.list_resource_ids.assert_awaited_once_with(
+            resource_type="knowledge_item",
+            scope_type="team",
+            scope_ids=["team-1"],
+            organization_id=STANDALONE_ORG_ID,
+        )
