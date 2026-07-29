@@ -122,9 +122,13 @@ class TestObservabilityIntegration:
         from faultmaven.modules.agent.domain.services.investigation_service import (
             InvestigationService,
         )
+        from faultmaven.modules.case.domain.services.case_service import CaseService
 
         # Check that key methods have been wrapped with @trace
-        # InvestigationService has @trace decorators on key methods
+        # InvestigationService has @trace decorators on key methods.
+        # close_case moved: the dead InvestigationService.close_case was
+        # deleted (#845) and the live user-initiated close is
+        # CaseService.close_case (#915).
         traced_methods = [
             ("process_turn", InvestigationService.process_turn),
             ("get_progress", InvestigationService.get_progress),
@@ -132,7 +136,7 @@ class TestObservabilityIntegration:
                 "transition_to_investigating",
                 InvestigationService.transition_to_investigating,
             ),
-            ("close_case", InvestigationService.close_case),
+            ("close_case", CaseService.close_case),
         ]
 
         # Check each method for the __wrapped__ attribute
