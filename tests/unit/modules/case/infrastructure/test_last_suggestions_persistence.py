@@ -11,22 +11,27 @@ the typed-choice tier (and the INV-26 guard behind it) was unreachable.
 These tests pin the property at the persistence seam: save → reload via the
 repository preserves the suggestions in the exact shape the service stores
 (``label`` / ``action_type`` / ``payload`` / ``body`` / ``intent``), and the
-reloaded value is sufficient for the resolver's exact-match tier.
+reloaded value satisfies the resolver's public ``resolve()`` entry point.
 
-The PostgreSQL repository's real path is behind ``@pytest.mark.cloud`` (no
-Postgres in CI), so — following ``test_pg_evidence_need_obtainability.py`` —
-its serialization is checked through the pure ``_case_record_params`` and the
-rehydration read is asserted against the module source, where a param drop
-is observable.
+The PostgreSQL repository's live SELECT needs a real Postgres
+(``jsonb_build_object`` / ``json_agg``), which CI runs only in the
+integration ``test-postgres`` job — so here, following
+``test_pg_evidence_need_obtainability.py``, the write side is checked
+through the pure ``_case_record_params`` and the read side by executing
+``_row_to_case`` directly against a stub row (its only I/O is
+``_load_case_actions``, patched out).
+
+The same PG metadata bag also read ``message_count`` without ever writing
+it — the identical asymmetry class, fixed and pinned here alongside.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
+from types import SimpleNamespace
 from typing import AsyncGenerator
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -35,9 +40,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import Case
-from faultmaven.modules.case.infrastructure import (
-    postgresql_hybrid_case_repository as _pg_repo_module,
-)
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
 )
@@ -147,18 +149,21 @@ class TestSQLiteLastSuggestionsRoundTrip:
         assert reloaded.last_suggestions == _clarification_suggestions()
 
     @pytest.mark.asyncio
-    async def test_reloaded_suggestions_feed_the_resolver_exact_match(self, repository):
+    async def test_reloaded_suggestions_feed_the_resolver(self, repository):
         """The consumer that was dead: typed 'Application logs' must resolve
-        to the stored file_reclassification intent from the RELOADED case."""
+        to the stored file_reclassification intent from the RELOADED case,
+        through the same public entry point the service calls. The exact-match
+        tier answers before the classifier tier, so the mocked router is
+        never touched."""
         case = _make_case()
         case.last_suggestions = _clarification_suggestions()
         await repository.save(case)
         reloaded = await repository.get(case.case_id)
 
         resolver = IntentResolver(llm_router=MagicMock())
-        matched = resolver._exact_match(
-            "Application logs",
-            [s for s in reloaded.last_suggestions if s.get("intent")],
+        matched = await resolver.resolve(
+            user_message="Application logs",
+            last_suggestions=reloaded.last_suggestions,
         )
 
         assert matched == {
@@ -179,8 +184,49 @@ class TestSQLiteLastSuggestionsRoundTrip:
 
 
 # ============================================================
-# PostgreSQL hybrid — pure param serialization + source-observable read
+# PostgreSQL hybrid — pure param serialization + direct _row_to_case read
 # ============================================================
+
+
+def _pg_row(metadata: dict) -> SimpleNamespace:
+    """Duck-typed SELECT row for ``_row_to_case``.
+
+    Every JSON/optional attribute the method touches is None-tolerant;
+    only identity/scalar columns need real values.
+    """
+    now = datetime.now(timezone.utc)
+    return SimpleNamespace(
+        case_id=f"case_{uuid4().hex[:12]}",
+        user_id="user_alpha",
+        organization_id="org_alpha",
+        source="copilot",
+        title="Clarification round-trip",
+        description="",
+        state="inquiry",
+        closure_reason=None,
+        disposition_eligibility=None,
+        investigation_strategy=None,
+        current_turn=3,
+        turns_without_progress=0,
+        inquiry=None,
+        problem_verification=None,
+        working_conclusion=None,
+        root_cause_conclusion=None,
+        escalation_state=None,
+        documentation=None,
+        progress=None,
+        hypotheses_data=None,
+        solutions_data=None,
+        uploaded_files_data=None,
+        messages_data=None,
+        metadata=json.dumps(metadata),
+        created_at=now,
+        updated_at=now,
+        version=1,
+        last_activity_at=None,
+        resolved_at=None,
+        closed_at=None,
+    )
 
 
 @pytest.mark.unit
@@ -205,9 +251,53 @@ class TestPostgresLastSuggestionsPersistence:
 
         assert "last_suggestions" not in metadata
 
-    def test_row_to_case_reads_last_suggestions(self):
-        """A rehydration drop is observable in the module source (the
-        real read path needs live Postgres — same rationale as
-        test_pg_evidence_need_obtainability.py)."""
-        source = Path(_pg_repo_module.__file__).read_text()
-        assert '"last_suggestions": metadata.get("last_suggestions") or None' in source
+    @pytest.mark.asyncio
+    async def test_row_to_case_reads_last_suggestions(self):
+        """Execute the real PG rehydration (the live SELECT needs Postgres,
+        but _row_to_case itself is pure once _load_case_actions is patched)."""
+        repo = _pg_repo()
+        repo._load_case_actions = AsyncMock(return_value=[])
+
+        case = await repo._row_to_case(
+            _pg_row({"last_suggestions": _clarification_suggestions()})
+        )
+
+        assert case.last_suggestions == _clarification_suggestions()
+
+    @pytest.mark.asyncio
+    async def test_row_to_case_without_key_reads_none(self):
+        """Rows written before #914 (or with no suggestions) load as None."""
+        repo = _pg_repo()
+        repo._load_case_actions = AsyncMock(return_value=[])
+
+        case = await repo._row_to_case(_pg_row({}))
+
+        assert case.last_suggestions is None
+
+
+@pytest.mark.unit
+class TestPostgresMessageCountPersistence:
+    """PG read the counter from the metadata bag but never wrote it —
+    the same write/read asymmetry class as #914, fixed alongside."""
+
+    def test_record_params_serialize_message_count(self):
+        repo = _pg_repo()
+        case = _make_case()
+        case.message_count = 12
+
+        params = repo._case_record_params(case, datetime.now(timezone.utc))
+        metadata = json.loads(params["metadata"])
+
+        assert metadata.get("message_count") == 12
+
+    @pytest.mark.asyncio
+    async def test_row_to_case_round_trips_message_count(self):
+        repo = _pg_repo()
+        repo._load_case_actions = AsyncMock(return_value=[])
+        case = _make_case()
+        case.message_count = 12
+
+        params = repo._case_record_params(case, datetime.now(timezone.utc))
+        reloaded = await repo._row_to_case(_pg_row(json.loads(params["metadata"])))
+
+        assert reloaded.message_count == 12

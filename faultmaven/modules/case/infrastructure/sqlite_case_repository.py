@@ -2424,8 +2424,15 @@ class SQLiteCaseRepository(CaseRepository):
                     # Intent-bearing DECIDE suggestions from the last agent
                     # turn — the resolver matches typed replies against them
                     # on the NEXT request, so they must survive the reload
-                    # (#914; already plain JSON-able dicts).
-                    "last_suggestions": case.last_suggestions,
+                    # (#914). Normalized like every sibling entry: the dicts
+                    # are engine-built and currently plain, but this save
+                    # atomically commits the whole turn — an advisory field
+                    # must never be the json.dumps TypeError that loses it.
+                    "last_suggestions": (
+                        to_json_compatible(case.last_suggestions)
+                        if case.last_suggestions
+                        else None
+                    ),
                 }
             ),
         }
@@ -3385,7 +3392,7 @@ class SQLiteCaseRepository(CaseRepository):
                 else None
             ),
             "pending_transition": metadata.get("pending_transition"),
-            "last_suggestions": metadata.get("last_suggestions") or None,
+            "last_suggestions": metadata.get("last_suggestions"),
             "progress": progress,
             "current_turn": int(row.current_turn or 0),
             "turns_without_progress": int(row.turns_without_progress or 0),
