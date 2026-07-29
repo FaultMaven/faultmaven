@@ -32,7 +32,11 @@ from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer
 
 from faultmaven.api.middleware.auth import get_auth_service
-from faultmaven.config.tenant_context import get_current_org_id
+from faultmaven.config.tenant_context import (
+    UNSCOPED_REQUEST_MSG,
+    get_current_org_id,
+    usable_tenant_id,
+)
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
@@ -460,6 +464,40 @@ async def require_platform_admin(
             status_code=403, detail="Platform administrator access required"
         )
     return user
+
+
+def require_actor_organization(user: DevUser) -> str:
+    """Return the tenant an actor's request resolves within — fail-closed.
+
+    Every id-addressed and every similarity-addressed lookup carries a mandatory
+    tenant predicate (``docs/architecture/security/rbac.md``, "Tenant-Scoped
+    Resolution"). This is where a route obtains that predicate, and it refuses
+    (403) rather than handing back ``None`` for a caller to degrade into an
+    unscoped query. Holding a cross-tenant role does not exempt a caller: an
+    operator still acts inside the organization they are bound to.
+
+    Under ``TENANT_PROVIDER=multi`` the Standalone sentinel is not a tenant — it
+    identifies the single-tenant deployment — so it is refused there too, the
+    same rule ``bind_request_org_context`` applies at the front door. Enforcing
+    it here as well keeps the guarantee independent of which dependencies a
+    given router happens to mount.
+
+    The sentinel rule itself lives in ``config.tenant_context.usable_tenant_id``,
+    shared with the service-layer read paths that collapse to an empty allowlist
+    instead of raising. This function is only the *refusal* half; a second copy
+    of the rule would drift from it.
+
+    Raises:
+        HTTPException: 403 when the actor carries no usable organization.
+    """
+    organization_id = usable_tenant_id(getattr(user, "organization_id", None))
+    if not organization_id:
+        logger.warning(
+            "Refusing unscoped request: user %s carries no organization",
+            getattr(user, "user_id", None),
+        )
+        raise HTTPException(status_code=403, detail=UNSCOPED_REQUEST_MSG)
+    return organization_id
 
 
 async def require_dev_user(user: DevUser = Depends(require_authentication)) -> DevUser:

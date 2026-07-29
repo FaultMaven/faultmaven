@@ -30,6 +30,7 @@ from typing import Any
 from uuid import uuid4
 
 from faultmaven.config.settings import get_settings
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -454,13 +455,22 @@ class AgentOrchestrationService:
                 except Exception:
                     pass  # Graceful degradation — global + personal still work
 
+            # The share row must be stamped with this tenant; a row carrying a
+            # foreign org grants no allowlist entry. The executing request's org
+            # goes through ``usable_tenant_id`` rather than into the query raw:
+            # under ``TENANT_PROVIDER=multi`` the Standalone sentinel is not a
+            # tenant, and an actor claim carrying it must collapse this arm to
+            # empty (personal ∪ global still answer) rather than become the
+            # predicate. Same predicate the KB and case allowlists resolve on.
+            shared_tenant_id = usable_tenant_id(organization_id)
             shared_kb_ids: list[str] = []
-            if team_ids and self.share_repository:
+            if team_ids and self.share_repository and shared_tenant_id:
                 try:
                     shared_kb_ids = await self.share_repository.list_resource_ids(
                         resource_type="knowledge_item",
                         scope_type="team",
                         scope_ids=team_ids,
+                        organization_id=shared_tenant_id,
                     )
                 except Exception:
                     pass  # Graceful degradation

@@ -2048,6 +2048,73 @@ class TestRunbookSuggestion:
         result = await evaluate_runbook_suggestion(case, runbook_kb=None)
         assert result.verdict == RunbookSuggestion.NOT_READY
 
+    @pytest.mark.security
+    async def test_sentinel_stamped_case_gets_no_dedup_verdict_under_multi(
+        self, monkeypatch
+    ):
+        """A case carrying the Standalone sentinel searches nothing under multi.
+
+        The counterpart of ``test_existing_covers_when_high_similarity``: same
+        content, same KB returning a 0.92 match, but the case's org is the
+        sentinel — which under ``TENANT_PROVIDER=multi`` is not a tenant but the
+        identity of the single-tenant deployment. ``create_case`` stamps the org
+        from the *total* ``get_current_org_id``, whose contextvar defaults to the
+        sentinel, so this case shape is reachable rather than hypothetical.
+
+        Asserting the KB was never awaited (not merely that the verdict differs)
+        is what makes this kill the guard rather than the surrounding logic: the
+        refusal must happen before the query, not by discarding its results.
+        """
+        from faultmaven.config.constants import STANDALONE_ORG_ID
+        from faultmaven.core.investigation.terminal_transitions import (
+            RunbookSuggestion,
+            evaluate_runbook_suggestion,
+        )
+        from faultmaven.modules.case.contracts import (
+            Case,
+            InquiryData,
+            ProblemVerification,
+        )
+        from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
+
+        monkeypatch.setattr(
+            "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+            lambda: BUILTIN_MULTI,
+        )
+
+        case = Case(
+            user_id="u1",
+            organization_id=STANDALONE_ORG_ID,
+            title="Pool timeout issue",
+            description="DB queries timing out",
+            state=CaseState.INVESTIGATING,
+            problem_verification=ProblemVerification(
+                symptom_statement="Timeout errors",
+                severity="HIGH",
+            ),
+            inquiry=InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                proposed_problem_statement="Timeout",
+            ),
+        )
+        _make_resolution_ready(case)
+        case.solutions[0].commands = ["kubectl edit configmap"]
+        _confirm_root_counterfactually(case)
+
+        mock_kb = AsyncMock()
+        mock_kb.search_by_text = AsyncMock(
+            return_value=[
+                {"similarity_score": 0.92, "title": "Another Tenant's Runbook"},
+            ]
+        )
+
+        result = await evaluate_runbook_suggestion(case, runbook_kb=mock_kb)
+
+        mock_kb.search_by_text.assert_not_awaited()
+        assert result.verdict != RunbookSuggestion.EXISTING_COVERS
+        assert "Another Tenant's Runbook" not in result.message
+
 
 class TestContradictingIntentCancelsPendingTransition:
     """Tests for Fix 1: Contradicting status_transition cancels pending_transition.

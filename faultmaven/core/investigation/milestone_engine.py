@@ -9147,7 +9147,9 @@ class MilestoneEngine:
                 try:
                     owner_team_ids = await team_service.list_all_user_team_ids(owner_id)
                     shared_kb_ids = await resolve_shared_kb_ids(
-                        share_repository, owner_team_ids
+                        share_repository,
+                        owner_team_ids,
+                        getattr(case, "organization_id", None),
                     )
                 except Exception:  # noqa: BLE001
                     # Graceful degradation — global ∪ owner-personal still seed.

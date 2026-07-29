@@ -123,6 +123,7 @@ async def test_search_runbooks_high_similarity(
     query_embedding = [0.1] * 1024  # Dummy embedding
     results = await runbook_kb.search_runbooks(
         query_embedding=query_embedding,
+        organization_id="org-A",
         filters={"domain": "database"},
         top_k=5,
         min_similarity=0.65,
@@ -139,7 +140,14 @@ async def test_search_runbooks_high_similarity(
     mock_vector_store.query_by_embedding.assert_called_once()
     call_args = mock_vector_store.query_by_embedding.call_args[1]
     assert call_args["query_embedding"] == query_embedding
-    assert call_args["where"]["domain"] == "database"
+    # Explicit $and — ChromaDB >=1.0 rejects a multi-key implicit-AND `where`.
+    assert call_args["where"] == {
+        "$and": [
+            {"report_type": "runbook"},
+            {"organization_id": "org-A"},
+            {"domain": "database"},
+        ]
+    }
     assert call_args["top_k"] == 5
 
 
@@ -156,7 +164,10 @@ async def test_search_runbooks_no_results(runbook_kb, mock_vector_store):
 
     query_embedding = [0.1] * 1024
     results = await runbook_kb.search_runbooks(
-        query_embedding=query_embedding, top_k=5, min_similarity=0.65
+        query_embedding=query_embedding,
+        organization_id="org-A",
+        top_k=5,
+        min_similarity=0.65,
     )
 
     assert len(results) == 0
@@ -190,7 +201,9 @@ async def test_search_runbooks_filters_by_similarity_threshold(
     }
 
     results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024, min_similarity=0.65  # 65% threshold
+        query_embedding=[0.1] * 1024,
+        organization_id="org-A",
+        min_similarity=0.65,  # 65% threshold
     )
 
     # Result should be filtered out (similarity 0.50 < 0.65)
@@ -245,7 +258,7 @@ async def test_search_runbooks_sorts_by_similarity(runbook_kb, mock_vector_store
     }
 
     results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024, min_similarity=0.65
+        query_embedding=[0.1] * 1024, organization_id="org-A", min_similarity=0.65
     )
 
     # Should be sorted: report-2 (0.90), report-1 (0.80), report-3 (0.70)
@@ -266,7 +279,9 @@ async def test_search_runbooks_handles_error_gracefully(runbook_kb, mock_vector_
         "ChromaDB connection failed"
     )
 
-    results = await runbook_kb.search_runbooks(query_embedding=[0.1] * 1024)
+    results = await runbook_kb.search_runbooks(
+        query_embedding=[0.1] * 1024, organization_id="org-A"
+    )
 
     # Should return empty list instead of raising exception
     assert len(results) == 0
@@ -284,6 +299,7 @@ async def test_index_runbook_incident_driven(
     """Test indexing an incident-driven runbook."""
     await runbook_kb.index_runbook(
         runbook=sample_incident_runbook,
+        organization_id="org-A",
         source=RunbookSource.INCIDENT_DRIVEN,
         case_title="Database Connection Pool Exhaustion",
         domain="database",
@@ -311,6 +327,7 @@ async def test_index_runbook_document_driven(
     """Test indexing a document-driven runbook."""
     await runbook_kb.index_runbook(
         runbook=sample_document_runbook,
+        organization_id="org-A",
         source=RunbookSource.DOCUMENT_DRIVEN,
         case_title="PostgreSQL Operations Guide",
         domain="database",
@@ -345,7 +362,9 @@ async def test_index_runbook_skips_non_runbook_types(runbook_kb, mock_vector_sto
     )
 
     await runbook_kb.index_runbook(
-        runbook=incident_report, source=RunbookSource.INCIDENT_DRIVEN
+        runbook=incident_report,
+        organization_id="org-A",
+        source=RunbookSource.INCIDENT_DRIVEN,
     )
 
     # Should NOT call vector store for non-runbook types
@@ -365,6 +384,7 @@ async def test_index_document_derived_runbook(runbook_kb, mock_vector_store):
         document_title="PostgreSQL Operations Guide",
         domain="database",
         tags=["postgresql", "performance", "troubleshooting"],
+        organization_id="org-A",
         original_document_id="doc-abc123",
     )
 
@@ -431,7 +451,7 @@ async def test_search_finds_both_incident_and_document_runbooks(
     }
 
     results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024, min_similarity=0.65
+        query_embedding=[0.1] * 1024, organization_id="org-A", min_similarity=0.65
     )
 
     # Should find both types

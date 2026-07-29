@@ -26,6 +26,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Optional
 
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     CauseAssuranceGrade,
@@ -1424,11 +1425,34 @@ async def evaluate_runbook_suggestion(
 
 
 async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list[dict]:
-    """Search for existing runbooks similar to a resolved case.
+    """Search for existing runbooks similar to a resolved case, within its tenant.
 
     Builds a query from case title + root cause + solution for semantic search.
     Returns list of matches with similarity_score and title.
+
+    Scoped to ``case.organization_id`` and fail-closed: a case carrying no
+    usable tenant yields ``[]`` **without a search**, never a deployment-wide
+    one. The tenant key is passed to whichever similarity entry point the
+    injected KB exposes, so an implementation that does not accept it fails
+    loudly instead of quietly searching every tenant.
+
+    The org is resolved through ``usable_tenant_id``, not used raw:
+    ``CaseService.create_case`` stamps ``organization_id`` from the *total*
+    ``get_current_org_id``, so under ``TENANT_PROVIDER=multi`` a case written
+    from an execution context that never bound a tenant carries the Standalone
+    sentinel — which is not a tenant there, and must not become the similarity
+    predicate. ``search_runbooks`` fails closed on a falsy org downstream, but
+    the ``search_by_text`` arm beside it has no downstream guard at all, so this
+    is the only check standing on that path.
     """
+    organization_id = usable_tenant_id(getattr(case, "organization_id", None))
+    if not organization_id:
+        logger.warning(
+            "Runbook similarity search skipped: case carries no usable tenant",
+            extra={"case_id": getattr(case, "case_id", None)},
+        )
+        return []
+
     # Build search text from case context
     parts = []
     if case.title:
@@ -1452,6 +1476,7 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
     if hasattr(runbook_kb, "search_by_text"):
         results = await runbook_kb.search_by_text(
             query_text=query_text,
+            organization_id=organization_id,
             top_k=3,
             min_similarity=0.65,
         )
@@ -1461,6 +1486,7 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
         try:
             results = await runbook_kb.search_runbooks(
                 query_text=query_text,
+                organization_id=organization_id,
                 top_k=3,
                 min_similarity=0.65,
             )

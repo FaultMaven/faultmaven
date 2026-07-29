@@ -322,7 +322,13 @@ Format as Markdown with these sections:
             )
 
     async def get_suggestion(self, suggestion_id: str) -> Optional[KnowledgeSuggestion]:
-        """Get a suggestion by ID.
+        """Get a suggestion by ID — UNSCOPED.
+
+        This is the trusted internal load: it applies no requester scope, so
+        extraction and other in-process flows can read a row they just wrote.
+        Anything acting on behalf of an actor must use
+        :meth:`get_suggestion_visible` instead, which carries the mandatory
+        tenant predicate.
 
         Args:
             suggestion_id: Suggestion identifier
@@ -332,17 +338,50 @@ Format as Markdown with these sections:
         """
         return self._suggestions_store.get(suggestion_id)
 
+    async def get_suggestion_visible(
+        self, suggestion_id: str, *, organization_id: str
+    ) -> Optional[KnowledgeSuggestion]:
+        """Get a suggestion by ID, scoped to the actor's tenant.
+
+        The actor-facing counterpart of :meth:`get_suggestion` (the split #871
+        introduced for documents). Returns None both for an absent id and for
+        one belonging to another organization, so the two are indistinguishable
+        to the caller and a route built on it answers 404 rather than acting as
+        an existence oracle. Fail-closed: no organization, no result — never a
+        deployment-wide lookup.
+
+        Rejected alternative: scoping :meth:`get_suggestion` itself — it is the
+        trusted load behind extraction, which has no actor to scope by.
+
+        Args:
+            suggestion_id: Suggestion identifier
+            organization_id: Actor's tenant; REQUIRED
+
+        Returns:
+            KnowledgeSuggestion owned by ``organization_id``, or None
+        """
+        if not suggestion_id or not organization_id:
+            return None
+        suggestion = self._suggestions_store.get(suggestion_id)
+        if suggestion is None or suggestion.organization_id != organization_id:
+            return None
+        return suggestion
+
     async def list_suggestions(
         self,
-        organization_id: Optional[str] = None,
+        organization_id: str,
         status: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> Dict[str, Any]:
-        """List suggestions with optional filtering.
+        """List suggestions belonging to one organization.
+
+        ``organization_id`` is REQUIRED and always applied: an unscoped listing
+        would return every tenant's suggestions to a platform admin bound to
+        one. Fail-closed — a falsy organization lists nothing.
 
         Args:
-            organization_id: Filter by organization
+            organization_id: Actor's tenant; REQUIRED
             status: Filter by status
             limit: Max items to return
             offset: Pagination offset
@@ -350,13 +389,19 @@ Format as Markdown with these sections:
         Returns:
             Dict with suggestions list and pagination info
         """
-        suggestions = list(self._suggestions_store.values())
+        if not organization_id:
+            return {
+                "suggestions": [],
+                "total_count": 0,
+                "limit": limit,
+                "offset": offset,
+            }
 
-        # Apply filters
-        if organization_id:
-            suggestions = [
-                s for s in suggestions if s.organization_id == organization_id
-            ]
+        suggestions = [
+            s
+            for s in self._suggestions_store.values()
+            if s.organization_id == organization_id
+        ]
 
         if status:
             suggestions = [s for s in suggestions if s.status.value == status]
@@ -381,6 +426,8 @@ Format as Markdown with these sections:
         suggestion_id: str,
         reviewed_by: str,
         review_notes: Optional[str] = None,
+        *,
+        organization_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Approve a suggestion and create a knowledge item.
 
@@ -388,11 +435,15 @@ Format as Markdown with these sections:
             suggestion_id: Suggestion to approve
             reviewed_by: User ID of reviewer
             review_notes: Optional notes
+            organization_id: Actor's tenant; REQUIRED — an out-of-tenant id
+                resolves to None, exactly like an absent one
 
         Returns:
             Dict with new knowledge_item_id or None if failed
         """
-        suggestion = await self.get_suggestion(suggestion_id)
+        suggestion = await self.get_suggestion_visible(
+            suggestion_id, organization_id=organization_id
+        )
         if not suggestion:
             self.logger.warning(f"Suggestion {suggestion_id} not found")
             return None
@@ -457,6 +508,8 @@ Format as Markdown with these sections:
         reviewed_by: str,
         rejection_reason: str,
         review_notes: Optional[str] = None,
+        *,
+        organization_id: str,
     ) -> bool:
         """Reject a suggestion.
 
@@ -465,11 +518,14 @@ Format as Markdown with these sections:
             reviewed_by: User ID of reviewer
             rejection_reason: Why rejected
             review_notes: Optional additional notes
+            organization_id: Actor's tenant; REQUIRED
 
         Returns:
-            True if rejected, False if not found
+            True if rejected, False if not found or out of tenant
         """
-        suggestion = await self.get_suggestion(suggestion_id)
+        suggestion = await self.get_suggestion_visible(
+            suggestion_id, organization_id=organization_id
+        )
         if not suggestion:
             return False
 
@@ -488,6 +544,8 @@ Format as Markdown with these sections:
         title: Optional[str] = None,
         content: Optional[str] = None,
         suggested_type: Optional[str] = None,
+        *,
+        organization_id: str,
     ) -> Optional[KnowledgeSuggestion]:
         """Update a suggestion's content.
 
@@ -496,11 +554,14 @@ Format as Markdown with these sections:
             title: New title
             content: New content
             suggested_type: New type
+            organization_id: Actor's tenant; REQUIRED
 
         Returns:
-            Updated suggestion or None if not found
+            Updated suggestion or None if not found or out of tenant
         """
-        suggestion = await self.get_suggestion(suggestion_id)
+        suggestion = await self.get_suggestion_visible(
+            suggestion_id, organization_id=organization_id
+        )
         if not suggestion:
             return None
 
@@ -523,17 +584,22 @@ Format as Markdown with these sections:
         self,
         suggestion_id: str,
         remediated_by: str,
+        *,
+        organization_id: str,
     ) -> Optional[KnowledgeSuggestion]:
         """Mark PII as remediated after manual review.
 
         Args:
             suggestion_id: Suggestion that was remediated
             remediated_by: User ID who remediated
+            organization_id: Actor's tenant; REQUIRED
 
         Returns:
-            Updated suggestion or None if not found
+            Updated suggestion or None if not found or out of tenant
         """
-        suggestion = await self.get_suggestion(suggestion_id)
+        suggestion = await self.get_suggestion_visible(
+            suggestion_id, organization_id=organization_id
+        )
         if not suggestion:
             return None
 
