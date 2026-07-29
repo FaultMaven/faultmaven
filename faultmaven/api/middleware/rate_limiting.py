@@ -106,6 +106,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Monotonic timestamp of the last "no Redis client" log line, so the
         # degrade is reported once per cooldown window rather than per request.
         self._unavailable_logged_at: Optional[float] = None
+        # The limiter's demotion counter as last acted on. A change means the
+        # client in use stopped answering and the ladder must be re-entered.
+        self._handled_demotion_generation = 0
+        # Whether initialization has ever succeeded. Gates the ping-before-adopt
+        # on re-entry: the first adoption trusts the composition root's own
+        # validation, every later one proves the client for itself.
+        self._ever_initialized = False
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Main middleware dispatch with rate limiting"""
@@ -196,11 +203,31 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         Both are bounded by ``INIT_RETRY_COOLDOWN_SECONDS`` so a persistent
         outage does not open a connection on every request.
 
+        The ladder is also re-entered when the client in use *stops answering*,
+        not only when it never answered. The ordinary production Redis outage is
+        a restart or failover mid-life, long after a successful adoption; the
+        short-circuit above used to make that state permanent, so the limiter
+        held a dead client and every check fell through to fail-open forever,
+        with no rung below it ever reached. The limiter now declares its client
+        dead after a run of failed checks and bumps a generation counter, which
+        is handled here — once per death, not once per request.
+
         Being inside the cooldown is *not* itself a verdict: this method never
         raises and never synthesizes a response. Whether "no limiter" means pass
         or refuse is a request-path decision, taken in ``dispatch`` where a
         limit verdict is actually needed — see ``_serve_without_a_limiter``.
         """
+        generation = self.rate_limiter.demotion_generation
+        if generation != self._handled_demotion_generation:
+            self._handled_demotion_generation = generation
+            # Nothing usable until proven otherwise: this stops dispatch running
+            # checks against the dead client while the ladder is re-entered.
+            self._initialized = False
+            self.logger.error(
+                "Rate limiter's Redis client stopped answering; re-entering the "
+                "degrade ladder"
+            )
+
         if self._initialized and not self._degraded:
             return True
 
@@ -216,7 +243,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._last_attempt_at = now
         client = getattr(request.app.state, "redis_client", None)
         try:
-            await self.rate_limiter.initialize(client=client)
+            # Re-entry proves the offered client before adopting it: on a
+            # mid-life outage app.state holds the client that just died, and
+            # re-adopting it unchecked would never reach the stand-in.
+            await self.rate_limiter.initialize(
+                client=client, verify_client=self._ever_initialized
+            )
         except Exception as e:
             # The underlying rate_limiter already logged the cause.
             self.logger.warning(
@@ -229,6 +261,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         was_degraded = self._degraded
         self._initialized = True
+        self._ever_initialized = True
         # Read straight off the limiter rather than via getattr-with-default: a
         # stand-in that does not report degradation must break the test, not
         # silently look terminal.

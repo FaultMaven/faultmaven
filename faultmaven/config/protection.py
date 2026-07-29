@@ -114,7 +114,12 @@ def _load_from_settings(settings) -> ProtectionSettings:
         # Redis: ``None`` unless an operator set REDIS_URL explicitly, in which
         # case the complete URL genuinely is the configured source. Everything
         # else resolves centrally through RedisClientFactory.
-        redis_url=settings.database.redis_url,
+        #
+        # ``or None`` for the same reason the environment path has it: a
+        # present-but-blank REDIS_URL (an unset ConfigMap key) yields ``''``,
+        # and this loader must agree with the other two that blank means "not
+        # configured" rather than carrying an empty string forward.
+        redis_url=settings.database.redis_url or None,
         redis_key_prefix="faultmaven",
         # Rate limiting - use defaults since not in basic settings
         rate_limiting_enabled=True,

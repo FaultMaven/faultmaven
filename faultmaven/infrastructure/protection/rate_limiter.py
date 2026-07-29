@@ -20,6 +20,22 @@ from ...models.protection import (
     RateLimitState,
 )
 
+# Consecutive failed checks against the current client before the limiter
+# declares it dead and asks to be re-initialized.
+#
+# Three, not one: a single timeout is the shape of a transient blip (one slow
+# round trip, one failover hiccup) and demoting on it would re-enter the ladder
+# constantly on a healthy but busy deployment. Three, not thirty: every limited
+# request performs at least one check, so on any pod carrying traffic three
+# consecutive failures is sub-second — a genuinely dead client cannot survive
+# long. The count is *consecutive* and resets on any success, so an intermittent
+# one-in-N error never accumulates into a demotion.
+CHECK_FAILURE_DEMOTION_THRESHOLD = 3
+
+# Floor on how often a run of failing checks may log at ERROR. Without it the
+# catch-all logged once per check — up to four lines per request, indefinitely.
+CHECK_FAILURE_LOG_INTERVAL_SECONDS = 30.0
+
 
 class RedisRateLimiter:
     """
@@ -55,6 +71,25 @@ class RedisRateLimiter:
         # this is a *usable* client — but a re-attemptable one: the caller is
         # expected to keep retrying so the limiter can be promoted back.
         self._degraded = False
+        # Whether a real (non-stand-in) client has ever been held. Distinguishes
+        # "standalone chose FakeRedis by design" (terminal) from "the real Redis
+        # died and the factory handed back the stand-in" (a degrade to undo).
+        self._had_real_client = False
+
+        # Liveness of the *current* client, tracked on the check path. A client
+        # can die long after initialization — the ordinary production outage is
+        # a Redis restart or failover mid-life, not a failure at boot.
+        self._consecutive_check_failures = 0
+        # Bumped each time a run of failures crosses the demotion threshold.
+        # The middleware compares generations, so one death produces exactly one
+        # re-entry into the ladder rather than one per subsequent request.
+        self._demotion_generation = 0
+        # Whether the *current* client has already been declared dead. This, not
+        # an exact-equality test on the failure count, is what keeps one death to
+        # one generation bump — and it is cleared by ``_adopt``, so a later
+        # client that dies is demoted too.
+        self._client_declared_dead = False
+        self._last_check_failure_log_at: Optional[float] = None
 
         # Rate limit configurations
         self._configs: Dict[str, RateLimitConfig] = {}
@@ -79,7 +114,74 @@ class RedisRateLimiter:
         """
         return self._degraded
 
-    async def initialize(self, client=None) -> None:
+    @property
+    def demotion_generation(self) -> int:
+        """Counter bumped each time the current client is declared dead.
+
+        The middleware holds the generation it last acted on; a change means
+        "the client you are using stopped answering — re-enter the ladder".
+        Comparing generations rather than reading a boolean keeps one death to
+        one re-entry, however many requests observe it.
+        """
+        return self._demotion_generation
+
+    def _record_check_success(self) -> None:
+        """A working check clears the failure run."""
+        if self._consecutive_check_failures:
+            self._consecutive_check_failures = 0
+            self._last_check_failure_log_at = None
+
+    def _record_check_failure(self, error: Exception) -> None:
+        """Count a failed check, declaring the client dead past the threshold."""
+        self._consecutive_check_failures += 1
+
+        now = time.monotonic()
+        crossed = (
+            self._consecutive_check_failures >= CHECK_FAILURE_DEMOTION_THRESHOLD
+            and not self._client_declared_dead
+        )
+        due = (
+            self._last_check_failure_log_at is None
+            or now - self._last_check_failure_log_at
+            >= CHECK_FAILURE_LOG_INTERVAL_SECONDS
+        )
+        if crossed or due:
+            self._last_check_failure_log_at = now
+            self.logger.error(
+                "Rate limit check failed (%s consecutive): %s",
+                self._consecutive_check_failures,
+                error,
+            )
+        else:
+            self.logger.debug(f"Rate limit check failed: {error}")
+
+        if crossed:
+            self._client_declared_dead = True
+            self._demotion_generation += 1
+            self.logger.error(
+                "Rate limiter's Redis client has failed %s consecutive checks; "
+                "marking it dead so the degrade ladder is re-entered",
+                CHECK_FAILURE_DEMOTION_THRESHOLD,
+            )
+
+    async def _client_answers(self, client) -> bool:
+        """Whether a client responds to a ping.
+
+        Used before *re-adopting* a shared client. On a mid-life outage the
+        client in ``app.state`` is precisely the one that just stopped
+        answering, so adopting it again would re-enter the same dead state and
+        never reach the stand-in.
+        """
+        try:
+            await client.ping()
+            return True
+        except Exception as e:
+            self.logger.warning(
+                f"Shared Redis client did not answer ({e}); not re-adopting it"
+            )
+            return False
+
+    async def initialize(self, client=None, verify_client: bool = False) -> None:
         """Adopt the application's Redis client, or build one as a fallback.
 
         ``client`` is the composition root's boot-validated client, resolved
@@ -109,6 +211,14 @@ class RedisRateLimiter:
         a failed *promotion* from rung 3 keeps enforcing against the stand-in
         rather than dropping to no limiting at all.
 
+        ``verify_client`` pings the offered ``client`` before adopting it. The
+        caller sets it on every re-entry into the ladder, because a re-entry
+        means the previous client stopped answering — and on a mid-life Redis
+        outage the client sitting in ``app.state`` *is* that client. Adopting it
+        unchecked would re-enter the dead state on every retry and never reach
+        the stand-in. It is left off for the very first initialization, where the
+        composition root has already pinged and a second ping is pure cost.
+
         Raises:
             Exception: when no usable client could be established.
         """
@@ -119,10 +229,10 @@ class RedisRateLimiter:
             is_fakeredis,
         )
 
-        if client is not None:
-            self._redis = client
-            self._owns_client = False
-            self._degraded = False
+        if client is not None and (
+            not verify_client or await self._client_answers(client)
+        ):
+            self._adopt(client, owns=False, degraded=False)
             self.logger.info(
                 "Redis rate limiter using the shared application Redis client"
             )
@@ -149,24 +259,52 @@ class RedisRateLimiter:
                 f"Rate limiter Redis unavailable ({e}); falling back to in-process "
                 "FakeRedis — rate limits are per-replica until Redis is reachable"
             )
-            self._redis = get_fakeredis_client()
             # Process-wide singleton, shared with every other subsystem.
-            self._owns_client = False
-            self._degraded = True
+            self._adopt(get_fakeredis_client(), owns=False, degraded=True)
             return
         except Exception as e:
             self.logger.error(f"Failed to initialize Redis rate limiter: {e}")
             raise
 
-        self._redis = resolved
-        # The FakeRedis stand-in is a process-wide singleton shared with
-        # every other subsystem, so it is never this limiter's to close.
-        self._owns_client = not is_fakeredis(resolved)
-        # Whatever the factory returns here is the *configured* backend
-        # (FakeRedis is standalone's real answer, not a degrade), so this rung
-        # is terminal.
-        self._degraded = False
-        self.logger.info("Redis rate limiter initialized successfully")
+        # The FakeRedis stand-in is a process-wide singleton shared with every
+        # other subsystem, so it is never this limiter's to close.
+        stand_in = is_fakeredis(resolved)
+        # A stand-in is only a *degrade* if this limiter has held a real client
+        # before. On standalone with no Redis configured the factory returns
+        # FakeRedis by design and that rung is terminal; the same return value
+        # after a real client died means the factory fell back, and the limiter
+        # must keep retrying so it can be promoted when Redis recovers.
+        self._adopt(
+            resolved,
+            owns=not stand_in,
+            degraded=stand_in and self._had_real_client,
+        )
+        if self._degraded:
+            self.logger.error(
+                "Rate limiter fell back to the in-process FakeRedis — rate "
+                "limits are per-replica until Redis is reachable"
+            )
+        else:
+            self.logger.info("Redis rate limiter initialized successfully")
+
+    def _adopt(self, client, *, owns: bool, degraded: bool) -> None:
+        """Install a client and clear the liveness state tracked against the old one.
+
+        Every rung goes through here so no rung can forget to re-arm the
+        liveness tracking. Leaving ``_client_declared_dead`` set would mean the
+        *next* client's death is never declared, and the ladder would be entered
+        exactly once in the process's life.
+        """
+        from faultmaven.infrastructure.redis_client import is_fakeredis
+
+        self._redis = client
+        self._owns_client = owns
+        self._degraded = degraded
+        self._consecutive_check_failures = 0
+        self._client_declared_dead = False
+        self._last_check_failure_log_at = None
+        if not is_fakeredis(client):
+            self._had_real_client = True
 
     async def close(self) -> None:
         """Close the Redis connection — only one this limiter opened itself.
@@ -212,10 +350,16 @@ class RedisRateLimiter:
                 f"{result.limit}, duration={duration:.3f}s"
             )
 
+            self._record_check_success()
             return result
 
         except Exception as e:
-            self.logger.error(f"Rate limit check failed: {e}")
+            # A client can die long after initialization. Counting the failures
+            # is what lets the middleware notice and re-enter the degrade
+            # ladder; without it a mid-life Redis outage left the limiter
+            # holding a dead client and passing every request unlimited,
+            # forever, with no rung below it ever reached.
+            self._record_check_failure(e)
 
             if self.fallback_enabled:
                 return RateLimitResult(

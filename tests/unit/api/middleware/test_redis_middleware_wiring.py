@@ -23,6 +23,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 import faultmaven.api.middleware.rate_limiting as rate_limiting
+import faultmaven.infrastructure.protection.rate_limiter as rate_limiter_module
 from faultmaven.api.middleware.deduplication import DeduplicationMiddleware
 from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
 from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
@@ -35,6 +36,23 @@ from faultmaven.infrastructure.redis_client import (
 from faultmaven.models.protection import RateLimitConfig
 
 _GET_ASYNC_CLIENT = "faultmaven.infrastructure.redis_client.get_async_redis_client"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_fakeredis():
+    """Give each test its own stand-in singleton.
+
+    ``get_fakeredis_client`` caches one process-wide instance, and an async
+    FakeRedis binds to the event loop that created it. Reused across tests it
+    raises "bound to a different event loop" — which these tests' own code paths
+    would then read as a *check failure*, silently manufacturing the very
+    condition under test.
+    """
+    from faultmaven.infrastructure.redis_client import reset_fakeredis_client
+
+    reset_fakeredis_client()
+    yield
+    reset_fakeredis_client()
 
 
 def _asgi_app(scope, receive, send):
@@ -291,8 +309,9 @@ async def test_initialization_does_not_latch_and_retries_after_the_cooldown():
 
     class _FlakyLimiter:
         is_degraded = False
+        demotion_generation = 0
 
-        async def initialize(self, client=None):
+        async def initialize(self, client=None, verify_client=False):
             attempts.append(client)
             if len(attempts) == 1:
                 raise ConnectionError("redis down")
@@ -585,3 +604,325 @@ async def test_no_per_request_error_spam_while_uninitialized(monkeypatch, caplog
         "is being logged per request, not per cooldown window"
     )
     assert any("no Redis client" in r.getMessage() for r in errors)
+
+
+# --------------------------------------------------------------------------- #
+# Mid-life client death (fm#897 adversarial review, B1)
+#
+# The dominant production outage is not "Redis was down when the pod booted" —
+# it is "the pod booted fine and Redis restarted / failed over / lost the
+# network an hour later". The short-circuit on `_initialized and not _degraded`
+# made a successful adoption permanent, so in that shape the limiter kept a dead
+# client, every check fell through `check_rate_limit`'s catch-all to fail-open,
+# and NO rung of the degrade ladder was ever reached. The doc's claim that
+# "rung 2 exists precisely so rung 3 is nearly unreachable" — the claim that
+# justifies defaulting production to fail-open — was false here.
+# --------------------------------------------------------------------------- #
+
+
+class _DeadClient:
+    """A client that was adopted while healthy and has since stopped answering."""
+
+    def __init__(self):
+        self.eval_calls = 0
+        self.ping_calls = 0
+
+    async def ping(self):
+        self.ping_calls += 1
+        raise ConnectionError("connection reset by peer")
+
+    async def eval(self, *args, **kwargs):
+        self.eval_calls += 1
+        raise ConnectionError("connection reset by peer")
+
+    async def zremrangebyscore(self, *args, **kwargs):
+        raise ConnectionError("connection reset by peer")
+
+    async def zcard(self, *args, **kwargs):
+        raise ConnectionError("connection reset by peer")
+
+
+async def _drive(mw, ip, count, state_client=None):
+    """Send ``count`` requests from one client IP; return the status codes.
+
+    ``state_client`` is what ``app.state.redis_client`` holds for the duration.
+    On a mid-life outage that is the client that just died — the composition
+    root does not withdraw it — so the tests must present it, not ``None``.
+    """
+    return [
+        (
+            await mw.dispatch(
+                _http_request(app=_app(state_client), client=ip), _call_next
+            )
+        ).status_code
+        for _ in range(count)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_a_client_that_dies_mid_life_demotes_and_keeps_enforcing(monkeypatch):
+    """B1: sustained check failures must re-enter the ladder, not fail open forever.
+
+    The observable property, at the reviewer's altitude: after the adopted
+    client dies, a later request is still *rate limited*. Before the fix this
+    probe returned 200 for every request indefinitely.
+    """
+    dead = _DeadClient()
+
+    async def _factory(redis_url=None):
+        # Standalone's answer when the configured Redis is unreachable.
+        from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+        return get_fakeredis_client()
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    settings = _limited_settings(global_requests=1)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+
+    # Boot healthy on the shared client, then it dies.
+    await mw._initialize(_http_request(app=_app(dead), client=ip))
+    assert mw._initialized is True
+    assert mw._degraded is False
+    assert mw.rate_limiter._redis is dead
+
+    # Requests during the failure run pass (a single timeout must not demote),
+    # but the run is bounded: the limiter declares the client dead.
+    statuses = await _drive(
+        mw, ip, rate_limiter_module.CHECK_FAILURE_DEMOTION_THRESHOLD, state_client=dead
+    )
+    assert statuses == [200] * len(statuses)
+    assert mw.rate_limiter.demotion_generation == 1
+
+    # The next request re-enters the ladder and lands on the stand-in, which
+    # enforces limits — so the request after it is refused.
+    after = await _drive(mw, ip, 2, state_client=dead)
+
+    assert mw._degraded is True, "the ladder was not re-entered"
+    assert after[-1] == 429, (
+        f"still unlimited after the client died (statuses {after}) — the "
+        "degrade ladder was never re-entered"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_a_dead_shared_client_is_not_blindly_re_adopted(monkeypatch):
+    """B1: app.state holds the client that just died — prove it before adopting.
+
+    Re-adopting it unchecked re-enters the dead state on every retry, so the
+    stand-in below it is never reached.
+    """
+    dead = _DeadClient()
+    built = []
+
+    async def _factory(redis_url=None):
+        from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+        built.append(redis_url)
+        return get_fakeredis_client()
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    settings = _limited_settings(global_requests=1)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+
+    await mw._initialize(_http_request(app=_app(dead), client=ip))
+    assert dead.ping_calls == 0, "the first adoption re-pinged a boot-validated client"
+
+    await _drive(
+        mw,
+        ip,
+        rate_limiter_module.CHECK_FAILURE_DEMOTION_THRESHOLD + 1,
+        state_client=dead,
+    )
+
+    assert dead.ping_calls >= 1, "the dead client was re-adopted without a ping"
+    assert mw.rate_limiter._redis is not dead, "the dead client was re-adopted"
+    assert built, "the ladder never fell through to the factory rung"
+    assert mw._degraded is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_promotion_still_works_after_a_mid_life_demotion(monkeypatch):
+    """B1: demotion must not be a one-way door — recovery is the point."""
+    dead = _DeadClient()
+    recovered = fakeredis_aio.FakeRedis(decode_responses=True)
+
+    async def _factory(redis_url=None):
+        from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+        return get_fakeredis_client()
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    settings = _limited_settings(global_requests=1)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+
+    await mw._initialize(_http_request(app=_app(dead), client=ip))
+    await _drive(
+        mw,
+        ip,
+        rate_limiter_module.CHECK_FAILURE_DEMOTION_THRESHOLD + 1,
+        state_client=dead,
+    )
+    assert mw._degraded is True
+
+    # Redis comes back; the composition root's client answers again.
+    mw._last_attempt_at -= rate_limiting.INIT_RETRY_COOLDOWN_SECONDS + 1
+    await mw._initialize(_http_request(app=_app(recovered), client=ip))
+
+    assert mw.rate_limiter._redis is recovered
+    assert mw._degraded is False
+    assert mw._initialized is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_a_dying_client_does_not_log_per_request(monkeypatch, caplog):
+    """D1: the check-path catch-all logged once per failed check, indefinitely.
+
+    Steady state after the demotion is the stand-in, where checks succeed — so
+    the bound here is "a handful of lines for the death", not "one per request".
+    """
+    dead = _DeadClient()
+
+    async def _factory(redis_url=None):
+        from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+        return get_fakeredis_client()
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    settings = _limited_settings(global_requests=10_000)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+
+    await mw._initialize(_http_request(app=_app(dead), client=ip))
+
+    request_count = 40
+    with caplog.at_level(logging.ERROR):
+        await _drive(mw, ip, request_count, state_client=dead)
+
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) <= 5, (
+        f"{len(errors)} ERROR lines for {request_count} requests — the failing "
+        "check is being logged per request"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_an_isolated_check_failure_does_not_demote(monkeypatch):
+    """The threshold is deliberate: one transient timeout is not a dead client."""
+    shared = fakeredis_aio.FakeRedis(decode_responses=True)
+
+    settings = _limited_settings(global_requests=10_000)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+    await mw._initialize(_http_request(app=_app(shared), client=ip))
+
+    limiter = mw.rate_limiter
+    real_eval = shared.eval
+    calls = {"n": 0}
+
+    async def _flaky_eval(*args, **kwargs):
+        calls["n"] += 1
+        # Fail on every other call: never CHECK_FAILURE_DEMOTION_THRESHOLD in a
+        # row, so an intermittent error must never accumulate into a demotion.
+        if calls["n"] % 2 == 1:
+            raise ConnectionError("transient timeout")
+        return await real_eval(*args, **kwargs)
+
+    monkeypatch.setattr(shared, "eval", _flaky_eval)
+
+    await _drive(mw, ip, 12, state_client=shared)
+
+    assert limiter.demotion_generation == 0, "an intermittent error demoted the client"
+    assert mw._degraded is False
+    assert limiter._redis is shared
+
+
+class _KillableClient:
+    """A real-looking client that can be killed and revived mid-test."""
+
+    def __init__(self, backing):
+        self._backing = backing
+        self.alive = True
+
+    def _check(self):
+        if not self.alive:
+            raise ConnectionError("connection reset by peer")
+
+    async def ping(self):
+        self._check()
+        return True
+
+    async def eval(self, *args, **kwargs):
+        self._check()
+        return await self._backing.eval(*args, **kwargs)
+
+    async def zremrangebyscore(self, *args, **kwargs):
+        self._check()
+        return await self._backing.zremrangebyscore(*args, **kwargs)
+
+    async def zcard(self, *args, **kwargs):
+        self._check()
+        return await self._backing.zcard(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_a_second_death_is_demoted_just_like_the_first(monkeypatch):
+    """Demotion must stay armed across re-adoptions, not fire once per process.
+
+    The failure run is counted with ``== threshold`` so one death yields one
+    generation bump. That is only correct because adopting a client clears the
+    run: leave a stale count behind and the counter sails past the threshold
+    without ever equalling it, so the ladder is entered once and never again.
+    """
+
+    async def _factory(redis_url=None):
+        from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+        return get_fakeredis_client()
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    killable = _KillableClient(fakeredis_aio.FakeRedis(decode_responses=True))
+    settings = _limited_settings(global_requests=10_000)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+    threshold = rate_limiter_module.CHECK_FAILURE_DEMOTION_THRESHOLD
+
+    await mw._initialize(_http_request(app=_app(killable), client=ip))
+    assert mw.rate_limiter._redis is killable
+
+    # First death → first demotion onto the stand-in.
+    killable.alive = False
+    await _drive(mw, ip, threshold + 1, state_client=killable)
+    assert mw.rate_limiter.demotion_generation == 1
+    assert mw._degraded is True
+
+    # Redis recovers and the limiter is promoted back.
+    killable.alive = True
+    mw._last_attempt_at -= rate_limiting.INIT_RETRY_COOLDOWN_SECONDS + 1
+    await _drive(mw, ip, 1, state_client=killable)
+    assert mw.rate_limiter._redis is killable
+    assert mw._degraded is False
+
+    # Second death → must be demoted again, not ignored.
+    killable.alive = False
+    await _drive(mw, ip, threshold + 1, state_client=killable)
+
+    assert mw.rate_limiter.demotion_generation == 2, (
+        "the second death was never detected — the failure run survived the "
+        "re-adoption, so the counter passed the threshold without equalling it"
+    )
+    assert mw._degraded is True
+    assert mw.rate_limiter._redis is not killable

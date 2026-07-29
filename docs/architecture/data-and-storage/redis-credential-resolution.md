@@ -61,10 +61,10 @@ to least preferred:
    global across replicas. Normal operation.
 2. **Per-replica FakeRedis** — an in-process stand-in. Limits are still
    enforced, just per replica rather than globally, and the degrade is logged
-   at ERROR. Reached when the shared client is unavailable at first request.
-   Accepting this rung is itself governed by `fail_open_on_redis_error`: an
-   operator who has demanded fail-closed gets a refusal rather than a
-   per-replica approximation.
+   at ERROR. Reached when the shared client is unavailable at first request
+   **or stops answering later** (see "Demotion" below). Accepting this rung is
+   itself governed by `fail_open_on_redis_error`: an operator who has demanded
+   fail-closed gets a refusal rather than a per-replica approximation.
 3. **Fail open** — requests pass unlimited. Governed by
    `fail_open_on_redis_error`, sourced from `PROTECTION_RATE_LIMIT_FAIL_OPEN`
    (default `true`) on every load path, including the production loader.
@@ -101,6 +101,43 @@ Landing on rung 2 does not latch either. It counts as initialized, so limits
 keep being enforced against the stand-in with no window of unlimited traffic,
 but the cooldown keeps re-attempting rung 1 so the pod is promoted back rather
 than running per-replica forever.
+
+### Demotion: the ladder is entered on client *death*, not only at startup
+
+The ladder above would be a fiction if it only ran at initialization. The
+ordinary production Redis outage is not "Redis was down when the pod booted" —
+it is a restart, a failover, or a lost network an hour into the pod's life,
+after a perfectly successful adoption. Treating a successful adoption as
+permanent meant the limiter kept a dead client, every check fell through
+`check_rate_limit`'s catch-all to fail-open, and **no rung below rung 1 was ever
+reached** in the shape that matters most. That also falsified the justification
+for defaulting to fail-open, which rests on rung 2 making rung 3 nearly
+unreachable.
+
+So liveness is tracked on the check path:
+
+- `RedisRateLimiter` counts **consecutive** failed checks. At
+  `CHECK_FAILURE_DEMOTION_THRESHOLD` (3) it declares the client dead and bumps
+  `demotion_generation`. Three because a single timeout is a blip and demoting
+  on it would churn a healthy pod, while every limited request performs at
+  least one check — so three consecutive failures is sub-second on any pod
+  carrying traffic. The count resets on any success, so an intermittent
+  one-in-N error never accumulates into a demotion.
+- `RateLimitMiddleware` holds the generation it last acted on. A change means
+  "re-enter the ladder": it drops `_initialized` (so no further checks run
+  against the dead client) and re-initializes. Comparing generations keeps one
+  death to **one** re-entry, however many requests observe it.
+- Re-entry **pings before adopting**. On a mid-life outage `app.state.redis_client`
+  still holds the client that just died; re-adopting it unchecked would land
+  back in the dead state on every retry and never reach the stand-in. The very
+  first initialization skips the ping — the composition root has already
+  validated that client and a second ping is pure cost.
+- The factory rung distinguishes "standalone chose FakeRedis by design"
+  (terminal) from "the factory fell back to FakeRedis after a real client died"
+  (degraded, keep retrying), so recovery still promotes.
+- Retries stay on the cooldown. The one immediate re-entry is the transition
+  out of a healthy terminal client; everything after that waits out
+  `INIT_RETRY_COOLDOWN_SECONDS`, so this is never a ping per request.
 
 **The probes are resolved before any of this.** `dispatch` decides whether a
 request is rate limited at all — `rate_limiting_enabled`, then `_should_bypass`

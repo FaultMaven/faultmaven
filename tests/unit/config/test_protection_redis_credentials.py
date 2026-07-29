@@ -95,6 +95,38 @@ def test_no_loader_assembles_a_redis_url(cloud_discrete_credentials, loader):
 
 
 @pytest.mark.parametrize("loader", _LOADERS, ids=lambda f: f.__name__)
+def test_a_blank_redis_url_reads_as_unset_on_every_loader(loader):
+    """A present-but-empty REDIS_URL means "not configured", on all three paths.
+
+    An unset ConfigMap key yields ``''``, not absence. The settings loader
+    lacked the ``or None`` the environment loader has, so the three producers
+    disagreed about the same deployment: two said ``None``, one said ``''``.
+    Every consumer happens to test truthiness today, so nothing broke — but the
+    invariant this branch exists to hold is "no loader carries a Redis URL it
+    was not given", and an empty string is not a URL.
+    """
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ["BASIC_PROTECTION_ENABLED"] = "true"
+        _apply_env({"REDIS_URL": "", "REDIS_HOST": _HOST, "REDIS_PASSWORD": _PASSWORD})
+        try:
+            settings = loader()
+
+            assert settings.redis_url is None, (
+                f"{loader.__name__} carried a blank REDIS_URL forward as "
+                f"{settings.redis_url!r} instead of treating it as unset"
+            )
+
+            # And the password still resolves centrally, as it must.
+            config = RedisClientFactory._build_config(
+                settings.redis_url, None, None, None
+            )
+            assert config["password"] == _PASSWORD
+            assert config["host"] == _HOST
+        finally:
+            reset_settings()
+
+
+@pytest.mark.parametrize("loader", _LOADERS, ids=lambda f: f.__name__)
 def test_password_reaches_the_client_config_through_every_loader(
     cloud_discrete_credentials, loader
 ):
