@@ -564,7 +564,14 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     ):
         """RBAC scope-visibility predicate for the inventory surface.
 
-        Mirrors the vector-retrieval allowlist (``build_kb_scope_filter``):
+        Mirrors the vector-retrieval allowlist (``build_kb_scope_filter``), and
+        the mirror is exact on the arm that matters: the share sub-select below
+        and the vector path's id resolver
+        (``IShareRepository.list_resource_ids``, reached via
+        ``resolve_shared_kb_ids``) apply the same
+        ``resource_shares.organization_id == organization_id`` predicate, so a
+        share row stamped with a foreign org grants visibility on neither
+        surface. The visibility rule is
         ``global`` (the org-free platform tier, visible to every tenant — #770)
         ∪ own-org items the requester ``owns`` (an author always sees their own)
         ∪ own-org items ``shared to any of the requester's teams`` via

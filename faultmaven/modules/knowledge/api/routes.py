@@ -45,6 +45,7 @@ from fastapi import (
 
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
+    require_actor_organization,
     require_authentication,
     require_platform_admin,
 )
@@ -1020,10 +1021,13 @@ async def list_suggestions(
     current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """
-    List knowledge suggestions with optional filtering.
+    List the caller's organization's knowledge suggestions.
 
     Returns suggestions extracted from cases that are pending review.
     Includes lineage information for each suggestion (source case, extractor, timestamp).
+
+    Scoped to the caller's tenant, resolved fail-closed: the operator role says
+    *what* you may do, never *whose* data you may see.
 
     Args:
         status: Filter by status (pending_review, approved, rejected)
@@ -1035,10 +1039,9 @@ async def list_suggestions(
     """
     logger = logging.getLogger(__name__)
 
-    try:
-        # Get organization_id from user context if available
-        organization_id = getattr(current_user, "organization_id", None)
+    organization_id = require_actor_organization(current_user)
 
+    try:
         result = await suggestion_service.list_suggestions(
             organization_id=organization_id,
             status=status,
@@ -1076,6 +1079,10 @@ async def get_suggestion(
     Returns full suggestion details including content, PII scan status,
     and lineage information.
 
+    Resolved through the tenant-scoped lookup: an id belonging to another
+    organization answers 404, identically to an absent id, so the response is
+    never an existence oracle.
+
     Args:
         suggestion_id: Suggestion identifier
 
@@ -1084,8 +1091,12 @@ async def get_suggestion(
     """
     logger = logging.getLogger(__name__)
 
+    organization_id = require_actor_organization(current_user)
+
     try:
-        suggestion = await suggestion_service.get_suggestion(suggestion_id)
+        suggestion = await suggestion_service.get_suggestion_visible(
+            suggestion_id, organization_id=organization_id
+        )
         if not suggestion:
             raise HTTPException(status_code=404, detail="Suggestion not found")
 
@@ -1112,6 +1123,9 @@ async def update_suggestion(
     Allows editing the suggested title, content, or type before approval.
     Content changes trigger a new PII scan.
 
+    Tenant-scoped: an id outside the caller's organization answers 404 and
+    nothing is written.
+
     Args:
         suggestion_id: Suggestion to update
         update_data: Fields to update (title, content, suggested_type)
@@ -1121,12 +1135,15 @@ async def update_suggestion(
     """
     logger = logging.getLogger(__name__)
 
+    organization_id = require_actor_organization(current_user)
+
     try:
         suggestion = await suggestion_service.update_suggestion(
             suggestion_id=suggestion_id,
             title=update_data.get("title"),
             content=update_data.get("content"),
             suggested_type=update_data.get("suggested_type"),
+            organization_id=organization_id,
         )
 
         if not suggestion:
@@ -1171,21 +1188,34 @@ async def approve_suggestion(
     # under multi (#770).
     require_global_authoring_allowed()
 
+    organization_id = require_actor_organization(current_user)
+
     try:
         review_notes = None
         if request_body:
             review_notes = request_body.get("review_notes")
 
+        # Resolve existence through the tenant-scoped lookup FIRST, so an
+        # absent id and another organization's id get the same 404. Folding
+        # both into the "not found or not ready" 400 below would make the
+        # status code an existence oracle: 400 would mean "it exists here,
+        # just isn't ready" while an out-of-scope id fell somewhere else.
+        if not await suggestion_service.get_suggestion_visible(
+            suggestion_id, organization_id=organization_id
+        ):
+            raise HTTPException(status_code=404, detail="Suggestion not found")
+
         result = await suggestion_service.approve_suggestion(
             suggestion_id=suggestion_id,
             reviewed_by=current_user.user_id,
             review_notes=review_notes,
+            organization_id=organization_id,
         )
 
         if not result:
             raise HTTPException(
                 status_code=400,
-                detail="Cannot approve: suggestion not found or PII scan not complete",
+                detail="Cannot approve: PII scan not complete",
             )
 
         logger.info(f"Approved suggestion {suggestion_id}")
@@ -1227,6 +1257,8 @@ async def reject_suggestion(
     """
     logger = logging.getLogger(__name__)
 
+    organization_id = require_actor_organization(current_user)
+
     try:
         rejection_reason = request_body.get("rejection_reason")
         if not rejection_reason:
@@ -1239,6 +1271,7 @@ async def reject_suggestion(
             reviewed_by=current_user.user_id,
             rejection_reason=rejection_reason,
             review_notes=review_notes,
+            organization_id=organization_id,
         )
 
         if not success:
@@ -1279,10 +1312,13 @@ async def remediate_pii(
     """
     logger = logging.getLogger(__name__)
 
+    organization_id = require_actor_organization(current_user)
+
     try:
         suggestion = await suggestion_service.remediate_pii(
             suggestion_id=suggestion_id,
             remediated_by=current_user.user_id,
+            organization_id=organization_id,
         )
 
         if not suggestion:
