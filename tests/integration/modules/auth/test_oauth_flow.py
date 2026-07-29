@@ -27,13 +27,20 @@ os.environ["SKIP_SERVICE_CHECKS"] = "true"
 os.environ["OAUTH_ENABLED"] = "true"
 os.environ["OAUTH_REQUIRE_CONSENT"] = "false"  # Auto-approve for E2E flow tests
 
-# Force reimport of app with OAuth enabled
 import sys
 
+from faultmaven.config.settings import reset_settings
+
+# Force the app below to be built with OAuth enabled.
+#
+# Clear the settings *singleton*; never drop faultmaven.config.settings from
+# sys.modules. Doing that leaves a second module object in the process, each
+# with its own `_settings_instance`, so a `reset_settings` captured by an
+# earlier import clears a singleton nothing reads while the freshly imported
+# module keeps handing production code a stale cached settings object.
+reset_settings()
 if "faultmaven.main" in sys.modules:
     del sys.modules["faultmaven.main"]
-if "faultmaven.config.settings" in sys.modules:
-    del sys.modules["faultmaven.config.settings"]
 
 from faultmaven.main import app
 

@@ -246,10 +246,12 @@ class ProtectionSystem:
 
             # 1. Rate Limiting (executed first)
             if self.basic_config.rate_limiting_enabled:
+                # No URL threaded through: the limiter adopts the composition
+                # root's client from app.state on the first request, exactly as
+                # DeduplicationMiddleware does.
                 self.app.add_middleware(
                     RateLimitMiddleware,
                     settings=self.basic_config,
-                    redis_url=self.basic_config.redis_url,
                 )
                 basic_result["middleware_added"].append("rate_limiting")
                 basic_result["components"].append("rate_limiting")
@@ -526,10 +528,11 @@ def setup_protection_middleware(
             setup_info["middleware_added"].append("deduplication")
 
         if settings.rate_limiting_enabled:
+            # No URL threaded through: the limiter adopts the composition root's
+            # client from app.state on the first request.
             app.add_middleware(
                 RateLimitMiddleware,
                 settings=settings,
-                redis_url=settings.redis_url,
             )
             setup_info["middleware_added"].append("rate_limiting")
 
@@ -671,9 +674,9 @@ async def setup_protection_middleware_async(
 
         # 1. Rate Limiting (executed first)
         if settings.rate_limiting_enabled:
-            app.add_middleware(
-                RateLimitMiddleware, settings=settings, redis_url=settings.redis_url
-            )
+            # No URL threaded through: the limiter adopts the composition root's
+            # client from app.state on the first request.
+            app.add_middleware(RateLimitMiddleware, settings=settings)
             setup_info["middleware_added"].append("rate_limiting")
             logger.info("Added rate limiting middleware")
 
@@ -721,6 +724,10 @@ def get_protection_health_endpoints():
 
     async def protection_health():
         """Get overall protection system health"""
+        # Imported here rather than at module scope: this module is imported
+        # during app assembly, and the Redis factory pulls in settings.
+        from ..infrastructure.redis_client import RedisClientFactory
+
         try:
             settings = load_protection_settings()
             validation = validate_protection_settings(settings)
@@ -730,7 +737,17 @@ def get_protection_health_endpoints():
                 "rate_limiting_enabled": settings.rate_limiting_enabled,
                 "deduplication_enabled": settings.deduplication_enabled,
                 "timeouts_enabled": settings.timeouts.enabled,
-                "redis_url": settings.redis_url,
+                # A configured URL carries its password inline, so it is masked
+                # before it leaves the process. ``None`` is the normal case and
+                # means the connection resolves centrally.
+                "redis_url": (
+                    RedisClientFactory._mask_url(settings.redis_url)
+                    if settings.redis_url
+                    else None
+                ),
+                "redis_source": (
+                    "explicit-url" if settings.redis_url else "central-factory"
+                ),
                 "validation": validation,
                 "status": "healthy" if validation["valid"] else "unhealthy",
             }

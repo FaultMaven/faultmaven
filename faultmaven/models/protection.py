@@ -113,8 +113,13 @@ class ProtectionSettings(BaseModel):
     debug_protection: bool = False
     protection_bypass_headers: List[str] = Field(default_factory=list)
 
-    # Redis configuration
-    redis_url: str = "redis://localhost:6379/1"
+    # Redis configuration.
+    # ``None`` means "resolve centrally via RedisClientFactory" — the normal
+    # case, and the only one that picks up a discretely-configured
+    # ``REDIS_PASSWORD``. A value is set only when an operator configures
+    # ``REDIS_URL`` explicitly, the one case where a complete URL genuinely is
+    # the configured source.
+    redis_url: Optional[str] = None
     redis_key_prefix: str = "fm:protection"
 
     class Config:

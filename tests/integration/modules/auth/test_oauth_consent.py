@@ -15,11 +15,19 @@ from unittest.mock import AsyncMock
 os.environ["SKIP_SERVICE_CHECKS"] = "true"
 os.environ["OAUTH_ENABLED"] = "true"
 
-# Force reimport of app with OAuth enabled
+# Force the app below to be built with OAuth enabled.
+#
+# Clear the settings *singleton*; never drop faultmaven.config.settings from
+# sys.modules. Doing that leaves a second module object in the process, each
+# with its own `_settings_instance`: every module that already did
+# `from faultmaven.config.settings import ...` keeps the old one, so its
+# reset_settings() clears a singleton nothing reads while the freshly imported
+# module keeps handing production code a stale cached settings object.
+from faultmaven.config.settings import reset_settings
+
+reset_settings()
 if "faultmaven.main" in sys.modules:
     del sys.modules["faultmaven.main"]
-if "faultmaven.config.settings" in sys.modules:
-    del sys.modules["faultmaven.config.settings"]
 
 import pytest
 from fastapi import Request, status
@@ -28,6 +36,17 @@ from httpx import ASGITransport, AsyncClient
 from faultmaven.main import app
 from faultmaven.modules.auth.contracts import OAuthTokenDTO
 from faultmaven.modules.auth.domain.models.auth import DevUser
+
+
+@pytest.fixture(autouse=True)
+def rebuilt_settings_do_not_outlive_the_test():
+    """Drop the singleton these tests rebuild under mutated OAuth env vars.
+
+    `monkeypatch` restores OAUTH_REQUIRE_CONSENT, but the settings object built
+    from it while it was set would otherwise survive into every later test.
+    """
+    yield
+    reset_settings()
 
 
 @pytest.fixture
@@ -103,9 +122,9 @@ class TestConsentFlowEnabled:
         # Enable consent requirement
         monkeypatch.setenv("OAUTH_REQUIRE_CONSENT", "true")
 
-        # Force settings reload
-        if "faultmaven.config.settings" in sys.modules:
-            del sys.modules["faultmaven.config.settings"]
+        # Force settings reload (the singleton, not the module — see the
+        # module-level note above).
+        reset_settings()
 
         response = await client_with_mocked_oauth_and_auth.get(
             "/api/v1/auth/oauth/authorize",
@@ -235,9 +254,9 @@ class TestConsentFlowDisabled:
         # Disable consent requirement (auto-approve mode)
         monkeypatch.setenv("OAUTH_REQUIRE_CONSENT", "false")
 
-        # Force settings reload
-        if "faultmaven.config.settings" in sys.modules:
-            del sys.modules["faultmaven.config.settings"]
+        # Force settings reload (the singleton, not the module — see the
+        # module-level note above).
+        reset_settings()
 
         response = await client_with_mocked_oauth_and_auth.get(
             "/api/v1/auth/oauth/authorize",
