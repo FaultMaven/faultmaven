@@ -198,9 +198,6 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
         persist_dir: Local persist directory (used for PersistentClient fallback)
         label: Human-readable label for logging (e.g., "KB", "evidence")
     """
-    import chromadb
-    from chromadb.config import Settings as ChromaSettings
-
     from faultmaven.infrastructure.chroma_client import (
         is_external_chroma_configured,
         local_chroma_or_fail,
@@ -210,13 +207,17 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
     # create_redis_client: under cloud, one env var must not buy a pod its way
     # out of the vector-store guarantee — a cloud process with no vector store
     # is the degradation the gate exists to refuse. Standalone keeps the skip
-    # (returns None; downstream stores register as disabled).
+    # (returns None; downstream stores register as disabled). Checked BEFORE
+    # the chromadb import below so skip-mode boots (CI) keep not paying it.
     if settings.server.skip_service_checks:
         local_chroma_or_fail(
             "SKIP_SERVICE_CHECKS=true skips ChromaDB entirely", settings
         )
         logger.info(f"Skipping ChromaDB {label} client (SKIP_SERVICE_CHECKS=True)")
         return None
+
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
 
     # Dispatch: canonical value is "chromadb" (default). If the caller
     # configures CHROMADB_URL, we probe it via HttpClient; on failure,
