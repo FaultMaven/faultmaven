@@ -134,7 +134,6 @@ async def reset_kb(
         if knowledge_service is None:
             print("ERROR: knowledge_service unavailable; cannot rebuild.")
             return 1
-        knowledge_service._db_session_factory = get_db_session
         result = await bootstrap_kb(
             knowledge_service=knowledge_service,
             db_session_factory=get_db_session,

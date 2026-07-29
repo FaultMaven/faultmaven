@@ -159,6 +159,11 @@ def test_conversion_service_composition_root_wiring():
     app (capabilities endpoint, retrieval allowlist) sees the real services.
     Pin identity with the CONTAINER-sourced values app.state ends up holding.
     """
+    from faultmaven.infrastructure.persistence.database import get_db_session
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
+
     with TestClient(app):
         cs = app.state.conversion_service
         assert cs is not None, "conversion service failed to initialize"
@@ -170,6 +175,18 @@ def test_conversion_service_composition_root_wiring():
         # team_service is None in standalone; identity still pins that the
         # construction and app.state resolve the same source.
         assert cs._team_service is app.state.team_service
+        assert cs._db_session_factory is get_db_session
+
+        # The KnowledgeService the same lifespan publishes must be DB-capable
+        # from the container, not from a patch applied here. That patch made
+        # the capability web-only: the jobs process initializes the same
+        # container without a lifespan, so ``kb_seed`` refused on every runbook
+        # (#894). One session source for the whole knowledge vertical.
+        ks = app.state.knowledge_service
+        assert isinstance(
+            ks, KnowledgeService
+        ), f"lifespan published a {type(ks).__name__}, not a real KnowledgeService"
+        assert ks._db_session_factory is get_db_session
 
 
 def test_capabilities_team_flags_gate_on_team_service():

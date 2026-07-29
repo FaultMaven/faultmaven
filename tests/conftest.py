@@ -677,28 +677,6 @@ def reset_container():
     container.reset()
 
 
-@pytest.fixture(scope="function")
-def initialized_container(reset_container):
-    """Provide a properly initialized container for tests"""
-    try:
-        reset_container.initialize()
-        return reset_container
-    except Exception as e:
-        # If real initialization fails, create minimal mock container
-        from unittest.mock import MagicMock
-
-        mock_container = MagicMock()
-
-        # Mock key service methods
-        mock_container.get_session_service.return_value = MagicMock()
-        mock_container.get_agent_service.return_value = MagicMock()
-        mock_container.get_case_service.return_value = MagicMock()
-        mock_container.get_knowledge_service.return_value = MagicMock()
-        mock_container.get_data_service.return_value = MagicMock()
-
-        return mock_container
-
-
 @pytest.fixture
 def sample_session_context():
     """Sample session context for testing."""
