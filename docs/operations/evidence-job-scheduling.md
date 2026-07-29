@@ -28,54 +28,46 @@ These jobs support the failure mode handling infrastructure documented in:
 # Manual execution
 python -m faultmaven.jobs.run storage_cleanup
 
-# Dry run (preview without deletion)
-python -m faultmaven.jobs.run storage_cleanup --dry-run
-
-# Custom TTL
-python -m faultmaven.jobs.run storage_cleanup --ttl-hours 48
+# With debug logging (what the deployed CronJob passes)
+python -m faultmaven.jobs.run storage_cleanup --verbose
 ```
 
-**Schedule:** Daily at 2:00 AM (low-traffic period)
+The runner's entire flag surface is the positional job name plus `--list`,
+`--verbose`/`-v`, `--organization-id` and `--cross-tenant-maintenance`
+(`faultmaven/jobs/run.py`). **There is no `--dry-run` and no `--ttl-hours`** —
+argparse exits 2 on either. Both behaviours are configured by environment
+variable instead (`faultmaven/config/settings.py`, `EvidenceStorageSettings`):
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `ORPHAN_CLEANUP_ENABLED` | `false` | Must be `true` before the job will delete anything |
+| `ORPHAN_CLEANUP_DRY_RUN` | `true` | Logs `[DRY RUN] would delete …` instead of deleting |
+| `ORPHAN_FILE_TTL_HOURS` | `24` (min 1, max 720) | Age threshold; younger files are never deleted |
+
+**The M1 canary protocol needs no flag, because dry-run is the default
+posture.** With both defaults in place the job enumerates and logs only, and
+`run()` refuses outright (`status="skipped"`) if `ORPHAN_CLEANUP_ENABLED=false`
+and dry-run has also been switched off. Run it that way for ≥48h, read the
+`[DRY RUN] would delete` lines, then set `ORPHAN_CLEANUP_ENABLED=true` and
+`ORPHAN_CLEANUP_DRY_RUN=false`. Note the asymmetry: there is no per-invocation
+override, so on a deployment that has already gone live you cannot force one
+dry-run pass without changing the CronJob's environment for that run.
+
+**Schedule:** Daily at 3:00 AM UTC. Deliberately **after** case-cleanup at
+2:00 AM: a case deleted by that sweep has had its files unlinked by the time
+this one runs, so the two do not race over the same evidence.
 
 **Configuration:**
 
 Cron:
 
 ```cron
-0 2 * * * cd /app && python -m faultmaven.jobs.run storage_cleanup
+0 3 * * * cd /app && python -m faultmaven.jobs.run storage_cleanup
 ```
 
-Kubernetes CronJob:
-
-```yaml
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: faultmaven-storage-cleanup
-spec:
-  schedule: "0 2 * * *"
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-          - name: storage-cleanup
-            image: ghcr.io/faultmaven/faultmaven:latest
-            command:
-              - python
-              - -m
-              - faultmaven.jobs.run
-              - storage_cleanup
-            envFrom:
-              # Config (DB host, Redis host, storage backend) + the app-role
-              # DATABASE_URL. CronJobs do not inherit the API Deployment's
-              # envFrom patch, so both mounts are explicit.
-              - configMapRef:
-                  name: faultmaven-config
-              - secretRef:
-                  name: faultmaven-secrets
-          restartPolicy: OnFailure
-```
+Kubernetes CronJob: see [Kubernetes CronJob Configuration](#kubernetes-cronjob-configuration)
+below — that section carries the single annotated illustration of the deployed
+manifest. It is not repeated here, so there is only one copy to keep true.
 
 **Metrics:**
 
@@ -88,14 +80,41 @@ Declared in `faultmaven/infrastructure/observability/evidence_metrics.py` and em
 There is no per-file deletion-failure counter; failures are logged
 (`Failed to delete orphan …`) but not currently emitted as a metric.
 
-**Alerts:**
+> **⚠ These two counters are not scrapable from a CronJob run.** They are
+> incremented inside the short-lived `python -m faultmaven.jobs.run` process,
+> which starts no HTTP exporter and pushes to no Pushgateway. The Prometheus
+> `/metrics` endpoint is mounted by `faultmaven/main.py` on the FastAPI app
+> only, and only when `METRICS_EXPORTER=prometheus_http` — the CronJob never
+> builds that app. So the counters rise and die with the pod, and any alert
+> expression over them **cannot fire from the scheduled sweep**. Detect orphan
+> problems from the job's logs instead (below). Making the counters alertable
+> would take either a Pushgateway (`prometheus_pushgateway_url` already exists
+> in settings but nothing in the jobs path pushes to it) or moving the sweep
+> into a scraped long-lived process.
 
-- Orphaned files >50: Warning (systematic processing failures) — alert on
-  `increase(faultmaven_evidence_orphan_files_found_total[24h])`
-- A large found/deleted gap: Warning (storage backend rejecting deletes) — compare
-  `faultmaven_evidence_orphan_files_found_total` against
-  `faultmaven_evidence_orphan_files_deleted_total`; there is no direct
-  failure counter to alert on
+**Detection that does work (log-based):**
+
+Every run ends with one summary line at INFO, whatever the outcome:
+
+```text
+Storage cleanup DRY RUN — scanned=N, found=N, deleted=N, skipped_linked=N,
+skipped_within_ttl=N, skipped_no_sidecar=N, stray_sidecars=N, errors=N
+```
+
+Alert on these lines via the log pipeline (Loki queries below):
+
+| Signal | Level | Meaning |
+|--------|-------|---------|
+| `found=` high in the summary line | INFO | Systematic link/store failure upstream |
+| `Failed to delete orphan …` | ERROR | Storage backend rejecting deletes |
+| `Unreadable sidecar for … — skipping` | WARNING | Corrupt or unreachable sidecar |
+| `sidecar(s) have no corresponding file` | WARNING | Stray sidecars nothing will ever sweep |
+| No summary line at all for a scheduled run | — | Job never reached the sweep (see boot gates) |
+
+[`docs/operations/monitoring/evidence-metrics.md`](monitoring/evidence-metrics.md)
+remains the canonical home for the metric and alert *definitions*; its
+`evidence_orphan_file_rate_high` rule is subject to the same scrape gap
+described above, so treat it as the intended rule rather than a live one.
 
 **Expected Behavior:**
 - Typical run: 0-5 orphaned files (transient failures)
@@ -170,15 +189,26 @@ A `cross_tenant` job runs under multi only when **both** of these hold:
 
 #### Sourcing the maintenance DSN
 
-> **Prerequisite — the infra#123 Secret split.** Everything below reads the DSN
-> from `faultmaven-db-privileged`, a Secret created by
+> **Prerequisite — the `MAINTENANCE_DATABASE_URL` *key*, not the Secret.** The
+> infra#123 split has landed (infra PR #153), and
 > `scripts/apps/bootstrap-faultmaven-secrets.sh` in `faultmaven-enterprise-infra`
-> (PR #153). Until that change has landed **and** the script has been re-run
-> against the cluster, that Secret does not exist: the only DB DSN present is
-> `faultmaven-secrets` / `DATABASE_URL`, which is the limited app role — the one
-> the runner's role probe refuses for cross-tenant work. Check with
-> `kubectl -n faultmaven get secret faultmaven-db-privileged` before following
-> this procedure.
+> now creates `faultmaven-db-privileged` **unconditionally** — it always carries
+> `MIGRATION_DATABASE_URL`. What is conditional is the maintenance key: the
+> script adds `MAINTENANCE_DATABASE_URL` only when
+> `faultmaven-postgresql-credentials` already holds a `maintenance-password`,
+> which `scripts/apps/provision-maintenance-role.sh` is what writes. So the
+> Secret existing proves nothing; check for the key:
+>
+> ```bash
+> kubectl -n faultmaven get secret faultmaven-db-privileged \
+>   -o jsonpath='{.data.MAINTENANCE_DATABASE_URL}'
+> ```
+>
+> Empty output means the maintenance role has not been provisioned. The only
+> DB DSN then usable is `faultmaven-secrets` / `DATABASE_URL`, the limited app
+> role — the one the runner's role probe refuses for cross-tenant work. See
+> [If the maintenance role has not been provisioned yet](#one-off-operator-run)
+> below for the two scripts, in order.
 
 The maintenance DSN lives in the **`faultmaven-db-privileged`** Secret, under the
 key `MAINTENANCE_DATABASE_URL`. That Secret is deliberately mounted by *nothing*
@@ -211,6 +241,24 @@ Job consumes `MIGRATION_DATABASE_URL`. In a Job or CronJob spec:
           image: ghcr.io/faultmaven/faultmaven:<pinned-sha>
           command: ["python", "-m", "faultmaven.jobs.run", "kb_seed", "--cross-tenant-maintenance"]
           env:
+            # env[0]/env[1] = PROFILE/ENVIRONMENT, in that order, matching every
+            # deployed CronJob (base/cronjobs/*.yaml). Neither key is in
+            # faultmaven-config, so envFrom does not supply them.
+            - name: PROFILE
+              value: "enterprise"
+            - name: ENVIRONMENT
+              value: "production"
+
+            # Storage-type selectors, also absent from faultmaven-config
+            # (infra#149). Under DEPLOYMENT_MODE=cloud the coherence gate
+            # refuses to run without SESSION_STORAGE_TYPE=redis.
+            - name: SESSION_STORAGE_TYPE
+              value: "redis"
+            - name: VECTOR_STORAGE_TYPE
+              value: "chromadb"
+            - name: CASE_STORAGE_TYPE
+              value: "postgres_hybrid"
+
             # The BYPASSRLS maintenance role, read key-by-key. Deliberately NOT
             # `optional: true`: a missing Secret or key must fail the pod with
             # CreateContainerConfigError rather than silently leaving the job on
@@ -227,7 +275,22 @@ Job consumes `MIGRATION_DATABASE_URL`. In a Job or CronJob spec:
                 name: faultmaven-config
             - secretRef:
                 name: faultmaven-secrets
+                optional: true
 ```
+
+> **⛔ A `kb_seed` Job cannot reach ChromaDB today.** `allow-chromadb-ingress`
+> (`kubernetes/platform/network-policies/faultmaven.yaml`) admits exactly two
+> pod identities on :8000 — `app.kubernetes.io/name: faultmaven-api` and
+> `app.kubernetes.io/name: faultmaven-case-cleanup` — and the name-scoping is
+> deliberate (GHSA-f4j7-r4q5-qw2c blast-radius minimisation, infra#138). A Job
+> created from the fragment above carries neither label and is firewalled from
+> the vector store it exists to write. Under `TENANT_PROVIDER=multi` the
+> web-startup KB bootstrap is skipped, so this is the *only* global-KB seeding
+> path — and it has no admitted identity. **The NetworkPolicy must be amended
+> first**: infra#150 tracks it and proposes a third `podSelector` for
+> `app.kubernetes.io/name: faultmaven-kb-seed`, which the Job would then set.
+> Do not borrow `faultmaven-case-cleanup`'s name label to get through — that
+> label means a different workload, and the deliberate narrowness is the point.
 
 #### One-off operator run
 
@@ -244,7 +307,28 @@ infra#123); the way to use it is to start a pod that mounts it.
 --from=cronjob/faultmaven-case-cleanup` looks like the shortcut, but that CronJob
 takes its DSN from the `faultmaven-secrets` `envFrom` mount — the limited app role
 — and its `command` carries no `--cross-tenant-maintenance`. The derived Job would
-be refused by the runner's role probe. Create the Job explicitly instead:
+be refused by the runner's role probe. Create the Job explicitly instead.
+
+**Read this before you run it — two labels, two different jobs.** `part-of:
+faultmaven` is what `allow-postgresql-primary-ingress` and
+`allow-minio-ingress` admit, so it *is* load-bearing for the database and object
+store. It is **not** what admits anything to ChromaDB:
+`allow-chromadb-ingress` is name-scoped to `app.kubernetes.io/name:
+faultmaven-api` or `faultmaven-case-cleanup` and nothing else, on purpose
+(GHSA-f4j7-r4q5-qw2c, infra#138). This matters because `case_cleanup` diffs the
+DB case-id set against ChromaDB collections and `kb_seed` writes chunks there —
+a Job that cannot reach the vector store cannot do either job.
+
+- **`case_cleanup`:** set `app.kubernetes.io/name: faultmaven-case-cleanup` on
+  the **pod template** (done below). That is the identity the policy already
+  admits for exactly this workload — same image, same code path, same ChromaDB
+  operations as the scheduled CronJob — so net exposure is unchanged. Without
+  it the sweep reads Postgres fine and is firewalled from the collections it is
+  supposed to reconcile: a half-completed cross-tenant sweep.
+- **`kb_seed`:** there is **no** admitted identity, and borrowing case-cleanup's
+  name label would misrepresent a different workload. The NetworkPolicy has to
+  be amended first — infra#150 tracks it and proposes a dedicated
+  `app.kubernetes.io/name: faultmaven-kb-seed` source.
 
 ```bash
 kubectl -n faultmaven create -f - <<'EOF'
@@ -262,9 +346,14 @@ spec:
   template:
     metadata:
       labels:
-        # part-of=faultmaven is load-bearing, not decorative: it is what the
-        # NetworkPolicies admit to the PostgreSQL primary and to ChromaDB.
+        # part-of=faultmaven is what allow-postgresql-primary-ingress and
+        # allow-minio-ingress admit.
         app.kubernetes.io/part-of: faultmaven
+        # name=faultmaven-case-cleanup is what allow-chromadb-ingress admits.
+        # part-of does NOT reach ChromaDB — that policy is name-scoped. Drop
+        # this label and the sweep silently cannot see the collections it
+        # diffs against. Correct ONLY for case_cleanup; see the note above.
+        app.kubernetes.io/name: faultmaven-case-cleanup
         app.kubernetes.io/component: maintenance
     spec:
       restartPolicy: Never
@@ -279,6 +368,25 @@ spec:
             - --cross-tenant-maintenance
             - --verbose
           env:
+            # env[0]/env[1] = PROFILE/ENVIRONMENT, and the three storage-type
+            # selectors — copied from base/cronjobs/case-cleanup.yaml. None of
+            # these five keys is in faultmaven-config, so envFrom does not
+            # supply them (infra#149). Without them the container initializes
+            # against the wrong backends, and under DEPLOYMENT_MODE=cloud the
+            # coherence gate refuses to start at all. Do not rely on the
+            # runner's generic warning path to catch that: it would let a
+            # CROSS-TENANT sweep proceed against a partially-initialized
+            # container.
+            - name: PROFILE
+              value: "enterprise"
+            - name: ENVIRONMENT
+              value: "production"
+            - name: SESSION_STORAGE_TYPE
+              value: "redis"
+            - name: VECTOR_STORAGE_TYPE
+              value: "chromadb"
+            - name: CASE_STORAGE_TYPE
+              value: "postgres_hybrid"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -289,12 +397,27 @@ spec:
                 name: faultmaven-config
             - secretRef:
                 name: faultmaven-secrets
+                optional: true
+          # Same sizing as the scheduled CronJob (base/cronjobs/case-cleanup.yaml):
+          # the jobs bootstrap loads the BGE-M3 model (~1.3Gi) during DI init.
+          # Declaring no requests would make this pod BestEffort — first to be
+          # evicted — and with backoffLimit: 0 an eviction mid-sweep leaves a
+          # PARTIAL cross-tenant delete that is never retried.
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
 EOF
 ```
 
-Swap `case_cleanup` for `kb_seed` to seed or refresh the platform KB pack (the
-multi-tenant replacement for the single-tenant web-startup KB bootstrap, which is
-skipped under multi). Follow the run with:
+To seed or refresh the platform KB pack instead (the multi-tenant replacement
+for the single-tenant web-startup KB bootstrap, which is skipped under multi),
+swap `case_cleanup` for `kb_seed` — but read the ChromaDB note above first: that
+variant is blocked by `allow-chromadb-ingress` until infra#150 lands. Follow the
+run with:
 
 ```bash
 kubectl -n faultmaven get jobs -l app.kubernetes.io/component=maintenance
@@ -339,8 +462,9 @@ Add to crontab:
 # Edit crontab
 crontab -e
 
-# Add job (adjust path to your installation)
-0 2 * * * cd /path/to/faultmaven && /path/to/.venv/bin/python -m faultmaven.jobs.run storage_cleanup >> /var/log/faultmaven/storage_cleanup.log 2>&1
+# Add job (adjust path to your installation). 03:00 matches the deployed
+# CronJob's schedule, which sits after case-cleanup's 02:00 sweep.
+0 3 * * * cd /path/to/faultmaven && /path/to/.venv/bin/python -m faultmaven.jobs.run storage_cleanup >> /var/log/faultmaven/storage_cleanup.log 2>&1
 ```
 
 ### Production (systemd timers)
@@ -370,7 +494,8 @@ Requires=faultmaven-storage-cleanup.service
 
 [Timer]
 OnCalendar=daily
-OnCalendar=02:00
+# 03:00 to match the deployed CronJob (after case-cleanup at 02:00)
+OnCalendar=03:00
 Persistent=true
 
 [Install]
@@ -409,21 +534,32 @@ metadata:
     app.kubernetes.io/component: cronjob
     app.kubernetes.io/part-of: faultmaven
 spec:
-  schedule: "0 2 * * *"
+  # 03:00 UTC, deliberately AFTER case-cleanup's 02:00 sweep: a case deleted
+  # there is already unlinked when this runs, so the two do not race.
+  schedule: "0 3 * * *"
   concurrencyPolicy: Forbid  # Don't run if previous job still running
   successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
   jobTemplate:
+    metadata:
+      labels:
+        app: faultmaven-storage-cleanup
+        app.kubernetes.io/name: faultmaven-storage-cleanup
+        app.kubernetes.io/component: cronjob
+        app.kubernetes.io/part-of: faultmaven
     spec:
       backoffLimit: 2  # Retry up to 2 times on failure
+      activeDeadlineSeconds: 1800  # 30 minute timeout
       template:
         metadata:
           labels:
             app: faultmaven-storage-cleanup
             app.kubernetes.io/name: faultmaven-storage-cleanup
             app.kubernetes.io/component: cronjob
-            # part-of=faultmaven is load-bearing, not decorative: it is what the
-            # NetworkPolicies admit to MinIO and to the PostgreSQL primary.
+            # part-of=faultmaven is load-bearing, not decorative: it is what
+            # allow-minio-ingress and allow-postgresql-primary-ingress admit.
+            # It does NOT reach ChromaDB — that policy is name-scoped — but
+            # this sweep has no ChromaDB dependency, so that is fine here.
             app.kubernetes.io/part-of: faultmaven
         spec:
           restartPolicy: OnFailure
@@ -435,16 +571,28 @@ spec:
 
           containers:
           - name: storage-cleanup
-            image: ghcr.io/faultmaven/faultmaven:1.0.0
-            imagePullPolicy: IfNotPresent
+            # The base pins `latest` + Always; the overlays repin the tag to
+            # `sha-<commit>` via kustomize `images:`, so a deployed CronJob
+            # shows a digest-pinned tag, not `latest`.
+            image: ghcr.io/faultmaven/faultmaven:latest
+            imagePullPolicy: Always
 
             command:
               - python
               - -m
               - faultmaven.jobs.run
               - storage_cleanup
+              - --verbose
 
             env:
+              # ORDER IS LOAD-BEARING: env[0]=PROFILE, env[1]=ENVIRONMENT. The
+              # onprem and staging overlays patch
+              # /spec/jobTemplate/spec/template/spec/containers/0/env/1/value
+              # by JSON-pointer INDEX for every part-of=faultmaven CronJob.
+              # Reorder or drop an entry and `kubectl apply -k overlays/onprem`
+              # either fails or patches the wrong variable.
+              - name: PROFILE
+                value: "enterprise"
               - name: ENVIRONMENT
                 value: "production"
 
@@ -463,15 +611,29 @@ spec:
                   name: faultmaven-config
               - secretRef:
                   name: faultmaven-secrets
+                  optional: true
 
+            # Sized for the jobs bootstrap, which currently loads the BGE-M3
+            # model (~1.3Gi) during DI init (infra#131). Anything smaller is
+            # OOMKilled before the sweep starts.
             resources:
               requests:
-                memory: "256Mi"
-                cpu: "100m"
+                memory: "1Gi"
+                cpu: "250m"
               limits:
-                memory: "512Mi"
-                cpu: "500m"
+                memory: "2Gi"
+                cpu: "1000m"
 ```
+
+> **⚠ Known gap in this manifest (infra#149).** Unlike its sibling
+> `kubernetes/apps/faultmaven/base/cronjobs/case-cleanup.yaml` and the API
+> Deployment, `storage-cleanup.yaml` does **not** set
+> `SESSION_STORAGE_TYPE`, `VECTOR_STORAGE_TYPE` or `CASE_STORAGE_TYPE`, and none
+> of the three is in `faultmaven-config`. Standalone is unaffected, but under
+> `DEPLOYMENT_MODE=cloud` the deployment-coherence gate refuses the run
+> ("Cloud requires real Redis sessions"), so scheduled storage cleanup would
+> stop happening on every invocation. The illustration above matches the file as
+> deployed; do not "fix" it here.
 
 **Deploy:** the CronJobs are part of the `faultmaven` kustomize base and are
 applied by the CD pipeline, not by hand. To apply from a workstation, run this
@@ -522,7 +684,7 @@ services:
 
 **Schedule with cron:**
 ```bash
-0 2 * * * cd /path/to/faultmaven && docker-compose -f docker-compose.jobs.yml up storage-cleanup
+0 3 * * * cd /path/to/faultmaven && docker-compose -f docker-compose.jobs.yml up storage-cleanup
 ```
 
 ---
@@ -544,10 +706,18 @@ rule_files:
   - "evidence_alerts.yml"
 
 scrape_configs:
+  # The API app is the only process that exposes /metrics, and only when
+  # METRICS_EXPORTER=prometheus_http (set in the API Deployment). In-cluster it
+  # listens on 8000; the local dev/compose port is 8090.
   - job_name: 'faultmaven'
     static_configs:
-      - targets: ['faultmaven:8090']
+      - targets: ['faultmaven-api.faultmaven.svc.cluster.local:8000']
 ```
+
+**This scrape target cannot see the CronJob counters.** The jobs run as separate
+short-lived processes that expose no endpoint — see the metrics note under
+[Storage Cleanup Job](#1-storage-cleanup-job). Only metrics emitted inside the
+API process are scrapable.
 
 ### Alert Rules
 
@@ -703,9 +873,12 @@ filebeat:
 
 ### High Orphaned File Rate
 
-**Symptoms:**
-- `increase(faultmaven_evidence_orphan_files_found_total[24h])` >50
-- Alert: "High number of orphaned files in storage"
+**Symptoms:** detected from the job's logs, not from Prometheus — the orphan
+counters are incremented in the CronJob process and never scraped (see the
+metrics note under [Storage Cleanup Job](#1-storage-cleanup-job)):
+
+- The run's summary line reports a high `found=` (Loki: `{namespace="faultmaven", app="faultmaven-storage-cleanup"} |= "Storage cleanup"`)
+- Or `found=` stays well above `deleted=` across consecutive runs
 
 **Investigation:**
 1. Review the job's own logs for `Failed to delete orphan` lines (see Loki queries above)
@@ -738,22 +911,17 @@ filebeat:
 - Database connection: Verify `DATABASE_URL` environment variable
 - Disk space: Check filesystem storage path has space
 
-### Retry Queue Backup
+### Retry Queue Backup (not yet applicable)
 
-**Symptoms:**
-- Retry jobs not completing
-- Evidence stuck in "processing" state
-
-**Investigation:**
-1. Check job queue depth (Redis): `LLEN job:retry_queue`
-2. Check worker processes: `ps aux | grep faultmaven`
-3. Review retry job logs for errors
-4. Check LLM provider status
-
-**Resolution:**
-- Restart job workers if stalled
-- Clear failed jobs from queue (after investigation)
-- Scale up job workers if queue consistently high
+> **There is no retry queue to inspect.** The async-turn-retry plan is deferred
+> (see [Retry Queue Monitoring](#2-retry-queue-monitoring-future) above and the
+> "scaffolded only, no emit sites" rows in
+> [`docs/operations/monitoring/evidence-metrics.md`](monitoring/evidence-metrics.md)):
+> no queue backend is wired, no `job:retry_queue` Redis key exists, and the
+> runner registers exactly three jobs — `case_cleanup`, `kb_seed`,
+> `storage_cleanup` (`AVAILABLE_JOBS` in `faultmaven/jobs/run.py`). This section
+> is a placeholder for when that lands; do not follow it as a procedure, and do
+> not treat the key name above as real.
 
 ---
 
@@ -763,9 +931,12 @@ filebeat:
 
 **Morning checklist:**
 1. Check overnight storage cleanup job: `journalctl -u faultmaven-storage-cleanup.service | tail -50`
-2. Verify orphaned file count reasonable (<5)
-3. Check for permanent failure alerts (critical)
-4. Review retry success rate (should be >50%)
+2. Verify orphaned file count reasonable (`found=` <5 in the run summary line)
+3. Steps 3–4 below are not yet actionable — the turn-retry metrics are
+   scaffolded with no emit sites, so there are no permanent-failure alerts and
+   no retry success rate to read:
+   - Check for permanent failure alerts (critical)
+   - Review retry success rate (should be >50%)
 
 ### Weekly Review
 
@@ -777,7 +948,8 @@ filebeat:
 
 ### Incident Response
 
-**Permanent DB Failure Alert:**
+**Permanent DB Failure Alert** (no such alert exists yet — the turn-retry
+counters have no emit sites; keep this as the intended procedure):
 1. Page received: "Evidence DB insert failed permanently"
 2. Check logs for case_id and content_ref
 3. Verify database health: `psql -c "SELECT 1"`
@@ -794,10 +966,11 @@ filebeat:
 
 ## Configuration Summary
 
-| Job | Schedule | Executor | Log Location | Alerts |
-|-----|----------|----------|--------------|--------|
-| storage_cleanup | Daily 2 AM | cron/systemd/k8s | journalctl / kubectl logs | orphaned_files >50 |
-| retry_monitoring | Every 5min | (future) | journalctl / kubectl logs | queue_depth >100 |
+| Job | Schedule | Executor | Log Location | Detection |
+|-----|----------|----------|--------------|-----------|
+| case_cleanup | Daily 2 AM UTC | k8s CronJob | kubectl logs / Loki | log-based |
+| storage_cleanup | Daily 3 AM UTC (after case_cleanup) | cron/systemd/k8s | journalctl / kubectl logs / Loki | log-based — `found=` in the run summary; counters are not scrapable from a CronJob |
+| retry_monitoring | Every 5min | (future) | journalctl / kubectl logs | (future) |
 
 ---
 
