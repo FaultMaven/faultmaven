@@ -188,9 +188,15 @@ class DIContainer(BaseDIContainer):
             # hold. Anywhere else the lenient posture below applies, which dev
             # ergonomics rely on.
             if self.settings.must_not_degrade:
-                # ``use_enum_values`` leaves these as plain strings; unwrap
-                # anyway so a directly-constructed Settings cannot log
-                # "Environment.PRODUCTION" into an operator's face (#827).
+                # The two fields do NOT behave alike. ``use_enum_values`` is set
+                # on FaultMavenSettings, so ``deployment_mode`` holds the plain
+                # str "cloud" and unwrapping it is defensive only. It is not set
+                # on ServerSettings, so ``server.environment`` holds the
+                # Environment MEMBER: formatting it unwrapped logs
+                # "Environment.PRODUCTION" at an operator (#827). Comparisons
+                # work either way — Environment subclasses str — which is
+                # exactly why the difference goes unnoticed until it is in a
+                # message.
                 mode = getattr(
                     self.settings.deployment_mode,
                     "value",
