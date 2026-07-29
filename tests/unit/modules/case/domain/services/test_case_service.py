@@ -1387,3 +1387,35 @@ class TestCloseCase:
 
         with pytest.raises(NotFoundError):
             await service.close_case("case_missing000", "user_123")
+
+    @pytest.mark.asyncio
+    async def test_deleted_mid_close_maps_to_not_found(self, service, mock_repo):
+        """CaseNotFoundError from the retry helper (deleted between the
+        pre-check and the fresh load) is translated to the handled
+        NotFoundError → 404, not an unmapped CaseException → 500."""
+        from faultmaven.exceptions import NotFoundError
+
+        open_case = _make_case(user_id="user_123", state=CaseState.INQUIRY)
+        mock_repo.get.side_effect = [open_case, None]
+
+        with pytest.raises(NotFoundError):
+            await service.close_case(open_case.case_id, "user_123")
+
+    @pytest.mark.asyncio
+    async def test_occ_exhaustion_maps_to_conflict(self, service, mock_repo):
+        """StaleCaseException after max retries is translated to the handled
+        ConflictError → 409 (mirrors the turn route's OCC posture)."""
+        from faultmaven.exceptions import ConflictError
+        from faultmaven.modules.case.exceptions import StaleCaseException
+
+        def _fresh_open(_case_id):
+            return _make_case(user_id="user_123", state=CaseState.INQUIRY)
+
+        mock_repo.get.side_effect = lambda case_id: _fresh_open(case_id)
+        mock_repo.save.side_effect = StaleCaseException(
+            case_id="case_x", expected_version=1, actual_version=2
+        )
+
+        with pytest.raises(ConflictError) as exc_info:
+            await service.close_case("case_x", "user_123")
+        assert exc_info.value.conflict_reason == "concurrent_update"

@@ -802,6 +802,10 @@ class CaseService(ICaseService):
             execute_user_closure,
         )
         from faultmaven.exceptions import ConflictError, NotFoundError
+        from faultmaven.modules.case.exceptions import (
+            CaseNotFoundError,
+            StaleCaseException,
+        )
         from faultmaven.modules.case.utils import update_case_with_retry
 
         case = await self.get_case(case_id, user_id)
@@ -824,7 +828,23 @@ class CaseService(ICaseService):
                 raise _already_terminal(fresh.state)
             execute_user_closure(fresh, user_id)
 
-        updated_case = await update_case_with_retry(self.repository, case_id, apply)
+        # The retry helper's own exceptions subclass CaseException, which no
+        # global handler maps — translate the two rare races to handled
+        # types so they surface as 404/409, not 500.
+        try:
+            updated_case = await update_case_with_retry(self.repository, case_id, apply)
+        except CaseNotFoundError:
+            # Deleted between the pre-check and the retry's fresh load.
+            raise NotFoundError("Case", case_id)
+        except StaleCaseException:
+            # Lost the version race max_attempts times; caller should
+            # reload and re-decide (mirrors the turn route's OCC posture).
+            raise ConflictError(
+                f"Case {case_id} changed while closing; reload and retry",
+                resource_type="Case",
+                resource_id=case_id,
+                conflict_reason="concurrent_update",
+            )
         logger.info(
             f"Closed case {case_id} via API, " f"reason: {updated_case.closure_reason}"
         )
