@@ -55,11 +55,17 @@ def get_current_org_id() -> str:
 def usable_tenant_id(organization_id: Optional[str]) -> Optional[str]:
     """Return ``organization_id`` iff it can serve as a tenant predicate, else ``None``.
 
-    The single place the "is this a real tenant?" question is decided. Both
-    enforcement styles read it, so they cannot drift: the API layer's
-    ``api/v1/auth_dependencies.require_actor_organization`` turns a ``None`` here
-    into a 403, and the service-layer read paths that already degrade turn it
-    into an empty allowlist.
+    The single place the "is this a real tenant?" question is decided — every
+    site that needs the answer calls this, none carries its own copy of the
+    test, so they cannot drift. Two styles read it:
+
+    * **refuse** — ``api/middleware/tenant_scope.bind_request_org_context`` at
+      the request front door and
+      ``api/v1/auth_dependencies.require_actor_organization`` at the route both
+      turn a ``None`` here into a 403 (:data:`UNSCOPED_REQUEST_MSG`);
+    * **degrade** — the service-layer read paths (the case read allowlist, the
+      KB and agent team arms, both runbook-similarity consumers) turn it into an
+      empty allowlist, which narrows rather than breaks.
 
     Under ``TENANT_PROVIDER=multi`` the Standalone sentinel is **not** a tenant —
     it identifies the single-tenant deployment. Refusing it here is what makes

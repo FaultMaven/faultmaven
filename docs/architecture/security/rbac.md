@@ -174,13 +174,24 @@ independent of which dependencies a given router mounts.
 **One predicate, two enforcement styles.** "Is this a usable tenant?" is decided
 in exactly one place — `config.tenant_context.usable_tenant_id`, which answers
 `None` for an absent org and for the Standalone sentinel under
-`TENANT_PROVIDER=multi`. `require_actor_organization` turns that `None` into a
-403. The case read allowlist (`CaseService._resolve_shared_case_ids`,
-`_resolve_team_filter_case_ids`) instead collapses its shared arm to the empty
-set: **degrading is deliberate there**, because those arms already collapse on
-every other resolution failure and narrowing an allowlist is the fail-closed
-direction — the owner arm still answers, so the listing narrows rather than
-breaks. What neither may do is *query with the sentinel as the predicate*.
+`TENANT_PROVIDER=multi`. Every site that needs the answer calls it; none carries
+its own copy of the test. Two of them **refuse**: `bind_request_org_context` at
+the request front door and `require_actor_organization` at the route, both 403
+with `UNSCOPED_REQUEST_MSG`. The rest **degrade** — the case read allowlist
+(`CaseService._resolve_shared_case_ids`, `_resolve_team_filter_case_ids`), the KB
+team arm (`resolve_shared_kb_ids`), the agent's shared-KB arm, and both
+runbook-similarity consumers collapse to the empty set. **Degrading is deliberate
+there**, because those arms already collapse on every other resolution failure
+and narrowing an allowlist is the fail-closed direction — the owner arm still
+answers, so the listing narrows rather than breaks. What none of them may do is
+*query with the sentinel as the predicate*.
+
+The degrading sites matter because the value they receive is not trustworthy on
+its own: `CaseService.create_case` stamps `Case.organization_id` from the *total*
+`get_current_org_id`, so a case written from a context that never bound a tenant
+carries the sentinel — and `organization_id` is `str`/`min_length=1`, so that is
+a perfectly valid row. Every reader that turns it into a predicate resolves it
+through `usable_tenant_id` first.
 
 That distinction is why the contextvar has two readers. `get_current_org_id` is
 total — its default *is* the sentinel — so it can never be the subject of a
