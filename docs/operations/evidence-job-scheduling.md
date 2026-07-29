@@ -38,11 +38,16 @@ python -m faultmaven.jobs.run storage_cleanup --ttl-hours 48
 **Schedule:** Daily at 2:00 AM (low-traffic period)
 
 **Configuration:**
-```yaml
-# Cron
-0 2 * * * cd /app && python -m faultmaven.jobs.run storage_cleanup
 
-# Kubernetes CronJob
+Cron:
+
+```cron
+0 2 * * * cd /app && python -m faultmaven.jobs.run storage_cleanup
+```
+
+Kubernetes CronJob:
+
+```yaml
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -61,12 +66,14 @@ spec:
               - -m
               - faultmaven.jobs.run
               - storage_cleanup
-            env:
-              - name: DATABASE_URL
-                valueFrom:
-                  secretKeyRef:
-                    name: faultmaven-secrets
-                    key: database-url
+            envFrom:
+              # Config (DB host, Redis host, storage backend) + the app-role
+              # DATABASE_URL. CronJobs do not inherit the API Deployment's
+              # envFrom patch, so both mounts are explicit.
+              - configMapRef:
+                  name: faultmaven-config
+              - secretRef:
+                  name: faultmaven-secrets
           restartPolicy: OnFailure
 ```
 
@@ -152,16 +159,39 @@ A `cross_tenant` job runs under multi only when **both** of these hold:
 
 #### Sourcing the maintenance DSN
 
+> **Prerequisite — the infra#123 Secret split.** Everything below reads the DSN
+> from `faultmaven-db-privileged`, a Secret created by
+> `scripts/apps/bootstrap-faultmaven-secrets.sh` in `faultmaven-enterprise-infra`
+> (PR #153). Until that change has landed **and** the script has been re-run
+> against the cluster, that Secret does not exist: the only DB DSN present is
+> `faultmaven-secrets` / `DATABASE_URL`, which is the limited app role — the one
+> the runner's role probe refuses for cross-tenant work. Check with
+> `kubectl -n faultmaven get secret faultmaven-db-privileged` before following
+> this procedure.
+
 The maintenance DSN lives in the **`faultmaven-db-privileged`** Secret, under the
 key `MAINTENANCE_DATABASE_URL`. That Secret is deliberately mounted by *nothing*
 via `envFrom` (infra#123): it also carries the owner/migrator DSN, and `envFrom`
 is blanket — it would put both RLS-defeating credentials into the environment of
 every container that mounted it. **It is therefore NOT present as an environment
-variable in the API pod**, so a bare `DATABASE_URL="$MAINTENANCE_DATABASE_URL"`
-expands to the empty string and the job dies with
-`ArgumentError: Could not parse SQLAlchemy URL from given URL string`.
+variable in the API pod**, so a stale `DATABASE_URL="$MAINTENANCE_DATABASE_URL"`
+expands to the empty string.
 
-Consume it with a key-scoped `secretKeyRef`, the same way the schema-migration
+An empty `DATABASE_URL` fails closed, before any database engine is built: the
+runner (`faultmaven/jobs/run.py`) runs the same boot gates as the API lifespan
+*ahead of* container initialization. Under `DEPLOYMENT_MODE=cloud` the deployment
+coherence gate names the variable directly and exits 1:
+
+```text
+CRITICAL - Refusing to run job: deployment configuration is incoherent
+Error: DEPLOYMENT_MODE=cloud is incoherent with the running configuration:
+  - DATABASE_URL must be PostgreSQL for cloud (got a non-postgresql URL — likely the SQLite default). SQLite is single-writer and standalone-only.
+```
+
+There is no silent SQLite fallback and no connection attempt. The diagnosis is
+already top-level, so no wrapper script is needed to interpret it.
+
+Consume the DSN with a key-scoped `secretKeyRef`, the same way the schema-migration
 Job consumes `MIGRATION_DATABASE_URL`. In a Job or CronJob spec:
 
 ```yaml
@@ -188,28 +218,95 @@ Job consumes `MIGRATION_DATABASE_URL`. In a Job or CronJob spec:
                 name: faultmaven-secrets
 ```
 
-For a one-off operator run, read the key explicitly rather than relying on an
-ambient variable:
+#### One-off operator run
+
+**Where this runs:** a workstation with `kubectl` and a kubecontext for the
+cluster. Every command below is `kubectl` only.
+
+**Not from inside the API pod.** The application image is `python:3.11-slim` plus
+build tooling — it carries no `kubectl` — and the API pod's ServiceAccount has no
+Secret-read RBAC, so reading the DSN from in-pod is not possible either. The
+maintenance credential is never in that pod by design (that is the whole point of
+infra#123); the way to use it is to start a pod that mounts it.
+
+**Do not derive the Job from the scheduled CronJob.** `kubectl create job
+--from=cronjob/faultmaven-case-cleanup` looks like the shortcut, but that CronJob
+takes its DSN from the `faultmaven-secrets` `envFrom` mount — the limited app role
+— and its `command` carries no `--cross-tenant-maintenance`. The derived Job would
+be refused by the runner's role probe. Create the Job explicitly instead:
 
 ```bash
-NS=faultmaven
-MAINT_DSN=$(kubectl -n $NS get secret faultmaven-db-privileged \
-  -o jsonpath='{.data.MAINTENANCE_DATABASE_URL}' | base64 -d)
-[ -n "$MAINT_DSN" ] || { echo "MAINTENANCE_DATABASE_URL not set — run provision-maintenance-role.sh"; exit 1; }
-
-DATABASE_URL="$MAINT_DSN" \
-  python -m faultmaven.jobs.run case_cleanup --cross-tenant-maintenance
-
-# Seed / refresh the platform KB pack (the multi-tenant replacement for the
-# single-tenant web-startup KB bootstrap, which is skipped under multi):
-DATABASE_URL="$MAINT_DSN" \
-  python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance
+kubectl -n faultmaven create -f - <<'EOF'
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: faultmaven-case-cleanup-maint-
+  labels:
+    app.kubernetes.io/part-of: faultmaven
+    app.kubernetes.io/component: maintenance
+spec:
+  # A partially-completed cross-tenant sweep should be inspected, not retried.
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        # part-of=faultmaven is load-bearing, not decorative: it is what the
+        # NetworkPolicies admit to the PostgreSQL primary and to ChromaDB.
+        app.kubernetes.io/part-of: faultmaven
+        app.kubernetes.io/component: maintenance
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: case-cleanup
+          image: ghcr.io/faultmaven/faultmaven:<pinned-sha>
+          command:
+            - python
+            - -m
+            - faultmaven.jobs.run
+            - case_cleanup
+            - --cross-tenant-maintenance
+            - --verbose
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: faultmaven-db-privileged
+                  key: MAINTENANCE_DATABASE_URL
+          envFrom:
+            - configMapRef:
+                name: faultmaven-config
+            - secretRef:
+                name: faultmaven-secrets
+EOF
 ```
 
-Keep the `[ -n "$MAINT_DSN" ]` guard. An absent key (the maintenance role has not
-been provisioned yet) does fail rather than run against the wrong database — but
-it fails as an opaque SQLAlchemy URL-parse error several frames deep. The guard
-turns that into the actual diagnosis.
+Swap `case_cleanup` for `kb_seed` to seed or refresh the platform KB pack (the
+multi-tenant replacement for the single-tenant web-startup KB bootstrap, which is
+skipped under multi). Follow the run with:
+
+```bash
+kubectl -n faultmaven get jobs -l app.kubernetes.io/component=maintenance
+kubectl -n faultmaven logs -l app.kubernetes.io/component=maintenance --tail=-1
+```
+
+**If the maintenance role has not been provisioned yet**, the Secret has no
+`MAINTENANCE_DATABASE_URL` key, the kubelet cannot build the container, and the
+pod sits in `CreateContainerConfigError` without ever starting — the loud, correct
+failure (this is why the `secretKeyRef` is deliberately not `optional: true`). It
+takes **both** of these, in order, in `faultmaven-enterprise-infra`:
+
+```bash
+./scripts/apps/provision-maintenance-role.sh    # creates the faultmaven_maintenance role
+                                                # + the maintenance-password component key
+./scripts/apps/bootstrap-faultmaven-secrets.sh  # derives MAINTENANCE_DATABASE_URL from that
+                                                # password into faultmaven-db-privileged
+```
+
+`provision-maintenance-role.sh` on its own does **not** populate the Secret key —
+it writes `maintenance-password` into `faultmaven-postgresql-credentials`, and the
+bootstrap script is what turns that into the DSN. Running only the first script
+leaves the Job failing exactly as before.
 
 Every maintenance run emits a WARNING-level `AUDIT` log line (job, arguments,
 posture), so cross-tenant sweeps are always attributable in the job logs; the
@@ -326,26 +423,24 @@ spec:
               - storage_cleanup
 
             env:
-              - name: DATABASE_URL
-                valueFrom:
-                  secretKeyRef:
-                    name: faultmaven-secrets
-                    key: database-url
+              - name: ENVIRONMENT
+                value: "production"
 
-              - name: REDIS_URL
-                valueFrom:
-                  secretKeyRef:
-                    name: faultmaven-secrets
-                    key: redis-url
-
-              - name: STORAGE_BACKEND
-                value: "s3"
-
-              - name: S3_BUCKET_NAME
-                value: "faultmaven-evidence"
-
-              - name: S3_REGION
-                value: "us-east-1"
+            envFrom:
+              # Everything else comes from the two application mounts, which is
+              # the ONLY supported wiring — do not hand-roll `secretKeyRef`
+              # entries per variable. `faultmaven-config` supplies the DB/Redis
+              # hosts and the storage settings (STORAGE_BACKEND, S3_BUCKET_NAME,
+              # S3_REGION, S3_ENDPOINT_URL, S3_KEY_PREFIX); `faultmaven-secrets`
+              # supplies DATABASE_URL (the limited app role), REDIS_PASSWORD and
+              # AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY. Both are created by
+              # `scripts/apps/bootstrap-faultmaven-secrets.sh` in
+              # `faultmaven-enterprise-infra`; that script is the authority on
+              # the key names.
+              - configMapRef:
+                  name: faultmaven-config
+              - secretRef:
+                  name: faultmaven-secrets
 
             resources:
               requests:
@@ -354,16 +449,6 @@ spec:
               limits:
                 memory: "512Mi"
                 cpu: "500m"
-
-            volumeMounts:
-              - name: aws-credentials
-                mountPath: /root/.aws
-                readOnly: true
-
-          volumes:
-            - name: aws-credentials
-              secret:
-                secretName: faultmaven-aws-credentials
 ```
 
 **Deploy:**
