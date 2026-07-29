@@ -76,6 +76,7 @@ class SessionlessShareRepository(IShareRepository):
         resource_type: str,
         scope_type: str,
         scope_ids: List[str],
+        organization_id: str,
     ) -> List[str]:
         async with get_db_session() as session:
             repo = PostgreSQLShareRepository(session)
@@ -83,6 +84,7 @@ class SessionlessShareRepository(IShareRepository):
                 resource_type=resource_type,
                 scope_type=scope_type,
                 scope_ids=scope_ids,
+                organization_id=organization_id,
             )
 
     async def delete_for_resource(self, resource_type: str, resource_id: str) -> int:

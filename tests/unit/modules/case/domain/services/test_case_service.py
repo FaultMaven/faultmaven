@@ -810,7 +810,10 @@ class TestCaseReadAllowlist:
         assert result == ["case_x", "case_y"]
         team_service.list_all_user_team_ids.assert_awaited_once_with("user_123")
         share_repo.list_resource_ids.assert_awaited_once_with(
-            resource_type="case", scope_type="team", scope_ids=["team_1", "team_2"]
+            resource_type="case",
+            scope_type="team",
+            scope_ids=["team_1", "team_2"],
+            organization_id=STANDALONE_ORG_ID,
         )
 
     @pytest.mark.asyncio

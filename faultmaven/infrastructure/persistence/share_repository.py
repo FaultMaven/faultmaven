@@ -149,9 +149,14 @@ class PostgreSQLShareRepository(IShareRepository):
         resource_type: str,
         scope_type: str,
         scope_ids: List[str],
+        organization_id: str,
     ) -> List[str]:
-        """Resource ids of ``resource_type`` shared to ANY of ``scope_ids``."""
-        if not scope_ids:
+        """Resource ids of ``resource_type`` shared to ANY of ``scope_ids``.
+
+        Tenant-scoped: only shares stamped with ``organization_id`` are
+        allowlist entries. Fail-closed on a falsy org — no query, no ids.
+        """
+        if not scope_ids or not organization_id:
             return []
         stmt = (
             select(ResourceShareModel.resource_id)
@@ -159,6 +164,11 @@ class PostgreSQLShareRepository(IShareRepository):
                 ResourceShareModel.resource_type == resource_type,
                 ResourceShareModel.scope_type == scope_type,
                 ResourceShareModel.scope_id.in_(scope_ids),
+                # The share row must belong to the requesting tenant. Without
+                # it, a row stamped with a foreign org would grant vector- and
+                # list-allowlist visibility across tenants — the same predicate
+                # #871 added to the inventory clause's share sub-select.
+                ResourceShareModel.organization_id == organization_id,
             )
             .distinct()
         )

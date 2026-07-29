@@ -42,6 +42,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
     Both types indexed and searched uniformly for maximum knowledge reuse.
     """
 
+    #: Decorative — logged at init and nowhere else. The injected
+    #: ``ChromaDBVectorStore`` is bound to its own collection (the general KB's
+    #: ``faultmaven_kb`` by default) and this class never selects a collection,
+    #: so runbooks live alongside KB documents and the ``report_type ==
+    #: "runbook"`` metadata predicate in ``search_runbooks`` is the ONLY thing
+    #: separating them. Do not "simplify" that predicate away, and do not read
+    #: this constant as evidence of a dedicated collection (#912).
     COLLECTION_NAME = "faultmaven_runbooks"
     MIN_SIMILARITY_THRESHOLD = 0.65  # Minimum 65% similarity
 
@@ -72,18 +79,25 @@ class RunbookKnowledgeBase(BaseExternalClient):
     async def search_runbooks(
         self,
         query_embedding: List[float],
+        *,
+        organization_id: str,
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = 5,
         min_similarity: float = MIN_SIMILARITY_THRESHOLD,
     ) -> List[SimilarRunbook]:
         """
-        Search for similar runbooks using semantic similarity.
+        Search for similar runbooks using semantic similarity, scoped to one tenant.
 
-        Searches BOTH incident-driven and document-driven runbooks.
-        Uses ChromaDB for vector similarity search.
+        Searches BOTH incident-driven and document-driven runbooks belonging to
+        ``organization_id``. The tenant predicate is mandatory and the method
+        **fails closed**: with no organization the search returns ``[]`` without
+        issuing a query, never an unscoped one (see
+        ``docs/architecture/security/rbac.md`` — "Tenant-Scoped Resolution").
 
         Args:
             query_embedding: Query embedding vector (1024-dim for BGE-M3)
+            organization_id: Owning tenant; REQUIRED, and the only predicate that
+                keeps one tenant's runbooks out of another's results
             filters: Optional metadata filters (domain, tags, etc.)
             top_k: Number of results to return (default 5)
             min_similarity: Minimum similarity threshold (default 0.65)
@@ -91,15 +105,28 @@ class RunbookKnowledgeBase(BaseExternalClient):
         Returns:
             List of SimilarRunbook objects sorted by similarity score (descending)
         """
+        if not organization_id:
+            logger.warning(
+                "Refusing unscoped runbook search: no organization_id supplied"
+            )
+            return []
 
         async def _search_wrapper():
-            # Build ChromaDB where clause from filters
-            where_clause = {"report_type": "runbook"}
-            if filters:
-                if "domain" in filters:
-                    where_clause["domain"] = filters["domain"]
+            # Build the ChromaDB where clause. Every condition is a separate
+            # single-key dict combined under an explicit ``$and``: ChromaDB
+            # (>=1.0) validates that a ``where`` mapping carries exactly one
+            # operator, so the multi-key implicit-AND form this code used before
+            # is rejected outright. ``$and`` needs >= 2 operands, which the
+            # report_type + organization_id pair always satisfies.
+            conditions: List[Dict[str, Any]] = [
+                {"report_type": "runbook"},
+                {"organization_id": organization_id},
+            ]
+            if filters and filters.get("domain"):
+                conditions.append({"domain": filters["domain"]})
                 # Note: ChromaDB doesn't support array filtering directly for tags
                 # Tags will be filtered post-query if needed
+            where_clause: Dict[str, Any] = {"$and": conditions}
 
             # Query vector database
             try:
@@ -209,13 +236,15 @@ class RunbookKnowledgeBase(BaseExternalClient):
     async def index_runbook(
         self,
         runbook: CaseReport,
+        *,
+        organization_id: str,
         source: RunbookSource = RunbookSource.INCIDENT_DRIVEN,
         case_title: Optional[str] = None,
         domain: Optional[str] = None,
         tags: Optional[List[str]] = None,
     ) -> None:
         """
-        Index runbook for future similarity search.
+        Index runbook for future similarity search, stamped with its tenant.
 
         Supports BOTH runbook sources:
         - Incident-driven: Called after case resolution (default)
@@ -223,8 +252,16 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
         Both types stored with identical structure for uniform search.
 
+        ``organization_id`` is REQUIRED and is stamped into the ChromaDB
+        metadata: it is the key ``search_runbooks`` filters on, so a row written
+        without one is invisible to every search. Indexing therefore fails
+        closed — an org-less call writes nothing rather than an unreachable,
+        unattributed row. ``CaseReport`` carries no organization of its own, so
+        the tenant must be supplied by the caller (from ``Case.organization_id``).
+
         Args:
             runbook: CaseReport object to index
+            organization_id: Owning tenant; REQUIRED
             source: RunbookSource (incident_driven or document_driven)
             case_title: Title of case or document (optional, will use runbook.title)
             domain: Technology domain (optional, will use from runbook.metadata)
@@ -233,6 +270,14 @@ class RunbookKnowledgeBase(BaseExternalClient):
         if runbook.report_type != ReportType.RUNBOOK:
             logger.warning(
                 f"Attempted to index non-runbook report type: {runbook.report_type}"
+            )
+            return
+
+        if not organization_id:
+            logger.error(
+                "Refusing to index runbook without an organization_id: "
+                "an untenanted row is unreachable by every scoped search",
+                extra={"report_id": runbook.report_id},
             )
             return
 
@@ -248,6 +293,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
             # Build metadata dict for ChromaDB
             chroma_metadata = {
                 "report_id": runbook.report_id,
+                "organization_id": organization_id,
                 "case_id": runbook.case_id,
                 "case_title": final_case_title,
                 "title": runbook.title,
@@ -309,19 +355,23 @@ class RunbookKnowledgeBase(BaseExternalClient):
         document_title: str,
         domain: str,
         tags: List[str],
+        *,
+        organization_id: str,
         original_document_id: Optional[str] = None,
     ) -> str:
         """
         Convenience method for indexing document-driven runbooks.
 
         Called from knowledge base ingestion flow when processing
-        user-uploaded operational documentation.
+        user-uploaded operational documentation. Delegates to
+        :meth:`index_runbook`, which carries the fail-closed tenant stamp.
 
         Args:
             runbook_content: Full runbook markdown content
             document_title: Title of source document
             domain: Technology domain
             tags: Classification tags
+            organization_id: Owning tenant; REQUIRED
             original_document_id: Optional reference to uploaded document
 
         Returns:
@@ -356,6 +406,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
         # Index for similarity search
         await self.index_runbook(
             runbook=runbook,
+            organization_id=organization_id,
             source=RunbookSource.DOCUMENT_DRIVEN,
             case_title=document_title,
             domain=domain,

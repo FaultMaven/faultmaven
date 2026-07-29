@@ -2690,18 +2690,6 @@ class FaultMavenSettings(BaseSettings):
 
         return {"compatible": len(issues) == 0, "issues": issues, "warnings": warnings}
 
-    def get_redis_url(self) -> str:
-        """Build Redis connection URL"""
-        if self.database.redis_url:
-            return self.database.redis_url
-
-        auth = ""
-        if self.database.redis_password:
-            password = self.database.redis_password.get_secret_value()
-            auth = f":{password}@"
-
-        return f"redis://{auth}{self.database.redis_host}:{self.database.redis_port}/{self.database.redis_db}"
-
     def is_development(self) -> bool:
         """Check if running in development mode"""
         return self.server.environment == Environment.DEVELOPMENT

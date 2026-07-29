@@ -147,6 +147,26 @@ The KB pipeline queries a single ChromaDB collection (`faultmaven_kb`) with a me
 
 `KnowledgeVectorStore.search()` and `hybrid_search()` accept the scope-`where` from the caller and reject any KB query that doesn't carry one (`ValueError`). Case evidence collections (`case_*`) are exempt from this check.
 
+### Runbook Similarity: One Shared Collection, Two Mandatory Predicates
+
+Runbooks have **no collection of their own**. `RunbookKnowledgeBase` is constructed over an injected `ChromaDBVectorStore` and never selects a collection, so the runbook-similarity corpus behind terminal-transition dedup and the report recommendation is the **same `faultmaven_kb` collection** described above. `RunbookKnowledgeBase.COLLECTION_NAME = "faultmaven_runbooks"` is **decorative** — it appears in one log line at init (`runbook_kb.py`) and nowhere else, and it is not the name of any collection this class reads or writes.
+
+Two predicates therefore do all the work on this path, and neither is redundant:
+
+- **`report_type` separates runbooks from KB documents.** Sharing a collection with every ingested document means `{"report_type": "runbook"}` is the *only* thing that keeps a runbook search from returning ordinary KB chunks. Reading `COLLECTION_NAME` as evidence of a dedicated collection and deleting this predicate as redundant is the specific mistake the source comments on the constant and on the `VectorMetadata` field exist to prevent (#912).
+- **`organization_id` is the tenant isolation.** A similarity query names no id and no owner, so the scope-`where` above does not apply and a metadata predicate is the *only* isolation available.
+
+The mechanics of the tenant half:
+
+- `RunbookKnowledgeBase.search_runbooks` takes a **required** `organization_id` and ANDs `{"organization_id": <org>}` into the `where` clause alongside `{"report_type": "runbook"}` and the optional `{"domain": …}`. Callers source it from `Case.organization_id` — `CaseReport` carries no organization of its own — through `usable_tenant_id`, so the Standalone sentinel never becomes a tenant predicate under `TENANT_PROVIDER=multi`.
+- With no organization it returns `[]` **without issuing a query**. It never falls back to a corpus-wide search.
+- `index_runbook` / `index_document_derived_runbook` stamp the same key and **refuse to write** without it: a row with no tenant is unreachable by every scoped search, so writing one would create silent, unattributed content rather than shared content.
+- `VectorMetadata` declares **both** `organization_id` and `report_type` so they survive the `ChromaDBVectorStore.add_documents` normalization step, which keeps only declared fields. A dropped tenant key would leave the row invisible — an isolation guarantee that held only because nothing was ever returned; a dropped `report_type` would make every real write unmatchable by the runbook predicate.
+
+The clause is built as an explicit `$and` of single-key conditions. ChromaDB (>= 1.0) validates that a `where` mapping carries exactly one operator, so the multi-key implicit-AND form is rejected outright.
+
+This is the similarity half of the rule in [rbac.md "Tenant-Scoped Resolution"](../security/rbac.md#tenant-scoped-resolution); the id half is `get_document_visible` / `get_suggestion_visible`, and the allowlist half is the `organization_id` predicate on `resource_shares` in both directions of the share resolution.
+
 ### Chunking Strategy
 
 KB documents use structure-aware chunking. The ingestion pipeline splits on markdown structural boundaries:
