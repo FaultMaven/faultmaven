@@ -33,8 +33,13 @@ class RedisRateLimiter:
     """
 
     def __init__(
-        self, redis_url: str, key_prefix: str = "fm:rl", fallback_enabled: bool = True
+        self,
+        redis_url: Optional[str] = None,
+        key_prefix: str = "fm:rl",
+        fallback_enabled: bool = True,
     ):
+        # ``None`` means "resolve centrally" — the normal case. Only an
+        # operator-configured REDIS_URL ever reaches here as a value.
         self.redis_url = redis_url
         self.key_prefix = key_prefix
         self.fallback_enabled = fallback_enabled
@@ -42,6 +47,9 @@ class RedisRateLimiter:
 
         # Redis connection
         self._redis = None
+        # Whether this limiter opened ``_redis`` itself and may therefore close
+        # it. An adopted client belongs to the composition root.
+        self._owns_client = False
 
         # Rate limit configurations
         self._configs: Dict[str, RateLimitConfig] = {}
@@ -54,16 +62,36 @@ class RedisRateLimiter:
             "persistent_violation": 16.0,
         }
 
-    async def initialize(self) -> None:
-        """Initialize Redis connection using central client factory."""
+    async def initialize(self, client=None) -> None:
+        """Adopt the application's Redis client, or build one as a fallback.
+
+        ``client`` is the composition root's boot-validated client, resolved
+        from ``app.state`` by the middleware. Adopting it is the preferred rung:
+        it is already connected and already proven to answer, so there is no
+        second connection pool, no second credential resolution and no
+        redundant ping. Only when no shared client exists does this fall back to
+        the central factory.
+        """
         from faultmaven.infrastructure.redis_client import (
             RedisUnavailableError,
             get_async_redis_client,
             get_fakeredis_client,
+            is_fakeredis,
         )
+
+        if client is not None:
+            self._redis = client
+            self._owns_client = False
+            self.logger.info(
+                "Redis rate limiter using the shared application Redis client"
+            )
+            return
 
         try:
             self._redis = await get_async_redis_client(redis_url=self.redis_url)
+            # The FakeRedis stand-in is a process-wide singleton shared with
+            # every other subsystem, so it is never this limiter's to close.
+            self._owns_client = not is_fakeredis(self._redis)
             self.logger.info("Redis rate limiter initialized successfully")
         except RedisUnavailableError as e:
             # Cloud refuses to substitute an in-process FakeRedis for the
@@ -73,26 +101,35 @@ class RedisRateLimiter:
             # and letting it propagate leaves self._redis None, which makes
             # check_rate_limit fail open: no rate limiting at all, strictly
             # worse than the per-replica limiting FakeRedis gives. So degrade
-            # loudly instead. The durable fix — sharing the container's
-            # boot-validated client rather than building a second one on the
-            # request path — is tracked in a follow-up issue.
+            # loudly instead. This is the third rung of the ladder: the shared
+            # boot-validated client, then a client built by the central factory,
+            # then the in-process stand-in — and only if that too is refused
+            # does anything fail open.
             self.logger.error(
                 f"Rate limiter Redis unavailable ({e}); falling back to in-process "
                 "FakeRedis — rate limits are per-replica until Redis is reachable"
             )
             self._redis = get_fakeredis_client()
+            # Process-wide singleton, shared with every other subsystem.
+            self._owns_client = False
         except Exception as e:
             self.logger.error(f"Failed to initialize Redis rate limiter: {e}")
             if not self.fallback_enabled:
                 raise
 
     async def close(self) -> None:
-        """Close Redis connection."""
-        if self._redis:
+        """Close the Redis connection — only one this limiter opened itself.
+
+        The shared client belongs to the composition root and backs sessions,
+        token revocation, deduplication and idempotency too. Closing it on
+        middleware teardown would take all of them down with it.
+        """
+        if self._redis is not None and self._owns_client:
             try:
                 await self._redis.close()
             except Exception:
                 pass
+            self._owns_client = False
 
     def configure_limits(self, limits: Dict[str, RateLimitConfig]) -> None:
         """Configure rate limits."""

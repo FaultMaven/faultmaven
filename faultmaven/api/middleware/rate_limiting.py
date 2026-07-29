@@ -22,6 +22,12 @@ from ...models.protection import (
     RateLimitError,
 )
 
+# How long to wait before retrying a failed rate-limiter initialization.
+# Initialization deliberately does not latch on failure — one blip must not
+# disable rate limiting for the pod's whole lifetime — and this bounds the
+# retry so a persistent Redis outage does not attempt a connection per request.
+INIT_RETRY_COOLDOWN_SECONDS = 30.0
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
@@ -75,6 +81,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Initialize rate limiter
         self._initialized = False
+        # Monotonic timestamp of the last failed initialization attempt, or
+        # None when no attempt has failed since the last success.
+        self._init_failed_at: Optional[float] = None
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Main middleware dispatch with rate limiting"""
@@ -82,9 +91,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         start_time = time.time()
 
         try:
-            # Initialize rate limiter if needed
+            # Initialize rate limiter if needed (resolves the Redis client from
+            # app.state, which is populated by the lifespan composition root)
             if not self._initialized:
-                await self._initialize()
+                await self._initialize(request)
 
             # Skip rate limiting if disabled
             if not self.settings.rate_limiting_enabled:
@@ -138,20 +148,50 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     },
                 )
 
-    async def _initialize(self) -> None:
-        """Initialize rate limiter connection"""
+    async def _initialize(self, request: Request) -> None:
+        """Initialize the rate limiter against the shared Redis client.
+
+        The client is resolved lazily from ``app.state`` for the same reason
+        ``DeduplicationMiddleware`` does it: Starlette middleware is constructed
+        at import time, before the lifespan startup that creates Redis, so it
+        cannot be captured in ``__init__``.
+
+        Failure does not latch. ``_initialized`` is set only on success, so a
+        later request retries — bounded by ``INIT_RETRY_COOLDOWN_SECONDS`` so a
+        persistent outage does not open a connection on every request. Latching
+        on failure meant one blip on a pod's first request disabled rate
+        limiting for that pod's entire lifetime, with no path back.
+        """
+        if (
+            self._init_failed_at is not None
+            and time.monotonic() - self._init_failed_at < INIT_RETRY_COOLDOWN_SECONDS
+        ):
+            # Still inside the back-off window from a failed attempt. A
+            # fail-closed deployment must keep refusing rather than serve
+            # unlimited; a fail-open one passes through until the window ends.
+            if not self.settings.fail_open_on_redis_error:
+                raise RuntimeError(
+                    "Rate limiter is uninitialized and within its retry cooldown"
+                )
+            return
+
+        client = getattr(request.app.state, "redis_client", None)
         try:
-            await self.rate_limiter.initialize()
+            await self.rate_limiter.initialize(client=client)
             self._initialized = True
+            self._init_failed_at = None
             self.logger.info("Rate limiting middleware initialized")
         except Exception as e:
-            # The underlying rate_limiter already logged the issue appropriately
-            # Only re-raise if fail_open is disabled
+            # The underlying rate_limiter already logged the issue appropriately.
+            self._init_failed_at = time.monotonic()
             if not self.settings.fail_open_on_redis_error:
                 self.logger.error(f"Failed to initialize rate limiter: {e}")
                 raise
-            # If fail_open is enabled, the rate_limiter already logged a warning
-            self._initialized = True
+            self.logger.warning(
+                "Rate limiter initialization failed (%s); retrying in %.0fs",
+                e,
+                INIT_RETRY_COOLDOWN_SECONDS,
+            )
 
     def _should_bypass(self, request: Request) -> bool:
         """Check if request should bypass rate limiting"""

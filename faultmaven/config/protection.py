@@ -18,6 +18,23 @@ from ..models.protection import (
 )
 
 
+def _fail_open_default() -> bool:
+    """Whether the request-path protections fail open when Redis is unreachable.
+
+    One reader for ``PROTECTION_FAIL_OPEN``, used by both load paths, so the
+    settings path and the environment path cannot disagree about what the
+    deployment asked for — the settings path used to hardcode ``True``.
+
+    Note the key is shared with ``settings.protection.fail_open``, which governs
+    the PII-redaction fail-open (#654) and defaults to ``False``. The two
+    consumers therefore read the same key with different defaults. That split
+    predates this function; it is preserved rather than silently changed here,
+    because flipping this default would turn a Redis blip into a 503 on every
+    request.
+    """
+    return os.getenv("PROTECTION_FAIL_OPEN", "true").lower() == "true"
+
+
 def load_protection_settings(settings=None) -> ProtectionSettings:
     """
     Load protection settings from unified settings or environment variables (fallback).
@@ -56,11 +73,17 @@ def _load_from_settings(settings) -> ProtectionSettings:
     """Load protection settings from unified settings"""
     # Basic protection settings are available in the settings
     return ProtectionSettings(
-        # General - use security and database settings
-        enabled=settings.security.protection_enabled,
-        fail_open_on_redis_error=True,  # Safe default
+        # General - use protection and database settings.
+        # ``protection_enabled`` lives on the protection section, not security;
+        # reading it off ``settings.security`` raised AttributeError on every
+        # call, which made this whole "canonical" path dead and silently
+        # demoted callers to their error branches.
+        enabled=settings.protection.protection_enabled,
+        fail_open_on_redis_error=_fail_open_default(),
         protection_bypass_headers=[],  # No bypasses from settings
-        # Redis
+        # Redis: ``None`` unless an operator set REDIS_URL explicitly, in which
+        # case the complete URL genuinely is the configured source. Everything
+        # else resolves centrally through RedisClientFactory.
         redis_url=settings.database.redis_url,
         redis_key_prefix="faultmaven",
         # Rate limiting - use defaults since not in basic settings
@@ -130,17 +153,21 @@ def _load_from_environment() -> ProtectionSettings:
 
     # General settings
     protection_enabled = os.getenv("PROTECTION_ENABLED", "true").lower() == "true"
-    fail_open = os.getenv("PROTECTION_FAIL_OPEN", "true").lower() == "true"
+    fail_open = _fail_open_default()
     bypass_headers = [
         header.strip()
         for header in os.getenv("PROTECTION_BYPASS_HEADERS", "").split(",")
         if header.strip()
     ]
 
-    # Redis settings - construct from environment or use K8s ClusterIP default
-    redis_host = os.getenv("REDIS_HOST", "faultmaven-redis-master")
-    redis_port = os.getenv("REDIS_PORT", "6379")
-    redis_url = os.getenv("REDIS_URL", f"redis://{redis_host}:{redis_port}")
+    # Redis: the complete-URL form only, never hand-assembled from REDIS_HOST /
+    # REDIS_PORT — that assembly is what dropped REDIS_PASSWORD on the floor.
+    # This is the one place ``REDIS_URL`` is read from the environment rather
+    # than from settings, because this path exists precisely for when
+    # ``get_settings()`` itself raised. ``or None`` is load-bearing: an empty
+    # REDIS_URL must read as "not configured", not as a falsy URL that later
+    # code treats as an explicit source. ``None`` means resolve centrally.
+    redis_url = os.getenv("REDIS_URL") or None
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "faultmaven")
 
     # Rate limiting settings
@@ -210,18 +237,13 @@ def get_development_protection_settings() -> ProtectionSettings:
     - Bypass headers enabled
     - Fail open on errors
     """
-    # Construct Redis URL from environment or use defaults
-    redis_host = os.getenv("REDIS_HOST", "faultmaven-redis-master")
-    redis_port = os.getenv("REDIS_PORT", "6379")
-    redis_url = os.getenv("REDIS_URL", f"redis://{redis_host}:{redis_port}")
-
     return ProtectionSettings(
         # General
         enabled=True,
         fail_open_on_redis_error=True,
         protection_bypass_headers=["X-Dev-Bypass", "X-Test-Bypass"],
-        # Redis
-        redis_url=redis_url,
+        # Redis: resolve centrally via RedisClientFactory.
+        redis_url=None,
         redis_key_prefix="faultmaven_dev",
         # Rate limiting (more lenient for development)
         rate_limiting_enabled=True,
@@ -264,8 +286,8 @@ def get_production_protection_settings() -> ProtectionSettings:
         enabled=True,
         fail_open_on_redis_error=False,  # Fail closed in production
         protection_bypass_headers=[],  # No bypasses in production
-        # Redis
-        redis_url="redis://redis.faultmaven.local:6379",
+        # Redis: resolve centrally via RedisClientFactory.
+        redis_url=None,
         redis_key_prefix="faultmaven_prod",
         # Rate limiting (strict for production)
         rate_limiting_enabled=True,
@@ -305,10 +327,11 @@ def validate_protection_settings(settings: ProtectionSettings) -> Dict[str, Any]
     """
     validation = {"valid": True, "warnings": [], "errors": [], "recommendations": []}
 
-    # Check Redis URL
-    if not settings.redis_url:
-        validation["errors"].append("Redis URL is required")
-        validation["valid"] = False
+    # No Redis check here. ``redis_url`` is ``None`` in the normal case — the
+    # connection is resolved centrally by RedisClientFactory, which owns both
+    # the credential lookup and the "nothing to connect to" refusal. Requiring
+    # a URL here would fail validation on every ordinary deployment and leave
+    # the app with no protection middleware installed at all.
 
     # Check rate limits
     for limit_name, limit_config in settings.rate_limits.items():
