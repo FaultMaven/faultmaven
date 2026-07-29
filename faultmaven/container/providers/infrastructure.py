@@ -374,23 +374,26 @@ def create_knowledge_vector_store(
 async def create_redis_client(settings: FaultMavenSettings) -> Any:
     """Create Redis client for session storage.
 
-    Always returns a working async Redis-compatible client.
-    Cloud deployment: real Redis. Local deployment: FakeRedis (in-process).
+    Connection parameters are resolved from settings in ONE place — the factory —
+    so nothing is relayed through here: a second path carrying the same values is
+    a second place one of them can be dropped. Cloud deployment: real Redis, or
+    a refusal to boot. Local deployment: FakeRedis (in-process).
     """
+    if settings.server.skip_service_checks:
+        # Skipping the service checks still needs a working client, so all
+        # subsystems keep functioning — but it goes through the same gate rather
+        # than around it. Under cloud, substituting an in-process FakeRedis is
+        # the exact per-replica degradation the gate exists to refuse, and one
+        # env var must not buy a cloud pod its way out of it.
+        from faultmaven.infrastructure.redis_client import fakeredis_or_fail
+
+        client = fakeredis_or_fail("SKIP_SERVICE_CHECKS=true skips Redis entirely")
+        logger.info("✅ Redis client: FakeRedis (SKIP_SERVICE_CHECKS=True)")
+        return client
+
     from faultmaven.infrastructure.redis_client import get_async_redis_client
 
-    if settings.server.skip_service_checks:
-        # Even with skip_service_checks, return FakeRedis so all subsystems work
-        from faultmaven.infrastructure.redis_client import get_fakeredis_client
-
-        logger.info("✅ Redis client: FakeRedis (SKIP_SERVICE_CHECKS=True)")
-        return get_fakeredis_client()
-
-    return await get_async_redis_client(
-        redis_url=settings.database.redis_url,
-        host=settings.database.redis_host,
-        port=settings.database.redis_port,
-    )
+    return await get_async_redis_client()
 
 
 def create_session_store(redis_client: Any, settings: FaultMavenSettings) -> Any:

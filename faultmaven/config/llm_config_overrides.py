@@ -183,19 +183,23 @@ async def _get_redis():
     Uses the same cloud Redis the rest of the app uses (settings.database.redis_url).
     Lazy import keeps this module free of an infrastructure import at load time.
 
-    Raises if no shared Redis is available. ``get_async_redis_client`` swallows a
-    failed connection (and an unset URL) and falls back to a per-process
-    ``FakeRedis`` — which CANNOT propagate across replicas. Silently accepting it
-    would make ``save_and_reload`` bump a fake counter (no warning, change never
-    reaches other pods) and ``watch_config_version`` poll fake state forever. So
-    we reject the fallback and let callers' best-effort error handling fire.
+    Raises if no shared Redis is available. A per-process ``FakeRedis`` CANNOT
+    propagate across replicas: accepting one would make ``save_and_reload`` bump
+    a fake counter (no warning, change never reaches other pods) and
+    ``watch_config_version`` poll fake state forever. Under cloud
+    ``get_async_redis_client`` now raises rather than substitute one, so this
+    sniff is defense in depth — it still fires on standalone, and it still
+    catches a factory regression that lets the substitution through under cloud.
     """
     from faultmaven.config.settings import get_settings
-    from faultmaven.infrastructure.redis_client import get_async_redis_client
+    from faultmaven.infrastructure.redis_client import (
+        get_async_redis_client,
+        is_fakeredis,
+    )
 
     redis_url = getattr(get_settings().database, "redis_url", None)
     client = await get_async_redis_client(redis_url=redis_url)
-    if type(client).__module__.startswith("fakeredis"):
+    if is_fakeredis(client):
         raise RuntimeError(
             "config propagation requires a shared Redis, but the client resolved "
             "to an in-process FakeRedis (Redis unset or unreachable)"

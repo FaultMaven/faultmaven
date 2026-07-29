@@ -56,11 +56,31 @@ class RedisRateLimiter:
 
     async def initialize(self) -> None:
         """Initialize Redis connection using central client factory."""
-        from faultmaven.infrastructure.redis_client import get_async_redis_client
+        from faultmaven.infrastructure.redis_client import (
+            RedisUnavailableError,
+            get_async_redis_client,
+            get_fakeredis_client,
+        )
 
         try:
             self._redis = await get_async_redis_client(redis_url=self.redis_url)
             self.logger.info("Redis rate limiter initialized successfully")
+        except RedisUnavailableError as e:
+            # Cloud refuses to substitute an in-process FakeRedis for the
+            # deployment-wide Redis, and fails the boot. This subsystem is
+            # initialized lazily on the first request, long after the boot gate
+            # could have acted, so the refusal cannot fail the boot from here —
+            # and letting it propagate leaves self._redis None, which makes
+            # check_rate_limit fail open: no rate limiting at all, strictly
+            # worse than the per-replica limiting FakeRedis gives. So degrade
+            # loudly instead. The durable fix — sharing the container's
+            # boot-validated client rather than building a second one on the
+            # request path — is tracked in a follow-up issue.
+            self.logger.error(
+                f"Rate limiter Redis unavailable ({e}); falling back to in-process "
+                "FakeRedis — rate limits are per-replica until Redis is reachable"
+            )
+            self._redis = get_fakeredis_client()
         except Exception as e:
             self.logger.error(f"Failed to initialize Redis rate limiter: {e}")
             if not self.fallback_enabled:
