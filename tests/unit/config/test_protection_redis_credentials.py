@@ -238,19 +238,22 @@ def test_fail_open_policy_comes_from_one_key_on_both_paths(
     assert load_protection_settings().fail_open_on_redis_error is expected
 
 
-@pytest.mark.parametrize("loader", _LOADERS, ids=lambda f: f.__name__)
+@pytest.mark.parametrize(
+    "loader",
+    [load_protection_settings, get_development_protection_settings],
+    ids=lambda f: f.__name__,
+)
 @pytest.mark.parametrize(
     "env_value,expected", [("false", False), ("true", True), (None, True)]
 )
-def test_every_loader_honours_the_fail_open_key_in_both_directions(
+def test_the_general_loaders_honour_the_fail_open_key_in_both_directions(
     cloud_discrete_credentials, monkeypatch, loader, env_value, expected
 ):
-    """No loader may hardcode the degrade policy over the operator's key.
+    """The general load paths must not hardcode the degrade policy.
 
-    ``get_production_protection_settings`` hardcoded ``False``, making
-    ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` a no-op in the one environment where the
-    503-on-every-request cliff actually bites. Swept over every producer and
-    both directions, so a loader that pinned the *new* default would fail too.
+    Both directions, so a loader that pinned the *default* fails too. Production
+    is excluded on purpose and has its own test below — it is the one loader
+    that pins the policy, and it pins it closed.
     """
     if env_value is None:
         monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
@@ -259,6 +262,36 @@ def test_every_loader_honours_the_fail_open_key_in_both_directions(
     reset_settings()
 
     assert loader().fail_open_on_redis_error is expected
+
+
+@pytest.mark.parametrize("env_value", ["true", "false", None])
+def test_production_fails_closed_whatever_the_key_says(
+    cloud_discrete_credentials, monkeypatch, env_value
+):
+    """Production pins fail-closed, and no environment value opens it.
+
+    The argument for defaulting production open was that rungs 1 and 2 of the
+    degrade ladder enforce limits first, making the fail-open rung nearly
+    unreachable. That is false while the sliding window counts seconds rather
+    than requests (``ZADD key current_time current_time`` — score and member are
+    the same integer second, so ``ZCARD`` cannot exceed the window in seconds and
+    every ``global`` limit is unreachable). ``global`` is the only limit that
+    applies to unauthenticated traffic, so under that defect fail-open is the
+    whole ladder rather than its floor.
+
+    Swept over both explicit values and absence: a loader that quietly started
+    reading the key again would fail on ``"true"``.
+    """
+    if env_value is None:
+        monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
+    else:
+        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", env_value)
+    reset_settings()
+
+    assert get_production_protection_settings().fail_open_on_redis_error is False, (
+        "production honoured PROTECTION_RATE_LIMIT_FAIL_OPEN; the fail-open rung "
+        "is not justifiable while the sliding window counts seconds"
+    )
 
 
 def test_hardening_pii_redaction_does_not_make_rate_limiting_fail_closed(
