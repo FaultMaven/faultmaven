@@ -14,6 +14,39 @@ from faultmaven.models.interfaces import IVectorStore
 logger = logging.getLogger(__name__)
 
 
+def create_persistent_client(path: str) -> Any:
+    """Open the process-wide ChromaDB client for a local persist path.
+
+    chromadb caches one System per path and refuses a second client for that
+    path whose ``Settings`` differ *in any field* ("An instance of Chroma
+    already exists for <path> with different settings"). The container's KB
+    client and ``KnowledgeIngester`` both open ``data/chroma-kb``, so every
+    persistent client in the process is built here, with one set of settings —
+    two spellings of the same path is a startup crash, and was a cross-test
+    failure that surfaced hundreds of lines away from its cause (#823).
+    """
+    import os
+
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+
+    os.makedirs(path, exist_ok=True)
+    return chromadb.PersistentClient(
+        path=path,
+        settings=ChromaSettings(
+            anonymized_telemetry=False,
+            allow_reset=True,
+            # chromadb's Settings picks ``environment`` up from the ambient
+            # ENVIRONMENT variable — the same one that names OUR deployment
+            # environment — and it counts towards client identity. Left to the
+            # env, a process that reads ENVIRONMENT differently between two
+            # clients for one path gets the refusal above. Pinned, the client
+            # is identified by its path and nothing else.
+            environment="",
+        ),
+    )
+
+
 class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     """ChromaDB implementation of the IVectorStore interface.
 

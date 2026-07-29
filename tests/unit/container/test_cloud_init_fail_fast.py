@@ -183,7 +183,10 @@ async def test_standalone_keeps_lenient_degraded_posture(monkeypatch):
         settings, ImportError("No module named 'workos'")
     )
     with patches[0], patches[1], patches[2], patches[3]:
-        await container.initialize()  # must NOT raise
+        # ``allow_degraded`` is how a test asks for the lenient path; without it
+        # a failure under pytest raises so it names itself (#823). It does not
+        # weaken the mode gate — see test_allow_degraded_does_not_excuse_cloud.
+        await container.initialize(allow_degraded=True)  # must NOT raise
 
     assert container._initialized is False
     assert container._initializing is False
@@ -205,5 +208,5 @@ async def test_standalone_lenient_for_the_same_error_shapes(monkeypatch):
         container = _fresh_container()
         patches = _compose_failing_at_services(settings, boom)
         with patches[0], patches[1], patches[2], patches[3]:
-            await container.initialize()  # must NOT raise
+            await container.initialize(allow_degraded=True)  # must NOT raise
         assert container._initialized is False

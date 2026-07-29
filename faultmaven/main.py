@@ -41,6 +41,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -54,6 +55,9 @@ from faultmaven.utils.serialization import to_json_compatible
 
 # Configure enhanced logging system first
 from .infrastructure.logging.config import get_logger
+
+if TYPE_CHECKING:
+    from .config.settings import FaultMavenSettings
 
 logger = get_logger(__name__)
 
@@ -245,6 +249,321 @@ except ImportError:
     logger.info("Opik not available, running without tracing")
 
 
+async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -> None:
+    """Initialize the DI container and wire every service onto ``app.state``.
+
+    Raises on any failure — deliberately. Whether a failure here is fatal is
+    one decision, and it belongs to :func:`compose_application`, not to the
+    wiring steps: a step that decides for itself is how a cloud pod ends up
+    serving an API with whole service layers missing.
+    """
+    from .container import container
+
+    await container.initialize()
+
+    # Verify critical services are available IMMEDIATELY after initialization
+    user_store = container.get_user_store()
+    # Every revoke path depends on this store (#767/#769), so a missing
+    # registration is fatal rather than something to discover on the first
+    # logout. Presence only — this does NOT probe Redis connectivity, so a
+    # dead backing store still boots and surfaces per-request instead
+    # (request path fails open, generator validation fails closed).
+    token_revocation_store = container.get_service("token_revocation_store")
+
+    logger.info(
+        f"Container initialization complete. Checking authentication services..."
+    )
+    logger.info(
+        f"   - user_store: {type(user_store).__name__ if user_store else 'None'}"
+    )
+    logger.info(
+        "   - token_revocation_store: "
+        f"{type(token_revocation_store).__name__ if token_revocation_store else 'None'}"
+    )
+
+    if user_store is None or token_revocation_store is None:
+        logger.error(
+            f"❌ Critical authentication services missing after container initialization:"
+        )
+        logger.error(f"   - user_store: {user_store}")
+        logger.error(f"   - token_revocation_store: {token_revocation_store}")
+        logger.error(f"   - Container initialized: {container.is_initialized}")
+        logger.error(
+            f"   - Container has user_store attr: {hasattr(container, 'user_store')}"
+        )
+        if hasattr(container, "user_store"):
+            logger.error(f"   - Container.user_store value: {container.user_store}")
+        raise RuntimeError(
+            "Container initialization incomplete: authentication services not available. "
+            "Check container initialization logs for errors during register_infrastructure()."
+        )
+
+    logger.info("✅ DI container initialized successfully with authentication services")
+
+    # Make container available to app for access by other components
+    app.extra["di_container"] = container
+
+    # ============================================================
+    # Bootstrap Application (deployment-agnostic architecture)
+    # ============================================================
+    # Ensures default organization exists for single-tenant mode
+    # Must run after container initialization (requires tenant_provider)
+    # Must run after container initialization (requires tenant_provider)
+    try:
+        from .bootstrap.startup import bootstrap_application
+
+        await bootstrap_application(container)
+        logger.debug("✅ Application bootstrap complete")
+
+        # Apply config overrides from database (cloud mode only).
+        # Standalone uses .env as the sole source of truth.
+        is_cloud = settings.is_cloud
+        if is_cloud:
+            try:
+                from .config.llm_config_overrides import (
+                    apply_overrides_to_settings,
+                    watch_config_version,
+                )
+
+                await apply_overrides_to_settings(settings)
+                logger.debug("✅ Config overrides applied (cloud mode)")
+
+                # Multi-replica propagation: a UI config write hot-reloads
+                # only the serving replica; this watcher reloads the others
+                # when the shared config version changes. Cancelled on
+                # shutdown. Cloud-only — standalone has no DB overrides.
+                app.state.llm_config_watch_task = asyncio.create_task(
+                    watch_config_version()
+                )
+            except Exception as e:
+                logger.debug(f"Config overrides skipped: {e}")
+        else:
+            logger.debug(
+                "Config overrides skipped (local mode — .env is source of truth)"
+            )
+    except Exception as e:
+        logger.critical(
+            f"🔥 BLOCKING STARTUP FAILURE: Application bootstrap failed: {e}"
+        )
+        # FAIL FAST: Re-raise to stop startup.
+        # A broken bootstrap means DB or critical directories are missing.
+        raise RuntimeError(f"Critical bootstrap failure: {e}") from e
+
+    # Multi-tenant hard gate: refuse to serve if the app's PostgreSQL role is
+    # exempt from RLS. Superusers and table owners bypass row-level security,
+    # so a misprovisioned role would silently defeat tenant isolation (the
+    # policies from migrations 018/023/030 become no-ops). Runs after
+    # bootstrap so the DB + RLS policies are guaranteed present; no-op in
+    # single-tenant mode and on SQLite.
+    from .infrastructure.persistence.rls_role_guard import (
+        assert_app_db_role_enforces_rls,
+    )
+    from .providers.tenancy.factory import (
+        BUILTIN_MULTI,
+        requested_tenant_provider,
+    )
+
+    await assert_app_db_role_enforces_rls(
+        is_multi_tenant=(requested_tenant_provider() == BUILTIN_MULTI)
+    )
+
+    # ============================================================
+    # Composition Root: Attach all services to app.state
+    # ============================================================
+    # This follows the Composition Root principle (P5):
+    # - Services are wired here at startup
+    # - FastAPI dependencies access via request.app.state
+    # - Services do NOT call container.get_*() themselves
+    # ============================================================
+
+    # CRITICAL: Set authentication services FIRST - they're required for the API to work
+    # These were already verified above, so they must be available
+    # Deployment-wide token revocation store (#767): the single store all
+    # revoke paths write to and the request-path check reads from.
+    app.state.token_revocation_store = token_revocation_store
+    app.state.user_store = user_store
+    app.state.user_service = container.get_user_service()
+    app.state.auth_service = container.get_auth_service()
+    app.state.oauth_service = container.get_oauth_service()  # OAuth service (optional)
+    # SSO hosted-login orchestration (ADR-015). None unless WorkOS is fully
+    # configured in oauth mode; the SSO router only mounts in that case.
+    app.state.sso_login_service = container.get_service("sso_login_service")
+    # RS256 token generator for oauth-mode /auth/refresh (ADR-015 D6).
+    # None in local mode, where refresh builds its HS256 generator per
+    # request instead.
+    app.state.jwt_token_generator = container.get_service("jwt_token_generator")
+
+    # Durable, append-only operator access trail (ADR-012 D8/D9). Wired
+    # beside the auth services rather than in the "may fail gracefully"
+    # block below: the operator routes fail closed without it, which is the
+    # intended behaviour — an unrecorded cross-tenant read is the failure
+    # this table exists to prevent.
+    from faultmaven.infrastructure.persistence.sessionless_operator_audit_repository import (  # noqa: E501
+        SessionlessOperatorAuditRepository,
+    )
+
+    app.state.operator_audit_repository = SessionlessOperatorAuditRepository()
+
+    # Break-glass grants over Cloud tenant case content (ADR-012 D9, #815).
+    # Same posture as the audit trail above: without it the content path
+    # fails closed rather than degrading to standing access.
+    from faultmaven.infrastructure.persistence.sessionless_operator_grant_repository import (  # noqa: E501
+        SessionlessOperatorGrantRepository,
+    )
+
+    app.state.operator_grant_repository = SessionlessOperatorGrantRepository()
+
+    # Shared Redis client (real Redis in cloud, FakeRedis in standalone).
+    # Single source of truth for Redis-dependent middleware (deduplication,
+    # idempotency), which resolve it lazily from app.state on first request —
+    # after this composition root has run. The container guarantees a working
+    # client (never None), so this is always populated.
+    app.state.redis_client = container.get_redis_client()
+
+    # The rest of the service layer. Genuinely optional services (the
+    # conversion service, the query classification engine) name themselves
+    # optional at their own line and fall back to None; everything else
+    # raises out of this function, because a service missing from app.state
+    # is not a degraded feature — it is a route that 500s on first use, or a
+    # gate that never runs. Which failures are survivable is the caller's
+    # decision (compose_application), not a blanket except here.
+    app.state.session_service = container.get_session_service()
+    app.state.case_service = container.get_case_service()
+    app.state.investigation_service = container.get_investigation_service()
+    app.state.knowledge_service = container.get_knowledge_service()
+
+    # Document-to-runbook conversion service
+    try:
+        from .config.settings import get_settings as _get_settings
+        from .infrastructure.persistence.database import (
+            get_db_session,
+            get_engine,
+        )
+        from .infrastructure.persistence.models import (
+            ConversionDraftModel,
+            ConversionJobModel,
+        )
+        from .modules.knowledge.domain.services.conversion_service import (
+            ConversionService,
+        )
+
+        # Ensure conversion tables exist (safe no-op if already present)
+        _conv_engine = get_engine()
+        async with _conv_engine.begin() as _conn:
+            await _conn.run_sync(
+                ConversionJobModel.__table__.create,
+                checkfirst=True,
+            )
+            await _conn.run_sync(
+                ConversionDraftModel.__table__.create,
+                checkfirst=True,
+            )
+
+        _settings = _get_settings()
+        _llm_provider = container.get_llm_provider()
+
+        app.state.conversion_service = ConversionService(
+            llm_router=_llm_provider,
+            settings=_settings,
+            db_session_factory=get_db_session,
+            knowledge_service=app.state.knowledge_service,
+            # Source both collaborators from the CONTAINER, not
+            # app.state — the app.state copies are assigned further
+            # down this lifespan, so reading them here yields None
+            # and silently disables team publishing (share rows never
+            # minted, membership gate #854 unreachable). Pinned by
+            # test_conversion_service_composition_root_wiring.
+            share_repository=getattr(container, "share_repository", None),
+            # Membership resolver for the team publish target (#854);
+            # absent (standalone) → team-scoped publish is refused.
+            team_service=container.get_team_service(),
+        )
+        logger.info("✅ Document conversion service initialized")
+    except Exception as conv_err:
+        logger.warning(
+            f"Document conversion service not available: {conv_err}",
+            exc_info=True,
+        )
+        app.state.conversion_service = None
+
+    app.state.preprocessing_service = container.get_preprocessing_service()
+    app.state.enhanced_agent_service = container.get_enhanced_agent_service()
+    app.state.orchestration_service = container.get_orchestration_service()
+    app.state.data_service = container.get_data_service()
+    app.state.tenant_provider = container.get_tenant_provider()
+    # KB team-scope resolver (None in standalone — team collaboration is
+    # a Cloud feature; the KB inventory route reads this off app.state).
+    app.state.team_service = container.get_team_service()
+    # Resource-share source of truth (ADR-013 §D4). Present in both modes;
+    # the agent retrieval path resolves the shared-id allowlist through it.
+    app.state.share_repository = getattr(container, "share_repository", None)
+    app.state.report_generation_service = container.get_report_generation_service()
+    app.state.report_recommendation_service = (
+        container.get_report_recommendation_service()
+    )
+    app.state.job_service = container.get_job_service()
+    # Query classification engine (optional - may not be available)
+    try:
+        app.state.query_classification_engine = (
+            container.get_query_classification_engine()
+        )
+    except AttributeError:
+        logger.warning("Query classification engine not available - skipping")
+        app.state.query_classification_engine = None
+    app.state.tracer = container.get_tracer()
+    app.state.llm_provider = container.get_llm_provider()
+    logger.info("✅ Services attached to app.state (Composition Root)")
+
+    # Late-bind conversion_service into milestone engine (avoids circular DI)
+    _milestone_engine = getattr(container, "milestone_engine", None)
+    _conversion_svc = getattr(app.state, "conversion_service", None)
+    if _milestone_engine and _conversion_svc:
+        _milestone_engine.conversion_service = _conversion_svc
+
+    # Check LLM provider configuration and warn if none configured
+    _check_llm_configuration(app.state.llm_provider, settings=settings)
+
+
+async def compose_application(app: FastAPI, settings: "FaultMavenSettings") -> None:
+    """Compose the application, refusing to start where a partial API is unsafe.
+
+    Deployments that must not degrade (``settings.must_not_degrade`` — cloud,
+    or any deployment declaring ``ENVIRONMENT=production``) abort startup, so
+    uvicorn exits, the pod CrashLoops and the rollout rolls back. Anywhere
+    else a partial application is a development affordance and startup
+    continues with a warning.
+    """
+    try:
+        await _wire_composition_root(app, settings)
+    except RuntimeError:
+        # The container's established fail-fast channel — the cloud refusal in
+        # ``DIContainer.initialize``, the bootstrap failure, the RLS role gate.
+        # Those callees have already decided the boot cannot continue, in any
+        # deployment mode, so this handler must not reinterpret them.
+        raise
+    except Exception as e:
+        if settings.must_not_degrade:
+            # Unwrapped: `server.environment` holds the Enum member, and a bare
+            # str() would log "Environment.STAGING" at an operator (#827).
+            env = getattr(
+                settings.server.environment, "value", settings.server.environment
+            )
+            logger.critical(
+                "FAIL-FAST: composition root failed under "
+                f"DEPLOYMENT_MODE={'cloud' if settings.is_cloud else 'standalone'}"
+                f"/ENVIRONMENT={env}. Refusing to serve a partial API."
+            )
+            raise RuntimeError(
+                f"Composition root failed: {e}. A partially wired application "
+                "would serve an API missing whole service layers."
+            ) from e
+        logger.error(f"Composition root failed: {e}", exc_info=True)
+        logger.warning(
+            "Continuing with fallback service implementations — this deployment "
+            "permits a partial API (see settings.must_not_degrade)"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
@@ -326,307 +645,10 @@ async def lifespan(app: FastAPI):
     global _app_settings
     _app_settings = settings
 
-    # Initialize the DI container first (before any services that depend on it)
-    # Container initialization includes service registration internally
+    # Container initialization and the composition root. Failures are refused
+    # or tolerated there, per deployment mode — not here.
     logger.info("Initializing DI container...")
-    try:
-        from .container import container
-
-        await container.initialize()
-
-        # Verify critical services are available IMMEDIATELY after initialization
-        user_store = container.get_user_store()
-        # Every revoke path depends on this store (#767/#769), so a missing
-        # registration is fatal rather than something to discover on the first
-        # logout. Presence only — this does NOT probe Redis connectivity, so a
-        # dead backing store still boots and surfaces per-request instead
-        # (request path fails open, generator validation fails closed).
-        token_revocation_store = container.get_service("token_revocation_store")
-
-        logger.info(
-            f"Container initialization complete. Checking authentication services..."
-        )
-        logger.info(
-            f"   - user_store: {type(user_store).__name__ if user_store else 'None'}"
-        )
-        logger.info(
-            "   - token_revocation_store: "
-            f"{type(token_revocation_store).__name__ if token_revocation_store else 'None'}"
-        )
-
-        if user_store is None or token_revocation_store is None:
-            logger.error(
-                f"❌ Critical authentication services missing after container initialization:"
-            )
-            logger.error(f"   - user_store: {user_store}")
-            logger.error(f"   - token_revocation_store: {token_revocation_store}")
-            logger.error(f"   - Container initialized: {container.is_initialized}")
-            logger.error(
-                f"   - Container has user_store attr: {hasattr(container, 'user_store')}"
-            )
-            if hasattr(container, "user_store"):
-                logger.error(f"   - Container.user_store value: {container.user_store}")
-            raise RuntimeError(
-                "Container initialization incomplete: authentication services not available. "
-                "Check container initialization logs for errors during register_infrastructure()."
-            )
-
-        logger.info(
-            "✅ DI container initialized successfully with authentication services"
-        )
-
-        # Make container available to app for access by other components
-        app.extra["di_container"] = container
-
-        # ============================================================
-        # Bootstrap Application (deployment-agnostic architecture)
-        # ============================================================
-        # Ensures default organization exists for single-tenant mode
-        # Must run after container initialization (requires tenant_provider)
-        # Must run after container initialization (requires tenant_provider)
-        try:
-            from .bootstrap.startup import bootstrap_application
-
-            await bootstrap_application(container)
-            logger.debug("✅ Application bootstrap complete")
-
-            # Apply config overrides from database (cloud mode only).
-            # Standalone uses .env as the sole source of truth.
-            is_cloud = settings.is_cloud
-            if is_cloud:
-                try:
-                    from .config.llm_config_overrides import (
-                        apply_overrides_to_settings,
-                        watch_config_version,
-                    )
-
-                    await apply_overrides_to_settings(settings)
-                    logger.debug("✅ Config overrides applied (cloud mode)")
-
-                    # Multi-replica propagation: a UI config write hot-reloads
-                    # only the serving replica; this watcher reloads the others
-                    # when the shared config version changes. Cancelled on
-                    # shutdown. Cloud-only — standalone has no DB overrides.
-                    app.state.llm_config_watch_task = asyncio.create_task(
-                        watch_config_version()
-                    )
-                except Exception as e:
-                    logger.debug(f"Config overrides skipped: {e}")
-            else:
-                logger.debug(
-                    "Config overrides skipped (local mode — .env is source of truth)"
-                )
-        except Exception as e:
-            logger.critical(
-                f"🔥 BLOCKING STARTUP FAILURE: Application bootstrap failed: {e}"
-            )
-            # FAIL FAST: Re-raise to stop startup.
-            # A broken bootstrap means DB or critical directories are missing.
-            raise RuntimeError(f"Critical bootstrap failure: {e}") from e
-
-        # Multi-tenant hard gate: refuse to serve if the app's PostgreSQL role is
-        # exempt from RLS. Superusers and table owners bypass row-level security,
-        # so a misprovisioned role would silently defeat tenant isolation (the
-        # policies from migrations 018/023/030 become no-ops). Runs after
-        # bootstrap so the DB + RLS policies are guaranteed present; no-op in
-        # single-tenant mode and on SQLite.
-        from .infrastructure.persistence.rls_role_guard import (
-            assert_app_db_role_enforces_rls,
-        )
-        from .providers.tenancy.factory import (
-            BUILTIN_MULTI,
-            requested_tenant_provider,
-        )
-
-        await assert_app_db_role_enforces_rls(
-            is_multi_tenant=(requested_tenant_provider() == BUILTIN_MULTI)
-        )
-
-        # ============================================================
-        # Composition Root: Attach all services to app.state
-        # ============================================================
-        # This follows the Composition Root principle (P5):
-        # - Services are wired here at startup
-        # - FastAPI dependencies access via request.app.state
-        # - Services do NOT call container.get_*() themselves
-        # ============================================================
-
-        # CRITICAL: Set authentication services FIRST - they're required for the API to work
-        # These were already verified above, so they must be available
-        # Deployment-wide token revocation store (#767): the single store all
-        # revoke paths write to and the request-path check reads from.
-        app.state.token_revocation_store = token_revocation_store
-        app.state.user_store = user_store
-        app.state.user_service = container.get_user_service()
-        app.state.auth_service = container.get_auth_service()
-        app.state.oauth_service = (
-            container.get_oauth_service()
-        )  # OAuth service (optional)
-        # SSO hosted-login orchestration (ADR-015). None unless WorkOS is fully
-        # configured in oauth mode; the SSO router only mounts in that case.
-        app.state.sso_login_service = container.get_service("sso_login_service")
-        # RS256 token generator for oauth-mode /auth/refresh (ADR-015 D6).
-        # None in local mode, where refresh builds its HS256 generator per
-        # request instead.
-        app.state.jwt_token_generator = container.get_service("jwt_token_generator")
-
-        # Durable, append-only operator access trail (ADR-012 D8/D9). Wired
-        # beside the auth services rather than in the "may fail gracefully"
-        # block below: the operator routes fail closed without it, which is the
-        # intended behaviour — an unrecorded cross-tenant read is the failure
-        # this table exists to prevent.
-        from faultmaven.infrastructure.persistence.sessionless_operator_audit_repository import (  # noqa: E501
-            SessionlessOperatorAuditRepository,
-        )
-
-        app.state.operator_audit_repository = SessionlessOperatorAuditRepository()
-
-        # Break-glass grants over Cloud tenant case content (ADR-012 D9, #815).
-        # Same posture as the audit trail above: without it the content path
-        # fails closed rather than degrading to standing access.
-        from faultmaven.infrastructure.persistence.sessionless_operator_grant_repository import (  # noqa: E501
-            SessionlessOperatorGrantRepository,
-        )
-
-        app.state.operator_grant_repository = SessionlessOperatorGrantRepository()
-
-        # Shared Redis client (real Redis in cloud, FakeRedis in standalone).
-        # Single source of truth for Redis-dependent middleware (deduplication,
-        # idempotency), which resolve it lazily from app.state on first request —
-        # after this composition root has run. The container guarantees a working
-        # client (never None), so this is always populated.
-        app.state.redis_client = container.get_redis_client()
-
-        # Other services (may fail gracefully)
-        try:
-            app.state.session_service = container.get_session_service()
-            app.state.case_service = container.get_case_service()
-            app.state.investigation_service = container.get_investigation_service()
-            app.state.knowledge_service = container.get_knowledge_service()
-
-            # Document-to-runbook conversion service
-            try:
-                from .config.settings import get_settings as _get_settings
-                from .infrastructure.persistence.database import (
-                    get_db_session,
-                    get_engine,
-                )
-                from .infrastructure.persistence.models import (
-                    ConversionDraftModel,
-                    ConversionJobModel,
-                )
-                from .modules.knowledge.domain.services.conversion_service import (
-                    ConversionService,
-                )
-
-                # Ensure conversion tables exist (safe no-op if already present)
-                _conv_engine = get_engine()
-                async with _conv_engine.begin() as _conn:
-                    await _conn.run_sync(
-                        ConversionJobModel.__table__.create,
-                        checkfirst=True,
-                    )
-                    await _conn.run_sync(
-                        ConversionDraftModel.__table__.create,
-                        checkfirst=True,
-                    )
-
-                _settings = _get_settings()
-                _llm_provider = container.get_llm_provider()
-
-                app.state.conversion_service = ConversionService(
-                    llm_router=_llm_provider,
-                    settings=_settings,
-                    db_session_factory=get_db_session,
-                    knowledge_service=app.state.knowledge_service,
-                    # Source both collaborators from the CONTAINER, not
-                    # app.state — the app.state copies are assigned further
-                    # down this lifespan, so reading them here yields None
-                    # and silently disables team publishing (share rows never
-                    # minted, membership gate #854 unreachable). Pinned by
-                    # test_conversion_service_composition_root_wiring.
-                    share_repository=getattr(container, "share_repository", None),
-                    # Membership resolver for the team publish target (#854);
-                    # absent (standalone) → team-scoped publish is refused.
-                    team_service=container.get_team_service(),
-                )
-                logger.info("✅ Document conversion service initialized")
-            except Exception as conv_err:
-                logger.warning(
-                    f"Document conversion service not available: {conv_err}",
-                    exc_info=True,
-                )
-                app.state.conversion_service = None
-
-            app.state.preprocessing_service = container.get_preprocessing_service()
-            app.state.enhanced_agent_service = container.get_enhanced_agent_service()
-            app.state.orchestration_service = container.get_orchestration_service()
-            app.state.data_service = container.get_data_service()
-            app.state.tenant_provider = container.get_tenant_provider()
-            # KB team-scope resolver (None in standalone — team collaboration is
-            # a Cloud feature; the KB inventory route reads this off app.state).
-            app.state.team_service = container.get_team_service()
-            # Resource-share source of truth (ADR-013 §D4). Present in both modes;
-            # the agent retrieval path resolves the shared-id allowlist through it.
-            app.state.share_repository = getattr(container, "share_repository", None)
-            app.state.report_generation_service = (
-                container.get_report_generation_service()
-            )
-            app.state.report_recommendation_service = (
-                container.get_report_recommendation_service()
-            )
-            app.state.job_service = container.get_job_service()
-            # Query classification engine (optional - may not be available)
-            try:
-                app.state.query_classification_engine = (
-                    container.get_query_classification_engine()
-                )
-            except AttributeError:
-                logger.warning("Query classification engine not available - skipping")
-                app.state.query_classification_engine = None
-            app.state.tracer = container.get_tracer()
-            app.state.llm_provider = container.get_llm_provider()
-        except AttributeError as e:
-            logger.warning(
-                f"Some optional services not available: {e} - continuing with available services"
-            )
-        except Exception as e:
-            logger.warning(
-                f"Error setting some services: {e} - continuing with available services"
-            )
-        app.state.tracer = container.get_tracer()
-        app.state.llm_provider = container.get_llm_provider()
-        logger.info("✅ Services attached to app.state (Composition Root)")
-
-        # Late-bind conversion_service into milestone engine (avoids circular DI)
-        _milestone_engine = getattr(container, "milestone_engine", None)
-        _conversion_svc = getattr(app.state, "conversion_service", None)
-        if _milestone_engine and _conversion_svc:
-            _milestone_engine.conversion_service = _conversion_svc
-
-        # Check LLM provider configuration and warn if none configured
-        _check_llm_configuration(app.state.llm_provider, settings=settings)
-    except RuntimeError as e:
-        # Container already logged the error and raised if it's a production fail-fast
-        # Re-raise to let FastAPI handle startup failure
-        raise
-    except Exception as e:
-        logger.error(f"DI container initialization failed: {e}")
-        # Only allow graceful degradation in non-production environments
-        # Use settings (deployment-agnostic) instead of os.getenv()
-        from .config.settings import Environment
-
-        is_production = settings.server.environment == Environment.PRODUCTION
-        if is_production:
-            logger.critical(
-                "Production startup failed - cannot continue with incomplete container"
-            )
-            raise RuntimeError(
-                f"Critical container initialization failed in production: {e}"
-            ) from e
-        logger.warning(
-            "Continuing with fallback service implementations (non-production mode)"
-        )
+    await compose_application(app, settings)
 
     # Initialize core services with K8s support
     # SessionManager replaced by services.session.SessionService via DI container
@@ -764,6 +786,9 @@ async def lifespan(app: FastAPI):
     case_cleanup_scheduler = None
     if settings.server.run_scheduler:
         try:
+            # Self-contained import: the container is composed in
+            # compose_application, not bound in this scope.
+            from .container import container
             from .infrastructure.tasks import start_case_cleanup_scheduler
 
             # Only start if both case_vector_store and case_repository are available

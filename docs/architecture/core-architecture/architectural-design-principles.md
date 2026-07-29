@@ -509,6 +509,52 @@ class CaseService:
 - Circular dependencies surface at startup, not runtime
 - Constructor signatures are the complete dependency manifest
 
+### Startup: refuse, or degrade knowingly
+
+Wiring can fail, and a half-wired application is not a degraded feature — it is
+a route that 500s on first use, or a gate that never runs, behind a `/health`
+that still answers `healthy`. The composition root therefore separates *doing
+the wiring* from *deciding whether a failure is survivable*:
+
+| Function (`faultmaven/main.py`) | Responsibility |
+|---|---|
+| `_wire_composition_root(app, settings)` | Container init, bootstrap, the RLS role gate, and the whole `app.state` cascade. Raises on failure; decides nothing. |
+| `compose_application(app, settings)` | The one decision: refuse the boot, or continue with a warning. |
+
+**One predicate decides, everywhere**: `settings.must_not_degrade` —
+`DEPLOYMENT_MODE=cloud`, or any deployment declaring `ENVIRONMENT=production`.
+Both composition gates — the DI container's refusal and the composition root —
+key on it, so "must not degrade" has one meaning and one spelling. (Gates that
+express a *capability* requirement rather than a degradation policy stay on
+`is_cloud`: a shared Redis is a cloud requirement, and standalone runs
+FakeRedis by design at any `ENVIRONMENT`.)
+
+- **Must not degrade** → startup raises `RuntimeError`, uvicorn exits, the pod
+  CrashLoops and the Kubernetes rollout rolls back.
+- **Anywhere else** → the failure is logged and the application serves what it
+  has. A self-hosted instance missing an optional service is still useful to
+  its single user, who can read the log.
+
+`RuntimeError` is the terminal channel: the container's refusal, the bootstrap
+failure and the RLS role gate raise it, and both entry points — the web
+lifespan and `jobs/run.py` — treat it as fatal in *every* mode, because the
+callee has already decided the boot cannot continue.
+
+Genuinely optional services (the conversion service, the query classification
+engine) say so at their own wiring line and fall back to `None`. There is no
+blanket `except` around the cascade: "optional service absent" is a claim a
+specific line makes, not something inferred from an exception reaching a
+catch-all.
+
+Under pytest the container raises instead of returning uninitialized, so a
+composition failure names itself rather than re-surfacing as an unrelated
+assertion in a later test; `initialize(allow_degraded=True)` opts a test back
+into the lenient path without weakening the mode gate.
+
+*Rejected alternative*: gating on `ENVIRONMENT` alone. Cloud overlays run
+`ENVIRONMENT=staging`, so that gate reads "not production" and serves a partial
+API exactly where the guarantee is needed.
+
 ---
 
 ## 6. Errors as Domain Concepts
