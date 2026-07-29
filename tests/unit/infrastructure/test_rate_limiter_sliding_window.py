@@ -1,0 +1,197 @@
+"""The sliding window counts requests, not wall-clock seconds (fm#920).
+
+The window is a Redis sorted set: one element per request inside the window,
+pruned by score. It used to insert ``int(time.time())`` as *both* score and
+member, and ZADD on an existing member updates its score instead of adding an
+element — so every request arriving in the same second collapsed into one
+element and ``ZCARD`` could never exceed the number of distinct seconds in the
+window. Any limit with ``requests > window`` (production ``global`` 500/60s) was
+therefore unreachable, and ``global`` is the only limit covering unauthenticated
+traffic.
+
+Why the pre-fix suite could not see it: every enforcement test used
+``requests=1`` — the single limit value where counting requests and counting
+distinct seconds are indistinguishable — and every must-not-limit test used
+10_000. These tests use ``1 < requests < window`` and drive more calls than the
+limit without sleeping, which is the only shape that separates the two.
+"""
+
+import time as std_time
+
+import fakeredis.aioredis as fakeredis_aio
+import pytest
+
+import faultmaven.infrastructure.protection.rate_limiter as rate_limiter_module
+from faultmaven.infrastructure.protection.rate_limiter import RedisRateLimiter
+from faultmaven.models.protection import LimitType, RateLimitConfig
+
+pytestmark = pytest.mark.unit
+
+
+class _Clock:
+    """A controllable stand-in for the module's ``time`` reference.
+
+    Only ``time()`` is controlled. ``monotonic()`` passes through to the real
+    clock because the limiter uses it for liveness bookkeeping (log throttling,
+    demotion), which has nothing to do with the window and must not be frozen.
+    """
+
+    def __init__(self, now: float):
+        self._now = now
+
+    def time(self) -> float:
+        return self._now
+
+    def monotonic(self) -> float:
+        return std_time.monotonic()
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+@pytest.fixture
+def redis_client():
+    return fakeredis_aio.FakeRedis(decode_responses=True)
+
+
+def _limiter(client, *, requests: int, window: int = 60) -> RedisRateLimiter:
+    """A limiter enforcing one ``global`` limit against ``client``."""
+    limiter = RedisRateLimiter()
+    limiter._adopt(client, owns=False, degraded=False)
+    limiter.configure_limits(
+        {
+            LimitType.GLOBAL.value: RateLimitConfig(
+                enabled=True, requests=requests, window=window
+            )
+        }
+    )
+    return limiter
+
+
+def _window_key(limiter: RedisRateLimiter, key: str) -> str:
+    return f"{limiter.key_prefix}:{LimitType.GLOBAL.value}:{key}"
+
+
+async def _verdicts(limiter, key, count):
+    """Drive ``count`` checks back to back; return the allow/block sequence.
+
+    Asserts each verdict came from a real check: ``check_rate_limit`` reports
+    ``limit=0`` when it swallowed a Redis error and failed open, which would
+    otherwise read as a legitimate "allowed".
+    """
+    out = []
+    for _ in range(count):
+        result = await limiter.check_rate_limit(key, LimitType.GLOBAL)
+        assert (
+            result.limit == limiter._configs[LimitType.GLOBAL.value].requests
+        ), "the check failed open on a Redis error instead of deciding"
+        out.append(result.allowed)
+    return out
+
+
+@pytest.mark.parametrize("limit", [2, 5, 17])
+async def test_the_window_counts_requests_not_seconds(redis_client, limit):
+    """The property, swept: N back-to-back requests against L allow exactly L.
+
+    No sleeps, so the whole sweep lands in (about) one wall-clock second. Under
+    per-second counting only the first request of each second is counted, so the
+    allowed run collapses to 1 and ``ZCARD`` never leaves 1.
+    """
+    limiter = _limiter(redis_client, requests=limit, window=60)
+    key = f"10.1.0.{limit}"
+    overshoot = 7
+
+    verdicts = await _verdicts(limiter, key, limit + overshoot)
+
+    assert verdicts == [True] * limit + [False] * overshoot, verdicts
+    assert await redis_client.zcard(_window_key(limiter, key)) == limit
+
+
+async def test_two_requests_in_the_same_second_are_two_entries(redis_client):
+    """The direct anti-regression: same-second requests must be distinct members.
+
+    ZADD with the whole-second timestamp as member updated a score rather than
+    adding an element, so the set stayed at one entry however many requests
+    arrived.
+    """
+    limiter = _limiter(redis_client, requests=2, window=60)
+    key = "10.1.1.1"
+
+    assert await _verdicts(limiter, key, 2) == [True, True]
+    assert await redis_client.zcard(_window_key(limiter, key)) == 2
+
+
+async def test_the_window_slides_as_entries_age_out(redis_client, monkeypatch):
+    """Quota consumed at t₀ is released once t₀ falls out of the window."""
+    clock = _Clock(1_700_000_000.0)
+    monkeypatch.setattr(rate_limiter_module, "time", clock)
+
+    limiter = _limiter(redis_client, requests=3, window=10)
+    key = "10.1.2.1"
+
+    assert await _verdicts(limiter, key, 4) == [True, True, True, False]
+    assert await redis_client.zcard(_window_key(limiter, key)) == 3
+
+    # Past t₀ + window: the three entries are outside the window and must be
+    # pruned, not merely ignored — the set is the only record of the count.
+    clock.advance(11)
+
+    assert await _verdicts(limiter, key, 1) == [True]
+    assert await redis_client.zcard(_window_key(limiter, key)) == 1
+
+
+async def test_blocked_requests_consume_no_quota(redis_client, monkeypatch):
+    """A refused request must not insert: it neither counts nor extends the window.
+
+    Inserting on the blocked path would let a client that keeps hammering a
+    limit hold its own quota shut indefinitely.
+    """
+    clock = _Clock(1_700_000_000.0)
+    monkeypatch.setattr(rate_limiter_module, "time", clock)
+
+    limiter = _limiter(redis_client, requests=2, window=10)
+    key = "10.1.3.1"
+    window_key = _window_key(limiter, key)
+
+    assert await _verdicts(limiter, key, 2) == [True, True]
+    assert await redis_client.zcard(window_key) == 2
+
+    # Refused requests, four seconds after the allowed pair.
+    clock.advance(4)
+    assert await _verdicts(limiter, key, 5) == [False] * 5
+    assert await redis_client.zcard(window_key) == 2, "a blocked request inserted"
+
+    # The window frees when the *allowed* entries age out (t₀ + 10), not when
+    # the blocked ones would have (t₀ + 14).
+    clock.advance(7)
+
+    assert await _verdicts(limiter, key, 1) == [True]
+    assert await redis_client.zcard(window_key) == 1
+
+
+async def test_status_and_enforcement_agree_on_the_window_edge(
+    redis_client, monkeypatch
+):
+    """The read-only status path prunes by the same float bound as enforcement.
+
+    Truncating ``now`` to a whole second widens the status window by up to a
+    second, so status reported quota that enforcement had already released.
+    """
+    clock = _Clock(1_700_000_000.4)
+    monkeypatch.setattr(rate_limiter_module, "time", clock)
+
+    limiter = _limiter(redis_client, requests=2, window=10)
+    key = "10.1.4.1"
+
+    assert await _verdicts(limiter, key, 1) == [True]
+
+    # Now sits 10.3s after the single entry: outside the float window, but
+    # inside a window measured from int(now).
+    clock.advance(10.3)
+
+    status = await limiter.get_rate_limit_status(key, LimitType.GLOBAL)
+
+    assert status is not None
+    assert (
+        status.current_count == 0
+    ), "status still counts an entry enforcement has released"

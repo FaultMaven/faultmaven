@@ -9,6 +9,7 @@ import asyncio
 import logging
 import random
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
@@ -376,41 +377,71 @@ class RedisRateLimiter:
     async def _check_redis_rate_limit(
         self, key: str, config: RateLimitConfig, limit_type: LimitType
     ) -> RateLimitResult:
-        """Check rate limit using Redis sliding window with Lua script."""
-        current_time = int(time.time())
+        """Check rate limit using Redis sliding window with Lua script.
+
+        The window is a sorted set holding **one element per request** inside it,
+        scored by arrival time and pruned by score. Two properties make that so,
+        and both are load-bearing:
+
+        - The **score** is wall-clock ``time.time()`` with sub-second precision,
+          not ``time.monotonic()``: entries are shared across processes and
+          replicas through Redis, so scores have to be comparable across hosts.
+          Clock skew moves the window edge by the skew, which rate limiting can
+          absorb; a per-host monotonic origin would make the set meaningless.
+        - The **member** is unique per request. A member derived from the
+          timestamp alone is not: ZADD on an existing member updates its score
+          instead of adding an element, so every request arriving in the same
+          instant would collapse into one entry and the count could never exceed
+          the number of distinct instants observed. The uuid, not the clock, is
+          what guarantees uniqueness — the set stays correct even if time stands
+          still. The timestamp prefix is there only so a human reading ZRANGE
+          output can see when an entry arrived.
+
+        Both values are computed here and passed in as arguments so the script
+        stays deterministic: it generates neither time nor randomness itself.
+        """
+        current_time = time.time()
         window_start = current_time - config.window
+        member = f"{current_time:.6f}:{uuid.uuid4().hex}"
 
         lua_script = """
         local key = KEYS[1]
-        local window_start = tonumber(ARGV[1])
-        local current_time = tonumber(ARGV[2])
-        local limit = tonumber(ARGV[3])
-        local ttl = tonumber(ARGV[4])
+        local window_start = ARGV[1]
+        local score = ARGV[2]
+        local member = ARGV[3]
+        local limit = tonumber(ARGV[4])
+        local ttl = tonumber(ARGV[5])
 
-        -- Remove expired entries
+        -- Remove entries that have fallen out of the window
         redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
 
-        -- Count current entries
+        -- Count the requests still inside it
         local current_count = redis.call('ZCARD', key)
 
-        -- Check if limit exceeded
+        -- Check if limit exceeded. Nothing is inserted on this path: a refused
+        -- request must neither consume quota nor extend the window, or a client
+        -- that keeps hammering a limit would hold its own quota shut.
         if current_count >= limit then
             return {current_count, limit, 0}  -- blocked
         end
 
         -- Add current request
-        redis.call('ZADD', key, current_time, current_time)
+        redis.call('ZADD', key, score, member)
         redis.call('EXPIRE', key, ttl)
 
         return {current_count + 1, limit, 1}  -- allowed
         """
 
+        # Scores and bounds go over the wire as formatted strings rather than Lua
+        # numbers: Redis parses them as doubles directly, so the sub-second
+        # precision cannot be lost to Lua's default number formatting.
         result = await self._redis.eval(
             lua_script,
             1,
             key,
-            window_start,
-            current_time,
+            f"{window_start:.6f}",
+            f"{current_time:.6f}",
+            member,
             config.requests,
             config.window + 60,
         )
@@ -483,7 +514,10 @@ class RedisRateLimiter:
         rate_limit_key = f"{self.key_prefix}:{limit_type.value}:{key}"
 
         try:
-            current_time = int(time.time())
+            # The same float bound the check path prunes by. Truncating to a
+            # whole second here would widen the window by up to a second, so
+            # status would report quota that enforcement had already released.
+            current_time = time.time()
             window_start = current_time - config.window
 
             await self._redis.zremrangebyscore(rate_limit_key, "-inf", window_start)

@@ -926,3 +926,36 @@ async def test_a_second_death_is_demoted_just_like_the_first(monkeypatch):
     )
     assert mw._degraded is True
     assert mw.rate_limiter._redis is not killable
+
+
+# --------------------------------------------------------------------------- #
+# The limit the window actually enforces (fm#920)
+#
+# Every enforcement test above uses ``global_requests=1``, the single limit value
+# where counting requests and counting distinct wall-clock seconds are
+# indistinguishable. The window keyed its sorted-set members by the whole-second
+# timestamp, so same-second requests collapsed into one entry and any limit above
+# 1 was unreachable — measured on production's 500/60s ``global``: 5000 requests
+# from one IP, 0 refused. ``global`` is the only limit covering unauthenticated
+# traffic.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_the_global_limit_refuses_past_the_configured_request_count(monkeypatch):
+    """Five rapid requests from one IP against a limit of 3: three pass, two 429."""
+    shared = fakeredis_aio.FakeRedis(decode_responses=True)
+
+    async def _never(redis_url=None):
+        raise AssertionError("the shared client from app.state was not adopted")
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _never)
+
+    mw = RateLimitMiddleware(
+        app=_asgi_app, settings=_limited_settings(global_requests=3)
+    )
+
+    statuses = await _drive(mw, _unique_client(), 5, state_client=shared)
+
+    assert statuses == [200, 200, 200, 429, 429], statuses
