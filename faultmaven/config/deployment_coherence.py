@@ -30,6 +30,29 @@ class DeploymentCoherenceError(RuntimeError):
     """Raised at startup when configuration contradicts ``DEPLOYMENT_MODE``."""
 
 
+# The canonical VECTOR_STORAGE_TYPE value is "chromadb" (the default); the
+# legacy spellings are accepted as synonyms. Anything else deselects the
+# external server even when CHROMADB_URL is set.
+CHROMA_STORAGE_SYNONYMS = frozenset({"chromadb", "chroma", "chroma_db", "chroma-db"})
+
+
+def is_external_chroma_configured(settings: Any) -> bool:
+    """Whether the configuration selects the external ChromaDB server.
+
+    True iff ``CHROMADB_URL`` is set and ``VECTOR_STORAGE_TYPE`` is a chromadb
+    synonym. The one predicate for that question, shared by the client
+    factories (``faultmaven.infrastructure.chroma_client``) and check 7 below —
+    an inline copy in a caller is a copy that can drift from this one. It lives
+    HERE, not in the infrastructure module, so the dependency stays
+    one-directional (infrastructure → config); the reverse import was a
+    circular-import architecture violation.
+    """
+    db = settings.database
+    vector_storage_type = (db.vector_storage_type or "").strip().lower()
+    chromadb_url = (db.chromadb_url or "").strip()
+    return bool(chromadb_url) and vector_storage_type in CHROMA_STORAGE_SYNONYMS
+
+
 def _plain(obj: Any, name: str) -> str:
     """Return a str/SecretStr field's plain value, or '' if unset."""
     val = getattr(obj, name, None)
@@ -168,12 +191,9 @@ def _check_cloud(settings: Any) -> List[str]:
     # Postgres rows land in the shared database while the vectors die with the
     # pod (#901). The client factories enforce the same refusal at build time
     # (ChromaUnavailableError) for the reachability case; this check catches
-    # the pure-config case at the gate, with a config-level message.
-    # Lazy import: shared predicate with the client factories, so the gate and
-    # the factories cannot drift on what "external ChromaDB" means (the #881
-    # lesson).
-    from faultmaven.infrastructure.chroma_client import is_external_chroma_configured
-
+    # the pure-config case at the gate, with a config-level message. The
+    # predicate is shared with the client factories (defined above) so the two
+    # cannot drift on what "external ChromaDB" means (the #881 lesson).
     if not is_external_chroma_configured(settings):
         problems.append(
             "Cloud requires the external ChromaDB server: set CHROMADB_URL and "

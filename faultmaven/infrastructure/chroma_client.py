@@ -20,14 +20,23 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+# The shared predicate lives in the config module (beside coherence check 7)
+# so the import stays one-directional: infrastructure → config. Re-exported
+# here because this module is the client factories' natural import surface.
+from faultmaven.config.deployment_coherence import (
+    CHROMA_STORAGE_SYNONYMS,
+    DeploymentCoherenceError,
+    is_external_chroma_configured,
+)
+
+__all__ = [
+    "CHROMA_STORAGE_SYNONYMS",
+    "ChromaUnavailableError",
+    "is_external_chroma_configured",
+    "local_chroma_or_fail",
+]
 
 logger = logging.getLogger(__name__)
-
-# The canonical value is "chromadb" (the default); the legacy spellings are
-# accepted as synonyms. Anything else deselects the external server even when
-# CHROMADB_URL is set.
-CHROMA_STORAGE_SYNONYMS = frozenset({"chromadb", "chroma", "chroma_db", "chroma-db"})
 
 
 class ChromaUnavailableError(DeploymentCoherenceError):
@@ -37,20 +46,6 @@ class ChromaUnavailableError(DeploymentCoherenceError):
     signal the deployment coherence gate raises, because this is the same
     statement: the running configuration contradicts ``DEPLOYMENT_MODE``.
     """
-
-
-def is_external_chroma_configured(settings: Any) -> bool:
-    """Whether the configuration selects the external ChromaDB server.
-
-    True iff ``CHROMADB_URL`` is set and ``VECTOR_STORAGE_TYPE`` is a chromadb
-    synonym. The one predicate for that question, shared by the client
-    factories and the deployment coherence gate — an inline copy in a caller
-    is a copy that can drift from this one.
-    """
-    db = settings.database
-    vector_storage_type = (db.vector_storage_type or "").strip().lower()
-    chromadb_url = (db.chromadb_url or "").strip()
-    return bool(chromadb_url) and vector_storage_type in CHROMA_STORAGE_SYNONYMS
 
 
 def local_chroma_or_fail(reason: str, settings: Any) -> None:
