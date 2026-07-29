@@ -36,7 +36,8 @@ def get_project_root() -> Path:
 
     Determines project root using multiple strategies for deployment flexibility:
     1. PROJECT_ROOT environment variable (Docker/custom deployments)
-    2. Current working directory if it contains alembic.ini (deployed apps)
+    2. Current working directory if it contains alembic.ini or pyproject.toml
+       (deployed apps — the image's WORKDIR holds both)
     3. Relative to this file (development mode)
 
     Returns:
