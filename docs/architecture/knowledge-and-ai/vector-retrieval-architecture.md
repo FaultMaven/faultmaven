@@ -154,7 +154,9 @@ Runbooks have **no collection of their own**. `RunbookKnowledgeBase` is construc
 Two predicates therefore do all the work on this path, and neither is redundant:
 
 - **`report_type` separates runbooks from KB documents.** Sharing a collection with every ingested document means `{"report_type": "runbook"}` is the *only* thing that keeps a runbook search from returning ordinary KB chunks. Reading `COLLECTION_NAME` as evidence of a dedicated collection and deleting this predicate as redundant is the specific mistake the source comments on the constant and on the `VectorMetadata` field exist to prevent (#912).
-- **`organization_id` is the tenant isolation.** A similarity query names no id and no owner, so the scope-`where` above does not apply and a metadata predicate is the *only* isolation available:
+- **`organization_id` is the tenant isolation.** A similarity query names no id and no owner, so the scope-`where` above does not apply and a metadata predicate is the *only* isolation available.
+
+The mechanics of the tenant half:
 
 - `RunbookKnowledgeBase.search_runbooks` takes a **required** `organization_id` and ANDs `{"organization_id": <org>}` into the `where` clause alongside `{"report_type": "runbook"}` and the optional `{"domain": …}`. Callers source it from `Case.organization_id` — `CaseReport` carries no organization of its own — through `usable_tenant_id`, so the Standalone sentinel never becomes a tenant predicate under `TENANT_PROVIDER=multi`.
 - With no organization it returns `[]` **without issuing a query**. It never falls back to a corpus-wide search.
