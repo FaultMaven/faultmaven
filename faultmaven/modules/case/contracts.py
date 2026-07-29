@@ -383,16 +383,29 @@ class ICaseRepository(Protocol):
 
 
 class CaseStateDTO(str, Enum):
-    """Public case status enum for cross-module use."""
+    """Public case state enum for cross-module use.
+
+    MUST mirror ``domain.models.CaseState`` exactly — that enum is the single
+    authority on the lifecycle (INQUIRY → INVESTIGATING → RESOLVED/CLOSED), and
+    the persistence enum agrees. Parity is pinned by
+    ``tests/unit/modules/case/test_case_state_dto_parity.py``.
+
+    This previously advertised four states the product does not have —
+    DOCUMENTING, RESOLVED_WITH_WORKAROUND, RESOLVED_BY_USER, ABANDONED. Nothing
+    could ever produce them (the domain has no such values), but they were not
+    harmless: a developer read them as real and wrote
+    ``CaseState.SOLVED``/``CaseState.DOCUMENTING`` into the case-closure route,
+    where every call raised AttributeError → 500 until it was fixed (see the
+    note at ``modules/case/api/routes.py`` in the close handler). The caller was
+    corrected and the phantom values were left in place, so the trap stayed
+    armed. Do not add a value here without adding it to the domain enum,
+    the persistence enum, and a migration.
+    """
 
     INQUIRY = "inquiry"
     INVESTIGATING = "investigating"
-    DOCUMENTING = "documenting"
     RESOLVED = "resolved"
-    RESOLVED_WITH_WORKAROUND = "resolved_with_workaround"
-    RESOLVED_BY_USER = "resolved_by_user"
     CLOSED = "closed"
-    ABANDONED = "abandoned"
 
 
 @dataclass
