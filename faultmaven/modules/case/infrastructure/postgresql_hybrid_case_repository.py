@@ -1945,8 +1945,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         columns (the PG hybrid had been writing them as phantom columns
         before the schema baseline; now they're real). The ``metadata``
         JSON blob still holds the transient runtime state (proposed_actions /
-        action_attempts / turn_history / pending_transition) — those
-        have no first-class column yet.
+        action_attempts / turn_history / pending_transition /
+        last_suggestions) — those have no first-class column yet.
         """
         return {
             "case_id": case.case_id,
@@ -2017,6 +2017,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             if case.turn_history
                             else []
                         ),
+                        # Intent-bearing DECIDE suggestions from the last
+                        # agent turn — the resolver matches typed replies
+                        # against them on the NEXT request, so they must
+                        # survive the reload (#914; plain JSON-able dicts;
+                        # the falsy filter below drops None/empty).
+                        "last_suggestions": case.last_suggestions,
                     }.items()
                     if v
                 }
@@ -2991,6 +2997,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 else None
             ),
             "pending_transition": metadata.get("pending_transition"),
+            "last_suggestions": metadata.get("last_suggestions") or None,
             "progress": progress,
             "current_turn": int(row.current_turn or 0),
             "turns_without_progress": int(row.turns_without_progress or 0),

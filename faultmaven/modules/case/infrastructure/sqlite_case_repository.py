@@ -2342,8 +2342,8 @@ class SQLiteCaseRepository(CaseRepository):
         ``current_turn``, ``turns_without_progress`` are first-class
         columns. The ``metadata`` JSON blob still holds the transient
         runtime state (proposed_actions / action_attempts / turn_history /
-        pending_transition / message_count) — those have no first-class
-        column yet.
+        pending_transition / message_count / last_suggestions) — those have
+        no first-class column yet.
         """
         return {
             "case_id": case.case_id,
@@ -2421,6 +2421,11 @@ class SQLiteCaseRepository(CaseRepository):
                         if case.turn_history
                         else []
                     ),
+                    # Intent-bearing DECIDE suggestions from the last agent
+                    # turn — the resolver matches typed replies against them
+                    # on the NEXT request, so they must survive the reload
+                    # (#914; already plain JSON-able dicts).
+                    "last_suggestions": case.last_suggestions,
                 }
             ),
         }
@@ -3360,7 +3365,8 @@ class SQLiteCaseRepository(CaseRepository):
 
         # Parse metadata for the transient runtime state that has no
         # first-class column yet (proposed_actions / action_attempts /
-        # turn_history / pending_transition / message_count).
+        # turn_history / pending_transition / message_count /
+        # last_suggestions).
         metadata = json.loads(row.metadata) if row.metadata else {}
 
         # Promoted columns: read directly from the row.
@@ -3379,6 +3385,7 @@ class SQLiteCaseRepository(CaseRepository):
                 else None
             ),
             "pending_transition": metadata.get("pending_transition"),
+            "last_suggestions": metadata.get("last_suggestions") or None,
             "progress": progress,
             "current_turn": int(row.current_turn or 0),
             "turns_without_progress": int(row.turns_without_progress or 0),
