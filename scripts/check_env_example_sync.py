@@ -50,6 +50,14 @@ ALLOWLIST = {
     # os.environ (env_prefix="opik_") and main.py's load_dotenv() puts .env there
     # first. Mirroring it as a settings field would shadow the SDK's default.
     "OPIK_TRACK_DISABLE",
+    # Read via os.getenv in config/protection.py (``_fail_open_default``), which
+    # builds ProtectionSettings — a plain BaseModel, not a BaseSettings section.
+    # Deliberately NOT mirrored as a settings field: the adjacent
+    # settings.protection.fail_open (PROTECTION_FAIL_OPEN) governs PII redaction
+    # and has the opposite safe default, and two similarly-named fields on the
+    # same section is exactly the one-key-two-meanings confusion this key exists
+    # to remove.
+    "PROTECTION_RATE_LIMIT_FAIL_OPEN",
 }
 
 # Capture optional leading "#": commented lines document the DEFAULT (checked

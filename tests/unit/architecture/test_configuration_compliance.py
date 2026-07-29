@@ -16,8 +16,15 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.config.settings import FaultMavenSettings, get_settings, reset_settings
+from faultmaven.config.settings import FaultMavenSettings
 from faultmaven.models.exceptions import ConfigurationError
+
+# Late-bound: the production code under test re-imports the settings module by
+# name on every call, so these must read and reset whichever module object *it*
+# sees, not whichever one existed when this file was imported. See
+# `tests/utils.reset_settings_singleton`.
+from tests.utils import get_live_settings as get_settings
+from tests.utils import reset_settings_singleton as reset_settings
 
 
 class ConfigurationViolationScanner:
@@ -409,36 +416,67 @@ class TestConfigurationArchitectureCompliance:
                 "localhost" in str(origin) for origin in origins
             ), f"Missing localhost origin. Found origins: {origins}"
 
-    def test_redis_url_generation(self):
-        """Test Redis URL generation from settings"""
-        # Test without password
-        with patch.dict(
-            os.environ,
-            {
-                "REDIS_HOST": "test-redis",
-                "REDIS_PORT": "6380",
-                "REDIS_DB": "1",
-                "REDIS_PASSWORD": "",
-            },
-            clear=False,
-        ):
+    def test_redis_connection_parameters_resolve_through_the_central_factory(self):
+        """Redis connection parameters come from one resolver, credentials intact.
+
+        Guards the live path — ``RedisClientFactory._build_config`` — rather
+        than a settings-side URL builder. The discrete form never
+        string-interpolates the password into a URL, so a password containing
+        URL-special characters needs no encoding and must arrive byte-identical
+        (fm#898: the deleted ``get_redis_url`` interpolated it unencoded).
+        """
+        from faultmaven.infrastructure.redis_client import RedisClientFactory
+
+        def resolved(**redis_env):
+            """Resolve the live Redis config with exactly these REDIS_* vars set."""
+            with patch.dict(os.environ, redis_env, clear=False):
+                for unset in (
+                    "REDIS_URL",
+                    "REDIS_HOST",
+                    "REDIS_PORT",
+                    "REDIS_DB",
+                    "REDIS_PASSWORD",
+                ):
+                    if unset not in redis_env:
+                        os.environ.pop(unset, None)
+                reset_settings()
+                return RedisClientFactory._build_config(None, None, None, None)
+
+        try:
+            # (a) Discrete host/port/db, no password.
+            config = resolved(REDIS_HOST="test-redis", REDIS_PORT="6380", REDIS_DB="1")
+            assert config["url"] is None
+            assert config["host"] == "test-redis"
+            assert config["port"] == 6380
+            assert config["db"] == 1
+            assert config["password"] is None
+
+            # (b) An explicit REDIS_URL wins wholesale; discrete fields stay unset.
+            config = resolved(
+                REDIS_URL="redis://custom-redis:6379/2",
+                REDIS_HOST="test-redis",
+                REDIS_PORT="6380",
+            )
+            assert config["url"] == "redis://custom-redis:6379/2"
+            assert config["host"] is None
+            assert config["port"] is None
+            assert config["db"] is None
+            assert config["password"] is None
+
+            # (c) A password full of URL-special characters survives verbatim.
+            # The discrete path never interpolates it into a URL, so there is
+            # nothing to percent-encode and nothing to get wrong.
+            special_password = "p@ss:w/rd#with?specials%25"
+            config = resolved(
+                REDIS_HOST="test-redis",
+                REDIS_PORT="6380",
+                REDIS_DB="1",
+                REDIS_PASSWORD=special_password,
+            )
+            assert config["url"] is None
+            assert config["password"] == special_password
+        finally:
             reset_settings()
-            settings = get_settings()
-            redis_url = settings.get_redis_url()
-
-            # URL should contain the host and port at minimum
-            assert "test-redis:6380" in redis_url
-            assert redis_url.endswith("/1")
-
-        # Test with direct REDIS_URL
-        with patch.dict(
-            os.environ, {"REDIS_URL": "redis://custom-redis:6379/2"}, clear=False
-        ):
-            reset_settings()
-            settings = get_settings()
-            redis_url = settings.get_redis_url()
-
-            assert redis_url == "redis://custom-redis:6379/2"
 
     def test_llm_provider_api_key_access(self):
         """Test LLM provider API key access and security"""
